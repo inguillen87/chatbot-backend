@@ -6,6 +6,7 @@ from pathlib import Path
 from .herramientas_municipio import TOOL_REGISTRY
 from .estacionamiento_utils import _dist_m
 from .google_maps_service import get_coordinates
+from .estacionamiento_service import consultar_ocupacion
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,19 @@ class PointsOfInterestHandler:
                     lat, lon = float(coords["lat"]), float(coords["lon"])
             except Exception as exc:  # pragma: no cover
                 logger.error("Error geocoding address %s: %s", address, exc, exc_info=True)
+        spots: list[dict] = []
+        info = {}
+        try:
+            if lat is not None and lon is not None:
+                info = consultar_ocupacion({"lat": lat, "lon": lon})
+            elif address:
+                info = consultar_ocupacion(address)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Error consultando ocupación: %s", exc, exc_info=True)
+
+        libres = info.get("libres") if isinstance(info, dict) else None
+        cam_name = info.get("camera") if isinstance(info, dict) else None
+        timestamp = info.get("timestamp") if isinstance(info, dict) else None
 
         if lat is not None and lon is not None:
             def dist(item):
@@ -77,31 +91,60 @@ class PointsOfInterestHandler:
 
             sorted_spots = sorted(self.parking_data, key=dist)
             nearest = sorted_spots[:3]
-            lines = [f"Situación de estacionamiento cerca de {address or 'tu ubicación'}:"]
-            for item in nearest:
+            lines = [
+                f"Datos de estacionamiento cerca de {address or 'tu ubicación'}:" \
+                + (f" (Fuente: {cam_name} {timestamp})" if cam_name and timestamp else "")
+            ]
+
+            free_indices = set()
+            if isinstance(libres, int) and libres > 0:
+                free_indices = set(random.sample(range(len(nearest)), min(libres, len(nearest))))
+            for idx, item in enumerate(nearest):
                 try:
-                    distance = f" ({int(dist(item))} m)"
+                    distance_val = int(dist(item))
+                    distance_text = f" ({distance_val} m)"
                 except Exception:  # pragma: no cover
-                    distance = ""
-                availability = random.randint(0, 3)
-                if availability > 0:
-                    status = f"{availability} lugares libres"
-                else:
-                    status = "todo ocupado"
-                lines.append(f"- {item['address']}{distance}: {status}")
+                    distance_val = None
+                    distance_text = ""
+                availability = 1 if idx in free_indices else 0
+                status = "libre" if availability else "ocupado"
+                lines.append(f"- {item['address']}{distance_text}: {status}")
+                spots.append({
+                    "address": item["address"],
+                    "lat": item["lat"],
+                    "lon": item["lon"],
+                    "distance_m": distance_val,
+                    "available_spots": availability,
+                })
         else:
             sample = random.sample(self.parking_data, min(3, len(self.parking_data)))
-            lines = [f"Situación de estacionamiento cerca de {address or 'la zona'}:"]
-            for item in sample:
-                availability = random.randint(0, 3)
-                status = f"{availability} lugares libres" if availability > 0 else "todo ocupado"
+            lines = [
+                f"Datos de estacionamiento cerca de {address or 'la zona'}:" \
+                + (f" (Fuente: {cam_name} {timestamp})" if cam_name and timestamp else "")
+            ]
+            free_indices = set()
+            if isinstance(libres, int) and libres > 0:
+                free_indices = set(random.sample(range(len(sample)), min(libres, len(sample))))
+            for idx, item in enumerate(sample):
+                availability = 1 if idx in free_indices else 0
+                status = "libre" if availability else "ocupado"
                 lines.append(f"- {item['address']}: {status}")
+                spots.append({
+                    "address": item["address"],
+                    "lat": item["lat"],
+                    "lon": item["lon"],
+                    "distance_m": None,
+                    "available_spots": availability,
+                })
 
         return {
             "message_body": "\n".join(lines),
             "options_list": [],
             "message_type": "text",
             "fuente": "points_of_interest_handler",
+            "camera": cam_name,
+            "timestamp": timestamp,
+            "spots": spots,
         }
     def handle(self, payload: dict) -> dict | None:
         pregunta = (payload.get("pregunta") or "").lower()

@@ -52,4 +52,11 @@ def consultar_ocupacion(ubicacion_texto_o_coord: Any) -> Dict[str, Any]:
         f"• Libres: {libres}\n• Ocupados: {ocupados}\n• {ts}\n\n"
         "Segmentos:\n" + "\n".join([f"- {s['label']}: {'LIBRE ✅' if s['libre'] else 'OCUPADO ❌'}" for s in resumen])
     )
-    return {"texto": texto}
+    return {
+        "texto": texto,
+        "camera": cam.get("nombre"),
+        "libres": libres,
+        "ocupados": ocupados,
+        "timestamp": ts,
+        "segmentos": resumen,
+    }
