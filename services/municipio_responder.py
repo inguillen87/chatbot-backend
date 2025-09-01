@@ -1132,14 +1132,14 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
                 social_links = (
                     "\n---\n"
                     "Seguinos en nuestras redes:\n"
-                    "📘 Facebook: https://www.facebook.com/municipalidaddejunin\n"
-                    "📸 Instagram: https://www.instagram.com/municipalidaddejunin"
+                    "📘 Facebook: https://www.facebook.com/JuninMunicipio\n"
+                    "📸 Instagram: https://www.instagram.com/munijuninmdz/"
                 )
             else:
                 social_links = (
                     "<hr>Seguinos en nuestras redes:<br>"
-                    '<a href="https://www.facebook.com/municipalidaddejunin" target="_blank">📘 Facebook</a><br>'
-                    '<a href="https://www.instagram.com/municipalidaddejunin" target="_blank">📸 Instagram</a>'
+                    '<a href="https://www.facebook.com/JuninMunicipio" target="_blank">📘 Facebook</a><br>'
+                    '<a href="https://www.instagram.com/munijuninmdz" target="_blank">📸 Instagram</a>'
                 )
             full_body += social_links
 
