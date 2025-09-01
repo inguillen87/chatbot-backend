@@ -20,6 +20,7 @@ from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
 from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.openai_maps_service import geocodificar_inversa_llm
+from services.municipio_responder import CONTEXTO_MUNICIPIO
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -290,7 +291,14 @@ def whatsapp_webhook():
 
     # --- Numeric Menu Handling ---
     last_options = session_context_db_entry.context_data.get("last_options_sent")
-    if message_body.isdigit() and last_options:
+    municipio_ctx = (
+        session_context_db_entry.context_data.get(CONTEXTO_MUNICIPIO)
+        or session_context_db_entry.context_data.get("contexto_municipio", {})
+    )
+    esperando_info = municipio_ctx.get("esperando_info_llm")
+
+    # Solo traducir números a acciones cuando no estamos esperando información libre.
+    if message_body.isdigit() and last_options and not esperando_info:
         idx = int(message_body) - 1
         if 0 <= idx < len(last_options):
             selected = last_options[idx]

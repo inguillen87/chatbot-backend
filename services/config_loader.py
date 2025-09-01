@@ -50,7 +50,13 @@ def cargar_configuracion_municipio(municipio_id: str, archivo: str) -> dict:
     try:
         mtime = os.path.getmtime(ruta)
     except OSError as e:
-        logger.error(f"[CONFIG] No se pudo acceder a {ruta}: {e}")
+        # Si el archivo no existe, evitar loguear como error en cada acceso.
+        # Para configuraciones "default" inexistentes, registrar un warning
+        # más amigable y continuar con un dict vacío.
+        if isinstance(e, FileNotFoundError):
+            logger.warning(f"[CONFIG] Archivo de configuración no encontrado en {ruta}. Usando valores por defecto.")
+        else:
+            logger.error(f"[CONFIG] No se pudo acceder a {ruta}: {e}")
         _config_cache[clave] = {}
         _mtime_cache[clave] = None
         return {}
