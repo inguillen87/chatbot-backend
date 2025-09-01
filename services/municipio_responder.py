@@ -1938,6 +1938,11 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
     logger.warning(f"DEBUG: No menu action found for input: '{user_input}' (normalized: '{normalized_input}')")
     return None
 
+def find_global_menu_action(user_input: str) -> str | None:
+    """Attempts to resolve a menu action purely by keywords, ignoring menu context."""
+    global_buttons = [{"texto": aid, "action_id": aid} for aid in MENU_KEYWORDS.keys()]
+    return find_menu_action_by_input(user_input, global_buttons)
+
 RECLAMO_KEYWORDS = {
     "Luminaria": ["luminaria", "luz", "poste", "foco"],
     "Arbolado": ["arbolado", "arbol", "arboles", "rama", "ramas"],
@@ -2478,6 +2483,8 @@ def responder_municipio(
                 pregunta_str_menu = pregunta_original["pregunta"]
 
             selected_action = action or find_menu_action_by_input(pregunta_str_menu, _get_main_menu_payload(context).get('options_list', []))
+            if not selected_action:
+                selected_action = find_global_menu_action(pregunta_str_menu)
 
             if selected_action:
                 contexto_municipio_actual['estado_conversacion'] = None
@@ -2763,6 +2770,8 @@ def responder_municipio(
             for btn in menu_payload.get("options_list", [])
         ]
         inferred_action = find_menu_action_by_input(pregunta_str or "", buttons_for_finder)
+        if not inferred_action:
+            inferred_action = find_global_menu_action(pregunta_str or "")
         if inferred_action:
             response = handle_main_menu_action(inferred_action, context, chat_db_context)
             if response:
@@ -2868,12 +2877,16 @@ def responder_municipio(
     # --- INICIO: Manejo de selección de menú principal por número, letra o keyword ---
     if estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name:
         pregunta_str_menu = ""
+        payload_action = None
         if isinstance(pregunta_original, str):
             pregunta_str_menu = pregunta_original
-        elif isinstance(pregunta_original, dict) and "pregunta" in pregunta_original:
-            pregunta_str_menu = pregunta_original["pregunta"]
+        elif isinstance(pregunta_original, dict):
+            pregunta_str_menu = pregunta_original.get("pregunta", "")
+            payload_action = pregunta_original.get("action")
 
-        logger_actual.info(f"Handling input in ESPERANDO_SELECCION_MENU_PRINCIPAL state. Input: '{pregunta_str_menu}'")
+        logger_actual.info(
+            f"Handling input in ESPERANDO_SELECCION_MENU_PRINCIPAL state. Input: '{pregunta_str_menu}', Payload action: '{payload_action}'"
+        )
 
         # Get the definitive menu structure from the payload generator
         # This ensures that the menu we check against is the same one the user saw.
@@ -2889,7 +2902,9 @@ def responder_municipio(
                 "action_id": btn.get("id") # The 'id' key holds the action_id
             })
 
-        selected_action = find_menu_action_by_input(pregunta_str_menu, buttons_for_finder)
+        selected_action = payload_action or find_menu_action_by_input(pregunta_str_menu, buttons_for_finder)
+        if not selected_action:
+            selected_action = find_global_menu_action(pregunta_str_menu)
 
         if selected_action:
             logger_actual.info(f"User input '{pregunta_str_menu}' matched to action: '{selected_action}'")
@@ -2939,6 +2954,8 @@ def responder_municipio(
 
         menu_opciones = contexto_municipio_actual.get("menu_opciones", [])
         selected_action = action_payload or find_menu_action_by_input(pregunta_str_menu, menu_opciones)
+        if not selected_action:
+            selected_action = find_global_menu_action(pregunta_str_menu)
 
         if selected_action:
             contexto_municipio_actual['estado_conversacion'] = None
