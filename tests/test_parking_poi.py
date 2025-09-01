@@ -71,9 +71,19 @@ class TestParkingPOI(unittest.TestCase):
         self.assertIn("ocupado", res.get("message_body", ""))
 
     def test_parking_keyword_estacionar(self):
+        with patch("services.points_of_interest_handler.get_coordinates", return_value=None):
+            handler = PointsOfInterestHandler(context={})
+            res = handler.handle({"pregunta": "quiero estacionar", "location": None})
+            self.assertIn("Compartir ubicación", str(res))
+
+    @patch("services.points_of_interest_handler.consultar_ocupacion", return_value={"libres": 1, "camera": "Demo", "timestamp": "00:00", "segmentos": []})
+    @patch("services.points_of_interest_handler.get_coordinates")
+    def test_parking_text_address_in_question(self, mock_geo, mock_occ):
+        mock_geo.return_value = {"lat": -33.023818, "lon": -68.497164}
         handler = PointsOfInterestHandler(context={})
-        res = handler.handle({"pregunta": "quiero estacionar", "location": None})
-        self.assertIn("Compartir ubicación", str(res))
+        res = handler.handle({"pregunta": "estacionamiento Las Heras 105", "location": None})
+        mock_geo.assert_called_once()
+        self.assertIn("Las Heras 105", res.get("message_body", ""))
 
     @patch("services.points_of_interest_handler.consultar_ocupacion", return_value={"libres": 1, "camera": "Demo", "timestamp": "00:00", "segmentos": []})
     @patch("services.points_of_interest_handler.get_coordinates")
