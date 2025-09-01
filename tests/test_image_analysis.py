@@ -92,5 +92,27 @@ class TestImageAnalysis(unittest.TestCase):
         self.assertTrue(resultado['es_reclamo'])
         self.assertEqual(resultado['categoria_sugerida'], "arreglo de calle")
 
+    @patch('services.interpretacion_imagen_service._descargar_imagen')
+    @patch('services.interpretacion_imagen_service.analyze_image_smart')
+    @patch('services.interpretacion_imagen_service.extract_complaint_details_llm')
+    def test_interpretar_imagen_farola(self, mock_extract_complaint_details_llm, mock_analyze_image_smart, mock_descargar_imagen):
+        mock_descargar_imagen.return_value = b'dummy_image_content'
+        mock_analyze_image_smart.return_value = {
+            "labels": [{"description": "farola", "confidence": 0.9}],
+            "objects": [],
+            "full_text_annotation": None,
+        }
+        mock_extract_complaint_details_llm.return_value = {}
+
+        archivo_adjunto = {
+            "url": "http://example.com/farola.jpg",
+            "mime_type": "image/jpeg",
+        }
+
+        resultado = interpretar_imagen_para_chat(archivo_adjunto, "reclamo_auto_descripcion_categoria")
+
+        self.assertTrue(resultado['es_reclamo'])
+        self.assertEqual(resultado['categoria_sugerida'], "luminaria")
+
 if __name__ == '__main__':
     unittest.main()

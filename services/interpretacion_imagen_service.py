@@ -269,6 +269,10 @@ VISION_LABEL_TO_RECLAMO_CATEGORIA = {
     "streetlight": "luminaria",
     "lamp post": "luminaria",
     "power line": "luminaria",
+    "farola": "luminaria",
+    "luminaria": "luminaria",
+    "alumbrado": "luminaria",
+    "poste de luz": "luminaria",
 
     # Semáforos / señalización
     "traffic light": "rotura de semaforo",
