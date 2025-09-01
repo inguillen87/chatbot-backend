@@ -49,6 +49,42 @@ class TestMenuKeywords(unittest.TestCase):
                 response = responder_municipio("vacunas", owner, rubro, chat_db_context=chat_ctx)
         self.assertIn("Veterinaria y Bromatología", response["message_body"])
 
+    def test_numeric_selection_in_submenu(self):
+        owner = SimpleNamespace(municipio_id="default", id=1)
+        rubro = SimpleNamespace()
+        chat_ctx = SimpleNamespace(
+            chat_session_id="test",
+            context_data={
+                CONTEXTO_MUNICIPIO: {
+                    "estado_conversacion": ConversationState.ESPERANDO_SELECCION_DE_LISTA.name,
+                    "menu_opciones": [
+                        {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
+                        {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
+                        {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
+                        {"texto": "Cancelar", "action_id": "cancelar"},
+                    ],
+                }
+            },
+        )
+        app = Flask(__name__)
+        with app.app_context():
+            with patch("services.municipio_responder.flag_modified"), \
+                 patch("services.municipio_responder.db"), \
+                 patch("services.municipio_responder.get_tramites_info", return_value={}), \
+                 patch(
+                     "services.municipio_responder.cargar_configuracion_municipio",
+                     return_value={
+                         "Veterinaria y Bromatologia": {
+                             "nombre": "Dra. Laura Funes",
+                             "telefono": "+5492634521563",
+                             "horario": "Lunes a Viernes de 8:00 a 18:00 hs."
+                         }
+                     },
+                 ):
+                response = responder_municipio("3", owner, rubro, chat_db_context=chat_ctx)
+        self.assertIn("Veterinaria y Bromatología", response["message_body"])
+        self.assertIsNone(chat_ctx.context_data[CONTEXTO_MUNICIPIO].get("estado_conversacion"))
+
 
 if __name__ == "__main__":
     unittest.main()

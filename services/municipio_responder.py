@@ -2369,15 +2369,16 @@ def responder_municipio(
         return _finalize_response(response)
     # --- FIN: Manejo del Flujo de Reclamos Activo ---
     # --- START DIRECT RECLAMO DETECTION FOR TEXT OR AUDIO ---
-    reclamo_options = _get_reclamos_menu().get("options_list", [])
-    plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
-    detected_category = find_reclamo_category_by_input(pregunta_str, plain_text_options)
-    if detected_category:
-        handler = ReclamoFlowHandler(context, chat_db_context)
-        response_dict = handler.start_flow(categoria_inicial=detected_category)
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return _finalize_response(response_dict)
+    if not contexto_municipio_actual.get("estado_conversacion"):
+        reclamo_options = _get_reclamos_menu().get("options_list", [])
+        plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
+        detected_category = find_reclamo_category_by_input(pregunta_str, plain_text_options)
+        if detected_category:
+            handler = ReclamoFlowHandler(context, chat_db_context)
+            response_dict = handler.start_flow(categoria_inicial=detected_category)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response_dict)
     # --- END DIRECT RECLAMO DETECTION FOR TEXT OR AUDIO ---
 
     # --- START INTENT CLASSIFICATION ---
@@ -2463,8 +2464,10 @@ def responder_municipio(
     estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
     action = received_payload.get("action")
 
-    # Allow keyword shortcuts even when a conversation state is active
-    if not action and pregunta_str:
+    # Allow keyword shortcuts even when a conversation state is active,
+    # but avoid treating numeric replies as global menu shortcuts so that
+    # sub-menu selections like "3" are handled within their local context.
+    if not action and pregunta_str and not pregunta_str.strip().isdigit():
         inferred_action = find_global_menu_action(pregunta_str)
         if inferred_action:
             contexto_municipio_actual['estado_conversacion'] = None

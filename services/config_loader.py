@@ -40,12 +40,20 @@ def cargar_configuracion_municipio(municipio_id: str, archivo: str) -> dict:
     clave = (municipio_id, archivo)
     ruta = os.path.join(BASE_CONFIG_PATH, municipio_id, archivo)
 
-    if not os.path.exists(ruta) and municipio_id != "default":
-        # Fallback to the shared "default" configuration when a municipality
-        # specific file is missing. This prevents noisy errors in logs and
-        # keeps behaviour consistent for municipalities that have not yet
-        # provided their own overrides.
-        return cargar_configuracion_municipio("default", archivo)
+    # If the file is not present in the mounted `/data` volume, fall back to the
+    # repository's bundled `data/` directory. This covers test environments and
+    # fresh deployments where the persistent volume has not yet been populated.
+    repo_ruta = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                             "data", "municipios", municipio_id, archivo)
+    if not os.path.exists(ruta):
+        if os.path.exists(repo_ruta):
+            ruta = repo_ruta
+        elif municipio_id != "default":
+            # Fallback to the shared "default" configuration when a municipality
+            # specific file is missing. This prevents noisy errors in logs and
+            # keeps behaviour consistent for municipalities that have not yet
+            # provided their own overrides.
+            return cargar_configuracion_municipio("default", archivo)
 
     try:
         mtime = os.path.getmtime(ruta)
