@@ -30,7 +30,7 @@ def handle(msg, ctx):
             {"texto": "📋 Consultar otros trámites", "action_id": "consultar_otros_tramites"}
         ]},
         {"titulo": "Servicios y Turnos 📅", "botones": [
-            {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_y_bromatologia"},
+            {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
             {"texto": "📅 Solicitar Turnos", "action_id": "solicitar_turnos"}
         ]},
         {"titulo": "Información y Novedades 📰", "botones": [
