@@ -12,6 +12,7 @@ from models import (
     Conversacion,
     db,
 )
+from utils.ticket_utils import normalize_category
 from sqlalchemy.exc import SQLAlchemyError
 from .integracion_municipal import enviar_ticket_a_sigem # SIGEM Integration
 
@@ -51,6 +52,7 @@ class MunicipioTicketCreator(TicketCreator):
             nombre_vecino=ticket_data.get("nombre_vecino"),
             telefono_vecino=ticket_data.get("telefono_vecino"),
             email_vecino=ticket_data.get("email_vecino"),
+            dni_vecino=ticket_data.get("dni") or ticket_data.get("dni_vecino"),
             foto_url_directa=ticket_data.get("foto_url_directa"), # Para la foto inicial del reclamo
             canal_ingreso=ticket_data.get("canal_ingreso"),
             estado=ticket_data.get("estado", "nuevo")
@@ -151,6 +153,10 @@ class ServicioTickets:
         # El commit se movió al final de la transacción en routes/chat.py
         # para evitar detached instances.
         # --- Fin de la lógica de manejo de usuario ---
+
+        # Normalizar categoría para evitar duplicados como variantes de 'luminarias'
+        if "categoria" in ticket_data:
+            ticket_data["categoria"] = normalize_category(ticket_data.get("categoria"))
 
         ticket_data["nro_ticket"] = random.randint(100000, 999999)
         try:
