@@ -2164,6 +2164,22 @@ def responder_municipio(
     }
     # --- FIN REFACTOR ---
 
+    # --- Manejo rápido de reclamos detectados vía imagen ---
+    datos_interpretados_archivo = context.get("datos_interpretados_archivo")
+    if (
+        datos_interpretados_archivo
+        and isinstance(datos_interpretados_archivo, dict)
+        and datos_interpretados_archivo.get("es_reclamo")
+    ):
+        logger_actual.info("Auto-starting claim flow from image analysis")
+        handler = ReclamoFlowHandler(context, chat_db_context)
+        datos_iniciales = {
+            "categoria": datos_interpretados_archivo.get("categoria_sugerida"),
+            "descripcion": datos_interpretados_archivo.get("descripcion_sugerida"),
+            "origen_descripcion": "imagen",
+        }
+        return _finalize_response(handler.start_flow(datos_iniciales=datos_iniciales))
+
     # --- INICIO: Análisis de Imágenes Multimodal ---
     if received_payload.get("es_foto") and received_payload.get("foto_url"):
         logger_actual.info(f"Image received. Starting multimodal analysis for URL: {received_payload.get('foto_url')}")
