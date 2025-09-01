@@ -153,11 +153,29 @@ class PointsOfInterestHandler:
         keywords = ("estacionamiento", "estacionar", "lugar libre")
         if any(word in pregunta for word in keywords):
             if not location:
+                # Try to geocode an address present in the question text
+                address_candidate = pregunta
+                for word in keywords:
+                    address_candidate = address_candidate.replace(word, "")
+                address_candidate = address_candidate.strip(",.;:- ")
+                coords = None
+                if len(address_candidate) > 3:
+                    try:
+                        coords = get_coordinates(address_candidate)
+                    except Exception:  # pragma: no cover - defensive
+                        coords = None
+                if coords:
+                    location = {
+                        "address": address_candidate,
+                        "lat": coords.get("lat"),
+                        "lon": coords.get("lon"),
+                    }
+                    return self._parking_response(location)
                 return {
                     "message_body": "Para buscar estacionamientos necesito tu ubicación.",
                     "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}],
                     "message_type": "interactive_buttons",
-                    "fuente": "points_of_interest_handler"
+                    "fuente": "points_of_interest_handler",
                 }
             return self._parking_response(location)
 
