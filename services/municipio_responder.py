@@ -153,6 +153,17 @@ class ReclamoFlowHandler:
         logger.info("Iniciando flujo de reclamo v2.")
         self.flow_context.clear()
         self.flow_context['datos_reclamo'] = datos_iniciales or {}
+
+        # Pre-fill contact details from the viewer if available so we do not
+        # ask the user for information we already have.
+        viewer = self.context.get("viewer_user_obj")
+        if viewer:
+            datos = self.flow_context['datos_reclamo']
+            datos.setdefault('nombre', getattr(viewer, 'name', None))
+            datos.setdefault('email', getattr(viewer, 'email', None))
+            datos.setdefault('telefono', getattr(viewer, 'telefono', None))
+            datos.setdefault('dni', getattr(viewer, 'dni', None))
+
         if categoria_inicial and not self.flow_context['datos_reclamo'].get('categoria'):
             self.flow_context['datos_reclamo']['categoria'] = categoria_inicial
 
@@ -192,6 +203,14 @@ class ReclamoFlowHandler:
         if payload.get("es_ubicacion") and payload.get("ubicacion_usuario"):
             location_data = payload.get("ubicacion_usuario")
             address = location_data.get("address")
+            if not address and location_data.get("latitude") and location_data.get("longitude"):
+                from .herramientas_municipio import obtener_direccion_de_coordenadas
+                direccion_info = obtener_direccion_de_coordenadas(
+                    location_data.get("latitude"),
+                    location_data.get("longitude"),
+                )
+                if direccion_info:
+                    address = direccion_info.get("formatted_address")
             self.flow_context['datos_reclamo']['direccion'] = (
                 address
                 if address
@@ -202,6 +221,8 @@ class ReclamoFlowHandler:
         else:
             self.flow_context['datos_reclamo']['direccion'] = user_input
 
+        # If a photo was already provided earlier in the flow, skip asking for
+        # it again and go straight to contact details.
         if self.flow_context['datos_reclamo'].get('foto_url'):
             return self.ask_for_contact_details()
 
@@ -251,8 +272,33 @@ class ReclamoFlowHandler:
             }
 
     def ask_for_contact_details(self):
+        datos = self.flow_context.setdefault('datos_reclamo', {})
+
+        # If all contact details are present, jump straight to confirmation.
+        required_fields = ['nombre', 'dni', 'email', 'telefono']
+        if all(datos.get(f) for f in required_fields):
+            self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
+            return self.get_confirmation_message()
+
+        # Otherwise, build a message showing what we already have and request
+        # only the missing pieces.
         self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
-        return {"message_body": "Ya casi terminamos. Por favor, decime tu nombre completo, DNI, email y teléfono. Podés escribir todo en un solo mensaje."}
+        known_parts = []
+        missing = []
+        field_labels = {'nombre': 'nombre', 'dni': 'DNI', 'email': 'email', 'telefono': 'teléfono'}
+        for field in required_fields:
+            if datos.get(field):
+                known_parts.append(f"{field_labels[field]}: {datos[field]}")
+            else:
+                missing.append(field_labels[field])
+
+        message = "Ya casi terminamos."
+        if known_parts:
+            message += " Tengo: " + ", ".join(known_parts) + "."
+        if missing:
+            message += " Por favor, indicame " + ", ".join(missing) + "."
+
+        return {"message_body": message}
 
     def handle_datos_contacto(self, user_input):
         contact_details = extract_multiple_contact_details_regex(user_input)

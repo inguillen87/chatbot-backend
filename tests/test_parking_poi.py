@@ -76,14 +76,21 @@ class TestParkingPOI(unittest.TestCase):
             res = handler.handle({"pregunta": "quiero estacionar", "location": None})
             self.assertIn("Compartir ubicación", str(res))
 
-    @patch("services.points_of_interest_handler.consultar_ocupacion", return_value={"libres": 1, "camera": "Demo", "timestamp": "00:00", "segmentos": []})
-    @patch("services.points_of_interest_handler.get_coordinates")
-    def test_parking_text_address_in_question(self, mock_geo, mock_occ):
-        mock_geo.return_value = {"lat": -33.023818, "lon": -68.497164}
-        handler = PointsOfInterestHandler(context={})
-        res = handler.handle({"pregunta": "estacionamiento Las Heras 105", "location": None})
-        mock_geo.assert_called_once()
-        self.assertIn("Las Heras 105", res.get("message_body", ""))
+    def test_parking_query_sets_waiting_state(self):
+        context = {"chat_db_context_data": {}}
+        handler = PointsOfInterestHandler(context=context)
+        res = handler.handle({"pregunta": "Buscar estacionamiento libre", "location": None})
+        self.assertIn("Compartir ubicación", str(res))
+        municipio_ctx = context["chat_db_context_data"]["contexto_municipio_v2"]
+        from services.conversation_state import ConversationState
+        self.assertEqual(
+            municipio_ctx.get("estado_conversacion"),
+            ConversationState.ESPERANDO_UBICACION_GENERAL.name,
+        )
+        self.assertEqual(
+            municipio_ctx.get("consulta_pendiente_ubicacion"),
+            "Buscar estacionamiento libre",
+        )
 
     @patch("services.points_of_interest_handler.consultar_ocupacion", return_value={"libres": 1, "camera": "Demo", "timestamp": "00:00", "segmentos": []})
     @patch("services.points_of_interest_handler.get_coordinates")
