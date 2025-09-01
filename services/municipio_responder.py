@@ -202,6 +202,9 @@ class ReclamoFlowHandler:
         else:
             self.flow_context['datos_reclamo']['direccion'] = user_input
 
+        if self.flow_context['datos_reclamo'].get('foto_url'):
+            return self.ask_for_contact_details()
+
         self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
         return {
             "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
@@ -2187,6 +2190,7 @@ def responder_municipio(
             "categoria": datos_interpretados_archivo.get("categoria_sugerida"),
             "descripcion": datos_interpretados_archivo.get("descripcion_sugerida"),
             "origen_descripcion": "imagen",
+            "foto_url": received_payload.get("foto_url"),
         }
         return _finalize_response(handler.start_flow(datos_iniciales=datos_iniciales))
 
@@ -2218,6 +2222,7 @@ def responder_municipio(
 
                     datos_iniciales = parsed_response.get("data", {})
                     datos_iniciales['origen_descripcion'] = 'imagen' # Add origin marker
+                    datos_iniciales['foto_url'] = received_payload.get("foto_url")
 
                     handler = ReclamoFlowHandler(context, chat_db_context)
                     response_dict = handler.start_flow(datos_iniciales=datos_iniciales)
@@ -2234,6 +2239,14 @@ def responder_municipio(
     # --- INICIO: Manejo Proactivo de Ubicación ---
     if received_payload.get("es_ubicacion") and not pregunta_str.strip():
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+
+        if contexto_municipio_actual.get("reclamo_flow_v2", {}).get("state") == ReclamoState.ESPERANDO_DIRECCION.name:
+            handler = ReclamoFlowHandler(context, chat_db_context)
+            response_dict = handler.handle("", received_payload)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response_dict)
+
         # When already waiting for a location to answer a pending query (e.g., estacionamiento),
         # skip proactive handling so that the dedicated state logic can process it.
         if contexto_municipio_actual.get("estado_conversacion") != ConversationState.ESPERANDO_UBICACION_GENERAL.name:
