@@ -1927,7 +1927,16 @@ MENU_KEYWORDS = {
     "solicitar_turnos": ["turnos", "turno", "solicitar turno", "pedir turno", "turnos online"],
     "licencia_de_conducir": ["licencia", "conducir", "carnet", "registro", "renovar licencia", "sacar licencia"],
     "enviar_sugerencia": ["sugerencia", "sugerir", "propuesta", "pedido", "pedir algo"],
-    "consultar_estado_reclamo": ["consultar reclamo", "estado reclamo", "seguimiento", "ver reclamo"],
+    "consultar_estado_reclamo": [
+        "consultar reclamo",
+        "estado reclamo",
+        "seguimiento",
+        "ver reclamo",
+        "consultar estado de reclamo",
+        "consultar estado del reclamo",
+        "estado de reclamo",
+        "estado del reclamo",
+    ],
 
     # Información útil
     "contactos_utiles": ["contactos", "contacto", "telefonos", "telefono", "utiles", "directorio", "llamar"],
