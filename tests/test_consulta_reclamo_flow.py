@@ -99,5 +99,26 @@ class TestConsultaReclamoFlow(unittest.TestCase):
             ConversationState.ESPERANDO_NUMERO_TICKET.name
         )
 
+    def test_consulta_estado_reclamo_natural_language(self):
+        owner_user = User.query.get(1)
+        rubro_obj = owner_user.rubro
+        chat_context = ChatSessionContext(chat_session_id='test_consulta_text_natural', user_id=1, context_data={})
+        db.session.add(chat_context)
+        db.session.commit()
+
+        response = responder_municipio(
+            pregunta_original='Consultar Estado de Reclamo',
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=owner_user,
+            chat_db_context=chat_context
+        )
+
+        self.assertIn("ingresá el número", response["message_body"])
+        self.assertEqual(
+            chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
+            ConversationState.ESPERANDO_NUMERO_TICKET.name
+        )
+
 if __name__ == '__main__':
     unittest.main()
