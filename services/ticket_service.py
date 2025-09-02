@@ -340,6 +340,7 @@ class ServicioTickets:
         fecha_fin: str | None = None,
         categoria: str | None = None,
         estado: str | None = None, # Nuevo parámetro de estado
+        satisfactorio: bool | None = None,
     ) -> list[dict]:
         """
         Devuelve los tickets con ubicación, opcionalmente filtrados por estado,
@@ -361,11 +362,25 @@ class ServicioTickets:
 
             query = Model.query.filter(Model.latitud.isnot(None), Model.longitud.isnot(None))
 
-            # Filtrar por estado si se proporciona
+            # Filtrar por estado si se proporciona. Si el estado solicitado es
+            # "resuelto", también incluimos aquellos marcados como "cerrado" para
+            # que el frontend pueda tratarlos como reclamos resueltos.
             if estado:
-                query = query.filter(Model.estado == estado)
+                if estado == "resuelto":
+                    query = query.filter(Model.estado.in_(["resuelto", "cerrado"]))
+                else:
+                    query = query.filter(Model.estado == estado)
             # else: # Comportamiento por defecto si no se especifica estado (ej: no cerrados)
             #     query = query.filter(Model.estado != "cerrado") # Opcional: mantener un filtro por defecto
+
+            # Si se solicita solo tickets satisfactorios, unimos con
+            # TicketSatisfaccion para asegurar que exista una encuesta asociada.
+            if satisfactorio:
+                query = query.join(
+                    TicketSatisfaccion,
+                    (TicketSatisfaccion.ticket_id == Model.id)
+                    & (TicketSatisfaccion.tipo == tipo_ticket),
+                )
 
             if tipo_ticket == "municipio" and municipio_id is not None:
                 query = query.filter_by(municipio_id=municipio_id)
