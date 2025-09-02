@@ -3,11 +3,34 @@ import os
 import hashlib
 import shutil
 import re
-from services.openai_tts_bridge import generar_audio_openai
-from services.cohere_tts_bridge import generar_audio_cohere
-from services.google_text_to_speech import TextToSpeechService
 
 logger = logging.getLogger(__name__)
+
+
+def sanitize_for_tts(raw: str) -> str:
+    """Prepare text so synthesized audio is clear and accessible.
+
+    The sanitizer:
+    - Removes URLs, emojis and other non standard symbols.
+    - Normalizes numbered options like ``1)`` to ``Opción 1:``.
+    - Expands common time abbreviations such as ``hs``/``hrs`` to "horas".
+    """
+
+    cleaned = re.sub(r"https?://\S+", "", raw)  # strip URLs
+    cleaned = cleaned.replace("*", "")
+    # remove emojis and nonstandard symbols
+    cleaned = re.sub(r"[^\w\s.,;:0-9áéíóúÁÉÍÓÚñÑüÜ-]", "", cleaned)
+    # Normalize numbered options like "1.", "1)" or "1-" to "Opción 1:"
+    cleaned = re.sub(r"(?m)^\s*(\d+)[\.)-]\s*", r"Opción \1: ", cleaned)
+    # Expand time abbreviations (e.g., "18 hs" -> "18 horas", "24hrs" -> "24 horas")
+    cleaned = re.sub(
+        r"(?i)\b(\d{1,2}(?:[:.]\d{2})?)\s*(hs|hrs)\b",
+        r"\1 horas",
+        cleaned,
+    )
+    cleaned = re.sub(r"(?i)\b(hs|hrs)\b", "horas", cleaned)
+    return " ".join(cleaned.split())
+
 
 def generar_audio_con_fallback(text: str) -> str | None:
     """
@@ -20,16 +43,6 @@ def generar_audio_con_fallback(text: str) -> str | None:
     Returns:
         str: The public URL path to the generated audio file, or None if all providers fail.
     """
-    def sanitize_for_tts(raw: str) -> str:
-        """Prepare text so synthesized audio is clear and accessible."""
-        cleaned = re.sub(r"https?://\S+", "", raw)  # strip URLs
-        cleaned = cleaned.replace("*", "")
-        # remove emojis and nonstandard symbols
-        cleaned = re.sub(r"[^\w\s.,;:0-9áéíóúÁÉÍÓÚñÑüÜ-]", "", cleaned)
-        # Normalize numbered options like "1.", "1)" or "1-" to "Opción 1:"
-        cleaned = re.sub(r"(?m)^\s*(\d+)[\.)-]\s*", r"Opción \1: ", cleaned)
-        return " ".join(cleaned.split())
-
     text = sanitize_for_tts(text)
     logger.info(f"TTS Orchestrator: Attempting to generate audio for text: '{text[:50]}...'")
 
@@ -53,6 +66,11 @@ def generar_audio_con_fallback(text: str) -> str | None:
         except Exception as e:
             logger.warning(f"TTS Orchestrator: Failed to cache audio: {e}")
         return audio_url
+
+    # Import providers lazily to avoid heavy dependencies at module import time
+    from services.openai_tts_bridge import generar_audio_openai
+    from services.cohere_tts_bridge import generar_audio_cohere
+    from services.google_text_to_speech import TextToSpeechService
 
     # 1. Try OpenAI
     try:
