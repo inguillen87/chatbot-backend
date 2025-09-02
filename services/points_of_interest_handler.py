@@ -101,9 +101,10 @@ class PointsOfInterestHandler:
                 + (f" (Fuente: {cam_name} {timestamp})" if cam_name and timestamp else "")
             ]
 
-            free_indices = set()
-            if isinstance(libres, int) and libres > 0:
-                free_indices = set(random.sample(range(len(nearest)), min(libres, len(nearest))))
+            sample_count = libres if isinstance(libres, int) and libres > 0 else 1
+            free_indices = set(
+                random.sample(range(len(nearest)), min(sample_count, len(nearest)))
+            )
             for idx, item in enumerate(nearest):
                 try:
                     distance_val = int(dist(item))
@@ -127,9 +128,10 @@ class PointsOfInterestHandler:
                 f"Datos de estacionamiento cerca de {address or 'la zona'}:" \
                 + (f" (Fuente: {cam_name} {timestamp})" if cam_name and timestamp else "")
             ]
-            free_indices = set()
-            if isinstance(libres, int) and libres > 0:
-                free_indices = set(random.sample(range(len(sample)), min(libres, len(sample))))
+            sample_count = libres if isinstance(libres, int) and libres > 0 else 1
+            free_indices = set(
+                random.sample(range(len(sample)), min(sample_count, len(sample)))
+            )
             for idx, item in enumerate(sample):
                 availability = 1 if idx in free_indices else 0
                 status = "libre" if availability else "ocupado"
@@ -176,6 +178,14 @@ class PointsOfInterestHandler:
                         "lat": coords.get("lat"),
                         "lon": coords.get("lon"),
                     }
+                    municipio_ctx = (
+                        self.context.get("chat_db_context_data", {})
+                        .setdefault(CONTEXTO_MUNICIPIO, {})
+                    )
+                    municipio_ctx["ultima_consulta_poi"] = original_question
+                    chat_db_context = self.context.get("chat_db_context")
+                    if chat_db_context:
+                        flag_modified(chat_db_context, "context_data")
                     return self._parking_response(location)
 
                 # Geocoding failed; remember query and ask for location
@@ -187,6 +197,7 @@ class PointsOfInterestHandler:
                     ConversationState.ESPERANDO_UBICACION_GENERAL.name
                 )
                 municipio_ctx["consulta_pendiente_ubicacion"] = original_question
+                municipio_ctx["ultima_consulta_poi"] = original_question
                 chat_db_context = self.context.get("chat_db_context")
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
@@ -197,6 +208,14 @@ class PointsOfInterestHandler:
                     "message_type": "interactive_buttons",
                     "fuente": "points_of_interest_handler",
                 }
+            municipio_ctx = (
+                self.context.get("chat_db_context_data", {})
+                .setdefault(CONTEXTO_MUNICIPIO, {})
+            )
+            municipio_ctx["ultima_consulta_poi"] = original_question
+            chat_db_context = self.context.get("chat_db_context")
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
             return self._parking_response(location)
 
         # --- Generic POI flow delegated to LLM + tools ---
