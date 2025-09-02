@@ -10,6 +10,7 @@ from models import (
     TicketComentario,
     TicketSatisfaccion,
     Conversacion,
+    User,
     db,
 )
 from utils.ticket_utils import normalize_category
@@ -443,26 +444,71 @@ class ServicioTickets:
             return []
 
     def obtener_historial_chat(self, ticket: Union[MunicipioTicket, PymeTicket]) -> list[dict]:
-        """Devuelve el historial de conversación asociado a un ticket."""
-        if not getattr(ticket, "anon_id", None):
-            return []
-        try:
-            conversaciones = (
-                Conversacion.query.filter_by(session_id=ticket.anon_id)
-                .order_by(Conversacion.timestamp.asc())
-                .all()
-            )
-        except Exception:
-            conversaciones = []
+        """Devuelve el historial completo de conversación para un ticket.
 
-        return [
-            {
-                "pregunta": conv.pregunta,
-                "respuesta": conv.respuesta,
-                "fecha": conv.timestamp.isoformat(),
-            }
-            for conv in conversaciones
-        ]
+        Combina el historial previo almacenado en ``Conversacion`` (pregunta/
+        respuesta del bot) con los comentarios posteriores guardados en
+        ``TicketComentario``. Cada entrada se normaliza con metadatos de autor
+        para que el frontend pueda distinguir entre mensajes del municipio y
+        del vecino.
+        """
+        mensajes: list[dict] = []
+
+        # --- Conversaciones previas al ticket (chatbot) ---
+        if getattr(ticket, "anon_id", None):
+            try:
+                conversaciones = (
+                    Conversacion.query.filter_by(session_id=ticket.anon_id)
+                    .order_by(Conversacion.timestamp.asc())
+                    .all()
+                )
+            except Exception:
+                conversaciones = []
+
+            nombre_vecino = (
+                getattr(ticket, "nombre_vecino", None)
+                or getattr(ticket, "nombre_cliente", None)
+                or "Vecino/a"
+            )
+
+            for conv in conversaciones:
+                if conv.pregunta:
+                    mensajes.append(
+                        {
+                            "texto": conv.pregunta,
+                            "fecha": conv.timestamp.isoformat(),
+                            "autor": "vecino",
+                            "autor_nombre": nombre_vecino,
+                            "es_admin": False,
+                        }
+                    )
+                if conv.respuesta:
+                    # Añadir un pequeño delta para conservar el orden pregunta-respuesta
+                    respuesta_fecha = (conv.timestamp + timedelta(milliseconds=1)).isoformat()
+                    mensajes.append(
+                        {
+                            "texto": conv.respuesta,
+                            "fecha": respuesta_fecha,
+                            "autor": "municipio",
+                            "autor_nombre": "Chatbot",
+                            "es_admin": True,
+                        }
+                    )
+
+        # --- Comentarios del ticket (posteriores) ---
+        try:
+            comentarios = ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
+        except Exception:
+            comentarios = []
+
+        for c in comentarios:
+            data = c.to_dict()
+            data["texto"] = data.pop("comentario")
+            mensajes.append(data)
+
+        # Orden cronológico por fecha
+        mensajes.sort(key=lambda x: x["fecha"])
+        return mensajes
 
     def obtener_timeline_ticket(self, ticket: Union[MunicipioTicket, PymeTicket]) -> list[dict]:
         """Construye la línea de tiempo de un ticket con comentarios y cambios de estado."""
@@ -489,6 +535,21 @@ class ServicioTickets:
                     }
                 )
             else:
+                autor_tipo = "municipio" if c.es_admin else "vecino"
+                if c.es_admin:
+                    nombre_autor = "Municipio"
+                    if c.user_id:
+                        usuario = db.session.get(User, c.user_id)
+                        if usuario and usuario.name:
+                            nombre_autor = usuario.name
+                else:
+                    nombre_autor = None
+                    if c.municipio_ticket and getattr(c.municipio_ticket, "nombre_vecino", None):
+                        nombre_autor = c.municipio_ticket.nombre_vecino
+                    elif c.pyme_ticket and getattr(c.pyme_ticket, "nombre_cliente", None):
+                        nombre_autor = c.pyme_ticket.nombre_cliente
+                    if not nombre_autor:
+                        nombre_autor = "Vecino/a"
                 timeline.append(
                     {
                         "tipo": "comentario",
@@ -496,6 +557,8 @@ class ServicioTickets:
                         "fecha": c.fecha.isoformat(),
                         "es_admin": c.es_admin,
                         "user_id": c.user_id,
+                        "autor": autor_tipo,
+                        "autor_nombre": nombre_autor,
                     }
                 )
 

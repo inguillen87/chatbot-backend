@@ -103,8 +103,9 @@ class TicketEndpointsTest(unittest.TestCase):
 
         ticket_map = {t['asunto']: t for t in tickets}
         self.assertIn('historial_chat', ticket_map['Bache en la calle'])
-        self.assertEqual(len(ticket_map['Bache en la calle']['historial_chat']), 1)
-        self.assertEqual(ticket_map['Bache en la calle']['historial_chat'][0]['pregunta'], 'Hola')
+        self.assertEqual(len(ticket_map['Bache en la calle']['historial_chat']), 2)
+        self.assertEqual(ticket_map['Bache en la calle']['historial_chat'][0]['texto'], 'Hola')
+        self.assertEqual(ticket_map['Bache en la calle']['historial_chat'][0]['autor'], 'vecino')
 
     def test_ticket_details_includes_chat_history(self):
         login_resp = self.client.post('/auth/login', json={
@@ -120,8 +121,9 @@ class TicketEndpointsTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.data)
         self.assertIn('historial_chat', data)
-        self.assertEqual(len(data['historial_chat']), 1)
-        self.assertEqual(data['historial_chat'][0]['pregunta'], 'Hola')
+        self.assertEqual(len(data['historial_chat']), 2)
+        self.assertEqual(data['historial_chat'][0]['texto'], 'Hola')
+        self.assertEqual(data['historial_chat'][0]['autor'], 'vecino')
 
     def test_get_chat_mensajes_with_attachments(self):
         # 1. Login to get token
