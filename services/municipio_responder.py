@@ -21,6 +21,7 @@ flag_modified = safe_flag_modified
 logger = logging.getLogger(__name__)
 from twilio.rest import Client
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from services.utils_placeholders import (
     reemplazar_placeholders,
     obtener_respuesta_municipio,
@@ -54,6 +55,8 @@ from services.intent_classifier import IntentClassifier
 from services.multimodal_analyzer import analizar_imagen_con_fallback
 import json
 from services.ticket_utils import formatear_ticket_respuesta
+
+ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
 class ReclamoState(Enum):
     ESPERANDO_CATEGORIA = auto()
@@ -953,6 +956,10 @@ def _format_post(post: dict, channel: str) -> str:
                 return ""
             fecha_str = fecha_str.rstrip("Z")
             dt = datetime.fromisoformat(fecha_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=ARG_TZ)
+            else:
+                dt = dt.astimezone(ARG_TZ)
             fecha_formateada = dt.strftime("%d/%m/%Y")
             if dt.time() != datetime.min.time():
                 fecha_formateada += f" {dt.strftime('%H:%M')} hs"
@@ -1066,7 +1073,13 @@ def _get_posts_from_json(content_type: str, channel: str, municipio_id: str) -> 
         if not date_str:
             return None
         try:
-            return datetime.fromisoformat(date_str.rstrip("Z"))
+            date_str = date_str.rstrip("Z")
+            dt = datetime.fromisoformat(date_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=ARG_TZ)
+            else:
+                dt = dt.astimezone(ARG_TZ)
+            return dt
         except Exception:
             return None
 
@@ -1077,7 +1090,7 @@ def _get_posts_from_json(content_type: str, channel: str, municipio_id: str) -> 
                 or p.get("fecha_inicio")
                 or p.get("fecha_publicacion")
             )
-        future_posts = [p for p in posts if p.get("_start") and p["_start"] >= datetime.now(p.get("_start").tzinfo)]
+        future_posts = [p for p in posts if p.get("_start") and p["_start"] >= datetime.now(ARG_TZ)]
         posts = future_posts or posts
         posts.sort(key=lambda x: x.get("_start") or datetime.max)
     else:
@@ -1189,12 +1202,14 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         full_body = ""
         if noticias_body:
             if channel == "whatsapp":
-                full_body += "*🗞️ Noticias Recientes*\n" + noticias_body
+                full_body += "*🗞️ Noticias Recientes*\n\n" + noticias_body
             else:
                 full_body += "<h3>🗞️ Noticias Recientes</h3>" + noticias_body
         if eventos_body:
             if channel == "whatsapp":
-                full_body += "*🎭 Próximos Eventos*\n" + eventos_body
+                if full_body:
+                    full_body += "\n"
+                full_body += "*🎭 Próximos Eventos*\n\n" + eventos_body
             else:
                 full_body += "<h3>🎭 Próximos Eventos</h3>" + eventos_body
 
