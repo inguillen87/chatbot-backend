@@ -221,8 +221,6 @@ class ReclamoFlowHandler:
         else:
             self.flow_context['datos_reclamo']['direccion'] = user_input
 
-        # If a photo was already provided earlier in the flow, skip asking for
-        # it again and go straight to contact details.
         if self.flow_context['datos_reclamo'].get('foto_url'):
             return self.ask_for_contact_details()
 
