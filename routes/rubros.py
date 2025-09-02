@@ -4,11 +4,14 @@ from flask import Blueprint, jsonify, current_app
 from models import Rubro
 
 # 1. Se define el prefijo de la URL en el Blueprint.
-# Esto es más limpio y evita conflictos.
-rubros_bp = Blueprint('rubros', __name__)
+#    Esto es más limpio y evita conflictos.
+# 2. strict_slashes=False permite acceder tanto a '/rubros' como
+#    a '/rubros/' sin redirecciones automáticas que pueden causar
+#    problemas en algunos clientes.
+rubros_bp = Blueprint('rubros', __name__, url_prefix='/rubros')
 
-# Acepta tanto '/rubros' como '/rubros/' para evitar redirecciones
-@rubros_bp.route('/rubros/', methods=['GET'])
+
+@rubros_bp.route('/', methods=['GET'], strict_slashes=False)
 def get_all_rubros():
     """
     Endpoint para obtener la lista de todos los rubros.
