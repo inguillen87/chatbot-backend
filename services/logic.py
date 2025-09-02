@@ -204,6 +204,14 @@ def responder_chatboc(
             media_url = uploaded_file_info.get("url")
             media_content_type = uploaded_file_info.get("mime_type")
 
+            # Expose basic photo metadata downstream so municipal handlers know a
+            # picture was already provided. This allows the claim flow to reuse the
+            # initial image instead of prompting for another one after location is
+            # sent.
+            if media_content_type and media_content_type.startswith("image/"):
+                kwargs["es_foto"] = True
+                kwargs["foto_url"] = media_url
+
             try:
                 response = requests.get(media_url, auth=(current_app.config.get("TWILIO_ACCOUNT_SID"), current_app.config.get("TWILIO_AUTH_TOKEN")))
                 response.raise_for_status()
