@@ -379,6 +379,24 @@ class TicketComentario(db.Model):
                 attachment_info['meta'] = None
 
             data['attachment_info'] = attachment_info
+        # Determine author information for clarity in timelines and chats
+        autor_tipo = "municipio" if self.es_admin else "vecino"
+        if self.es_admin:
+            nombre_autor = "Municipio"
+            if self.user_id:
+                usuario = db.session.get(User, self.user_id)
+                if usuario and usuario.name:
+                    nombre_autor = usuario.name
+        else:
+            nombre_autor = None
+            if self.municipio_ticket and getattr(self.municipio_ticket, "nombre_vecino", None):
+                nombre_autor = self.municipio_ticket.nombre_vecino
+            elif self.pyme_ticket and getattr(self.pyme_ticket, "nombre_cliente", None):
+                nombre_autor = self.pyme_ticket.nombre_cliente
+            if not nombre_autor:
+                nombre_autor = "Vecino/a"
+        data["autor"] = autor_tipo
+        data["autor_nombre"] = nombre_autor
 
         return data
 

@@ -10,6 +10,7 @@ from models import (
     TicketComentario,
     TicketSatisfaccion,
     Conversacion,
+    User,
     db,
 )
 from utils.ticket_utils import normalize_category
@@ -489,6 +490,21 @@ class ServicioTickets:
                     }
                 )
             else:
+                autor_tipo = "municipio" if c.es_admin else "vecino"
+                if c.es_admin:
+                    nombre_autor = "Municipio"
+                    if c.user_id:
+                        usuario = db.session.get(User, c.user_id)
+                        if usuario and usuario.name:
+                            nombre_autor = usuario.name
+                else:
+                    nombre_autor = None
+                    if c.municipio_ticket and getattr(c.municipio_ticket, "nombre_vecino", None):
+                        nombre_autor = c.municipio_ticket.nombre_vecino
+                    elif c.pyme_ticket and getattr(c.pyme_ticket, "nombre_cliente", None):
+                        nombre_autor = c.pyme_ticket.nombre_cliente
+                    if not nombre_autor:
+                        nombre_autor = "Vecino/a"
                 timeline.append(
                     {
                         "tipo": "comentario",
@@ -496,6 +512,8 @@ class ServicioTickets:
                         "fecha": c.fecha.isoformat(),
                         "es_admin": c.es_admin,
                         "user_id": c.user_id,
+                        "autor": autor_tipo,
+                        "autor_nombre": nombre_autor,
                     }
                 )
 
