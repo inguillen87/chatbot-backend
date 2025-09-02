@@ -1,19 +1,10 @@
-from flask import Blueprint, render_template, current_app, request, jsonify
-import os
+from flask import Blueprint, request, jsonify
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from services.ticket_service import servicio_tickets
+from models import User
 
 
 estadisticas_bp = Blueprint("estadisticas", __name__, url_prefix="/estadisticas")
-
-
-@estadisticas_bp.route("/mapa_calor")
-@token_requerido
-@admin_o_empleado_requerido
-def mapa_calor(current_user):
-    """Renderiza el mapa de calor."""
-    maptiler_key = current_app.config.get("MAPTILER_KEY") or os.getenv("VITE_MAPTILER_KEY", "")
-    return render_template("estadisticas.html", maptiler_key=maptiler_key)
 
 
 @estadisticas_bp.route("/mapa_calor/datos", methods=["GET"])
@@ -32,3 +23,19 @@ def mapa_calor_datos(current_user):
         estado=args.get("estado"),
     )
     return jsonify(puntos)
+
+
+@estadisticas_bp.route("/usuarios/ubicaciones", methods=["GET"])
+@token_requerido
+@admin_o_empleado_requerido
+def get_user_locations(current_user):
+    """Devuelve las ubicaciones (lat, lng) de usuarios del mismo municipio."""
+    users = (
+        User.query.filter(
+            User.municipio_id == current_user.municipio_id,
+            User.latitud.isnot(None),
+            User.longitud.isnot(None),
+        ).all()
+    )
+    locations = [{"lat": u.latitud, "lng": u.longitud} for u in users]
+    return jsonify(locations)
