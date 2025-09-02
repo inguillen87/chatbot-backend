@@ -339,18 +339,26 @@ def _infer_category_from_vision_results(vision_results: Dict[str, Any], min_conf
     """Infers a claim category from Vision API labels and objects."""
     detected_items_with_confidence = []
     for label in vision_results.get("labels", []):
-        confidence = label.get("confidence", 0)
+        confidence = label.get("confidence")
+        if confidence is None:
+            confidence = label.get("score")
+        if confidence is None:
+            confidence = 1.0
         if confidence >= min_confidence:
             detected_items_with_confidence.append({
-                "text": normalizar_texto_municipios(label.get("description","")),
-                "score": confidence
+                "text": normalizar_texto_municipios(label.get("description", "")),
+                "score": confidence,
             })
     for obj in vision_results.get("objects", []):
-        confidence = obj.get("confidence", 0)
+        confidence = obj.get("confidence")
+        if confidence is None:
+            confidence = obj.get("score")
+        if confidence is None:
+            confidence = 1.0
         if confidence >= min_confidence:
-             detected_items_with_confidence.append({
-                "text": normalizar_texto_municipios(obj.get("name","")),
-                "score": confidence
+            detected_items_with_confidence.append({
+                "text": normalizar_texto_municipios(obj.get("name", "")),
+                "score": confidence,
             })
 
     # Sort by confidence

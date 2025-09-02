@@ -11,7 +11,7 @@ sys.path.insert(0, project_root)
 from app import create_app, db
 from config import TestConfig
 from models import User, Rubro, ChatSessionContext
-from services.municipio_responder import responder_municipio, ConversationState
+from services.municipio_responder import responder_municipio, ConversationState, ReclamoState
 
 class TestProactiveFlows(unittest.TestCase):
 
@@ -75,6 +75,7 @@ class TestProactiveFlows(unittest.TestCase):
         call_args = mock_start_flow.call_args[1]
         self.assertEqual(call_args['datos_iniciales']['categoria'], "Arreglo de calle")
         self.assertEqual(call_args['datos_iniciales']['descripcion'], "Hay un bache grande en la calle.")
+        self.assertEqual(call_args['datos_iniciales']['foto_url'], "http://example.com/bache.jpg")
 
 
     def test_location_upload_triggers_proactive_flow(self):
@@ -214,6 +215,69 @@ class TestProactiveFlows(unittest.TestCase):
         )
         option_texts = [opt["texto"] for opt in response["options_list"]]
         self.assertIn("Iniciar un Reclamo", option_texts)
+
+    @patch('services.municipio_responder.analizar_imagen_con_fallback')
+    def test_image_then_location_advances_claim_flow(self, mock_analizar_imagen):
+        mock_analizar_imagen.return_value = {
+            "raw_response": json.dumps({
+                "intent": "crear_reclamo",
+                "data": {
+                    "categoria": "Arreglo de calle",
+                    "descripcion": "Bache en la calle"
+                }
+            })
+        }
+
+        owner_user = User.query.get(1)
+        rubro_obj = owner_user.rubro
+        chat_context = ChatSessionContext(chat_session_id='session_img_loc', user_id=1, context_data={})
+        db.session.add(chat_context)
+        db.session.commit()
+
+        image_payload = {"pregunta": "", "es_foto": True, "foto_url": "http://example.com/bache.jpg"}
+        response = responder_municipio(
+            pregunta_original=image_payload,
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=owner_user,
+            chat_db_context=chat_context,
+            channel="whatsapp",
+        )
+
+        self.assertIn("dirección", response["message_body"])
+        self.assertEqual(
+            chat_context.context_data['contexto_municipio_v2']['reclamo_flow_v2']['state'],
+            ReclamoState.ESPERANDO_DIRECCION.name,
+        )
+
+        location_payload = {
+            "pregunta": "",
+            "es_ubicacion": True,
+            "ubicacion_usuario": {
+                "address": "Calle Falsa 123",
+                "latitude": -32.889,
+                "longitude": -68.845,
+            },
+        }
+
+        response2 = responder_municipio(
+            pregunta_original=location_payload,
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=owner_user,
+            chat_db_context=chat_context,
+            channel="whatsapp",
+        )
+
+        self.assertIn("Ya casi terminamos", response2["message_body"])
+        self.assertEqual(
+            chat_context.context_data['contexto_municipio_v2']['reclamo_flow_v2']['datos_reclamo']['direccion'],
+            "Calle Falsa 123",
+        )
+        self.assertNotEqual(
+            chat_context.context_data['contexto_municipio_v2'].get('estado_conversacion'),
+            ConversationState.ESPERANDO_INTENCION_UBICACION.name,
+        )
 
 if __name__ == '__main__':
     unittest.main()
