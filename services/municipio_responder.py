@@ -153,6 +153,17 @@ class ReclamoFlowHandler:
         logger.info("Iniciando flujo de reclamo v2.")
         self.flow_context.clear()
         self.flow_context['datos_reclamo'] = datos_iniciales or {}
+
+        # Pre-fill contact details from the viewer if available so we do not
+        # ask the user for information we already have.
+        viewer = self.context.get("viewer_user_obj")
+        if viewer:
+            datos = self.flow_context['datos_reclamo']
+            datos.setdefault('nombre', getattr(viewer, 'name', None))
+            datos.setdefault('email', getattr(viewer, 'email', None))
+            datos.setdefault('telefono', getattr(viewer, 'telefono', None))
+            datos.setdefault('dni', getattr(viewer, 'dni', None))
+
         if categoria_inicial and not self.flow_context['datos_reclamo'].get('categoria'):
             self.flow_context['datos_reclamo']['categoria'] = categoria_inicial
 
@@ -192,6 +203,14 @@ class ReclamoFlowHandler:
         if payload.get("es_ubicacion") and payload.get("ubicacion_usuario"):
             location_data = payload.get("ubicacion_usuario")
             address = location_data.get("address")
+            if not address and location_data.get("latitude") and location_data.get("longitude"):
+                from .herramientas_municipio import obtener_direccion_de_coordenadas
+                direccion_info = obtener_direccion_de_coordenadas(
+                    location_data.get("latitude"),
+                    location_data.get("longitude"),
+                )
+                if direccion_info:
+                    address = direccion_info.get("formatted_address")
             self.flow_context['datos_reclamo']['direccion'] = (
                 address
                 if address
@@ -201,6 +220,11 @@ class ReclamoFlowHandler:
             return {"message_body": "La dirección parece muy corta. Por favor, ingresá una dirección más completa (calle y número)."}
         else:
             self.flow_context['datos_reclamo']['direccion'] = user_input
+
+        # If a photo was already provided earlier in the flow, skip asking for
+        # it again and go straight to contact details.
+        if self.flow_context['datos_reclamo'].get('foto_url'):
+            return self.ask_for_contact_details()
 
         self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
         return {
@@ -248,8 +272,33 @@ class ReclamoFlowHandler:
             }
 
     def ask_for_contact_details(self):
+        datos = self.flow_context.setdefault('datos_reclamo', {})
+
+        # If all contact details are present, jump straight to confirmation.
+        required_fields = ['nombre', 'dni', 'email', 'telefono']
+        if all(datos.get(f) for f in required_fields):
+            self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
+            return self.get_confirmation_message()
+
+        # Otherwise, build a message showing what we already have and request
+        # only the missing pieces.
         self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
-        return {"message_body": "Ya casi terminamos. Por favor, decime tu nombre completo, DNI, email y teléfono. Podés escribir todo en un solo mensaje."}
+        known_parts = []
+        missing = []
+        field_labels = {'nombre': 'nombre', 'dni': 'DNI', 'email': 'email', 'telefono': 'teléfono'}
+        for field in required_fields:
+            if datos.get(field):
+                known_parts.append(f"{field_labels[field]}: {datos[field]}")
+            else:
+                missing.append(field_labels[field])
+
+        message = "Ya casi terminamos."
+        if known_parts:
+            message += " Tengo: " + ", ".join(known_parts) + "."
+        if missing:
+            message += " Por favor, indicame " + ", ".join(missing) + "."
+
+        return {"message_body": message}
 
     def handle_datos_contacto(self, user_input):
         contact_details = extract_multiple_contact_details_regex(user_input)
@@ -1196,10 +1245,31 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             "fuente": f"info_{action_id}_json",
         }
 
+    if action_id == "compartir_ubicacion":
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        if (
+            contexto_municipio_actual.get("estado_conversacion") is None
+            and contexto_municipio_actual.get("ultima_consulta_poi")
+        ):
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_UBICACION_GENERAL.name
+            contexto_municipio_actual["consulta_pendiente_ubicacion"] = contexto_municipio_actual.get("ultima_consulta_poi")
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return {
+                "message_body": "Para buscar estacionamientos necesito tu ubicación.",
+                "options_list": [
+                    {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
+                    {"texto": "Cancelar", "action": "cancelar"},
+                ],
+                "message_type": "interactive_buttons",
+                "fuente": "pedir_ubicacion_estacionamiento",
+            }
+
     if action_id == "estacionamiento":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_UBICACION_GENERAL.name
         contexto_municipio_actual['consulta_pendiente_ubicacion'] = 'estacionamiento'
+        contexto_municipio_actual['ultima_consulta_poi'] = 'estacionamiento'
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return {
@@ -2237,6 +2307,20 @@ def responder_municipio(
         # When already waiting for a location to answer a pending query (e.g., estacionamiento),
         # skip proactive handling so that the dedicated state logic can process it.
         if contexto_municipio_actual.get("estado_conversacion") != ConversationState.ESPERANDO_UBICACION_GENERAL.name:
+            ultima_consulta = contexto_municipio_actual.get("ultima_consulta_poi")
+            if ultima_consulta:
+                logger_actual.info(
+                    f"Location received for last POI query '{ultima_consulta}'."
+                )
+                return _finalize_response(
+                    PointsOfInterestHandler(context={}).handle(
+                        {
+                            "pregunta": ultima_consulta,
+                            "location": received_payload.get("ubicacion_usuario"),
+                        }
+                    )
+                )
+
             logger_actual.info(
                 "Location received without text. Starting proactive location handling."
             )
@@ -3195,8 +3279,11 @@ def responder_municipio(
     elif estado_conversacion == ConversationState.ESPERANDO_UBICACION_GENERAL.name:
         if location:
             consulta_guardada = contexto_municipio_actual.pop('consulta_pendiente_ubicacion', None)
-            contexto_municipio_actual['estado_conversacion'] = None # Clear state
-            if chat_db_context: flag_modified(chat_db_context, "context_data")
+            if consulta_guardada:
+                contexto_municipio_actual['ultima_consulta_poi'] = consulta_guardada
+            contexto_municipio_actual['estado_conversacion'] = None  # Clear state
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
 
             if consulta_guardada:
                 logger_actual.info(f"Received location, processing saved query: '{consulta_guardada}'")
@@ -3216,8 +3303,11 @@ def responder_municipio(
                 if geocoded_location:
                     # Address was valid, proceed with the original query
                     consulta_guardada = contexto_municipio_actual.pop('consulta_pendiente_ubicacion', None)
-                    contexto_municipio_actual['estado_conversacion'] = None # Clear state
-                    if chat_db_context: flag_modified(chat_db_context, "context_data")
+                    if consulta_guardada:
+                        contexto_municipio_actual['ultima_consulta_poi'] = consulta_guardada
+                    contexto_municipio_actual['estado_conversacion'] = None  # Clear state
+                    if chat_db_context:
+                        flag_modified(chat_db_context, "context_data")
 
                     if consulta_guardada:
                         logger_actual.info(f"Geocoded address successfully. Processing saved query: '{consulta_guardada}'")

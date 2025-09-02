@@ -3,10 +3,15 @@ import logging
 import random
 from pathlib import Path
 
+from sqlalchemy.orm.attributes import flag_modified
+
 from .herramientas_municipio import TOOL_REGISTRY
 from .estacionamiento_utils import _dist_m
 from .google_maps_service import get_coordinates
 from .estacionamiento_service import consultar_ocupacion
+from .conversation_state import ConversationState
+
+CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
 
 logger = logging.getLogger(__name__)
 
@@ -147,18 +152,68 @@ class PointsOfInterestHandler:
             "spots": spots,
         }
     def handle(self, payload: dict) -> dict | None:
-        pregunta = (payload.get("pregunta") or "").lower()
+        original_question = payload.get("pregunta") or ""
+        pregunta = original_question.lower()
         location = payload.get("location")
 
         keywords = ("estacionamiento", "estacionar", "lugar libre")
         if any(word in pregunta for word in keywords):
             if not location:
+                # Try to geocode an address present in the question text
+                address_candidate = pregunta
+                for word in keywords:
+                    address_candidate = address_candidate.replace(word, "")
+                address_candidate = address_candidate.strip(",.;:- ")
+                coords = None
+                if len(address_candidate) > 3:
+                    try:
+                        coords = get_coordinates(address_candidate)
+                    except Exception:  # pragma: no cover - defensive
+                        coords = None
+                if coords:
+                    location = {
+                        "address": address_candidate,
+                        "lat": coords.get("lat"),
+                        "lon": coords.get("lon"),
+                    }
+                    municipio_ctx = (
+                        self.context.get("chat_db_context_data", {})
+                        .setdefault(CONTEXTO_MUNICIPIO, {})
+                    )
+                    municipio_ctx["ultima_consulta_poi"] = original_question
+                    chat_db_context = self.context.get("chat_db_context")
+                    if chat_db_context:
+                        flag_modified(chat_db_context, "context_data")
+                    return self._parking_response(location)
+
+                # Geocoding failed; remember query and ask for location
+                municipio_ctx = (
+                    self.context.get("chat_db_context_data", {})
+                    .setdefault(CONTEXTO_MUNICIPIO, {})
+                )
+                municipio_ctx["estado_conversacion"] = (
+                    ConversationState.ESPERANDO_UBICACION_GENERAL.name
+                )
+                municipio_ctx["consulta_pendiente_ubicacion"] = original_question
+                municipio_ctx["ultima_consulta_poi"] = original_question
+                chat_db_context = self.context.get("chat_db_context")
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+
                 return {
                     "message_body": "Para buscar estacionamientos necesito tu ubicación.",
                     "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}],
                     "message_type": "interactive_buttons",
-                    "fuente": "points_of_interest_handler"
+                    "fuente": "points_of_interest_handler",
                 }
+            municipio_ctx = (
+                self.context.get("chat_db_context_data", {})
+                .setdefault(CONTEXTO_MUNICIPIO, {})
+            )
+            municipio_ctx["ultima_consulta_poi"] = original_question
+            chat_db_context = self.context.get("chat_db_context")
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
             return self._parking_response(location)
 
         # --- Generic POI flow delegated to LLM + tools ---
