@@ -21,6 +21,7 @@ def mapa_calor_datos(current_user):
         fecha_fin=args.get("fecha_fin"),
         categoria=args.get("categoria"),
         estado=args.get("estado"),
+        satisfactorio=args.get("satisfactorio", type=lambda v: str(v).lower() == "true"),
     )
     return jsonify(puntos)
 

@@ -140,7 +140,8 @@ def serialize_ticket_to_json(ticket, ticket_type):
         "tipo": ticket_type,
         "nro_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
         "asunto": getattr(ticket, 'asunto', 'Sin Asunto'),
-        "estado": ticket.estado,
+        # Mapear "cerrado" a "resuelto" para una mejor UX en el panel.
+        "estado": "resuelto" if getattr(ticket, 'estado', None) == "cerrado" else ticket.estado,
         "fecha": ticket.fecha.isoformat(),
         "categoria": normalize_category(getattr(ticket, 'categoria', 'Sin Categoría')),
         "direccion": user_data.get("direccion", "No especificada"),
@@ -245,11 +246,15 @@ def get_tickets_del_usuario_logic(current_user: User):
 
         for t_sum in all_tickets_for_summary_calculation:
             # El filtro de categoría de empleado ya se aplicó en la query_base
-            if t_sum.estado in defined_statuses:
-                summary_by_status[t_sum.estado] += 1
+            estado_actual = "resuelto" if t_sum.estado == "cerrado" else t_sum.estado
+            if estado_actual in defined_statuses:
+                summary_by_status[estado_actual] += 1
             else:
                 summary_by_status["otros"] += 1  # Contar otros estados
         summary_by_status["total"] = len(all_tickets_for_summary_calculation)
+        # Unificar los tickets cerrados dentro de la cuenta de "resuelto" para
+        # que el frontend los trate como reclamos resueltos.
+        summary_by_status["resuelto"] += summary_by_status.get("cerrado", 0)
 
         # Ahora, obtener la lista de tickets para la página actual, aplicando el filtro de estado si existe
         current_app.logger.info(f"Filtros aplicados: estado={requested_estado_filter}, categoria={requested_categoria_filter}")
@@ -276,7 +281,10 @@ def get_tickets_del_usuario_logic(current_user: User):
             )
 
         if requested_estado_filter and requested_estado_filter != 'todos':
-            final_tickets_query = final_tickets_query.filter(TicketModel.estado == requested_estado_filter)
+            if requested_estado_filter == 'resuelto':
+                final_tickets_query = final_tickets_query.filter(TicketModel.estado.in_(["resuelto", "cerrado"]))
+            else:
+                final_tickets_query = final_tickets_query.filter(TicketModel.estado == requested_estado_filter)
 
         page = int(request.args.get("page", 1))
         per_page = int(request.args.get("per_page", current_app.config.get("TICKETS_PER_PAGE_DEFAULT", 50)))
@@ -824,6 +832,14 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     )
 
     ticket_obj.estado = nuevo_estado
+    if nuevo_estado == "cerrado":
+        encuesta = TicketSatisfaccion(
+            ticket_id=ticket_obj.id,
+            tipo=tipo,
+            puntuacion=5,
+            comentario="Cierre automático",
+        )
+        db.session.add(encuesta)
     comentario_estado = TicketComentario(
         municipio_ticket_id=ticket_obj.id if tipo == "municipio" else None,
         pyme_ticket_id=ticket_obj.id if tipo == "pyme" else None,
