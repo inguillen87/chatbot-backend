@@ -63,12 +63,13 @@ class TestParkingPOI(unittest.TestCase):
         res = handler.handle({"pregunta": "estacionamiento", "location": loc})
         self.assertIn("libre", res.get("message_body", ""))
 
+    @patch("services.points_of_interest_handler.random.sample", side_effect=lambda seq, k: list(range(k)))
     @patch("services.points_of_interest_handler.consultar_ocupacion", return_value={"libres": 0, "camera": "Demo", "timestamp": "00:00", "segmentos": []})
-    def test_parking_response_availability_full(self, mock_occ):
+    def test_parking_response_availability_defaults_to_free(self, mock_occ, mock_sample):
         handler = PointsOfInterestHandler(context={})
         loc = {"lat": -33.023818, "lon": -68.497164, "address": "Las Heras 105, Junín, Mendoza"}
         res = handler.handle({"pregunta": "estacionamiento", "location": loc})
-        self.assertIn("ocupado", res.get("message_body", ""))
+        self.assertIn("libre", res.get("message_body", ""))
 
     def test_parking_keyword_estacionar(self):
         with patch("services.points_of_interest_handler.get_coordinates", return_value=None):

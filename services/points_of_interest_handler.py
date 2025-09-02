@@ -101,9 +101,10 @@ class PointsOfInterestHandler:
                 + (f" (Fuente: {cam_name} {timestamp})" if cam_name and timestamp else "")
             ]
 
-            free_indices = set()
-            if isinstance(libres, int) and libres > 0:
-                free_indices = set(random.sample(range(len(nearest)), min(libres, len(nearest))))
+            sample_count = libres if isinstance(libres, int) and libres > 0 else 1
+            free_indices = set(
+                random.sample(range(len(nearest)), min(sample_count, len(nearest)))
+            )
             for idx, item in enumerate(nearest):
                 try:
                     distance_val = int(dist(item))
@@ -127,9 +128,10 @@ class PointsOfInterestHandler:
                 f"Datos de estacionamiento cerca de {address or 'la zona'}:" \
                 + (f" (Fuente: {cam_name} {timestamp})" if cam_name and timestamp else "")
             ]
-            free_indices = set()
-            if isinstance(libres, int) and libres > 0:
-                free_indices = set(random.sample(range(len(sample)), min(libres, len(sample))))
+            sample_count = libres if isinstance(libres, int) and libres > 0 else 1
+            free_indices = set(
+                random.sample(range(len(sample)), min(sample_count, len(sample)))
+            )
             for idx, item in enumerate(sample):
                 availability = 1 if idx in free_indices else 0
                 status = "libre" if availability else "ocupado"
