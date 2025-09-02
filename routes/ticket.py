@@ -228,14 +228,27 @@ def get_tickets_del_usuario_logic(current_user: User):
         all_tickets_for_summary_calculation = query_base.all()
 
         summary_by_status = defaultdict(int)
-        defined_statuses = ["nuevo", "en_proceso", "en_vivo", "esperando_agente_en_vivo", "cerrado"]
+        defined_statuses = [
+            "nuevo",
+            "en_proceso",
+            "en_vivo",
+            "esperando_agente_en_vivo",
+            "resuelto",
+            "cerrado",
+        ]
+
+        # Inicializar todos los estados definidos en 0 para que el frontend
+        # siempre reciba las claves esperadas aunque no existan tickets en ese
+        # estado.
+        for st in defined_statuses:
+            summary_by_status[st] = 0
 
         for t_sum in all_tickets_for_summary_calculation:
             # El filtro de categoría de empleado ya se aplicó en la query_base
             if t_sum.estado in defined_statuses:
                 summary_by_status[t_sum.estado] += 1
             else:
-                summary_by_status["otros"] += 1 # Contar otros estados
+                summary_by_status["otros"] += 1  # Contar otros estados
         summary_by_status["total"] = len(all_tickets_for_summary_calculation)
 
         # Ahora, obtener la lista de tickets para la página actual, aplicando el filtro de estado si existe
@@ -962,7 +975,13 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/timeline', methods=['GET'])
 @anon_o_token_requerido
 def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
-    """Devuelve la línea de tiempo de un ticket con mensajes y cambios de estado."""
+    """Devuelve la línea de tiempo de un ticket con mensajes y cambios de estado.
+
+    Además de la timeline basada en comentarios y modificaciones de estado,
+    ahora se incluye el historial de conversación asociado al ``anon_id`` del
+    ticket. Esto permite que el frontend muestre una vista completa del flujo de
+    interacción del reclamo o pedido, combinando mensajes del chat y estados.
+    """
     TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket if tipo == "pyme" else None
     if not TicketModel:
         return jsonify({"error": f"Tipo de ticket no válido: {tipo}"}), 400
@@ -989,7 +1008,13 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
             return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
     timeline = servicio_tickets.obtener_timeline_ticket(ticket_obj)
-    return jsonify({"estado_chat": ticket_obj.estado, "timeline": timeline})
+    historial_chat = servicio_tickets.obtener_historial_chat(ticket_obj)
+
+    return jsonify({
+        "estado_chat": ticket_obj.estado,
+        "timeline": timeline,
+        "historial_chat": historial_chat,
+    })
 
 # ---------- CHAT EN VIVO: RESPONDER CIUDADANO (SOLO TOKEN) ----------
 @ticket_bp.route('/tickets/chat/<int:ticket_id>/responder_ciudadano', methods=['POST'])
