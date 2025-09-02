@@ -3,6 +3,8 @@
 // <form id="message-form">
 //   <input id="message-input" autocomplete="off" />
 //   <button type="submit">Send</button>
+//   <button type="button" id="attachment-button">📎</button>
+//   <input type="file" id="attachment-input" style="display:none" />
 // </form>
 // <button id="record-button">Record</button>
 // <button id="location-button">Share Location</button>
@@ -30,10 +32,24 @@ document.addEventListener('DOMContentLoaded', () => {
     const messageInput = document.getElementById('message-input');
     const recordButton = document.getElementById('record-button');
     const locationButton = document.getElementById('location-button');
+    const attachmentButton = document.getElementById('attachment-button');
+    const attachmentInput = document.getElementById('attachment-input');
 
     let mediaRecorder;
     let audioChunks = [];
     let isRecording = false;
+
+    // --- Attachment Logic ---
+    if (attachmentButton && attachmentInput) {
+        attachmentButton.addEventListener('click', () => attachmentInput.click());
+        attachmentInput.addEventListener('change', () => {
+            const file = attachmentInput.files[0];
+            if (file) {
+                sendAttachment(file);
+                attachmentInput.value = '';
+            }
+        });
+    }
 
     // --- Audio Recording Logic ---
 
@@ -120,6 +136,37 @@ document.addEventListener('DOMContentLoaded', () => {
         .catch(error => {
             console.error('Error sending audio:', error);
             appendMessage('system', 'Error sending audio.');
+        });
+    }
+
+    // Function to handle file attachments
+    function sendAttachment(file) {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        appendMessage('user', `[Adjunto: ${file.name}]`);
+
+        fetch('/upload/chat_attachment', {
+            method: 'POST',
+            body: formData,
+            headers: {
+                'X-Chat-Session-Id': getSessionId()
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.ok && data.attachment_info) {
+                socket.emit('message', {
+                    pregunta: `[Archivo adjunto: ${file.name}]`,
+                    attachment_info: data.attachment_info
+                });
+            } else {
+                appendMessage('system', 'Error uploading attachment.');
+            }
+        })
+        .catch(error => {
+            console.error('Error uploading attachment:', error);
+            appendMessage('system', 'Error uploading attachment.');
         });
     }
 
