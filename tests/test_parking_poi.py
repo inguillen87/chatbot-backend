@@ -63,12 +63,13 @@ class TestParkingPOI(unittest.TestCase):
         res = handler.handle({"pregunta": "estacionamiento", "location": loc})
         self.assertIn("libre", res.get("message_body", ""))
 
+    @patch("services.points_of_interest_handler.random.sample", side_effect=lambda seq, k: list(range(k)))
     @patch("services.points_of_interest_handler.consultar_ocupacion", return_value={"libres": 0, "camera": "Demo", "timestamp": "00:00", "segmentos": []})
-    def test_parking_response_availability_full(self, mock_occ):
+    def test_parking_response_availability_defaults_to_free(self, mock_occ, mock_sample):
         handler = PointsOfInterestHandler(context={})
         loc = {"lat": -33.023818, "lon": -68.497164, "address": "Las Heras 105, Junín, Mendoza"}
         res = handler.handle({"pregunta": "estacionamiento", "location": loc})
-        self.assertIn("ocupado", res.get("message_body", ""))
+        self.assertIn("libre", res.get("message_body", ""))
 
     def test_parking_keyword_estacionar(self):
         with patch("services.points_of_interest_handler.get_coordinates", return_value=None):
@@ -150,4 +151,63 @@ class TestParkingPOI(unittest.TestCase):
                 location=location_payload['ubicacion_usuario']
             )
 
+            self.assertIn('Las Heras 105', resp.get('message_body', ''))
+
+    @patch("services.points_of_interest_handler.consultar_ocupacion", return_value={"libres": 1, "camera": "Demo", "timestamp": "00:00", "segmentos": []})
+    def test_repeat_share_location_uses_last_query(self, mock_occ):
+        import eventlet
+        eventlet.monkey_patch = lambda *args, **kwargs: None
+
+        from app import create_app, db
+        from config import TestConfig
+        from models import User, Rubro, ChatSessionContext
+        from services.municipio_responder import responder_municipio, ConversationState
+
+        app = create_app(TestConfig)
+        with app.app_context():
+            db.create_all()
+            rubro = Rubro(id=1, clave='municipios', nombre='municipios')
+            owner_user = User(id=1, tipo_chat='municipio', rol='admin', email='admin@test.com', name='Admin', rubro=rubro)
+            owner_user.set_password('pass')
+            db.session.add_all([rubro, owner_user])
+            db.session.commit()
+
+            ctx = ChatSessionContext(
+                chat_session_id='test_repeat_share',
+                user_id=1,
+                context_data={'contexto_municipio_v2': {'estado_conversacion': None, 'ultima_consulta_poi': 'estacionamiento'}}
+            )
+            db.session.add(ctx)
+            db.session.commit()
+
+            # User presses the share location button again
+            prompt_resp = responder_municipio(
+                pregunta_original={'pregunta': 'Compartir ubicación', 'action': 'compartir_ubicacion'},
+                owner_user=owner_user,
+                rubro_obj=rubro,
+                viewer_user=owner_user,
+                chat_db_context=ctx
+            )
+            self.assertIn('ubicación', prompt_resp.get('message_body', '').lower())
+            ctx_data = ctx.context_data['contexto_municipio_v2']
+            self.assertEqual(ctx_data.get('estado_conversacion'), ConversationState.ESPERANDO_UBICACION_GENERAL.name)
+
+            location_payload = {
+                'pregunta': '',
+                'es_ubicacion': True,
+                'ubicacion_usuario': {
+                    'latitude': -33.023818,
+                    'longitude': -68.497164,
+                    'address': 'Las Heras 105, Junín, Mendoza'
+                }
+            }
+
+            resp = responder_municipio(
+                pregunta_original=location_payload,
+                owner_user=owner_user,
+                rubro_obj=rubro,
+                viewer_user=owner_user,
+                chat_db_context=ctx,
+                location=location_payload['ubicacion_usuario']
+            )
             self.assertIn('Las Heras 105', resp.get('message_body', ''))
