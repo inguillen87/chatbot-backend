@@ -924,9 +924,15 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
             .order_by(TicketComentario.fecha.asc())
             .all()
         )
-        # Usar el método to_dict() del modelo para asegurar que todos los datos,
-        # incluyendo la información de adjuntos, se serialicen correctamente.
-        mensajes_formateados = [msg.to_dict() for msg in mensajes_nuevos]
+        # Formatear los mensajes, renombrando "comentario" -> "texto" para
+        # mantener consistencia con el historial completo del ticket.
+        mensajes_formateados = []
+        for msg in mensajes_nuevos:
+            data = msg.to_dict()
+            if "texto" not in data:
+                data["texto"] = data.get("comentario")
+            data.pop("comentario", None)
+            mensajes_formateados.append(data)
 
         respuesta_final = {
             "estado_chat": sala_de_chat.estado,
@@ -972,10 +978,15 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
             .order_by(TicketComentario.fecha.asc())
             .all()
         )
-
-        # Usar el método to_dict() del modelo para asegurar que todos los datos,
-        # incluyendo la información de adjuntos, se serialicen correctamente.
-        mensajes_formateados = [msg.to_dict() for msg in mensajes_nuevos]
+        # Formatear los mensajes, renombrando "comentario" -> "texto" para
+        # mantener consistencia con el historial completo del ticket.
+        mensajes_formateados = []
+        for msg in mensajes_nuevos:
+            data = msg.to_dict()
+            if "texto" not in data:
+                data["texto"] = data.get("comentario")
+            data.pop("comentario", None)
+            mensajes_formateados.append(data)
 
         # Devolver una estructura consistente con get_chat_mensajes
         respuesta_final = {

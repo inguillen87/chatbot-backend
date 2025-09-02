@@ -347,6 +347,7 @@ class TicketComentario(db.Model):
             "pyme_ticket_id": self.pyme_ticket_id,
             "municipio_ticket_id": self.municipio_ticket_id,
             "comentario": self.comentario,
+            "texto": self.comentario,
             "fecha": self.fecha.isoformat(),
             "user_id": self.user_id,
             "anon_id": self.anon_id,
