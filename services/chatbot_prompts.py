@@ -20,9 +20,9 @@ Tu respuesta DEBE ser un único objeto JSON válido. No incluyas texto fuera del
     "descripcion": "...",
     "ubicacion": "...",
     "distrito": "...",
-    "usuario": "...",
-    "telefono": "...",
-    "email": "...",
+    "nombre_usuario_detectado": "...",
+    "telefono_detectado": "...",
+    "email_detectado": "...",
     "dni": "..."
   }},
   "pedir_info": null,
