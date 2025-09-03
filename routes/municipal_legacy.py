@@ -377,6 +377,9 @@ def create_municipal_post(current_user):
 
         data['eventos'].insert(0, nuevo_post)  # Insertar al principio para que aparezca primero
 
+        # Mantener solo los 50 posts más recientes en el archivo
+        data['eventos'] = data['eventos'][:50]
+
         with open(agenda_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -398,11 +401,25 @@ def create_municipal_posts_bulk(current_user):
     raw_payload = request.get_json(silent=True)
     payload = raw_payload if isinstance(raw_payload, dict) else {}
     events = payload.get("events")
+    text = None
 
     if events is None:
-        # Allow a raw agenda text via JSON, plain body or form field ``text``
         text = payload.get("text") or (raw_payload if isinstance(raw_payload, str) else None) or request.form.get("text")
-        if text:
+        body_text = request.get_data(as_text=True).strip()
+        if events is None and not text and body_text:
+            try:
+                maybe_json = json.loads(body_text)
+                if isinstance(maybe_json, dict):
+                    events = maybe_json.get("events")
+                    if text is None:
+                        text = maybe_json.get("text")
+                elif isinstance(maybe_json, list):
+                    events = maybe_json
+                else:
+                    text = body_text
+            except json.JSONDecodeError:
+                text = body_text
+        if events is None and text:
             from utils.agenda_parser import parse_agenda_text
             events = parse_agenda_text(text)
 
@@ -441,24 +458,35 @@ def create_municipal_posts_bulk(current_user):
 
         created_posts = []
         for ev in events:
-            title = ev.get("title")
+            title = ev.get("title") or ev.get("titulo")
             if not title:
                 continue
+
+            day = ev.get("day") or ev.get("dia")
+            time_val = ev.get("time") or ev.get("hora") or ""
+            descripcion = ev.get("description") or ev.get("descripcion", "")
+            location = ev.get("location") or ev.get("ubicacion")
+            image_url = ev.get("imagen_url") or ev.get("imagen", "")
+            enlace = ev.get("enlace") or ev.get("url")
+
             post = {
                 "id": str(uuid4()),
                 "titulo": title,
-                "subtitulo": ev.get("day"),
-                "descripcion": ev.get("description", ""),
+                "subtitulo": day,
+                "descripcion": descripcion,
                 "tipo_post": "evento",
-                "imagen_url": ev.get("imagen_url", ""),
-                "fecha_evento_inicio": f"{ev.get('day', '')} {ev.get('time', '')}".strip(),
-                "fecha_evento_fin": ev.get("fecha_evento_fin"),
+                "imagen_url": image_url,
+                "fecha_evento_inicio": f"{day or ''} {time_val}".strip(),
+                "fecha_evento_fin": ev.get("fecha_evento_fin") or ev.get("fecha_fin"),
                 "fecha_publicacion": get_local_now().isoformat(),
-                "enlace": ev.get("enlace"),
-                "ubicacion": ev.get("location"),
+                "enlace": enlace,
+                "ubicacion": location,
             }
             data['eventos'].insert(0, post)
             created_posts.append(post)
+
+        # Limitar a los 50 eventos más recientes
+        data['eventos'] = data['eventos'][:50]
 
         with open(agenda_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
