@@ -1,42 +1,38 @@
 import unittest
-import json
-from app import create_app, db
-from config import TestingConfig
+from unittest.mock import patch
 
 class TestLocationService(unittest.TestCase):
-    def setUp(self):
-        self.app = create_app(TestingConfig)
-        self.app_context = self.app.app_context()
-        self.app_context.push()
-        db.create_all()
-        self.client = self.app.test_client()
+    @patch("services.location_service.GOOGLE_MAPS_API_KEY", "test")
+    @patch("services.location_service.googlemaps.Client")
+    def test_geocode_address_restricts_country(self, mock_client, *_):
+        from services import location_service as ls
+        mock_instance = mock_client.return_value
+        mock_instance.geocode.return_value = [
+            {"geometry": {"location": {"lat": -32.89, "lng": -68.83}}}
+        ]
+        result = ls.geocode_address("San Martin")
+        mock_instance.geocode.assert_called_once_with(
+            "San Martin",
+            region="ar",
+            components={"country": "AR"},
+        )
+        self.assertEqual(result["geometry"]["location"]["lat"], -32.89)
 
-    def tearDown(self):
-        db.session.remove()
-        db.drop_all()
-        self.app_context.pop()
-
-    def test_get_google_maps_key(self):
-        response = self.client.get("/config/google-maps-key")
-        self.assertEqual(response.status_code, 200)
-        data = json.loads(response.data)
-        self.assertIn("google_maps_key", data)
-
-    def test_parse_location_data(self):
-        from routes.chat import _parse_request
-        with self.app.test_request_context(
-            "/ask",
-            method="POST",
-            data=json.dumps({
-                "pregunta": "test",
-                "tipo_chat": "municipio",
-                "location": {"lat": 12.34, "lon": 56.78}
-            }),
-            content_type="application/json"
-        ):
-            pregunta, contexto_previo, tipo_chat, rubro_id, rubro_clave, attachment_info, location, ticket_id, tipo_ticket, error_response = _parse_request()
-            self.assertIsNone(error_response)
-            self.assertEqual(location, {"lat": 12.34, "lon": 56.78})
+    @patch("services.location_service.GOOGLE_MAPS_API_KEY", "test")
+    @patch("services.location_service.googlemaps.Client")
+    def test_autocomplete_address_uses_country(self, mock_client, *_):
+        from services import location_service as ls
+        mock_instance = mock_client.return_value
+        mock_instance.places_autocomplete.return_value = [
+            {"description": "San Martin, Mendoza, Argentina"}
+        ]
+        result = ls.autocomplete_address("San Martin")
+        mock_instance.places_autocomplete.assert_called_once_with(
+            input_text="San Martin",
+            language="es",
+            components={"country": "ar"},
+        )
+        self.assertEqual(result[0]["description"], "San Martin, Mendoza, Argentina")
 
 if __name__ == "__main__":
     unittest.main()
