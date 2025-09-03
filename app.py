@@ -58,6 +58,7 @@ from routes.promociones import promociones_bp # <--- NUEVA IMPORTACIÓN PROMOCIO
 from routes.catalog_mappings import catalog_mappings_bp
 from routes.whatsapp_webhook import webhook_bp as whatsapp_webhook_bp # <--- NUEVA IMPORTACIÓN WHATSAPP
 from routes.estacionamiento import bp_est # <--- NUEVA IMPORTACIÓN ESTACIONAMIENTO
+from routes.media import media_bp
 
 # --- Listener de ejemplo (reemplazalo por el tuyo si corresponde) ---
 def my_on_connect_listener(dbapi_connection, connection_record):
@@ -296,6 +297,7 @@ def create_app(config_class=Config):
     app.register_blueprint(catalog_mappings_bp)
     app.register_blueprint(whatsapp_webhook_bp) # <--- REGISTRO DEL BLUEPRINT DE WHATSAPP (sin prefijo aquí)
     app.register_blueprint(bp_est)
+    app.register_blueprint(media_bp)
 
     # --- Registro de comandos CLI ---
     register_commands(app)
