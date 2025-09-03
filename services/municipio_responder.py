@@ -2928,17 +2928,36 @@ def responder_municipio(
 
         elif estado_conversacion == ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name:
             datos_guardados = contexto_municipio_actual.get('datos_sugerencia', {})
-            nuevos_datos = extract_multiple_contact_details_llm(pregunta_str, ["nombre", "dni", "email", "direccion", "telefono"])
-            if nuevos_datos.get("nombre"): datos_guardados["nombre"] = nuevos_datos["nombre"]
-            if nuevos_datos.get("dni"): datos_guardados["dni"] = nuevos_datos["dni"]
-            if nuevos_datos.get("email"): datos_guardados["email"] = nuevos_datos["email"]
-            if nuevos_datos.get("direccion"): datos_guardados["direccion"] = nuevos_datos["direccion"]
-            if nuevos_datos.get("telefono"): datos_guardados["telefono"] = nuevos_datos["telefono"]
+            campos_requeridos = ["nombre", "dni", "email", "direccion"]
 
-            campos_faltantes = [c for c in ["nombre", "dni", "email", "direccion"] if not datos_guardados.get(c)]
+            # Primero intentamos extraer con regex para los campos aún faltantes.
+            nuevos_datos = extract_multiple_contact_details_regex(
+                pregunta_str, campos_requeridos + ["telefono"]
+            )
+            for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
+                if nuevos_datos.get(campo):
+                    datos_guardados[campo] = nuevos_datos[campo]
+
+            campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
+
+            # Solo si aún faltan datos importantes recurrimos al LLM.
+            if campos_faltantes:
+                try:
+                    llm_datos = extract_multiple_contact_details_llm(
+                        pregunta_str, campos_requeridos + ["telefono"]
+                    )
+                    if llm_datos:
+                        for campo, valor in llm_datos.items():
+                            if valor and campo in ["nombre", "dni", "email", "direccion", "telefono"] and not datos_guardados.get(campo):
+                                datos_guardados[campo] = valor
+                except Exception as e:
+                    logger.error("[DATOS_SUGERENCIA] LLM fallback failed: %s", e)
+                campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
+
             contexto_municipio_actual['datos_sugerencia'] = datos_guardados
             if campos_faltantes:
-                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
                 return _finalize_response({
                     "message_body": f"Aún necesito: {', '.join(campos_faltantes)}. Podés enviarlos todos juntos.",
                     "fuente": "datos_contacto_sugerencia_incompletos"
