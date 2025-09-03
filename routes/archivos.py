@@ -536,7 +536,7 @@ def upload_chat_attachment_options():
 
 @archivos_bp.route('/upload/chat_attachment', methods=['POST'])
 @anon_o_token_requerido
-def upload_chat_attachment(current_user=None, anon_id=None):
+def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
     """
     Endpoint para que el ChatWidget suba un archivo.
     No lo asocia a ningún ticket, solo lo sube y crea los registros.
@@ -557,7 +557,8 @@ def upload_chat_attachment(current_user=None, anon_id=None):
     # El tamaño se valida dentro de gcs_service
 
     try:
-        user_id = current_user.id if current_user else None
+        user = current_user or owner_user
+        user_id = user.id if user else None
         session_id = request.headers.get("X-Chat-Session-Id")
 
         if not session_id:
