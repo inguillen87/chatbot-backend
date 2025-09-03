@@ -10,6 +10,13 @@ class TestDniExtractionAndConfirmation(unittest.TestCase):
         self.assertEqual(data.get("dni"), "32877851")
         self.assertEqual(data.get("email"), "guillen.marce@gmail.com")
 
+    def test_enumerated_name_phone_city(self):
+        text = "1. Juan Perez\n2. +5491112345678\n3. CABA"
+        data = extract_multiple_contact_details_regex(text)
+        self.assertEqual(data.get("nombre"), "Juan Perez")
+        self.assertEqual(data.get("telefono"), "+5491112345678")
+        self.assertEqual(data.get("ciudad"), "CABA")
+
     def test_text_confirmation(self):
         context = {"chat_db_context_data": {CONTEXTO_MUNICIPIO: {"reclamo_flow_v2": {
             "datos_reclamo": {
