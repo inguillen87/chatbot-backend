@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 from pathlib import Path
+import shutil
 from flask import Flask
 from extensions import db
 from config import TestConfig
@@ -39,16 +40,20 @@ class WhatsappPromocionarTest(unittest.TestCase):
         db.create_all()
 
         self.admin_user = User(name='Admin', email='a@a.com', password_hash='x', rol='admin')
-        other_admin = User(name='Other', email='o@o.com', password_hash='x', rol='admin')
-        db.session.add_all([self.admin_user, other_admin])
+        self.other_admin = User(name='Other', email='o@o.com', password_hash='x', rol='admin')
+        db.session.add_all([self.admin_user, self.other_admin])
         db.session.flush()
+        # Tie admins to their own empresa for clarity
+        self.admin_user.empresa_id = self.admin_user.id
+        self.other_admin.empresa_id = self.other_admin.id
+
         self.client_user = User(
             name='Cliente1', email='c1@c.com', password_hash='x',
-            telefono='+123', acepta_marketing=True, empresa_id=self.admin_user.id
+            telefono='+123', acepta_marketing=True, empresa_id=self.admin_user.empresa_id
         )
         self.other_client = User(
             name='Cliente2', email='c2@c.com', password_hash='x',
-            telefono='+456', acepta_marketing=True, empresa_id=other_admin.id
+            telefono='+456', acepta_marketing=True, empresa_id=self.other_admin.empresa_id
         )
         db.session.add_all([self.client_user, self.other_client])
         db.session.commit()
@@ -64,10 +69,12 @@ class WhatsappPromocionarTest(unittest.TestCase):
 
     @patch('routes.whatsapp_promocionar.enviar_imagen_whatsapp', return_value=True)
     def test_rate_limit(self, mock_send):
-        tmp = Path('test_last_whatsapp.txt')
-        if tmp.exists():
-            tmp.unlink()
-        with patch.object(self.promo_module, 'RATE_LIMIT_FILE', tmp):
+        tmp_dir = Path('test_rate_limit_dir')
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        orig = self.promo_module.RATE_LIMIT_DIR
+        self.promo_module.RATE_LIMIT_DIR = tmp_dir
+        try:
             payload = {
                 'titulo': 'Promo',
                 'descripcion': 'Desc',
@@ -84,15 +91,49 @@ class WhatsappPromocionarTest(unittest.TestCase):
             )
             resp2 = self.client.post('/api/whatsapp/promocionar', json=payload)
             self.assertEqual(resp2.status_code, 429)
-        if tmp.exists():
-            tmp.unlink()
+        finally:
+            self.promo_module.RATE_LIMIT_DIR = orig
+            if tmp_dir.exists():
+                shutil.rmtree(tmp_dir)
+
+    @patch('routes.whatsapp_promocionar.enviar_imagen_whatsapp', return_value=True)
+    def test_envio_global_registra_para_todos(self, mock_send):
+        tmp_dir = Path('test_rate_limit_dir')
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        orig = self.promo_module.RATE_LIMIT_DIR
+        self.promo_module.RATE_LIMIT_DIR = tmp_dir
+        try:
+            # Elevate admin to super_admin to allow global broadcast
+            self.admin_user.rol = 'super_admin'
+            payload = {
+                'titulo': 'Promo',
+                'descripcion': 'Desc',
+                'link': 'https://x',
+                'url_imagen': 'http://img',
+                'todos': True
+            }
+            self.client.post('/api/whatsapp/promocionar', json=payload)
+
+            from routes.whatsapp_promocionar import _ultimo_envio, _puede_enviar
+            last_global = _ultimo_envio(None)
+            self.assertIsNotNone(last_global)
+            # Other admin should see the same last send and be blocked
+            self.assertEqual(last_global, _ultimo_envio(self.other_admin.id))
+            self.assertFalse(_puede_enviar(self.other_admin.id))
+        finally:
+            self.promo_module.RATE_LIMIT_DIR = orig
+            if tmp_dir.exists():
+                shutil.rmtree(tmp_dir)
 
     @patch('routes.whatsapp_promocionar.enviar_imagen_whatsapp', return_value=True)
     def test_estado_promocion(self, mock_send):
-        tmp = Path('test_last_whatsapp.txt')
-        if tmp.exists():
-            tmp.unlink()
-        with patch.object(self.promo_module, 'RATE_LIMIT_FILE', tmp):
+        tmp_dir = Path('test_rate_limit_dir')
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        orig = self.promo_module.RATE_LIMIT_DIR
+        self.promo_module.RATE_LIMIT_DIR = tmp_dir
+        try:
             resp = self.client.get('/api/whatsapp/promocionar')
             self.assertEqual(resp.status_code, 200)
             data = resp.get_json()
@@ -111,8 +152,26 @@ class WhatsappPromocionarTest(unittest.TestCase):
             data2 = resp2.get_json()
             self.assertFalse(data2['puede_enviar'])
             self.assertIsNotNone(data2['ultimo_envio'])
-        if tmp.exists():
-            tmp.unlink()
+        finally:
+            self.promo_module.RATE_LIMIT_DIR = orig
+            if tmp_dir.exists():
+                shutil.rmtree(tmp_dir)
+
+    def test_puede_enviar_por_empresa(self):
+        tmp_dir = Path('test_rate_limit_dir')
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        orig = self.promo_module.RATE_LIMIT_DIR
+        self.promo_module.RATE_LIMIT_DIR = tmp_dir
+        try:
+            from routes.whatsapp_promocionar import _registrar_envio, _puede_enviar
+            _registrar_envio(self.admin_user.id)
+            self.assertFalse(_puede_enviar(self.admin_user.id))
+            self.assertTrue(_puede_enviar(self.other_admin.id))
+        finally:
+            self.promo_module.RATE_LIMIT_DIR = orig
+            if tmp_dir.exists():
+                shutil.rmtree(tmp_dir)
 
 
 if __name__ == '__main__':

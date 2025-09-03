@@ -4,43 +4,73 @@ from models import User
 from utils.whatsapp import enviar_imagen_whatsapp
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 whatsapp_promocionar_bp = Blueprint('whatsapp_promocionar', __name__, url_prefix='/api/whatsapp')
 
-RATE_LIMIT_FILE = Path('logs/last_whatsapp_promocion.txt')
+RATE_LIMIT_DIR = Path('logs')
 
 
-def _puede_enviar() -> bool:
-    if not RATE_LIMIT_FILE.exists():
+def _rate_limit_file(empresa_id: Optional[int]) -> Path:
+    name = 'last_whatsapp_promocion_global.txt' if empresa_id is None else f'last_whatsapp_promocion_{empresa_id}.txt'
+    return RATE_LIMIT_DIR / name
+
+
+def _check_file(path: Path) -> bool:
+    if not path.exists():
         return True
     try:
-        last = datetime.fromisoformat(RATE_LIMIT_FILE.read_text().strip())
+        last = datetime.fromisoformat(path.read_text().strip())
         return datetime.utcnow() - last >= timedelta(days=1)
     except Exception:
         return True
 
 
-def _registrar_envio():
-    RATE_LIMIT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    RATE_LIMIT_FILE.write_text(datetime.utcnow().isoformat())
+def _puede_enviar(empresa_id: Optional[int], scope_all: bool = False) -> bool:
+    global_file = _rate_limit_file(None)
+    if not _check_file(global_file):
+        return False
+    if scope_all:
+        return True
+    return _check_file(_rate_limit_file(empresa_id))
 
 
-def _ultimo_envio():
-    if not RATE_LIMIT_FILE.exists():
-        return None
-    try:
-        return datetime.fromisoformat(RATE_LIMIT_FILE.read_text().strip())
-    except Exception:
-        return None
+def _registrar_envio(empresa_id: Optional[int], scope_all: bool = False):
+    path = _rate_limit_file(None if scope_all else empresa_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(datetime.utcnow().isoformat())
+
+
+def _ultimo_envio(empresa_id: Optional[int]):
+    """Return the timestamp of the last send for the empresa or global."""
+    global_last = None
+    g_path = _rate_limit_file(None)
+    if g_path.exists():
+        try:
+            global_last = datetime.fromisoformat(g_path.read_text().strip())
+        except Exception:
+            global_last = None
+
+    if empresa_id is None:
+        return global_last
+
+    local_last = None
+    l_path = _rate_limit_file(empresa_id)
+    if l_path.exists():
+        try:
+            local_last = datetime.fromisoformat(l_path.read_text().strip())
+        except Exception:
+            local_last = None
+
+    if global_last and (not local_last or global_last > local_last):
+        return global_last
+    return local_last
 
 
 @whatsapp_promocionar_bp.route('/promocionar', methods=['POST'])
 @token_requerido
 @admin_o_empleado_requerido
 def promocionar_whatsapp(current_user):
-    if not _puede_enviar():
-        return jsonify({'error': 'Solo se permite un envío por día.'}), 429
-
     data = request.get_json() or {}
     # The frontend may send a pre-built `mensaje` or individual fields
     # to compose one. Prefer explicit pieces so employees don't have to
@@ -60,13 +90,16 @@ def promocionar_whatsapp(current_user):
     if not url_imagen:
         return jsonify({'error': 'url_imagen es requerido.'}), 400
 
-    scope_all = data.get('todos') or request.args.get('todos')
+    scope_all = bool(data.get('todos') or request.args.get('todos'))
+    if scope_all and current_user.rol != 'super_admin':
+        scope_all = False
     query = User.query.filter(
         User.telefono.isnot(None),
         User.acepta_marketing.is_(True)
     )
 
     if current_user.rol == 'super_admin' and scope_all:
+        empresa_id = None
         usuarios = query.all()
     else:
         empresa_id = current_user.id if current_user.rol == 'admin' and current_user.empresa_id is None else current_user.empresa_id
@@ -74,12 +107,15 @@ def promocionar_whatsapp(current_user):
             return jsonify({'error': 'No se pudo determinar la empresa del usuario.'}), 403
         usuarios = query.filter(User.empresa_id == empresa_id).all()
 
+    if not _puede_enviar(empresa_id, scope_all):
+        return jsonify({'error': 'Solo se permite un envío por día.'}), 429
+
     enviados = 0
     for usuario in usuarios:
         if enviar_imagen_whatsapp(usuario.telefono, mensaje, url_imagen):
             enviados += 1
 
-    _registrar_envio()
+    _registrar_envio(empresa_id, scope_all)
     return jsonify({'enviados': enviados}), 200
 
 
@@ -87,8 +123,12 @@ def promocionar_whatsapp(current_user):
 @token_requerido
 @admin_o_empleado_requerido
 def estado_promocion(current_user):
-    last = _ultimo_envio()
+    scope_all = bool(request.args.get('todos')) and current_user.rol == 'super_admin'
+    empresa_id = None if scope_all else (
+        current_user.id if current_user.rol == 'admin' and current_user.empresa_id is None else current_user.empresa_id
+    )
+    last = _ultimo_envio(empresa_id)
     return jsonify({
-        'puede_enviar': _puede_enviar(),
+        'puede_enviar': _puede_enviar(empresa_id, scope_all),
         'ultimo_envio': last.isoformat() if last else None
     })

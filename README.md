@@ -39,8 +39,9 @@ selection instructions to maintain full visibility of all choices.
   when the last send occurred.
 - `POST /api/whatsapp/promocionar` – broadcast a flyer to marketing subscribers
   of the authenticated company. Accepts `titulo`, `descripcion`, `link` and
-  `url_imagen` (or a prebuilt `mensaje`). Limited to one send per day. Super
-  admins can include `{"todos": true}` to send to every tenant.
+  `url_imagen` (or a prebuilt `mensaje`). Limited to one send per day por
+  empresa. Super admins can include `{"todos": true}` to enviar a todos los
+  tenants y el límite diario se aplica globalmente.
 - `GET /catalogo/buscar` – query the vector catalog with `?q=` and optional
   `?limite=` to control how many products are returned (defaults to
   `CATALOGO_RESULT_LIMIT`).
