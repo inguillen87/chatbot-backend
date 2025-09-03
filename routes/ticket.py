@@ -762,7 +762,9 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     
     # Recargar comentarios y archivos para la respuesta
     # (La relación 'comentarios' y 'archivos' en ticket_obj se actualiza tras el commit)
-    comentarios_actualizados = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket_obj.comentarios.order_by(TicketComentario.fecha.asc()).all()]
+    comentarios_actualizados = [
+        c.to_dict() for c in ticket_obj.comentarios.order_by(TicketComentario.fecha.asc()).all()
+    ]
     
     archivos_actualizados_data = []
     if hasattr(ticket_obj, 'archivos'):
