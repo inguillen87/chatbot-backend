@@ -1,6 +1,8 @@
 from flask import Blueprint, send_from_directory, current_app
 import os
 
+from services.config_loader import BASE_DATA_PATH
+
 media_bp = Blueprint("media_bp", __name__, url_prefix="/media")
 
 
@@ -13,7 +15,7 @@ def media(filename: str):
     fallback to the repository's bundled ``data/`` folder when the file
     is not found in the persistent path.
     """
-    data_dir = current_app.config.get("DATA_DIR", os.environ.get("DATA_DIR", "/data"))
+    data_dir = current_app.config.get("DATA_DIR", BASE_DATA_PATH)
     repo_dir = os.path.join(current_app.root_path, "data")
 
     if os.path.exists(os.path.join(data_dir, filename)):
