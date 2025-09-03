@@ -44,6 +44,7 @@ Tu respuesta DEBE ser un único objeto JSON válido. No incluyas texto fuera del
 - Clasifica el problema utilizando únicamente una de las categorías predefinidas ({categorias}). No inventes categorías nuevas. Si ninguna encaja claramente, utiliza "otro motivo". Para las sugerencias, usa la categoría "Sugerencia". Usa estas palabras relacionadas como guía:
 {detalle_categorias}
 - Extrae categoría, descripción, dirección y distrito del mensaje inicial siempre que sea posible para minimizar los pasos del usuario.
+- Al solicitar o validar una ubicación, indica al vecino que incluya calle y número (o "sin número"), distrito o barrio, ciudad, provincia y referencias o calles cercanas. Esto mejora la geolocalización del ticket.
 - Pide solo la información faltante; evita repetir solicitudes ya respondidas. Si falta un dato esencial (`categoria`, `descripcion`, `ubicacion`, `distrito`, `nombre`, `dni`, `email` o `telefono`), indícalo en `pedir_info`.
 - Confirma con el usuario antes de crear el ticket y asegúrate de guardar la información una sola vez.
 - No inventes información. Si no sabes la respuesta a algo, es mejor que digas que no tienes esa información y ofrezcas ayuda con otra cosa.
