@@ -773,7 +773,7 @@ def extract_multiple_contact_details_regex(text: str, potential_fields: list | N
         return {}
 
     if potential_fields is None:
-        potential_fields = ["nombre", "dni", "email", "telefono"]
+        potential_fields = ["nombre", "dni", "email", "telefono", "ciudad"]
 
     from utils.validators import (
         extract_email,
@@ -784,6 +784,19 @@ def extract_multiple_contact_details_regex(text: str, potential_fields: list | N
     )
 
     extracted_data: dict[str, str] = {}
+
+    # Handle simple enumerated inputs like:
+    # "1. Juan Perez\n2. +54 911 12345678\n3. CABA"
+    enumerados = re.findall(r"\b[123][\).:\-]?\s*([^\n]+)", text)
+    if len(enumerados) >= 3:
+        extracted_data.setdefault("nombre", enumerados[0].strip())
+        telefono_candidato = enumerados[1].strip()
+        telefono_norm = extract_phone(telefono_candidato)
+        if telefono_norm:
+            extracted_data.setdefault("telefono", telefono_norm)
+        else:
+            extracted_data.setdefault("telefono", telefono_candidato)
+        extracted_data.setdefault("ciudad", enumerados[2].strip())
 
     for field in potential_fields:
         if field not in extracted_data or not extracted_data.get(field):

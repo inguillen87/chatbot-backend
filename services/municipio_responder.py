@@ -46,7 +46,8 @@ from .common_utils import (
     validar_email,
     validar_telefono,
     formatear_telefono_e164,
-    construir_respuesta_sugerir_registro
+    construir_respuesta_sugerir_registro,
+    extract_multiple_contact_details_regex,
 )
 from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
@@ -66,26 +67,6 @@ class ReclamoState(Enum):
     ESPERANDO_DATOS_CONTACTO = auto()
     ESPERANDO_CONFIRMACION = auto()
 
-def extract_multiple_contact_details_regex(text: str) -> dict:
-    details = {}
-    email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text)
-    if email_match:
-        details['email'] = email_match.group(0)
-        text = text.replace(email_match.group(0), '')
-    dni_match = re.search(r'\b\d{7,8}\b', text)
-    if dni_match:
-        details['dni'] = dni_match.group(0)
-        text = text.replace(dni_match.group(0), '')
-    phone_match = re.search(r'(?:\+54\s?)?(?:9\s?)?(\d{2,4})\s?(\d{6,8})', text)
-    if phone_match:
-        details['telefono'] = f"{phone_match.group(1)}{phone_match.group(2)}"
-        text = text.replace(phone_match.group(0), '')
-    name_candidate = text.strip(' .,-_/\\')
-    if len(name_candidate.split()) >= 2 and len(name_candidate.split()) <= 4:
-        if 'mi nombre es' in name_candidate.lower():
-            name_candidate = name_candidate.lower().replace('mi nombre es', '').strip()
-        details['nombre'] = ' '.join([word.capitalize() for word in name_candidate.split()])
-    return details
 
 CANCEL_KEYWORDS = {
     normalizar_texto(k)
