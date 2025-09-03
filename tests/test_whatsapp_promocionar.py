@@ -44,10 +44,17 @@ class WhatsappPromocionarTest(unittest.TestCase):
         if tmp.exists():
             tmp.unlink()
         with patch.object(self.promo_module, 'RATE_LIMIT_FILE', tmp):
-            resp1 = self.client.post('/api/whatsapp/promocionar', json={'mensaje': 'Hola', 'url_imagen': 'http://img'})
+            payload = {
+                'titulo': 'Promo',
+                'descripcion': 'Desc',
+                'link': 'https://x',
+                'url_imagen': 'http://img'
+            }
+            resp1 = self.client.post('/api/whatsapp/promocionar', json=payload)
             self.assertEqual(resp1.status_code, 200)
             self.assertEqual(resp1.get_json()['enviados'], 1)
-            resp2 = self.client.post('/api/whatsapp/promocionar', json={'mensaje': 'Hola', 'url_imagen': 'http://img'})
+            mock_send.assert_called_once_with('+123', 'Promo\n\nDesc\nhttps://x', 'http://img')
+            resp2 = self.client.post('/api/whatsapp/promocionar', json=payload)
             self.assertEqual(resp2.status_code, 429)
         if tmp.exists():
             tmp.unlink()

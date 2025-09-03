@@ -6,11 +6,13 @@ from utils.whatsapp import enviar_imagen_whatsapp
 from sqlalchemy import and_
 
 MUNICIPIO_ID = 4
-MENSAJE = "¡Se viene un gran evento en tu municipio! \nMirá la imagen para más info."
+TITULO = "¡Se viene un gran evento en tu municipio!"
+DESCRIPCION = "Mirá la imagen para más info y no te lo pierdas."
+LINK = "https://example.com/evento"
 URL_IMAGEN = "https://example.com/flyer_evento.jpg"
 
 
-def enviar_flyer_a_municipio(municipio_id: int, mensaje: str, url_imagen: str):
+def enviar_flyer_a_municipio(municipio_id: int, titulo: str, descripcion: str, link: str, url_imagen: str):
     app = create_app()
     with app.app_context():
         usuarios = User.query.filter(
@@ -21,6 +23,7 @@ def enviar_flyer_a_municipio(municipio_id: int, mensaje: str, url_imagen: str):
             )
         ).all()
 
+        mensaje = f"{titulo}\n\n{descripcion}\n{link}"
         for usuario in usuarios:
             numero = usuario.telefono
             enviar_imagen_whatsapp(numero, mensaje, url_imagen)
@@ -28,4 +31,4 @@ def enviar_flyer_a_municipio(municipio_id: int, mensaje: str, url_imagen: str):
 
 
 if __name__ == "__main__":
-    enviar_flyer_a_municipio(MUNICIPIO_ID, MENSAJE, URL_IMAGEN)
+    enviar_flyer_a_municipio(MUNICIPIO_ID, TITULO, DESCRIPCION, LINK, URL_IMAGEN)

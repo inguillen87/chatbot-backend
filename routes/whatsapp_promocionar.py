@@ -33,10 +33,23 @@ def promocionar_whatsapp(current_user):
         return jsonify({'error': 'Solo se permite un envío por día.'}), 429
 
     data = request.get_json() or {}
+    # The frontend may send a pre-built `mensaje` or individual fields
+    # to compose one. Prefer explicit pieces so employees don't have to
+    # manually craft the WhatsApp text.
     mensaje = data.get('mensaje')
+    titulo = data.get('titulo')
+    descripcion = data.get('descripcion')
+    link = data.get('link')
     url_imagen = data.get('url_imagen')
-    if not mensaje or not url_imagen:
-        return jsonify({'error': 'mensaje y url_imagen son requeridos.'}), 400
+
+    if not mensaje:
+        if titulo and descripcion and link:
+            mensaje = f"{titulo}\n\n{descripcion}\n{link}"
+        else:
+            return jsonify({'error': 'titulo, descripcion y link son requeridos si no se envía mensaje.'}), 400
+
+    if not url_imagen:
+        return jsonify({'error': 'url_imagen es requerido.'}), 400
 
     usuarios = User.query.filter(
         User.telefono.isnot(None),
