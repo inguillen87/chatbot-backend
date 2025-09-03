@@ -3049,19 +3049,18 @@ def responder_municipio(
 
             campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
 
-            # Solo si aún faltan datos importantes recurrimos al LLM.
-            if campos_faltantes:
-                try:
-                    llm_datos = extract_multiple_contact_details_llm(
-                        pregunta_str, campos_requeridos + ["telefono"]
-                    )
-                    if llm_datos:
-                        for campo, valor in llm_datos.items():
-                            if valor and campo in ["nombre", "dni", "email", "direccion", "telefono"] and not datos_guardados.get(campo):
-                                datos_guardados[campo] = valor
-                except Exception as e:
-                    logger.error("[DATOS_SUGERENCIA] LLM fallback failed: %s", e)
-                campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
+            # Utilizar el LLM para extraer o corregir datos aunque ya existan valores previos.
+            try:
+                llm_datos = extract_multiple_contact_details_llm(
+                    pregunta_str, campos_requeridos + ["telefono"]
+                )
+                if llm_datos:
+                    for campo, valor in llm_datos.items():
+                        if valor and campo in ["nombre", "dni", "email", "direccion", "telefono"]:
+                            datos_guardados[campo] = valor
+            except Exception as e:
+                logger.error("[DATOS_SUGERENCIA] LLM fallback failed: %s", e)
+            campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
 
             contexto_municipio_actual['datos_sugerencia'] = datos_guardados
             if campos_faltantes:

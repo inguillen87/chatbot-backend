@@ -482,10 +482,14 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "pedir_info": "ubicacion"
             }
 
-        nombre_vecino = action_data.get("nombre")
+        nombre_vecino = (
+            action_data.get("nombre")
+            or action_data.get("usuario")
+            or action_data.get("nombre_usuario_detectado")
+        )
         dni_vecino = action_data.get("dni")
-        email_vecino = action_data.get("email")
-        direccion_contacto = action_data.get("direccion")
+        email_vecino = action_data.get("email") or action_data.get("email_detectado")
+        direccion_contacto = action_data.get("direccion") or action_data.get("direccion_contacto")
         if not all([nombre_vecino, dni_vecino, email_vecino, direccion_contacto]):
             return {
                 "success": False,
