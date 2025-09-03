@@ -30,6 +30,8 @@ models_stub.db = SimpleNamespace(session=_DummySession())
 
 twilio_rest_stub = ModuleType('twilio.rest')
 class _DummyClient:
+    def __init__(self, *a, **k):
+        pass
     class messages:
         @staticmethod
         def create(*a, **k):
@@ -37,6 +39,9 @@ class _DummyClient:
 twilio_rest_stub.Client = _DummyClient
 sys.modules.setdefault('twilio.rest', twilio_rest_stub)
 sys.modules.setdefault('twilio', ModuleType('twilio'))
+twilio_validator_stub = ModuleType('twilio.request_validator')
+twilio_validator_stub.RequestValidator = MagicMock()
+sys.modules.setdefault('twilio.request_validator', twilio_validator_stub)
 sys.modules.setdefault('cohere', ModuleType('cohere'))
 # sqlalchemy_stub = ModuleType('sqlalchemy') # Removed stubbing of entire sqlalchemy module
 # sqlalchemy_exc_stub = ModuleType('sqlalchemy.exc')
@@ -46,9 +51,13 @@ sys.modules.setdefault('cohere', ModuleType('cohere'))
 # sqlalchemy_stub.exc = sqlalchemy_exc_stub
 # sys.modules.setdefault('sqlalchemy', sqlalchemy_stub) # Removed stubbing
 # sys.modules.setdefault('sqlalchemy.exc', sqlalchemy_exc_stub) # Removed stubbing
-sys.modules.setdefault('requests', ModuleType('requests'))
 
-from services.municipio_responder import responder_municipio
+
+from services.municipio_responder import (
+    responder_municipio,
+    CONTEXTO_MUNICIPIO,
+    ConversationState,
+)
 
 class DummyTicket:
     def __init__(self, id=1, nro_ticket=123456):
@@ -61,6 +70,8 @@ class DummyUser(SimpleNamespace):
 @patch('services.municipio_responder.flag_modified', MagicMock())
 class MunicipioLogicTests(unittest.TestCase):
     def setUp(self):
+        import eventlet
+        eventlet.monkey_patch = lambda *a, **k: None
         from app import create_app
         self.app = create_app('config.TestingConfig')
         self.app_context = self.app.app_context()
@@ -141,6 +152,33 @@ class MunicipioLogicTests(unittest.TestCase):
         )
 
         mock_start_flow.assert_called_once()
+        self.assertEqual(resp["message_body"], "flujoiniciado")
+
+    @patch('services.municipio_responder.ReclamoFlowHandler.start_flow')
+    def test_auto_category_from_text(self, mock_start_flow):
+        mock_start_flow.return_value = {"message_body": "flujoiniciado"}
+
+        from models import ChatSessionContext, db
+        chat_context = ChatSessionContext(
+            chat_session_id="test_session_text_category",
+            context_data={
+                CONTEXTO_MUNICIPIO: {"estado_conversacion": ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name}
+            },
+        )
+        db.session.add(chat_context)
+        db.session.commit()
+
+        resp = responder_municipio(
+            pregunta_original="Necesito iniciar reclamo por luminaria, hay un poste caido",
+            owner_user=self.owner_user,
+            rubro_obj=self.owner_user.rubro,
+            viewer_user=self.viewer_user,
+            chat_db_context=chat_context,
+        )
+
+        mock_start_flow.assert_called_once()
+        kwargs = mock_start_flow.call_args.kwargs
+        self.assertEqual(kwargs.get("categoria_inicial"), "Luminaria")
         self.assertEqual(resp["message_body"], "flujoiniciado")
 
 

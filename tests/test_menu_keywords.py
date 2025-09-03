@@ -8,6 +8,8 @@ from services.municipio_responder import (
     responder_municipio,
     CONTEXTO_MUNICIPIO,
     ConversationState,
+    find_reclamo_category_by_input,
+    _get_reclamos_menu,
 )
 
 
@@ -84,6 +86,17 @@ class TestMenuKeywords(unittest.TestCase):
                 response = responder_municipio("3", owner, rubro, chat_db_context=chat_ctx)
         self.assertIn("Veterinaria y Bromatología", response["message_body"])
         self.assertIsNone(chat_ctx.context_data[CONTEXTO_MUNICIPIO].get("estado_conversacion"))
+
+    def test_sanidad_animal_keyword(self):
+        self.assertEqual(find_global_menu_action("sanidad animal"), "veterinaria_bromatologia")
+
+    def test_averia_keyword(self):
+        self.assertEqual(find_global_menu_action("averia"), "mostrar_menu_reclamos")
+
+    def test_poste_caido_category_detection(self):
+        options = _get_reclamos_menu().get("options_list", [])
+        category = find_reclamo_category_by_input("hay un poste caido", options)
+        self.assertEqual(category, "Luminaria")
 
 
 if __name__ == "__main__":

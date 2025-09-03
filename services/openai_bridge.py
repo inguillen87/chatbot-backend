@@ -3,6 +3,13 @@ import openai
 import logging
 import json
 import httpx
+from typing import List, Dict
+
+try:
+    import tiktoken
+    _TOKEN_ENCODER = tiktoken.encoding_for_model("gpt-4o-mini")
+except Exception:  # pragma: no cover - optional dependency
+    _TOKEN_ENCODER = None
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +58,23 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
         message = str(mensaje_usuario)
 
     messages.append({"role": "user", "content": message})
+
+    def _estimate_tokens(text: str) -> int:
+        if _TOKEN_ENCODER:
+            return len(_TOKEN_ENCODER.encode(text))
+        return len(text.split())
+
+    def _prune_messages(msgs: List[Dict[str, str]], limit: int = 4000) -> List[Dict[str, str]]:
+        total = 0
+        pruned: List[Dict[str, str]] = []
+        for m in reversed(msgs):
+            total += _estimate_tokens(m.get("content", ""))
+            if total > limit:
+                break
+            pruned.append(m)
+        return list(reversed(pruned))
+
+    messages = _prune_messages(messages)
 
     logger.info(f"Sending to OpenAI. Message: {message[:100]}...")
 

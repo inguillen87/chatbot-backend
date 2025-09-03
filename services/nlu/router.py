@@ -34,7 +34,8 @@ INTENTS = {
     "mostrar_menu": ["menu", "volver", "inicio", "principal"],
     "iniciar_reclamo": [
         "reclamo", "reclamos", "reportar", "iniciar un reclamo",
-        "hacer un reclamo", "show_reclamos_menu", "queja", "problema"
+        "hacer un reclamo", "show_reclamos_menu", "queja", "problema",
+        "averia", "avería"
     ],
     "denuncias": [
         "denuncia", "denuncias", "denunciar", "hacer una denuncia", "realizar una denuncia"
@@ -56,7 +57,8 @@ INTENTS = {
     ],
     "pagar_tasas": [
         "tasas", "pagar tasas", "impuestos", "pago_de_tasas_vigentes",
-        "pagar impuestos", "tasas municipales", "impuesto municipal"
+        "pagar impuestos", "tasas municipales", "impuesto municipal",
+        "tributo", "tributos"
     ],
     "consultar_tramites": [
         "tramite", "tramites", "consultar otros tramites", "consultar_otros_tramites",
@@ -65,7 +67,8 @@ INTENTS = {
     "veterinaria_bromatologia": [
         "veterinaria", "bromatologia", "mascotas", "animales",
         "veterinaria y bromatologia", "veterinaria_y_bromatologia",
-        "perros", "gatos", "vacunas", "castracion"
+        "perros", "gatos", "vacunas", "castracion",
+        "sanidad animal", "sanidad_animal"
     ],
     "solicitar_turnos": [
         "turno", "turnos", "solicitar turnos", "solicitar_turnos",

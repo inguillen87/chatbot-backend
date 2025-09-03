@@ -12,6 +12,7 @@ from enum import Enum, auto
 import unicodedata
 import difflib
 from flask import current_app, has_app_context, session as flask_session
+from cachetools import TTLCache
 from models import MunicipioTicket, TicketComentario, db, SitioWebInfo, Conversacion
 from services.ticket_service import servicio_tickets
 from utils.db_utils import safe_flag_modified
@@ -81,6 +82,13 @@ CANCEL_KEYWORDS = {
         "basta",
     ]
 }
+
+# Simple cache to avoid recomputing responses for repeated municipal queries
+MUNICIPIO_RESPONSE_CACHE = TTLCache(maxsize=256, ttl=3600)
+
+def clear_municipio_cache() -> None:
+    """Utility mainly for tests to clear the local municipio response cache."""
+    MUNICIPIO_RESPONSE_CACHE.clear()
 
 class ReclamoFlowHandler:
     def __init__(self, context, chat_db_context):
@@ -1139,8 +1147,18 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         contexto_municipio_actual.pop("datos_parciales_llm_reclamo", None)
         contexto_municipio_actual.pop("historial_llm_reclamo", None)
         contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
+
+        user_input = context.get("user_input_raw", "")
+        detected_category = find_reclamo_category_by_input(
+            user_input,
+            _get_reclamos_menu().get("options_list", []),
+        )
         handler = ReclamoFlowHandler(context, chat_db_context)
-        response_dict = handler.start_flow()
+        if detected_category:
+            logger.info(
+                f"[MENU_ACTION] Auto-detected category '{detected_category}' from input."
+            )
+        response_dict = handler.start_flow(categoria_inicial=detected_category)
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return response_dict
@@ -1945,11 +1963,11 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
 MENU_KEYWORDS = {
     # Reclamos, Trámites y Turnos
-    "mostrar_menu_reclamos": ["reclamo", "reclamos", "denuncia", "problema", "queja", "reportar"],
-    "iniciar_reclamo": ["iniciar reclamo", "hacer reclamo", "nuevo reclamo", "realizar reclamo"],
-    "solicitar_turnos": ["turnos", "turno", "solicitar turno", "pedir turno", "turnos online"],
-    "licencia_de_conducir": ["licencia", "conducir", "carnet", "registro", "renovar licencia", "sacar licencia"],
-    "enviar_sugerencia": ["sugerencia", "sugerir", "propuesta", "pedido", "pedir algo"],
+    "mostrar_menu_reclamos": ["reclamo", "reclamos", "denuncia", "problema", "queja", "reportar", "averia", "averias", "incidente"],
+    "iniciar_reclamo": ["iniciar reclamo", "hacer reclamo", "nuevo reclamo", "realizar reclamo", "presentar reclamo", "registrar queja"],
+    "solicitar_turnos": ["turnos", "turno", "solicitar turno", "pedir turno", "turnos online", "reservar turno", "agendar turno"],
+    "licencia_de_conducir": ["licencia", "conducir", "carnet", "registro", "renovar licencia", "sacar licencia", "tramitar licencia", "registro de conducir"],
+    "enviar_sugerencia": ["sugerencia", "sugerir", "propuesta", "pedido", "pedir algo", "comentario", "feedback"],
     "consultar_estado_reclamo": [
         "consultar reclamo",
         "estado reclamo",
@@ -1962,20 +1980,20 @@ MENU_KEYWORDS = {
     ],
 
     # Información útil
-    "contactos_utiles": ["contactos", "contacto", "telefonos", "telefono", "utiles", "directorio", "llamar"],
-    "agenda_y_noticias": ["agenda", "cultural", "eventos", "noticias", "novedades", "informacion", "actividades"],
+    "contactos_utiles": ["contactos", "contacto", "telefonos", "telefono", "utiles", "directorio", "llamar", "medios de contacto", "telefonos utiles"],
+    "agenda_y_noticias": ["agenda", "cultural", "eventos", "noticias", "novedades", "informacion", "actividades", "eventos culturales"],
     "veterinaria_bromatologia": [
         "veterinaria", "bromatologia", "zoonosis", "animales", "animal",
         "perro", "perros", "gato", "gatos", "mascota", "mascotas",
         "vacuna", "vacunas", "vacunacion", "antirrabica", "antirrábica",
-        "rabia"
+        "rabia", "perrera", "sanidad animal", "sanidad_animal"
     ],
-    "defensa_del_consumidor": ["defensa del consumidor", "consumidor", "consumo", "proteccion al consumidor"],
+    "defensa_del_consumidor": ["defensa del consumidor", "consumidor", "consumo", "proteccion al consumidor", "atencion al consumidor"],
 
     # Tasas y Servicios
-    "pago_de_tasas_vigentes": ["pagar", "pago", "tasas", "tasa", "boleta", "impuestos", "municipal"],
-    "buscar_estacionamiento": ["estacionamiento", "estacionar", "aparcamiento", "parking", "estacionar auto"],
-    "recoleccion_residuos": ["recoleccion", "residuos", "basura", "basurero", "cuando pasa el camion", "recolector"]
+    "pago_de_tasas_vigentes": ["pagar", "pago", "tasas", "tasa", "boleta", "impuestos", "municipal", "tributo", "tributos", "arancel", "aranceles", "impuesto municipal", "impuestos municipales"],
+    "buscar_estacionamiento": ["estacionamiento", "estacionar", "aparcamiento", "parking", "estacionar auto", "donde estacionar", "lugar para estacionar"],
+    "recoleccion_residuos": ["recoleccion", "residuos", "basura", "basurero", "cuando pasa el camion", "recolector", "recogida", "recoleccion de basura"]
 }
 
 from fuzzywuzzy import process
@@ -2051,12 +2069,64 @@ def find_global_menu_action(user_input: str) -> str | None:
     return find_menu_action_by_input(user_input, global_buttons)
 
 RECLAMO_KEYWORDS = {
-    "Luminaria": ["luminaria", "luz", "poste", "foco"],
-    "Arbolado": ["arbolado", "arbol", "arboles", "rama", "ramas"],
-    "Limpieza y riego": ["limpieza", "riego", "basura", "basural", "contenedor"],
-    "Arreglo de calle": ["calle", "bache", "pozo", "asfalto", "vereda", "agujero", "hueco"],
-    "Pérdida de agua": ["agua", "perdida", "caño", "cañeria"],
-    "Otros": ["otros", "otro", "varios"]
+    "Luminaria": [
+        "luminaria",
+        "luz",
+        "poste",
+        "foco",
+        "farol",
+        "farola",
+        "iluminacion",
+        "lampara",
+        "poste caido",
+        "poste caído",
+    ],
+    "Arbolado": [
+        "arbolado",
+        "arbol",
+        "arboles",
+        "rama",
+        "ramas",
+        "arbol caido",
+        "árbol caído",
+        "tronco",
+        "gajo",
+    ],
+    "Limpieza y riego": [
+        "limpieza",
+        "riego",
+        "basura",
+        "basural",
+        "contenedor",
+        "escombros",
+        "mugre",
+        "pasto",
+        "yuyos",
+        "maleza",
+        "desmalezado",
+        "baldio",
+    ],
+    "Arreglo de calle": [
+        "calle",
+        "bache",
+        "pozo",
+        "asfalto",
+        "vereda",
+        "agujero",
+        "hueco",
+        "pavimento",
+        "calzada",
+    ],
+    "Pérdida de agua": [
+        "agua",
+        "perdida",
+        "caño",
+        "cañeria",
+        "fuga",
+        "rotura",
+        "tuberia",
+    ],
+    "Otros": ["otros", "otro", "varios"],
 }
 
 def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> str | None:
@@ -2206,8 +2276,12 @@ def responder_municipio(
         logger_actual.info(f"DEBUG: [START] responder_municipio called for session {chat_db_context.chat_session_id}. Initial state: {estado_conversacion_debug}")
     # --- END DEBUG LOG ---
 
+    normalized_question = None
+
     def _finalize_response(response):
-        """Return the response unchanged; audio is handled upstream."""
+        """Return the response unchanged; also store it in cache for repeated queries."""
+        if normalized_question:
+            MUNICIPIO_RESPONSE_CACHE[normalized_question] = response
         return response
 
     logger_actual.info(
@@ -2243,6 +2317,11 @@ def responder_municipio(
         )
         pregunta_str = ""
         received_payload["pregunta"] = ""
+
+    normalized_question = normalizar_texto(pregunta_str)
+    if normalized_question in MUNICIPIO_RESPONSE_CACHE:
+        logger_actual.info("responder_municipio: returning cached response")
+        return MUNICIPIO_RESPONSE_CACHE[normalized_question]
 
     if kwargs:
         for key, value in kwargs.items():
@@ -2477,6 +2556,7 @@ def responder_municipio(
 
     # --- INICIO FIX: Manejo explícito de solicitud de menú principal ---
     # Si el usuario pide explícitamente el menú, lo mostramos directamente sin pasar por el LLM.
+    context["user_input_raw"] = pregunta_str
     normalized_input_menu = normalizar_texto(pregunta_str or "")
     action_id = received_payload.get("action_id") or received_payload.get("action")
     if normalized_input_menu in {"menu", "menu principal"} or action_id == "menu_principal":
