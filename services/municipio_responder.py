@@ -1098,7 +1098,9 @@ def _get_posts_from_json(content_type: str, channel: str, municipio_id: str) -> 
 
     formatted = [_format_post(p, channel) for p in posts[:limit]]
     if channel == "whatsapp":
-        return ("\n────────\n\n").join(formatted) + "\n"
+        emoji = "📰" if content_type == "noticia" else "🎭"
+        formatted = [f"{emoji} {item}".rstrip() for item in formatted]
+        return "\n\n".join(formatted) + "\n"
     return "<hr>".join(formatted)
 
 def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> dict:
@@ -1208,7 +1210,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         if eventos_body:
             if channel == "whatsapp":
                 if full_body:
-                    full_body += "\n"
+                    full_body += "\n\n"
                 full_body += "*🎭 Próximos Eventos*\n\n" + eventos_body
             else:
                 full_body += "<h3>🎭 Próximos Eventos</h3>" + eventos_body
