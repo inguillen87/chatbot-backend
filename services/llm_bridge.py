@@ -18,13 +18,22 @@ def clear_llm_cache() -> None:
     LLM_CACHE.clear()
 
 
-def _build_cache_key(mensaje_usuario: Any) -> str:
-    if isinstance(mensaje_usuario, dict):
+def _build_cache_key(
+    mensaje_usuario: Any,
+    chat_session_id: str | None = None,
+    historial: list | None = None,
+) -> str:
+    """Build a cache key that includes session and history context."""
+    key_obj: Dict[str, Any] = {"mensaje": mensaje_usuario, "session": chat_session_id}
+    if historial:
         try:
-            return json.dumps(mensaje_usuario, sort_keys=True)
+            key_obj["history"] = json.dumps(historial, sort_keys=True)
         except Exception:
-            return str(mensaje_usuario)
-    return str(mensaje_usuario)
+            key_obj["history"] = str(historial)
+    try:
+        return json.dumps(key_obj, sort_keys=True)
+    except Exception:
+        return str(key_obj)
 
 
 def llamar_llm(
@@ -43,7 +52,7 @@ def llamar_llm(
     cached in-memory to minimize repeated calls.
     """
     user_msg = mensaje_usuario if mensaje_usuario is not None else mensaje
-    cache_key = _build_cache_key(user_msg)
+    cache_key = _build_cache_key(user_msg, chat_session_id, historial)
 
     if cache_key in LLM_CACHE:
         logger.info("llamar_llm: returning cached response")
@@ -71,11 +80,30 @@ def llamar_llm(
     return respuesta
 
 
-def llamar_llm_para_generacion_texto(prompt: str) -> str:
-    """Convenience wrapper for generating plain text via the main LLM call."""
+def llamar_llm_para_generacion_texto(
+    system_prompt_especifico: str,
+    user_prompt: str,
+    temperature: float = 0.7,
+    json_output: bool = False,
+) -> str:
+    """Generate text using OpenAI (with optional JSON formatting)."""
     try:
-        respuesta, _ = llamar_llm(None, prompt, {}, [])
-        return respuesta.get("message_body", "")
+        from services.openai_bridge import client as openai_client
+
+        if not openai_client:
+            raise ConnectionError("OpenAI client is not initialized. Check API key.")
+
+        messages = []
+        if system_prompt_especifico:
+            messages.append({"role": "system", "content": system_prompt_especifico})
+        messages.append({"role": "user", "content": user_prompt})
+
+        kwargs = {"model": "gpt-4o-mini", "messages": messages, "temperature": temperature}
+        if json_output:
+            kwargs["response_format"] = {"type": "json_object"}
+
+        response = openai_client.chat.completions.create(**kwargs)
+        return response.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"Error en llamar_llm_para_generacion_texto: {e}", exc_info=True)
         return ""

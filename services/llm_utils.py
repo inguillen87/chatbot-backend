@@ -110,7 +110,7 @@ def _clean_llm_json_output(llm_output: str) -> str:
 
 def llamar_llm_para_json_estructurado(system_prompt: str, user_prompt: str) -> Optional[Dict | List]:
     """
-    Calls the LLM (Gemini) requesting a JSON output and parses it safely.
+    Calls the LLM requesting a JSON output and parses it safely.
 
     Args:
         system_prompt: The system prompt guiding the LLM's task.
@@ -123,7 +123,6 @@ def llamar_llm_para_json_estructurado(system_prompt: str, user_prompt: str) -> O
 
     logger.info("Calling LLM for structured JSON output.")
     try:
-        # Call the generic Gemini function, requesting JSON output
         response_text = llamar_llm_para_generacion_texto(
             system_prompt_especifico=system_prompt,
             user_prompt=user_prompt,
