@@ -153,5 +153,18 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("camión recolector", response.get("message_body", ""))
         mock_llamar_gemini.assert_not_called()
 
+    @patch('services.llm_orchestrator.llamar_llm_con_fallback')
+    def test_keyword_tributo(self, mock_llamar_gemini):
+        """El uso de la palabra 'tributo' debe resolverse sin el LLM."""
+        mock_llamar_gemini.return_value = ({}, {})
+        response = responder_municipio(
+            pregunta_original="¿Dónde pago un tributo municipal?",
+            owner_user=MagicMock(id=1),
+            rubro_obj=MagicMock(nombre='municipio'),
+            chat_db_context=MagicMock(context_data={}),
+        )
+        self.assertIn("tasas municipales", response.get("message_body", ""))
+        mock_llamar_gemini.assert_not_called()
+
 if __name__ == '__main__':
     unittest.main()

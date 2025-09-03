@@ -3,8 +3,15 @@ import openai
 import logging
 import uuid
 import httpx
+from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
+
+_TTS_CACHE: TTLCache[str, str] = TTLCache(maxsize=128, ttl=3600)
+
+def clear_tts_cache() -> None:
+    """Utility mainly for tests to clear the local TTS cache."""
+    _TTS_CACHE.clear()
 
 def generar_audio_openai(text: str, speed: float = 0.9) -> str | None:
     """
@@ -20,6 +27,10 @@ def generar_audio_openai(text: str, speed: float = 0.9) -> str | None:
     if not api_key:
         logger.warning("OPENAI_API_KEY not found in environment variables.")
         return None
+
+    cache_key = f"{text}|{speed}"
+    if cache_key in _TTS_CACHE:
+        return _TTS_CACHE[cache_key]
 
     try:
         # Disable reading proxy settings from the environment to avoid passing
@@ -53,6 +64,8 @@ def generar_audio_openai(text: str, speed: float = 0.9) -> str | None:
         # Stream the response content to the file
         response.stream_to_file(output_path)
         logger.info(f"Audio content written to file: {output_path}")
+
+        _TTS_CACHE[cache_key] = public_url_path
 
         return public_url_path
 
