@@ -78,6 +78,9 @@ class Config:
         os.makedirs(os.path.dirname(local_db_path), exist_ok=True)
         SQLALCHEMY_DATABASE_URI = f"sqlite:///{local_db_path}?check_same_thread=False"
 
+    # Directory for persistent data such as uploaded media.
+    DATA_DIR = os.getenv("DATA_DIR", "/data")
+
     # Reduce SQLite lock wait time to avoid long blocking when the database is
     # busy. A smaller timeout makes the application fail fast instead of
     # waiting ~30s on each locked write.
