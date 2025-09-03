@@ -25,6 +25,15 @@ def _registrar_envio():
     RATE_LIMIT_FILE.write_text(datetime.utcnow().isoformat())
 
 
+def _ultimo_envio():
+    if not RATE_LIMIT_FILE.exists():
+        return None
+    try:
+        return datetime.fromisoformat(RATE_LIMIT_FILE.read_text().strip())
+    except Exception:
+        return None
+
+
 @whatsapp_promocionar_bp.route('/promocionar', methods=['POST'])
 @token_requerido
 @admin_o_empleado_requerido
@@ -51,10 +60,19 @@ def promocionar_whatsapp(current_user):
     if not url_imagen:
         return jsonify({'error': 'url_imagen es requerido.'}), 400
 
-    usuarios = User.query.filter(
+    scope_all = data.get('todos') or request.args.get('todos')
+    query = User.query.filter(
         User.telefono.isnot(None),
         User.acepta_marketing.is_(True)
-    ).all()
+    )
+
+    if current_user.rol == 'super_admin' and scope_all:
+        usuarios = query.all()
+    else:
+        empresa_id = current_user.id if current_user.rol == 'admin' and current_user.empresa_id is None else current_user.empresa_id
+        if not empresa_id:
+            return jsonify({'error': 'No se pudo determinar la empresa del usuario.'}), 403
+        usuarios = query.filter(User.empresa_id == empresa_id).all()
 
     enviados = 0
     for usuario in usuarios:
@@ -63,3 +81,14 @@ def promocionar_whatsapp(current_user):
 
     _registrar_envio()
     return jsonify({'enviados': enviados}), 200
+
+
+@whatsapp_promocionar_bp.route('/promocionar', methods=['GET'])
+@token_requerido
+@admin_o_empleado_requerido
+def estado_promocion(current_user):
+    last = _ultimo_envio()
+    return jsonify({
+        'puede_enviar': _puede_enviar(),
+        'ultimo_envio': last.isoformat() if last else None
+    })
