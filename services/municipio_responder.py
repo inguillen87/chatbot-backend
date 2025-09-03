@@ -2182,40 +2182,49 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
 def extract_reclamo_details_from_text(user_input: str, reclamo_options: list) -> dict:
     """Attempt to extract category, description and address from a user message.
 
-    This function uses the existing keyword mapping to determine the
-    category and simple heuristics to pull out the remaining description
-    and any street address mentioned in the text so we can advance the
-    reclamo flow without additional prompts.
+    The function first tries to leverage the LLM-based extractor so we obtain
+    a short category, concise description and any location mentioned by the
+    user. If the LLM fails or returns partial data we fall back to the legacy
+    keyword heuristics so the flow can still progress.
     """
     details: dict[str, str] = {}
     if not user_input:
         return details
 
-    # Detect category first
-    category = find_reclamo_category_by_input(user_input, reclamo_options)
-    if category:
-        details["categoria_sugerida"] = category
+    # --- Primary extraction using LLM ---
+    llm_details = extract_complaint_details_llm(user_input) or {}
+    if llm_details.get("tipo_problema"):
+        mapped = find_reclamo_category_by_input(llm_details["tipo_problema"], reclamo_options)
+        if mapped:
+            details["categoria_sugerida"] = mapped
+    if llm_details.get("descripcion_problema"):
+        details["descripcion_sugerida"] = llm_details["descripcion_problema"]
+    if llm_details.get("ubicacion_problema"):
+        details["direccion_sugerida"] = llm_details["ubicacion_problema"]
 
-    description = user_input
-    if category:
-        normalized = normalizar_texto(user_input)
-        for kw in RECLAMO_KEYWORDS.get(category, []):
-            if kw in normalized:
-                import re
-                pattern = re.compile(re.escape(kw), re.IGNORECASE)
-                parts = pattern.split(user_input, 1)
-                if len(parts) > 1 and parts[1].strip():
-                    description = parts[1].strip(" ,.-")
-                break
+    # --- Fallback heuristics when LLM data is missing ---
+    if "categoria_sugerida" not in details:
+        category = find_reclamo_category_by_input(user_input, reclamo_options)
+        if category:
+            details["categoria_sugerida"] = category
+            description_source = user_input
+            normalized = normalizar_texto(user_input)
+            for kw in RECLAMO_KEYWORDS.get(category, []):
+                if kw in normalized:
+                    import re
+                    pattern = re.compile(re.escape(kw), re.IGNORECASE)
+                    parts = pattern.split(user_input, 1)
+                    if len(parts) > 1 and parts[1].strip():
+                        description_source = parts[1].strip(" ,.-")
+                    break
+            if description_source and description_source != user_input and "descripcion_sugerida" not in details:
+                details["descripcion_sugerida"] = description_source
 
-    if description and description != user_input:
-        details["descripcion_sugerida"] = description
-
-    # Very small address extractor: look for "en <calle> <numero>"
-    import re
-    match = re.search(r"en\s+([A-Za-zÀ-ÿ'\s]+?)\s+(\d{1,5})", user_input, re.IGNORECASE)
-    if match:
-        details["direccion_sugerida"] = f"{match.group(1).strip()} {match.group(2)}"
+    if "direccion_sugerida" not in details:
+        import re
+        match = re.search(r"en\s+([A-Za-zÀ-ÿ'\s]+?)\s+(\d{1,5})", user_input, re.IGNORECASE)
+        if match:
+            details["direccion_sugerida"] = f"{match.group(1).strip()} {match.group(2)}"
 
     return details
 
@@ -3049,19 +3058,18 @@ def responder_municipio(
 
             campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
 
-            # Solo si aún faltan datos importantes recurrimos al LLM.
-            if campos_faltantes:
-                try:
-                    llm_datos = extract_multiple_contact_details_llm(
-                        pregunta_str, campos_requeridos + ["telefono"]
-                    )
-                    if llm_datos:
-                        for campo, valor in llm_datos.items():
-                            if valor and campo in ["nombre", "dni", "email", "direccion", "telefono"] and not datos_guardados.get(campo):
-                                datos_guardados[campo] = valor
-                except Exception as e:
-                    logger.error("[DATOS_SUGERENCIA] LLM fallback failed: %s", e)
-                campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
+            # Utilizar el LLM para extraer o corregir datos aunque ya existan valores previos.
+            try:
+                llm_datos = extract_multiple_contact_details_llm(
+                    pregunta_str, campos_requeridos + ["telefono"]
+                )
+                if llm_datos:
+                    for campo, valor in llm_datos.items():
+                        if valor and campo in ["nombre", "dni", "email", "direccion", "telefono"]:
+                            datos_guardados[campo] = valor
+            except Exception as e:
+                logger.error("[DATOS_SUGERENCIA] LLM fallback failed: %s", e)
+            campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
 
             contexto_municipio_actual['datos_sugerencia'] = datos_guardados
             if campos_faltantes:
