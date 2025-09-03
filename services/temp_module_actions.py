@@ -9,7 +9,7 @@ from services.ticket_service import servicio_tickets
 from .herramientas_municipio import parse_direccion_completa, direccion_es_valida
 from .common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from .config_loader import CONFIG_MUNICIPIO # Para fallback de config
-from services.gemini_bridge import llamar_gemini # Necesario para el type hint, aunque no se usa en esta función
+from services.llm_bridge import llamar_llm  # Necesario para el type hint, aunque no se usa en esta función
 from services.whatsapp_service import enviar_notificacion_whatsapp_con_plantilla
 
 # Definición completa de accion_crear_reclamo_municipio

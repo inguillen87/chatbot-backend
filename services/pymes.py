@@ -205,10 +205,10 @@ def serializar_enum(obj):
         return obj
 
 # PROMPT_CLASIFICAR_INTENCION y _clasificar_intencion_pyme_con_llm eliminados.
-# La intención vendrá de la llamada principal a Gemini.
+# La intención vendrá de la llamada principal al LLM.
 
 def analizar_sentimiento_llm(texto: str) -> str:
-    # Esta función aún usa robust_chat (Cohere). Se revisará en una fase posterior si debe migrar a Gemini
+    # Esta función aún usa robust_chat (Cohere). Se revisará en una fase posterior si debe migrar al LLM
     # o si se mantiene para tareas específicas de análisis de sentimiento si Cohere es preferido para eso.
     # Por ahora, se deja como está, asumiendo que `robust_chat` sigue funcional o será mockeado en tests.
     prompt = (f"Analiza el sentimiento del texto y responde 'positivo', 'negativo' o 'neutral'. TEXTO: '{texto}'\nSENTIMIENTO:")

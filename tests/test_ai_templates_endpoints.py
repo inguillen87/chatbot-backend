@@ -65,8 +65,8 @@ def test_suggest_templates_success(client):
     _crear_plantilla("Saludo", "Hola, ¿cómo estás {{nombre_cliente}}?", ["saludo"], embedding_value=[0.1]*1024)
     _crear_plantilla("Despedida", "Adiós, {{nombre_cliente}}.", ["despedida"], embedding_value=[0.2]*1024)
 
-    with patch('routes.ai.embed_textos_gemini') as mock_embed_textos_gemini:
-        mock_embed_textos_gemini.return_value = [[0.1]*1024]
+    with patch('routes.ai.embed_textos_llm') as mock_embed_textos_llm:
+        mock_embed_textos_llm.return_value = [[0.1]*1024]
         response = client.post('/api/ai/suggest-templates',
                                     headers={'Authorization': f'Bearer {jwt_token}'},
                                     json={'asunto': 'Quiero saludar', 'contexto_ticket': 'Hola', 'top_n': 1})
@@ -78,7 +78,7 @@ def test_suggest_templates_success(client):
         assert len(sugerencias) >= 1
         assert sugerencias[0]['name'] == 'Saludo'
         assert "Hola, ¿cómo estás {{nombre_cliente}}?" in sugerencias[0]['text']
-        mock_embed_textos_gemini.assert_called_once()
+        mock_embed_textos_llm.assert_called_once()
 
 if __name__ == '__main__':
     unittest.main()

@@ -22,7 +22,7 @@ def handle(msg: str, meta: dict) -> dict:
         }
 
     try:
-        # Prepare the arguments for the `llamar_gemini` function correctly.
+        # Prepare the arguments for the generic LLM function correctly.
         usuario_actual = viewer_user or owner_user
         usuario_dict = {
             "nombre": getattr(usuario_actual, 'nombre', ''),
@@ -32,7 +32,7 @@ def handle(msg: str, meta: dict) -> dict:
         }
         historial = (
             chat_db_context.context_data.get("mensajes_previos_llm_formato")
-            or chat_db_context.context_data.get("mensajes_previos_gemini_formato", [])
+            or chat_db_context.context_data.get("mensajes_previos_gemini_formato", [])  # legacy key
         )
 
         # Corrected the keyword argument from 'pregunta' to 'mensaje_usuario'

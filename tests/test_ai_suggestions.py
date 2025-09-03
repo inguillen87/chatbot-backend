@@ -76,9 +76,9 @@ class TestAISuggestions(unittest.TestCase):
         db.session.commit()
         return plantilla
 
-    @patch('routes.ai.embed_textos_gemini')
-    def test_suggest_templates_success(self, mock_embed_textos_gemini):
-        mock_embed_textos_gemini.return_value = [[0.11]*1024]
+    @patch('routes.ai.embed_textos_llm')
+    def test_suggest_templates_success(self, mock_embed_textos_llm):
+        mock_embed_textos_llm.return_value = [[0.11]*1024]
         self._crear_plantilla("Saludo", "Hola, ¿cómo estás {{nombre_cliente}}?", ["saludo"], embedding_value=[0.1]*1024)
         self._crear_plantilla("Despedida", "Adiós, {{nombre_cliente}}.", ["despedida"], embedding_value=[0.2]*1024)
 
@@ -93,7 +93,7 @@ class TestAISuggestions(unittest.TestCase):
         self.assertEqual(len(sugerencias), 1)
         self.assertEqual(sugerencias[0]['name'], 'Saludo')
         self.assertIn("Hola, ¿cómo estás {{nombre_cliente}}?", sugerencias[0]['text'])
-        mock_embed_textos_gemini.assert_called_once()
+        mock_embed_textos_llm.assert_called_once()
 
     def test_suggest_templates_missing_asunto(self):
         response = self.client.post('/api/ai/suggest-templates',
@@ -104,11 +104,11 @@ class TestAISuggestions(unittest.TestCase):
         self.assertIn('error', data)
         self.assertIn("El campo 'asunto' es obligatorio", data['error'])
 
-    @patch('routes.ai.embed_textos_gemini')
-    def test_suggest_templates_no_active_templates_with_embeddings(self, mock_embed_textos_gemini):
+    @patch('routes.ai.embed_textos_llm')
+    def test_suggest_templates_no_active_templates_with_embeddings(self, mock_embed_textos_llm):
         self._crear_plantilla("Inactiva", "Plantilla inactiva", is_active=False, embedding_value=[0.5]*1024)
         self._crear_plantilla("Activa Sin Embedding", "Texto activo sin embedding", embedding_value=None)
-        mock_embed_textos_gemini.return_value = [[0.1]*1024]
+        mock_embed_textos_llm.return_value = [[0.1]*1024]
 
         response = self.client.post('/api/ai/suggest-templates',
                                     headers={'Authorization': f'Bearer {self.jwt_token}'},
@@ -121,10 +121,10 @@ class TestAISuggestions(unittest.TestCase):
         # self.assertIn('message', data)
         # self.assertEqual(data['message'], "No hay plantillas de respuesta activas configuradas con embeddings.")
 
-    @patch('routes.ai.embed_textos_gemini')
-    def test_suggest_templates_embed_fails(self, mock_embed_textos_gemini):
+    @patch('routes.ai.embed_textos_llm')
+    def test_suggest_templates_embed_fails(self, mock_embed_textos_llm):
         self._crear_plantilla("Activa Con Embedding", "Texto activo", embedding_value=[0.1]*1024)
-        mock_embed_textos_gemini.return_value = None
+        mock_embed_textos_llm.return_value = None
 
         response = self.client.post('/api/ai/suggest-templates',
                                     headers={'Authorization': f'Bearer {self.jwt_token}'},

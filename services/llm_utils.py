@@ -110,7 +110,7 @@ def _clean_llm_json_output(llm_output: str) -> str:
 
 def llamar_llm_para_json_estructurado(system_prompt: str, user_prompt: str) -> Optional[Dict | List]:
     """
-    Calls the LLM (Gemini) requesting a JSON output and parses it safely.
+    Calls the LLM requesting a JSON output and parses it safely.
 
     Args:
         system_prompt: The system prompt guiding the LLM's task.
@@ -119,12 +119,11 @@ def llamar_llm_para_json_estructurado(system_prompt: str, user_prompt: str) -> O
     Returns:
         A dictionary or list parsed from the LLM's JSON response, or None on error.
     """
-    from services.gemini_bridge import llamar_gemini_para_generacion_texto
+    from services.llm_bridge import llamar_llm_para_generacion_texto
 
     logger.info("Calling LLM for structured JSON output.")
     try:
-        # Call the generic Gemini function, requesting JSON output
-        response_text = llamar_gemini_para_generacion_texto(
+        response_text = llamar_llm_para_generacion_texto(
             system_prompt_especifico=system_prompt,
             user_prompt=user_prompt,
             temperature=0.1,  # Lower temp for more deterministic JSON extraction
@@ -515,7 +514,7 @@ def clasificar_entidad_con_llm(texto_usuario: str) -> str:
         # Sin embargo, para cumplir el requisito de usar el LLM, lo pasaremos al prompt.
         pass # Dejamos que el LLM decida
 
-    from services.gemini_bridge import llamar_gemini_para_generacion_texto
+    from services.llm_bridge import llamar_llm_para_generacion_texto
 
     system_prompt = (
         "Eres un clasificador de texto experto. Tu tarea es analizar el TEXTO DE ENTRADA "
@@ -545,7 +544,7 @@ def clasificar_entidad_con_llm(texto_usuario: str) -> str:
 
     try:
         logger.info(f"[LLM_CLASIFICAR_ENTIDAD] Clasificando texto: '{texto_usuario}'")
-        respuesta_raw = llamar_gemini_para_generacion_texto(
+        respuesta_raw = llamar_llm_para_generacion_texto(
             system_prompt_especifico=system_prompt,
             user_prompt=user_prompt,
             temperature=0.0 # Máxima precisión
@@ -636,7 +635,7 @@ print("Done with llm_utils.py basic execution tests.")
 
 def extraer_lista_pedido_de_texto_con_llm(texto_ocr: str, pyme_id_context: Optional[int] = None) -> List[Dict[str, Any]]:
     """
-    Utiliza un LLM (Gemini) para extraer una lista de productos y cantidades de un texto OCR.
+    Utiliza un LLM para extraer una lista de productos y cantidades de un texto OCR.
     Intenta ser robusto a errores comunes de OCR y formatos de lista variados.
 
     Args:
@@ -653,7 +652,7 @@ def extraer_lista_pedido_de_texto_con_llm(texto_ocr: str, pyme_id_context: Optio
         logger_llm_utils.warning("[LLM_PEDIDO_EXTRACT] texto_ocr vacío o solo espacios.")
         return []
 
-    from services.gemini_bridge import llamar_gemini_para_generacion_texto # Local import
+    from services.llm_bridge import llamar_llm_para_generacion_texto # Local import
 
     # TODO: Refinar este prompt
     system_prompt_pedido = (
@@ -676,18 +675,18 @@ def extraer_lista_pedido_de_texto_con_llm(texto_ocr: str, pyme_id_context: Optio
         "Array JSON:"
     )
 
-    logger_llm_utils.info(f"[LLM_PEDIDO_EXTRACT] Llamando a Gemini para extraer de: {texto_ocr[:200]}...")
-    respuesta_gemini_texto = llamar_gemini_para_generacion_texto(
+    logger_llm_utils.info(f"[LLM_PEDIDO_EXTRACT] Llamando al LLM para extraer de: {texto_ocr[:200]}...")
+    respuesta_llm_texto = llamar_llm_para_generacion_texto(
         system_prompt_especifico=system_prompt_pedido,
         user_prompt=user_prompt_pedido,
         temperature=0.1 # Más determinista para extracción
     )
 
-    if not respuesta_gemini_texto:
-        logger_llm_utils.warning(f"[LLM_PEDIDO_EXTRACT] Gemini no devolvió respuesta para el texto OCR.")
+    if not respuesta_llm_texto:
+        logger_llm_utils.warning(f"[LLM_PEDIDO_EXTRACT] El LLM no devolvió respuesta para el texto OCR.")
         return []
 
-    cleaned_json_str = _clean_llm_json_output(respuesta_gemini_texto)
+    cleaned_json_str = _clean_llm_json_output(respuesta_llm_texto)
     try:
         items_extraidos = json.loads(cleaned_json_str)
         if isinstance(items_extraidos, list):

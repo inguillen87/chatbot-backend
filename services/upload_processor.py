@@ -8,7 +8,7 @@ from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
 from extensions import db
 from models import CatalogoItem, User, Rubro, ArchivoAdjunto
-from services.embedding_service import embed_textos_gemini as embed_textos
+from services.embedding_service import embed_textos_llm as embed_textos
 
 from services.google_docai import procesar_catalogo_pdf_google, procesar_catalogo_imagen_google
 from services.procesar_catalogo_excel import procesar_catalogo_excel
@@ -124,8 +124,8 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
             mime_type, _ = guess_type(path_archivo)
             if mime_type:
                 resultado_generico = procesar_archivo_generico(path_archivo, mime_type)
-                if resultado_generico and resultado_generico.get("analisis_gemini"):
-                    registros_estructurados = resultado_generico["analisis_gemini"]
+                if resultado_generico and resultado_generico.get("analisis_llm"):
+                    registros_estructurados = resultado_generico["analisis_llm"]
                     if isinstance(registros_estructurados, dict) and "productos" in registros_estructurados:
                         registros_estructurados = registros_estructurados["productos"]
                 else:

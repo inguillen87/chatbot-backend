@@ -62,9 +62,9 @@ class TestMunicipioImprovements(unittest.TestCase):
             db.session.add(chat_session)
             db.session.commit()
 
-            # Mock the Gemini call to return a response that includes a list in 'pedir_info'
-            with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
-                mock_llamar_gemini.return_value = ({
+            # Mock the LLM call to return a response that includes a list in 'pedir_info'
+            with patch('services.municipio_responder.llamar_llm_con_fallback') as mock_llamar_llm:
+                mock_llamar_llm.return_value = ({
                     "message_body": "Some response",
                     "accion_backend": "iniciar_reclamo",
                     "datos_estructura": {},

@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify, current_app
 from models import User, PlantillasRespuesta
-from services.embedding_service import embed_textos_gemini
+from services.embedding_service import embed_textos_llm
 from extensions import db
 from .auth import token_requerido
 from models import User, PlantillasRespuesta, db
@@ -44,7 +44,7 @@ def suggest_templates_route(current_user: User):
         return jsonify({"sugerencias": [], "message": "El texto de consulta combinado (asunto/contexto) está vacío."}), 200
 
     try:
-        query_embedding_list = embed_textos_gemini(textos=[texto_consulta], input_type="search_query")
+        query_embedding_list = embed_textos_llm(textos=[texto_consulta], input_type="search_query")
         if not query_embedding_list or not query_embedding_list[0]:
             current_app.logger.error(f"[SUGGEST_TEMPLATES] No se pudo generar embedding para la consulta: '{texto_consulta[:100]}...'")
             return jsonify({"error": "Error al generar el embedding para la consulta."}), 500

@@ -1,12 +1,12 @@
 import logging
 from typing import Dict, Any, List, Optional
-from services.llm_utils import _clean_llm_json_output, llamar_gemini_para_generacion_texto
+from services.llm_utils import _clean_llm_json_output, llamar_llm_para_generacion_texto
 
 logger = logging.getLogger(__name__)
 
 def extraer_datos_orden_de_compra_con_llm(texto_ocr: str) -> Optional[Dict[str, Any]]:
     """
-    Utiliza un LLM (Gemini) para extraer datos estructurados de una orden de compra a partir de su texto OCR.
+    Utiliza un LLM para extraer datos estructurados de una orden de compra a partir de su texto OCR.
 
     Args:
         texto_ocr: El texto completo extraído por OCR de una imagen de orden de compra.
@@ -51,18 +51,18 @@ def extraer_datos_orden_de_compra_con_llm(texto_ocr: str) -> Optional[Dict[str, 
         "Objeto JSON:"
     )
 
-    logger.info(f"[LLM_OC_EXTRACT] Llamando a Gemini para extraer de: {texto_ocr[:200]}...")
-    respuesta_gemini_texto = llamar_gemini_para_generacion_texto(
+    logger.info(f"[LLM_OC_EXTRACT] Llamando al LLM para extraer de: {texto_ocr[:200]}...")
+    respuesta_llm_texto = llamar_llm_para_generacion_texto(
         system_prompt_especifico=system_prompt_oc,
         user_prompt=user_prompt_oc,
         temperature=0.1
     )
 
-    if not respuesta_gemini_texto:
-        logger.warning("[LLM_OC_EXTRACT] Gemini no devolvió respuesta para el texto OCR de la OC.")
+    if not respuesta_llm_texto:
+        logger.warning("[LLM_OC_EXTRACT] El LLM no devolvió respuesta para el texto OCR de la OC.")
         return None
 
-    cleaned_json_str = _clean_llm_json_output(respuesta_gemini_texto)
+    cleaned_json_str = _clean_llm_json_output(respuesta_llm_texto)
     try:
         datos_oc = json.loads(cleaned_json_str)
         if isinstance(datos_oc, dict):

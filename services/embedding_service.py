@@ -1,12 +1,12 @@
 import logging
 from typing import List, Optional
-from services.gemini_bridge import llamar_gemini as llamar_gemini_para_generacion_texto
+from services.llm_bridge import llamar_llm as llamar_llm_para_generacion_texto
 
 logger = logging.getLogger(__name__)
 
-def embed_textos_gemini(textos: List[str], input_type: str = "search_document") -> Optional[List[List[float]]]:
+def embed_textos_llm(textos: List[str], input_type: str = "search_document") -> Optional[List[List[float]]]:
     """
-    Genera embeddings para una lista de textos utilizando la API de Gemini.
+    Genera embeddings para una lista de textos utilizando la API del LLM.
 
     Args:
         textos: Una lista de strings para generar embeddings.
@@ -21,8 +21,8 @@ def embed_textos_gemini(textos: List[str], input_type: str = "search_document") 
         return None
 
     # NOTA: Esta es una implementación mock/placeholder. Debería ser reemplazada
-    # con una llamada real al servicio de embeddings de Gemini.
+    # con una llamada real al servicio de embeddings del LLM.
     # Los tests deben mockear esta función para devolver valores controlados.
-    logger.warning("Usando implementación MOCK de embed_textos_gemini. Devolverá vectores de ceros.")
+    logger.warning("Usando implementación MOCK de embed_textos_llm. Devolverá vectores de ceros.")
     # Se devuelve un vector de 1024 para ser consistente con los datos de prueba existentes.
     return [[0.0] * 1024 for _ in textos]
