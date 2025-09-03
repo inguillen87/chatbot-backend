@@ -57,6 +57,7 @@ from routes.ai import ai_bp as ai_suggest_bp
 from routes.promociones import promociones_bp # <--- NUEVA IMPORTACIÓN PROMOCIONES
 from routes.catalog_mappings import catalog_mappings_bp
 from routes.whatsapp_webhook import webhook_bp as whatsapp_webhook_bp # <--- NUEVA IMPORTACIÓN WHATSAPP
+from routes.whatsapp_promocionar import whatsapp_promocionar_bp
 from routes.estacionamiento import bp_est # <--- NUEVA IMPORTACIÓN ESTACIONAMIENTO
 from routes.media import media_bp
 
@@ -296,6 +297,7 @@ def create_app(config_class=Config):
     app.register_blueprint(promociones_bp) # <--- REGISTRO DEL BLUEPRINT DE PROMOCIONES
     app.register_blueprint(catalog_mappings_bp)
     app.register_blueprint(whatsapp_webhook_bp) # <--- REGISTRO DEL BLUEPRINT DE WHATSAPP (sin prefijo aquí)
+    app.register_blueprint(whatsapp_promocionar_bp)
     app.register_blueprint(bp_est)
     app.register_blueprint(media_bp)
 

@@ -35,6 +35,9 @@ selection instructions to maintain full visibility of all choices.
   removing products. Use `/carrito/resumen` to retrieve the current cart.
 - Universal catalog search formats results for any industry using
   `armar_respuesta_legible_multi_rubro`.
+- `POST /api/whatsapp/promocionar` – broadcast a flyer to all users who consented
+  to marketing. Accepts `titulo`, `descripcion`, `link` and `url_imagen` (or a
+  prebuilt `mensaje`). Limited to one send per day.
 - `GET /catalogo/buscar` – query the vector catalog with `?q=` and optional
   `?limite=` to control how many products are returned (defaults to
   `CATALOGO_RESULT_LIMIT`).
