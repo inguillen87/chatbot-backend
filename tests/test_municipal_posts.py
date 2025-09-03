@@ -280,6 +280,69 @@ def test_bulk_create_from_text(client):
         os.remove(agenda_path)
 
 
+def test_bulk_create_from_raw_string_with_json_header(client):
+    with app.app_context():
+        admin_user = User.query.filter_by(email="admin_muni@test.com").first()
+        token = generar_token(admin_user.id, admin_user.rol, admin_user.tipo_chat, admin_user.municipio_id, admin_user.pyme_id)
+
+    headers = {
+        'Authorization': f'Bearer {token}'
+    }
+
+    agenda_path = AGENDA_PATH
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
+    response = client.post(
+        '/municipal/posts/bulk',
+        data=SAMPLE_TEXT,
+        headers=headers,
+        content_type='application/json'
+    )
+
+    assert response.status_code == 201
+    data_resp = response.get_json()
+    assert len(data_resp['created']) == 6
+
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
+
+def test_list_municipal_posts_limits_to_10(client):
+    with app.app_context():
+        admin_user = User.query.filter_by(email="admin_muni@test.com").first()
+        token = generar_token(admin_user.id, admin_user.rol, admin_user.tipo_chat, admin_user.municipio_id, admin_user.pyme_id)
+
+    headers = {
+        'Authorization': f'Bearer {token}'
+    }
+
+    agenda_path = AGENDA_PATH
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
+    events = [
+        {"title": f"Evento {i}", "day": f"Dia {i}"}
+        for i in range(15)
+    ]
+
+    response = client.post(
+        '/municipal/posts/bulk',
+        data=json.dumps({"events": events}),
+        headers=headers
+    )
+    assert response.status_code == 201
+
+    response = client.get('/municipal/posts', headers=headers)
+    posts = response.get_json()
+    assert len(posts) == 10
+    assert posts[0]['titulo'] == 'Evento 14'
+    assert posts[-1]['titulo'] == 'Evento 5'
+
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
+
 def test_bulk_create_from_file(client):
     with app.app_context():
         admin_user = User.query.filter_by(email="admin_muni@test.com").first()

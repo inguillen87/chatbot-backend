@@ -142,8 +142,11 @@ def get_or_create_anon_id() -> str:
         or request.headers.get("Anon-Id")
         or request.args.get("anon_id")
     )
-    if not anon_id and request.is_json:
-        anon_id = (request.get_json(silent=True) or {}).get("anon_id")
+
+    if not anon_id:
+        payload = request.get_json(silent=True)
+        if isinstance(payload, dict):
+            anon_id = payload.get("anon_id")
 
     if not anon_id:
         anon_id = str(uuid.uuid4())
