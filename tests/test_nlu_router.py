@@ -4,15 +4,15 @@ from services.nlu.router import route
 
 
 class TestNLURouter(unittest.TestCase):
-    def test_agenda_cultural(self):
-        self.assertEqual(route("Que actividades culturales hay?"), "agenda_cultural")
+    def test_route_tributo(self):
+        self.assertEqual(route("Quiero pagar un tributo"), "pagar_tasas")
 
-    def test_ultimas_novedades(self):
-        self.assertEqual(route("Que hay de nuevo?"), "ultimas_novedades")
+    def test_route_sanidad_animal(self):
+        self.assertEqual(route("Información sobre sanidad animal"), "veterinaria_bromatologia")
 
-    def test_denuncias(self):
-        self.assertEqual(route("Quiero denunciar un problema"), "denuncias")
+    def test_route_averia(self):
+        self.assertEqual(route("hay una avería"), "iniciar_reclamo")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

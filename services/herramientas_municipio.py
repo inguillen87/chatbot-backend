@@ -282,7 +282,7 @@ def consultar_recoleccion_por_direccion(direccion: str) -> str:
 
 KEYWORD_TO_CATEGORY_MAP = {
     # Luminaria
-    "luminaria": "Luminaria", "luz": "Luminaria", "poste": "Luminaria", "farol": "Luminaria", "iluminacion": "Luminaria", "foco": "Luminaria", "lampara": "Luminaria",
+    "luminaria": "Luminaria", "luz": "Luminaria", "poste": "Luminaria", "farol": "Luminaria", "farola": "Luminaria", "iluminacion": "Luminaria", "foco": "Luminaria", "lampara": "Luminaria", "poste caido": "Luminaria", "poste caído": "Luminaria",
     # Arbol Caido
     "arbol": "Arbol Caido", "arbol caido": "Arbol Caido", "rama": "Arbol Caido", "ramas": "Arbol Caido", "gajo": "Arbol Caido", "tronco": "Arbol Caido",
     # Limpieza
