@@ -40,7 +40,7 @@ def procesar_archivo_generico(file_path: str, mime_type: str) -> Optional[Dict[s
             logger.error(f"No se pudo extraer texto del archivo: {file_path}")
             return None
 
-        # Una vez extraído el texto, lo enviamos a Gemini para análisis
+        # Una vez extraído el texto, lo enviamos al LLM para análisis
         # El prompt puede ser ajustado para ser más específico según el contexto
         # que se le pase a esta función en el futuro.
         prompt_para_llm = f"""

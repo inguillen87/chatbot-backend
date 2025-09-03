@@ -1,13 +1,14 @@
-class MockGemini:
+class MockLLMPart:
     def __init__(self, text):
         self.text = text
 
 class MockContent:
     def __init__(self, text):
-        self.parts = [MockGemini(text)]
+        self.parts = [MockLLMPart(text)]
 
-class MockGeminiResponse:
+class MockLLMResponse:
     def __init__(self, text):
+        self.text = text
         self.candidates = [MockContent(text)]
 
     def to_dict(self):
@@ -15,11 +16,7 @@ class MockGeminiResponse:
             "candidates": [
                 {
                     "content": {
-                        "parts": [
-                            {
-                                "text": self.text
-                            }
-                        ]
+                        "parts": [{"text": self.text}]
                     }
                 }
             ]

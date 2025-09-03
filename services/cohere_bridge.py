@@ -60,7 +60,7 @@ def llamar_cohere(app, mensaje_usuario: str, usuario: dict, historial: list, cha
         logger.info(f"Response from Cohere (raw): {raw_response_text}")
 
         # 4. Parse the response
-        # This assumes Cohere returns a JSON string similar to Gemini's.
+        # This assumes Cohere returns a JSON string similar to OpenAI's.
         # This might need significant adjustment based on actual Cohere output.
         if raw_response_text.startswith("```json"):
             raw_response_text = raw_response_text[len("```json"):].strip()

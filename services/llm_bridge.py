@@ -47,8 +47,8 @@ def llamar_llm(
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Generic LLM wrapper using OpenAI with Cohere as fallback.
 
-    This function keeps the previous signature for backwards compatibility while removing
-    the dependency on Gemini. It first tries OpenAI and falls back to Cohere. Responses are
+    This function keeps the previous signature for backwards compatibility.
+    It first tries OpenAI and falls back to Cohere. Responses are
     cached in-memory to minimize repeated calls.
     """
     user_msg = mensaje_usuario if mensaje_usuario is not None else mensaje

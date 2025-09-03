@@ -53,7 +53,7 @@ def sugerir_categorias_relevantes(texto_usuario: str) -> list[str]:
     Usa el LLM para obtener una lista de categorías sugeridas basadas en el texto del usuario.
     """
     todas_las_categorias = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values()))) # Still useful for keyword matching
-    # LLM call removed. Category suggestion is now expected from the main Gemini call.
+    # LLM call removed. Category suggestion is now expected from the main LLM call.
     # This function now performs basic keyword matching as a fallback or primary if called directly.
     logger.info(f"Sugiriendo categorías (NO-LLM) para: '{texto_usuario[:50]}...'")
     sugeridas = []

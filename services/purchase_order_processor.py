@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 
 def extraer_datos_orden_de_compra_con_llm(texto_ocr: str) -> Optional[Dict[str, Any]]:
     """
-    Utiliza un LLM (Gemini) para extraer datos estructurados de una orden de compra a partir de su texto OCR.
+    Utiliza un LLM para extraer datos estructurados de una orden de compra a partir de su texto OCR.
 
     Args:
         texto_ocr: El texto completo extraído por OCR de una imagen de orden de compra.

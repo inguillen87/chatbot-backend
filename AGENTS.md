@@ -1,6 +1,6 @@
 ## Working with this Chatboc API Project (LLM-Powered Architecture)
 
-This document provides guidance for AI agents and human developers working on this codebase, which is transitioning to an architecture primarily driven by a Large Language Model (LLM) like Google's Gemini.
+This document provides guidance for AI agents and human developers working on this codebase, which is transitioning to an architecture primarily driven by a Large Language Model (LLM) like OpenAI's GPT models.
 
 ### Core Architectural Philosophy
 The primary goal is to centralize language understanding, conversation flow management, and data extraction logic within the LLM, guided by a comprehensive system prompt. The Python backend should act as an executor of actions determined by the LLM and a manager of data persistence and external service interactions.

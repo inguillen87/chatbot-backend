@@ -10,7 +10,6 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
 from services.municipio_responder import responder_municipio, CONTEXTO_MUNICIPIO, ConversationState
-from tests.mocks import MockGeminiResponse
 from app import create_app, db
 from config import Config
 from models import User, ChatSessionContext
@@ -48,9 +47,9 @@ class TestSimulatedClaimFlow(unittest.TestCase):
         self.app_context.pop()
 
     @unittest.skip("Skipping flawed test to be rewritten later.")
-    @patch('services.municipio_responder.llamar_gemini')
+    @patch('services.municipio_responder.llamar_llm')
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
-    def test_full_claim_flow(self, mock_crear_ticket, mock_llamar_gemini):
+    def test_full_claim_flow(self, mock_crear_ticket, mock_llamar_llm):
         with self.app.test_request_context():
             # --- Mock Setup ---
             mock_ticket = MagicMock()
@@ -58,7 +57,7 @@ class TestSimulatedClaimFlow(unittest.TestCase):
             mock_ticket.nro_ticket = "54321"
             mock_crear_ticket.return_value = mock_ticket
 
-            mock_llamar_gemini.side_effect = [
+            mock_llamar_llm.side_effect = [
                 # Step 1: User wants to make a claim
                 {
                     "message_body": "Entendido. Para registrar tu reclamo por el contenedor de basura, ¿podrías decirme la dirección exacta donde se encuentra?",

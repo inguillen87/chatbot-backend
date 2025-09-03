@@ -289,7 +289,7 @@ def generate_template_text_from_prompt(user):
 
         current_app.logger.info(f"Usuario {user.id} solicitando generación de texto para plantilla con prompt: '{prompt_usuario[:100]}...'")
 
-        # Usar el nuevo servicio de Gemini para generación de texto
+        # Usar el servicio LLM para generación de texto
         system_prompt_generacion = "Eres un asistente experto en redactar plantillas de respuesta. Genera un texto basado en la siguiente solicitud del usuario."
         generated_text = llamar_llm_para_generacion_texto(
             system_prompt_especifico=system_prompt_generacion,
@@ -298,14 +298,14 @@ def generate_template_text_from_prompt(user):
         )
 
         if generated_text:
-            current_app.logger.info(f"Texto generado por Gemini para prompt de usuario {user.id}: '{generated_text[:100]}...'")
+            current_app.logger.info(f"Texto generado por LLM para prompt de usuario {user.id}: '{generated_text[:100]}...'")
             return jsonify({"generated_text": generated_text.strip()}), 200
         else:
-            current_app.logger.error(f"Gemini no devolvió texto para el prompt del usuario {user.id}: '{prompt_usuario[:100]}...'.")
+            current_app.logger.error(f"El LLM no devolvió texto para el prompt del usuario {user.id}: '{prompt_usuario[:100]}...'.")
             return jsonify({"error": "No se pudo generar el texto de la plantilla en este momento. Intente más tarde."}), 503 # Service Unavailable
 
     except Exception as e:
-        current_app.logger.error(f"Error al generar texto de plantilla (Gemini) para usuario {user.id} con prompt '{prompt_usuario[:100]}...': {e}", exc_info=True)
+        current_app.logger.error(f"Error al generar texto de plantilla (LLM) para usuario {user.id} con prompt '{prompt_usuario[:100]}...': {e}", exc_info=True)
         return jsonify({"error": "Error interno al procesar la solicitud de generación de texto."}), 500
 
 @ai_templates_bp.route('/improve-template-text', methods=['POST'])
@@ -313,7 +313,7 @@ def generate_template_text_from_prompt(user):
 @admin_o_empleado_requerido # Asumiendo mismos permisos
 def improve_template_text(user):
     """
-    Mejora el texto de una plantilla existente usando Cohere Generate.
+    Mejora el texto de una plantilla existente usando el LLM.
     Autenticación: Requerida (admin/empleado).
     """
     data = request.get_json()
@@ -342,7 +342,7 @@ def improve_template_text(user):
 
         current_app.logger.info(f"Usuario {user.id} solicitando mejora de texto para plantilla: '{text_to_improve[:100]}...'")
 
-        # El prompt_para_cohere ya está bien formulado para ser un user_prompt para Gemini.
+        # El prompt_para_cohere ya está bien formulado para ser un user_prompt para el LLM.
         # El system_prompt puede ser más genérico o específico para la tarea de mejora.
         system_prompt_mejora = "Eres un asistente experto en refinar y mejorar textos para plantillas de comunicación profesional. Responde únicamente con el texto mejorado."
         improved_text = llamar_llm_para_generacion_texto(
@@ -353,14 +353,14 @@ def improve_template_text(user):
 
         if improved_text:
             cleaned_text = improved_text.strip()
-            # La limpieza adicional que se hacía para Cohere podría no ser necesaria o ser diferente para Gemini.
-            # Se deja como está por ahora, pero se podría revisar si Gemini añade prefijos/sufijos no deseados.
-            current_app.logger.info(f"Texto mejorado por Gemini para usuario {user.id}: '{cleaned_text[:100]}...'")
+            # La limpieza adicional que se hacía para Cohere podría no ser necesaria o ser diferente para el LLM.
+            # Se deja como está por ahora, pero se podría revisar si el LLM añade prefijos/sufijos no deseados.
+            current_app.logger.info(f"Texto mejorado por LLM para usuario {user.id}: '{cleaned_text[:100]}...'")
             return jsonify({"improved_text": cleaned_text}), 200
         else:
-            current_app.logger.error(f"Gemini no devolvió texto mejorado para el input del usuario {user.id}: '{text_to_improve[:100]}...'.")
+            current_app.logger.error(f"El LLM no devolvió texto mejorado para el input del usuario {user.id}: '{text_to_improve[:100]}...'.")
             return jsonify({"error": "No se pudo mejorar el texto de la plantilla en este momento. Intente más tarde."}), 503
 
     except Exception as e:
-        current_app.logger.error(f"Error al mejorar texto de plantilla (Gemini) para usuario {user.id} con texto '{text_to_improve[:100]}...': {e}", exc_info=True)
+        current_app.logger.error(f"Error al mejorar texto de plantilla (LLM) para usuario {user.id} con texto '{text_to_improve[:100]}...': {e}", exc_info=True)
         return jsonify({"error": "Error interno al procesar la solicitud de mejora de texto."}), 500
