@@ -27,12 +27,33 @@ def geocode_address(address):
         return None
 
     try:
-        geocode_result = gmaps.geocode(address)
+        geocode_result = gmaps.geocode(
+            address,
+            region="ar",
+            components={"country": "AR"},
+        )
         if geocode_result:
             return geocode_result[0]
         return None
     except Exception as e:
         logger.error(f"Error geocoding address: {e}", exc_info=True)
+        return None
+
+
+def autocomplete_address(query):
+    """Returns address suggestions restricted to Argentina."""
+    gmaps = get_gmaps_client()
+    if not gmaps:
+        return None
+
+    try:
+        return gmaps.places_autocomplete(
+            input_text=query,
+            language="es",
+            components={"country": "ar"},
+        )
+    except Exception as e:
+        logger.error(f"Error getting autocomplete suggestions: {e}", exc_info=True)
         return None
 
 def find_nearby_places(location, keyword, radius=1500):
