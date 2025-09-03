@@ -48,8 +48,25 @@ class TicketPublicEndpointTest(unittest.TestCase):
         self.assertEqual(data['id_ticket'], 'M-123456')
         self.assertEqual(len(data['timeline']), 3)
         self.assertEqual(data['timeline'][0]['tipo'], 'ticket_creado')
+        self.assertEqual(data['timeline'][0]['estado'], 'nuevo')
         self.assertEqual(data['timeline'][1]['tipo'], 'comentario')
         self.assertEqual(data['timeline'][2]['estado'], 'en progreso')
+
+    def test_timeline_maps_cerrado_to_resuelto(self):
+        cambio_estado = TicketComentario(
+            municipio_ticket_id=self.ticket_id,
+            comentario="Estado actualizado a 'cerrado'",
+            es_admin=True,
+            origen='sistema',
+            estado_ticket='cerrado'
+        )
+        db.session.add(cambio_estado)
+        db.session.commit()
+
+        resp = self.client.get('/tickets/municipio/por_numero/123456?pin=654321')
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data['timeline'][1]['estado'], 'resuelto')
 
     @patch('routes.ticket.verify_recaptcha', return_value=False)
     def test_public_lookup_invalid_recaptcha(self, mock_recaptcha):

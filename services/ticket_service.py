@@ -532,10 +532,14 @@ class ServicioTickets:
         except Exception:
             comentarios = []
 
+        def _estado_publico(estado: str) -> str:
+            """Normaliza estados internos para mostrarlos al público."""
+            return "resuelto" if estado == "cerrado" else estado
+
         timeline = [
             {
                 "tipo": "ticket_creado",
-                "estado": ticket.estado,
+                "estado": "nuevo",
                 "fecha": ticket.fecha.isoformat(),
             }
         ]
@@ -545,7 +549,7 @@ class ServicioTickets:
                 timeline.append(
                     {
                         "tipo": "estado",
-                        "estado": c.estado_ticket,
+                        "estado": _estado_publico(c.estado_ticket),
                         "fecha": c.fecha.isoformat(),
                     }
                 )
