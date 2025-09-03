@@ -96,17 +96,27 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
         # 4. Parse the response
         parsed_response = json.loads(raw_response_text)
 
+        usage_dict = None
         if getattr(response, "usage", None):
             usage = response.usage
             logger.info(
                 f"OpenAI usage - prompt: {usage.prompt_tokens}, completion: {usage.completion_tokens}, total: {usage.total_tokens}"
             )
+            try:
+                usage_dict = usage.to_dict()
+            except Exception:
+                # Fallback to simple dict conversion if to_dict isn't available
+                usage_dict = {
+                    "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                    "completion_tokens": getattr(usage, "completion_tokens", None),
+                    "total_tokens": getattr(usage, "total_tokens", None),
+                }
 
         # Ensure the response has the keys our application expects
         parsed_response.setdefault('message_body', parsed_response.get('respuesta_usuario', ''))
         parsed_response.setdefault('accion_backend', 'responder_directamente')
 
-        return parsed_response, {"usage": getattr(response, "usage", None), "prompt_tokens_estimate": total_prompt_tokens}
+        return parsed_response, {"usage": usage_dict, "prompt_tokens_estimate": total_prompt_tokens}
 
     except Exception as e:
         logger.error(f"Error calling OpenAI API: {e}", exc_info=True)
