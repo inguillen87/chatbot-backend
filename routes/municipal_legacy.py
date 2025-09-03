@@ -314,7 +314,7 @@ def create_municipal_post(current_user):
     titulo = request.form.get('titulo')
     subtitulo = request.form.get('subtitulo')
     contenido = request.form.get('contenido')
-    tipo_post = request.form.get('tipo_post', 'noticia') # 'noticia' o 'evento'
+    tipo_post = request.form.get('tipo_post', 'noticia')  # 'noticia', 'evento' o 'informacion'
     imagen_url_externa = request.form.get('imagen_url', '')
     enlace = request.form.get('enlace') or request.form.get('url')
     fecha_evento_inicio = request.form.get('fecha_evento_inicio')
@@ -348,6 +348,7 @@ def create_municipal_post(current_user):
         "subtitulo": subtitulo,
         "descripcion": contenido, # Mapear 'contenido' a 'descripcion' para consistencia
         "tipo_post": tipo_post,
+        "tags": [tipo_post],
         "imagen_url": flyer_image_url or imagen_url_externa,
         "fecha_evento_inicio": fecha_evento_inicio,
         "fecha_evento_fin": fecha_evento_fin,
@@ -377,8 +378,8 @@ def create_municipal_post(current_user):
 
         data['eventos'].insert(0, nuevo_post)  # Insertar al principio para que aparezca primero
 
-        # Mantener solo los 50 posts más recientes en el archivo
-        data['eventos'] = data['eventos'][:50]
+        # Mantener solo los 200 posts más recientes en el archivo
+        data['eventos'] = data['eventos'][:200]
 
         with open(agenda_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -401,6 +402,7 @@ def create_municipal_posts_bulk(current_user):
     raw_payload = request.get_json(silent=True)
     payload = raw_payload if isinstance(raw_payload, dict) else {}
     events = payload.get("events")
+    tipo_post = payload.get("tipo_post") or request.form.get("tipo_post") or "evento"
     text = None
 
     if events is None:
@@ -474,7 +476,8 @@ def create_municipal_posts_bulk(current_user):
                 "titulo": title,
                 "subtitulo": day,
                 "descripcion": descripcion,
-                "tipo_post": "evento",
+                "tipo_post": tipo_post,
+                "tags": [tipo_post],
                 "imagen_url": image_url,
                 "fecha_evento_inicio": f"{day or ''} {time_val}".strip(),
                 "fecha_evento_fin": ev.get("fecha_evento_fin") or ev.get("fecha_fin"),
@@ -485,8 +488,8 @@ def create_municipal_posts_bulk(current_user):
             data['eventos'].insert(0, post)
             created_posts.append(post)
 
-        # Limitar a los 50 eventos más recientes
-        data['eventos'] = data['eventos'][:50]
+        # Limitar a los 200 eventos más recientes
+        data['eventos'] = data['eventos'][:200]
 
         with open(agenda_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
