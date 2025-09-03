@@ -24,7 +24,7 @@ class TestSugerenciaFlow(unittest.TestCase):
         owner_user = User(id=1, tipo_chat='municipio', rol='admin', email='admin@test.com', name='Admin', rubro=rubro, municipio_id=1)
         owner_user.set_password('password')
         viewer_user = User(id=2, email='vecino@test.com', name='Vecino', direccion='Calle 123', telefono='+5491111111')
-        viewer_user.dni = '12345678'
+        viewer_user.set_password('password')
         db.session.add_all([rubro, owner_user, viewer_user])
         db.session.commit()
 
@@ -34,7 +34,6 @@ class TestSugerenciaFlow(unittest.TestCase):
         self.app_context.pop()
 
     def test_sugerencia_flow(self):
-        # 1. User clicks "Enviar una Sugerencia"
         owner_user = User.query.get(1)
         viewer_user = User.query.get(2)
         rubro_obj = owner_user.rubro
@@ -42,44 +41,62 @@ class TestSugerenciaFlow(unittest.TestCase):
         db.session.add(chat_context)
         db.session.commit()
 
-        sugerencia_payload = {"action": "enviar_sugerencia"}
-
+        # 1. User starts suggestion flow
         response = responder_municipio(
-            pregunta_original=sugerencia_payload,
+            pregunta_original={"action": "enviar_sugerencia"},
             owner_user=owner_user,
             rubro_obj=rubro_obj,
             viewer_user=viewer_user,
             chat_db_context=chat_context
         )
-
         self.assertIn("escribí tu sugerencia", response["message_body"])
         self.assertEqual(
             chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
             ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
         )
 
-        # 2. User sends the suggestion text
-        sugerencia_texto = "Mi sugerencia es que pongan más bancos en la plaza."
+        # 2. User sends suggestion text and is asked for missing DNI
+        sugerencia_texto = "Sería bueno que pongan más bancos en la plaza."
+        response_2 = responder_municipio(
+            pregunta_original=sugerencia_texto,
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=viewer_user,
+            chat_db_context=chat_context
+        )
+        self.assertIn("Faltan: dni", response_2["message_body"])
+        self.assertEqual(
+            chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
+            ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
+        )
 
-        with patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
-            response_2 = responder_municipio(
-                pregunta_original=sugerencia_texto,
+        # 3. User provides contact details including DNI; ensure LLM is not called
+        contact_msg = "Marcelo Guillen 32877851 2613168608 sarmiento 125 Junin Mendoza"
+        with patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket, \
+             patch('services.municipio_responder.extract_multiple_contact_details_llm') as mock_llm:
+            response_3 = responder_municipio(
+                pregunta_original=contact_msg,
                 owner_user=owner_user,
                 rubro_obj=rubro_obj,
                 viewer_user=viewer_user,
                 chat_db_context=chat_context
             )
             mock_crear_ticket.assert_not_called()
-            self.assertIn("confirmá si los datos", response_2["message_body"])
-            self.assertEqual(
-                chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
-                ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name
-            )
+            mock_llm.assert_not_called()
 
+        self.assertIn("confirmá si los datos", response_3["message_body"])
+        self.assertEqual(
+            chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
+            ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name
+        )
+        datos = chat_context.context_data['contexto_municipio_v2']['datos_sugerencia']
+        self.assertEqual(datos.get('dni'), '32877851')
+
+        # 4. User confirms and ticket is created
         with patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
             mock_crear_ticket.return_value = {"id": 99, "nro_ticket": "S-12345"}
-            response_3 = responder_municipio(
-                pregunta_original="si",
+            response_4 = responder_municipio(
+                pregunta_original={"action": "confirmar_sugerencia_si"},
                 owner_user=owner_user,
                 rubro_obj=rubro_obj,
                 viewer_user=viewer_user,
@@ -90,9 +107,9 @@ class TestSugerenciaFlow(unittest.TestCase):
             self.assertEqual(call_kwargs['ticket_data']['categoria'], 'Sugerencia')
             self.assertEqual(call_kwargs['ticket_data']['detalles'], sugerencia_texto)
             self.assertEqual(call_kwargs['ticket_data']['municipio_id'], owner_user.municipio_id)
-            self.assertTrue(response_3.get("success"))
-            self.assertIn("Hemos recibido tu sugerencia", response_3.get("message_to_user", ""))
-            self.assertIn("S-12345", response_3.get("message_to_user", ""))
+            self.assertTrue(response_4.get("success"))
+            self.assertIn("Hemos recibido tu sugerencia", response_4.get("message_to_user", ""))
+            self.assertIn("S-12345", response_4.get("message_to_user", ""))
 
 if __name__ == '__main__':
     unittest.main()

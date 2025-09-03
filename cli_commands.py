@@ -39,7 +39,7 @@ def register_commands(app):
     def generate_template_embeddings_command():
         """Genera y almacena embeddings para las Plantillas de Respuesta."""
         from models import PlantillasRespuesta
-        from services.embedding_service import embed_textos_gemini
+        from services.embedding_service import embed_textos_llm
         from extensions import db
 
         cli_logger.info("Iniciando generación de embeddings para Plantillas de Respuesta...")
@@ -59,8 +59,8 @@ def register_commands(app):
 
                 cli_logger.info(f"Procesando plantilla ID {plantilla.id} ('{plantilla.name}')...")
                 try:
-                    # embed_textos_gemini espera una lista de textos y devuelve una lista de embeddings
-                    embedding_list = embed_textos_gemini(textos=[plantilla.text], input_type="search_document") # Usar search_document para plantillas almacenadas
+                    # embed_textos_llm espera una lista de textos y devuelve una lista de embeddings
+                    embedding_list = embed_textos_llm(textos=[plantilla.text], input_type="search_document") # Usar search_document para plantillas almacenadas
 
                     if embedding_list and embedding_list[0]:
                         plantilla.embedding = embedding_list[0]

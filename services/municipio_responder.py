@@ -12,6 +12,7 @@ from enum import Enum, auto
 import unicodedata
 import difflib
 from flask import current_app, has_app_context, session as flask_session
+from cachetools import TTLCache
 from models import MunicipioTicket, TicketComentario, db, SitioWebInfo, Conversacion
 from services.ticket_service import servicio_tickets
 from utils.db_utils import safe_flag_modified
@@ -81,6 +82,13 @@ CANCEL_KEYWORDS = {
         "basta",
     ]
 }
+
+# Simple cache to avoid recomputing responses for repeated municipal queries
+MUNICIPIO_RESPONSE_CACHE = TTLCache(maxsize=256, ttl=3600)
+
+def clear_municipio_cache() -> None:
+    """Utility mainly for tests to clear the local municipio response cache."""
+    MUNICIPIO_RESPONSE_CACHE.clear()
 
 class ReclamoFlowHandler:
     def __init__(self, context, chat_db_context):
@@ -1139,8 +1147,26 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         contexto_municipio_actual.pop("datos_parciales_llm_reclamo", None)
         contexto_municipio_actual.pop("historial_llm_reclamo", None)
         contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
+
+        user_input = context.get("user_input_raw", "")
+        reclamo_opts = _get_reclamos_menu().get("options_list", [])
+        details = extract_reclamo_details_from_text(user_input, reclamo_opts)
+        detected_category = details.pop("categoria_sugerida", None)
         handler = ReclamoFlowHandler(context, chat_db_context)
-        response_dict = handler.start_flow()
+        if detected_category:
+            logger.info(
+                f"[MENU_ACTION] Auto-detected category '{detected_category}' from input."
+            )
+        # Map remaining suggested fields into initial data
+        datos_iniciales = {}
+        if details.get("descripcion_sugerida"):
+            datos_iniciales["descripcion"] = details["descripcion_sugerida"]
+        if details.get("direccion_sugerida"):
+            datos_iniciales["direccion"] = details["direccion_sugerida"]
+        response_dict = handler.start_flow(
+            datos_iniciales=datos_iniciales or None,
+            categoria_inicial=detected_category,
+        )
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return response_dict
@@ -1945,11 +1971,11 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
 MENU_KEYWORDS = {
     # Reclamos, Trámites y Turnos
-    "mostrar_menu_reclamos": ["reclamo", "reclamos", "denuncia", "problema", "queja", "reportar"],
-    "iniciar_reclamo": ["iniciar reclamo", "hacer reclamo", "nuevo reclamo", "realizar reclamo"],
-    "solicitar_turnos": ["turnos", "turno", "solicitar turno", "pedir turno", "turnos online"],
-    "licencia_de_conducir": ["licencia", "conducir", "carnet", "registro", "renovar licencia", "sacar licencia"],
-    "enviar_sugerencia": ["sugerencia", "sugerir", "propuesta", "pedido", "pedir algo"],
+    "mostrar_menu_reclamos": ["reclamo", "reclamos", "denuncia", "problema", "queja", "reportar", "averia", "averias", "incidente"],
+    "iniciar_reclamo": ["iniciar reclamo", "hacer reclamo", "nuevo reclamo", "realizar reclamo", "presentar reclamo", "registrar queja"],
+    "solicitar_turnos": ["turnos", "turno", "solicitar turno", "pedir turno", "turnos online", "reservar turno", "agendar turno"],
+    "licencia_de_conducir": ["licencia", "conducir", "carnet", "registro", "renovar licencia", "sacar licencia", "tramitar licencia", "registro de conducir"],
+    "enviar_sugerencia": ["sugerencia", "sugerir", "propuesta", "pedido", "pedir algo", "comentario", "feedback"],
     "consultar_estado_reclamo": [
         "consultar reclamo",
         "estado reclamo",
@@ -1962,20 +1988,20 @@ MENU_KEYWORDS = {
     ],
 
     # Información útil
-    "contactos_utiles": ["contactos", "contacto", "telefonos", "telefono", "utiles", "directorio", "llamar"],
-    "agenda_y_noticias": ["agenda", "cultural", "eventos", "noticias", "novedades", "informacion", "actividades"],
+    "contactos_utiles": ["contactos", "contacto", "telefonos", "telefono", "utiles", "directorio", "llamar", "medios de contacto", "telefonos utiles"],
+    "agenda_y_noticias": ["agenda", "cultural", "eventos", "noticias", "novedades", "informacion", "actividades", "eventos culturales"],
     "veterinaria_bromatologia": [
         "veterinaria", "bromatologia", "zoonosis", "animales", "animal",
         "perro", "perros", "gato", "gatos", "mascota", "mascotas",
         "vacuna", "vacunas", "vacunacion", "antirrabica", "antirrábica",
-        "rabia"
+        "rabia", "perrera", "sanidad animal", "sanidad_animal"
     ],
-    "defensa_del_consumidor": ["defensa del consumidor", "consumidor", "consumo", "proteccion al consumidor"],
+    "defensa_del_consumidor": ["defensa del consumidor", "consumidor", "consumo", "proteccion al consumidor", "atencion al consumidor"],
 
     # Tasas y Servicios
-    "pago_de_tasas_vigentes": ["pagar", "pago", "tasas", "tasa", "boleta", "impuestos", "municipal"],
-    "buscar_estacionamiento": ["estacionamiento", "estacionar", "aparcamiento", "parking", "estacionar auto"],
-    "recoleccion_residuos": ["recoleccion", "residuos", "basura", "basurero", "cuando pasa el camion", "recolector"]
+    "pago_de_tasas_vigentes": ["pagar", "pago", "tasas", "tasa", "boleta", "impuestos", "municipal", "tributo", "tributos", "arancel", "aranceles", "impuesto municipal", "impuestos municipales"],
+    "buscar_estacionamiento": ["estacionamiento", "estacionar", "aparcamiento", "parking", "estacionar auto", "donde estacionar", "lugar para estacionar"],
+    "recoleccion_residuos": ["recoleccion", "residuos", "basura", "basurero", "cuando pasa el camion", "recolector", "recogida", "recoleccion de basura"]
 }
 
 from fuzzywuzzy import process
@@ -2051,12 +2077,64 @@ def find_global_menu_action(user_input: str) -> str | None:
     return find_menu_action_by_input(user_input, global_buttons)
 
 RECLAMO_KEYWORDS = {
-    "Luminaria": ["luminaria", "luz", "poste", "foco"],
-    "Arbolado": ["arbolado", "arbol", "arboles", "rama", "ramas"],
-    "Limpieza y riego": ["limpieza", "riego", "basura", "basural", "contenedor"],
-    "Arreglo de calle": ["calle", "bache", "pozo", "asfalto", "vereda", "agujero", "hueco"],
-    "Pérdida de agua": ["agua", "perdida", "caño", "cañeria"],
-    "Otros": ["otros", "otro", "varios"]
+    "Luminaria": [
+        "luminaria",
+        "luz",
+        "poste",
+        "foco",
+        "farol",
+        "farola",
+        "iluminacion",
+        "lampara",
+        "poste caido",
+        "poste caído",
+    ],
+    "Arbolado": [
+        "arbolado",
+        "arbol",
+        "arboles",
+        "rama",
+        "ramas",
+        "arbol caido",
+        "árbol caído",
+        "tronco",
+        "gajo",
+    ],
+    "Limpieza y riego": [
+        "limpieza",
+        "riego",
+        "basura",
+        "basural",
+        "contenedor",
+        "escombros",
+        "mugre",
+        "pasto",
+        "yuyos",
+        "maleza",
+        "desmalezado",
+        "baldio",
+    ],
+    "Arreglo de calle": [
+        "calle",
+        "bache",
+        "pozo",
+        "asfalto",
+        "vereda",
+        "agujero",
+        "hueco",
+        "pavimento",
+        "calzada",
+    ],
+    "Pérdida de agua": [
+        "agua",
+        "perdida",
+        "caño",
+        "cañeria",
+        "fuga",
+        "rotura",
+        "tuberia",
+    ],
+    "Otros": ["otros", "otro", "varios"],
 }
 
 def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> str | None:
@@ -2099,6 +2177,47 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
         return all_keywords[best_match]
 
     return None
+
+
+def extract_reclamo_details_from_text(user_input: str, reclamo_options: list) -> dict:
+    """Attempt to extract category, description and address from a user message.
+
+    This function uses the existing keyword mapping to determine the
+    category and simple heuristics to pull out the remaining description
+    and any street address mentioned in the text so we can advance the
+    reclamo flow without additional prompts.
+    """
+    details: dict[str, str] = {}
+    if not user_input:
+        return details
+
+    # Detect category first
+    category = find_reclamo_category_by_input(user_input, reclamo_options)
+    if category:
+        details["categoria_sugerida"] = category
+
+    description = user_input
+    if category:
+        normalized = normalizar_texto(user_input)
+        for kw in RECLAMO_KEYWORDS.get(category, []):
+            if kw in normalized:
+                import re
+                pattern = re.compile(re.escape(kw), re.IGNORECASE)
+                parts = pattern.split(user_input, 1)
+                if len(parts) > 1 and parts[1].strip():
+                    description = parts[1].strip(" ,.-")
+                break
+
+    if description and description != user_input:
+        details["descripcion_sugerida"] = description
+
+    # Very small address extractor: look for "en <calle> <numero>"
+    import re
+    match = re.search(r"en\s+([A-Za-zÀ-ÿ'\s]+?)\s+(\d{1,5})", user_input, re.IGNORECASE)
+    if match:
+        details["direccion_sugerida"] = f"{match.group(1).strip()} {match.group(2)}"
+
+    return details
 
 
 def _get_reclamos_consultas_menu():
@@ -2206,8 +2325,12 @@ def responder_municipio(
         logger_actual.info(f"DEBUG: [START] responder_municipio called for session {chat_db_context.chat_session_id}. Initial state: {estado_conversacion_debug}")
     # --- END DEBUG LOG ---
 
+    normalized_question = None
+
     def _finalize_response(response):
-        """Return the response unchanged; audio is handled upstream."""
+        """Return the response unchanged; also store it in cache for repeated queries."""
+        if normalized_question:
+            MUNICIPIO_RESPONSE_CACHE[normalized_question] = response
         return response
 
     logger_actual.info(
@@ -2244,6 +2367,11 @@ def responder_municipio(
         pregunta_str = ""
         received_payload["pregunta"] = ""
 
+    normalized_question = normalizar_texto(pregunta_str)
+    if normalized_question in MUNICIPIO_RESPONSE_CACHE:
+        logger_actual.info("responder_municipio: returning cached response")
+        return MUNICIPIO_RESPONSE_CACHE[normalized_question]
+
     if kwargs:
         for key, value in kwargs.items():
             received_payload[key] = value
@@ -2278,24 +2406,61 @@ def responder_municipio(
 
     # --- Manejo rápido de reclamos detectados vía imagen ---
     datos_interpretados_archivo = context.get("datos_interpretados_archivo")
+    flujo_activo = (
+        context.get("chat_db_context_data", {})
+        .get(CONTEXTO_MUNICIPIO, {})
+        .get("reclamo_flow_v2", {})
+        .get("state")
+    )
     if (
         datos_interpretados_archivo
         and isinstance(datos_interpretados_archivo, dict)
         and datos_interpretados_archivo.get("es_reclamo")
     ):
-        logger_actual.info("Auto-starting claim flow from image analysis")
         handler = ReclamoFlowHandler(context, chat_db_context)
-        datos_iniciales = {
-            "categoria": datos_interpretados_archivo.get("categoria_sugerida"),
-            "descripcion": datos_interpretados_archivo.get("descripcion_sugerida"),
-            "origen_descripcion": "imagen",
-            "foto_url": received_payload.get("foto_url"),
-        }
-        return _finalize_response(handler.start_flow(datos_iniciales=datos_iniciales))
+        if flujo_activo:
+            # Merge suggested data into the existing flow and continue
+            flow_data = (
+                context["chat_db_context_data"][CONTEXTO_MUNICIPIO]
+                .setdefault("reclamo_flow_v2", {})
+                .setdefault("datos_reclamo", {})
+            )
+            flow_data.setdefault(
+                "categoria", datos_interpretados_archivo.get("categoria_sugerida")
+            )
+            flow_data.setdefault(
+                "descripcion", datos_interpretados_archivo.get("descripcion_sugerida")
+            )
+            flow_data["foto_url"] = received_payload.get("foto_url")
+            response = handler.handle("", received_payload)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response)
+        else:
+            logger_actual.info("Auto-starting claim flow from image analysis")
+            datos_iniciales = {
+                "categoria": datos_interpretados_archivo.get("categoria_sugerida"),
+                "descripcion": datos_interpretados_archivo.get("descripcion_sugerida"),
+                "origen_descripcion": "imagen",
+                "foto_url": received_payload.get("foto_url"),
+            }
+            response = handler.start_flow(datos_iniciales=datos_iniciales)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response)
 
     # --- INICIO: Análisis de Imágenes Multimodal ---
     if received_payload.get("es_foto") and received_payload.get("foto_url"):
-        logger_actual.info(f"Image received. Starting multimodal analysis for URL: {received_payload.get('foto_url')}")
+        if flujo_activo:
+            handler = ReclamoFlowHandler(context, chat_db_context)
+            response_dict = handler.handle("", received_payload)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response_dict)
+
+        logger_actual.info(
+            f"Image received. Starting multimodal analysis for URL: {received_payload.get('foto_url')}"
+        )
 
         # Define a detailed prompt for the vision model
         vision_prompt = """
@@ -2311,16 +2476,20 @@ def responder_municipio(
         Si no puedes identificar un problema claro o la imagen no es relevante para un reclamo municipal, devuelve un JSON con "intent": "invalido".
         """
 
-        analysis_result = analizar_imagen_con_fallback(received_payload.get("foto_url"), vision_prompt)
+        analysis_result = analizar_imagen_con_fallback(
+            received_payload.get("foto_url"), vision_prompt
+        )
 
         if analysis_result and analysis_result.get("raw_response"):
             try:
                 parsed_response = json.loads(analysis_result.get("raw_response"))
                 if parsed_response.get("intent") == "crear_reclamo":
-                    logger_actual.info(f"Multimodal analysis successful. Intent: 'crear_reclamo'. Data: {parsed_response.get('data')}")
+                    logger_actual.info(
+                        f"Multimodal analysis successful. Intent: 'crear_reclamo'. Data: {parsed_response.get('data')}"
+                    )
 
                     datos_iniciales = parsed_response.get("data", {})
-                    datos_iniciales['origen_descripcion'] = 'imagen' # Add origin marker
+                    datos_iniciales['origen_descripcion'] = 'imagen'
                     datos_iniciales['foto_url'] = received_payload.get("foto_url")
 
                     handler = ReclamoFlowHandler(context, chat_db_context)
@@ -2477,6 +2646,7 @@ def responder_municipio(
 
     # --- INICIO FIX: Manejo explícito de solicitud de menú principal ---
     # Si el usuario pide explícitamente el menú, lo mostramos directamente sin pasar por el LLM.
+    context["user_input_raw"] = pregunta_str
     normalized_input_menu = normalizar_texto(pregunta_str or "")
     action_id = received_payload.get("action_id") or received_payload.get("action")
     if normalized_input_menu in {"menu", "menu principal"} or action_id == "menu_principal":
@@ -2498,10 +2668,19 @@ def responder_municipio(
     if not contexto_municipio_actual.get("estado_conversacion"):
         reclamo_options = _get_reclamos_menu().get("options_list", [])
         plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
-        detected_category = find_reclamo_category_by_input(pregunta_str, plain_text_options)
+        details = extract_reclamo_details_from_text(pregunta_str, plain_text_options)
+        detected_category = details.pop("categoria_sugerida", None)
         if detected_category:
             handler = ReclamoFlowHandler(context, chat_db_context)
-            response_dict = handler.start_flow(categoria_inicial=detected_category)
+            datos_iniciales = {}
+            if details.get("descripcion_sugerida"):
+                datos_iniciales["descripcion"] = details["descripcion_sugerida"]
+            if details.get("direccion_sugerida"):
+                datos_iniciales["direccion"] = details["direccion_sugerida"]
+            response_dict = handler.start_flow(
+                datos_iniciales=datos_iniciales or None,
+                categoria_inicial=detected_category,
+            )
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response(response_dict)
@@ -2673,12 +2852,22 @@ def responder_municipio(
                             break
                 if not selected_category_name:
                     plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
-                    selected_category_name = find_reclamo_category_by_input(pregunta_str_reclamo, plain_text_options)
+                    details = extract_reclamo_details_from_text(pregunta_str_reclamo, plain_text_options)
+                    selected_category_name = details.pop("categoria_sugerida", None)
 
             if selected_category_name:
                 handler = ReclamoFlowHandler(context, chat_db_context)
-                response_dict = handler.start_flow(categoria_inicial=selected_category_name)
-                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                datos_iniciales = {}
+                if details.get("descripcion_sugerida"):
+                    datos_iniciales["descripcion"] = details["descripcion_sugerida"]
+                if details.get("direccion_sugerida"):
+                    datos_iniciales["direccion"] = details["direccion_sugerida"]
+                response_dict = handler.start_flow(
+                    datos_iniciales=datos_iniciales or None,
+                    categoria_inicial=selected_category_name,
+                )
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
                 return _finalize_response(response_dict)
             else:
                 return _finalize_response(_get_reclamos_menu())
@@ -2848,17 +3037,36 @@ def responder_municipio(
 
         elif estado_conversacion == ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name:
             datos_guardados = contexto_municipio_actual.get('datos_sugerencia', {})
-            nuevos_datos = extract_multiple_contact_details_llm(pregunta_str, ["nombre", "dni", "email", "direccion", "telefono"])
-            if nuevos_datos.get("nombre"): datos_guardados["nombre"] = nuevos_datos["nombre"]
-            if nuevos_datos.get("dni"): datos_guardados["dni"] = nuevos_datos["dni"]
-            if nuevos_datos.get("email"): datos_guardados["email"] = nuevos_datos["email"]
-            if nuevos_datos.get("direccion"): datos_guardados["direccion"] = nuevos_datos["direccion"]
-            if nuevos_datos.get("telefono"): datos_guardados["telefono"] = nuevos_datos["telefono"]
+            campos_requeridos = ["nombre", "dni", "email", "direccion"]
 
-            campos_faltantes = [c for c in ["nombre", "dni", "email", "direccion"] if not datos_guardados.get(c)]
+            # Primero intentamos extraer con regex para los campos aún faltantes.
+            nuevos_datos = extract_multiple_contact_details_regex(
+                pregunta_str, campos_requeridos + ["telefono"]
+            )
+            for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
+                if nuevos_datos.get(campo):
+                    datos_guardados[campo] = nuevos_datos[campo]
+
+            campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
+
+            # Solo si aún faltan datos importantes recurrimos al LLM.
+            if campos_faltantes:
+                try:
+                    llm_datos = extract_multiple_contact_details_llm(
+                        pregunta_str, campos_requeridos + ["telefono"]
+                    )
+                    if llm_datos:
+                        for campo, valor in llm_datos.items():
+                            if valor and campo in ["nombre", "dni", "email", "direccion", "telefono"] and not datos_guardados.get(campo):
+                                datos_guardados[campo] = valor
+                except Exception as e:
+                    logger.error("[DATOS_SUGERENCIA] LLM fallback failed: %s", e)
+                campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
+
             contexto_municipio_actual['datos_sugerencia'] = datos_guardados
             if campos_faltantes:
-                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
                 return _finalize_response({
                     "message_body": f"Aún necesito: {', '.join(campos_faltantes)}. Podés enviarlos todos juntos.",
                     "fuente": "datos_contacto_sugerencia_incompletos"
@@ -3186,13 +3394,12 @@ def responder_municipio(
                     selected_category_name = option.get("category_name")
                     break
 
-        # Si no es un número, o el número no corresponde a una opción, intentar matchear por texto.
+        # Si no es un número o no corresponde, intentar matchear por texto y extraer más datos.
+        details = {}
         if not selected_category_name:
-            # Usar la función existente que busca por keywords.
-            # Le pasamos una lista de dicts con la clave "texto" que espera la función.
-            # Usamos el 'category_name' limpio que agregamos.
             plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
-            selected_category_name = find_reclamo_category_by_input(pregunta_str_reclamo, plain_text_options)
+            details = extract_reclamo_details_from_text(pregunta_str_reclamo, plain_text_options)
+            selected_category_name = details.pop("categoria_sugerida", None)
 
         if selected_category_name:
             if selected_category_name == "Pérdida de agua":
@@ -3213,7 +3420,15 @@ def responder_municipio(
 
             # --- INICIO: Integración del nuevo ReclamoFlowHandler ---
             handler = ReclamoFlowHandler(context, chat_db_context)
-            response_dict = handler.start_flow(categoria_inicial=selected_category_name)
+            datos_iniciales = {}
+            if details.get("descripcion_sugerida"):
+                datos_iniciales["descripcion"] = details["descripcion_sugerida"]
+            if details.get("direccion_sugerida"):
+                datos_iniciales["direccion"] = details["direccion_sugerida"]
+            response_dict = handler.start_flow(
+                datos_iniciales=datos_iniciales or None,
+                categoria_inicial=selected_category_name,
+            )
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response(response_dict)

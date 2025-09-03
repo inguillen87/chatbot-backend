@@ -14,8 +14,8 @@ The primary goal is to centralize language understanding, conversation flow mana
     *   `services.municipios.responder_municipio` for municipal interactions.
     *   `services.pymes.responder_pyme` for business interactions.
 4.  **LLM Interaction (New Flow)**:
-    *   Inside `responder_municipio`/`responder_pyme`, for relevant intents (e.g., "iniciar_reclamo", "crear_pedido") or when continuing an LLM-driven dialogue, a call is made to `services.gemini_bridge.llamar_gemini`.
-    *   **`services.gemini_bridge.JULES_SYSTEM_PROMPT`**: This is the master prompt that defines the LLM's persona, capabilities, input/output structure, and examples. **This is the primary place to adjust the bot's "vocabulary", understanding, and decision-making logic.**
+    *   Inside `responder_municipio`/`responder_pyme`, for relevant intents (e.g., "iniciar_reclamo", "crear_pedido") or when continuing an LLM-driven dialogue, a call is made to `services.llm_bridge.llamar_llm`.
+    *   **`services.llm_bridge.JULES_SYSTEM_PROMPT`**: This is the master prompt that defines the LLM's persona, capabilities, input/output structure, and examples. **This is the primary place to adjust the bot's "vocabulary", understanding, and decision-making logic.**
     *   The LLM is expected to return a JSON object with the following structure:
         ```json
         {
@@ -54,7 +54,7 @@ The primary goal is to centralize language understanding, conversation flow mana
     *   This handler-based logic is being progressively refactored to support, rather than duplicate, the LLM's primary role.
 
 ### Developing New Features / Modifying Behavior
-1.  **Primary Tool: `JULES_SYSTEM_PROMPT` (`services/gemini_bridge.py`)**
+1.  **Primary Tool: `JULES_SYSTEM_PROMPT` (`services/llm_bridge.py`)**
     *   To change how the bot understands user requests, extracts information, or decides on next steps, **start by modifying this prompt.**
     *   Add more examples (including for corrections and disambiguation), clarify rules, or refine descriptions of `accion_backend` and `datos_estructura`.
     *   Ensure the prompt clearly instructs the LLM to *always* return the specified JSON structure.
@@ -101,13 +101,13 @@ The primary goal is to centralize language understanding, conversation flow mana
     *   To run all: `python -m unittest discover tests`
     *   To run specific file: `python -m unittest tests/test_file_name.py`
     *   **LLM-related tests**:
-        *   `tests/test_gemini_bridge.py`: Tests the `llamar_gemini` function (mocked or real). Focus on prompt formatting and parsing of the LLM's JSON response.
+        *   `tests/test_llm_bridge.py`: Tests the `llamar_llm` function (mocked or real). Focus on prompt formatting and parsing of the LLM's JSON response.
         *   `tests/test_acciones_municipio.py` (and similar for pyme): Test individual `accion_` functions. Mock the `datos_llm` input and dependencies (DB, external services).
-        *   **Integration Tests (within `responder_municipio`/`responder_pyme`)**: Mock `gemini_bridge.llamar_gemini` to return controlled LLM JSON responses. Verify that `responder_municipio`/`pyme` correctly calls the appropriate action functions or manages dialogue based on the LLM's output.
+        *   **Integration Tests (within `responder_municipio`/`responder_pyme`)**: Mock `llm_bridge.llamar_llm` to return controlled LLM JSON responses. Verify that `responder_municipio`/`pyme` correctly calls the appropriate action functions or manages dialogue based on the LLM's output.
 
 ### Current LLM-Powered Flows (Example: Municipio Reclamos)
 *   The `USAR_LLM_PARA_RECLAMOS` flag in `services/municipios.py` controls the new flow.
-*   If active, `responder_municipio` calls `llamar_gemini`.
+*   If active, `responder_municipio` calls `llamar_llm`.
 *   `accion_crear_reclamo_municipio` is called if LLM provides all necessary data.
 *   A separate `historial_llm_reclamo` is maintained in the `contexto_municipio_actual` for multi-turn interactions guided by the LLM.
 

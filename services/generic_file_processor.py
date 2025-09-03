@@ -3,20 +3,20 @@ import logging
 from typing import Optional, Dict, Any
 import pandas as pd
 from docx import Document
-from services.gemini_bridge import llamar_gemini_para_generacion_texto
+from services.llm_bridge import llamar_llm_para_generacion_texto
 
 logger = logging.getLogger(__name__)
 
 def procesar_archivo_generico(file_path: str, mime_type: str) -> Optional[Dict[str, Any]]:
     """
-    Procesa un archivo genérico, extrayendo su contenido y analizándolo con Gemini.
+    Procesa un archivo genérico, extrayendo su contenido y analizándolo con un LLM.
 
     Args:
         file_path: La ruta local al archivo.
         mime_type: El tipo MIME del archivo.
 
     Returns:
-        Un diccionario con el contenido extraído y el análisis de Gemini, o None si falla.
+        Un diccionario con el contenido extraído y el análisis del LLM, o None si falla.
     """
     try:
         texto_extraido = None
@@ -43,7 +43,7 @@ def procesar_archivo_generico(file_path: str, mime_type: str) -> Optional[Dict[s
         # Una vez extraído el texto, lo enviamos a Gemini para análisis
         # El prompt puede ser ajustado para ser más específico según el contexto
         # que se le pase a esta función en el futuro.
-        prompt_para_gemini = f"""
+        prompt_para_llm = f"""
         Analiza el siguiente texto extraído de un documento y estructura la información clave.
         Si parece un catálogo de productos, extrae una lista de productos con su nombre, descripción y precio si es posible.
         Si parece una orden de compra, extrae el número de orden, los productos y las cantidades.
@@ -55,14 +55,14 @@ def procesar_archivo_generico(file_path: str, mime_type: str) -> Optional[Dict[s
         ---
         """
 
-        analisis_gemini = llamar_gemini_para_generacion_texto(
+        analisis_llm = llamar_llm_para_generacion_texto(
             system_prompt_especifico="Eres un asistente de IA que extrae información estructurada de documentos.",
-            user_prompt=prompt_para_gemini
+            user_prompt=prompt_para_llm
         )
 
         return {
             "texto_extraido": texto_extraido,
-            "analisis_gemini": analisis_gemini
+            "analisis_llm": analisis_llm
         }
 
     except Exception as e:

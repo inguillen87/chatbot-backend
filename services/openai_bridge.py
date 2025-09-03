@@ -3,6 +3,13 @@ import openai
 import logging
 import json
 import httpx
+from typing import List, Dict
+
+try:
+    import tiktoken
+    _TOKEN_ENCODER = tiktoken.encoding_for_model("gpt-4o-mini")
+except Exception:  # pragma: no cover - optional dependency
+    _TOKEN_ENCODER = None
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +59,27 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
 
     messages.append({"role": "user", "content": message})
 
-    logger.info(f"Sending to OpenAI. Message: {message[:100]}...")
+    def _estimate_tokens(text: str) -> int:
+        if _TOKEN_ENCODER:
+            return len(_TOKEN_ENCODER.encode(text))
+        return len(text.split())
+
+    def _prune_messages(msgs: List[Dict[str, str]], limit: int = 4000) -> List[Dict[str, str]]:
+        total = 0
+        pruned: List[Dict[str, str]] = []
+        for m in reversed(msgs):
+            total += _estimate_tokens(m.get("content", ""))
+            if total > limit:
+                break
+            pruned.append(m)
+        return list(reversed(pruned))
+
+    messages = _prune_messages(messages)
+
+    total_prompt_tokens = sum(_estimate_tokens(m.get("content", "")) for m in messages)
+    logger.info(
+        f"Sending to OpenAI. Message: {message[:100]}... Estimated prompt tokens: {total_prompt_tokens}"
+    )
 
     try:
         # 3. Make the API call
@@ -69,11 +96,27 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
         # 4. Parse the response
         parsed_response = json.loads(raw_response_text)
 
+        usage_dict = None
+        if getattr(response, "usage", None):
+            usage = response.usage
+            logger.info(
+                f"OpenAI usage - prompt: {usage.prompt_tokens}, completion: {usage.completion_tokens}, total: {usage.total_tokens}"
+            )
+            try:
+                usage_dict = usage.to_dict()
+            except Exception:
+                # Fallback to simple dict conversion if to_dict isn't available
+                usage_dict = {
+                    "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                    "completion_tokens": getattr(usage, "completion_tokens", None),
+                    "total_tokens": getattr(usage, "total_tokens", None),
+                }
+
         # Ensure the response has the keys our application expects
         parsed_response.setdefault('message_body', parsed_response.get('respuesta_usuario', ''))
         parsed_response.setdefault('accion_backend', 'responder_directamente')
 
-        return parsed_response, {}
+        return parsed_response, {"usage": usage_dict, "prompt_tokens_estimate": total_prompt_tokens}
 
     except Exception as e:
         logger.error(f"Error calling OpenAI API: {e}", exc_info=True)

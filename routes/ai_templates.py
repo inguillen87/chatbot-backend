@@ -3,7 +3,7 @@
 from flask import Blueprint, jsonify, request, current_app
 from models import PlantillasRespuesta, db # db será necesario para las operaciones de escritura/actualización
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
-from services.embedding_service import embed_textos_gemini
+from services.embedding_service import embed_textos_llm
 
 # Definir el Blueprint con el prefijo de URL /api/ai
 ai_templates_bp = Blueprint('ai_templates', __name__, url_prefix='/api/ai')
@@ -79,8 +79,8 @@ def create_template(user):
     embedding_vector = None
     if text:
         try:
-            # embed_textos_gemini espera una lista de textos y devuelve una lista de embeddings
-            embeddings_list = embed_textos_gemini(textos=[text.strip()], input_type="search_document")
+            # embed_textos_llm espera una lista de textos y devuelve una lista de embeddings
+            embeddings_list = embed_textos_llm(textos=[text.strip()], input_type="search_document")
             if embeddings_list and len(embeddings_list) > 0:
                 embedding_vector = embeddings_list[0]
             else:
@@ -196,7 +196,7 @@ def update_template(user, template_id):
         updated_fields.append('text') # Ahora sí lo agregamos a los campos actualizados
         current_app.logger.info(f"El texto de la plantilla '{plantilla.id}' ha cambiado. Regenerando embedding.")
         try:
-            embeddings_list = embed_textos_gemini(textos=[plantilla.text], input_type="search_document")
+            embeddings_list = embed_textos_llm(textos=[plantilla.text], input_type="search_document")
             if embeddings_list and len(embeddings_list) > 0:
                 plantilla.embedding = embeddings_list[0]
                 embedding_regenerated = True
@@ -258,7 +258,7 @@ def delete_template(user, template_id):
         current_app.logger.error(f"Error al eliminar plantilla '{template_id}' por usuario {user.id}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al eliminar la plantilla."}), 500
 
-from services.gemini_bridge import llamar_gemini_para_generacion_texto
+from services.llm_bridge import llamar_llm_para_generacion_texto
 
 @ai_templates_bp.route('/generate-template-text', methods=['POST'])
 @token_requerido
@@ -291,7 +291,7 @@ def generate_template_text_from_prompt(user):
 
         # Usar el nuevo servicio de Gemini para generación de texto
         system_prompt_generacion = "Eres un asistente experto en redactar plantillas de respuesta. Genera un texto basado en la siguiente solicitud del usuario."
-        generated_text = llamar_gemini_para_generacion_texto(
+        generated_text = llamar_llm_para_generacion_texto(
             system_prompt_especifico=system_prompt_generacion,
             user_prompt=prompt_usuario,
             temperature=0.7 # Puede ajustarse para más creatividad
@@ -345,7 +345,7 @@ def improve_template_text(user):
         # El prompt_para_cohere ya está bien formulado para ser un user_prompt para Gemini.
         # El system_prompt puede ser más genérico o específico para la tarea de mejora.
         system_prompt_mejora = "Eres un asistente experto en refinar y mejorar textos para plantillas de comunicación profesional. Responde únicamente con el texto mejorado."
-        improved_text = llamar_gemini_para_generacion_texto(
+        improved_text = llamar_llm_para_generacion_texto(
             system_prompt_especifico=system_prompt_mejora,
             user_prompt=prompt_para_cohere, # prompt_para_cohere ya contiene la instrucción y el texto
             temperature=0.5 # Temperatura moderada para mejora
