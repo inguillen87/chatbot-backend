@@ -17,6 +17,7 @@ from models import (
 from datetime import datetime, timedelta
 from services.ticket_service import servicio_tickets
 from services.gcs_service import upload_to_gcs # Import the new GCS service
+from services.geo.route import obtener_ruta
 from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
 from utils.permissions import require_role
 from collections import defaultdict
@@ -997,6 +998,41 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
     except Exception as e:
         current_app.logger.error(f"Error en get_chat_mensajes_pyme para ticket {ticket_id}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al obtener los mensajes del chat."}), 500
+
+# ---------- RUTA HACIA EL TICKET ----------
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/ruta', methods=['GET'])
+@anon_o_token_requerido
+def get_ticket_route(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
+    """Devuelve la ruta desde el municipio hasta la ubicación del ticket."""
+    if tipo != "municipio":
+        return jsonify({"error": "Ruta solo disponible para tickets de municipio."}), 400
+
+    ticket_obj = db.session.get(MunicipioTicket, ticket_id)
+    if not ticket_obj:
+        return jsonify({"error": "Ticket no encontrado."}), 404
+
+    es_agente = current_user and current_user.tipo_chat == "municipio"
+    es_dueno = current_user and ticket_obj.user_id == current_user.id
+    es_anon = anon_id and ticket_obj.anon_id == anon_id
+    if not (es_agente or es_dueno or es_anon):
+        return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+
+    if ticket_obj.latitud is None or ticket_obj.longitud is None:
+        return jsonify({"error": "El ticket no tiene coordenadas."}), 400
+
+    municipio = db.session.get(User, ticket_obj.municipio_id)
+    if not municipio or municipio.latitud is None or municipio.longitud is None:
+        return jsonify({"error": "El municipio no tiene coordenadas."}), 400
+
+    ruta_data = obtener_ruta((municipio.latitud, municipio.longitud), (ticket_obj.latitud, ticket_obj.longitud))
+    if not ruta_data:
+        return jsonify({"error": "No se pudo obtener la ruta."}), 500
+
+    return jsonify({
+        "origen": {"lat": municipio.latitud, "lng": municipio.longitud},
+        "destino": {"lat": ticket_obj.latitud, "lng": ticket_obj.longitud},
+        **ruta_data,
+    })
 
 # ---------- TIMELINE DEL TICKET ----------
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/timeline', methods=['GET'])
