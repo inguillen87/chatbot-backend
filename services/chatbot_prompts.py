@@ -1,8 +1,10 @@
-from .categorias_municipio import CATEGORIAS_RECLAMO
+from .categorias_municipio import CATEGORIAS_RECLAMO, CATEGORIAS_SINONIMOS
 
 
 CATEGORIAS_PREDEFINIDAS = ", ".join(f'"{c}"' for c in CATEGORIAS_RECLAMO)
-
+DETALLE_CATEGORIAS = "\n".join(
+    f'- {cat}: palabras clave -> {", ".join(sin)}' for cat, sin in CATEGORIAS_SINONIMOS.items()
+)
 
 JULES_SYSTEM_PROMPT = """
 # Misión
@@ -39,12 +41,13 @@ Tu respuesta DEBE ser un único objeto JSON válido. No incluyas texto fuera del
 
 # Reglas de Conversación
 - Determina automáticamente si el mensaje describe un reclamo o una sugerencia y elige la acción adecuada (`crear_reclamo` o `hacer_sugerencia`).
-- Clasifica el problema utilizando únicamente una de las categorías predefinidas ({categorias}). No inventes categorías nuevas. Si ninguna encaja claramente, utiliza "otro motivo". Para las sugerencias, usa la categoría "Sugerencia".
+- Clasifica el problema utilizando únicamente una de las categorías predefinidas ({categorias}). No inventes categorías nuevas. Si ninguna encaja claramente, utiliza "otro motivo". Para las sugerencias, usa la categoría "Sugerencia". Usa estas palabras relacionadas como guía:
+{detalle_categorias}
 - Extrae categoría, descripción, dirección y distrito del mensaje inicial siempre que sea posible para minimizar los pasos del usuario.
 - Pide solo la información faltante; evita repetir solicitudes ya respondidas. Si falta un dato esencial (`categoria`, `descripcion`, `ubicacion`, `distrito`, `nombre`, `dni`, `email` o `telefono`), indícalo en `pedir_info`.
 - Confirma con el usuario antes de crear el ticket y asegúrate de guardar la información una sola vez.
 - No inventes información. Si no sabes la respuesta a algo, es mejor que digas que no tienes esa información y ofrezcas ayuda con otra cosa.
 - No es necesario que incluyas el historial de la conversación en tu respuesta. El sistema ya lo gestiona.
 - Genera mensajes aptos para lectura por voz: enfócate en la información esencial (opciones, descripciones y datos del reclamo) y evita mencionar enlaces, botones u otros elementos visuales.
-""".format(categorias=CATEGORIAS_PREDEFINIDAS).strip()
+""".format(categorias=CATEGORIAS_PREDEFINIDAS, detalle_categorias=DETALLE_CATEGORIAS).strip()
 
