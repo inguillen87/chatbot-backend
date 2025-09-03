@@ -356,6 +356,40 @@ def test_bulk_create_from_file(client):
     if os.path.exists(agenda_path):
         os.remove(agenda_path)
 
+
+def test_municipal_posts_limit(client):
+    """Verifica que solo se almacenen los 50 posts más recientes y se devuelvan los últimos 10."""
+    with app.app_context():
+        admin_user = User.query.filter_by(email="admin_muni@test.com").first()
+        token = generar_token(admin_user.id, admin_user.rol, admin_user.tipo_chat, admin_user.municipio_id, admin_user.pyme_id)
+
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Content-Type': 'application/json',
+    }
+
+    agenda_path = AGENDA_PATH
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
+    events = [{"title": f"Evento {i}"} for i in range(60)]
+    response = client.post('/municipal/posts/bulk', data=json.dumps({"events": events}), headers=headers)
+    assert response.status_code == 201
+
+    with open(agenda_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    assert len(data['eventos']) == 50
+
+    response = client.get('/municipal/posts', headers=headers)
+    assert response.status_code == 200
+    posts = response.get_json()
+    assert len(posts) == 10
+    assert posts[0]['titulo'] == 'Evento 59'
+    assert posts[-1]['titulo'] == 'Evento 50'
+
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
     file_data = io.BytesIO(SAMPLE_TEXT.encode('utf-8'))
     data = {'file': (file_data, 'agenda.txt')}
     response = client.post('/municipal/posts/bulk', data=data, headers=headers, content_type='multipart/form-data')
