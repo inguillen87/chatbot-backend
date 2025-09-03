@@ -60,6 +60,7 @@ def test_create_municipal_post_success(client):
     assert response.status_code == 201
     json_data = response.get_json()
     assert json_data['titulo'] == 'Gran Evento de Primavera'
+    assert json_data['tags'] == ['evento']
 
     # Verificar que el post se guardó en el archivo JSON
     assert os.path.exists(agenda_path)
@@ -408,7 +409,7 @@ def test_bulk_create_from_file(client):
 
 
 def test_municipal_posts_limit(client):
-    """Verifica que solo se almacenen los 50 posts más recientes y se devuelvan los últimos 10."""
+    """Verifica que solo se almacenen los 200 posts más recientes y se devuelvan los últimos 10."""
     with app.app_context():
         admin_user = User.query.filter_by(email="admin_muni@test.com").first()
         token = generar_token(admin_user.id, admin_user.rol, admin_user.tipo_chat, admin_user.municipio_id, admin_user.pyme_id)
@@ -422,20 +423,20 @@ def test_municipal_posts_limit(client):
     if os.path.exists(agenda_path):
         os.remove(agenda_path)
 
-    events = [{"title": f"Evento {i}"} for i in range(60)]
+    events = [{"title": f"Evento {i}"} for i in range(210)]
     response = client.post('/municipal/posts/bulk', data=json.dumps({"events": events}), headers=headers)
     assert response.status_code == 201
 
     with open(agenda_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
-    assert len(data['eventos']) == 50
+    assert len(data['eventos']) == 200
 
     response = client.get('/municipal/posts', headers=headers)
     assert response.status_code == 200
     posts = response.get_json()
     assert len(posts) == 10
-    assert posts[0]['titulo'] == 'Evento 59'
-    assert posts[-1]['titulo'] == 'Evento 50'
+    assert posts[0]['titulo'] == 'Evento 209'
+    assert posts[-1]['titulo'] == 'Evento 200'
 
     if os.path.exists(agenda_path):
         os.remove(agenda_path)
@@ -449,6 +450,36 @@ def test_municipal_posts_limit(client):
     assert len(data_resp['created']) == 6
     titles = [p['titulo'] for p in data_resp['created']]
     assert 'Expo Educativa 2026' in titles
+
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
+
+def test_bulk_create_municipal_posts_informacion(client):
+    with app.app_context():
+        admin_user = User.query.filter_by(email="admin_muni@test.com").first()
+        token = generar_token(admin_user.id, admin_user.rol, admin_user.tipo_chat, admin_user.municipio_id, admin_user.pyme_id)
+
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Content-Type': 'application/json',
+    }
+
+    events = [
+        {"title": "Aviso importante", "day": "Lunes 1"}
+    ]
+
+    agenda_path = AGENDA_PATH
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
+    payload = {"events": events, "tipo_post": "informacion"}
+    response = client.post('/municipal/posts/bulk', data=json.dumps(payload), headers=headers)
+
+    assert response.status_code == 201
+    data_resp = response.get_json()
+    assert data_resp['created'][0]['tipo_post'] == 'informacion'
+    assert data_resp['created'][0]['tags'] == ['informacion']
 
     if os.path.exists(agenda_path):
         os.remove(agenda_path)
