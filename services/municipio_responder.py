@@ -998,7 +998,23 @@ def _format_post(post: dict, channel: str) -> str:
             lines.extend(["", f"🔗 {link}"])
         return "\n".join(lines)
 
-    # Default to web/HTML formatting
+    if channel == "web":
+        lines = [title]
+        if subtitle:
+            lines.append(subtitle)
+        if fecha:
+            lines.append(f"📅 {fecha}")
+        if ubicacion:
+            lines.append(f"📍 {ubicacion}")
+        if desc:
+            lines.extend(["", desc])
+        if imagen:
+            lines.extend(["", imagen])
+        if link:
+            lines.extend(["", f"🔗 {link}"])
+        return "\n".join(lines)
+
+    # Default to HTML formatting for other channels
     parts = [f"<strong>{title}</strong>"]
     if subtitle:
         parts.append(f"<em>{subtitle}</em>")
@@ -1100,6 +1116,8 @@ def _get_posts_from_json(content_type: str, channel: str, municipio_id: str) -> 
     if channel == "whatsapp":
         emoji = "📰" if content_type == "noticia" else "🎭"
         formatted = [f"{emoji} {item}".rstrip() for item in formatted]
+        return "\n\n".join(formatted) + "\n"
+    if channel == "web":
         return "\n\n".join(formatted) + "\n"
     return "<hr>".join(formatted)
 
@@ -1205,6 +1223,8 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         if noticias_body:
             if channel == "whatsapp":
                 full_body += "*🗞️ Noticias Recientes*\n\n" + noticias_body
+            elif channel == "web":
+                full_body += "🗞️ Noticias Recientes\n\n" + noticias_body
             else:
                 full_body += "<h3>🗞️ Noticias Recientes</h3>" + noticias_body
         if eventos_body:
@@ -1212,13 +1232,17 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
                 if full_body:
                     full_body += "\n\n"
                 full_body += "*🎭 Próximos Eventos*\n\n" + eventos_body
+            elif channel == "web":
+                if full_body:
+                    full_body += "\n\n"
+                full_body += "🎭 Próximos Eventos\n\n" + eventos_body
             else:
                 full_body += "<h3>🎭 Próximos Eventos</h3>" + eventos_body
 
         if not full_body:
             full_body = "No hay noticias ni eventos para mostrar en este momento."
         else:
-            if channel == "whatsapp":
+            if channel == "whatsapp" or channel == "web":
                 social_links = (
                     "\n---\n"
                     "Seguinos en nuestras redes:\n"

@@ -9,7 +9,11 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from app import create_app, db
-from services.actions.municipio_actions import CrearReclamoActionHandler, ConsultarEstadoTicketActionHandler
+from services.actions.municipio_actions import (
+    CrearReclamoActionHandler,
+    ConsultarEstadoTicketActionHandler,
+    HacerSugerenciaActionHandler,
+)
 from services.herramientas_municipio import direccion_es_valida
 from models import User
 from config import Config
@@ -498,6 +502,40 @@ class TestAccionesMunicipio(unittest.TestCase):
             # The new expected response comes from the mocked LLM
             self.assertIn("necesito tu ubicación", response["message_body"])
             mock_google_search.assert_not_called()
+
+    @patch('services.actions.municipio_actions.formatear_ticket_respuesta', return_value=("ok", []))
+    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
+    def test_hacer_sugerencia_persiste_ubicacion(self, mock_crear_ticket, mock_formatear):
+        mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "555"}
+        viewer = MagicMock(spec=User)
+        viewer.id = 10
+        owner = MagicMock(spec=User)
+        owner.municipio_id = 1
+        context = {
+            "viewer_user_obj": viewer,
+            "user_obj": owner,
+            "anon_id": "anon",
+            "municipio_config_actual": {},
+            "contexto_municipio_v2": {},
+        }
+        handler = HacerSugerenciaActionHandler(context)
+        datos = {
+            "descripcion": "Más árboles en la plaza",
+            "ubicacion": "Plaza Central",
+            "coordenadas": {"lat": -32.9, "lon": -68.8},
+            "nombre": "Juan Perez",
+            "dni": "12345678",
+            "email": "juan@example.com",
+            "direccion": "Calle Falsa 123",
+        }
+        resp = handler.execute(datos)
+        self.assertTrue(resp["success"])
+        mock_crear_ticket.assert_called_once()
+        ticket_kwargs = mock_crear_ticket.call_args.kwargs['ticket_data']
+        self.assertEqual(ticket_kwargs['direccion'], 'Plaza Central')
+        self.assertEqual(ticket_kwargs['latitud'], -32.9)
+        self.assertEqual(ticket_kwargs['longitud'], -68.8)
+        self.assertEqual(ticket_kwargs['direccion_contacto'], 'Calle Falsa 123')
 
     @patch('services.municipio_responder.handle_llm_interaction', return_value=(None, {}))
     @patch('services.municipio_responder.google_search')

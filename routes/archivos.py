@@ -30,6 +30,7 @@ ALLOWED_EXTENSIONS = {
     'docx',
     'txt',
     'json', # Añadido json
+    'mp3', 'wav', 'ogg', 'oga', 'm4a',
 }
 
 # Tipos MIME aceptados; cualquier otro se rechaza por seguridad
@@ -41,6 +42,7 @@ ALLOWED_MIME_PREFIXES = [
     'text/plain',
     'text/csv', # Añadido para CSV explícitamente si no lo cubre vnd
     'application/json', # Añadido para JSON
+    'audio/',
 ]
 
 # Tamaño máximo de archivo (10 MB) por archivo

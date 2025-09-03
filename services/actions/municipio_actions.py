@@ -473,11 +473,20 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "pedir_info": "descripcion_sugerencia"
             }
 
+        ubicacion_sugerencia = action_data.get("ubicacion")
+        coordenadas_sugerencia = action_data.get("coordenadas")
+        if not ubicacion_sugerencia:
+            return {
+                "success": False,
+                "message_to_user": "¿En qué lugar aplica tu sugerencia? Podés darme una dirección o ubicación aproximada.",
+                "pedir_info": "ubicacion"
+            }
+
         nombre_vecino = action_data.get("nombre")
         dni_vecino = action_data.get("dni")
         email_vecino = action_data.get("email")
-        direccion_vecino = action_data.get("direccion")
-        if not all([nombre_vecino, dni_vecino, email_vecino, direccion_vecino]):
+        direccion_contacto = action_data.get("direccion")
+        if not all([nombre_vecino, dni_vecino, email_vecino, direccion_contacto]):
             return {
                 "success": False,
                 "message_to_user": "Para registrar tu sugerencia necesito tu nombre completo, DNI, email y dirección. Podés escribir todo en un solo mensaje.",
@@ -502,7 +511,10 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             "nombre_vecino": nombre_vecino_final,
             "dni_vecino": dni_vecino,
             "email_vecino": email_vecino,
-            "direccion": direccion_vecino,
+            "direccion": ubicacion_sugerencia,
+            "direccion_contacto": direccion_contacto,
+            "latitud": coordenadas_sugerencia.get("lat") if isinstance(coordenadas_sugerencia, dict) else None,
+            "longitud": coordenadas_sugerencia.get("lon") if isinstance(coordenadas_sugerencia, dict) else None,
         }
         if self.context.get("foto_url"):
             ticket_data["foto_url_directa"] = self.context.get("foto_url")
