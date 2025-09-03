@@ -42,13 +42,29 @@ def _registrar_envio(empresa_id: Optional[int], scope_all: bool = False):
 
 
 def _ultimo_envio(empresa_id: Optional[int]):
-    path = _rate_limit_file(empresa_id)
-    if not path.exists():
-        return None
-    try:
-        return datetime.fromisoformat(path.read_text().strip())
-    except Exception:
-        return None
+    """Return the timestamp of the last send for the empresa or global."""
+    global_last = None
+    g_path = _rate_limit_file(None)
+    if g_path.exists():
+        try:
+            global_last = datetime.fromisoformat(g_path.read_text().strip())
+        except Exception:
+            global_last = None
+
+    if empresa_id is None:
+        return global_last
+
+    local_last = None
+    l_path = _rate_limit_file(empresa_id)
+    if l_path.exists():
+        try:
+            local_last = datetime.fromisoformat(l_path.read_text().strip())
+        except Exception:
+            local_last = None
+
+    if global_last and (not local_last or global_last > local_last):
+        return global_last
+    return local_last
 
 
 @whatsapp_promocionar_bp.route('/promocionar', methods=['POST'])
