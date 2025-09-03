@@ -93,3 +93,23 @@ def enviar_mensaje_whatsapp_con_lista(numero_destino, cuerpo, titulo_lista, secc
     """Envía un mensaje de WhatsApp con una lista interactiva."""
     lista = {"titulo": titulo_lista, "secciones": secciones}
     return enviar_mensaje_whatsapp_con_fallback(numero_destino, cuerpo, lista=lista)
+
+
+def enviar_imagen_whatsapp(numero_destino, cuerpo, url_imagen):
+    """Envía un mensaje de WhatsApp con una imagen adjunta."""
+    client = _get_twilio_client()
+    if not client or not TWILIO_WHATSAPP_NUMBER:
+        return False
+
+    try:
+        message = client.messages.create(
+            from_=f"whatsapp:{TWILIO_WHATSAPP_NUMBER}",
+            to=f"whatsapp:{numero_destino}",
+            body=cuerpo,
+            media_url=[url_imagen],
+        )
+        print(f"Mensaje de WhatsApp con imagen enviado con SID: {message.sid}")
+        return True
+    except Exception as e:
+        print(f"Error al enviar mensaje de WhatsApp con imagen: {e}")
+        return False
