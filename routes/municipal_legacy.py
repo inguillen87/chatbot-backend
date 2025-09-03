@@ -377,6 +377,9 @@ def create_municipal_post(current_user):
 
         data['eventos'].insert(0, nuevo_post)  # Insertar al principio para que aparezca primero
 
+        # Mantener solo los 50 posts más recientes en el archivo
+        data['eventos'] = data['eventos'][:50]
+
         with open(agenda_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -459,6 +462,9 @@ def create_municipal_posts_bulk(current_user):
             }
             data['eventos'].insert(0, post)
             created_posts.append(post)
+
+        # Limitar a los 50 eventos más recientes
+        data['eventos'] = data['eventos'][:50]
 
         with open(agenda_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
