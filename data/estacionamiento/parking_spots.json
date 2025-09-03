@@ -3,630 +3,840 @@
     "id": 1,
     "address": "Las Heras 105, Junín, Mendoza",
     "lat": -33.023818,
-    "lon": -68.497164
+    "lon": -68.497164,
+    "available_spots": 0
   },
   {
     "id": 2,
     "address": "Sarmiento 110, Junín, Mendoza",
     "lat": -33.033311,
-    "lon": -68.493997
+    "lon": -68.493997,
+    "available_spots": 2
   },
   {
     "id": 3,
     "address": "San Martin 115, Junín, Mendoza",
     "lat": -33.021182,
-    "lon": -68.4907
+    "lon": -68.4907,
+    "available_spots": 4
   },
   {
     "id": 4,
     "address": "Patricias Mendocinas 120, Junín, Mendoza",
     "lat": -33.023667,
-    "lon": -68.500225
+    "lon": -68.500225,
+    "available_spots": 0
   },
   {
     "id": 5,
     "address": "Mitre 125, Junín, Mendoza",
     "lat": -33.024346,
-    "lon": -68.503492
+    "lon": -68.503492,
+    "available_spots": 1
   },
   {
     "id": 6,
     "address": "Lavalle 130, Junín, Mendoza",
     "lat": -33.033696,
-    "lon": -68.50583
+    "lon": -68.50583,
+    "available_spots": 3
   },
   {
     "id": 7,
     "address": "Lavalle 135, Junín, Mendoza",
     "lat": -33.038869,
-    "lon": -68.499919
+    "lon": -68.499919,
+    "available_spots": 4
   },
   {
     "id": 8,
     "address": "Las Heras 140, Junín, Mendoza",
     "lat": -33.021536,
-    "lon": -68.501096
+    "lon": -68.501096,
+    "available_spots": 1
   },
   {
     "id": 9,
     "address": "Italia 145, Junín, Mendoza",
     "lat": -33.026767,
-    "lon": -68.501453
+    "lon": -68.501453,
+    "available_spots": 1
   },
   {
     "id": 10,
     "address": "Mitre 150, Junín, Mendoza",
     "lat": -33.022338,
-    "lon": -68.498883
+    "lon": -68.498883,
+    "available_spots": 0
   },
   {
     "id": 11,
     "address": "Patricias Mendocinas 155, Junín, Mendoza",
     "lat": -33.02115,
-    "lon": -68.494709
+    "lon": -68.494709,
+    "available_spots": 1
   },
   {
     "id": 12,
     "address": "Las Heras 160, Junín, Mendoza",
     "lat": -33.020332,
-    "lon": -68.498387
+    "lon": -68.498387,
+    "available_spots": 0
   },
   {
     "id": 13,
     "address": "San Martin 165, Junín, Mendoza",
     "lat": -33.032137,
-    "lon": -68.493861
+    "lon": -68.493861,
+    "available_spots": 4
   },
   {
     "id": 14,
     "address": "Mitre 170, Junín, Mendoza",
     "lat": -33.024738,
-    "lon": -68.497861
+    "lon": -68.497861,
+    "available_spots": 1
   },
   {
     "id": 15,
     "address": "San Martin 175, Junín, Mendoza",
     "lat": -33.021873,
-    "lon": -68.509952
+    "lon": -68.509952,
+    "available_spots": 2
   },
   {
     "id": 16,
     "address": "Rivadavia 180, Junín, Mendoza",
     "lat": -33.029541,
-    "lon": -68.491898
+    "lon": -68.491898,
+    "available_spots": 3
   },
   {
     "id": 17,
     "address": "Italia 185, Junín, Mendoza",
     "lat": -33.031822,
-    "lon": -68.496839
+    "lon": -68.496839,
+    "available_spots": 2
   },
   {
     "id": 18,
     "address": "Sarmiento 190, Junín, Mendoza",
     "lat": -33.031035,
-    "lon": -68.495426
+    "lon": -68.495426,
+    "available_spots": 0
   },
   {
     "id": 19,
     "address": "Rivadavia 195, Junín, Mendoza",
     "lat": -33.034192,
-    "lon": -68.493778
+    "lon": -68.493778,
+    "available_spots": 0
   },
   {
     "id": 20,
     "address": "Mitre 200, Junín, Mendoza",
     "lat": -33.023274,
-    "lon": -68.506768
+    "lon": -68.506768,
+    "available_spots": 0
   },
   {
     "id": 21,
     "address": "Patricias Mendocinas 205, Junín, Mendoza",
     "lat": -33.035568,
-    "lon": -68.493474
+    "lon": -68.493474,
+    "available_spots": 2
   },
   {
     "id": 22,
     "address": "Mitre 210, Junín, Mendoza",
     "lat": -33.026196,
-    "lon": -68.507517
+    "lon": -68.507517,
+    "available_spots": 2
   },
   {
     "id": 23,
     "address": "Belgrano 215, Junín, Mendoza",
     "lat": -33.036031,
-    "lon": -68.509621
+    "lon": -68.509621,
+    "available_spots": 2
   },
   {
     "id": 24,
     "address": "Rivadavia 220, Junín, Mendoza",
     "lat": -33.021068,
-    "lon": -68.498425
+    "lon": -68.498425,
+    "available_spots": 0
   },
   {
     "id": 25,
     "address": "Lavalle 225, Junín, Mendoza",
     "lat": -33.034659,
-    "lon": -68.501704
+    "lon": -68.501704,
+    "available_spots": 1
   },
   {
     "id": 26,
     "address": "Las Heras 230, Junín, Mendoza",
     "lat": -33.02928,
-    "lon": -68.496137
+    "lon": -68.496137,
+    "available_spots": 2
   },
   {
     "id": 27,
     "address": "San Martin 235, Junín, Mendoza",
     "lat": -33.035359,
-    "lon": -68.500193
+    "lon": -68.500193,
+    "available_spots": 0
   },
   {
     "id": 28,
     "address": "Belgrano 240, Junín, Mendoza",
     "lat": -33.031119,
-    "lon": -68.49359
+    "lon": -68.49359,
+    "available_spots": 3
   },
   {
     "id": 29,
     "address": "San Martin 245, Junín, Mendoza",
     "lat": -33.019945,
-    "lon": -68.503379
+    "lon": -68.503379,
+    "available_spots": 1
   },
   {
     "id": 30,
     "address": "Las Heras 250, Junín, Mendoza",
     "lat": -33.031225,
-    "lon": -68.50406
+    "lon": -68.50406,
+    "available_spots": 2
   },
   {
     "id": 31,
     "address": "Rivadavia 255, Junín, Mendoza",
     "lat": -33.02548,
-    "lon": -68.498207
+    "lon": -68.498207,
+    "available_spots": 0
   },
   {
     "id": 32,
     "address": "Sarmiento 260, Junín, Mendoza",
     "lat": -33.019504,
-    "lon": -68.498054
+    "lon": -68.498054,
+    "available_spots": 3
   },
   {
     "id": 33,
     "address": "Las Heras 265, Junín, Mendoza",
     "lat": -33.03327,
-    "lon": -68.502591
+    "lon": -68.502591,
+    "available_spots": 2
   },
   {
     "id": 34,
     "address": "Mitre 270, Junín, Mendoza",
     "lat": -33.032792,
-    "lon": -68.503841
+    "lon": -68.503841,
+    "available_spots": 1
   },
   {
     "id": 35,
     "address": "Italia 275, Junín, Mendoza",
     "lat": -33.027673,
-    "lon": -68.500378
+    "lon": -68.500378,
+    "available_spots": 0
   },
   {
     "id": 36,
     "address": "Patricias Mendocinas 280, Junín, Mendoza",
     "lat": -33.020873,
-    "lon": -68.496436
+    "lon": -68.496436,
+    "available_spots": 0
   },
   {
     "id": 37,
     "address": "Italia 285, Junín, Mendoza",
     "lat": -33.024819,
-    "lon": -68.508736
+    "lon": -68.508736,
+    "available_spots": 2
   },
   {
     "id": 38,
     "address": "Patricias Mendocinas 290, Junín, Mendoza",
     "lat": -33.025599,
-    "lon": -68.498048
+    "lon": -68.498048,
+    "available_spots": 1
   },
   {
     "id": 39,
     "address": "Belgrano 295, Junín, Mendoza",
     "lat": -33.025305,
-    "lon": -68.492606
+    "lon": -68.492606,
+    "available_spots": 1
   },
   {
     "id": 40,
     "address": "Colón 300, Junín, Mendoza",
     "lat": -33.038792,
-    "lon": -68.492793
+    "lon": -68.492793,
+    "available_spots": 2
   },
   {
     "id": 41,
     "address": "Rivadavia 305, Junín, Mendoza",
     "lat": -33.032696,
-    "lon": -68.491561
+    "lon": -68.491561,
+    "available_spots": 2
   },
   {
     "id": 42,
     "address": "Lavalle 310, Junín, Mendoza",
     "lat": -33.03868,
-    "lon": -68.507232
+    "lon": -68.507232,
+    "available_spots": 1
   },
   {
     "id": 43,
     "address": "Mitre 315, Junín, Mendoza",
     "lat": -33.035566,
-    "lon": -68.496242
+    "lon": -68.496242,
+    "available_spots": 3
   },
   {
     "id": 44,
     "address": "Las Heras 320, Junín, Mendoza",
     "lat": -33.032752,
-    "lon": -68.508571
+    "lon": -68.508571,
+    "available_spots": 4
   },
   {
     "id": 45,
     "address": "Rivadavia 325, Junín, Mendoza",
     "lat": -33.030937,
-    "lon": -68.492485
+    "lon": -68.492485,
+    "available_spots": 2
   },
   {
     "id": 46,
     "address": "Colón 330, Junín, Mendoza",
     "lat": -33.021837,
-    "lon": -68.505104
+    "lon": -68.505104,
+    "available_spots": 3
   },
   {
     "id": 47,
     "address": "San Martin 335, Junín, Mendoza",
     "lat": -33.037529,
-    "lon": -68.501485
+    "lon": -68.501485,
+    "available_spots": 3
   },
   {
     "id": 48,
     "address": "Las Heras 340, Junín, Mendoza",
     "lat": -33.029111,
-    "lon": -68.509587
+    "lon": -68.509587,
+    "available_spots": 2
   },
   {
     "id": 49,
     "address": "Patricias Mendocinas 345, Junín, Mendoza",
     "lat": -33.033561,
-    "lon": -68.492915
+    "lon": -68.492915,
+    "available_spots": 2
   },
   {
     "id": 50,
     "address": "San Martin 350, Junín, Mendoza",
     "lat": -33.038451,
-    "lon": -68.498393
+    "lon": -68.498393,
+    "available_spots": 4
   },
   {
     "id": 51,
     "address": "Belgrano 355, Junín, Mendoza",
     "lat": -33.019917,
-    "lon": -68.506606
+    "lon": -68.506606,
+    "available_spots": 1
   },
   {
     "id": 52,
     "address": "Colón 360, Junín, Mendoza",
     "lat": -33.030576,
-    "lon": -68.492263
+    "lon": -68.492263,
+    "available_spots": 2
   },
   {
     "id": 53,
     "address": "Colón 365, Junín, Mendoza",
     "lat": -33.023849,
-    "lon": -68.5093
+    "lon": -68.5093,
+    "available_spots": 4
   },
   {
     "id": 54,
     "address": "Colón 370, Junín, Mendoza",
     "lat": -33.019308,
-    "lon": -68.491714
+    "lon": -68.491714,
+    "available_spots": 4
   },
   {
     "id": 55,
     "address": "Belgrano 375, Junín, Mendoza",
     "lat": -33.038674,
-    "lon": -68.499496
+    "lon": -68.499496,
+    "available_spots": 3
   },
   {
     "id": 56,
     "address": "Italia 380, Junín, Mendoza",
     "lat": -33.03819,
-    "lon": -68.501712
+    "lon": -68.501712,
+    "available_spots": 4
   },
   {
     "id": 57,
     "address": "Sarmiento 385, Junín, Mendoza",
     "lat": -33.034848,
-    "lon": -68.49271
+    "lon": -68.49271,
+    "available_spots": 2
   },
   {
     "id": 58,
     "address": "San Martin 390, Junín, Mendoza",
     "lat": -33.033552,
-    "lon": -68.490317
+    "lon": -68.490317,
+    "available_spots": 4
   },
   {
     "id": 59,
     "address": "Mitre 395, Junín, Mendoza",
     "lat": -33.026174,
-    "lon": -68.490484
+    "lon": -68.490484,
+    "available_spots": 2
   },
   {
     "id": 60,
     "address": "Mitre 400, Junín, Mendoza",
     "lat": -33.032418,
-    "lon": -68.496993
+    "lon": -68.496993,
+    "available_spots": 2
   },
   {
     "id": 61,
     "address": "Belgrano 405, Junín, Mendoza",
     "lat": -33.02996,
-    "lon": -68.505684
+    "lon": -68.505684,
+    "available_spots": 0
   },
   {
     "id": 62,
     "address": "Belgrano 410, Junín, Mendoza",
     "lat": -33.020422,
-    "lon": -68.501678
+    "lon": -68.501678,
+    "available_spots": 1
   },
   {
     "id": 63,
     "address": "Belgrano 415, Junín, Mendoza",
     "lat": -33.028255,
-    "lon": -68.508238
+    "lon": -68.508238,
+    "available_spots": 1
   },
   {
     "id": 64,
     "address": "Mitre 420, Junín, Mendoza",
     "lat": -33.029629,
-    "lon": -68.496762
+    "lon": -68.496762,
+    "available_spots": 4
   },
   {
     "id": 65,
     "address": "Italia 425, Junín, Mendoza",
     "lat": -33.030473,
-    "lon": -68.507883
+    "lon": -68.507883,
+    "available_spots": 4
   },
   {
     "id": 66,
     "address": "Lavalle 430, Junín, Mendoza",
     "lat": -33.021469,
-    "lon": -68.500192
+    "lon": -68.500192,
+    "available_spots": 0
   },
   {
     "id": 67,
     "address": "Las Heras 435, Junín, Mendoza",
     "lat": -33.021823,
-    "lon": -68.504664
+    "lon": -68.504664,
+    "available_spots": 0
   },
   {
     "id": 68,
     "address": "Belgrano 440, Junín, Mendoza",
     "lat": -33.037276,
-    "lon": -68.501401
+    "lon": -68.501401,
+    "available_spots": 4
   },
   {
     "id": 69,
     "address": "Belgrano 445, Junín, Mendoza",
     "lat": -33.023532,
-    "lon": -68.503239
+    "lon": -68.503239,
+    "available_spots": 2
   },
   {
     "id": 70,
     "address": "Lavalle 450, Junín, Mendoza",
     "lat": -33.032564,
-    "lon": -68.508996
+    "lon": -68.508996,
+    "available_spots": 4
   },
   {
     "id": 71,
     "address": "Mitre 455, Junín, Mendoza",
     "lat": -33.019938,
-    "lon": -68.498575
+    "lon": -68.498575,
+    "available_spots": 4
   },
   {
     "id": 72,
     "address": "Italia 460, Junín, Mendoza",
     "lat": -33.03294,
-    "lon": -68.494666
+    "lon": -68.494666,
+    "available_spots": 1
   },
   {
     "id": 73,
     "address": "San Martin 465, Junín, Mendoza",
     "lat": -33.024851,
-    "lon": -68.497733
+    "lon": -68.497733,
+    "available_spots": 1
   },
   {
     "id": 74,
     "address": "Rivadavia 470, Junín, Mendoza",
     "lat": -33.036114,
-    "lon": -68.496782
+    "lon": -68.496782,
+    "available_spots": 1
   },
   {
     "id": 75,
     "address": "Mitre 475, Junín, Mendoza",
     "lat": -33.037888,
-    "lon": -68.50022
+    "lon": -68.50022,
+    "available_spots": 4
   },
   {
     "id": 76,
     "address": "Colón 480, Junín, Mendoza",
     "lat": -33.023893,
-    "lon": -68.5073
+    "lon": -68.5073,
+    "available_spots": 4
   },
   {
     "id": 77,
     "address": "Rivadavia 485, Junín, Mendoza",
     "lat": -33.032821,
-    "lon": -68.499986
+    "lon": -68.499986,
+    "available_spots": 3
   },
   {
     "id": 78,
     "address": "Italia 490, Junín, Mendoza",
     "lat": -33.034792,
-    "lon": -68.500936
+    "lon": -68.500936,
+    "available_spots": 0
   },
   {
     "id": 79,
     "address": "Sarmiento 495, Junín, Mendoza",
     "lat": -33.032701,
-    "lon": -68.505988
+    "lon": -68.505988,
+    "available_spots": 0
   },
   {
     "id": 80,
     "address": "Mitre 500, Junín, Mendoza",
     "lat": -33.030539,
-    "lon": -68.505373
+    "lon": -68.505373,
+    "available_spots": 2
   },
   {
     "id": 81,
     "address": "Las Heras 505, Junín, Mendoza",
     "lat": -33.037679,
-    "lon": -68.492328
+    "lon": -68.492328,
+    "available_spots": 3
   },
   {
     "id": 82,
     "address": "Sarmiento 510, Junín, Mendoza",
     "lat": -33.031695,
-    "lon": -68.502322
+    "lon": -68.502322,
+    "available_spots": 3
   },
   {
     "id": 83,
     "address": "Las Heras 515, Junín, Mendoza",
     "lat": -33.022704,
-    "lon": -68.494809
+    "lon": -68.494809,
+    "available_spots": 4
   },
   {
     "id": 84,
     "address": "Italia 520, Junín, Mendoza",
     "lat": -33.031714,
-    "lon": -68.496374
+    "lon": -68.496374,
+    "available_spots": 0
   },
   {
     "id": 85,
     "address": "Patricias Mendocinas 525, Junín, Mendoza",
     "lat": -33.036308,
-    "lon": -68.492791
+    "lon": -68.492791,
+    "available_spots": 2
   },
   {
     "id": 86,
     "address": "Patricias Mendocinas 530, Junín, Mendoza",
     "lat": -33.031156,
-    "lon": -68.496048
+    "lon": -68.496048,
+    "available_spots": 3
   },
   {
     "id": 87,
     "address": "Colón 535, Junín, Mendoza",
     "lat": -33.026899,
-    "lon": -68.505564
+    "lon": -68.505564,
+    "available_spots": 3
   },
   {
     "id": 88,
     "address": "Belgrano 540, Junín, Mendoza",
     "lat": -33.03211,
-    "lon": -68.498236
+    "lon": -68.498236,
+    "available_spots": 3
   },
   {
     "id": 89,
     "address": "San Martin 545, Junín, Mendoza",
     "lat": -33.033641,
-    "lon": -68.504652
+    "lon": -68.504652,
+    "available_spots": 2
   },
   {
     "id": 90,
     "address": "Belgrano 550, Junín, Mendoza",
     "lat": -33.031284,
-    "lon": -68.50232
+    "lon": -68.50232,
+    "available_spots": 0
   },
   {
     "id": 91,
     "address": "Patricias Mendocinas 555, Junín, Mendoza",
     "lat": -33.020853,
-    "lon": -68.505278
+    "lon": -68.505278,
+    "available_spots": 3
   },
   {
     "id": 92,
     "address": "Belgrano 560, Junín, Mendoza",
     "lat": -33.021023,
-    "lon": -68.509277
+    "lon": -68.509277,
+    "available_spots": 4
   },
   {
     "id": 93,
     "address": "Colón 565, Junín, Mendoza",
     "lat": -33.030682,
-    "lon": -68.497419
+    "lon": -68.497419,
+    "available_spots": 3
   },
   {
     "id": 94,
     "address": "Sarmiento 570, Junín, Mendoza",
     "lat": -33.019197,
-    "lon": -68.5051
+    "lon": -68.5051,
+    "available_spots": 1
   },
   {
     "id": 95,
     "address": "Patricias Mendocinas 575, Junín, Mendoza",
     "lat": -33.030009,
-    "lon": -68.491461
+    "lon": -68.491461,
+    "available_spots": 4
   },
   {
     "id": 96,
     "address": "Las Heras 580, Junín, Mendoza",
     "lat": -33.036332,
-    "lon": -68.50512
+    "lon": -68.50512,
+    "available_spots": 2
   },
   {
     "id": 97,
     "address": "Lavalle 585, Junín, Mendoza",
     "lat": -33.020294,
-    "lon": -68.50845
+    "lon": -68.50845,
+    "available_spots": 4
   },
   {
     "id": 98,
     "address": "Mitre 590, Junín, Mendoza",
     "lat": -33.031662,
-    "lon": -68.506695
+    "lon": -68.506695,
+    "available_spots": 2
   },
   {
     "id": 99,
     "address": "Lavalle 595, Junín, Mendoza",
     "lat": -33.034213,
-    "lon": -68.501448
+    "lon": -68.501448,
+    "available_spots": 3
   },
   {
     "id": 100,
     "address": "Mitre 600, Junín, Mendoza",
     "lat": -33.029288,
-    "lon": -68.501883
+    "lon": -68.501883,
+    "available_spots": 0
   },
   {
     "id": 101,
     "address": "Playa Municipal, Rivadavia 200, Junín, Mendoza",
     "lat": -33.0285,
-    "lon": -68.4925
+    "lon": -68.4925,
+    "available_spots": 1
   },
   {
     "id": 102,
     "address": "Estacionamiento Centro, San Martín 220, Junín, Mendoza",
     "lat": -33.0225,
-    "lon": -68.499
+    "lon": -68.499,
+    "available_spots": 0
   },
   {
     "id": 103,
     "address": "Playa Sur, Italia 300, Junín, Mendoza",
     "lat": -33.035,
-    "lon": -68.497
+    "lon": -68.497,
+    "available_spots": 0
   },
   {
     "id": 104,
     "address": "Playa Norte, Colón 400, Junín, Mendoza",
     "lat": -33.0205,
-    "lon": -68.503
+    "lon": -68.503,
+    "available_spots": 4
   },
   {
     "id": 105,
     "address": "Estacionamiento Hospital, Rivadavia 450, Junín, Mendoza",
     "lat": -33.027,
-    "lon": -68.506
+    "lon": -68.506,
+    "available_spots": 4
+  },
+  {
+    "address": "San Martín 59, Ciudad de Junín, Mendoza",
+    "lat": -33.0872,
+    "lon": -68.4687,
+    "id": 106,
+    "available_spots": 4
+  },
+  {
+    "address": "25 de Mayo 100, La Colonia, Junín, Mendoza",
+    "lat": -32.9676,
+    "lon": -68.4761,
+    "id": 107,
+    "available_spots": 4
+  },
+  {
+    "address": "Florida 50, Los Barriales, Junín, Mendoza",
+    "lat": -32.9495,
+    "lon": -68.5201,
+    "id": 108,
+    "available_spots": 4
+  },
+  {
+    "address": "Ruta 60 km 1020, Medrano, Junín, Mendoza",
+    "lat": -32.9671,
+    "lon": -68.5525,
+    "id": 109,
+    "available_spots": 3
+  },
+  {
+    "address": "Mitre 150, Philipps, Junín, Mendoza",
+    "lat": -32.9132,
+    "lon": -68.5141,
+    "id": 110,
+    "available_spots": 0
+  },
+  {
+    "address": "La Posta 150, Alto Verde, Junín, Mendoza",
+    "lat": -32.984,
+    "lon": -68.4856,
+    "id": 111,
+    "available_spots": 1
+  },
+  {
+    "address": "San Martín s/n, Mundo Nuevo, Junín, Mendoza",
+    "lat": -33.0077,
+    "lon": -68.4455,
+    "id": 112,
+    "available_spots": 4
+  },
+  {
+    "address": "Ruta 50 km 1034, Algarrobo Grande, Junín, Mendoza",
+    "lat": -33.1205,
+    "lon": -68.438,
+    "id": 113,
+    "available_spots": 3
+  },
+  {
+    "address": "Ruta 60 y Calle Retamo, Retamo, Junín, Mendoza",
+    "lat": -33.0396,
+    "lon": -68.4601,
+    "id": 114,
+    "available_spots": 4
+  },
+  {
+    "address": "Rivadavia 300, Ciudad de Junín, Mendoza",
+    "lat": -33.022,
+    "lon": -68.495,
+    "id": 115,
+    "available_spots": 1
+  },
+  {
+    "address": "Chile 250, Ciudad de Junín, Mendoza",
+    "lat": -33.025,
+    "lon": -68.5,
+    "id": 116,
+    "available_spots": 2
+  },
+  {
+    "address": "Moreno 180, Ciudad de Junín, Mendoza",
+    "lat": -33.03,
+    "lon": -68.492,
+    "id": 117,
+    "available_spots": 3
+  },
+  {
+    "address": "Laprida 75, Ciudad de Junín, Mendoza",
+    "lat": -33.035,
+    "lon": -68.488,
+    "id": 118,
+    "available_spots": 4
+  },
+  {
+    "address": "Córdoba 210, Ciudad de Junín, Mendoza",
+    "lat": -33.028,
+    "lon": -68.487,
+    "id": 119,
+    "available_spots": 2
+  },
+  {
+    "address": "Neuquén 90, Ciudad de Junín, Mendoza",
+    "lat": -33.02,
+    "lon": -68.494,
+    "id": 120,
+    "available_spots": 2
   }
 ]
