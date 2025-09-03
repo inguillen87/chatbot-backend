@@ -5,10 +5,36 @@ from typing import Dict, Any, List, Optional
 # from models import AnalisisArchivo # Movido para evitar importación circular
 # Asumiendo que robust_chat está en llm_utils o cohere_ai
 from services.llm_utils import robust_chat, _clean_llm_json_output # _clean_llm_json_output es de llm_utils
+from services.google_speech_to_text import SpeechToTextService
 
 logger = logging.getLogger(__name__)
 
 class InterpretacionService:
+
+    def interpretar_archivo(self, archivo_adjunto) -> Dict[str, Any]:
+        """Interpreta un archivo adjunto y extrae texto si es posible.
+
+        Actualmente solo se soporta la transcripción de archivos de audio. Para
+        otros tipos de archivos se devuelve un resultado vacío para no
+        introducir lógica basada en palabras clave en Python, tal como indica
+        la arquitectura del proyecto.
+        """
+        resultado = {"datos_estructurados": None, "texto_extraido": None}
+        if not archivo_adjunto or not getattr(archivo_adjunto, "mime", None):
+            return resultado
+
+        mime = archivo_adjunto.mime.lower()
+        if mime.startswith("audio/"):
+            stt_service = SpeechToTextService()
+            try:
+                texto = stt_service.transcribe_audio_url(archivo_adjunto.url, mime)
+            except Exception as e:
+                logger.error(f"Error transcribiendo audio {archivo_adjunto.url}: {e}", exc_info=True)
+                texto = ""
+            if texto:
+                resultado["texto_extraido"] = texto
+
+        return resultado
 
     def _llamar_llm_para_extraccion_ticket_municipal(self, texto_completo: str, user_id: Optional[int] = None) -> Dict[str, Any]:
         """
