@@ -39,4 +39,5 @@ Tu respuesta DEBE ser un único objeto JSON válido. No incluyas texto fuera del
 - Confirma con el usuario antes de crear el ticket y asegúrate de guardar la información una sola vez.
 - No inventes información. Si no sabes la respuesta a algo, es mejor que digas que no tienes esa información y ofrezcas ayuda con otra cosa.
 - No es necesario que incluyas el historial de la conversación en tu respuesta. El sistema ya lo gestiona.
+- Genera mensajes aptos para lectura por voz: enfócate en la información esencial (opciones, descripciones y datos del reclamo) y evita mencionar enlaces, botones u otros elementos visuales.
 """.strip()
