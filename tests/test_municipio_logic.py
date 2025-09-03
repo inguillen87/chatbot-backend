@@ -57,6 +57,7 @@ from services.municipio_responder import (
     responder_municipio,
     CONTEXTO_MUNICIPIO,
     ConversationState,
+    ReclamoState,
 )
 
 class DummyTicket:
@@ -180,6 +181,78 @@ class MunicipioLogicTests(unittest.TestCase):
         kwargs = mock_start_flow.call_args.kwargs
         self.assertEqual(kwargs.get("categoria_inicial"), "Luminaria")
         self.assertEqual(resp["message_body"], "flujoiniciado")
+
+    @patch('services.municipio_responder.ReclamoFlowHandler.start_flow')
+    def test_auto_description_and_address(self, mock_start_flow):
+        mock_start_flow.return_value = {"message_body": "flujoiniciado"}
+
+        from models import ChatSessionContext, db
+        chat_context = ChatSessionContext(
+            chat_session_id="test_session_desc", context_data={}
+        )
+        db.session.add(chat_context)
+        db.session.commit()
+
+        message = "Quiero hacer un reclamo de luminaria, hay un poste caído en calle Sarmiento 125"
+
+        resp = responder_municipio(
+            pregunta_original=message,
+            owner_user=self.owner_user,
+            rubro_obj=self.owner_user.rubro,
+            viewer_user=self.viewer_user,
+            chat_db_context=chat_context,
+        )
+
+        mock_start_flow.assert_called_once()
+        kwargs = mock_start_flow.call_args.kwargs
+        datos = kwargs.get("datos_iniciales")
+        self.assertEqual(kwargs.get("categoria_inicial"), "Luminaria")
+        self.assertEqual(datos.get("descripcion"), "hay un poste caído en calle Sarmiento 125")
+        self.assertEqual(datos.get("direccion"), "calle Sarmiento 125")
+        self.assertEqual(resp["message_body"], "flujoiniciado")
+
+    @patch('services.municipio_responder.ReclamoFlowHandler.handle')
+    @patch('services.municipio_responder.ReclamoFlowHandler.start_flow')
+    def test_photo_in_active_flow_keeps_context(self, mock_start_flow, mock_handle):
+        mock_handle.return_value = {"message_body": "ok"}
+
+        from models import ChatSessionContext, db
+        chat_context = ChatSessionContext(
+            chat_session_id="test_session_photo",
+            context_data={
+                CONTEXTO_MUNICIPIO: {
+                    "reclamo_flow_v2": {
+                        "state": ReclamoState.ESPERANDO_FOTO.name,
+                        "datos_reclamo": {"categoria": "Luminaria"},
+                    }
+                }
+            },
+        )
+        db.session.add(chat_context)
+        db.session.commit()
+
+        datos_interpretados = {
+            "es_reclamo": True,
+            "categoria_sugerida": "Luminaria",
+            "descripcion_sugerida": "poste caido",
+        }
+
+        resp = responder_municipio(
+            pregunta_original="",
+            owner_user=self.owner_user,
+            rubro_obj=self.owner_user.rubro,
+            viewer_user=self.viewer_user,
+            chat_db_context=chat_context,
+            datos_interpretados_archivo=datos_interpretados,
+            es_foto=True,
+            foto_url="http://example.com/foto.jpg",
+        )
+
+        mock_start_flow.assert_not_called()
+        mock_handle.assert_called_once()
+        flow_data = chat_context.context_data[CONTEXTO_MUNICIPIO]["reclamo_flow_v2"]["datos_reclamo"]
+        self.assertEqual(flow_data.get("foto_url"), "http://example.com/foto.jpg")
+        self.assertEqual(resp["message_body"], "ok")
 
 
 if __name__ == '__main__':

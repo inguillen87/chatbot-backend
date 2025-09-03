@@ -76,7 +76,10 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
 
     messages = _prune_messages(messages)
 
-    logger.info(f"Sending to OpenAI. Message: {message[:100]}...")
+    total_prompt_tokens = sum(_estimate_tokens(m.get("content", "")) for m in messages)
+    logger.info(
+        f"Sending to OpenAI. Message: {message[:100]}... Estimated prompt tokens: {total_prompt_tokens}"
+    )
 
     try:
         # 3. Make the API call
@@ -93,11 +96,17 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
         # 4. Parse the response
         parsed_response = json.loads(raw_response_text)
 
+        if getattr(response, "usage", None):
+            usage = response.usage
+            logger.info(
+                f"OpenAI usage - prompt: {usage.prompt_tokens}, completion: {usage.completion_tokens}, total: {usage.total_tokens}"
+            )
+
         # Ensure the response has the keys our application expects
         parsed_response.setdefault('message_body', parsed_response.get('respuesta_usuario', ''))
         parsed_response.setdefault('accion_backend', 'responder_directamente')
 
-        return parsed_response, {}
+        return parsed_response, {"usage": getattr(response, "usage", None), "prompt_tokens_estimate": total_prompt_tokens}
 
     except Exception as e:
         logger.error(f"Error calling OpenAI API: {e}", exc_info=True)
