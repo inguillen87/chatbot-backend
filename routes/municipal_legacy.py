@@ -295,7 +295,7 @@ def list_municipal_posts(current_user):
                 current_app.logger.warning("agenda_cultural.json corrupto, se recreará.")
                 return jsonify([]), 200
         eventos = data.get('eventos', [])
-        return jsonify(eventos), 200
+        return jsonify(eventos[:10]), 200
     except Exception as e:
         current_app.logger.error(f"Error al leer agenda_cultural.json: {e}", exc_info=True)
         return jsonify({"error": "Error interno al leer la agenda."}), 500
@@ -395,12 +395,13 @@ def create_municipal_posts_bulk(current_user):
     if current_user.tipo_chat != "municipio":
         return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
 
-    payload = request.get_json(silent=True) or {}
+    raw_payload = request.get_json(silent=True)
+    payload = raw_payload if isinstance(raw_payload, dict) else {}
     events = payload.get("events")
 
     if events is None:
-        # Allow a raw agenda text via JSON or form field ``text``
-        text = payload.get("text") or request.form.get("text")
+        # Allow a raw agenda text via JSON, plain body or form field ``text``
+        text = payload.get("text") or (raw_payload if isinstance(raw_payload, str) else None) or request.form.get("text")
         if text:
             from utils.agenda_parser import parse_agenda_text
             events = parse_agenda_text(text)
