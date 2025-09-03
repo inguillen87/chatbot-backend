@@ -229,6 +229,56 @@ def test_bulk_create_municipal_posts(client):
         os.remove(agenda_path)
 
 
+def test_bulk_create_municipal_posts_spanish_keys(client):
+    with app.app_context():
+        admin_user = User.query.filter_by(email="admin_muni@test.com").first()
+        token = generar_token(
+            admin_user.id,
+            admin_user.rol,
+            admin_user.tipo_chat,
+            admin_user.municipio_id,
+            admin_user.pyme_id,
+        )
+
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Content-Type': 'application/json',
+    }
+
+    events = [
+        {
+            "titulo": "Feria del Libro",
+            "dia": "Lunes 1",
+            "hora": "10.00 hs.",
+            "ubicacion": "Plaza Central",
+        },
+        {
+            "titulo": "Festival de Música",
+            "dia": "Martes 2",
+            "ubicacion": "Teatro Municipal",
+        },
+    ]
+
+    agenda_path = AGENDA_PATH
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
+    response = client.post(
+        '/municipal/posts/bulk',
+        data=json.dumps({"events": events}),
+        headers=headers,
+    )
+
+    assert response.status_code == 201
+    data_resp = response.get_json()
+    assert len(data_resp['created']) == 2
+    titles = [p['titulo'] for p in data_resp['created']]
+    assert "Feria del Libro" in titles and "Festival de Música" in titles
+
+    if os.path.exists(agenda_path):
+        os.remove(agenda_path)
+
+
 SAMPLE_TEXT = (
     "*Jueves 28*\n"
     "🕑9.30 hs.\n"
