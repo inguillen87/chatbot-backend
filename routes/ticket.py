@@ -499,6 +499,8 @@ def _serialize_ticket_details(ticket, ticket_type):
         "ubicacion_geografica": {
             "latitud": getattr(ticket, 'latitud', None),
             "longitud": getattr(ticket, 'longitud', None),
+            "distrito": getattr(ticket, 'distrito', None),
+            "direccion": getattr(ticket, 'direccion', None),
         },
         "canal_ingreso": getattr(ticket, 'canal_ingreso', None),
         "contacto_seguimiento": getattr(ticket, 'contacto_seguimiento', None),
