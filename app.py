@@ -229,6 +229,7 @@ def create_app(config_class=Config):
             "X-Anon-Id",
             "Anon-Id",
             "Cache-Control",
+            "token",
         ],
         expose_headers=["X-Anon-Id", "Anon-Id"],
     )
