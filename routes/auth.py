@@ -17,7 +17,7 @@ from services.pymes import get_or_create_pyme_user_by_token
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 
-from utils.auth_helpers import token_requerido, obtener_token, get_or_create_anon_id
+from utils.auth_helpers import token_requerido, obtener_token, get_or_create_anon_id, generar_token, anon_o_token_requerido
 from flask_login import current_user
 
 
@@ -498,6 +498,32 @@ def login_from_widget(owner_user):
     if anon_id:
         resp.headers["X-Anon-Id"] = anon_id
         resp.headers["Anon-Id"] = anon_id
+    return resp
+
+
+@auth_bp.route('/widget-token', methods=['POST', 'OPTIONS'], strict_slashes=False)
+@anon_o_token_requerido
+def get_widget_token(current_user, owner_user, anon_id):
+    """Genera un token JWT para sesiones del widget."""
+    if request.method == 'OPTIONS':
+        return '', 204
+
+    if not owner_user:
+        resp = jsonify({"error": "Token inválido"})
+        resp.headers.setdefault("X-Anon-Id", anon_id)
+        resp.headers.setdefault("Anon-Id", anon_id)
+        return resp, 401
+
+    nuevo_token = generar_token(
+        owner_user.id,
+        owner_user.rol,
+        owner_user.tipo_chat,
+        owner_user.municipio_id,
+        owner_user.pyme_id,
+    )
+    resp = jsonify({"token": nuevo_token})
+    resp.headers.setdefault("X-Anon-Id", anon_id)
+    resp.headers.setdefault("Anon-Id", anon_id)
     return resp
 
 
