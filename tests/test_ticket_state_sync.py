@@ -71,5 +71,33 @@ class TicketStateSyncTest(unittest.TestCase):
         self.assertEqual(actualizado.estado, 'cerrado')
         self.assertEqual(actualizado.estado_cliente, 'cerrado')
 
+    def test_get_ticket_estados_endpoint(self):
+        res_login = self.client.post(
+            '/auth/login',
+            data=json.dumps({'email': 'pyme@example.com', 'password': 'pass'}),
+            content_type='application/json'
+        )
+        token = json.loads(res_login.data)['token']
+        res = self.client.get('/tickets/estados', headers={'Authorization': f'Bearer {token}'})
+        self.assertEqual(res.status_code, 200)
+        data = json.loads(res.data)
+        self.assertIn('estados', data)
+        self.assertIn('en_proceso', data['estados'])
+
+    def test_invalid_estado_rejected(self):
+        res_login = self.client.post(
+            '/auth/login',
+            data=json.dumps({'email': 'pyme@example.com', 'password': 'pass'}),
+            content_type='application/json'
+        )
+        token = json.loads(res_login.data)['token']
+        res = self.client.put(
+            f'/tickets/pyme/{self.pyme_ticket.id}/estado',
+            headers={'Authorization': f'Bearer {token}'},
+            data=json.dumps({'estado': 'invalido'}),
+            content_type='application/json'
+        )
+        self.assertEqual(res.status_code, 400)
+
 if __name__ == '__main__':
     unittest.main()
