@@ -2839,7 +2839,12 @@ def responder_municipio(
     # Allow keyword shortcuts even when a conversation state is active,
     # but avoid treating numeric replies as global menu shortcuts so that
     # sub-menu selections like "3" are handled within their local context.
-    if not action and pregunta_str and not pregunta_str.strip().isdigit():
+    if (
+        not action
+        and pregunta_str
+        and not pregunta_str.strip().isdigit()
+        and estado_conversacion != ConversationState.ESPERANDO_INTENCION_UBICACION.name
+    ):
         inferred_action = find_global_menu_action(pregunta_str)
         if inferred_action:
             contexto_municipio_actual['estado_conversacion'] = None

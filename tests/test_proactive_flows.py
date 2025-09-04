@@ -119,10 +119,8 @@ class TestProactiveFlows(unittest.TestCase):
         with patch('services.municipio_responder.ReclamoFlowHandler.start_flow') as mock_start_flow:
             mock_start_flow.return_value = {"message_body": "OK, starting claim."}
 
-            action_payload = {"action": "iniciar_reclamo_con_ubicacion"}
-
             response_2 = responder_municipio(
-                pregunta_original=action_payload,
+                pregunta_original="iniciar_reclamo_con_ubicacion",
                 owner_user=owner_user,
                 rubro_obj=rubro_obj,
                 viewer_user=owner_user,
@@ -133,6 +131,7 @@ class TestProactiveFlows(unittest.TestCase):
             mock_start_flow.assert_called_once()
             call_args = mock_start_flow.call_args[1]
             self.assertIn("Plaza Independencia, Mendoza", call_args['datos_iniciales']['direccion'])
+            self.assertEqual(response_2["message_body"], "OK, starting claim.")
 
     def test_location_menu_accepts_numeric_selection(self):
         owner_user = User.query.get(1)
