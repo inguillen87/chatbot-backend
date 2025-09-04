@@ -602,6 +602,7 @@ class ServicioTickets:
             "nuevo": {"completado": False, "fecha": None},
             "en_proceso": {"completado": False, "fecha": None},
             "completado": {"completado": False, "fecha": None},
+            "resuelto": {"completado": False, "fecha": None},
         }
 
         for evento in timeline:
@@ -609,15 +610,19 @@ class ServicioTickets:
                 estados["nuevo"] = {"completado": True, "fecha": evento.get("fecha")}
             elif evento.get("tipo") == "estado":
                 nombre_estado = evento.get("estado")
-                if nombre_estado in ("en_progreso", "en progreso"):
+                if nombre_estado in ("en_progreso", "en progreso", "en_proceso"):
                     estados["en_proceso"] = {"completado": True, "fecha": evento.get("fecha")}
-                elif nombre_estado in ("resuelto", "cerrado", "completado"):
+                elif nombre_estado == "completado":
                     estados["completado"] = {"completado": True, "fecha": evento.get("fecha")}
+                elif nombre_estado in ("resuelto", "cerrado"):
+                    estados["completado"] = {"completado": True, "fecha": evento.get("fecha")}
+                    estados["resuelto"] = {"completado": True, "fecha": evento.get("fecha")}
 
         return [
             {"estado": "nuevo", **estados["nuevo"]},
             {"estado": "en_proceso", **estados["en_proceso"]},
             {"estado": "completado", **estados["completado"]},
+            {"estado": "resuelto", **estados["resuelto"]},
         ]
 
     def migrar_tickets_de_anonimo(self, anon_id: str, nuevo_user_id: int) -> int:

@@ -43,7 +43,7 @@ class TicketProgressRouteTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertIn('progreso_estados', data)
-        self.assertEqual(len(data['progreso_estados']), 3)
+        self.assertEqual(len(data['progreso_estados']), 4)
         for estado in data['progreso_estados']:
             self.assertTrue(estado['completado'])
         self.assertIn('ruta', data)
