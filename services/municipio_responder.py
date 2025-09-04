@@ -2062,7 +2062,21 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
 MENU_KEYWORDS = {
     # Reclamos, Trámites y Turnos
-    "mostrar_menu_reclamos": ["reclamo", "reclamos", "denuncia", "problema", "queja", "reportar", "averia", "averias", "incidente"],
+    "mostrar_menu_reclamos": [
+        "reclamo",
+        "reclamos",
+        "denuncia",
+        "problema",
+        "queja",
+        "reportar",
+        "averia",
+        "averias",
+        "incidente",
+        "consulta",
+        "consultas",
+        "pregunta",
+        "preguntas",
+    ],
     "iniciar_reclamo": ["iniciar reclamo", "hacer reclamo", "nuevo reclamo", "realizar reclamo", "presentar reclamo", "registrar queja"],
     "solicitar_turnos": ["turnos", "turno", "solicitar turno", "pedir turno", "turnos online", "reservar turno", "agendar turno"],
     "licencia_de_conducir": ["licencia", "conducir", "carnet", "registro", "renovar licencia", "sacar licencia", "tramitar licencia", "registro de conducir"],
@@ -2074,6 +2088,8 @@ MENU_KEYWORDS = {
         "pedir algo",
         "comentario",
         "feedback",
+        "opinion",
+        "opinión",
         "hacer una sugerencia",
         "quiero hacer una sugerencia",
         "queria hacer una sugerencia",
@@ -2829,6 +2845,19 @@ def responder_municipio(
         safe_flag_modified(chat_db_context, "context_data")
         return _finalize_response(response)
     # --- FIN: Manejo del Flujo de Reclamos Activo ---
+
+    # --- START GLOBAL MENU SHORTCUTS ---
+    if not contexto_municipio_actual.get("estado_conversacion") and pregunta_str:
+        inferred_action = find_global_menu_action(pregunta_str)
+        if inferred_action:
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            response = handle_main_menu_action(inferred_action, context, chat_db_context)
+            if response:
+                return _finalize_response(response)
+    # --- END GLOBAL MENU SHORTCUTS ---
+
     # --- START DIRECT RECLAMO DETECTION FOR TEXT OR AUDIO ---
     if not contexto_municipio_actual.get("estado_conversacion"):
         reclamo_options = _get_reclamos_menu().get("options_list", [])
@@ -2935,12 +2964,18 @@ def responder_municipio(
     action = received_payload.get("action")
 
     # Allow keyword shortcuts even when a conversation state is active,
-    # but avoid treating numeric replies as global menu shortcuts so that
-    # sub-menu selections like "3" are handled within their local context.
+    # but avoid treating numeric replies or explicit action IDs as global
+    # menu shortcuts so that selections like "3" or "mostrar_menu_*" are
+    # handled within their local context.
+    main_actions = {
+        normalizar_texto(btn.get("action_id", ""))
+        for btn in _get_main_menu_payload(context).get("options_list", [])
+    }
     if (
         not action
         and pregunta_str
         and not pregunta_str.strip().isdigit()
+        and normalizar_texto(pregunta_str) not in main_actions
         and estado_conversacion != ConversationState.ESPERANDO_INTENCION_UBICACION.name
         and estado_conversacion != ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name
         and estado_conversacion != ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
