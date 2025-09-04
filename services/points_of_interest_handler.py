@@ -41,12 +41,13 @@ class PointsOfInterestHandler:
     def _parking_response(self, location: dict | str) -> dict:
         """Generate a parking response based on coordinates or an address."""
         if not self.parking_data:
-            return {
-                "message_body": "No tengo datos de estacionamiento disponibles en este momento.",
-                "options_list": [],
-                "message_type": "text",
-                "fuente": "points_of_interest_handler",
-            }
+            from .municipio_responder import _message_with_menu
+            payload = _message_with_menu(
+                "No tengo datos de estacionamiento disponibles en este momento.",
+                self.context,
+            )
+            payload["fuente"] = "points_of_interest_handler"
+            return payload
 
         address = ""
         lat = lon = None
@@ -144,15 +145,15 @@ class PointsOfInterestHandler:
                     "available_spots": availability,
                 })
 
-        return {
-            "message_body": "\n".join(lines),
-            "options_list": [],
-            "message_type": "text",
+        from .municipio_responder import _message_with_menu  # local import to avoid circular dependency
+        base_payload = _message_with_menu("\n".join(lines), self.context)
+        base_payload.update({
             "fuente": "points_of_interest_handler",
             "camera": cam_name,
             "timestamp": timestamp,
             "spots": spots,
-        }
+        })
+        return base_payload
     def handle(self, payload: dict) -> dict | None:
         original_question = payload.get("pregunta") or ""
         pregunta = original_question.lower()
@@ -202,12 +203,6 @@ class PointsOfInterestHandler:
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
 
-                return {
-                    "message_body": "Para buscar estacionamientos necesito tu ubicación.",
-                    "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}],
-                    "message_type": "interactive_buttons",
-                    "fuente": "points_of_interest_handler",
-                }
             municipio_ctx = (
                 self.context.get("chat_db_context_data", {})
                 .setdefault(CONTEXTO_MUNICIPIO, {})
@@ -231,12 +226,6 @@ class PointsOfInterestHandler:
                 respuesta_llm = llm_result
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error("Error invoking LLM for POI query: %s", exc, exc_info=True)
-            return {
-                "message_body": "Ocurrió un error al procesar la consulta.",
-                "options_list": [],
-                "message_type": "text",
-                "fuente": "points_of_interest_handler"
-            }
 
         accion = respuesta_llm.get("accion_backend")
         message_body = respuesta_llm.get("message_body", "")
@@ -248,12 +237,10 @@ class PointsOfInterestHandler:
             params = datos.get("parametros_herramienta", {})
             herramienta = TOOL_REGISTRY.get(nombre)
             if not herramienta:
-                return {
-                    "message_body": message_body or "No tengo una herramienta para eso.",
-                    "options_list": [],
-                    "message_type": "text",
-                    "fuente": "points_of_interest_handler"
-                }
+                from .municipio_responder import _message_with_menu
+                final_payload = _message_with_menu(message_body or "No tengo una herramienta para eso.", self.context)
+                final_payload["fuente"] = "points_of_interest_handler"
+                return final_payload
             try:
                 resultado = herramienta["funcion"](**params)
                 if isinstance(resultado, dict):
@@ -261,25 +248,18 @@ class PointsOfInterestHandler:
                 else:
                     result_text = str(resultado)
                 final_message = f"{message_body}\n{result_text}".strip() or result_text
-                return {
-                    "message_body": final_message,
-                    "options_list": [],
-                    "message_type": "text",
-                    "fuente": "points_of_interest_handler"
-                }
+                from .municipio_responder import _message_with_menu
+                final_payload = _message_with_menu(final_message, self.context)
+                final_payload["fuente"] = "points_of_interest_handler"
+                return final_payload
             except Exception as exc:  # pragma: no cover - defensive
                 logger.error("Error executing tool %s: %s", nombre, exc, exc_info=True)
-                return {
-                    "message_body": "Ocurrió un error al obtener la información solicitada.",
-                    "options_list": [],
-                    "message_type": "text",
-                    "fuente": "points_of_interest_handler"
-                }
+                from .municipio_responder import _message_with_menu
+                final_payload = _message_with_menu("Ocurrió un error al obtener la información solicitada.", self.context)
+                final_payload["fuente"] = "points_of_interest_handler"
+                return final_payload
 
-        msg_type = "interactive_buttons" if botones else "text"
-        return {
-            "message_body": message_body,
-            "options_list": botones,
-            "message_type": msg_type,
-            "fuente": "points_of_interest_handler"
-        }
+        from .municipio_responder import _message_with_menu
+        final_payload = _message_with_menu(message_body, self.context)
+        final_payload["fuente"] = "points_of_interest_handler"
+        return final_payload

@@ -128,6 +128,20 @@ class TestReclamoFlowUX(unittest.TestCase):
             ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name,
         )
 
+    def test_confirmacion_negative_returns_to_contact_details(self):
+        flow_context = {
+            "state": ReclamoState.ESPERANDO_CONFIRMACION.name,
+            "datos_reclamo": {
+                "categoria": "Bache",
+                "descripcion": "pozo",
+                "direccion": "Calle 123",
+            },
+        }
+        handler = self._build_handler(flow_context)
+        resp = handler.handle_confirmacion("no", {})
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
+        self.assertIn("Por favor", resp["message_body"])
+
 
 if __name__ == "__main__":
     unittest.main()

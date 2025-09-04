@@ -394,6 +394,11 @@ class ReclamoFlowHandler:
                 "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde."
             )
             return self.end_flow(error_message, show_menu=True)
+        elif any(word in normalized for word in negatives) or action == "reclamo_confirmar_no":
+            return self.ask_for_contact_details()
+        else:  # Cancel or any other input
+            cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
+            return self.end_flow(cancel_msg, show_menu=True)
 
     def end_flow(self, message, show_menu=False):
         self.flow_context.clear()
