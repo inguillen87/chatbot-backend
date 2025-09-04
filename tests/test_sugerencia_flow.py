@@ -111,5 +111,53 @@ class TestSugerenciaFlow(unittest.TestCase):
             self.assertIn("Hemos recibido tu sugerencia", response_4.get("message_to_user", ""))
             self.assertIn("S-12345", response_4.get("message_to_user", ""))
 
+    def test_sugerencia_reutiliza_contacto(self):
+        owner_user = User.query.get(1)
+        viewer_user = User.query.get(2)
+        rubro_obj = owner_user.rubro
+        chat_context = ChatSessionContext(chat_session_id='test_sugerencia_reuse', user_id=1, context_data={})
+        db.session.add(chat_context)
+        db.session.commit()
+
+        # Primer sugerencia para almacenar datos de contacto
+        responder_municipio(
+            pregunta_original={"action": "enviar_sugerencia"},
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=viewer_user,
+            chat_db_context=chat_context
+        )
+        responder_municipio(
+            pregunta_original="Faltan árboles en la plaza",
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=viewer_user,
+            chat_db_context=chat_context
+        )
+        contact_msg = "Marcelo Guillen 32877851 guillen@test.com sarmiento 125 Junin Mendoza"
+        with patch('services.municipio_responder.extract_multiple_contact_details_llm') as mock_llm:
+            responder_municipio(
+                pregunta_original=contact_msg,
+                owner_user=owner_user,
+                rubro_obj=rubro_obj,
+                viewer_user=viewer_user,
+                chat_db_context=chat_context
+            )
+            mock_llm.assert_not_called()
+        with patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
+            mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "S-1"}
+            responder_municipio(
+                pregunta_original={"action": "confirmar_sugerencia_si"},
+                owner_user=owner_user,
+                rubro_obj=rubro_obj,
+                viewer_user=viewer_user,
+                chat_db_context=chat_context
+            )
+
+        # Verificar que los datos de contacto quedaron guardados para reutilización
+        contacto = chat_context.context_data['contexto_municipio_v2'].get('contacto_usuario', {})
+        self.assertEqual(contacto.get('dni'), '32877851')
+        self.assertEqual(contacto.get('email'), 'guillen@test.com')
+
 if __name__ == '__main__':
     unittest.main()

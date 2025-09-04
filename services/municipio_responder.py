@@ -80,6 +80,11 @@ CANCEL_KEYWORDS = {
         "menu principal",
         "terminar",
         "basta",
+        "reiniciar",
+        "resetear",
+        "empezar de nuevo",
+        "volver a empezar",
+        "empezar de cero",
     ]
 }
 
@@ -184,6 +189,13 @@ class ReclamoFlowHandler:
                 or getattr(viewer, 'dni_vecino', None)
                 or getattr(viewer, 'documento', None),
             )
+
+        # Reuse previously provided contact info stored in municipal context
+        contacto_prev = self.municipal_ctx.get('contacto_usuario', {})
+        if contacto_prev:
+            datos = self.flow_context['datos_reclamo']
+            for campo in ['nombre', 'email', 'telefono', 'dni']:
+                datos.setdefault(campo, contacto_prev.get(campo))
 
         if categoria_inicial and not self.flow_context['datos_reclamo'].get('categoria'):
             self.flow_context['datos_reclamo']['categoria'] = categoria_inicial
@@ -1164,6 +1176,20 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             flag_modified(chat_db_context, "context_data")
         return _get_main_menu_payload(context)
 
+    if action_id in {"limpiar_contexto", "cancelar"}:
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contacto_prev = contexto_municipio_actual.get("contacto_usuario")
+        contexto_municipio_actual.clear()
+        if contacto_prev:
+            contexto_municipio_actual["contacto_usuario"] = contacto_prev
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _get_main_menu_payload(
+            context,
+            welcome_message_override="¡Listo! Empezamos de nuevo. ¿En qué te puedo ayudar?",
+        )
+
     if action_id == "mostrar_menu_reclamos":
         submenu = _get_reclamos_consultas_menu()
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
@@ -1498,7 +1524,35 @@ def handle_location_update(data):
         "respuesta": f"Ubicación actualizada a: {direccion_info.get('formatted_address')}"
     }
 
-BOTONES_COMANDOS_MUNICIPIO = {"Hacer un reclamo": "iniciar_reclamo", "Consultar estado de un trámite": "consultar_estado_ticket", "Consultar estado de ticket": "consultar_estado_ticket", "Consultar otro ticket": "consultar_estado_ticket", "Hablar con un agente": "hablar_con_agente", "Nuevo reclamo": "iniciar_reclamo", "Adjuntar foto": "adjuntar_foto", "Compartir ubicación": "compartir_ubicacion", "Foto": "adjuntar_foto", "Ubicación": "compartir_ubicacion", "No, continuar": "sin_adjuntos", "Completar reclamo": "sin_adjuntos", "Sí, confirmar reclamo": "confirmar_reclamo", "Si, confirmar reclamo": "confirmar_reclamo", "Confirmar reclamo": "confirmar_reclamo", "Finalizar": "confirmar_reclamo", "Finalizar reclamo": "confirmar_reclamo", "Confirmar": "confirmar_reclamo", "Confirmado": "confirmar_reclamo", "Si confirmo": "confirmar_reclamo", "Sí confirmo": "confirmar_reclamo", "Editar datos": "editar_reclamo", "Sí, solucionado": "confirmar_cierre_ticket", "No, aún no": "no_cerrar_ticket"}
+BOTONES_COMANDOS_MUNICIPIO = {
+    "Hacer un reclamo": "iniciar_reclamo",
+    "Consultar estado de un trámite": "consultar_estado_ticket",
+    "Consultar estado de ticket": "consultar_estado_ticket",
+    "Consultar otro ticket": "consultar_estado_ticket",
+    "Hablar con un agente": "hablar_con_agente",
+    "Nuevo reclamo": "iniciar_reclamo",
+    "Adjuntar foto": "adjuntar_foto",
+    "Compartir ubicación": "compartir_ubicacion",
+    "Foto": "adjuntar_foto",
+    "Ubicación": "compartir_ubicacion",
+    "No, continuar": "sin_adjuntos",
+    "Completar reclamo": "sin_adjuntos",
+    "Sí, confirmar reclamo": "confirmar_reclamo",
+    "Si, confirmar reclamo": "confirmar_reclamo",
+    "Confirmar reclamo": "confirmar_reclamo",
+    "Finalizar": "confirmar_reclamo",
+    "Finalizar reclamo": "confirmar_reclamo",
+    "Confirmar": "confirmar_reclamo",
+    "Confirmado": "confirmar_reclamo",
+    "Si confirmo": "confirmar_reclamo",
+    "Sí confirmo": "confirmar_reclamo",
+    "Editar datos": "editar_reclamo",
+    "Sí, solucionado": "confirmar_cierre_ticket",
+    "No, aún no": "no_cerrar_ticket",
+    "Volver al inicio": "menu_principal",
+    "Cancelar": "cancelar",
+    "Empezar de nuevo": "limpiar_contexto",
+}
 
 # Utiliza el orquestador de LLMs que intenta OpenAI y Cohere.
 from services.llm_orchestrator import llamar_llm_con_fallback
@@ -2022,6 +2076,17 @@ MENU_KEYWORDS = {
         "tengo una sugerencia",
         "tengo un comentario",
         "me gustaria hacer una sugerencia",
+    ],
+    "limpiar_contexto": [
+        "cancelar",
+        "volver al inicio",
+        "empezar de nuevo",
+        "reiniciar",
+        "resetear",
+        "limpiar chat",
+        "borrar conversacion",
+        "nuevo tema",
+        "volver a empezar",
     ],
     "consultar_estado_reclamo": [
         "consultar reclamo",
@@ -3074,19 +3139,29 @@ def responder_municipio(
 
             ubicacion_sugerencia = contexto_municipio_actual.pop('ubicacion_contextual_sugerencia', 'N/A')
             viewer_user_obj = context.get("viewer_user_obj")
+            contacto_prev = contexto_municipio_actual.get('contacto_usuario', {})
             datos_sugerencia = {
                 "categoria": "Sugerencia",
                 "descripcion": sugerencia_texto,
                 "ubicacion": ubicacion_sugerencia,
-                "nombre": getattr(viewer_user_obj, "name", None) or getattr(viewer_user_obj, "nombre", None),
-                "dni": getattr(viewer_user_obj, "dni", None),
-                "email": getattr(viewer_user_obj, "email", None),
-                "direccion": getattr(viewer_user_obj, "direccion", None),
-                "telefono": getattr(viewer_user_obj, "telefono", None),
+                "nombre": (
+                    getattr(viewer_user_obj, "name", None)
+                    or getattr(viewer_user_obj, "nombre", None)
+                    or contacto_prev.get("nombre")
+                ),
+                "dni": getattr(viewer_user_obj, "dni", None) or contacto_prev.get("dni"),
+                "email": getattr(viewer_user_obj, "email", None) or contacto_prev.get("email"),
+                "direccion": getattr(viewer_user_obj, "direccion", None) or contacto_prev.get("direccion"),
+                "telefono": getattr(viewer_user_obj, "telefono", None) or contacto_prev.get("telefono"),
             }
 
             campos_faltantes = [c for c in ["nombre", "dni", "email", "direccion"] if not datos_sugerencia.get(c)]
             contexto_municipio_actual['datos_sugerencia'] = datos_sugerencia
+            contexto_municipio_actual['contacto_usuario'] = {
+                k: datos_sugerencia.get(k)
+                for k in ["nombre", "dni", "email", "direccion", "telefono"]
+                if datos_sugerencia.get(k)
+            }
             if campos_faltantes:
                 contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
@@ -3130,20 +3205,27 @@ def responder_municipio(
 
             campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
 
-            # Utilizar el LLM para extraer o corregir datos aunque ya existan valores previos.
-            try:
-                llm_datos = extract_multiple_contact_details_llm(
-                    pregunta_str, campos_requeridos + ["telefono"]
-                )
-                if llm_datos:
-                    for campo, valor in llm_datos.items():
-                        if valor and campo in ["nombre", "dni", "email", "direccion", "telefono"]:
-                            datos_guardados[campo] = valor
-            except Exception as e:
-                logger.error("[DATOS_SUGERENCIA] LLM fallback failed: %s", e)
-            campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
+            # Utilizar el LLM solo si todavía faltan campos
+            if campos_faltantes:
+                try:
+                    llm_datos = extract_multiple_contact_details_llm(
+                        pregunta_str, campos_requeridos + ["telefono"]
+                    )
+                    if llm_datos:
+                        for campo, valor in llm_datos.items():
+                            if valor and campo in ["nombre", "dni", "email", "direccion", "telefono"]:
+                                datos_guardados[campo] = valor
+                except Exception as e:
+                    logger.error("[DATOS_SUGERENCIA] LLM fallback failed: %s", e)
+                campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
 
             contexto_municipio_actual['datos_sugerencia'] = datos_guardados
+            # Persist contact info for future interactions
+            contexto_municipio_actual['contacto_usuario'] = {
+                k: datos_guardados.get(k)
+                for k in ["nombre", "dni", "email", "direccion", "telefono"]
+                if datos_guardados.get(k)
+            }
             if campos_faltantes:
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
@@ -3903,6 +3985,13 @@ def responder_municipio(
             "descripcion": sugerencia_texto,
             "ubicacion": ubicacion_sugerencia,
         }
+        contacto_prev = contexto_municipio_actual.get('contacto_usuario', {})
+        if contacto_prev:
+            datos_sugerencia.update({
+                k: contacto_prev.get(k)
+                for k in ["nombre", "dni", "email", "direccion", "telefono"]
+                if contacto_prev.get(k)
+            })
 
         handler = CrearReclamoActionHandler(context)
         response = handler.execute(datos_sugerencia)
