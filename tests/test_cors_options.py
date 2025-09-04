@@ -48,6 +48,16 @@ class CorsOptionsTests(unittest.TestCase):
         allow_headers = resp.headers.get('Access-Control-Allow-Headers', '')
         self.assertIn('Anon-Id', allow_headers)
 
+    def test_options_allows_token_header(self):
+        resp = self.client.options('/perfil', headers={
+            'Origin': 'http://localhost:8080',
+            'Access-Control-Request-Method': 'GET',
+            'Access-Control-Request-Headers': 'token'
+        })
+        self.assertEqual(resp.status_code, 204)
+        allow_headers = resp.headers.get('Access-Control-Allow-Headers', '')
+        self.assertIn('token', allow_headers.lower())
+
     def test_perfil_options(self):
         resp = self.client.options('/auth/perfil', headers={
             'Origin': 'http://localhost:8080',
