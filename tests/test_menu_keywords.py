@@ -98,6 +98,14 @@ class TestMenuKeywords(unittest.TestCase):
         category = find_reclamo_category_by_input("hay un poste caido", options)
         self.assertEqual(category, "Luminaria")
 
+    def test_sugerencia_phrase(self):
+        phrase = "queria hacer una sugerencia"
+        self.assertEqual(find_global_menu_action(phrase), "enviar_sugerencia")
+
+    def test_long_phrase_skips_fuzzy_match(self):
+        phrase = "me gustaria que coloquen mas juegos de plaza en mi barrio"
+        self.assertIsNone(find_global_menu_action(phrase))
+
 
 if __name__ == "__main__":
     unittest.main()

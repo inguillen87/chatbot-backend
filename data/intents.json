@@ -166,6 +166,19 @@
     "respuesta": "Para reclamos de servicios municipales (luminarias, baches, residuos, arbolado, etc.), podés comunicarte directamente por WhatsApp al [telefono], llamar al municipio o ingresar tu reclamo desde nuestra web [linkWeb]. En muchos casos generamos un número de ticket para seguimiento. ¿Te gustaría registrar un reclamo ahora?"
   },
   {
+    "categoria": "enviar_sugerencia",
+    "ejemplos": [
+      "tengo una sugerencia",
+      "quiero hacer una sugerencia",
+      "queria hacer una sugerencia",
+      "quisiera hacer una sugerencia",
+      "tengo un comentario",
+      "tengo una propuesta",
+      "me gustaria que coloquen mas juegos de plaza en mi barrio"
+    ],
+    "respuesta": "Podés enviarnos tu sugerencia escribiéndola aquí y la derivaremos al área correspondiente. ¿Cuál es tu sugerencia?"
+  },
+  {
     "categoria": "informacion_pagos_tasas",
     "ejemplos": [
       "¿Dónde pago las tasas municipales?",
