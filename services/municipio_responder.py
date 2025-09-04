@@ -2604,17 +2604,19 @@ def responder_municipio(
             address = received_payload.get("ubicacion_usuario", {}).get("address", "la ubicación que compartiste")
 
             contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
+            opciones_proactivas = [
+                {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
+                {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
+                {"texto": "Cancelar", "action_id": "cancelar"},
+            ]
             contexto_municipio_actual['ubicacion_contextual'] = received_payload.get("ubicacion_usuario")
+            contexto_municipio_actual['menu_opciones'] = opciones_proactivas
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
 
             return _finalize_response({
                 "message_body": f"Recibí tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
-                "options_list": [
-                    {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
-                    {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
-                    {"texto": "Cancelar", "action_id": "cancelar"}
-                ],
+                "options_list": opciones_proactivas,
                 "message_type": "interactive_buttons",
                 "fuente": "proactive_location_handler",
             })
@@ -2837,7 +2839,12 @@ def responder_municipio(
     # Allow keyword shortcuts even when a conversation state is active,
     # but avoid treating numeric replies as global menu shortcuts so that
     # sub-menu selections like "3" are handled within their local context.
-    if not action and pregunta_str and not pregunta_str.strip().isdigit():
+    if (
+        not action
+        and pregunta_str
+        and not pregunta_str.strip().isdigit()
+        and estado_conversacion != ConversationState.ESPERANDO_INTENCION_UBICACION.name
+    ):
         inferred_action = find_global_menu_action(pregunta_str)
         if inferred_action:
             contexto_municipio_actual['estado_conversacion'] = None
