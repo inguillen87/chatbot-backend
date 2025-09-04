@@ -123,12 +123,22 @@ def normalizar_texto(texto: str) -> str:
 
 # --- VALIDACIÓN DE DIRECCIONES ---
 def direccion_es_valida(texto: str) -> bool:
-    """Verifica si una dirección es válida utilizando el servicio de geocodificación."""
+    """Verifica si una dirección es válida.
+
+    Intenta usar el servicio de geocodificación; si no está disponible
+    (por ejemplo, falta la API key) o no encuentra resultados, se aplica
+    una validación heurística simple para evitar repetir pedidos de
+    dirección al usuario.
+    """
     if not texto:
         return False
 
     geocode_result = geocode_address(texto)
-    return geocode_result is not None
+    if geocode_result is not None:
+        return True
+
+    # Fallback heurístico: acepta direcciones que contengan texto y un número
+    return bool(re.search(r"[A-Za-zÁÉÍÓÚÑáéíóúñ ]+\s+\d+", texto))
 
 
 def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None) -> dict | None:

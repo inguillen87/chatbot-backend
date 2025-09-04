@@ -370,6 +370,12 @@ class TestAccionesMunicipio(unittest.TestCase):
         resultado = direccion_es_valida("don bosco 55 esquina sarmiento junin mendoza")
         self.assertTrue(resultado)
 
+    @patch('services.herramientas_municipio.geocode_address', return_value=None)
+    def test_direccion_es_valida_fallback(self, _mock_geocode):
+        """Debe aceptar direcciones simples aunque no haya geocodificación."""
+        self.assertTrue(direccion_es_valida("don bosco 55"))
+        self.assertFalse(direccion_es_valida("sin numero"))
+
     @patch('services.municipio_responder.cargar_agenda_cultural')
     def test_agenda_y_noticias_handler(self, mock_cargar_agenda):
         mock_cargar_agenda.return_value = {
