@@ -1,4 +1,5 @@
 import os
+import re
 from urllib.parse import urlparse
 
 # Directorio base de la aplicación
@@ -47,6 +48,8 @@ if public_root and public_root not in ("localhost", "127.0.0.1"):
     ])
 
 ALLOWED_ORIGINS = list(dict.fromkeys(allowed_urls))
+# Allow Vercel preview deployments (e.g. https://<project>.vercel.app)
+ALLOWED_ORIGINS.append(re.compile(r"https://.*\.vercel\.app"))
 
 # Derive cookie domain for production if not provided explicitly
 cookie_domain_env = os.getenv("COOKIE_DOMAIN")
