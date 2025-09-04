@@ -2206,6 +2206,22 @@ def find_global_menu_action(user_input: str) -> str | None:
     global_buttons = [{"texto": aid, "action_id": aid} for aid in MENU_KEYWORDS.keys()]
     return find_menu_action_by_input(user_input, global_buttons)
 
+
+def _detect_reclamo_during_sugerencia(pregunta_str: str, contexto_municipio_actual: dict, context: dict, chat_db_context) -> dict | None:
+    """If the user mentions starting a complaint while in the suggestion flow,
+    abort the suggestion workflow and start the regular complaint flow."""
+    normalized = normalizar_texto(pregunta_str or "")
+    if "reclamo" in normalized:
+        contexto_municipio_actual.pop('datos_sugerencia', None)
+        contexto_municipio_actual.pop('ubicacion_contextual_sugerencia', None)
+        contexto_municipio_actual.pop('estado_conversacion', None)
+        handler = ReclamoFlowHandler(context, chat_db_context)
+        response = handler.start_flow(datos_iniciales={"descripcion": pregunta_str})
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return response
+    return None
+
 RECLAMO_KEYWORDS = {
     "Luminaria": [
         "luminaria",
@@ -2918,6 +2934,9 @@ def responder_municipio(
         and pregunta_str
         and not pregunta_str.strip().isdigit()
         and estado_conversacion != ConversationState.ESPERANDO_INTENCION_UBICACION.name
+        and estado_conversacion != ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name
+        and estado_conversacion != ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
+        and estado_conversacion != ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
     ):
         inferred_action = find_global_menu_action(pregunta_str)
         if inferred_action:
@@ -3133,6 +3152,9 @@ def responder_municipio(
             })
 
         elif estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name:
+            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context)
+            if switch_response:
+                return _finalize_response(switch_response)
             sugerencia_texto = pregunta_str
             if len(sugerencia_texto) < 10:
                 return _finalize_response({"message_body": "Tu sugerencia parece un poco corta. ¿Podrías darme un poco más de detalle?", "fuente": "sugerencia_muy_corta"})
@@ -3192,6 +3214,9 @@ def responder_municipio(
             })
 
         elif estado_conversacion == ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name:
+            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context)
+            if switch_response:
+                return _finalize_response(switch_response)
             datos_guardados = contexto_municipio_actual.get('datos_sugerencia', {})
             campos_requeridos = ["nombre", "dni", "email", "direccion"]
 
@@ -3256,7 +3281,16 @@ def responder_municipio(
             })
 
         elif estado_conversacion == ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name:
-            if "si" in normalizar_texto(pregunta_str) or action == "confirmar_sugerencia_si":
+            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context)
+            if switch_response:
+                return _finalize_response(switch_response)
+            texto_normalizado = normalizar_texto(pregunta_str)
+            afirmativos = ["si", "enviar", "guardar", "guarda", "ok", "dale", "confirmar"]
+            if (
+                action == "confirmar_sugerencia_si"
+                or texto_normalizado.strip() == "1"
+                or any(a in texto_normalizado for a in afirmativos)
+            ):
                 datos_confirmados = contexto_municipio_actual.pop('datos_sugerencia', {})
                 handler = CrearReclamoActionHandler(context)
                 response = handler.execute(datos_confirmados)

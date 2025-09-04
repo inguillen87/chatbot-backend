@@ -10,7 +10,7 @@ sys.path.insert(0, project_root)
 from app import create_app, db
 from config import TestConfig
 from models import User, Rubro, ChatSessionContext
-from services.municipio_responder import responder_municipio, ConversationState
+from services.municipio_responder import responder_municipio, ConversationState, ReclamoState
 
 class TestSugerenciaFlow(unittest.TestCase):
 
@@ -158,6 +158,39 @@ class TestSugerenciaFlow(unittest.TestCase):
         contacto = chat_context.context_data['contexto_municipio_v2'].get('contacto_usuario', {})
         self.assertEqual(contacto.get('dni'), '32877851')
         self.assertEqual(contacto.get('email'), 'guillen@test.com')
+
+    def test_sugerencia_interrumpida_por_reclamo(self):
+        owner_user = User.query.get(1)
+        viewer_user = User.query.get(2)
+        rubro_obj = owner_user.rubro
+        chat_context = ChatSessionContext(chat_session_id='test_interrupcion', user_id=1, context_data={})
+        db.session.add(chat_context)
+        db.session.commit()
+
+        responder_municipio(
+            pregunta_original={"action": "enviar_sugerencia"},
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=viewer_user,
+            chat_db_context=chat_context,
+        )
+
+        mensaje = "Hola, quería iniciar un reclamo por luminaria"  # debe salir del flujo de sugerencia
+        response = responder_municipio(
+            pregunta_original=mensaje,
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=viewer_user,
+            chat_db_context=chat_context,
+        )
+
+        self.assertIn("Elegí una opción para tu reclamo", response["message_body"])
+        ctx = chat_context.context_data["contexto_municipio_v2"]
+        self.assertNotIn("datos_sugerencia", ctx)
+        self.assertEqual(
+            ctx.get("reclamo_flow_v2", {}).get("state"),
+            ReclamoState.ESPERANDO_CATEGORIA.name,
+        )
 
 if __name__ == '__main__':
     unittest.main()
