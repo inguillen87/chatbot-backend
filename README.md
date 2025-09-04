@@ -52,7 +52,9 @@ selection instructions to maintain full visibility of all choices.
   to the account (`categorias`).
 - `GET /tickets` – for admins or employees, list all tickets for the company or
   municipality. Supports optional `?estado=` and `?categoria=` filters.
+- `GET /tickets/estados` – devuelve los estados disponibles para actualizar un ticket.
 - `GET /tickets/mios` – list the tickets created by the logged in user.
+- `PUT /tickets/<tipo>/<id>/estado` – actualizar el estado de un ticket específico.
 - Municipal accounts hitting `/pedidos` receive the same JSON structure as
   `/tickets` to ease frontend integration.
 - `GET /crm/clientes` – for admins, returns the users associated with their token. Supports `?tag=` filtering and now `?q=` search by name or email plus `?marketing=true|false`. The same data is available at `/municipal/usuarios`.

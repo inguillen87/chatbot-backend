@@ -32,6 +32,23 @@ ticket_bp = Blueprint('ticket_bp', __name__)
 MENSAJE_CHAT_CERRADO = "El chat fue cerrado"
 MENSAJE_SIN_PERMISOS = "No tienes permiso para acceder a este chat."
 
+# Estados válidos para los tickets que pueden ser utilizados por la UI.
+TICKET_ALLOWED_STATES = [
+    "nuevo",
+    "en_proceso",
+    "en_vivo",
+    "esperando_agente_en_vivo",
+    "cerrado",
+]
+
+
+@ticket_bp.route('/tickets/estados', methods=['GET'])
+@token_requerido
+@admin_o_empleado_requerido
+def obtener_estados_ticket(current_user: User):
+    """Devuelve la lista de estados permitidos para los tickets."""
+    return jsonify({"estados": TICKET_ALLOWED_STATES})
+
 def guardar_archivo_adjunto_ticket(file_storage, user_id, ticket_id, tipo_ticket) -> ArchivoAdjunto | None:
     """
     Handles the upload of a file to GCS and creates an ArchivoAdjunto record.
@@ -230,14 +247,7 @@ def get_tickets_del_usuario_logic(current_user: User):
         all_tickets_for_summary_calculation = query_base.all()
 
         summary_by_status = defaultdict(int)
-        defined_statuses = [
-            "nuevo",
-            "en_proceso",
-            "en_vivo",
-            "esperando_agente_en_vivo",
-            "resuelto",
-            "cerrado",
-        ]
+        defined_statuses = list(TICKET_ALLOWED_STATES) + ["resuelto"]
 
         # Inicializar todos los estados definidos en 0 para que el frontend
         # siempre reciba las claves esperadas aunque no existan tickets en ese
@@ -833,6 +843,18 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     if not nuevo_estado:
         return jsonify({"error": "Falta el nuevo estado."}), 400
 
+    # Permitir "resuelto" como alias de "cerrado" para la UI
+    if nuevo_estado == "resuelto":
+        nuevo_estado = "cerrado"
+
+    if nuevo_estado not in TICKET_ALLOWED_STATES:
+        return (
+            jsonify({
+                "error": f"Estado '{nuevo_estado}' no es válido. Permitidos: {', '.join(TICKET_ALLOWED_STATES + ['resuelto'])}",
+            }),
+            400,
+        )
+
     TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
     ticket_obj = db.session.get(TicketModel, ticket_id)
     if not ticket_obj:
@@ -1278,7 +1300,7 @@ def get_panel_por_categoria(current_user: User):
             tickets_grouped_by_cat[t_obj.categoria or "Sin Categoría"].append(t_obj)
 
         final_panel_data = {}
-        defined_statuses = ["nuevo", "en_proceso", "en_vivo", "esperando_agente_en_vivo", "cerrado"]
+        defined_statuses = list(TICKET_ALLOWED_STATES)
 
         for categoria_key, tickets_in_category_list in tickets_grouped_by_cat.items():
             summary_by_status_for_cat = defaultdict(int)
@@ -1359,7 +1381,7 @@ def get_panel_pyme(current_user: User):
             tickets_grouped_by_cat[t_obj.categoria or "Sin Categoría"].append(t_obj)
 
         final_panel_data = {}
-        defined_statuses = ["nuevo", "en_proceso", "en_vivo", "esperando_agente_en_vivo", "cerrado"]
+        defined_statuses = list(TICKET_ALLOWED_STATES)
 
         for categoria_key, tickets_in_category_list in tickets_grouped_by_cat.items():
             summary_by_status_for_cat = defaultdict(int)
