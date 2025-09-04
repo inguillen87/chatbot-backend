@@ -688,7 +688,13 @@ def set_profile_name():
         return jsonify({"error": "'nombre_usuario' requerido"}), 400
 
     resp = jsonify({"profile_name": profile_name})
-    resp.set_cookie("nombre_usuario", profile_name, max_age=60 * 60 * 24 * 30, samesite="Lax")
+    resp.set_cookie(
+        "nombre_usuario",
+        profile_name,
+        max_age=60 * 60 * 24 * 30,
+        samesite=current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
+        secure=current_app.config.get("SESSION_COOKIE_SECURE", True),
+    )
 
     chat_session_id = request.headers.get("X-Chat-Session-Id")
     if chat_session_id:
