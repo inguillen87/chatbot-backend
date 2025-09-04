@@ -221,8 +221,14 @@ class CrearReclamoActionHandler(BaseActionHandler):
         )
         categoria_lookup = None
         if categoria:
+            categoria_normalized = re.sub(r"[^\w\s]", "", categoria).strip().lower()
             for key in contactos.keys():
-                if key.lower() == categoria.lower():
+                key_normalized = re.sub(r"[^\w\s]", "", key).strip().lower()
+                if (
+                    key_normalized == categoria_normalized
+                    or key_normalized in categoria_normalized
+                    or categoria_normalized in key_normalized
+                ):
                     categoria_lookup = key
                     break
         if categoria_lookup:
