@@ -1,10 +1,11 @@
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from services.municipio_responder import (
     ReclamoFlowHandler,
     CONTEXTO_MUNICIPIO,
     ReclamoState,
+    ConversationState,
 )
 
 
@@ -99,6 +100,47 @@ class TestReclamoFlowUX(unittest.TestCase):
         self.assertEqual(handler.flow_context["datos_reclamo"].get("dni"), "12345678")
         self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
         self.assertIn("Juan", resp["message_body"])
+
+    def test_confirmacion_resets_context_and_shows_menu(self):
+        flow_context = {
+            "state": ReclamoState.ESPERANDO_CONFIRMACION.name,
+            "datos_reclamo": {
+                "categoria": "Bache",
+                "descripcion": "pozo",
+                "direccion": "Calle 123",
+                "nombre": "Juan",
+                "dni": "123",
+                "email": "juan@test.com",
+                "telefono": "+5400000000",
+            },
+        }
+        context = {"chat_db_context_data": {CONTEXTO_MUNICIPIO: {"reclamo_flow_v2": flow_context}}}
+        handler = ReclamoFlowHandler(context, MagicMock())
+        with patch('services.actions.municipio_actions.CrearReclamoActionHandler.execute') as mock_exec:
+            mock_exec.return_value = {"success": True, "data": {"nro_ticket": "R-1"}}
+            resp = handler.handle_confirmacion("si", {})
+        self.assertIn("R-1", resp["message_body"])
+        self.assertIn("¿Cómo te puedo ayudar hoy?", resp["message_body"])
+        municipal_ctx = context["chat_db_context_data"][CONTEXTO_MUNICIPIO]
+        self.assertNotIn("reclamo_flow_v2", municipal_ctx)
+        self.assertEqual(
+            municipal_ctx["estado_conversacion"],
+            ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name,
+        )
+
+    def test_confirmacion_negative_returns_to_contact_details(self):
+        flow_context = {
+            "state": ReclamoState.ESPERANDO_CONFIRMACION.name,
+            "datos_reclamo": {
+                "categoria": "Bache",
+                "descripcion": "pozo",
+                "direccion": "Calle 123",
+            },
+        }
+        handler = self._build_handler(flow_context)
+        resp = handler.handle_confirmacion("no", {})
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
+        self.assertIn("Por favor", resp["message_body"])
 
 
 if __name__ == "__main__":
