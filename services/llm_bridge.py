@@ -2,6 +2,8 @@ import json
 import logging
 from typing import Any, Dict, Tuple
 
+from services.logging_config import log_text_block
+
 from cachetools import TTLCache
 
 from services.openai_bridge import llamar_openai
@@ -60,10 +62,12 @@ def llamar_llm(
 
     try:
         respuesta = llamar_openai(app, user_msg, usuario or {}, historial or [], chat_session_id)
+        log_text_block(logger, "LLM OpenAI response", respuesta)
     except Exception as e:
         logger.error(f"OpenAI call failed: {e}; trying Cohere", exc_info=True)
         try:
             respuesta = llamar_cohere(app, user_msg, usuario or {}, historial or [], chat_session_id)
+            log_text_block(logger, "LLM Cohere response", respuesta)
         except Exception as e2:
             logger.error(f"Cohere call failed: {e2}", exc_info=True)
             error_response = ({

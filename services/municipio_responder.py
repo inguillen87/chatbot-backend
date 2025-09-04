@@ -151,10 +151,30 @@ class ReclamoFlowHandler:
         viewer = self.context.get("viewer_user_obj")
         if viewer:
             datos = self.flow_context['datos_reclamo']
-            datos.setdefault('nombre', getattr(viewer, 'name', None))
-            datos.setdefault('email', getattr(viewer, 'email', None))
-            datos.setdefault('telefono', getattr(viewer, 'telefono', None))
-            datos.setdefault('dni', getattr(viewer, 'dni', None))
+            # Some viewer objects store attributes with different names. Fall back
+            # to common alternatives to avoid asking for data we already have.
+            datos.setdefault(
+                'nombre',
+                getattr(viewer, 'name', None)
+                or getattr(viewer, 'nombre', None)
+                or getattr(viewer, 'nombre_vecino', None),
+            )
+            datos.setdefault(
+                'email',
+                getattr(viewer, 'email', None)
+                or getattr(viewer, 'email_vecino', None),
+            )
+            datos.setdefault(
+                'telefono',
+                getattr(viewer, 'telefono', None)
+                or getattr(viewer, 'telefono_vecino', None),
+            )
+            datos.setdefault(
+                'dni',
+                getattr(viewer, 'dni', None)
+                or getattr(viewer, 'dni_vecino', None)
+                or getattr(viewer, 'documento', None),
+            )
 
         if categoria_inicial and not self.flow_context['datos_reclamo'].get('categoria'):
             self.flow_context['datos_reclamo']['categoria'] = categoria_inicial
@@ -236,6 +256,9 @@ class ReclamoFlowHandler:
             self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
             return {"message_body": "Gracias. ¿Cuál es la dirección exacta del problema (calle y número)?"}
         else:
+            # If a photo was already provided earlier, do not ask for another one.
+            if self.flow_context['datos_reclamo'].get('foto_url'):
+                return self.ask_for_contact_details()
             self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
             return {
                 "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",

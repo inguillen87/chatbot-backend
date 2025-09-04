@@ -5,12 +5,17 @@ os.environ["EVENTLET_NO_GREENDNS"] = "1"
 import logging
 import sys
 from flask import Flask, request, current_app, jsonify, g
+
+from services.logging_config import setup_logging
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 from flask_cors import CORS
 from flask_session import Session
 from sqlalchemy import event
 from socket_service import socketio
+
+# Configure root logger with truncation to keep Render logs readable
+setup_logging()
 
 # Set credentials for local development only, BEFORE any service that needs them is imported.
 if os.environ.get("FLASK_ENV") != "production":
