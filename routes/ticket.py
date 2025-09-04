@@ -739,7 +739,9 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     try:
         if ticket_obj.estado == "nuevo" and (comentario_texto.strip() or archivos_adjuntados_db): # Si hay nuevo contenido (texto o archivos)
             ticket_obj.estado = "en_proceso"
-        
+            if hasattr(ticket_obj, "estado_cliente"):
+                ticket_obj.estado_cliente = "en_proceso"
+
         db.session.commit() # Commit después de todas las operaciones (comentario y archivos)
     except Exception as e:
         db.session.rollback()
@@ -858,6 +860,8 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     )
 
     ticket_obj.estado = nuevo_estado
+    if hasattr(ticket_obj, "estado_cliente"):
+        ticket_obj.estado_cliente = nuevo_estado
     if nuevo_estado == "cerrado":
         encuesta = TicketSatisfaccion(
             ticket_id=ticket_obj.id,

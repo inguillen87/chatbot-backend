@@ -86,7 +86,8 @@ class PymeTicketCreator(TicketCreator):
             telefono=ticket_data.get("telefono_vecino") or ticket_data.get("telefono"),
             email=ticket_data.get("email_vecino") or ticket_data.get("email"),
             dni=ticket_data.get("dni"),
-            estado=ticket_data.get("estado", "nuevo")
+            estado=ticket_data.get("estado", "nuevo"),
+            estado_cliente=ticket_data.get("estado", "nuevo")
         )
 
 class ServicioTickets:
