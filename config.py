@@ -19,6 +19,7 @@ PANEL_URL = os.getenv("PANEL_URL", "http://localhost:8080")
 WIDGET_URL = os.getenv("WIDGET_URL", "http://localhost:8080")
 
 parsed_backend = urlparse(BACKEND_URL)
+IS_HTTPS = parsed_backend.scheme == "https"
 
 # CORS_ALLOWED_ORIGINS can override the default allowed origins.  When unset we
 # allow the panel and widget URLs.  Values are cleaned of trailing slashes and
@@ -94,12 +95,12 @@ class Config:
 
     # 3. CONFIGURACIÓN DE COOKIES DE SESIÓN (MODO DEV/PROD)
     SESSION_COOKIE_DOMAIN = (None if ENV == "dev" else COOKIE_DOMAIN)
-    SESSION_COOKIE_SECURE = (ENV == "prod")
+    SESSION_COOKIE_SECURE = (ENV == "prod") or IS_HTTPS
     SESSION_COOKIE_SAMESITE = "None"
 
     # Flask-Login "remember me" cookie settings
     REMEMBER_COOKIE_SAMESITE = "None"
-    REMEMBER_COOKIE_SECURE = (ENV == "prod")
+    REMEMBER_COOKIE_SECURE = (ENV == "prod") or IS_HTTPS
 
     SESSION_TYPE = 'sqlalchemy'
     SESSION_SQLALCHEMY_TABLE = 'sessions'
