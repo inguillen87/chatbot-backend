@@ -330,6 +330,13 @@ def anon_o_token_requerido(f):
 
         # Adjuntar el anon_id a la respuesta para que el cliente lo pueda usar
         resp = make_response(response)
+        origin = request.headers.get("Origin")
+        if origin:
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Vary"] = "Origin"
+        else:
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
         resp.headers.setdefault("X-Anon-Id", anon_id)
         resp.headers.setdefault("Anon-Id", anon_id)
         return resp
