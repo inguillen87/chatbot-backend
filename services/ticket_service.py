@@ -155,6 +155,16 @@ class ServicioTickets:
         # para evitar detached instances.
         # --- Fin de la lógica de manejo de usuario ---
 
+        # Inferir categoría a partir de campos alternativos si no fue provista
+        if not ticket_data.get("categoria"):
+            tipo_general = (
+                ticket_data.get("tipo")
+                or ticket_data.get("tipo_ticket")
+                or ticket_data.get("tipo_reclamo")
+            )
+            if tipo_general:
+                ticket_data["categoria"] = tipo_general
+
         # Normalizar categoría para evitar duplicados como variantes de 'luminarias'
         if "categoria" in ticket_data:
             ticket_data["categoria"] = normalize_category(ticket_data.get("categoria"))
