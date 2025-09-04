@@ -137,7 +137,16 @@ class TestProactiveFlows(unittest.TestCase):
     def test_location_menu_accepts_numeric_selection(self):
         owner_user = User.query.get(1)
         rubro_obj = owner_user.rubro
-        chat_context = ChatSessionContext(chat_session_id='test_session_location_numeric', user_id=1, context_data={})
+        initial_context = {
+            'contexto_municipio_v2': {
+                'menu_opciones': [
+                    {'texto': '📝 Iniciar un Reclamo', 'action_id': 'iniciar_reclamo'},
+                    {'texto': '💡 Enviar una Sugerencia', 'action_id': 'enviar_sugerencia'},
+                    {'texto': 'Cancelar', 'action_id': 'cancelar'},
+                ]
+            }
+        }
+        chat_context = ChatSessionContext(chat_session_id='test_session_location_numeric', user_id=1, context_data=initial_context)
         db.session.add(chat_context)
         db.session.commit()
 
@@ -158,6 +167,12 @@ class TestProactiveFlows(unittest.TestCase):
             viewer_user=owner_user,
             chat_db_context=chat_context,
             channel="whatsapp",
+        )
+
+        opciones_guardadas = chat_context.context_data['contexto_municipio_v2']['menu_opciones']
+        self.assertEqual(
+            [opt['action_id'] for opt in opciones_guardadas],
+            ['iniciar_reclamo_con_ubicacion', 'enviar_sugerencia_con_ubicacion', 'cancelar']
         )
 
         with patch('services.municipio_responder.ReclamoFlowHandler.start_flow') as mock_start_flow:
