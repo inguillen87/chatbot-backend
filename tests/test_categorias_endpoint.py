@@ -18,6 +18,10 @@ class _DummyBP:
             return f
         return decorator
 flask_stub.Blueprint = _DummyBP
+flask_stub.Flask = object
+def _make_response(*a, **k):
+    return None
+flask_stub.make_response = _make_response
 def abort(code):
     raise Exception(f"abort {code}")
 flask_stub.abort = abort
@@ -56,18 +60,28 @@ models_stub.SitioWebInfo = type('SitioWebInfo', (), {})
 models_stub.db = SimpleNamespace(session=None)
 sys.modules.setdefault('models', models_stub)
 
+# Evitar importar módulos del proyecto que traen dependencias pesadas
+auth_stub = ModuleType('routes.auth')
+auth_stub.token_requerido = lambda f: f
+sys.modules.setdefault('routes.auth', auth_stub)
+permissions_stub = ModuleType('utils.permissions')
+permissions_stub.require_role = lambda *roles: (lambda f: f)
+sys.modules.setdefault('utils.permissions', permissions_stub)
+
 from routes.categorias import obtener_categorias
 
 class CategoriasEndpointTest(unittest.TestCase):
     def test_returns_category_list(self):
         user = SimpleNamespace(rol='admin')
         with patch('routes.categorias.jsonify', lambda x: x):
-            resp = obtener_categorias.__wrapped__(user)
+            resp = obtener_categorias(user)
         self.assertIsInstance(resp, dict)
         self.assertIn('categorias', resp)
         self.assertIn('categories', resp)
         self.assertEqual(resp['categorias'], resp['categories'])
         self.assertIn('Luminaria', resp['categorias'])
+        # Asegurar que nuevas categorías como 'Sugerencia' también estén presentes
+        self.assertIn('Sugerencia', resp['categorias'])
 
 if __name__ == '__main__':
     unittest.main()
