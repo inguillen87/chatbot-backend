@@ -117,6 +117,15 @@ class CrearReclamoActionHandler(BaseActionHandler):
         elif viewer_user and getattr(viewer_user, "dni", None) and str(viewer_user.dni).isdigit():
             dni_final = str(viewer_user.dni)
 
+        # Optional contact address (for suggestion flows)
+        direccion_contacto = (
+            action_data.get("direccion_contacto")
+            or datos_parciales.get("direccion_contacto")
+            or action_data.get("direccion")
+        )
+        if not direccion_contacto and viewer_user:
+            direccion_contacto = getattr(viewer_user, "direccion", None)
+
 
         # Actualizar el contexto con los datos más recientes para persistencia
         for key, value in [
@@ -128,6 +137,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             ("telefono_vecino", telefono_final),
             ("email_vecino", email_final),
             ("dni_vecino", dni_final),
+            ("direccion_contacto", direccion_contacto),
             ("foto_url", foto_url_llm),
         ]:
             if value:
@@ -246,6 +256,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "telefono_vecino": telefono_final,
             "email_vecino": email_final,
             "dni_vecino": dni_final,
+            "direccion_contacto": direccion_contacto,
             "estado": "nuevo",
             "user_id": getattr(viewer_user, "id", None),
             "anon_id": self.context.get("anon_id"),
@@ -311,19 +322,28 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 contacto_especializado.setdefault("horario", owner_user.horario)
 
             # Limpiar contexto de reclamo después de la creación exitosa
-            # Guardamos la info del usuario si existe, para no perderla.
+            # Guardamos la info del usuario y de contacto para no perderla.
             user_info = contexto_reclamo.get('user', {})
+            contacto_usuario = {
+                "nombre": nombre_vecino_final,
+                "dni": dni_final,
+                "email": email_final,
+                "telefono": telefono_final,
+                "direccion": direccion_contacto,
+            }
             # Limpiamos TODO el contexto del municipio para evitar "context bleed".
             if CONTEXTO_MUNICIPIO in self.context:
                 self.context[CONTEXTO_MUNICIPIO].clear()
-                # Restauramos la info del usuario.
                 if user_info:
                     self.context[CONTEXTO_MUNICIPIO]['user'] = user_info
-
-                # Forzamos el estado de vuelta a conversación general para que el bot no quede "trabado" en el flujo de reclamo.
+                self.context[CONTEXTO_MUNICIPIO]['contacto_usuario'] = {
+                    k: v for k, v in contacto_usuario.items() if v
+                }
                 from services.municipio_responder import ConversationState
                 self.context[CONTEXTO_MUNICIPIO]['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
-                logger.info(f"Contexto de reclamo limpiado. Nuevo estado: {self.context[CONTEXTO_MUNICIPIO]['estado_conversacion']}")
+                logger.info(
+                    f"Contexto de reclamo limpiado. Nuevo estado: {self.context[CONTEXTO_MUNICIPIO]['estado_conversacion']}"
+                )
 
 
             # Notificaciones
@@ -488,14 +508,33 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "pedir_info": "ubicacion"
             }
 
+        contacto_prev = self.context.get(CONTEXTO_MUNICIPIO, {}).get("contacto_usuario", {})
+        viewer_user = self.context.get("viewer_user_obj")
         nombre_vecino = (
             action_data.get("nombre")
             or action_data.get("usuario")
             or action_data.get("nombre_usuario_detectado")
+            or contacto_prev.get("nombre")
+            or (getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None))
         )
-        dni_vecino = action_data.get("dni")
-        email_vecino = action_data.get("email") or action_data.get("email_detectado")
-        direccion_contacto = action_data.get("direccion") or action_data.get("direccion_contacto")
+        dni_vecino = action_data.get("dni") or contacto_prev.get("dni") or getattr(viewer_user, "dni", None)
+        email_vecino = (
+            action_data.get("email")
+            or action_data.get("email_detectado")
+            or contacto_prev.get("email")
+            or getattr(viewer_user, "email", None)
+        )
+        direccion_contacto = (
+            action_data.get("direccion")
+            or action_data.get("direccion_contacto")
+            or contacto_prev.get("direccion")
+            or getattr(viewer_user, "direccion", None)
+        )
+        telefono_vecino = (
+            action_data.get("telefono")
+            or contacto_prev.get("telefono")
+            or getattr(viewer_user, "telefono", None)
+        )
         if not all([nombre_vecino, dni_vecino, email_vecino, direccion_contacto]):
             return {
                 "success": False,
@@ -503,7 +542,6 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "pedir_info": "datos_contacto_sugerencia"
             }
         # Create a ticket for the suggestion
-        viewer_user = self.context.get("viewer_user_obj")
         owner_user = self.context.get("user_obj")
         user_id_db = getattr(viewer_user, "id", None)
         anon_id_db = self.context.get("anon_id") if not user_id_db else None
@@ -521,6 +559,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             "nombre_vecino": nombre_vecino_final,
             "dni_vecino": dni_vecino,
             "email_vecino": email_vecino,
+            "telefono_vecino": telefono_vecino,
             "direccion": ubicacion_sugerencia,
             "direccion_contacto": direccion_contacto,
             "latitud": coordenadas_sugerencia.get("lat") if isinstance(coordenadas_sugerencia, dict) else None,
@@ -542,10 +581,22 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             logger.info(f"Ticket de sugerencia {nro_ticket_str} creado exitosamente.")
 
             # Limpiar el contexto para evitar estados pegajosos
+            user_info = self.context.get(CONTEXTO_MUNICIPIO, {}).get('user', {})
+            contacto_usuario = {
+                "nombre": nombre_vecino_final,
+                "dni": dni_vecino,
+                "email": email_vecino,
+                "direccion": direccion_contacto,
+                "telefono": telefono_vecino,
+            }
             if CONTEXTO_MUNICIPIO in self.context:
-                self.context[CONTEXTO_MUNICIPIO].clear()
+                ctx_muni = self.context[CONTEXTO_MUNICIPIO]
+                ctx_muni.clear()
+                if user_info:
+                    ctx_muni['user'] = user_info
+                ctx_muni['contacto_usuario'] = {k: v for k, v in contacto_usuario.items() if v}
                 from services.municipio_responder import ConversationState
-                self.context[CONTEXTO_MUNICIPIO]['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+                ctx_muni['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
 
             # Obtener la URL base del chat del contexto para el botón "Ver mi Ticket"
             municipio_config = self.context.get('municipio_config_actual', {})
