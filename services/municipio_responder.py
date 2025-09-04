@@ -80,6 +80,11 @@ CANCEL_KEYWORDS = {
         "menu principal",
         "terminar",
         "basta",
+        "reiniciar",
+        "resetear",
+        "empezar de nuevo",
+        "volver a empezar",
+        "empezar de cero",
     ]
 }
 
@@ -1171,6 +1176,20 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             flag_modified(chat_db_context, "context_data")
         return _get_main_menu_payload(context)
 
+    if action_id in {"limpiar_contexto", "cancelar"}:
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contacto_prev = contexto_municipio_actual.get("contacto_usuario")
+        contexto_municipio_actual.clear()
+        if contacto_prev:
+            contexto_municipio_actual["contacto_usuario"] = contacto_prev
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _get_main_menu_payload(
+            context,
+            welcome_message_override="¡Listo! Empezamos de nuevo. ¿En qué te puedo ayudar?",
+        )
+
     if action_id == "mostrar_menu_reclamos":
         submenu = _get_reclamos_consultas_menu()
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
@@ -1505,7 +1524,35 @@ def handle_location_update(data):
         "respuesta": f"Ubicación actualizada a: {direccion_info.get('formatted_address')}"
     }
 
-BOTONES_COMANDOS_MUNICIPIO = {"Hacer un reclamo": "iniciar_reclamo", "Consultar estado de un trámite": "consultar_estado_ticket", "Consultar estado de ticket": "consultar_estado_ticket", "Consultar otro ticket": "consultar_estado_ticket", "Hablar con un agente": "hablar_con_agente", "Nuevo reclamo": "iniciar_reclamo", "Adjuntar foto": "adjuntar_foto", "Compartir ubicación": "compartir_ubicacion", "Foto": "adjuntar_foto", "Ubicación": "compartir_ubicacion", "No, continuar": "sin_adjuntos", "Completar reclamo": "sin_adjuntos", "Sí, confirmar reclamo": "confirmar_reclamo", "Si, confirmar reclamo": "confirmar_reclamo", "Confirmar reclamo": "confirmar_reclamo", "Finalizar": "confirmar_reclamo", "Finalizar reclamo": "confirmar_reclamo", "Confirmar": "confirmar_reclamo", "Confirmado": "confirmar_reclamo", "Si confirmo": "confirmar_reclamo", "Sí confirmo": "confirmar_reclamo", "Editar datos": "editar_reclamo", "Sí, solucionado": "confirmar_cierre_ticket", "No, aún no": "no_cerrar_ticket"}
+BOTONES_COMANDOS_MUNICIPIO = {
+    "Hacer un reclamo": "iniciar_reclamo",
+    "Consultar estado de un trámite": "consultar_estado_ticket",
+    "Consultar estado de ticket": "consultar_estado_ticket",
+    "Consultar otro ticket": "consultar_estado_ticket",
+    "Hablar con un agente": "hablar_con_agente",
+    "Nuevo reclamo": "iniciar_reclamo",
+    "Adjuntar foto": "adjuntar_foto",
+    "Compartir ubicación": "compartir_ubicacion",
+    "Foto": "adjuntar_foto",
+    "Ubicación": "compartir_ubicacion",
+    "No, continuar": "sin_adjuntos",
+    "Completar reclamo": "sin_adjuntos",
+    "Sí, confirmar reclamo": "confirmar_reclamo",
+    "Si, confirmar reclamo": "confirmar_reclamo",
+    "Confirmar reclamo": "confirmar_reclamo",
+    "Finalizar": "confirmar_reclamo",
+    "Finalizar reclamo": "confirmar_reclamo",
+    "Confirmar": "confirmar_reclamo",
+    "Confirmado": "confirmar_reclamo",
+    "Si confirmo": "confirmar_reclamo",
+    "Sí confirmo": "confirmar_reclamo",
+    "Editar datos": "editar_reclamo",
+    "Sí, solucionado": "confirmar_cierre_ticket",
+    "No, aún no": "no_cerrar_ticket",
+    "Volver al inicio": "menu_principal",
+    "Cancelar": "cancelar",
+    "Empezar de nuevo": "limpiar_contexto",
+}
 
 # Utiliza el orquestador de LLMs que intenta OpenAI y Cohere.
 from services.llm_orchestrator import llamar_llm_con_fallback
@@ -2029,6 +2076,17 @@ MENU_KEYWORDS = {
         "tengo una sugerencia",
         "tengo un comentario",
         "me gustaria hacer una sugerencia",
+    ],
+    "limpiar_contexto": [
+        "cancelar",
+        "volver al inicio",
+        "empezar de nuevo",
+        "reiniciar",
+        "resetear",
+        "limpiar chat",
+        "borrar conversacion",
+        "nuevo tema",
+        "volver a empezar",
     ],
     "consultar_estado_reclamo": [
         "consultar reclamo",
