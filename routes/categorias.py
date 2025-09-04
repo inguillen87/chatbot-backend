@@ -1,7 +1,14 @@
 from flask import Blueprint, jsonify
 from routes.auth import token_requerido
 from utils.permissions import require_role
-from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
+# La lista de categorías disponible para asignar a los empleados y filtrar
+# tickets proviene de ``services.categorias_municipio``.  Anteriormente
+# se utilizaba ``TODAS_LAS_CATEGORIAS_UNICAS`` derivado de un mapa de
+# palabras clave, lo que dejaba fuera categorías como ``Sugerencia`` u
+# ``Otro Motivo``.  Para exponer todas las categorías relevantes al
+# frontend de administración utilizamos directamente ``CATEGORIAS_RECLAMO``
+# y capitalizamos cada entrada para una mejor presentación.
+from services.categorias_municipio import CATEGORIAS_RECLAMO
 
 categorias_bp = Blueprint('categorias', __name__, url_prefix='/categorias')
 
@@ -14,7 +21,8 @@ def obtener_categorias(current_user):
     Para compatibilidad con versiones anteriores, se devuelve tanto la clave
     en español (`categorias`) como su equivalente en inglés (`categories`).
     """
+    categorias = [c.title() for c in CATEGORIAS_RECLAMO]
     return jsonify({
-        "categorias": TODAS_LAS_CATEGORIAS_UNICAS,
-        "categories": TODAS_LAS_CATEGORIAS_UNICAS,
+        "categorias": categorias,
+        "categories": categorias,
     })
