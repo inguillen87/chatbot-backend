@@ -1998,7 +1998,22 @@ MENU_KEYWORDS = {
     "iniciar_reclamo": ["iniciar reclamo", "hacer reclamo", "nuevo reclamo", "realizar reclamo", "presentar reclamo", "registrar queja"],
     "solicitar_turnos": ["turnos", "turno", "solicitar turno", "pedir turno", "turnos online", "reservar turno", "agendar turno"],
     "licencia_de_conducir": ["licencia", "conducir", "carnet", "registro", "renovar licencia", "sacar licencia", "tramitar licencia", "registro de conducir"],
-    "enviar_sugerencia": ["sugerencia", "sugerir", "propuesta", "pedido", "pedir algo", "comentario", "feedback"],
+    "enviar_sugerencia": [
+        "sugerencia",
+        "sugerir",
+        "propuesta",
+        "pedido",
+        "pedir algo",
+        "comentario",
+        "feedback",
+        "hacer una sugerencia",
+        "quiero hacer una sugerencia",
+        "queria hacer una sugerencia",
+        "quisiera hacer una sugerencia",
+        "tengo una sugerencia",
+        "tengo un comentario",
+        "me gustaria hacer una sugerencia",
+    ],
     "consultar_estado_reclamo": [
         "consultar reclamo",
         "estado reclamo",
@@ -2074,7 +2089,19 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
             if button_text_norm.startswith(normalized_input):
                 return button.get("action_id")
 
-    # 4. Check for keyword match (fuzzy matching for natural language)
+    # 4. For longer free-form phrases, skip fuzzy matching to avoid
+    # misclassifying natural sentences as menu keywords. Let higher-level
+    # NLU or LLM logic handle these cases instead.
+    if len(normalized_input.split()) > 7:
+        logger.info(
+            f"DEBUG: Skipping fuzzy match for long input: '{normalized_input}'"
+        )
+        logger.warning(
+            f"DEBUG: No menu action found for input: '{user_input}' (normalized: '{normalized_input}')"
+        )
+        return None
+
+    # 5. Check for keyword match (fuzzy matching for natural language)
     local_keywords = {}
     for button in menu_buttons:
         action_id = button.get('action_id')
@@ -2083,15 +2110,21 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
                 local_keywords[keyword] = action_id
 
     if local_keywords:
-        best_match, score = process.extractOne(normalized_input, local_keywords.keys())
+        best_match, score = process.extractOne(
+            normalized_input, local_keywords.keys()
+        )
 
         if score > 80:
             # Added log for debugging
-            logger.info(f"DEBUG: Fuzzy match found for '{normalized_input}' with keyword '{best_match}' (score: {score}). Action: {local_keywords[best_match]}")
+            logger.info(
+                f"DEBUG: Fuzzy match found for '{normalized_input}' with keyword '{best_match}' (score: {score}). Action: {local_keywords[best_match]}"
+            )
             return local_keywords[best_match]
 
     # Added log for debugging
-    logger.warning(f"DEBUG: No menu action found for input: '{user_input}' (normalized: '{normalized_input}')")
+    logger.warning(
+        f"DEBUG: No menu action found for input: '{user_input}' (normalized: '{normalized_input}')"
+    )
     return None
 
 def find_global_menu_action(user_input: str) -> str | None:

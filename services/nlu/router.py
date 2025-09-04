@@ -41,7 +41,20 @@ INTENTS = {
         "denuncia", "denuncias", "denunciar", "hacer una denuncia", "realizar una denuncia"
     ],
     "enviar_sugerencia": [
-        "sugerencia", "enviar sugerencia", "comentario", "opinion", "feedback", "idea"
+        "sugerencia",
+        "enviar sugerencia",
+        "comentario",
+        "opinion",
+        "feedback",
+        "idea",
+        "hacer una sugerencia",
+        "queria hacer una sugerencia",
+        "quiero hacer una sugerencia",
+        "quisiera hacer una sugerencia",
+        "tengo una sugerencia",
+        "tengo un comentario",
+        "me gustaria hacer una sugerencia",
+        "me gustaria que",
     ],
     "consultar_estado_ticket": [
         "estado", "ticket", "mi reclamo", "ver estado",
