@@ -388,20 +388,12 @@ class ReclamoFlowHandler:
                     "message_to_user",
                     f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{nro_ticket}*. Te mantendremos informado sobre el estado del mismo por este medio."
                 )
-                return {
-                    "message_body": message,
-                    "options_list": result.get("options_list", []),
-                    "message_type": result.get("message_type", "text"),
-                }
+                return self.end_flow(message, show_menu=True)
             error_message = result.get(
                 "message_to_user",
                 "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde."
             )
             return self.end_flow(error_message, show_menu=True)
-        elif any(word in normalized for word in negatives) or action == "reclamo_confirmar_no":
-            return self.ask_for_contact_details()
-        else:  # Cancel
-            return self.end_flow("Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?", show_menu=True)
 
     def end_flow(self, message, show_menu=False):
         self.flow_context.clear()
@@ -410,10 +402,9 @@ class ReclamoFlowHandler:
         self.municipal_ctx.pop("reclamo_flow_v2", None)
 
         if show_menu:
-            return self.greeting_handler.handle({})
+            return _message_with_menu(message, self.context)
         else:
             return {"message_body": message, "message_type": "text"}
-
 # Initialize the classifier globally
 INTENTS_FILE_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'intents.json')
 intent_classifier = IntentClassifier(intents_file_path=INTENTS_FILE_PATH)
@@ -922,6 +913,7 @@ class GreetingHandler(BaseMunicipioHandler):
 
             # Preserve essential info if it exists
             user_info = chat_db_context_data.get(CONTEXTO_MUNICIPIO, {}).get('user', {})
+            contacto_prev = chat_db_context_data.get(CONTEXTO_MUNICIPIO, {}).get('contacto_usuario', {})
             profile_name = chat_db_context_data.get('profile_name')
 
             # Clear the entire context to prevent stale data from any flow
@@ -929,6 +921,8 @@ class GreetingHandler(BaseMunicipioHandler):
 
             # Restore essential info into a fresh context
             contexto_municipio_nuevo = chat_db_context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+            if contacto_prev:
+                contexto_municipio_nuevo['contacto_usuario'] = contacto_prev
             if user_info:
                 contexto_municipio_nuevo['user'] = user_info
             if profile_name:
@@ -944,6 +938,12 @@ class GreetingHandler(BaseMunicipioHandler):
         return _get_main_menu_payload(self.context)
 
 
+
+def _message_with_menu(message, context):
+    menu_payload = GreetingHandler(context).handle({})
+    if message:
+        menu_payload["message_body"] = f"{message}\n\n{menu_payload['message_body']}"
+    return menu_payload
 def handle_contactos_utiles_inicio(context, chat_db_context):
     """Handles the initial request for 'Contactos Útiles'."""
     municipio_id = context.get("municipio_id", MUNICIPIO_ID)
@@ -2087,6 +2087,9 @@ MENU_KEYWORDS = {
         "borrar conversacion",
         "nuevo tema",
         "volver a empezar",
+        "borrar historial",
+        "limpiar memoria",
+        "arrancar de cero",
     ],
     "consultar_estado_reclamo": [
         "consultar reclamo",
@@ -3122,6 +3125,7 @@ def responder_municipio(
             contexto_municipio_actual['estado_conversacion'] = None
             if chat_db_context: flag_modified(chat_db_context, "context_data")
 
+
             botones = []
             if ticket:
                 contactos = cargar_configuracion_municipio(municipio_id, "contactos_especializados.json")
@@ -3143,14 +3147,12 @@ def responder_municipio(
                 mensaje = (
                     "No encontramos un ticket con ese número y PIN. Por favor, verifica los datos e intenta nuevamente."
                 )
-
-            return _finalize_response({
-                "message_body": mensaje,
-                "options_list": botones,
-                "message_type": "interactive_buttons" if botones else "text",
-                "fuente": "handler_consultar_reclamo"
-            })
-
+            final_payload = _message_with_menu(mensaje, context)
+            final_payload['fuente'] = 'handler_consultar_reclamo'
+            if botones:
+                final_payload['options_list'] = botones + final_payload.get('options_list', [])
+                final_payload['message_type'] = 'interactive_buttons'
+            return _finalize_response(final_payload)
         elif estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name:
             switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context)
             if switch_response:
@@ -3297,6 +3299,10 @@ def responder_municipio(
                 if response.get("success"):
                     response["message_to_user"] = f"✅ ¡Hemos recibido tu sugerencia! Muchas gracias por tu aporte. Lo hemos registrado con el número de ticket `{response.get('data', {}).get('nro_ticket', 'N/A')}` para su seguimiento."
                     contexto_municipio_actual['estado_conversacion'] = None
+                    if chat_db_context: flag_modified(chat_db_context, "context_data")
+                    final_payload = _message_with_menu(response["message_to_user"], context)
+                    final_payload['success'] = True
+                    return _finalize_response(final_payload)
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return _finalize_response(response)
             else:

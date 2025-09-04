@@ -108,8 +108,13 @@ class TestSugerenciaFlow(unittest.TestCase):
             self.assertEqual(call_kwargs['ticket_data']['detalles'], sugerencia_texto)
             self.assertEqual(call_kwargs['ticket_data']['municipio_id'], owner_user.municipio_id)
             self.assertTrue(response_4.get("success"))
-            self.assertIn("Hemos recibido tu sugerencia", response_4.get("message_to_user", ""))
-            self.assertIn("S-12345", response_4.get("message_to_user", ""))
+            self.assertIn("Hemos recibido tu sugerencia", response_4["message_body"])
+            self.assertIn("S-12345", response_4["message_body"])
+            self.assertIn("¿Cómo te puedo ayudar hoy?", response_4["message_body"])
+            self.assertEqual(
+                chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
+                ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+            )
 
     def test_sugerencia_reutiliza_contacto(self):
         owner_user = User.query.get(1)

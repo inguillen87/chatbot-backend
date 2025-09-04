@@ -93,6 +93,9 @@ class TestMenuKeywords(unittest.TestCase):
     def test_averia_keyword(self):
         self.assertEqual(find_global_menu_action("averia"), "mostrar_menu_reclamos")
 
+    def test_borrar_historial_keyword(self):
+        self.assertEqual(find_global_menu_action("borrar historial"), "limpiar_contexto")
+
     def test_poste_caido_category_detection(self):
         options = _get_reclamos_menu().get("options_list", [])
         category = find_reclamo_category_by_input("hay un poste caido", options)
