@@ -448,6 +448,7 @@ def _serialize_ticket_details(ticket, ticket_type):
     comentarios = [c.to_dict() for c in ticket.comentarios]
 
     timeline = servicio_tickets.obtener_timeline_ticket(ticket)
+    progreso_estados = servicio_tickets.obtener_estado_progreso(ticket)
 
     historial_chat = servicio_tickets.obtener_historial_chat(ticket)
 
@@ -511,7 +512,27 @@ def _serialize_ticket_details(ticket, ticket_type):
         "informacion_personal_vecino": informacion_personal,
         "historial_chat": historial_chat,
         "timeline": timeline,
+        "progreso_estados": progreso_estados,
     }
+
+    if ticket_type == "municipio":
+        ruta_data = None
+        if getattr(ticket, 'latitud', None) is not None and getattr(ticket, 'longitud', None) is not None:
+            municipio_usuario = db.session.get(User, ticket.municipio_id)
+            if municipio_usuario and municipio_usuario.latitud is not None and municipio_usuario.longitud is not None:
+                ruta_osrm = obtener_ruta((municipio_usuario.latitud, municipio_usuario.longitud), (ticket.latitud, ticket.longitud))
+                if ruta_osrm:
+                    ruta_data = {
+                        "origen": {"lat": municipio_usuario.latitud, "lng": municipio_usuario.longitud},
+                        "destino": {"lat": ticket.latitud, "lng": ticket.longitud},
+                        **ruta_osrm,
+                    }
+                else:
+                    ruta_data = {
+                        "origen": {"lat": municipio_usuario.latitud, "lng": municipio_usuario.longitud},
+                        "destino": {"lat": ticket.latitud, "lng": ticket.longitud},
+                    }
+        ticket_data["ruta"] = ruta_data
     return ticket_data
 
 
@@ -718,7 +739,9 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     try:
         if ticket_obj.estado == "nuevo" and (comentario_texto.strip() or archivos_adjuntados_db): # Si hay nuevo contenido (texto o archivos)
             ticket_obj.estado = "en_proceso"
-        
+            if hasattr(ticket_obj, "estado_cliente"):
+                ticket_obj.estado_cliente = "en_proceso"
+
         db.session.commit() # Commit después de todas las operaciones (comentario y archivos)
     except Exception as e:
         db.session.rollback()
@@ -837,6 +860,8 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     )
 
     ticket_obj.estado = nuevo_estado
+    if hasattr(ticket_obj, "estado_cliente"):
+        ticket_obj.estado_cliente = nuevo_estado
     if nuevo_estado == "cerrado":
         encuesta = TicketSatisfaccion(
             ticket_id=ticket_obj.id,

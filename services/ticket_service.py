@@ -86,7 +86,8 @@ class PymeTicketCreator(TicketCreator):
             telefono=ticket_data.get("telefono_vecino") or ticket_data.get("telefono"),
             email=ticket_data.get("email_vecino") or ticket_data.get("email"),
             dni=ticket_data.get("dni"),
-            estado=ticket_data.get("estado", "nuevo")
+            estado=ticket_data.get("estado", "nuevo"),
+            estado_cliente=ticket_data.get("estado", "nuevo")
         )
 
 class ServicioTickets:
@@ -592,6 +593,32 @@ class ServicioTickets:
                 )
 
         return timeline
+
+    def obtener_estado_progreso(self, ticket: Union[MunicipioTicket, PymeTicket]) -> list[dict]:
+        """Genera una lista ordenada con los estados principales del ticket."""
+        timeline = self.obtener_timeline_ticket(ticket)
+
+        estados = {
+            "nuevo": {"completado": False, "fecha": None},
+            "en_proceso": {"completado": False, "fecha": None},
+            "completado": {"completado": False, "fecha": None},
+        }
+
+        for evento in timeline:
+            if evento.get("tipo") == "ticket_creado":
+                estados["nuevo"] = {"completado": True, "fecha": evento.get("fecha")}
+            elif evento.get("tipo") == "estado":
+                nombre_estado = evento.get("estado")
+                if nombre_estado in ("en_progreso", "en progreso"):
+                    estados["en_proceso"] = {"completado": True, "fecha": evento.get("fecha")}
+                elif nombre_estado in ("resuelto", "cerrado", "completado"):
+                    estados["completado"] = {"completado": True, "fecha": evento.get("fecha")}
+
+        return [
+            {"estado": "nuevo", **estados["nuevo"]},
+            {"estado": "en_proceso", **estados["en_proceso"]},
+            {"estado": "completado", **estados["completado"]},
+        ]
 
     def migrar_tickets_de_anonimo(self, anon_id: str, nuevo_user_id: int) -> int:
         """Asigna a ``nuevo_user_id`` todos los tickets y comentarios
