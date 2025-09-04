@@ -34,16 +34,25 @@ class WidgetTokenEndpointTests(unittest.TestCase):
         self.ctx.pop()
 
     def test_widget_token_returns_jwt(self):
-        resp = self.client.post("/auth/widget-token", headers={"Authorization": self.user.token})
+        resp = self.client.post(
+            "/auth/widget-token",
+            headers={"Authorization": self.user.token, "Origin": "https://example.com"},
+        )
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertIn("token", data)
-        decoded = jwt.decode(data["token"], self.app.config["SECRET_KEY"], algorithms=["HS256"])
+        decoded = jwt.decode(
+            data["token"], self.app.config["SECRET_KEY"], algorithms=["HS256"]
+        )
         self.assertEqual(decoded["user_id"], self.user.id)
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://example.com")
 
     def test_widget_token_preflight(self):
-        resp = self.client.options("/auth/widget-token", headers={"Origin": "https://example.com"})
+        resp = self.client.options(
+            "/auth/widget-token", headers={"Origin": "https://example.com"}
+        )
         self.assertEqual(resp.status_code, 204)
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://example.com")
 
 
 if __name__ == "__main__":
