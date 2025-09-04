@@ -72,6 +72,7 @@ class TicketSearchTests(unittest.TestCase):
     def test_normalize_category_helper(self):
         from utils.ticket_utils import normalize_category
         self.assertEqual(normalize_category('luminaria sin luz'), 'Luminarias')
+        self.assertEqual(normalize_category('pozo en la calle'), 'Arreglo De Calle')
 
     def test_dni_serialized(self):
         from routes.ticket import serialize_ticket_to_json
