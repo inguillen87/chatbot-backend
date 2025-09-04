@@ -146,6 +146,15 @@ class ReclamoFlowHandler:
         self.flow_context.clear()
         self.flow_context['datos_reclamo'] = datos_iniciales or {}
 
+        # Si la conversación comenzó con una foto (context['foto_url']) pero
+        # aún no se reflejó en los datos del reclamo, la agregamos para evitar
+        # que se le vuelva a solicitar al usuario.
+        if (
+            self.context.get("foto_url")
+            and not self.flow_context['datos_reclamo'].get('foto_url')
+        ):
+            self.flow_context['datos_reclamo']['foto_url'] = self.context.get("foto_url")
+
         # Pre-fill contact details from the viewer if available so we do not
         # ask the user for information we already have.
         viewer = self.context.get("viewer_user_obj")

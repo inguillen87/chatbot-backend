@@ -58,6 +58,28 @@ class TestReclamoFlowUX(unittest.TestCase):
         self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
         self.assertNotIn("foto", resp["message_body"].lower())
 
+    def test_start_flow_uses_context_photo(self):
+        context = {
+            "chat_db_context_data": {},
+            "foto_url": "http://example.com/foto.jpg",
+        }
+        handler = ReclamoFlowHandler(context, MagicMock())
+        handler.start_flow(
+            datos_iniciales={
+                "categoria": "Bache",
+                "direccion": "Calle 123",
+                "descripcion": "pozo grande",
+            }
+        )
+        self.assertEqual(
+            handler.flow_context["datos_reclamo"].get("foto_url"),
+            "http://example.com/foto.jpg",
+        )
+        self.assertEqual(
+            handler.flow_context["state"],
+            ReclamoState.ESPERANDO_DATOS_CONTACTO.name,
+        )
+
     def test_start_flow_prefills_dni_from_viewer_alias(self):
         class Viewer:
             name = "Juan"
