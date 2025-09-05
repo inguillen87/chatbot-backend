@@ -557,5 +557,65 @@
         "ejemplos": ["Gracias", "Muchas gracias", "Ok gracias"],
         "respuesta": "¡De nada! ¿Hay algo más en lo que pueda ayudarte?"
     }
+  ],
+  "municipios": [
+    {
+      "categoria": "impuestos_tasas",
+      "ejemplos": [
+        "¿Dónde pago las tasas municipales?",
+        "quiero pagar mis impuestos",
+        "cómo descargar la boleta municipal",
+        "cuando vence la tasa",
+        "pago de tasas de junín",
+        "boleta municipal Junín"
+      ],
+      "respuesta": "Consultá impuestos, descargá boletas y pagá online en Rentas del municipio: https://www.juninmendoza.gov.ar/vencimientos/"
+    },
+    {
+      "categoria": "horarios_municipio",
+      "ejemplos": [
+        "horario de la municipalidad",
+        "a qué hora atiende la muni",
+        "cuándo abre el municipio",
+        "horario de atención junín",
+        "la muni está abierta los sábados"
+      ],
+      "respuesta": "La municipalidad de Junín atiende de lunes a viernes de 8 a 13 hs."
+    },
+    {
+      "categoria": "direccion_municipio",
+      "ejemplos": [
+        "dónde queda la municipalidad",
+        "dirección del municipio de junin",
+        "cómo llegar a la muni",
+        "ubicacion de la municipalidad",
+        "telefono de la municipalidad",
+        "pagina web del municipio",
+        "facebook de la municipalidad",
+        "contacto municipalidad de junin"
+      ],
+      "respuesta": "La municipalidad de Junín está en las calles Román Cano e Hipólito Yrigoyen, Junín, Mendoza. Teléfono: 0263-4492050. Sitio web: https://www.juninmendoza.gob.ar/ Facebook: https://www.facebook.com/MunicipalidadDeJuninMendoza/. Cómo llegar: https://www.google.com/maps/search/?api=1&query=Rom%C3%A1n+Cano+e+Hip%C3%B3lito+Yrigoyen%2C+Jun%C3%ADn%2C+Mendoza."
+    },
+    {
+      "categoria": "recoleccion_residuos",
+      "ejemplos": [
+        "qué días pasa la basura",
+        "horario de recolección de residuos",
+        "no pasó el camión de la basura",
+        "cuando pasa el recolector"
+      ],
+      "respuesta": "El camión recolector pasa de lunes a viernes a partir de las 21 hs. Consultá el calendario completo en https://www.juninmendoza.gov.ar/tramites/"
+    },
+    {
+      "categoria": "licencia_conducir",
+      "ejemplos": [
+        "sacar licencia de conducir",
+        "quiero renovar el carnet",
+        "dónde hago el carnet de conducir",
+        "requisitos para la licencia",
+        "turno para la licencia"
+      ],
+      "respuesta": "Solicitá turno y revisá requisitos para la Licencia de Conducir en https://www.juninmendoza.gov.ar/licencia-de-conducir-junin/"
+    }
   ]
 }
