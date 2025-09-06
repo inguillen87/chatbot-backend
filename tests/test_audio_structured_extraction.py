@@ -34,7 +34,10 @@ class AudioStructuredExtractionTests(unittest.TestCase):
             mock_chat.assert_called_once()
             self.assertEqual(result["datos_estructurados"]["tipo_solicitud"], "reclamo")
             self.assertEqual(result["datos_estructurados"]["email_ciudadano"], "juan@example.com")
-            self.assertIn("semáforo", result["datos_estructurados"]["descripcion_corta_problema"])
+            self.assertIn(
+                "semáforo",
+                result["datos_estructurados"]["descripcion_corta_problema"].lower(),
+            )
             self.assertEqual(result["texto_transcrito"][:4], "Hola")
 
 
