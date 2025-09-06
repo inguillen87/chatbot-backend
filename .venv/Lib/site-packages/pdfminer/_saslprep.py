@@ -21,8 +21,10 @@
 __all__ = ["saslprep"]
 
 import stringprep
-from typing import Callable, Tuple
 import unicodedata
+from typing import Callable, Tuple
+
+from pdfminer.pdfexceptions import PDFValueError
 
 # RFC4013 section 2.3 prohibited output.
 _PROHIBITED: Tuple[Callable[[str], bool], ...] = (
@@ -64,7 +66,11 @@ def saslprep(data: str, prohibit_unassigned_code_points: bool = True) -> str:
     in_table_c12 = stringprep.in_table_c12
     in_table_b1 = stringprep.in_table_b1
     data = "".join(
-        ["\u0020" if in_table_c12(elt) else elt for elt in data if not in_table_b1(elt)]
+        [
+            "\u0020" if in_table_c12(elt) else elt
+            for elt in data
+            if not in_table_b1(elt)
+        ],
     )
 
     # RFC3454 section 2, step 2 - Normalize
@@ -77,7 +83,7 @@ def saslprep(data: str, prohibit_unassigned_code_points: bool = True) -> str:
             # RFC3454, Section 6, #3. If a string contains any
             # RandALCat character, the first and last characters
             # MUST be RandALCat characters.
-            raise ValueError("SASLprep: failed bidirectional check")
+            raise PDFValueError("SASLprep: failed bidirectional check")
         # RFC3454, Section 6, #2. If a string contains any RandALCat
         # character, it MUST NOT contain any LCat character.
         prohibited = prohibited + (stringprep.in_table_d2,)
@@ -90,6 +96,6 @@ def saslprep(data: str, prohibit_unassigned_code_points: bool = True) -> str:
     # RFC3454 section 2, step 3 and 4 - Prohibit and check bidi
     for char in data:
         if any(in_table(char) for in_table in prohibited):
-            raise ValueError("SASLprep: failed prohibited character check")
+            raise PDFValueError("SASLprep: failed prohibited character check")
 
     return data

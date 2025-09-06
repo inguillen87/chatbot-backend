@@ -1,11 +1,15 @@
 import collections
 from typing import Dict
 
-from .psparser import LIT
+from pdfminer.psparser import LIT
 
 LITERAL_DEVICE_GRAY = LIT("DeviceGray")
 LITERAL_DEVICE_RGB = LIT("DeviceRGB")
 LITERAL_DEVICE_CMYK = LIT("DeviceCMYK")
+# Abbreviations for inline images
+LITERAL_INLINE_DEVICE_GRAY = LIT("G")
+LITERAL_INLINE_DEVICE_RGB = LIT("RGB")
+LITERAL_INLINE_DEVICE_CMYK = LIT("CMYK")
 
 
 class PDFColorSpace:
@@ -19,7 +23,7 @@ class PDFColorSpace:
 
 PREDEFINED_COLORSPACE: Dict[str, PDFColorSpace] = collections.OrderedDict()
 
-for (name, n) in [
+for name, n in [
     ("DeviceGray", 1),  # default value first
     ("CalRGB", 3),
     ("CalGray", 1),

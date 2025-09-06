@@ -30,7 +30,8 @@ def obj_to_bbox(obj: T_obj) -> T_bbox:
     """
     Return the bounding box for an object.
     """
-    return bbox_getter(obj)
+    bbox: T_bbox = bbox_getter(obj)
+    return bbox
 
 
 def bbox_to_rect(bbox: T_bbox) -> Dict[str, T_num]:
@@ -84,7 +85,8 @@ def clip_obj(obj: T_obj, bbox: T_bbox) -> Optional[T_obj]:
         copy[attr] = dims[attr]
 
     diff = dims["top"] - obj["top"]
-    copy["doctop"] = obj["doctop"] + diff
+    if "doctop" in copy:
+        copy["doctop"] = obj["doctop"] + diff
     copy["width"] = copy["x1"] - copy["x0"]
     copy["height"] = copy["bottom"] - copy["top"]
 
