@@ -35,6 +35,15 @@ class VeterinariaContactTest(unittest.TestCase):
             any("wa.me" in b.get("url", "") for b in result.get("options_list", []))
         )
 
+    def test_veterinaria_contact_from_alias(self):
+        """Ensure the 'bromatologia' action alias returns the same info."""
+        result = self.mr.handle_main_menu_action(
+            "bromatologia",
+            {"municipio_id": "default", "chat_db_context_data": {}},
+            None,
+        )
+        self.assertIn("Información de Veterinaria y Bromatología", result["message_body"])
+
 
 if __name__ == "__main__":
     unittest.main()
