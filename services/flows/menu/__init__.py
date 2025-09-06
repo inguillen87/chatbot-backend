@@ -16,6 +16,7 @@ def handle(msg, ctx):
 
     welcome_message = (
         "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
+        "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más. "
         "¿Cómo te puedo ayudar hoy?"
     )
 

@@ -95,7 +95,7 @@ class TestNewFeatures(unittest.TestCase):
             channel="whatsapp",
         )
 
-        self.assertIn("¿Cómo te llamás?", response.get("message_body", ""))
+        self.assertIn("Podés compartir tu ubicación", response.get("message_body", ""))
         self.assertEqual(len(response.get("options_list", [])), 4)
         self.assertTrue(
             any(opt.get("texto") == "🗣️ Reclamos y Consultas" for opt in response.get("options_list", []))

@@ -839,12 +839,14 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
     elif user_name:
         welcome_message = (
             f"¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
+            "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más.\n\n"
             "¿Cómo te puedo ayudar hoy?"
         )
     else:
         welcome_message = (
             "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
-            "¿Cómo te llamás?"
+            "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más.\n\n"
+            "¿Cómo te puedo ayudar hoy?"
         )
 
     channel = context.get("channel", "web")
