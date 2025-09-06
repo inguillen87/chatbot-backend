@@ -839,12 +839,14 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
     elif user_name:
         welcome_message = (
             f"¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
+            "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más.\n\n"
             "¿Cómo te puedo ayudar hoy?"
         )
     else:
         welcome_message = (
             "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
-            "¿Cómo te llamás?"
+            "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más.\n\n"
+            "¿Cómo te puedo ayudar hoy?"
         )
 
     channel = context.get("channel", "web")
@@ -895,7 +897,7 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
                 new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
                 flat_buttons.append(new_boton)
 
-    return {
+    response = {
         "message_body": welcome_message,
         "options_list": flat_buttons,
         "message_type": "interactive_list",
@@ -904,6 +906,11 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         "categorias": categorias,
         "generar_audio": True
     }
+    config = context.get("municipio_config_actual", {})
+    image_url = config.get("welcome_image_url")
+    if image_url:
+        response["image_url"] = image_url
+    return response
 
 
 class GreetingHandler(BaseMunicipioHandler):
@@ -1312,26 +1319,43 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         if not full_body:
             full_body = "No hay noticias ni eventos para mostrar en este momento."
         else:
-            if channel == "whatsapp" or channel == "web":
-                social_links = (
-                    "\n---\n"
-                    "Seguinos en nuestras redes:\n"
-                    "📘 Facebook: https://www.facebook.com/JuninMunicipio\n"
-                    "📸 Instagram: https://www.instagram.com/munijuninmdz/"
+            config_links = context.get("municipio_config_actual", {}).get("social_links", [])
+            if channel == "web":
+                social_body = (
+                    "<hr>Seguinos en nuestras redes:<br>" +
+                    "".join(
+                        f'<img src="{link.get("logo_url", "")}" alt="{link.get("name")}" '
+                        f'style="height:20px"> '
+                        f'<a href="{link.get("url")}" target="_blank">{link.get("name")}</a><br>'
+                        for link in config_links
+                    )
                 )
             else:
-                social_links = (
-                    "<hr>Seguinos en nuestras redes:<br>"
-                    '<a href="https://www.facebook.com/JuninMunicipio" target="_blank">📘 Facebook</a><br>'
-                    '<a href="https://www.instagram.com/munijuninmdz" target="_blank">📸 Instagram</a>'
+                social_body = (
+                    "\n---\nSeguinos en nuestras redes:\n" +
+                    "\n".join(
+                        f"{link.get('name')}: {link.get('url')}" for link in config_links
+                    )
                 )
-            full_body += social_links
+            full_body += social_body
+            social_buttons = [
+                {
+                    "texto": link.get("name"),
+                    "url": link.get("url"),
+                    "type": "url",
+                    "image_url": link.get("logo_url"),
+                }
+                for link in config_links
+            ]
 
-        return {
+        response = {
             "message_body": full_body.strip(),
-            "message_type": "text",
+            "message_type": "interactive_buttons" if social_buttons else "text",
             "fuente": "handler_agenda_y_noticias",
         }
+        if social_buttons:
+            response["options_list"] = social_buttons
+        return response
 
     if action_id == "web_municipio":
         website_url = context.get("municipio_config_actual", {}).get("website_url", "https://www.juninmendoza.gov.ar/")
@@ -1350,12 +1374,33 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         for btn in botones:
             if btn.get("url") and not btn.get("type"):
                 btn["type"] = "url"
-        return {
-            "message_body": data.get("descripcion", ""),
-            "options_list": botones,
-            "message_type": "interactive_buttons" if botones else "text",
+        body = data.get("descripcion", "")
+        config_links = context.get("municipio_config_actual", {}).get("social_links", [])
+        social_buttons = []
+        if action_id in {"obras", "punto_limpio"} and config_links:
+            body += (
+                "\n---\nSeguinos en nuestras redes:\n" +
+                "\n".join(f"{link.get('name')}: {link.get('url')}" for link in config_links)
+            )
+            social_buttons = [
+                {
+                    "texto": link.get("name"),
+                    "url": link.get("url"),
+                    "type": "url",
+                    "image_url": link.get("logo_url"),
+                }
+                for link in config_links
+            ]
+        response = {
+            "message_body": body,
+            "options_list": botones + social_buttons,
+            "message_type": "interactive_buttons" if botones or social_buttons else "text",
             "fuente": f"info_{action_id}_json",
         }
+        image = data.get("image_url")
+        if image:
+            response["image_url"] = image
+        return response
 
     if action_id == "compartir_ubicacion":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
@@ -2133,6 +2178,14 @@ MENU_KEYWORDS = {
         "rabia", "perrera", "sanidad animal", "sanidad_animal"
     ],
     "defensa_del_consumidor": ["defensa del consumidor", "consumidor", "consumo", "proteccion al consumidor", "atencion al consumidor"],
+    "obras": [
+        "obras", "obra", "cuadrillas", "cloacas", "pavimento",
+        "pavimentacion", "asfalto", "trabajos"
+    ],
+    "punto_limpio": [
+        "punto limpio", "reciclaje", "reciclar", "planta de reciclaje",
+        "punto verde", "residuos secos", "sustentable"
+    ],
 
     # Tasas y Servicios
     "pago_de_tasas_vigentes": ["pagar", "pago", "tasas", "tasa", "boleta", "impuestos", "municipal", "tributo", "tributos", "arancel", "aranceles", "impuesto municipal", "impuestos municipales"],
@@ -2438,6 +2491,8 @@ def _get_informacion_menu():
         {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
         {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
         {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
+        {"texto": "🏗️ Obras", "action_id": "obras"},
+        {"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"},
     ]
     return {
         "message_body": "Seleccioná una opción:",
