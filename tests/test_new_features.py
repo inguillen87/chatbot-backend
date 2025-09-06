@@ -94,6 +94,17 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("♻️ Punto Limpio", botones)
         self.assertEqual(len(respuesta.get("options_list", [])), 12)
 
+    def test_menu_flow_includes_new_submenus(self):
+        from services.flows import menu as menu_flow
+
+        respuesta = menu_flow.handle(msg={}, ctx={'municipio_config_actual': {}})
+        categorias = respuesta.get("categorias", [])
+        info = next((c for c in categorias if c.get("titulo") == "📰 Información del Municipio"), {})
+        botones = [b.get("texto") for b in info.get("botones", [])]
+        self.assertIn("🏗️ Obras", botones)
+        self.assertIn("♻️ Punto Limpio", botones)
+        self.assertEqual(len(respuesta.get("options_list", [])), 12)
+
     @patch('services.llm_orchestrator.llamar_llm_con_fallback')
     def test_llm_mostrar_menu_returns_full_menu(self, mock_llamar_gemini):
         """Verifica que la acción "mostrar_menu" del LLM devuelve el menú completo."""
