@@ -39,6 +39,17 @@ class TestResponseFormatter(unittest.TestCase):
         self.assertEqual(len(response["interactive"]["action"]["buttons"]), 3)
         self.assertEqual(response["interactive"]["action"]["buttons"][2]["reply"]["title"], "Botón 3")
 
+    def test_whatsapp_interactive_buttons_with_image(self):
+        response = build_interactive_response(
+            options=[{"id": "opt1", "texto": "Opción"}],
+            body_text="Elegí:",
+            channel="whatsapp",
+            message_type='interactive_buttons',
+            original_bot_response={"image_url": "http://example.com/pic.jpg"}
+        )
+        self.assertEqual(response["interactive"]["header"]["type"], "image")
+        self.assertEqual(response["interactive"]["header"]["image"]["link"], "http://example.com/pic.jpg")
+
     def test_whatsapp_interactive_buttons_too_many_options_fallbacks_to_list(self):
         options = [
             {"id": f"btn{i}", "texto": f"Botón {i}"} for i in range(5)
@@ -97,6 +108,16 @@ class TestResponseFormatter(unittest.TestCase):
         self.assertEqual(response["type"], "text")
         expected_body = "Hola mundo\n\n*1*. Menú\n*2*. Cancelar\n\nResponde con el número de la opción que necesites."
         self.assertEqual(response["text"]["body"], expected_body)
+
+    def test_whatsapp_text_message_with_image(self):
+        response = build_interactive_response(
+            options=[],
+            body_text="Hola imagen",
+            channel="whatsapp",
+            message_type='text',
+            original_bot_response={"image_url": "http://example.com/pic.jpg"}
+        )
+        self.assertEqual(response["image_url"], "http://example.com/pic.jpg")
 
     def test_whatsapp_fallback_to_text_if_no_options_for_interactive(self):
         response = build_interactive_response(

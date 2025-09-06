@@ -510,6 +510,14 @@ def whatsapp_webhook():
                 message_params['persistent_action'] = [f"whatsapp:{json.dumps(interactive_payload)}"]
             else: # Text message
                 message_params['body'] = formatted_whatsapp_payload.get("text", {}).get("body", "No se pudo generar una respuesta.")
+
+            image_url = formatted_whatsapp_payload.get("image_url")
+            if image_url and 'persistent_action' not in message_params:
+                if image_url.startswith('/'):
+                    base_url = request.url_root.rstrip('/')
+                    image_url = f"{base_url}{image_url}"
+                message_params['media_url'] = [image_url]
+
             current_app.logger.debug(f"Sending WhatsApp message params: {message_params}")
 
             # Send the main message. If the body exceeds Twilio's 1600 character

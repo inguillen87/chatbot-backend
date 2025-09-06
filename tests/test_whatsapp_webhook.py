@@ -323,6 +323,36 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             self.assertTrue(kwargs_twilio["body"].startswith("Ok"))
             self.mock_welcome.assert_not_called()
 
+    @patch('routes.whatsapp_webhook.responder_chatboc')
+    def test_text_response_with_image_sends_media(self, mock_bot):
+        self._create_confirmed_session()
+        self.mock_validator.validate.return_value = True
+
+        mock_twilio_message = MagicMock()
+        mock_twilio_message.sid = "SM_image"
+        self.mock_twilio_create.return_value = mock_twilio_message
+
+        mock_bot.return_value = {
+            "message_body": "Hola",
+            "options_list": [],
+            "message_type": "text",
+            "image_url": "http://example.com/promo.jpg"
+        }
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola"
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.mock_twilio_create.assert_called()
+        _, kwargs_twilio = self.mock_twilio_create.call_args
+        self.assertIn('media_url', kwargs_twilio)
+        self.assertEqual(kwargs_twilio['media_url'][0], 'http://example.com/promo.jpg')
+
     @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_docx_attachment(self, mock_requests_get):
         # Mock the download response
