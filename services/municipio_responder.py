@@ -289,8 +289,14 @@ class ReclamoFlowHandler:
     def handle_foto(self, user_input, payload):
         action = payload.get("action")
         normalized = user_input.lower()
-        if payload.get("es_foto") and payload.get("foto_url"):
-            self.flow_context['datos_reclamo']['foto_url'] = payload.get("foto_url")
+
+        # Accept the photo if either the payload or the outer context indicates
+        # that an image was provided. This covers the case where the user sends
+        # a picture directly without first pressing "Sí, agregar foto".
+        foto_url = payload.get("foto_url") or self.context.get("foto_url")
+        es_foto = payload.get("es_foto") or self.context.get("es_foto")
+        if es_foto and foto_url:
+            self.flow_context['datos_reclamo']['foto_url'] = foto_url
             return self.ask_for_contact_details()
 
         no_words = {"no", "omitir", "omitilo", "sin foto", "ninguna"}
@@ -307,18 +313,20 @@ class ReclamoFlowHandler:
                 "options_list": [{"texto": "Omitir foto", "action_id": "reclamo_adjuntar_foto_no"}],
             }
 
-    def ask_for_contact_details(self):
+    def ask_for_contact_details(self, force_prompt: bool = False):
         datos = self.flow_context.setdefault('datos_reclamo', {})
 
-        # If all contact details are present, jump straight to confirmation.
-        required_fields = ['nombre', 'dni', 'email', 'telefono']
-        if all(datos.get(f) for f in required_fields):
+        # If we are not forcing a prompt, skip directly to confirmation even if
+        # some fields are missing. The user can choose to editar los datos later
+        # if necessary.
+        if not force_prompt:
             self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
             return self.get_confirmation_message()
 
         # Otherwise, build a message showing what we already have and request
         # only the missing pieces.
         self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
+        required_fields = ['nombre', 'dni', 'email', 'telefono']
         known_parts = []
         missing = []
         field_labels = {'nombre': 'nombre', 'dni': 'DNI', 'email': 'email', 'telefono': 'teléfono'}
@@ -395,7 +403,7 @@ class ReclamoFlowHandler:
             )
             return self.end_flow(error_message, show_menu=True)
         elif any(word in normalized for word in negatives) or action == "reclamo_confirmar_no":
-            return self.ask_for_contact_details()
+            return self.ask_for_contact_details(force_prompt=True)
         else:  # Cancel or any other input
             cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
             return self.end_flow(cancel_msg, show_menu=True)

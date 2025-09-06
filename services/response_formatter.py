@@ -90,6 +90,9 @@ def build_interactive_response(options: list,
         # Flatten the list if it's nested (e.g., [[...]])
         options = [item for sublist in options for item in sublist]
 
+    # Propagate any image url provided by the bot so the caller can attach it
+    image_url = original_bot_response.get("image_url")
+
     logger.debug(
         "build_interactive_response called | channel=%s | message_type=%s | num_options=%d | audio_url=%s",
         channel,
@@ -211,6 +214,8 @@ def build_interactive_response(options: list,
                 "text": {"body": final_body},
                 "contexto_actualizado": context_update if context_update else None,
             }
+            if image_url:
+                payload["image_url"] = image_url
             if audio_url:
                 payload["audio"] = {"link": audio_url}
             return payload
@@ -226,7 +231,9 @@ def build_interactive_response(options: list,
             "action": {}
         }
 
-        if header_text:
+        if image_url:
+            interactive_data["header"] = {"type": "image", "image": {"link": image_url}}
+        elif header_text:
             interactive_data["header"] = {"type": "text", "text": header_text}
         if footer_text:
             interactive_data["footer"] = {"text": footer_text}
@@ -260,6 +267,8 @@ def build_interactive_response(options: list,
                     "text": {"body": body_text_to_update},
                     "contexto_actualizado": context_update if context_update else None,
                 }
+                if image_url:
+                    payload["image_url"] = image_url
                 if audio_url:
                     payload["audio"] = {"link": audio_url}
                 logger.info(f"build_interactive_response: falling back to TEXT payload because only URL options were present.")

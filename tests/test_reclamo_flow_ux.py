@@ -25,8 +25,8 @@ class TestReclamoFlowUX(unittest.TestCase):
         }
         handler = self._build_handler(flow_context)
         resp = handler.handle_direccion("Calle 123", {})
-        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
-        self.assertNotIn("foto", resp["message_body"].lower())
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
+        self.assertIn("foto adjunta", resp["message_body"].lower())
 
     def test_contact_details_prefilled_goes_to_confirmation(self):
         flow_context = {
@@ -56,8 +56,8 @@ class TestReclamoFlowUX(unittest.TestCase):
         }
         handler = self._build_handler(flow_context)
         resp = handler.handle_descripcion("pozo grande en la calle")
-        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
-        self.assertNotIn("foto", resp["message_body"].lower())
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
+        self.assertIn("foto adjunta", resp["message_body"].lower())
 
     def test_start_flow_uses_context_photo(self):
         context = {
@@ -78,8 +78,42 @@ class TestReclamoFlowUX(unittest.TestCase):
         )
         self.assertEqual(
             handler.flow_context["state"],
-            ReclamoState.ESPERANDO_DATOS_CONTACTO.name,
+            ReclamoState.ESPERANDO_CONFIRMACION.name,
         )
+
+    def test_handle_foto_accepts_direct_image(self):
+        flow_context = {
+            "state": ReclamoState.ESPERANDO_FOTO.name,
+            "datos_reclamo": {
+                "categoria": "Bache",
+                "direccion": "Calle 123",
+                "descripcion": "pozo grande",
+            },
+        }
+        handler = self._build_handler(flow_context)
+        resp = handler.handle_foto("", {"es_foto": True, "foto_url": "http://example.com/foto.jpg"})
+        self.assertEqual(
+            handler.flow_context["datos_reclamo"].get("foto_url"),
+            "http://example.com/foto.jpg",
+        )
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
+        self.assertIn("foto adjunta", resp["message_body"].lower())
+
+    def test_missing_dni_goes_directly_to_confirmation(self):
+        flow_context = {
+            "datos_reclamo": {
+                "categoria": "Bache",
+                "direccion": "Calle 123",
+                "descripcion": "pozo en la calle",
+                "nombre": "Juan Perez",
+                "email": "juan@example.com",
+                "telefono": "+5400000000",
+            }
+        }
+        handler = self._build_handler(flow_context)
+        resp = handler.ask_for_contact_details()
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
+        self.assertIn("dni", resp["message_body"].lower())
 
     def test_start_flow_prefills_dni_from_viewer_alias(self):
         class Viewer:
