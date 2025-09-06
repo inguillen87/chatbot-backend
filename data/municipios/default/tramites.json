@@ -642,6 +642,25 @@
             }
         ]
     },
+    "obras": {
+        "descripcion": "Conocé las obras y cuadrillas trabajando en el departamento. Podés ver proyectos de cloacas, pavimento y más en nuestro sitio.",
+        "botones": [
+            {
+                "texto": "Ver obras",
+                "url": "https://www.juninmendoza.gov.ar/obras/"
+            }
+        ]
+    },
+    "punto_limpio": {
+        "descripcion": "Planta de recolección, reciclaje y elaboración de productos sustentables. Conocé cómo trabajamos y sumate al cuidado del ambiente.",
+        "botones": [
+            {
+                "texto": "Más información",
+                "url": "https://www.juninmendoza.gov.ar/punto-limpio/"
+            }
+        ],
+        "image_url": "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png"
+    },
     "recoleccion_residuos": {
         "descripcion": "El camión recolector pasa de lunes a viernes a partir de las 21 hs. Consultá el calendario completo en la web municipal.",
         "botones": [

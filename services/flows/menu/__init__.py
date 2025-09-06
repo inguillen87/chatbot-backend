@@ -16,6 +16,7 @@ def handle(msg, ctx):
 
     welcome_message = (
         "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín. "
+        "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más. "
         "¿Cómo te puedo ayudar hoy?"
     )
 
@@ -36,14 +37,21 @@ def handle(msg, ctx):
         {"titulo": "Información y Novedades 📰", "botones": [
             {"texto": "🎭 Agenda Cultural y Turística", "action_id": "agenda_cultural_y_turistica"},
             {"texto": "📰 Últimas Novedades", "action_id": "ultimas_novedades"},
-            {"texto": "🛒 Defensa del Consumidor", "action_id": "defensa_del_consumidor"}
+            {"texto": "🛒 Defensa del Consumidor", "action_id": "defensa_del_consumidor"},
+            {"texto": "🏗️ Obras", "action_id": "obras"},
+            {"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"}
         ]}
     ]
 
     flat_buttons = [boton for categoria in categorias for boton in categoria.get('botones', [])]
 
-    return {
+    response = {
         "message_body": welcome_message,
         "options_list": flat_buttons,
         "message_type": "interactive_list",
     }
+    config = ctx.get("municipio_config_actual", {}) if ctx else {}
+    image_url = config.get("welcome_image_url")
+    if image_url:
+        response["image_url"] = image_url
+    return response
