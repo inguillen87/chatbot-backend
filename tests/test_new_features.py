@@ -79,6 +79,21 @@ class TestNewFeatures(unittest.TestCase):
         self.assertEqual(respuesta.get("fuente"), "greeting_handler_structured_menu_v2")
         self.assertEqual(respuesta.get("image_url"), 'http://example.com/welcome.jpg')
 
+    def test_greeting_handler_web_menu_includes_submenus(self):
+        """El saludo en canal web debe incluir submenús de Obras y Punto Limpio."""
+        handler = GreetingHandler(context={
+            'profile_name': 'Tester',
+            'channel': 'web',
+            'municipio_config_actual': {}
+        })
+        respuesta = handler.handle(payload={})
+        categorias = respuesta.get("categorias", [])
+        info = next((c for c in categorias if c.get("titulo") == "📰 Información del Municipio"), {})
+        botones = [b.get("texto") for b in info.get("botones", [])]
+        self.assertIn("🏗️ Obras", botones)
+        self.assertIn("♻️ Punto Limpio", botones)
+        self.assertEqual(len(respuesta.get("options_list", [])), 12)
+
     @patch('services.llm_orchestrator.llamar_llm_con_fallback')
     def test_llm_mostrar_menu_returns_full_menu(self, mock_llamar_gemini):
         """Verifica que la acción "mostrar_menu" del LLM devuelve el menú completo."""
