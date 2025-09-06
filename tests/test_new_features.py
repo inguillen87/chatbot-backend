@@ -65,7 +65,11 @@ class TestNewFeatures(unittest.TestCase):
         """
         Verifica que el GreetingHandler devuelve el menú principal final (v5).
         """
-        handler = GreetingHandler(context={'profile_name': 'Tester', 'channel': 'whatsapp'})
+        handler = GreetingHandler(context={
+            'profile_name': 'Tester',
+            'channel': 'whatsapp',
+            'municipio_config_actual': {'welcome_image_url': 'http://example.com/welcome.jpg'}
+        })
         respuesta = handler.handle(payload={})
         self.assertIn("¡Hola, Tester!", respuesta["message_body"])
         self.assertIn("Soy JUNI", respuesta["message_body"])
@@ -73,6 +77,33 @@ class TestNewFeatures(unittest.TestCase):
         self.assertEqual(len(respuesta["options_list"]), 4)
         self.assertEqual(respuesta["options_list"][0]["texto"], "🗣️ Reclamos y Consultas")
         self.assertEqual(respuesta.get("fuente"), "greeting_handler_structured_menu_v2")
+        self.assertEqual(respuesta.get("image_url"), 'http://example.com/welcome.jpg')
+
+    def test_greeting_handler_web_menu_includes_submenus(self):
+        """El saludo en canal web debe incluir submenús de Obras y Punto Limpio."""
+        handler = GreetingHandler(context={
+            'profile_name': 'Tester',
+            'channel': 'web',
+            'municipio_config_actual': {}
+        })
+        respuesta = handler.handle(payload={})
+        categorias = respuesta.get("categorias", [])
+        info = next((c for c in categorias if c.get("titulo") == "📰 Información del Municipio"), {})
+        botones = [b.get("texto") for b in info.get("botones", [])]
+        self.assertIn("🏗️ Obras", botones)
+        self.assertIn("♻️ Punto Limpio", botones)
+        self.assertEqual(len(respuesta.get("options_list", [])), 12)
+
+    def test_menu_flow_includes_new_submenus(self):
+        from services.flows import menu as menu_flow
+
+        respuesta = menu_flow.handle(msg={}, ctx={'municipio_config_actual': {}})
+        categorias = respuesta.get("categorias", [])
+        info = next((c for c in categorias if c.get("titulo") == "📰 Información del Municipio"), {})
+        botones = [b.get("texto") for b in info.get("botones", [])]
+        self.assertIn("🏗️ Obras", botones)
+        self.assertIn("♻️ Punto Limpio", botones)
+        self.assertEqual(len(respuesta.get("options_list", [])), 12)
 
     @patch('services.llm_orchestrator.llamar_llm_con_fallback')
     def test_llm_mostrar_menu_returns_full_menu(self, mock_llamar_gemini):
@@ -95,7 +126,7 @@ class TestNewFeatures(unittest.TestCase):
             channel="whatsapp",
         )
 
-        self.assertIn("¿Cómo te llamás?", response.get("message_body", ""))
+        self.assertIn("Podés compartir tu ubicación", response.get("message_body", ""))
         self.assertEqual(len(response.get("options_list", [])), 4)
         self.assertTrue(
             any(opt.get("texto") == "🗣️ Reclamos y Consultas" for opt in response.get("options_list", []))
@@ -154,6 +185,54 @@ class TestNewFeatures(unittest.TestCase):
         mock_llamar_gemini.assert_not_called()
 
     @patch('services.llm_orchestrator.llamar_llm_con_fallback')
+    def test_keyword_obras(self, mock_llamar_gemini):
+        """Consultas sobre obras deben responder sin usar el LLM."""
+        mock_llamar_gemini.return_value = ({}, {})
+        response = responder_municipio(
+            pregunta_original="¿Qué obras están haciendo?",
+            owner_user=MagicMock(id=1),
+            rubro_obj=MagicMock(nombre='municipio'),
+            chat_db_context=MagicMock(context_data={}),
+        )
+        body = response.get("message_body", "").lower()
+        self.assertIn("obras", body)
+        self.assertNotIn("facebook.com", body)
+        self.assertNotIn("instagram.com", body)
+        options = response.get("options_list", [])
+        social = {opt.get("texto"): opt for opt in options if opt.get("texto") in {"Facebook", "Instagram"}}
+        self.assertIn("Facebook", social)
+        self.assertIn("Instagram", social)
+        self.assertTrue(social["Facebook"].get("image_url"))
+        self.assertTrue(social["Instagram"].get("image_url"))
+        mock_llamar_gemini.assert_not_called()
+
+    @patch('services.llm_orchestrator.llamar_llm_con_fallback')
+    def test_keyword_punto_limpio(self, mock_llamar_gemini):
+        """Preguntar por punto limpio debe devolver info y evitar el LLM."""
+        mock_llamar_gemini.return_value = ({}, {})
+        response = responder_municipio(
+            pregunta_original="¿Dónde está el punto limpio?",
+            owner_user=MagicMock(id=1),
+            rubro_obj=MagicMock(nombre='municipio'),
+            chat_db_context=MagicMock(context_data={}),
+        )
+        body = response.get("message_body", "").lower()
+        self.assertIn("punto limpio", body)
+        self.assertNotIn("facebook.com", body)
+        self.assertNotIn("instagram.com", body)
+        options = response.get("options_list", [])
+        social = {opt.get("texto"): opt for opt in options if opt.get("texto") in {"Facebook", "Instagram"}}
+        self.assertIn("Facebook", social)
+        self.assertIn("Instagram", social)
+        self.assertTrue(social["Facebook"].get("image_url"))
+        self.assertTrue(social["Instagram"].get("image_url"))
+        self.assertEqual(
+            response.get("image_url"),
+            "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png",
+        )
+        mock_llamar_gemini.assert_not_called()
+
+    @patch('services.llm_orchestrator.llamar_llm_con_fallback')
     def test_keyword_tributo(self, mock_llamar_gemini):
         """El uso de la palabra 'tributo' debe resolverse sin el LLM."""
         mock_llamar_gemini.return_value = ({}, {})
@@ -165,6 +244,74 @@ class TestNewFeatures(unittest.TestCase):
         )
         self.assertIn("tasas municipales", response.get("message_body", ""))
         mock_llamar_gemini.assert_not_called()
+
+    @patch('services.municipio_responder.cargar_agenda_cultural')
+    @patch('services.llm_orchestrator.llamar_llm_con_fallback')
+    def test_agenda_incluye_imagen_evento(self, mock_llamar_llm, mock_cargar):
+        mock_llamar_llm.return_value = ({}, {})
+        mock_cargar.return_value = {
+            "eventos": [
+                {
+                    "tipo_post": "evento",
+                    "titulo": "Maratón",
+                    "imagen_url": "http://example.com/event.jpg",
+                    "fecha_evento_inicio": "2025-08-15T10:00:00"
+                }
+            ]
+        }
+        response = responder_municipio(
+            pregunta_original="agenda",
+            owner_user=MagicMock(id=1),
+            rubro_obj=MagicMock(nombre='municipio'),
+            chat_db_context=MagicMock(context_data={}),
+        )
+        self.assertEqual(response.get("image_url"), "http://example.com/event.jpg")
+        self.assertIn("maratón", response.get("message_body", "").lower())
+        mock_llamar_llm.assert_not_called()
+
+    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
+    @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
+    @patch('services.actions.municipio_actions.validar_email', return_value=True)
+    @patch('services.location_service.geocode_address', return_value=(-32.89, -68.83))
+    @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
+    @patch('services.actions.municipio_actions.enviar_notificacion_sms')
+    @patch('services.actions.municipio_actions.formatear_telefono_e164', return_value='+5491111111111')
+    @patch('services.herramientas_municipio.parse_direccion_completa', return_value={'calle': 'X', 'numero': '1', 'localidad': 'Y'})
+    def test_reclamo_incluye_imagen_promocional(
+        self,
+        mock_parse,
+        mock_formatear_tel,
+        mock_sms,
+        mock_whatsapp,
+        mock_geocode,
+        mock_validar_email,
+        mock_validar_tel,
+        mock_crear_ticket,
+    ):
+        """El reclamo final debe incluir la imagen promocional configurada."""
+        mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "12345", "consulta_pin": "555444"}
+        from services.actions.municipio_actions import CrearReclamoActionHandler
+        context = {
+            'municipio_config_actual': {
+                'promo_image_url': 'http://example.com/promo.jpg',
+                'base_chat_url': 'https://chat.example'
+            },
+            'chat_db_context_data': {'processed_idempotency_keys': {}},
+            'anon_id': 'test-123'
+        }
+        handler = CrearReclamoActionHandler(context)
+        datos_llm = {
+            'categoria': 'Luminaria',
+            'descripcion': 'poste caido',
+            'ubicacion': 'Calle 123',
+            'coordenadas': {'lat': -32.89, 'lon': -68.83},
+            'usuario': 'Juan',
+            'telefono': '2615550000',
+            'email': 'juan@example.com',
+            'pin': '555444'
+        }
+        respuesta = handler.execute(datos_llm)
+        self.assertEqual(respuesta.get('image_url'), 'http://example.com/promo.jpg')
 
 if __name__ == '__main__':
     unittest.main()

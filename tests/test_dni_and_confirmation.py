@@ -10,6 +10,18 @@ class TestDniExtractionAndConfirmation(unittest.TestCase):
         self.assertEqual(data.get("dni"), "32877851")
         self.assertEqual(data.get("email"), "guillen.marce@gmail.com")
 
+    def test_extracts_all_contact_details(self):
+        text = (
+            "Marcelo Guillen 32877851 guillen.marce@gmail.com 2613168608 "
+            "sarmiento esquina san martin junin mendoza"
+        )
+        data = extract_multiple_contact_details_regex(
+            text, ["nombre", "dni", "email", "direccion", "telefono"]
+        )
+        self.assertEqual(data.get("nombre"), "Marcelo Guillen")
+        self.assertEqual(data.get("direccion"), "sarmiento esquina san martin junin mendoza")
+        self.assertEqual(data.get("telefono"), "+2613168608")
+
     def test_enumerated_name_phone_city(self):
         text = "1. Juan Perez\n2. +5491112345678\n3. CABA"
         data = extract_multiple_contact_details_regex(text)

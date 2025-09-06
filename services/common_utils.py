@@ -781,38 +781,74 @@ def extract_multiple_contact_details_regex(text: str, potential_fields: list | N
         extract_name,
         extract_address,
         extract_dni,
+        validate_name,
     )
 
     extracted_data: dict[str, str] = {}
+
+    remaining_text = text
 
     # Handle simple enumerated inputs like:
     # "1. Juan Perez\n2. +54 911 12345678\n3. CABA"
     enumerados = re.findall(r"\b[123][\).:\-]?\s*([^\n]+)", text)
     if len(enumerados) >= 3:
-        extracted_data.setdefault("nombre", enumerados[0].strip())
+        nombre_enumerado = enumerados[0].strip()
+        extracted_data.setdefault("nombre", nombre_enumerado)
+        remaining_text = remaining_text.replace(nombre_enumerado, " ")
         telefono_candidato = enumerados[1].strip()
         telefono_norm = extract_phone(telefono_candidato)
         if telefono_norm:
             extracted_data.setdefault("telefono", telefono_norm)
+            remaining_text = remaining_text.replace(telefono_candidato, " ")
         else:
             extracted_data.setdefault("telefono", telefono_candidato)
-        extracted_data.setdefault("ciudad", enumerados[2].strip())
+            remaining_text = remaining_text.replace(telefono_candidato, " ")
+        ciudad_enumerada = enumerados[2].strip()
+        extracted_data.setdefault("ciudad", ciudad_enumerada)
+        remaining_text = remaining_text.replace(ciudad_enumerada, " ")
 
-    for field in potential_fields:
-        if field not in extracted_data or not extracted_data.get(field):
-            heuristic_value = None
-            if field in ["nombre", "nombre_cliente"]:
-                heuristic_value = extract_name(text)
-            elif field in ["telefono", "telefono_cliente"]:
-                heuristic_value = extract_phone(text)
-            elif field in ["direccion", "ubicacion", "direccion_cliente"]:
-                heuristic_value = extract_address(text)
-            elif field in ["email", "email_cliente"]:
-                heuristic_value = extract_email(text)
-            elif field in ["dni", "dni_cliente"]:
-                heuristic_value = extract_dni(text)
+    def _remove_from_remaining(value: str) -> None:
+        nonlocal remaining_text
+        if value:
+            remaining_text = remaining_text.replace(value, " ")
 
+    # Primero extraemos campos fácilmente identificables para eliminarlos
+    # del texto antes de intentar obtener nombre y dirección.
+    for field in ["dni", "email", "telefono", "ciudad"]:
+        if field not in potential_fields:
+            continue
+        heuristic_value = None
+        if field == "dni":
+            heuristic_value = extract_dni(remaining_text)
+        elif field == "email":
+            heuristic_value = extract_email(remaining_text)
+        elif field == "telefono":
+            heuristic_value = extract_phone(remaining_text)
             if heuristic_value:
                 extracted_data[field] = heuristic_value
+                _remove_from_remaining(heuristic_value)
+                _remove_from_remaining(re.sub(r"\D", "", heuristic_value))
+            continue
+        elif field == "ciudad":
+            heuristic_value = extract_address(remaining_text)
+        if heuristic_value:
+            extracted_data[field] = heuristic_value
+            _remove_from_remaining(heuristic_value)
+
+    leftover = remaining_text.strip()
+    tokens = leftover.split()
+
+    if (
+        "nombre" in potential_fields
+        and "nombre" not in extracted_data
+        and len(tokens) >= 2
+    ):
+        candidate = " ".join(tokens[:2])
+        if validate_name(candidate):
+            extracted_data["nombre"] = candidate
+            tokens = tokens[2:]
+
+    if "direccion" in potential_fields and "direccion" not in extracted_data and tokens:
+        extracted_data["direccion"] = " ".join(tokens).strip()
 
     return extracted_data
