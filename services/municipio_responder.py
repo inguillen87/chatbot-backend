@@ -1164,8 +1164,8 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
     Handles actions from the new categorized main menu.
     """
     # --- Aliases for new action_ids to reuse existing logic ---
-    if action_id == "veterinaria_bromatologia":
-        action_id = "zoonosis" # Re-route to existing logic
+    if action_id in {"veterinaria_bromatologia", "bromatologia"}:
+        action_id = "zoonosis"  # Re-route to existing logic
     if action_id == "buscar_estacionamiento":
         action_id = "estacionamiento" # Re-route to existing logic
 
@@ -2962,6 +2962,15 @@ def responder_municipio(
     # Obtener el estado actual de la conversación antes de evaluar acciones
     estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
     action = received_payload.get("action")
+
+    # If the client sends an explicit action (e.g., button press) and there is
+    # no active conversation state, handle it immediately via the main menu
+    # dispatcher. This allows frontend buttons to work even when they send an
+    # action identifier instead of free-form text.
+    if action and not estado_conversacion:
+        response = handle_main_menu_action(action, context, chat_db_context)
+        if response and not response.get("fuente", "").startswith("unimplemented_"):
+            return _finalize_response(response)
 
     # Allow keyword shortcuts even when a conversation state is active,
     # but avoid treating numeric replies or explicit action IDs as global
