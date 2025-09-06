@@ -289,8 +289,14 @@ class ReclamoFlowHandler:
     def handle_foto(self, user_input, payload):
         action = payload.get("action")
         normalized = user_input.lower()
-        if payload.get("es_foto") and payload.get("foto_url"):
-            self.flow_context['datos_reclamo']['foto_url'] = payload.get("foto_url")
+
+        # Accept the photo if either the payload or the outer context indicates
+        # that an image was provided. This covers the case where the user sends
+        # a picture directly without first pressing "Sí, agregar foto".
+        foto_url = payload.get("foto_url") or self.context.get("foto_url")
+        es_foto = payload.get("es_foto") or self.context.get("es_foto")
+        if es_foto and foto_url:
+            self.flow_context['datos_reclamo']['foto_url'] = foto_url
             return self.ask_for_contact_details()
 
         no_words = {"no", "omitir", "omitilo", "sin foto", "ninguna"}
@@ -307,18 +313,20 @@ class ReclamoFlowHandler:
                 "options_list": [{"texto": "Omitir foto", "action_id": "reclamo_adjuntar_foto_no"}],
             }
 
-    def ask_for_contact_details(self):
+    def ask_for_contact_details(self, force_prompt: bool = False):
         datos = self.flow_context.setdefault('datos_reclamo', {})
 
-        # If all contact details are present, jump straight to confirmation.
-        required_fields = ['nombre', 'dni', 'email', 'telefono']
-        if all(datos.get(f) for f in required_fields):
+        # If we are not forcing a prompt, skip directly to confirmation even if
+        # some fields are missing. The user can choose to editar los datos later
+        # if necessary.
+        if not force_prompt:
             self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
             return self.get_confirmation_message()
 
         # Otherwise, build a message showing what we already have and request
         # only the missing pieces.
         self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
+        required_fields = ['nombre', 'dni', 'email', 'telefono']
         known_parts = []
         missing = []
         field_labels = {'nombre': 'nombre', 'dni': 'DNI', 'email': 'email', 'telefono': 'teléfono'}
@@ -395,7 +403,7 @@ class ReclamoFlowHandler:
             )
             return self.end_flow(error_message, show_menu=True)
         elif any(word in normalized for word in negatives) or action == "reclamo_confirmar_no":
-            return self.ask_for_contact_details()
+            return self.ask_for_contact_details(force_prompt=True)
         else:  # Cancel or any other input
             cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
             return self.end_flow(cancel_msg, show_menu=True)
@@ -839,12 +847,14 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
     elif user_name:
         welcome_message = (
             f"¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
+            "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más.\n\n"
             "¿Cómo te puedo ayudar hoy?"
         )
     else:
         welcome_message = (
             "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
-            "¿Cómo te llamás?"
+            "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más.\n\n"
+            "¿Cómo te puedo ayudar hoy?"
         )
 
     channel = context.get("channel", "web")
@@ -882,6 +892,8 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
             {"titulo": "📰 Información del Municipio", "botones": [
                 {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
                 {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
+                {"texto": "🏗️ Obras", "action_id": "obras"},
+                {"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"},
             ]},
             {"titulo": "🅿️ Estacionamiento", "botones": [
                 {"texto": "🅿️ Buscar Estacionamiento Libre", "action_id": "buscar_estacionamiento"},
@@ -895,7 +907,7 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
                 new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
                 flat_buttons.append(new_boton)
 
-    return {
+    response = {
         "message_body": welcome_message,
         "options_list": flat_buttons,
         "message_type": "interactive_list",
@@ -904,6 +916,11 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         "categorias": categorias,
         "generar_audio": True
     }
+    config = context.get("municipio_config_actual", {})
+    image_url = config.get("welcome_image_url")
+    if image_url:
+        response["image_url"] = image_url
+    return response
 
 
 class GreetingHandler(BaseMunicipioHandler):
@@ -1107,19 +1124,24 @@ def _format_contact(contact: dict, channel: str) -> str:
         return "<br>".join(lines)
 
 
-def _get_posts_from_json(content_type: str, channel: str, municipio_id: str) -> str:
-    """Helper to get formatted posts of a specific type from the JSON file."""
+def _get_posts_from_json(content_type: str, channel: str, municipio_id: str) -> tuple[str, str | None]:
+    """Helper to get formatted posts of a specific type from the JSON file.
+
+    Returns a tuple with the formatted text and the first image URL found
+    for the requested posts. The image is returned separately to allow the
+    caller to adjuntar a media message.
+    """
 
     all_posts_data = cargar_agenda_cultural(municipio_id)
     all_posts = all_posts_data.get("eventos", [])
 
     if not all_posts:
-        return ""
+        return "", None
 
     posts = [p for p in all_posts if p.get("tipo_post") == content_type]
 
     if not posts:
-        return ""
+        return "", None
 
     limit = 6
 
@@ -1150,14 +1172,20 @@ def _get_posts_from_json(content_type: str, channel: str, municipio_id: str) -> 
     else:
         posts.sort(key=lambda x: x.get("fecha_publicacion", ""), reverse=True)
 
-    formatted = [_format_post(p, channel) for p in posts[:limit]]
+    first_image = None
+    formatted: list[str] = []
+    for p in posts[:limit]:
+        if not first_image:
+            first_image = p.get("imagen_url")
+        formatted.append(_format_post(p, channel))
+
     if channel == "whatsapp":
         emoji = "📰" if content_type == "noticia" else "🎭"
         formatted = [f"{emoji} {item}".rstrip() for item in formatted]
-        return "\n\n".join(formatted) + "\n"
+        return "\n\n".join(formatted) + "\n", first_image
     if channel == "web":
-        return "\n\n".join(formatted) + "\n"
-    return "<hr>".join(formatted)
+        return "\n\n".join(formatted) + "\n", first_image
+    return "<hr>".join(formatted), first_image
 
 def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> dict:
     """
@@ -1286,8 +1314,8 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
     if action_id == "agenda_y_noticias":
         channel = context.get("channel", "web")
         municipio_id = context.get("municipio_id", MUNICIPIO_ID)
-        noticias_body = _get_posts_from_json("noticia", channel, municipio_id)
-        eventos_body = _get_posts_from_json("evento", channel, municipio_id)
+        noticias_body, noticias_img = _get_posts_from_json("noticia", channel, municipio_id)
+        eventos_body, eventos_img = _get_posts_from_json("evento", channel, municipio_id)
 
         full_body = ""
         if noticias_body:
@@ -1311,27 +1339,36 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
         if not full_body:
             full_body = "No hay noticias ni eventos para mostrar en este momento."
+            social_buttons = []
+            first_image = None
         else:
-            if channel == "whatsapp" or channel == "web":
-                social_links = (
-                    "\n---\n"
-                    "Seguinos en nuestras redes:\n"
-                    "📘 Facebook: https://www.facebook.com/JuninMunicipio\n"
-                    "📸 Instagram: https://www.instagram.com/munijuninmdz/"
-                )
+            config_links = context.get("municipio_config_actual", {}).get("social_links", [])
+            if channel == "web":
+                social_body = "<hr>Seguinos en nuestras redes:"
             else:
-                social_links = (
-                    "<hr>Seguinos en nuestras redes:<br>"
-                    '<a href="https://www.facebook.com/JuninMunicipio" target="_blank">📘 Facebook</a><br>'
-                    '<a href="https://www.instagram.com/munijuninmdz" target="_blank">📸 Instagram</a>'
-                )
-            full_body += social_links
+                social_body = "\n---\nSeguinos en nuestras redes:"
+            full_body += social_body
+            social_buttons = [
+                {
+                    "texto": link.get("name"),
+                    "url": link.get("url"),
+                    "type": "url",
+                    "image_url": link.get("logo_url"),
+                }
+                for link in config_links
+            ]
+            first_image = eventos_img or noticias_img
 
-        return {
+        response = {
             "message_body": full_body.strip(),
-            "message_type": "text",
+            "message_type": "interactive_buttons" if social_buttons else "text",
             "fuente": "handler_agenda_y_noticias",
         }
+        if social_buttons:
+            response["options_list"] = social_buttons
+        if first_image:
+            response["image_url"] = first_image
+        return response
 
     if action_id == "web_municipio":
         website_url = context.get("municipio_config_actual", {}).get("website_url", "https://www.juninmendoza.gov.ar/")
@@ -1350,12 +1387,30 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         for btn in botones:
             if btn.get("url") and not btn.get("type"):
                 btn["type"] = "url"
-        return {
-            "message_body": data.get("descripcion", ""),
-            "options_list": botones,
-            "message_type": "interactive_buttons" if botones else "text",
+        body = data.get("descripcion", "")
+        config_links = context.get("municipio_config_actual", {}).get("social_links", [])
+        social_buttons = []
+        if action_id in {"obras", "punto_limpio"} and config_links:
+            body += "\n---\nSeguinos en nuestras redes:"
+            social_buttons = [
+                {
+                    "texto": link.get("name"),
+                    "url": link.get("url"),
+                    "type": "url",
+                    "image_url": link.get("logo_url"),
+                }
+                for link in config_links
+            ]
+        response = {
+            "message_body": body,
+            "options_list": botones + social_buttons,
+            "message_type": "interactive_buttons" if botones or social_buttons else "text",
             "fuente": f"info_{action_id}_json",
         }
+        image = data.get("image_url")
+        if image:
+            response["image_url"] = image
+        return response
 
     if action_id == "compartir_ubicacion":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
@@ -2133,6 +2188,14 @@ MENU_KEYWORDS = {
         "rabia", "perrera", "sanidad animal", "sanidad_animal"
     ],
     "defensa_del_consumidor": ["defensa del consumidor", "consumidor", "consumo", "proteccion al consumidor", "atencion al consumidor"],
+    "obras": [
+        "obras", "obra", "cuadrillas", "cloacas", "pavimento",
+        "pavimentacion", "asfalto", "trabajos"
+    ],
+    "punto_limpio": [
+        "punto limpio", "reciclaje", "reciclar", "planta de reciclaje",
+        "punto verde", "residuos secos", "sustentable"
+    ],
 
     # Tasas y Servicios
     "pago_de_tasas_vigentes": ["pagar", "pago", "tasas", "tasa", "boleta", "impuestos", "municipal", "tributo", "tributos", "arancel", "aranceles", "impuesto municipal", "impuestos municipales"],
@@ -2438,6 +2501,8 @@ def _get_informacion_menu():
         {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
         {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
         {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
+        {"texto": "🏗️ Obras", "action_id": "obras"},
+        {"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"},
     ]
     return {
         "message_body": "Seleccioná una opción:",

@@ -109,6 +109,12 @@ class TestMenuKeywords(unittest.TestCase):
         phrase = "me gustaria que coloquen mas juegos de plaza en mi barrio"
         self.assertIsNone(find_global_menu_action(phrase))
 
+    def test_cloacas_keyword(self):
+        self.assertEqual(find_global_menu_action("cloacas"), "obras")
+
+    def test_punto_limpio_keyword(self):
+        self.assertEqual(find_global_menu_action("punto limpio"), "punto_limpio")
+
 
 if __name__ == "__main__":
     unittest.main()
