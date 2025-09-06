@@ -1,11 +1,14 @@
 import logging
 import json
+import requests
 from typing import Dict, Any, List, Optional
 
 # from models import AnalisisArchivo # Movido para evitar importación circular
 # Asumiendo que robust_chat está en llm_utils o cohere_ai
 from services.llm_utils import robust_chat, _clean_llm_json_output # _clean_llm_json_output es de llm_utils
 from services.google_speech_to_text import SpeechToTextService
+from services.vision_fallback_service import analyze_image_smart
+from services.categorias_municipio import CATEGORIAS_RECLAMO
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,103 @@ class InterpretacionService:
 
         return resultado
 
+    def interpretar_audio_para_reclamo(
+        self, audio_url: str, mime_type: str, user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Transcribe un audio y extrae datos estructurados para un reclamo municipal.
+
+        Parameters
+        ----------
+        audio_url: str
+            URL directa al archivo de audio.
+        mime_type: str
+            Tipo MIME del audio (por ejemplo, ``"audio/ogg"``).
+        user_id: Optional[int]
+            Identificador de usuario para pasar al LLM en caso necesario.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Diccionario con ``texto_transcrito`` y ``datos_estructurados`` con los
+            campos extraídos. Si ocurre algún error, ambos campos pueden estar
+            vacíos.
+        """
+
+        if not audio_url or not mime_type:
+            return {"texto_transcrito": "", "datos_estructurados": {}}
+
+        stt_service = SpeechToTextService()
+        try:
+            texto = stt_service.transcribe_audio_url(audio_url, mime_type)
+        except Exception as e:
+            logger.error(f"Error transcribiendo audio {audio_url}: {e}", exc_info=True)
+            texto = ""
+
+        datos = {}
+        if texto:
+            datos = self._llamar_llm_para_extraccion_ticket_municipal(texto, user_id)
+
+        return {"texto_transcrito": texto, "datos_estructurados": datos}
+
+    def interpretar_imagen_para_reclamo(
+        self, image_url: str, mime_type: str, user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Analiza una imagen y extrae datos estructurados para un reclamo municipal.
+
+        La imagen se envía a un servicio de visión para obtener etiquetas y
+        objetos detectados. Esa información se resume y se pasa a un LLM para
+        clasificarla dentro de las categorías admitidas por la aplicación.
+        """
+
+        if not image_url or not mime_type:
+            return {"palabras_clave": [], "datos_estructurados": {}}
+
+        try:
+            resp = requests.get(image_url, timeout=10)
+            resp.raise_for_status()
+            image_bytes = resp.content
+        except Exception as e:
+            logger.error(f"Error descargando imagen {image_url}: {e}", exc_info=True)
+            return {"palabras_clave": [], "datos_estructurados": {}}
+
+        vision_data = analyze_image_smart(image_bytes)
+        keywords: List[str] = []
+        for lbl in vision_data.get("labels", []):
+            desc = lbl.get("description")
+            if desc:
+                keywords.append(desc)
+        for obj in vision_data.get("objects", []):
+            name = obj.get("name")
+            if name:
+                keywords.append(name)
+        ocr_text = vision_data.get("full_text_annotation", {}).get("description", "").strip()
+        if ocr_text:
+            keywords.extend([w for w in ocr_text.split() if w])
+
+        datos = {}
+        if keywords:
+            categorias_str = ", ".join(CATEGORIAS_RECLAMO)
+            prompt = (
+                "Eres un asistente que clasifica imágenes para un sistema de reclamos municipales. "
+                f"Palabras clave detectadas: {', '.join(keywords)}. "
+                "Devuelve un JSON válido con las claves: categoria (una de las categorías permitidas), "
+                "descripcion_corta_problema y palabras_clave (lista). "
+                f"Las categorías permitidas son: {categorias_str}."
+            )
+            try:
+                response_content = robust_chat(message=prompt, user_id=user_id)
+                if response_content:
+                    cleaned = _clean_llm_json_output(response_content)
+                    if cleaned:
+                        datos = json.loads(cleaned)
+            except Exception as e:
+                logger.error(
+                    f"Error llamando al LLM para extracción desde imagen {image_url}: {e}",
+                    exc_info=True,
+                )
+
+        return {"palabras_clave": keywords, "datos_estructurados": datos}
+
     def _llamar_llm_para_extraccion_ticket_municipal(self, texto_completo: str, user_id: Optional[int] = None) -> Dict[str, Any]:
         """
         Llama a un LLM para extraer detalles de un reclamo municipal desde texto.
@@ -44,12 +144,14 @@ class InterpretacionService:
             return {}
 
         campos_esperados = [
+            "tipo_solicitud",
             "tipo_problema",
             "descripcion_corta_problema",
             "direccion_problema",
             "nombre_ciudadano",
+            "email_ciudadano",
             "telefono_ciudadano",
-            "detalles_adicionales"
+            "detalles_adicionales",
         ]
 
         prompt = (
@@ -60,8 +162,10 @@ class InterpretacionService:
             f"los nombres de los campos de la lista: {campos_esperados}.\n"
             "Si un campo no se encuentra en el texto, omite esa clave del JSON.\n"
             "Prioriza la información más específica y relevante para cada campo.\n"
-            "Por ejemplo, para 'descripcion_corta_problema', extrae la esencia del reclamo.\n"
-            "Para 'direccion_problema', sé lo más específico posible con la ubicación.\n\n"
+            "Para 'tipo_solicitud', indica si el texto describe un reclamo o una sugerencia.\n"
+            "Para 'descripcion_corta_problema', extrae la esencia del reclamo o sugerencia.\n"
+            "Para 'direccion_problema', sé lo más específico posible con la ubicación.\n"
+            "Incluye 'email_ciudadano' solo si aparece explícitamente en el texto.\n\n"
             f"TEXTO DEL RECLAMO:\n'''{texto_completo[:8000]}'''\n\n"
             "JSON RESPONSE:"
         )
