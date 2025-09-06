@@ -884,6 +884,8 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
             {"titulo": "📰 Información del Municipio", "botones": [
                 {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
                 {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
+                {"texto": "🏗️ Obras", "action_id": "obras"},
+                {"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"},
             ]},
             {"titulo": "🅿️ Estacionamiento", "botones": [
                 {"texto": "🅿️ Buscar Estacionamiento Libre", "action_id": "buscar_estacionamiento"},
