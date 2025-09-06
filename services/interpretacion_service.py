@@ -36,6 +36,44 @@ class InterpretacionService:
 
         return resultado
 
+    def interpretar_audio_para_reclamo(
+        self, audio_url: str, mime_type: str, user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Transcribe un audio y extrae datos estructurados para un reclamo municipal.
+
+        Parameters
+        ----------
+        audio_url: str
+            URL directa al archivo de audio.
+        mime_type: str
+            Tipo MIME del audio (por ejemplo, ``"audio/ogg"``).
+        user_id: Optional[int]
+            Identificador de usuario para pasar al LLM en caso necesario.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Diccionario con ``texto_transcrito`` y ``datos_estructurados`` con los
+            campos extraídos. Si ocurre algún error, ambos campos pueden estar
+            vacíos.
+        """
+
+        if not audio_url or not mime_type:
+            return {"texto_transcrito": "", "datos_estructurados": {}}
+
+        stt_service = SpeechToTextService()
+        try:
+            texto = stt_service.transcribe_audio_url(audio_url, mime_type)
+        except Exception as e:
+            logger.error(f"Error transcribiendo audio {audio_url}: {e}", exc_info=True)
+            texto = ""
+
+        datos = {}
+        if texto:
+            datos = self._llamar_llm_para_extraccion_ticket_municipal(texto, user_id)
+
+        return {"texto_transcrito": texto, "datos_estructurados": datos}
+
     def _llamar_llm_para_extraccion_ticket_municipal(self, texto_completo: str, user_id: Optional[int] = None) -> Dict[str, Any]:
         """
         Llama a un LLM para extraer detalles de un reclamo municipal desde texto.
@@ -44,12 +82,14 @@ class InterpretacionService:
             return {}
 
         campos_esperados = [
+            "tipo_solicitud",
             "tipo_problema",
             "descripcion_corta_problema",
             "direccion_problema",
             "nombre_ciudadano",
+            "email_ciudadano",
             "telefono_ciudadano",
-            "detalles_adicionales"
+            "detalles_adicionales",
         ]
 
         prompt = (
@@ -60,8 +100,10 @@ class InterpretacionService:
             f"los nombres de los campos de la lista: {campos_esperados}.\n"
             "Si un campo no se encuentra en el texto, omite esa clave del JSON.\n"
             "Prioriza la información más específica y relevante para cada campo.\n"
-            "Por ejemplo, para 'descripcion_corta_problema', extrae la esencia del reclamo.\n"
-            "Para 'direccion_problema', sé lo más específico posible con la ubicación.\n\n"
+            "Para 'tipo_solicitud', indica si el texto describe un reclamo o una sugerencia.\n"
+            "Para 'descripcion_corta_problema', extrae la esencia del reclamo o sugerencia.\n"
+            "Para 'direccion_problema', sé lo más específico posible con la ubicación.\n"
+            "Incluye 'email_ciudadano' solo si aparece explícitamente en el texto.\n\n"
             f"TEXTO DEL RECLAMO:\n'''{texto_completo[:8000]}'''\n\n"
             "JSON RESPONSE:"
         )
