@@ -369,6 +369,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             # Formatear respuesta y obtener el botón de contacto
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/tickets/municipio')
+            promo_image_url = municipio_config.get('promo_image_url')
             categoria_display = categoria
             mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
                 "reclamo",
@@ -390,6 +391,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "message_to_user": mensaje_respuesta,
                 "options_list": botones_finales,
                 "message_type": "interactive_buttons" if botones_finales else "text",
+                "image_url": promo_image_url,
                 "data": {
                     "ticket_id": ticket_creado.get('id'),
                     "nro_ticket": nro_ticket_str,
@@ -601,6 +603,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             # Obtener la URL base del chat del contexto para el botón "Ver mi Ticket"
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/tickets/municipio')
+            promo_image_url = municipio_config.get('promo_image_url')
 
             respuesta_formateada, botones_generados = formatear_ticket_respuesta(
                 "sugerencia",
@@ -623,6 +626,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "message_to_user": respuesta_formateada,
                 "options_list": botones_finales,
                 "message_type": "interactive_buttons",
+                "image_url": promo_image_url,
                 "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado"}
             }
         except Exception as e:
