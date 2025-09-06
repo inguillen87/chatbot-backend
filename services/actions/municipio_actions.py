@@ -79,8 +79,13 @@ class CrearReclamoActionHandler(BaseActionHandler):
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
         # Lógica de fusión de datos de contacto mejorada
-        llm_name = (action_data.get("usuario") or datos_parciales.get("usuario") or
-                    action_data.get("nombre_usuario_detectado") or datos_parciales.get("nombre_usuario_detectado"))
+        llm_name = (
+            action_data.get("nombre")
+            or action_data.get("usuario")
+            or datos_parciales.get("usuario")
+            or action_data.get("nombre_usuario_detectado")
+            or datos_parciales.get("nombre_usuario_detectado")
+        )
         profile_name_from_user_obj = getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None)
         profile_name_from_context = self.context.get("profile_name")
 
