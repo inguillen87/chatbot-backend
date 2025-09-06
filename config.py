@@ -74,7 +74,10 @@ class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "una-llave-secreta-muy-segura-para-desarrollo-local")
 
     # 2. CONFIGURACIÓN DE LA BASE DE DATOS
-    if os.getenv("RENDER") == "true":
+    db_url = os.getenv("DATABASE_URL")
+    if db_url:
+        SQLALCHEMY_DATABASE_URI = db_url
+    elif os.getenv("RENDER") == "true":
         db_path_render = "/data/database.db"
         SQLALCHEMY_DATABASE_URI = f"sqlite:///{db_path_render}?check_same_thread=False"
     else:
@@ -85,12 +88,15 @@ class Config:
     # Directory for persistent data such as uploaded media.
     DATA_DIR = os.getenv("DATA_DIR", "/data")
 
-    # Reduce SQLite lock wait time to avoid long blocking when the database is
-    # busy. A smaller timeout makes the application fail fast instead of
-    # waiting ~30s on each locked write.
-    SQLALCHEMY_ENGINE_OPTIONS = {
-        'connect_args': {'timeout': 5}
-    }
+    if SQLALCHEMY_DATABASE_URI.startswith("sqlite"):
+        SQLALCHEMY_ENGINE_OPTIONS = {'connect_args': {'timeout': 5}}
+    else:
+        SQLALCHEMY_ENGINE_OPTIONS = {
+            'pool_size': 10,
+            'max_overflow': 20,
+            'pool_pre_ping': True,
+            'pool_recycle': 1800,
+        }
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # 3. CONFIGURACIÓN DE COOKIES DE SESIÓN (MODO DEV/PROD)
