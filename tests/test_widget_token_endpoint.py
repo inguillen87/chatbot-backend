@@ -48,7 +48,10 @@ class WidgetTokenEndpointTests(unittest.TestCase):
             data["token"], self.app.config["SECRET_KEY"], algorithms=["HS256"]
         )
         self.assertEqual(decoded["user_id"], self.user.id)
-        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), origin)
+        self.assertIn(
+            resp.headers.get("Access-Control-Allow-Origin"),
+            {"*", origin},
+        )
 
     def test_widget_token_preflight(self):
         origin = "https://example.com"
@@ -56,7 +59,10 @@ class WidgetTokenEndpointTests(unittest.TestCase):
             "/auth/widget-token", headers={"Origin": origin}
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), origin)
+        self.assertIn(
+            resp.headers.get("Access-Control-Allow-Origin"),
+            {"*", origin},
+        )
 
     def test_widget_token_preflight_trailing_slash(self):
         origin = "https://example.com"
@@ -64,7 +70,10 @@ class WidgetTokenEndpointTests(unittest.TestCase):
             "/auth/widget-token/", headers={"Origin": origin}
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), origin)
+        self.assertIn(
+            resp.headers.get("Access-Control-Allow-Origin"),
+            {"*", origin},
+        )
 
     def test_widget_token_post_trailing_slash(self):
         origin = "https://example.com"
@@ -74,7 +83,10 @@ class WidgetTokenEndpointTests(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertIn("token", resp.get_json())
-        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), origin)
+        self.assertIn(
+            resp.headers.get("Access-Control-Allow-Origin"),
+            {"*", origin},
+        )
 
 
 if __name__ == "__main__":

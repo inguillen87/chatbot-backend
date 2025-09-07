@@ -503,24 +503,28 @@ def login_from_widget(owner_user):
     return resp
 
 
-@auth_bp.route('/widget-token', methods=['POST', 'OPTIONS'])
-@auth_bp.route('/widget-token/', methods=['POST', 'OPTIONS'])
-@cross_origin(
+CORS_KW = dict(
     origins="*",
     methods=["POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
     max_age=600,
     supports_credentials=False,
+    send_wildcard=True,
 )
+
+
+@auth_bp.route("/widget-token", methods=["POST"])
+@auth_bp.route("/widget-token/", methods=["POST"])
+@cross_origin(**CORS_KW)
 @anon_o_token_requerido
 def get_widget_token(current_user, owner_user, anon_id):
     """Genera un token JWT para sesiones del widget."""
-    # Si llega OPTIONS, Flask-CORS ya respondió 200 y no entra aquí.
 
     if not owner_user:
         resp = jsonify({"error": "Token inválido"})
-        resp.headers.setdefault("X-Anon-Id", anon_id)
-        resp.headers.setdefault("Anon-Id", anon_id)
+        if anon_id:
+            resp.headers.setdefault("X-Anon-Id", anon_id)
+            resp.headers.setdefault("Anon-Id", anon_id)
         return resp, 401
 
     nuevo_token = generar_token(
@@ -531,8 +535,9 @@ def get_widget_token(current_user, owner_user, anon_id):
         owner_user.pyme_id,
     )
     resp = jsonify({"token": nuevo_token})
-    resp.headers.setdefault("X-Anon-Id", anon_id)
-    resp.headers.setdefault("Anon-Id", anon_id)
+    if anon_id:
+        resp.headers.setdefault("X-Anon-Id", anon_id)
+        resp.headers.setdefault("Anon-Id", anon_id)
     return resp
 
 
