@@ -503,7 +503,8 @@ def login_from_widget(owner_user):
     return resp
 
 
-@auth_bp.route('/widget-token', methods=['POST', 'OPTIONS'], strict_slashes=False)
+@auth_bp.route('/widget-token', methods=['POST', 'OPTIONS'])
+@auth_bp.route('/widget-token/', methods=['POST', 'OPTIONS'])
 @cross_origin(
     origins="*",
     methods=["POST", "OPTIONS"],
