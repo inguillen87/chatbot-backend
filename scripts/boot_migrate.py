@@ -1,9 +1,9 @@
 # scripts/boot_migrate.py
 import os
-from collections import deque, defaultdict
-from typing import Dict, List, Set, Tuple
+from collections import deque
+from typing import Dict, List, Set, Tuple, Optional
 from sqlalchemy import create_engine, text, inspect
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 from sqlalchemy.sql.sqltypes import Boolean, String
 
 # --- Config ---
@@ -17,37 +17,38 @@ CHUNK = int(os.environ.get("MIGRATE_CHUNK", "1000"))
 EXCLUDE = {"alembic_version"}
 
 # Modo de manejo de FKs:
-#   "ordered" -> solo orden topológico (por defecto)
-#   "auto"    -> orden topológico; si falla una FK en runtime, desactiva FKs y reintenta
-#   "replica" -> desactiva FKs durante toda la copia
-FK_MODE = os.environ.get("FK_MODE", "auto").lower()  # ordered | auto | replica
+#   "ordered" -> solo orden topológico (recomendado en Render)
+#   "auto"    -> si falla una FK, intenta deshabilitar FKs SOLO para ese batch
+#   "replica" -> intenta deshabilitar FKs globalmente (requiere superuser)
+FK_MODE = os.environ.get("FK_MODE", "ordered").lower()  # ordered | auto | replica
+
+# Flag interno: si el server no permite setear session_replication_role,
+# lo detectamos y no volvemos a intentarlo.
+CAN_SET_REPL_ROLE = True
 
 
 def _dialect_name(ins) -> str:
     try:
-        return ins.bind.dialect.name  # 'sqlite', 'postgresql', etc.
+        return ins.bind.dialect.name
     except Exception:
-        # fallback conservador
         return ""
 
 
 def list_tables(ins, *, is_dst: bool = False) -> List[str]:
     """
     Lista tablas reales según dialecto.
-    - SQLite: no hay esquemas; NO pasar schema.
-    - Postgres (destino): usar schema 'public'.
-    Filtra metatablas internas y exclusiones.
+    - SQLite: NO usar schema.
+    - Postgres u otros: usar schema 'public'.
     """
     dialect = _dialect_name(ins)
     if dialect == "sqlite":
-        tables = ins.get_table_names()  # sin schema
+        tables = ins.get_table_names()
         skip_sqlite = {
             "sqlite_sequence", "sqlite_stat1", "sqlite_stat4",
             "sqlite_schema", "sqlite_master"
         }
         tables = [t for t in tables if t not in skip_sqlite]
     else:
-        # Para Postgres u otros con esquemas, usamos 'public'
         tables = ins.get_table_names(schema="public")
 
     return [
@@ -56,25 +57,24 @@ def list_tables(ins, *, is_dst: bool = False) -> List[str]:
     ]
 
 
-def fk_graph_from_dst(idst) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
+def fk_graph_from_dst_subset(idst, subset: Set[str]) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
     """
-    Grafo de dependencias a partir de FKs en Postgres:
-        edge: child -> parent (child depende de parent)
+    Grafo de dependencias (solo entre tablas del subset) desde las FKs de Postgres:
+      edge: child -> parent
     """
-    tables = set(list_tables(idst, is_dst=True))
-    deps: Dict[str, Set[str]] = {t: set() for t in tables}
-    rdeps: Dict[str, Set[str]] = {t: set() for t in tables}
-    for t in tables:
+    deps: Dict[str, Set[str]] = {t: set() for t in subset}
+    rdeps: Dict[str, Set[str]] = {t: set() for t in subset}
+    for t in subset:
         for fk in idst.get_foreign_keys(t, schema="public"):
             ref = fk.get("referred_table")
-            if ref in tables:
+            if ref in subset:
                 deps[t].add(ref)
                 rdeps[ref].add(t)
     return deps, rdeps
 
 
-def topo_sort_from_dst(idst) -> List[str]:
-    deps, rdeps = fk_graph_from_dst(idst)
+def topo_sort_subset(idst, subset: Set[str]) -> List[str]:
+    deps, rdeps = fk_graph_from_dst_subset(idst, subset)
     indeg = {t: len(deps[t]) for t in deps}
     q = deque([t for t, d in indeg.items() if d == 0])
     order = []
@@ -85,7 +85,7 @@ def topo_sort_from_dst(idst) -> List[str]:
             indeg[v] -= 1
             if indeg[v] == 0:
                 q.append(v)
-    # Si quedaron ciclos, los ponemos al final (se maneja con FK_MODE='auto'/'replica')
+    # Si hay ciclos, apéndalos al final; se resolverán por orden de inserción.
     for t in deps:
         if t not in order:
             order.append(t)
@@ -140,10 +140,7 @@ def normalize_rows(rows, bool_cols: Set[str]):
 
 
 def ensure_string_capacity(src_engine, dst_engine, table, cols_with_limits, overlap_cols):
-    """
-    Si en el origen (SQLite) hay strings más largos que el límite VARCHAR(n) del destino (PG),
-    hacemos ALTER COLUMN ... TYPE TEXT.
-    """
+    # Si hay strings más largos en SQLite que el VARCHAR(n) de PG, subimos a TEXT.
     targets = {c: n for c, n in cols_with_limits.items() if c in overlap_cols}
     if not targets:
         return
@@ -158,23 +155,32 @@ def ensure_string_capacity(src_engine, dst_engine, table, cols_with_limits, over
                 d.execute(text(f'ALTER TABLE "public"."{table}" ALTER COLUMN "{col}" TYPE TEXT'))
 
 
-def set_replication_role(conn, role: str):
-    # role: 'origin' | 'replica'
-    conn.execute(text(f"SET session_replication_role = '{role}'"))
+def maybe_set_replication_role(conn, role: str) -> bool:
+    """
+    Intenta setear session_replication_role; si no hay permisos, memoriza el flag global
+    y retorna False. En ese caso, el caller no debe volver a intentar.
+    """
+    global CAN_SET_REPL_ROLE
+    if not CAN_SET_REPL_ROLE:
+        return False
+    try:
+        conn.execute(text(f"SET session_replication_role = '{role}'"))
+        return True
+    except ProgrammingError as e:
+        msg = str(e).lower()
+        if "permission denied to set parameter" in msg or "must be superuser" in msg:
+            CAN_SET_REPL_ROLE = False
+            print("WARN: session_replication_role not allowed on this DB user; continuing without disabling FKs.")
+            return False
+        raise
 
 
 def _is_fk_violation(err: IntegrityError) -> bool:
-    """
-    Detección robusta de violación de FK en distintas formas del mensaje/DBAPI.
-    """
     s = str(err).lower()
-    if "foreignkeyviolation" in s:
+    if "foreignkeyviolation" in s:  # SQLAlchemy label
         return True
     if "violates foreign key constraint" in s:
         return True
-    if "foreign key" in s and "violate" in s:
-        return True
-    # psycopg3 usa SQLSTATE 23503 para FK
     try:
         pgcode = getattr(getattr(err, "orig", None), "pgcode", None)
         if pgcode == "23503":
@@ -185,9 +191,6 @@ def _is_fk_violation(err: IntegrityError) -> bool:
 
 
 def copy_table(src, dst, isrc, idst, table, chunk_size=CHUNK, fk_mode=FK_MODE):
-    # Columnas
-    # - SRC (SQLite): sin schema
-    # - DST (Postgres): schema='public'
     src_cols = [c["name"] for c in isrc.get_columns(table)]
     dst_cols_meta = idst.get_columns(table, schema="public")
     dst_cols = [c["name"] for c in dst_cols_meta]
@@ -196,17 +199,14 @@ def copy_table(src, dst, isrc, idst, table, chunk_size=CHUNK, fk_mode=FK_MODE):
         print(f"{table}: no common columns, skip")
         return
 
-    # Capacidades de strings (sobre destino)
     string_limits = detect_string_cols_with_limit(idst, table)
     ensure_string_capacity(src, dst, table, string_limits, cols)
 
-    # Booleanos (sobre destino)
     bool_cols = detect_bool_cols(idst, table)
 
     collist = ", ".join(f'"{c}"' for c in cols)
     placeholders = ", ".join(f":{c}" for c in cols)
 
-    # Total de filas
     with src.connect() as s:
         total = s.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar_one()
     print(f"{table}: {total} rows to copy...")
@@ -228,19 +228,22 @@ def copy_table(src, dst, isrc, idst, table, chunk_size=CHUNK, fk_mode=FK_MODE):
 
         try:
             with dst.begin() as d:
+                # Intento de FK global por batch solo si está pedido y permitido
                 if fk_mode == "replica" and not fk_disabled:
-                    set_replication_role(d, "replica")
-                    fk_disabled = True
+                    fk_disabled = maybe_set_replication_role(d, "replica")
                 d.execute(
                     text(f'INSERT INTO "public"."{table}" ({collist}) VALUES ({placeholders})'),
                     norm_rows
                 )
         except IntegrityError as e:
-            # Si la FK falla en modo ordered/auto, reintentamos con FKs deshabilitadas
             if _is_fk_violation(e) and fk_mode in {"auto"} and not fk_disabled:
                 print(f'  ! FK violation in {table} at offset {off}. Retrying with FKs disabled...')
                 with dst.begin() as d:
-                    set_replication_role(d, "replica")
+                    # Si no puedo deshabilitar FKs, re-lanzo con mensaje claro
+                    if not maybe_set_replication_role(d, "replica"):
+                        print("  ! Cannot disable FKs on this DB user. "
+                              "Ensure parents are copied first or use FK_MODE=ordered.")
+                        raise
                     fk_disabled = True
                     d.execute(
                         text(f'INSERT INTO "public"."{table}" ({collist}) VALUES ({placeholders})'),
@@ -250,10 +253,9 @@ def copy_table(src, dst, isrc, idst, table, chunk_size=CHUNK, fk_mode=FK_MODE):
                 print(f'ERROR copying table {table} at offset {off}: {e}')
                 raise
         finally:
-            # Volvemos a origin solo si deshabilitamos dentro de este batch y no estamos en modo "replica"
             if fk_disabled and fk_mode in {"ordered", "auto"}:
                 with dst.begin() as d:
-                    set_replication_role(d, "origin")
+                    maybe_set_replication_role(d, "origin")
 
         off += len(norm_rows)
         print(f"  -> {off}/{total}")
@@ -304,42 +306,58 @@ def main():
     idst = inspect(dst)
 
     # Tablas presentes en ambos
-    src_tables = set(list_tables(isrc, is_dst=False))  # SQLite: sin schema
-    dst_tables = set(list_tables(idst, is_dst=True))   # Postgres: schema=public
-    common = sorted(src_tables & dst_tables)
+    src_tables = set(list_tables(isrc, is_dst=False))  # SQLite
+    dst_tables = set(list_tables(idst, is_dst=True))   # Postgres
+    common = src_tables & dst_tables
 
-    # Orden topológico desde las FKs de DESTINO
-    order_dst = [t for t in topo_sort_from_dst(idst) if t in common]
+    if not common:
+        print("No common tables between SQLite and Postgres. Nothing to do.")
+        return
 
-    print("Copy order (from Postgres FKs):")
+    # Subgrafo de dependencias limitado a 'common'
+    deps, _ = fk_graph_from_dst_subset(idst, common)
+
+    # Tablas "bloqueadas": tienen padres fuera de 'common' (no existen en SQLite)
+    blocked = sorted([t for t in common if any(p not in common for p in deps.get(t, set()))])
+    allowed = common - set(blocked)
+
+    # Orden de copia dentro del subgrafo permitido
+    order_dst = [t for t in topo_sort_subset(idst, allowed)]
+
+    print("Copy order (from Postgres FKs, restricted to common):")
     for t in order_dst:
         print(" -", t)
+    if blocked:
+        print("Skipping tables due to missing parent(s) in SQLite (would violate FKs):")
+        for t in blocked:
+            missing = [p for p in deps.get(t, set()) if p not in common]
+            print(f"   - {t} (missing parents: {', '.join(missing)})")
 
     if DROP_FIRST:
         with dst.begin() as d:
-            # Truncamos en orden inverso (primero las dependientes)
             for t in reversed(order_dst):
                 d.execute(text(f'TRUNCATE TABLE "public"."{t}" RESTART IDENTITY CASCADE'))
         print("TRUNCATE done.")
 
-    # Si el usuario pide FK_MODE=replica, desactivamos FKs para toda la copia
-    fk_globally_disabled = FK_MODE == "replica"
+    # FK_MODE=replica global (si el usuario lo pidió y hay permisos)
+    fk_globally_disabled = (FK_MODE == "replica")
     if fk_globally_disabled:
         with dst.begin() as d:
-            set_replication_role(d, "replica")
-        print("FKs disabled globally (replica mode).")
+            if not maybe_set_replication_role(d, "replica"):
+                print("WARN: FK_MODE=replica requested but not permitted. Continuing in ordered mode.")
+                fk_globally_disabled = False
+        if fk_globally_disabled:
+            print("FKs disabled globally (replica mode).")
 
-    # Copiamos
+    # Copiado
     for t in order_dst:
         copy_table(src, dst, isrc, idst, t, chunk_size=CHUNK, fk_mode=FK_MODE)
 
-    # Volvemos FKs a origin si estaban globalmente deshabilitadas
     if fk_globally_disabled:
         with dst.begin() as d:
-            set_replication_role(d, "origin")
+            maybe_set_replication_role(d, "origin")
         print("FKs re-enabled (origin mode).")
 
-    # Secuencias
     fix_sequences(dst)
     print("MIGRATION DONE")
 
