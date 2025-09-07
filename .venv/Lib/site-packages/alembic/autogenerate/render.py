@@ -813,6 +813,8 @@ def _render_server_default(
             return _render_potential_expr(
                 default.arg, autogen_context, is_server_default=True
             )
+    elif isinstance(default, sa_schema.FetchedValue):
+        return _render_fetched_value(autogen_context)
 
     if isinstance(default, str) and repr_:
         default = repr(re.sub(r"^'|'$", "", default))
@@ -847,6 +849,12 @@ def _render_identity(
     return "%(prefix)sIdentity(%(kwargs)s)" % {
         "prefix": _sqlalchemy_autogenerate_prefix(autogen_context),
         "kwargs": (", ".join("%s=%s" % pair for pair in kwargs.items())),
+    }
+
+
+def _render_fetched_value(autogen_context: AutogenContext) -> str:
+    return "%(prefix)sFetchedValue()" % {
+        "prefix": _sqlalchemy_autogenerate_prefix(autogen_context),
     }
 
 
@@ -1000,7 +1008,7 @@ def _render_primary_key(
 def _fk_colspec(
     fk: ForeignKey,
     metadata_schema: Optional[str],
-    namespace_metadata: MetaData,
+    namespace_metadata: Optional[MetaData],
 ) -> str:
     """Implement a 'safe' version of ForeignKey._get_colspec() that
     won't fail if the remote table can't be resolved.
@@ -1024,7 +1032,10 @@ def _fk_colspec(
         # the FK constraint needs to be rendered in terms of the column
         # name.
 
-        if table_fullname in namespace_metadata.tables:
+        if (
+            namespace_metadata is not None
+            and table_fullname in namespace_metadata.tables
+        ):
             col = namespace_metadata.tables[table_fullname].c.get(colname)
             if col is not None:
                 colname = _ident(col.name)  # type: ignore[assignment]
@@ -1055,7 +1066,7 @@ def _populate_render_fk_opts(
 def _render_foreign_key(
     constraint: ForeignKeyConstraint,
     autogen_context: AutogenContext,
-    namespace_metadata: MetaData,
+    namespace_metadata: Optional[MetaData],
 ) -> Optional[str]:
     rendered = _user_defined_render("foreign_key", constraint, autogen_context)
     if rendered is not False:
@@ -1069,7 +1080,9 @@ def _render_foreign_key(
 
     _populate_render_fk_opts(constraint, opts)
 
-    apply_metadata_schema = namespace_metadata.schema
+    apply_metadata_schema = (
+        namespace_metadata.schema if namespace_metadata is not None else None
+    )
     return (
         "%(prefix)sForeignKeyConstraint([%(cols)s], "
         "[%(refcols)s], %(args)s)"
