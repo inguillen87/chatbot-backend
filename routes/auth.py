@@ -505,13 +505,7 @@ def login_from_widget(owner_user):
 
 @auth_bp.route('/widget-token', methods=['POST', 'OPTIONS'], strict_slashes=False)
 @cross_origin(
-    origins=[
-        "https://chatboc-demo-widget-oigs.vercel.app",
-        "https://chatboc.ar",
-        "https://api.chatboc.ar",
-        # agregá aquí los dominios de municipios/empresas que lo van a embeber
-        # p.ej.: "https://www.junin.gob.ar",
-    ],
+    origins="*",
     methods=["POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
     max_age=600,
