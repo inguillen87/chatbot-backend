@@ -1,6 +1,7 @@
 # Contenido COMPLETO para: routes/auth.py
 
 from flask import Blueprint, request, jsonify, current_app, g, make_response
+from flask_cors import cross_origin
 from services.logic import es_rubro_publico, normalizar_rubro
 import os
 from sqlalchemy import func
@@ -15,6 +16,7 @@ import jwt
 from services.google_auth import login_o_crear_usuario
 from services.pymes import get_or_create_pyme_user_by_token
 
+# Blueprint for authentication-related routes
 auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 
 from utils.auth_helpers import token_requerido, obtener_token, get_or_create_anon_id, generar_token, anon_o_token_requerido
@@ -502,11 +504,23 @@ def login_from_widget(owner_user):
 
 
 @auth_bp.route('/widget-token', methods=['POST', 'OPTIONS'], strict_slashes=False)
+@cross_origin(
+    origins=[
+        "https://chatboc-demo-widget-oigs.vercel.app",
+        "https://chatboc.ar",
+        "https://api.chatboc.ar",
+        # agregá aquí los dominios de municipios/empresas que lo van a embeber
+        # p.ej.: "https://www.junin.gob.ar",
+    ],
+    methods=["POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    max_age=600,
+    supports_credentials=False,
+)
 @anon_o_token_requerido
 def get_widget_token(current_user, owner_user, anon_id):
     """Genera un token JWT para sesiones del widget."""
-    if request.method == 'OPTIONS':
-        return '', 204
+    # Si llega OPTIONS, Flask-CORS ya respondió 200 y no entra aquí.
 
     if not owner_user:
         resp = jsonify({"error": "Token inválido"})
