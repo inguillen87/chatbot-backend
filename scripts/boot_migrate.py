@@ -1,7 +1,8 @@
 # scripts/boot_migrate.py
 import os
 import re
-from collections import defaultdict
+import sys
+from collections import defaultdict, deque
 from typing import Dict, List, Set, Tuple, Any
 
 from sqlalchemy import create_engine, text, inspect
@@ -30,6 +31,10 @@ DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
 ONLY_TABLES = os.environ.get("ONLY_TABLES")  # regex (opcional)
 SKIP_TABLES = os.environ.get("SKIP_TABLES")  # regex (opcional)
 
+# Nuevas opciones para orden/prioridad y “forzado” (deshabilitado por defecto)
+PRIORITY_TABLES = [t.strip() for t in os.environ.get("PRIORITY_TABLES", "").split(",") if t.strip()]
+FORCE_STALLED_CHILDREN = os.environ.get("FORCE_STALLED_CHILDREN", "0") == "1"
+
 CAN_SET_REPL_ROLE = True  # se desactiva si el rol no tiene permiso
 
 # ----------------- Utils -----------------
@@ -57,6 +62,21 @@ def list_tables_pg(ins) -> List[str]:
 
 def list_tables(ins) -> List[str]:
     return list_tables_sqlite(ins) if _dialect_name(ins) == "sqlite" else list_tables_pg(ins)
+
+def log_env():
+    print(f"SRC_SQLITE (raw): {SRC_SQLITE_PATH}")
+    print(f"SRC_SQLITE (url): {SRC_SQLITE_URL}")
+    print(f"DST_PG: {DST_PG}")
+    print(
+        "Config: "
+        f"DROP_FIRST={int(DROP_FIRST)} | "
+        f"FK_MODE={FK_MODE} | "
+        f"FK_MISSING_STRATEGY={FK_MISSING_STRATEGY} | "
+        f"CHUNK={CHUNK} | "
+        f"DRY_RUN={int(DRY_RUN)} | "
+        f"PRIORITY_TABLES={PRIORITY_TABLES or '-'} | "
+        f"FORCE_STALLED_CHILDREN={int(FORCE_STALLED_CHILDREN)}"
+    )
 
 # ---- Descubrimiento de FKs y metadatos (Postgres) ----
 def fk_edges(dst_engine) -> Dict[str, Set[str]]:
@@ -402,6 +422,45 @@ def fix_sequences(dst):
                       {"seq": seq, "val": (maxv or 0) + 1, "is_called": False})
             print(f"seq fixed: {table}.{col} -> {seq}")
 
+# ---- Topological order helpers ----
+def blockers(table: str, deps: Dict[str, Set[str]], done: Set[str]) -> List[str]:
+    return sorted([p for p in deps.get(table, set()) if p not in done])
+
+def topo_order(nodes: List[str], deps: Dict[str, Set[str]]) -> List[str]:
+    """Orden topológico: padres -> hijos, restringido a nodes."""
+    # filtrar deps a nodes
+    deps_f = {c: set(p for p in parents if p in nodes) for c, parents in deps.items() if c in nodes}
+    # construir adjacency (padre -> hijos)
+    children: Dict[str, Set[str]] = defaultdict(set)
+    indeg: Dict[str, int] = {n: 0 for n in nodes}
+    for child, parents in deps_f.items():
+        indeg[child] = len(parents)
+        for p in parents:
+            children[p].add(child)
+    q = deque([n for n in nodes if indeg.get(n, 0) == 0])
+    res: List[str] = []
+    seen: Set[str] = set()
+    while q:
+        n = q.popleft()
+        if n in seen:
+            continue
+        seen.add(n)
+        res.append(n)
+        for ch in children.get(n, set()):
+            indeg[ch] -= 1
+            if indeg[ch] == 0:
+                q.append(ch)
+    # Si quedaron nodos (ciclos raros), se agregan al final en su orden original
+    res += [n for n in nodes if n not in res]
+    return res
+
+def apply_priority(order: List[str], priority: List[str]) -> List[str]:
+    if not priority:
+        return order
+    prio = [t for t in priority if t in order]
+    rest = [t for t in order if t not in prio]
+    return prio + rest
+
 # ---- Scheduler dinámico por dependencias ----
 _pending: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -410,9 +469,7 @@ def main():
         print("SKIP migrate: MIGRATE_FROM_SQLITE != 1")
         return
 
-    print(f"SRC_SQLITE (raw): {SRC_SQLITE_PATH}")
-    print(f"SRC_SQLITE (url): {SRC_SQLITE_URL}")
-    print(f"DST_PG: {DST_PG}")
+    log_env()
 
     src = create_engine(SRC_SQLITE_URL)
     dst = create_engine(DST_PG, pool_pre_ping=True)
@@ -428,14 +485,19 @@ def main():
         return
 
     # mapa de dependencias (child -> set(parents)) y metadatos
-    deps = fk_edges(dst)
+    deps_all = fk_edges(dst)
+    # Filtrar deps a las tablas 'common'
+    deps = {c: set(p for p in parents if p in common) for c, parents in deps_all.items() if c in common}
     fkmap = fk_column_map(dst)
     nullable = column_nullable_map(dst)
     pkmap = table_pk_map(dst)
 
-    # mostrar orden sugerido (no vinculante, porque usamos scheduler)
-    print("Copy order (initial listing):")
-    for t in common:
+    # Orden sugerido (topológico + prioridad)
+    initial_order = topo_order(common, deps)
+    initial_order = apply_priority(initial_order, PRIORITY_TABLES)
+
+    print("Copy order (initial):")
+    for t in initial_order:
         print(" -", t)
 
     if DROP_FIRST:
@@ -443,7 +505,8 @@ def main():
             print("[DRY_RUN] Would TRUNCATE all common tables.")
         else:
             with dst.begin() as d:
-                for t in reversed(common):
+                # TRUNCATE CASCADE en orden inverso del topológico por las dudas
+                for t in reversed(initial_order):
                     d.execute(text(f'TRUNCATE TABLE "public"."{t}" RESTART IDENTITY CASCADE'))
             print("TRUNCATE done.")
 
@@ -458,7 +521,7 @@ def main():
             print("FKs disabled globally (replica mode).")
 
     # Scheduler: mientras queden tablas por copiar, en cada pasada copia las que ya tengan a sus padres copiados
-    remaining: Set[str] = set(common)
+    remaining: Set[str] = set(initial_order)
     copied: Set[str] = set()
     stats: Dict[str, Dict[str, int]] = {}
 
@@ -467,22 +530,25 @@ def main():
         pass_no += 1
         print(f"=== PASS {pass_no} ===")
         progressed = 0
-        for t in list(remaining):
-            parents = deps.get(t, set())
-            if not parents or parents.issubset(copied):
+        # Respetar prioridad/orden topológico
+        for t in [x for x in initial_order if x in remaining]:
+            if not deps.get(t) or deps.get(t).issubset(copied):
                 ok = copy_table(src, dst, isrc, idst, t, fkmap.get(t, []), nullable, pkmap, stats, chunk_size=CHUNK, fk_mode=FK_MODE)
                 if ok:
                     copied.add(t)
                     remaining.remove(t)
                     progressed += 1
         if progressed == 0:
-            # no pudimos avanzar por alguna dependencia que el grafo no reflejó → forzamos intento en todas (para exponer exactamente qué falla)
-            for t in list(remaining):
-                print(f"--- Forcing attempt on {t} due to stalled progress ---")
-                ok = copy_table(src, dst, isrc, idst, t, fkmap.get(t, []), nullable, pkmap, stats, chunk_size=CHUNK, fk_mode=FK_MODE)
-                copied.add(t)
-                remaining.remove(t)
-            break
+            # Estancado: no forzar hijos. Mostrar bloqueadores y abortar con código 1.
+            print("=== PASS stalled ===")
+            print("No hay tablas listas sin bloqueos. Detalle de bloqueos:")
+            for t in [x for x in initial_order if x in remaining]:
+                bl = blockers(t, deps, copied)
+                if bl:
+                    print(f" - {t}: espera {', '.join(bl)}")
+                else:
+                    print(f" - {t}: sin padres registrados pero no avanzó (revisar metadatos/FKs)")
+            sys.exit(1)
 
     # Reintentos de filas pendientes por FKs no resueltas en los datos
     if not DRY_RUN and _pending:
