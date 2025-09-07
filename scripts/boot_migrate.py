@@ -23,9 +23,35 @@ EXCLUDE = {"alembic_version"}
 FK_MODE = os.environ.get("FK_MODE", "auto").lower()  # ordered | auto | replica
 
 
-def list_tables(ins):
+def _dialect_name(ins) -> str:
+    try:
+        return ins.bind.dialect.name  # 'sqlite', 'postgresql', etc.
+    except Exception:
+        # fallback conservador
+        return ""
+
+
+def list_tables(ins, *, is_dst: bool = False) -> List[str]:
+    """
+    Lista tablas reales según dialecto.
+    - SQLite: no hay esquemas; NO pasar schema.
+    - Postgres (destino): usar schema 'public'.
+    Filtra metatablas internas y exclusiones.
+    """
+    dialect = _dialect_name(ins)
+    if dialect == "sqlite":
+        tables = ins.get_table_names()  # sin schema
+        skip_sqlite = {
+            "sqlite_sequence", "sqlite_stat1", "sqlite_stat4",
+            "sqlite_schema", "sqlite_master"
+        }
+        tables = [t for t in tables if t not in skip_sqlite]
+    else:
+        # Para Postgres u otros con esquemas, usamos 'public'
+        tables = ins.get_table_names(schema="public")
+
     return [
-        t for t in ins.get_table_names(schema="public")
+        t for t in tables
         if t not in EXCLUDE and not t.startswith("_") and not t.startswith("__")
     ]
 
@@ -35,7 +61,7 @@ def fk_graph_from_dst(idst) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
     Grafo de dependencias a partir de FKs en Postgres:
         edge: child -> parent (child depende de parent)
     """
-    tables = set(list_tables(idst))
+    tables = set(list_tables(idst, is_dst=True))
     deps: Dict[str, Set[str]] = {t: set() for t in tables}
     rdeps: Dict[str, Set[str]] = {t: set() for t in tables}
     for t in tables:
@@ -59,14 +85,14 @@ def topo_sort_from_dst(idst) -> List[str]:
             indeg[v] -= 1
             if indeg[v] == 0:
                 q.append(v)
-    # Si quedaron ciclos, los ponemos al final (los manejamos con FK_MODE='auto'/'replica')
+    # Si quedaron ciclos, los ponemos al final (se maneja con FK_MODE='auto'/'replica')
     for t in deps:
         if t not in order:
             order.append(t)
     return order
 
 
-def detect_bool_cols(ins, table_name):
+def detect_bool_cols(ins, table_name) -> Set[str]:
     bools = set()
     for c in ins.get_columns(table_name, schema="public"):
         t = c.get("type")
@@ -75,8 +101,8 @@ def detect_bool_cols(ins, table_name):
     return bools
 
 
-def detect_string_cols_with_limit(ins, table_name):
-    out = {}
+def detect_string_cols_with_limit(ins, table_name) -> Dict[str, int]:
+    out: Dict[str, int] = {}
     for c in ins.get_columns(table_name, schema="public"):
         t = c.get("type")
         if isinstance(t, String) and getattr(t, "length", None):
@@ -85,18 +111,24 @@ def detect_string_cols_with_limit(ins, table_name):
 
 
 def to_bool(val):
-    if val is None: return None
-    if isinstance(val, bool): return val
-    if isinstance(val, (int,)): return bool(val)
-    if isinstance(val, (float,)): return bool(int(val))
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int,)):
+        return bool(val)
+    if isinstance(val, (float,)):
+        return bool(int(val))
     if isinstance(val, str):
         v = val.strip().lower()
-        if v in {"1", "true", "t", "yes", "y", "on"}: return True
-        if v in {"0", "false", "f", "no", "n", "off", ""}: return False
+        if v in {"1", "true", "t", "yes", "y", "on"}:
+            return True
+        if v in {"0", "false", "f", "no", "n", "off", ""}:
+            return False
     return bool(val)
 
 
-def normalize_rows(rows, bool_cols):
+def normalize_rows(rows, bool_cols: Set[str]):
     out = []
     for r in rows:
         d = dict(r)
@@ -108,12 +140,18 @@ def normalize_rows(rows, bool_cols):
 
 
 def ensure_string_capacity(src_engine, dst_engine, table, cols_with_limits, overlap_cols):
+    """
+    Si en el origen (SQLite) hay strings más largos que el límite VARCHAR(n) del destino (PG),
+    hacemos ALTER COLUMN ... TYPE TEXT.
+    """
     targets = {c: n for c, n in cols_with_limits.items() if c in overlap_cols}
     if not targets:
         return
     with src_engine.connect() as s, dst_engine.begin() as d:
         for col, limit in targets.items():
-            len_max = s.execute(text(f'SELECT MAX(LENGTH("{col}")) FROM "{table}"')).scalar()
+            len_max = s.execute(
+                text(f'SELECT MAX(LENGTH("{col}")) FROM "{table}"')
+            ).scalar()
             len_max = int(len_max or 0)
             if len_max > limit:
                 print(f'  - Upsizing column {table}.{col} from VARCHAR({limit}) to TEXT (max src len={len_max})')
@@ -125,7 +163,31 @@ def set_replication_role(conn, role: str):
     conn.execute(text(f"SET session_replication_role = '{role}'"))
 
 
+def _is_fk_violation(err: IntegrityError) -> bool:
+    """
+    Detección robusta de violación de FK en distintas formas del mensaje/DBAPI.
+    """
+    s = str(err).lower()
+    if "foreignkeyviolation" in s:
+        return True
+    if "violates foreign key constraint" in s:
+        return True
+    if "foreign key" in s and "violate" in s:
+        return True
+    # psycopg3 usa SQLSTATE 23503 para FK
+    try:
+        pgcode = getattr(getattr(err, "orig", None), "pgcode", None)
+        if pgcode == "23503":
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def copy_table(src, dst, isrc, idst, table, chunk_size=CHUNK, fk_mode=FK_MODE):
+    # Columnas
+    # - SRC (SQLite): sin schema
+    # - DST (Postgres): schema='public'
     src_cols = [c["name"] for c in isrc.get_columns(table)]
     dst_cols_meta = idst.get_columns(table, schema="public")
     dst_cols = [c["name"] for c in dst_cols_meta]
@@ -134,16 +196,17 @@ def copy_table(src, dst, isrc, idst, table, chunk_size=CHUNK, fk_mode=FK_MODE):
         print(f"{table}: no common columns, skip")
         return
 
-    # Capacidades de strings
+    # Capacidades de strings (sobre destino)
     string_limits = detect_string_cols_with_limit(idst, table)
     ensure_string_capacity(src, dst, table, string_limits, cols)
 
-    # Booleanos
+    # Booleanos (sobre destino)
     bool_cols = detect_bool_cols(idst, table)
 
     collist = ", ".join(f'"{c}"' for c in cols)
     placeholders = ", ".join(f":{c}" for c in cols)
 
+    # Total de filas
     with src.connect() as s:
         total = s.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar_one()
     print(f"{table}: {total} rows to copy...")
@@ -168,15 +231,21 @@ def copy_table(src, dst, isrc, idst, table, chunk_size=CHUNK, fk_mode=FK_MODE):
                 if fk_mode == "replica" and not fk_disabled:
                     set_replication_role(d, "replica")
                     fk_disabled = True
-                d.execute(text(f'INSERT INTO "public"."{table}" ({collist}) VALUES ({placeholders})'), norm_rows)
+                d.execute(
+                    text(f'INSERT INTO "public"."{table}" ({collist}) VALUES ({placeholders})'),
+                    norm_rows
+                )
         except IntegrityError as e:
             # Si la FK falla en modo ordered/auto, reintentamos con FKs deshabilitadas
-            if "ForeignKeyViolation" in str(e) and fk_mode in {"auto"} and not fk_disabled:
+            if _is_fk_violation(e) and fk_mode in {"auto"} and not fk_disabled:
                 print(f'  ! FK violation in {table} at offset {off}. Retrying with FKs disabled...')
                 with dst.begin() as d:
                     set_replication_role(d, "replica")
                     fk_disabled = True
-                    d.execute(text(f'INSERT INTO "public"."{table}" ({collist}) VALUES ({placeholders})'), norm_rows)
+                    d.execute(
+                        text(f'INSERT INTO "public"."{table}" ({collist}) VALUES ({placeholders})'),
+                        norm_rows
+                    )
             else:
                 print(f'ERROR copying table {table} at offset {off}: {e}')
                 raise
@@ -203,13 +272,19 @@ def fix_sequences(dst):
     with dst.begin() as d:
         res = d.execute(q).fetchall()
         for schema, table, col in res:
-            seq = d.execute(text("SELECT pg_get_serial_sequence(:tbl,:col)"),
-                            {"tbl": f'"{schema}"."{table}"', "col": col}).scalar()
+            seq = d.execute(
+                text("SELECT pg_get_serial_sequence(:tbl,:col)"),
+                {"tbl": f'"{schema}"."{table}"', "col": col}
+            ).scalar()
             if not seq:
                 continue
-            maxv = d.execute(text(f'SELECT COALESCE(MAX("{col}"),0) FROM "{schema}"."{table}"')).scalar()
-            d.execute(text("SELECT setval(:seq,:val,:is_called)"),
-                      {"seq": seq, "val": (maxv or 0) + 1, "is_called": False})
+            maxv = d.execute(
+                text(f'SELECT COALESCE(MAX("{col}"),0) FROM "{schema}"."{table}"')
+            ).scalar()
+            d.execute(
+                text("SELECT setval(:seq,:val,:is_called)"),
+                {"seq": seq, "val": (maxv or 0) + 1, "is_called": False}
+            )
             print(f"seq fixed: {table}.{col} -> {seq}")
 
 
@@ -229,8 +304,8 @@ def main():
     idst = inspect(dst)
 
     # Tablas presentes en ambos
-    src_tables = set(list_tables(isrc))
-    dst_tables = set(list_tables(idst))
+    src_tables = set(list_tables(isrc, is_dst=False))  # SQLite: sin schema
+    dst_tables = set(list_tables(idst, is_dst=True))   # Postgres: schema=public
     common = sorted(src_tables & dst_tables)
 
     # Orden topológico desde las FKs de DESTINO
