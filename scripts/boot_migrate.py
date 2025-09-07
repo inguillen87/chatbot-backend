@@ -3,32 +3,48 @@ import os
 from collections import deque
 from sqlalchemy import create_engine, text, inspect
 
-# --- Config ---
-SRC_SQLITE = os.environ.get("SRC_SQLITE", "sqlite:////data/database.db")  # Ruta del .db en Render
+# --- Env & normalización de SQLite URL ---
+_raw_sqlite = os.environ.get("SRC_SQLITE", "/data/database.db")
+
+def normalize_sqlite_url(raw: str) -> str:
+    """Convierte rutas como '/data/db.sqlite' o 'data.db' en URLs válidos para SQLAlchemy.
+       Si ya viene con esquema 'sqlite://', lo deja tal cual."""
+    raw = raw.strip()
+    if raw.startswith("sqlite:"):
+        return raw
+    # Si es ruta absoluta -> necesita 4 slashes
+    if raw.startswith("/"):
+        return f"sqlite:////{raw.lstrip('/')}"
+    # Ruta relativa -> 3 slashes
+    return f"sqlite:///{raw}"
+
+SRC_SQLITE = normalize_sqlite_url(_raw_sqlite)
+
+# --- Destino PG ---
 DST_PG = os.environ.get("SQLALCHEMY_DATABASE_URI") or os.environ["DATABASE_URL"]
 
+# --- Flags ---
 DO_MIGRATE = os.environ.get("MIGRATE_FROM_SQLITE", "0") == "1"
 DROP_FIRST = os.environ.get("DROP_FIRST", "0") == "1"
 CHUNK = int(os.environ.get("MIG_CHUNK", "1000"))
 
-# Tablas a excluir (metadatos, tmp, etc.)
+# Excluir tablas temporales/auxiliares
 EXCLUDE = {"alembic_version"}
 
-# Tablas que deben copiarse primero, para evitar errores de FK
+# Tablas que conviene copiar primero (evita violaciones de FK)
 PRIORITY_FIRST = [
     "user",
     "whatsapp_numero",
-    # agregá aquí otras tablas "padre" si ves errores de FK (p.ej. "rubro", "promocion", etc.)
+    # agrega aquí otras "padre" si apareciera alguna FK más
 ]
 
-# Si querés forzar algunas al final, ponelas acá
+# Si querés forzar algunas al final
 PRIORITY_LAST = [
     # "logs",
 ]
 
 
 def list_tables(inspector):
-    """Lista tablas reales (sin temporales/auxiliares)."""
     names = []
     for t in inspector.get_table_names():
         if t in EXCLUDE:
@@ -40,7 +56,6 @@ def list_tables(inspector):
 
 
 def topo_sort(inspector):
-    """Orden topológico por FKs (si están definidas en origen)."""
     tables = list_tables(inspector)
     deps = {t: set() for t in tables}
     rdeps = {t: set() for t in tables}
@@ -64,7 +79,6 @@ def topo_sort(inspector):
             if indeg[v] == 0:
                 q.append(v)
 
-    # Si quedaron ciclos o faltantes, los anexamos al final
     for t in tables:
         if t not in order:
             order.append(t)
@@ -72,7 +86,6 @@ def topo_sort(inspector):
 
 
 def apply_priority(order):
-    """Mueve las tablas de PRIORITY_FIRST al frente y PRIORITY_LAST al final, preservando el resto."""
     head = [t for t in PRIORITY_FIRST if t in order]
     tail = [t for t in PRIORITY_LAST if t in order]
     middle = [t for t in order if t not in head and t not in tail]
@@ -84,7 +97,8 @@ def main():
         print("SKIP migrate: MIGRATE_FROM_SQLITE != 1")
         return
 
-    print(f"SRC_SQLITE: {SRC_SQLITE}")
+    print(f"SRC_SQLITE (raw): {_raw_sqlite}")
+    print(f"SRC_SQLITE (url): {SRC_SQLITE}")
     print(f"DST_PG: {DST_PG}")
 
     src = create_engine(SRC_SQLITE)
@@ -93,32 +107,26 @@ def main():
     isrc = inspect(src)
     idst = inspect(dst)
 
-    # Orden propuesto por FKs (si existen en SQLite)
     src_order = topo_sort(isrc)
 
-    # Intersección con tablas realmente presentes en destino (ya migradas por Alembic)
     dst_tables = set(idst.get_table_names())
     order = [t for t in src_order if t in dst_tables]
 
-    # Aplica prioridad manual para asegurar user/whatsapp_numero antes que dependientes
     order = apply_priority(order)
 
     print("Copy order (with priority):")
     for t in order:
         print(" -", t)
 
-    # Si pedimos limpiar destino antes de copiar
     if DROP_FIRST:
         with dst.begin() as d:
             for t in reversed(order):
-                # Truncamos en orden inverso para respetar dependencias
                 try:
                     d.execute(text(f'TRUNCATE TABLE "{t}" RESTART IDENTITY CASCADE'))
                 except Exception as e:
                     print(f"skip truncate {t}: {e}")
         print("TRUNCATE done.")
 
-    # Copia tabla por tabla
     for t in order:
         src_cols = [c["name"] for c in isrc.get_columns(t)]
         dst_cols = [c["name"] for c in idst.get_columns(t)]
@@ -155,10 +163,8 @@ def main():
                 print(f"  -> {off}/{total}")
             except Exception as e:
                 print(f"ERROR copying table {t} at offset {off}: {e}")
-                # Re-lanzamos para que el deploy falle y puedas ver el error exacto en logs
                 raise
 
-    # Arregla secuencias (serial/identity) en Postgres
     fix_sql = text("""
         SELECT c.table_schema, c.table_name, c.column_name
         FROM information_schema.columns c
