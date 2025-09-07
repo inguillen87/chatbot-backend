@@ -5,6 +5,7 @@ import os  # For accessing environment variables
 import requests
 import io
 import json
+import threading
 from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
 from extensions import db  # Import db instance for database operations
@@ -51,6 +52,44 @@ def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
         text = text[split_idx:].lstrip()
     parts.append(text)
     return parts
+
+
+def _send_delayed_payload(client, to_number: str, from_number: str, payload: dict, delay: int):
+    """Send a payload via WhatsApp after a delay using a background thread."""
+
+    def _send():
+        with current_app.app_context():
+            from services.response_formatter import build_interactive_response
+
+            formatted = build_interactive_response(
+                options=payload.get("options_list", []),
+                body_text=payload.get("message_body", ""),
+                channel="whatsapp",
+                message_type=payload.get("message_type", "text"),
+                original_bot_response=payload,
+            )
+
+            params = {"from_": to_number, "to": from_number}
+            if formatted.get("type") == "interactive":
+                interactive = formatted.get("interactive")
+                params["body"] = interactive.get("body", {}).get("text", "")
+                params["persistent_action"] = [f"whatsapp:{json.dumps(interactive)}"]
+            else:
+                params["body"] = formatted.get("text", {}).get("body", "")
+
+            image_url = formatted.get("image_url")
+            if image_url and "persistent_action" not in params:
+                params["media_url"] = [image_url]
+
+            try:
+                client.messages.create(**params)
+            except Exception as e:
+                current_app.logger.error(f"Error sending delayed message: {e}")
+
+    if client:
+        timer = threading.Timer(delay, _send)
+        timer.daemon = True
+        timer.start()
 
 
 def _esperando_info_libre(municipio_ctx: dict) -> bool:
@@ -589,5 +628,19 @@ def whatsapp_webhook():
             traceback.print_exc()
     else:
         print("Warning: Twilio client no inicializado. No se puede enviar respuesta por WhatsApp.")
+
+    # Schedule delayed menu or follow-up payload if requested
+    if (
+        twilio_client
+        and bot_response_dict.get("delayed_payload")
+        and bot_response_dict.get("delay_seconds")
+    ):
+        _send_delayed_payload(
+            twilio_client,
+            to_number_raw,
+            from_number_raw,
+            bot_response_dict["delayed_payload"],
+            bot_response_dict["delay_seconds"],
+        )
 
     return "OK", 200

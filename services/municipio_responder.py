@@ -254,9 +254,11 @@ class ReclamoFlowHandler:
         else:
             self.flow_context['datos_reclamo']['direccion'] = user_input
 
-        # If a photo was already provided earlier in the flow, skip asking for
-        # it again and go straight to contact details.
-        if self.flow_context['datos_reclamo'].get('foto_url'):
+        # If a photo was already provided earlier in the flow or exists in the
+        # context (e.g. the user started the claim by sending an image), skip
+        # asking for it again and go straight to contact details.
+        if self.flow_context['datos_reclamo'].get('foto_url') or self.context.get('foto_url'):
+            self.flow_context['datos_reclamo'].setdefault('foto_url', self.context.get('foto_url'))
             return self.ask_for_contact_details()
 
         self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
@@ -277,8 +279,10 @@ class ReclamoFlowHandler:
             self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
             return {"message_body": "Gracias. ¿Cuál es la dirección exacta del problema (calle y número)?"}
         else:
-            # If a photo was already provided earlier, do not ask for another one.
-            if self.flow_context['datos_reclamo'].get('foto_url'):
+            # If a photo was already provided earlier or is present in the
+            # context, do not ask for another one.
+            if self.flow_context['datos_reclamo'].get('foto_url') or self.context.get('foto_url'):
+                self.flow_context['datos_reclamo'].setdefault('foto_url', self.context.get('foto_url'))
                 return self.ask_for_contact_details()
             self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
             return {
@@ -349,7 +353,10 @@ class ReclamoFlowHandler:
         if not contact_details:
             return {"message_body": "No pude identificar tus datos. Por favor, intentá de nuevo incluyendo nombre, DNI, email y teléfono."}
 
-        self.flow_context['datos_reclamo'].update(contact_details)
+        datos_reclamo = self.flow_context['datos_reclamo']
+        for k, v in contact_details.items():
+            if v:
+                datos_reclamo[k] = v
         self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
         return self.get_confirmation_message()
 
@@ -394,12 +401,19 @@ class ReclamoFlowHandler:
                 nro_ticket = result.get("data", {}).get("nro_ticket")
                 message = result.get(
                     "message_to_user",
-                    f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{nro_ticket}*. Te mantendremos informado sobre el estado del mismo por este medio."
+                    f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{nro_ticket}*. Te mantendremos informado sobre el estado del mismo por este medio.",
                 )
-                return self.end_flow(message, show_menu=True)
+                message += (
+                    "\n\n¿Sabías que estamos trabajando para una Junín más limpia?\n"
+                    "Planta de recolección, reciclaje y elaboración de productos sustentables.\n"
+                    "Ladrillos, tejas, postes, mangueras, impresión 3D, luminarias LED y paneles solares.\n"
+                    "Más info: https://www.juninmendoza.gov.ar/punto-limpio/"
+                )
+                punto_limpio_logo = "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png"
+                return self.end_flow(message, show_menu=True, image_url=punto_limpio_logo)
             error_message = result.get(
                 "message_to_user",
-                "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde."
+                "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde.",
             )
             return self.end_flow(error_message, show_menu=True)
         elif any(word in normalized for word in negatives) or action == "reclamo_confirmar_no":
@@ -408,16 +422,22 @@ class ReclamoFlowHandler:
             cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
             return self.end_flow(cancel_msg, show_menu=True)
 
-    def end_flow(self, message, show_menu=False):
+    def end_flow(self, message, show_menu=False, image_url=None):
         self.flow_context.clear()
         # Remove flow data from municipio context so subsequent turns don't
         # enter this handler unintentionally.
         self.municipal_ctx.pop("reclamo_flow_v2", None)
 
+        payload = {"message_body": message, "message_type": "text"}
+        if image_url:
+            payload["image_url"] = image_url
+
         if show_menu:
-            return _message_with_menu(message, self.context)
-        else:
-            return {"message_body": message, "message_type": "text"}
+            menu_payload = GreetingHandler(self.context).handle({})
+            payload["delayed_payload"] = menu_payload
+            payload["delay_seconds"] = 20
+
+        return payload
 # Initialize the classifier globally
 INTENTS_FILE_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'intents.json')
 intent_classifier = IntentClassifier(intents_file_path=INTENTS_FILE_PATH)
