@@ -15,7 +15,7 @@ import jwt
 from services.google_auth import login_o_crear_usuario
 from services.pymes import get_or_create_pyme_user_by_token
 
-auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
+auth_bp = Blueprint('auth', __name__, url_prefix='/auth', strict_slashes=False)
 
 from utils.auth_helpers import token_requerido, obtener_token, get_or_create_anon_id, generar_token, anon_o_token_requerido
 from flask_login import current_user
@@ -501,12 +501,10 @@ def login_from_widget(owner_user):
     return resp
 
 
-@auth_bp.route('/widget-token', methods=['POST', 'OPTIONS'], strict_slashes=False)
+@auth_bp.route('/widget-token', methods=['POST', 'OPTIONS'])
 @anon_o_token_requerido
 def get_widget_token(current_user, owner_user, anon_id):
     """Genera un token JWT para sesiones del widget."""
-    if request.method == 'OPTIONS':
-        return '', 204
 
     if not owner_user:
         resp = jsonify({"error": "Token inválido"})
