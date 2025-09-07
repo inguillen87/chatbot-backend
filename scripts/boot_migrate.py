@@ -319,6 +319,11 @@ def copy_table(src, dst, isrc, idst, table, fkmap_tbl, nullable_map, pkmap, stat
     fk_disabled = False
     fks = fkmap_tbl or []
 
+    # --- NUEVO: soporte para FKs auto-referenciales dentro de la misma tabla ---
+    self_pk_cols = pkmap.get(table, [])
+    self_pk_col = self_pk_cols[0] if len(self_pk_cols) == 1 else None
+    self_inserted_ids: Set[Any] = set()
+
     while off < total:
         with src.connect() as s:
             rows = s.execute(text(f'SELECT {collist} FROM "{table}" LIMIT {chunk_size} OFFSET {off}')).mappings().all()
@@ -339,9 +344,23 @@ def copy_table(src, dst, isrc, idst, table, fkmap_tbl, nullable_map, pkmap, stat
                     continue
                 ch_col, pa_col = ch_cols[0], pa_cols[0]
                 val = candidate.get(ch_col)
+
+                # Si es NULL y la columna lo permite, no hay violación
                 if val is None:
                     continue
-                exists = val in fetch_parent_keys(dst, pa_table, pa_col, [val])
+
+                # Determinar existencia del padre:
+                exists = False
+                # Si la FK apunta a esta misma tabla y es de 1 columna,
+                # considerar ids insertados en este mismo batch/pasada.
+                if pa_table == table:
+                    if self_pk_col and val in self_inserted_ids:
+                        exists = True
+                    else:
+                        exists = val in fetch_parent_keys(dst, pa_table, pa_col, [val])
+                else:
+                    exists = val in fetch_parent_keys(dst, pa_table, pa_col, [val])
+
                 if not exists:
                     nullable = nullable_map.get((table, ch_col), True)
                     if FK_MISSING_STRATEGY == "synth":
@@ -370,6 +389,14 @@ def copy_table(src, dst, isrc, idst, table, fkmap_tbl, nullable_map, pkmap, stat
                         fk_disabled = maybe_set_replication_role(d, "replica")
                     d.execute(text(f'INSERT INTO "public"."{table}" ({collist}) VALUES ({placeholders})'), to_insert)
                 stats[table]["copied"] += len(to_insert)
+
+                # --- NUEVO: registrar PKs insertadas para resolver jerarquías en la misma tabla ---
+                if self_pk_col:
+                    for row in to_insert:
+                        v = row.get(self_pk_col)
+                        if v is not None:
+                            self_inserted_ids.add(v)
+
             except IntegrityError as e:
                 if _is_fk_violation(e) and fk_mode in {"auto"} and not fk_disabled:
                     print(f'  ! FK violation in {table}. Retrying with FKs disabled...')
@@ -486,8 +513,8 @@ def main():
 
     # mapa de dependencias (child -> set(parents)) y metadatos
     deps_all = fk_edges(dst)
-    # Filtrar deps a las tablas 'common'
-    deps = {c: set(p for p in parents if p in common) for c, parents in deps_all.items() if c in common}
+    # Filtrar deps a las tablas 'common' y quitar auto-dependencias (self-loops)
+    deps = {c: set(p for p in parents if p in common and p != c) for c, parents in deps_all.items() if c in common}
     fkmap = fk_column_map(dst)
     nullable = column_nullable_map(dst)
     pkmap = table_pk_map(dst)
