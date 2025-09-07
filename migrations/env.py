@@ -1,19 +1,18 @@
-# migrations/env.py  (REEMPLAZAR COMPLETO)
-
+# migrations/env.py
 import os
 from alembic import context
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 
 def normalize(url_str: str) -> str:
-    """Fuerza el driver psycopg v3 y agrega sslmode=require cuando el host es público (render.com)."""
+    """Fuerza psycopg v3 y sslmode=require en host público."""
     url = make_url(url_str)
 
-    # 1) forzar dialecto psycopg v3 si viene como "postgresql://"
+    # Forzar driver psycopg v3 si viene "postgresql://"
     if url.drivername == "postgresql":
         url = url.set(drivername="postgresql+psycopg")
 
-    # 2) si el host es público (render.com), asegurar sslmode=require
+    # sslmode=require si es host de render.com
     host = (url.host or "")
     if "render.com" in host:
         qs = dict(url.query)
@@ -23,12 +22,24 @@ def normalize(url_str: str) -> str:
 
     return str(url)
 
-# Lee primero EXTERNAL, si no está toma INTERNAL (en Render definí DATABASE_URL_INTERNAL)
-raw_url = os.getenv("DATABASE_URL") or os.getenv("DATABASE_URL_INTERNAL")
-if not raw_url:
-    raise RuntimeError("DATABASE_URL no seteada")
+# 1) primero el -x dburl=... que pasamos desde el Start Command
+xargs = context.get_x_argument(as_dictionary=True)
+raw_url = xargs.get("dburl")
 
-DB_URL = normalize(raw_url)  # <-- CLAVE
+# 2) si no vino por -x, probamos variables de entorno (orden más útil)
+if not raw_url:
+    raw_url = (
+        os.getenv("DB_URL_PUBLIC")
+        or os.getenv("DATABASE_URL")
+        or os.getenv("DATABASE_URL_INTERNAL")
+    )
+
+if not raw_url:
+    raise RuntimeError(
+        "No database URL (usa -x dburl=... o setea DB_URL_PUBLIC/DATABASE_URL)"
+    )
+
+DB_URL = normalize(raw_url)
 
 def run_migrations_offline() -> None:
     context.configure(url=DB_URL, literal_binds=True)
