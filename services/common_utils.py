@@ -835,6 +835,15 @@ def extract_multiple_contact_details_regex(text: str, potential_fields: list | N
             extracted_data[field] = heuristic_value
             _remove_from_remaining(heuristic_value)
 
+    # If the text explicitly mentions the address field, keep only what follows
+    lower_remaining = remaining_text.lower()
+    for kw in ["direccion", "dirección", "dir."]:
+        idx = lower_remaining.find(kw)
+        if idx != -1:
+            remaining_text = remaining_text[idx + len(kw):]
+            remaining_text = re.sub(r"^[\s:.,-]+", "", remaining_text)
+            break
+
     leftover = remaining_text.strip()
     tokens = leftover.split()
 

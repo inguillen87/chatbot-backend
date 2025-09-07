@@ -3322,9 +3322,11 @@ def responder_municipio(
             }
             if campos_faltantes:
                 contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
-                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                campos_texto = ', '.join(campos_faltantes)
                 return _finalize_response({
-                    "message_body": f"Para registrar tu sugerencia necesito tu nombre completo, DNI, email y dirección. Faltan: {', '.join(campos_faltantes)}. Podés escribir todo en un solo mensaje.",
+                    "message_body": f"Para registrar tu sugerencia necesito: {campos_texto}. Podés escribir todo en un solo mensaje.",
                     "fuente": "pide_datos_contacto_sugerencia"
                 })
 
