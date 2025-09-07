@@ -60,6 +60,7 @@ def my_on_connect_listener(dbapi_connection, connection_record):
 
 def create_app(config_class=Config):
     app = Flask(__name__)
+    app.url_map.strict_slashes = False
     print("Creating app...")
 
     # Detrás de proxy/reverse-proxy
