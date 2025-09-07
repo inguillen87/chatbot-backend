@@ -42,7 +42,7 @@ def _choose_raw_url() -> str:
       2) current_app.config['SQLALCHEMY_DATABASE_URI']  (si hay app)
       3) Variables de entorno: SQLALCHEMY_DATABASE_URI, DATABASE_URL, PG_EXTERNAL,
                                DB_URL_PUBLIC, DATABASE_URL_INTERNAL
-      4) sqlalchemy.url del alembic.ini (si estuviera seteada)
+      4) sqlalchemy.url del alembic.ini
     """
     # 1) x-args
     xargs = context.get_x_argument(as_dictionary=True)
@@ -86,7 +86,6 @@ def _choose_raw_url() -> str:
 RAW_URL = _choose_raw_url()
 DB_URL = _normalize(RAW_URL)
 
-# Reflejar en la config de Alembic (aunque creemos engine con la misma)
 config = context.config
 config.set_main_option("sqlalchemy.url", DB_URL)
 
@@ -105,8 +104,23 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 def run_migrations_online() -> None:
-    engine = create_engine(DB_URL, pool_pre_ping=True)
-    with engine.connect() as connection:
+    # Si ya nos inyectaron una conexión (pattern recomendado), úsala.
+    connectable = config.attributes.get("connection", None)
+
+    if connectable is None:
+        # Fallback: creamos nuestro propio engine (lo que a vos te fallaba)
+        engine = create_engine(DB_URL, pool_pre_ping=True)
+        with engine.connect() as connection:
+            context.configure(
+                connection=connection,
+                compare_type=True,
+                compare_server_default=True,
+            )
+            with context.begin_transaction():
+                context.run_migrations()
+    else:
+        # Conexión provista desde afuera (no creamos engine acá)
+        connection = connectable
         context.configure(
             connection=connection,
             compare_type=True,
