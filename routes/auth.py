@@ -502,6 +502,7 @@ def login_from_widget(owner_user):
 
 
 @auth_bp.route('/widget-token', methods=['POST', 'OPTIONS'], strict_slashes=False)
+@auth_bp.route('/widget-token/', methods=['POST', 'OPTIONS'], strict_slashes=False)
 @anon_o_token_requerido
 def get_widget_token(current_user, owner_user, anon_id):
     """Genera un token JWT para sesiones del widget."""
