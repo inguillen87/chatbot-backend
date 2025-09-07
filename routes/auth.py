@@ -1,6 +1,7 @@
 # Contenido COMPLETO para: routes/auth.py
 
 from flask import Blueprint, request, jsonify, current_app, g, make_response
+from flask_cors import cross_origin
 from services.logic import es_rubro_publico, normalizar_rubro
 import os
 from sqlalchemy import func
@@ -15,7 +16,8 @@ import jwt
 from services.google_auth import login_o_crear_usuario
 from services.pymes import get_or_create_pyme_user_by_token
 
-auth_bp = Blueprint('auth', __name__, url_prefix='/auth', strict_slashes=False)
+# Blueprint for authentication-related routes
+auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 
 from utils.auth_helpers import token_requerido, obtener_token, get_or_create_anon_id, generar_token, anon_o_token_requerido
 from flask_login import current_user
@@ -501,15 +503,28 @@ def login_from_widget(owner_user):
     return resp
 
 
-@auth_bp.route('/widget-token', methods=['POST', 'OPTIONS'])
+CORS_KW = dict(
+    origins="*",
+    methods=["POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    max_age=600,
+    supports_credentials=False,
+    send_wildcard=True,
+)
+
+
+@auth_bp.route("/widget-token", methods=["POST"])
+@auth_bp.route("/widget-token/", methods=["POST"])
+@cross_origin(**CORS_KW)
 @anon_o_token_requerido
 def get_widget_token(current_user, owner_user, anon_id):
     """Genera un token JWT para sesiones del widget."""
 
     if not owner_user:
         resp = jsonify({"error": "Token inválido"})
-        resp.headers.setdefault("X-Anon-Id", anon_id)
-        resp.headers.setdefault("Anon-Id", anon_id)
+        if anon_id:
+            resp.headers.setdefault("X-Anon-Id", anon_id)
+            resp.headers.setdefault("Anon-Id", anon_id)
         return resp, 401
 
     nuevo_token = generar_token(
@@ -520,8 +535,9 @@ def get_widget_token(current_user, owner_user, anon_id):
         owner_user.pyme_id,
     )
     resp = jsonify({"token": nuevo_token})
-    resp.headers.setdefault("X-Anon-Id", anon_id)
-    resp.headers.setdefault("Anon-Id", anon_id)
+    if anon_id:
+        resp.headers.setdefault("X-Anon-Id", anon_id)
+        resp.headers.setdefault("Anon-Id", anon_id)
     return resp
 
 
