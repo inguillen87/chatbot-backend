@@ -233,7 +233,7 @@ def create_app(config_class=Config):
         from routes.whatsapp_promocionar import whatsapp_promocionar_bp
         from routes.estacionamiento import bp_est
         from routes.media import media_bp
-        from routes.preferences import preferences_bp
+        from routes.accessibility import accessibility_bp
         from cli_commands import register_commands
 
         app.register_blueprint(config_bp)
@@ -287,7 +287,7 @@ def create_app(config_class=Config):
         app.register_blueprint(whatsapp_promocionar_bp)
         app.register_blueprint(bp_est)
         app.register_blueprint(media_bp)
-        app.register_blueprint(preferences_bp)
+        app.register_blueprint(accessibility_bp)
 
         # Comandos CLI
         register_commands(app)
