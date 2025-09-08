@@ -11,7 +11,7 @@ import uuid
 import json
 import os
 import random
-from services.gcs_service import get_thumb_filename, BUCKET_NAME
+from services.gcs_service import get_thumb_filename, BUCKET_NAME, GCS_ENABLED
 
 
 JSONType = JSONB().with_variant(SQLITE_JSON, "sqlite")
@@ -367,22 +367,27 @@ class TicketComentario(db.Model):
                 "size": self.archivo_adjunto.tamano
             }
 
-            # Dynamically construct thumb_url and add meta
-            thumb_filename = get_thumb_filename(self.archivo_adjunto.filename)
-            attachment_info['thumb_url'] = f"https://storage.googleapis.com/{BUCKET_NAME}/{thumb_filename}"
-
             # Fetch metadata from AnalisisArchivo
             analisis = AnalisisArchivo.query.filter_by(
                 archivo_adjunto_id=self.archivo_adjunto.id,
                 tipo_analisis='thumbnail_meta'
             ).first()
+            meta = analisis.datos_estructurados if analisis else None
 
-            if analisis:
-                attachment_info['meta'] = analisis.datos_estructurados
-            else:
-                attachment_info['meta'] = None
+            thumb_url = meta.get("url") if meta else None
+            if not thumb_url:
+                thumb_filename = get_thumb_filename(self.archivo_adjunto.filename)
+                if GCS_ENABLED:
+                    thumb_url = f"https://storage.googleapis.com/{BUCKET_NAME}/{thumb_filename}"
+                else:
+                    thumb_url = os.path.join(
+                        os.path.dirname(self.archivo_adjunto.url), thumb_filename
+                    ).replace("\\", "/")
 
-            data['attachment_info'] = attachment_info
+            attachment_info["thumbUrl"] = thumb_url
+            attachment_info['meta'] = meta
+
+            data['attachmentInfo'] = attachment_info
         # Determine author information for clarity in timelines and chats
         autor_tipo = "municipio" if self.es_admin else "vecino"
         if self.es_admin:

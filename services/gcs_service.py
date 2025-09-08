@@ -1,12 +1,15 @@
 import os
 import uuid
+import io
+import requests
 from flask import current_app
 from werkzeug.utils import secure_filename
-import io
 from services.thumbnail_service import generar_thumbnail
 
 # Google Cloud Storage can be optionally disabled (e.g., when billing is off).
 GCS_ENABLED = os.environ.get("GCS_ENABLED", "false").lower() == "true"
+VERCEL_BLOB_RW_TOKEN = os.environ.get("VERCEL_BLOB_RW_TOKEN")
+VERCEL_BLOB_API = "https://api.vercel.com/v2/blob"
 
 if GCS_ENABLED:
     from google.cloud import storage
@@ -40,12 +43,15 @@ def _save_to_local(original_filename: str, file_bytes: bytes, unique_name: str,
     original_path = os.path.join(upload_dir, unique_name)
     with open(original_path, "wb") as f:
         f.write(file_bytes)
-
+    thumb_url = None
     if thumbnail_bytes and thumb_meta:
         thumb_filename = get_thumb_filename(unique_name)
         thumb_path = os.path.join(upload_dir, thumb_filename)
         with open(thumb_path, "wb") as f:
             f.write(thumbnail_bytes)
+        rel_thumb = os.path.relpath(thumb_path, current_app.root_path)
+        thumb_url = "/" + rel_thumb.replace(os.sep, "/")
+        thumb_meta["url"] = thumb_url
 
     rel_path = os.path.relpath(original_path, current_app.root_path)
     original_url = "/" + rel_path.replace(os.sep, "/")
@@ -57,6 +63,42 @@ def _save_to_local(original_filename: str, file_bytes: bytes, unique_name: str,
         "original_name": original_filename,
         "mimetype": mimetype,
         "thumb_meta": thumb_meta,
+        "thumbUrl": thumb_url,
+    }
+
+
+def _save_to_vercel_blob(original_filename: str, file_bytes: bytes, unique_name: str,
+                         mimetype: str, thumbnail_bytes: bytes | None,
+                         thumb_meta: dict | None) -> dict | None:
+    """Save files to Vercel Blob storage when configured."""
+    if not VERCEL_BLOB_RW_TOKEN:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {VERCEL_BLOB_RW_TOKEN}",
+        "x-vercel-filename": unique_name,
+        "Content-Type": mimetype,
+    }
+    resp = requests.post(VERCEL_BLOB_API, headers=headers, data=file_bytes)
+    resp.raise_for_status()
+    original_url = resp.json().get("url")
+    thumb_url = None
+    if thumbnail_bytes and thumb_meta:
+        headers["x-vercel-filename"] = get_thumb_filename(unique_name)
+        headers["Content-Type"] = "image/webp"
+        resp_thumb = requests.post(VERCEL_BLOB_API, headers=headers, data=thumbnail_bytes)
+        resp_thumb.raise_for_status()
+        thumb_url = resp_thumb.json().get("url")
+        thumb_meta["url"] = thumb_url
+
+    return {
+        "unique_name": unique_name,
+        "original_url": original_url,
+        "size": len(file_bytes),
+        "original_name": original_filename,
+        "mimetype": mimetype,
+        "thumb_meta": thumb_meta,
+        "thumbUrl": thumb_url,
     }
 
 def upload_to_gcs(file_storage) -> dict | None:
@@ -150,6 +192,16 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
     file_stream_for_thumb = io.BytesIO(file_bytes)
     thumbnail_bytes, thumb_meta = generar_thumbnail(file_stream_for_thumb, file_storage.mimetype)
 
+    if VERCEL_BLOB_RW_TOKEN:
+        return _save_to_vercel_blob(
+            original_filename,
+            file_bytes,
+            unique_name,
+            file_storage.mimetype,
+            thumbnail_bytes,
+            thumb_meta,
+        )
+
     if not GCS_ENABLED:
         return _save_to_local(
             original_filename,
@@ -168,12 +220,15 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
         blob_original = bucket.blob(unique_name)
         blob_original.upload_from_string(file_bytes, content_type=file_storage.mimetype)
 
+        thumb_url = None
         # 2. Upload Thumbnail if available
         if thumbnail_bytes and thumb_meta:
             thumb_filename = get_thumb_filename(unique_name)
             blob_thumb = bucket.blob(thumb_filename)
             blob_thumb.upload_from_string(thumbnail_bytes, content_type='image/webp')
-            current_app.logger.info(f"Thumbnail uploaded to {blob_thumb.public_url}")
+            thumb_url = blob_thumb.public_url
+            thumb_meta["url"] = thumb_url
+            current_app.logger.info(f"Thumbnail uploaded to {thumb_url}")
 
         return {
             "unique_name": unique_name,
@@ -181,7 +236,8 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
             "size": len(file_bytes),
             "original_name": original_filename,
             "mimetype": file_storage.mimetype,
-            "thumb_meta": thumb_meta
+            "thumb_meta": thumb_meta,
+            "thumbUrl": thumb_url,
         }
 
     except Exception as e:

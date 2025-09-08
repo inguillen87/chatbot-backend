@@ -164,10 +164,10 @@ class TicketEndpointsTest(unittest.TestCase):
 
         comment_with_attachment = data['mensajes'][0]
         self.assertEqual(comment_with_attachment['comentario'], "Test comment with attachment")
-        self.assertIn('attachment_info', comment_with_attachment)
-        self.assertIsNotNone(comment_with_attachment['attachment_info'])
-        self.assertEqual(comment_with_attachment['attachment_info']['name'], "test_image.jpg")
-        self.assertEqual(comment_with_attachment['attachment_info']['url'], "http://example.com/test.jpg")
+        self.assertIn('attachmentInfo', comment_with_attachment)
+        self.assertIsNotNone(comment_with_attachment['attachmentInfo'])
+        self.assertEqual(comment_with_attachment['attachmentInfo']['name'], "test_image.jpg")
+        self.assertEqual(comment_with_attachment['attachmentInfo']['url'], "http://example.com/test.jpg")
 
     @patch('services.email_service.enviar_email_con_multiples_adjuntos')
     def test_send_ticket_history_email(self, mock_send_email):
