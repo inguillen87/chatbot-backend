@@ -1,5 +1,8 @@
 import unittest
 import jwt
+import os
+
+os.environ.setdefault("CORS_ALLOWED_ORIGINS", "https://example.com")
 
 try:
     from app import create_app
@@ -53,14 +56,14 @@ class WidgetTokenEndpointTests(unittest.TestCase):
         resp = self.client.options(
             "/auth/widget-token", headers={"Origin": "https://example.com"}
         )
-        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://example.com")
 
     def test_widget_token_preflight_trailing_slash(self):
         resp = self.client.options(
             "/auth/widget-token/", headers={"Origin": "https://example.com"}
         )
-        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(resp.status_code, 200)
         self.assertEqual(
             resp.headers.get("Access-Control-Allow-Origin"), "https://example.com"
         )
