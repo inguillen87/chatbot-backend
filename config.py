@@ -137,10 +137,12 @@ class Config:
     CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
     CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/0")
 
-    SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    # Valores por defecto orientados a Zoho; pueden sobrescribirse mediante variables de entorno
+    SMTP_HOST = os.getenv("SMTP_HOST", "smtp.zoho.com")
     SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-    SMTP_USER = os.getenv("SMTP_USER", "guillen.marce@gmail.com")
-    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "hwgkycwywmphzbot")
+    SMTP_USER = os.getenv("SMTP_USER", "info@chatboc.ar")
+    # No se proporciona contraseña por defecto para evitar uso accidental de credenciales personales
+    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
     SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "True").lower() in ('true', '1', 't')
     SMTP_USE_SSL = os.getenv("SMTP_USE_SSL", "False").lower() in ('true', '1', 't')
 
