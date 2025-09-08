@@ -59,19 +59,19 @@ def _refresh(tok, minutes):
     return ntok
 
 
-_ALLOWED_ORIGINS = {
-    x.strip() for x in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if x.strip()
-}
-
-
 def _add_cors(resp):
     origin = request.headers.get("Origin")
-    if origin in _ALLOWED_ORIGINS:
-        resp.headers["Access-Control-Allow-Origin"] = origin
+    allowed = os.getenv("CORS_ALLOWED_ORIGINS", "*").strip()
+    if allowed == "*" and origin:
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+    else:
+        allowed_set = {x.strip() for x in allowed.split(",") if x.strip()}
+        if origin in allowed_set:
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Vary"] = "Origin"
     resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     resp.headers["Access-Control-Max-Age"] = "600"
-    resp.headers["Vary"] = "Origin"
     return resp
 
 
