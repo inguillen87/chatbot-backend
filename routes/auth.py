@@ -1,6 +1,7 @@
 # Contenido COMPLETO para: routes/auth.py
 
 from flask import Blueprint, request, jsonify, current_app, g, make_response
+from flask_cors import cross_origin
 from services.logic import es_rubro_publico, normalizar_rubro
 import os
 from sqlalchemy import func
@@ -12,6 +13,7 @@ import uuid
 import json
 from datetime import datetime, timedelta
 import jwt
+from flask_cors import cross_origin
 from services.google_auth import login_o_crear_usuario
 from services.pymes import get_or_create_pyme_user_by_token
 
