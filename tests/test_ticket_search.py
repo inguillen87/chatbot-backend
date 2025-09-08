@@ -73,12 +73,27 @@ class TicketSearchTests(unittest.TestCase):
         from utils.ticket_utils import normalize_category
         self.assertEqual(normalize_category('luminaria sin luz'), 'Luminarias')
         self.assertEqual(normalize_category('pozo en la calle'), 'Arreglo De Calle')
+        self.assertEqual(normalize_category('poste sin luz'), 'Luminarias')
+        self.assertEqual(normalize_category('arbol del vecino'), 'Arbol Caido')
 
     def test_dni_serialized(self):
         from routes.ticket import serialize_ticket_to_json
         ticket = MunicipioTicket.query.get(1)
         data = serialize_ticket_to_json(ticket, 'municipio')
         self.assertEqual(data['dni'], '12345678')
+
+    def test_dynamic_keyword_cache(self):
+        from services.herramientas_municipio import recargar_cache_keywords_para_tests
+        from utils.ticket_utils import normalize_category
+
+        nuevo = MunicipioTicket(id=3, nro_ticket='102', estado='nuevo', fecha=datetime.now(),
+                                 categoria='luminaria', municipio_id=5, user_id=self.neighbor.id,
+                                 nombre_vecino='Ana Lopez', detalles='alumbrado publico apagado')
+        db.session.add(nuevo)
+        db.session.commit()
+
+        recargar_cache_keywords_para_tests()
+        self.assertEqual(normalize_category('alumbrado'), 'Luminarias')
 
 if __name__ == '__main__':
     unittest.main()
