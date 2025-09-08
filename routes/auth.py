@@ -59,23 +59,26 @@ def _refresh(tok, minutes):
     return ntok
 
 
-_ALLOWED_ORIGINS = [
+_ALLOWED_ORIGINS = {
     x.strip() for x in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if x.strip()
-]
+}
 
 
-def _cors():
-    return dict(
-        origins=_ALLOWED_ORIGINS,
-        methods=["POST", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization"],
-        max_age=600,
-    )
+def _add_cors(resp):
+    origin = request.headers.get("Origin")
+    if origin in _ALLOWED_ORIGINS:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+    resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    resp.headers["Access-Control-Max-Age"] = "600"
+    resp.headers["Vary"] = "Origin"
+    return resp
 
 
 @auth_bp.route("/widget-token", methods=["POST", "OPTIONS"], strict_slashes=False)
-@cross_origin(**_cors())
 def widget_token():
+    if request.method == "OPTIONS":
+        return _add_cors(make_response("", 200))
     token = obtener_token()
     owner_user = None
     if token:
@@ -89,7 +92,8 @@ def widget_token():
         else:
             owner_user = User.query.filter_by(token=token).first()
     if not owner_user:
-        return jsonify({"error": "invalid_owner"}), 401
+        resp = _add_cors(jsonify({"error": "invalid_owner"}))
+        return resp, 401
     owner = {
         "user_id": owner_user.id,
         "rol": owner_user.rol,
@@ -100,20 +104,23 @@ def widget_token():
     minutes = _conf("WIDGET_ACCESS_MINUTES", 45)
     renew = _conf("WIDGET_RENEW_DAYS", 7)
     tok, _ = _sign(owner, minutes, renew)
-    return jsonify({"token": tok, "expires_in": minutes * 60})
+    return _add_cors(jsonify({"token": tok, "expires_in": minutes * 60}))
 
 
 @auth_bp.route("/widget-refresh", methods=["POST", "OPTIONS"], strict_slashes=False)
-@cross_origin(**_cors())
 def widget_refresh():
+    if request.method == "OPTIONS":
+        return _add_cors(make_response("", 200))
     tok = (request.get_json(silent=True) or {}).get("token")
     if not tok:
-        return jsonify({"error": "missing_token"}), 401
+        resp = _add_cors(jsonify({"error": "missing_token"}))
+        return resp, 401
     minutes = _conf("WIDGET_ACCESS_MINUTES", 45)
     ntok = _refresh(tok, minutes)
     if not ntok:
-        return jsonify({"error": "renew_window_expired"}), 401
-    return jsonify({"token": ntok, "expires_in": minutes * 60})
+        resp = _add_cors(jsonify({"error": "renew_window_expired"}))
+        return resp, 401
+    return _add_cors(jsonify({"token": ntok, "expires_in": minutes * 60}))
 
 
 def solo_admin_requerido(f):
