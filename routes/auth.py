@@ -13,14 +13,107 @@ import uuid
 import json
 from datetime import datetime, timedelta
 import jwt
+from flask_cors import cross_origin
 from services.google_auth import login_o_crear_usuario
 from services.pymes import get_or_create_pyme_user_by_token
 
-# Blueprint for authentication-related routes
 auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 
-from utils.auth_helpers import token_requerido, obtener_token, get_or_create_anon_id, generar_token, anon_o_token_requerido
+from utils.auth_helpers import token_requerido, obtener_token, get_or_create_anon_id, generar_token, user_from_token
 from flask_login import current_user
+
+
+def _now():
+    return int(datetime.utcnow().timestamp())
+
+
+def _conf(k, d):
+    try:
+        return int(os.getenv(k, d))
+    except Exception:
+        return d
+
+
+def _sign(payload, minutes, renew_days=None):
+    payload = dict(payload, iat=_now(), exp=_now() + minutes * 60)
+    if renew_days:
+        payload["renew_until"] = _now() + renew_days * 86400
+    tok = jwt.encode(payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    return tok, payload["exp"]
+
+
+def _refresh(tok, minutes):
+    try:
+        p = jwt.decode(
+            tok,
+            current_app.config["SECRET_KEY"],
+            algorithms=["HS256"],
+            options={"verify_exp": False},
+        )
+    except Exception:
+        return None
+    if p.get("renew_until") and _now() > int(p["renew_until"]):
+        return None
+    p.pop("exp", None)
+    ntok, _ = _sign(p, minutes, None)
+    return ntok
+
+
+_ALLOWED_ORIGINS = [
+    x.strip() for x in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if x.strip()
+]
+
+
+def _cors():
+    return dict(
+        origins=_ALLOWED_ORIGINS,
+        methods=["POST", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization"],
+        max_age=600,
+    )
+
+
+@auth_bp.route("/widget-token", methods=["POST", "OPTIONS"], strict_slashes=False)
+@cross_origin(**_cors())
+def widget_token():
+    token = obtener_token()
+    owner_user = None
+    if token:
+        jwt_user = user_from_token(token)
+        if jwt_user:
+            owner_user = (
+                User.query.get(jwt_user.empresa_id)
+                if jwt_user.empresa_id
+                else jwt_user
+            )
+        else:
+            owner_user = User.query.filter_by(token=token).first()
+    if not owner_user:
+        return jsonify({"error": "invalid_owner"}), 401
+    owner = {
+        "user_id": owner_user.id,
+        "rol": owner_user.rol,
+        "tipo_chat": owner_user.tipo_chat,
+        "municipio_id": owner_user.municipio_id,
+        "pyme_id": owner_user.pyme_id,
+    }
+    minutes = _conf("WIDGET_ACCESS_MINUTES", 45)
+    renew = _conf("WIDGET_RENEW_DAYS", 7)
+    tok, _ = _sign(owner, minutes, renew)
+    return jsonify({"token": tok, "expires_in": minutes * 60})
+
+
+@auth_bp.route("/widget-refresh", methods=["POST", "OPTIONS"], strict_slashes=False)
+@cross_origin(**_cors())
+def widget_refresh():
+    tok = (request.get_json(silent=True) or {}).get("token")
+    if not tok:
+        return jsonify({"error": "missing_token"}), 401
+    minutes = _conf("WIDGET_ACCESS_MINUTES", 45)
+    ntok = _refresh(tok, minutes)
+    if not ntok:
+        return jsonify({"error": "renew_window_expired"}), 401
+    return jsonify({"token": ntok, "expires_in": minutes * 60})
 
 
 def solo_admin_requerido(f):
@@ -500,44 +593,6 @@ def login_from_widget(owner_user):
     if anon_id:
         resp.headers["X-Anon-Id"] = anon_id
         resp.headers["Anon-Id"] = anon_id
-    return resp
-
-
-CORS_KW = dict(
-    origins="*",
-    methods=["POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
-    max_age=600,
-    supports_credentials=False,
-    send_wildcard=True,
-)
-
-
-@auth_bp.route("/widget-token", methods=["POST"])
-@auth_bp.route("/widget-token/", methods=["POST"])
-@cross_origin(**CORS_KW)
-@anon_o_token_requerido
-def get_widget_token(current_user, owner_user, anon_id):
-    """Genera un token JWT para sesiones del widget."""
-
-    if not owner_user:
-        resp = jsonify({"error": "Token inválido"})
-        if anon_id:
-            resp.headers.setdefault("X-Anon-Id", anon_id)
-            resp.headers.setdefault("Anon-Id", anon_id)
-        return resp, 401
-
-    nuevo_token = generar_token(
-        owner_user.id,
-        owner_user.rol,
-        owner_user.tipo_chat,
-        owner_user.municipio_id,
-        owner_user.pyme_id,
-    )
-    resp = jsonify({"token": nuevo_token})
-    if anon_id:
-        resp.headers.setdefault("X-Anon-Id", anon_id)
-        resp.headers.setdefault("Anon-Id", anon_id)
     return resp
 
 
