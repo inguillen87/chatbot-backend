@@ -38,7 +38,12 @@ CATEGORIAS_SINONIMOS = {
         "arbol caido",
         "arbol tumbado",
         "arbol derribado",
-        "ramas caidas"
+        "ramas caidas",
+        "poda",
+        "podar",
+        "arbol del vecino",
+        "medianera",
+        "raices"
     ],
     "arreglo de calle": [
         "bache",
@@ -49,7 +54,10 @@ CATEGORIAS_SINONIMOS = {
         "socavon",
         "calzada dañada",
         "asfalto roto",
-        "losa levantada"
+        "losa levantada",
+        "vereda rota",
+        "vereda levantada",
+        "calle en mal estado"
     ],
     "castracion de mascota": [
         "castrar",
@@ -67,7 +75,10 @@ CATEGORIAS_SINONIMOS = {
         "fuga de agua",
         "perdida",
         "escape de agua",
-        "sin suministro"
+        "sin suministro",
+        "canilla",
+        "canilla rota",
+        "sin servicio de agua"
     ],
     "fumigacion": [
         "plagas",
@@ -97,7 +108,10 @@ CATEGORIAS_SINONIMOS = {
         "escombros",
         "yuyos",
         "malezas",
-        "limpiar"
+        "limpiar",
+        "baldio",
+        "pasto alto",
+        "basural"
     ],
     "luminaria": [
         "lampara",
@@ -109,7 +123,10 @@ CATEGORIAS_SINONIMOS = {
         "farola",
         "columna",
         "luz quemada",
-        "luz apagada"
+        "luz apagada",
+        "sin luz",
+        "poste sin luz",
+        "farol apagado"
     ],
     "riego de calle": [
         "regar",
@@ -117,7 +134,8 @@ CATEGORIAS_SINONIMOS = {
         "tierra",
         "camion de agua",
         "riego",
-        "calle de tierra"
+        "calle de tierra",
+        "camion cisterna"
     ],
     "rotura de semaforo": [
         "semaforo",
@@ -125,7 +143,8 @@ CATEGORIAS_SINONIMOS = {
         "senal de transito",
         "semaforo apagado",
         "semaforo roto",
-        "semaforo intermitente"
+        "semaforo intermitente",
+        "semaforo fuera de servicio"
     ],
     "tramites de obras privadas": [
         "permiso de obra",
@@ -134,13 +153,29 @@ CATEGORIAS_SINONIMOS = {
         "planos",
         "expediente",
         "ampliacion",
-        "refaccion"
+        "refaccion",
+        "obra nueva",
+        "habilitacion de obra"
     ],
     "incendio": [
         "fuego",
         "quemado",
         "llamas",
         "humo",
-        "incendio"
+        "incendio",
+        "quema de basura",
+        "fuego en pastizal"
+    ],
+    "Sugerencia": [
+        "sugerencia",
+        "idea",
+        "propuesta",
+        "recomendacion",
+        "mejora"
+    ],
+    "otro motivo": [
+        "otro",
+        "otros",
+        "ninguna de las anteriores"
     ],
 }

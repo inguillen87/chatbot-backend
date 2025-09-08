@@ -1109,6 +1109,8 @@ def _format_post(post: dict, channel: str) -> str:
 def _format_contact(contact: dict, channel: str) -> str:
     """Formatea un contacto individual según el canal."""
     nombre = contact.get("nombre", "Sin nombre")
+    if "_" in nombre:
+        nombre = nombre.replace("_", " ").title()
     descripcion = contact.get("descripcion")
     telefono = contact.get("telefono")
     url = contact.get("url")
@@ -1142,6 +1144,40 @@ def _format_contact(contact: dict, channel: str) -> str:
             lines.append(f'<a href="{url}" target="_blank">Más información</a>')
         lines.append("<br>")
         return "<br>".join(lines)
+
+
+def handle_contactos_utiles_mostrar_categoria(context, chat_db_context, selected):
+    """Muestra los contactos de una categoría manteniendo el estado para nuevas consultas."""
+    channel = context.get("channel", "web")
+    contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+    categorias_map = contexto_municipio_actual.get('contactos_categorias', {})
+
+    contactos = selected.get("contactos", [])
+    nombre_categoria = selected.get("nombre", "")
+    if not contactos:
+        message_body = f"No se encontraron contactos para la categoría '{nombre_categoria}'."
+    else:
+        if channel == "whatsapp":
+            message_body = f"📞 *Contactos para {nombre_categoria}:*\n\n"
+            for c in contactos:
+                message_body += _format_contact(c, channel) + "\n"
+        else:
+            message_body = f"<h4>📞 Contactos para {nombre_categoria}</h4>"
+            for c in contactos:
+                message_body += _format_contact(c, channel)
+
+    buttons = [{"texto": v["nombre"], "action_id": f"select_contact_category_{k}"} for k, v in categorias_map.items()]
+
+    contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_CONTACTO_CATEGORIA.name
+    if chat_db_context:
+        flag_modified(chat_db_context, "context_data")
+
+    return {
+        "message_body": message_body.strip(),
+        "options_list": buttons,
+        "message_type": "interactive_buttons",
+        "fuente": "contactos_utiles_show_contacts",
+    }
 
 
 def _get_posts_from_json(content_type: str, channel: str, municipio_id: str) -> tuple[str, str | None]:
@@ -3776,15 +3812,14 @@ def responder_municipio(
             return _finalize_response(_get_reclamos_menu())
     # --- FIN: Manejo de selección de menú de reclamos ---
 
-    elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_CONTACTO_CATEGORIA.name:
-        selected_category_action = received_payload.get("action")
-        pregunta_str_norm = normalizar_texto(pregunta_str or "")
 
-        # Find the category either by action_id or by text matching
-        selected_category = None
+    elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_CONTACTO_CATEGORIA.name:
+        selected_category_action = received_payload.get('action')
+        pregunta_str_norm = normalizar_texto(pregunta_str or '')
+
         categorias_map = contexto_municipio_actual.get('contactos_categorias', {})
-        if selected_category_action and selected_category_action.startswith("select_contact_category_"):
-            slug = selected_category_action.replace("select_contact_category_", "")
+        if selected_category_action and selected_category_action.startswith('select_contact_category_'):
+            slug = selected_category_action.replace('select_contact_category_', '')
             selected = categorias_map.get(slug)
         elif pregunta_str_norm and categorias_map:
             from fuzzywuzzy import process
@@ -3796,36 +3831,13 @@ def responder_municipio(
 
         if not selected:
             return _finalize_response({
-                "message_body": "Por favor, seleccioná una categoría de la lista.",
-                "fuente": "contactos_utiles_invalid_category_selection"
+                'message_body': 'Por favor, seleccioná una categoría de la lista.',
+                'fuente': 'contactos_utiles_invalid_category_selection'
             })
 
-        channel = context.get("channel", "web")
-        contactos = selected.get("contactos", [])
-        nombre_categoria = selected.get("nombre", "")
-        if not contactos:
-            message_body = f"No se encontraron contactos para la categoría '{nombre_categoria}'."
-        else:
-            if channel == "whatsapp":
-                message_body = f"📞 *Contactos para {nombre_categoria}:*\n\n"
-                for c in contactos:
-                    message_body += _format_contact(c, channel) + "\n"
-            else:
-                message_body = f"<h4>📞 Contactos para {nombre_categoria}</h4>"
-                for c in contactos:
-                    message_body += _format_contact(c, channel)
-
-        # Reset state
-        contexto_municipio_actual['estado_conversacion'] = None
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-
-        return _finalize_response({
-            "message_body": message_body.strip(),
-            "message_type": "text",
-            "fuente": "contactos_utiles_show_contacts"
-        })
-
+        return _finalize_response(
+            handle_contactos_utiles_mostrar_categoria(context, chat_db_context, selected)
+        )
     # --- INICIO: Manejo de actualización de datos de usuario ---
     elif estado_conversacion == ConversationState.ESPERANDO_NUEVO_DATO_USUARIO.name:
         campo_a_actualizar = contexto_municipio_actual.get('campo_a_actualizar')

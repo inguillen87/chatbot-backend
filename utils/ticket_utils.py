@@ -3,6 +3,10 @@ from services.categorias_municipio import (
     CATEGORIAS_SINONIMOS,
     normalizar_texto,
 )
+from services.herramientas_municipio import (
+    KEYWORD_TO_CATEGORY_MAP,
+    ensure_keyword_cache,
+)
 
 
 # Precompute a mapping from normalized synonyms to their canonical category
@@ -14,6 +18,11 @@ for canon, synonyms in CATEGORIAS_SINONIMOS.items():
     _synonym_map[canon_norm] = canon_output
     for s in synonyms:
         _synonym_map[normalizar_texto(s)] = canon_output
+
+# Include dynamic keywords loaded from previous tickets
+ensure_keyword_cache()
+for keyword, category in KEYWORD_TO_CATEGORY_MAP.items():
+    _synonym_map.setdefault(normalizar_texto(keyword), category)
 
 
 def normalize_category(category: Optional[str]) -> Optional[str]:
@@ -27,6 +36,11 @@ def normalize_category(category: Optional[str]) -> Optional[str]:
 
     if not category:
         return category
+
+    ensure_keyword_cache()
+    # Incorporar keywords dinámicas que puedan haberse cargado
+    for keyword, cat in KEYWORD_TO_CATEGORY_MAP.items():
+        _synonym_map.setdefault(normalizar_texto(keyword), cat)
 
     texto = normalizar_texto(category)
     for key, canon in _synonym_map.items():
