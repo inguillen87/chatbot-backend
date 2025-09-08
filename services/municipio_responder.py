@@ -1819,7 +1819,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         if context.get("es_ubicacion") and context.get("ubicacion_usuario"):
              campo_esperado = "ubicacion"
 
-        if campo_esperado and (pregunta_str or context.get("es_ubicacion")):
+        if isinstance(campo_esperado, str) and (pregunta_str or context.get("es_ubicacion")):
             logger_actual.info(f"Guardando dato esperado '{campo_esperado}' en el contexto antes de llamar al LLM.")
             datos_parciales = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
 
@@ -1882,6 +1882,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         accion_backend_llm = respuesta_llm_dict.get("accion_backend")
         datos_estructura_llm = respuesta_llm_dict.get("datos_estructura")
         pedir_info_llm = respuesta_llm_dict.get("pedir_info")
+        if isinstance(pedir_info_llm, str) and "," in pedir_info_llm:
+            pedir_info_llm = [p.strip() for p in pedir_info_llm.split(",") if p.strip()]
         botones_llm = respuesta_llm_dict.get("botones", [])
 
         if not respuesta_usuario_llm and accion_backend_llm not in ["crear_reclamo", "ejecutar_herramienta"]:
