@@ -57,8 +57,10 @@ def sugerir_categorias_relevantes(texto_usuario: str) -> list[str]:
     # This function now performs basic keyword matching as a fallback or primary if called directly.
     logger.info(f"Sugiriendo categorías (NO-LLM) para: '{texto_usuario[:50]}...'")
     sugeridas = []
-    if not texto_usuario: return sugeridas
+    if not texto_usuario:
+        return sugeridas
 
+    _ensure_keyword_cache_actualizado()
     texto_norm = normalizar_texto(texto_usuario)
     from services.categorias_municipio import CATEGORIAS_RECLAMO
     # Contar ocurrencias de keywords para cada categoría
@@ -292,33 +294,91 @@ def consultar_recoleccion_por_direccion(direccion: str) -> str:
 
 KEYWORD_TO_CATEGORY_MAP = {
     # Luminaria
-    "luminaria": "Luminaria", "luz": "Luminaria", "poste": "Luminaria", "farol": "Luminaria", "farola": "Luminaria", "iluminacion": "Luminaria", "foco": "Luminaria", "lampara": "Luminaria", "poste caido": "Luminaria", "poste caído": "Luminaria",
+    "luminaria": "Luminaria", "luz": "Luminaria", "poste": "Luminaria", "farol": "Luminaria", "farola": "Luminaria", "iluminacion": "Luminaria", "foco": "Luminaria", "lampara": "Luminaria", "poste caido": "Luminaria", "poste caído": "Luminaria", "sin luz": "Luminaria", "poste sin luz": "Luminaria", "farol apagado": "Luminaria",
     # Arbol Caido
-    "arbol": "Arbol Caido", "arbol caido": "Arbol Caido", "rama": "Arbol Caido", "ramas": "Arbol Caido", "gajo": "Arbol Caido", "tronco": "Arbol Caido",
+    "arbol": "Arbol Caido", "arbol caido": "Arbol Caido", "rama": "Arbol Caido", "ramas": "Arbol Caido", "gajo": "Arbol Caido", "tronco": "Arbol Caido", "poda": "Arbol Caido", "podar": "Arbol Caido", "medianera": "Arbol Caido", "arbol del vecino": "Arbol Caido", "raiz": "Arbol Caido",
     # Limpieza
-    "limpieza": "Limpieza", "basura": "Limpieza", "mugre": "Limpieza", "escombros": "Limpieza", "pasto": "Limpieza", "yuyos": "Limpieza", "maleza": "Limpieza", "desmalezado": "Limpieza", "baldio": "Limpieza",
+    "limpieza": "Limpieza", "basura": "Limpieza", "mugre": "Limpieza", "escombros": "Limpieza", "pasto": "Limpieza", "yuyos": "Limpieza", "maleza": "Limpieza", "desmalezado": "Limpieza", "baldio": "Limpieza", "pasto alto": "Limpieza", "basural": "Limpieza",
     # Arreglo de calle
-    "bache": "Arreglo de calle", "calle": "Arreglo de calle", "asfalto": "Arreglo de calle", "vereda": "Arreglo de calle", "pozo": "Arreglo de calle", "pavimento": "Arreglo de calle", "calzada": "Arreglo de calle", "hueco": "Arreglo de calle",
+    "bache": "Arreglo de calle", "calle": "Arreglo de calle", "asfalto": "Arreglo de calle", "vereda": "Arreglo de calle", "pozo": "Arreglo de calle", "pavimento": "Arreglo de calle", "calzada": "Arreglo de calle", "hueco": "Arreglo de calle", "vereda rota": "Arreglo de calle", "vereda levantada": "Arreglo de calle", "calle en mal estado": "Arreglo de calle",
     # Falta de agua, rotura de caño
-    "agua": "Falta de agua, rotura de caño", "caño": "Falta de agua, rotura de caño", "cano": "Falta de agua, rotura de caño", "perdida": "Falta de agua, rotura de caño", "fuga": "Falta de agua, rotura de caño", "rotura": "Falta de agua, rotura de caño", "tuberia": "Falta de agua, rotura de caño",
+    "agua": "Falta de agua, rotura de caño", "caño": "Falta de agua, rotura de caño", "cano": "Falta de agua, rotura de caño", "perdida": "Falta de agua, rotura de caño", "fuga": "Falta de agua, rotura de caño", "rotura": "Falta de agua, rotura de caño", "tuberia": "Falta de agua, rotura de caño", "canilla": "Falta de agua, rotura de caño", "canilla rota": "Falta de agua, rotura de caño", "sin servicio de agua": "Falta de agua, rotura de caño",
     # Rotura de semaforo
-    "semaforo": "Rotura de semaforo", "semáforo": "Rotura de semaforo", "luz roja": "Rotura de semaforo", "luz verde": "Rotura de semaforo",
+    "semaforo": "Rotura de semaforo", "semáforo": "Rotura de semaforo", "luz roja": "Rotura de semaforo", "luz verde": "Rotura de semaforo", "semaforo fuera de servicio": "Rotura de semaforo",
     # Fumigacion
     "fumigacion": "Fumigacion", "fumigar": "Fumigacion", "bichos": "Fumigacion", "plaga": "Fumigacion", "mosquitos": "Fumigacion", "insectos": "Fumigacion", "ratas": "Fumigacion", "cucarachas": "Fumigacion",
     # Riego de Calle
-    "riego": "Riego de Calle", "regar": "Riego de Calle",
+    "riego": "Riego de Calle", "regar": "Riego de Calle", "camion de agua": "Riego de Calle", "camion cisterna": "Riego de Calle",
     # Castracion de mascota
     "castracion": "Castracion de mascota", "castración": "Castracion de mascota", "castrar": "Castracion de mascota", "mascota": "Castracion de mascota", "perro": "Castracion de mascota", "gato": "Castracion de mascota", "esterilizacion": "Castracion de mascota", "esterilización": "Castracion de mascota",
     # Inspeccion de comercio
     "inspeccion": "Inspeccion de comercio", "inspección": "Inspeccion de comercio", "comercio": "Inspeccion de comercio", "negocio": "Inspeccion de comercio", "habilitacion": "Inspeccion de comercio",
     # Tramites de Obras Privadas
-    "obra": "Tramites de Obras Privadas", "construccion": "Tramites de Obras Privadas", "construcción": "Tramites de Obras Privadas", "plano": "Tramites de Obras Privadas",
+    "obra": "Tramites de Obras Privadas", "construccion": "Tramites de Obras Privadas", "construcción": "Tramites de Obras Privadas", "plano": "Tramites de Obras Privadas", "obra nueva": "Tramites de Obras Privadas", "habilitacion de obra": "Tramites de Obras Privadas",
     # Incendio
-    "incendio": "Incendio", "fuego": "Incendio", "humo": "Incendio", "quema": "Incendio", "llamas": "Incendio",
+    "incendio": "Incendio", "fuego": "Incendio", "humo": "Incendio", "quema": "Incendio", "llamas": "Incendio", "quema de basura": "Incendio", "fuego en pastizal": "Incendio",
 }
+
+# --- CARGA DINÁMICA DE PALABRAS CLAVE DESDE LA BASE DE DATOS ---
+# Se aprovechan los reclamos ya cargados para ampliar el diccionario de
+# keywords con términos reales usados por los vecinos. Esto permite que el
+# sistema sea más proactivo y evite llamadas innecesarias al LLM.
+
+_DYNAMIC_KEYWORD_CACHE: dict[str, str] = {}
+_CACHE_LAST_LOAD: float = 0.0
+_CACHE_TTL_SECONDS = 60 * 15  # 15 minutos
+
+
+def _cargar_keywords_desde_db() -> None:
+    """Refresca el cache de palabras clave consultando los tickets previos."""
+    from time import time
+    global _DYNAMIC_KEYWORD_CACHE, _CACHE_LAST_LOAD
+    try:
+        rows = (
+            MunicipioTicket.query.with_entities(
+                MunicipioTicket.categoria, MunicipioTicket.detalles
+            )
+            .order_by(MunicipioTicket.id.desc())
+            .limit(200)
+            .all()
+        )
+        dynamic: dict[str, str] = {}
+        for categoria, descripcion in rows:
+            if not categoria or not descripcion:
+                continue
+            canon = categoria.strip().title()
+            if normalizar_texto(canon) == "luminaria":
+                canon = "Luminarias"
+            for token in normalizar_texto(descripcion).split():
+                if token and token not in KEYWORD_TO_CATEGORY_MAP:
+                    dynamic[token] = canon
+        _DYNAMIC_KEYWORD_CACHE = dynamic
+        _CACHE_LAST_LOAD = time()
+        logger.info("Cache de keywords cargado con %d términos", len(dynamic))
+    except Exception as exc:  # pragma: no cover - fallbacks no interrumpen ejecución
+        logger.warning("No se pudo cargar cache de keywords: %s", exc)
+
+
+def _ensure_keyword_cache_actualizado() -> None:
+    from time import time
+    if time() - _CACHE_LAST_LOAD > _CACHE_TTL_SECONDS:
+        _cargar_keywords_desde_db()
+    if _DYNAMIC_KEYWORD_CACHE:
+        KEYWORD_TO_CATEGORY_MAP.update(_DYNAMIC_KEYWORD_CACHE)
+
+
+def recargar_cache_keywords_para_tests() -> None:
+    """Forza recarga del cache (util para pruebas)."""
+    _cargar_keywords_desde_db()
+
+
+def ensure_keyword_cache() -> None:
+    """Exposed helper to refresh cache when needed."""
+    _ensure_keyword_cache_actualizado()
 
 
 def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
+    _ensure_keyword_cache_actualizado()
     texto_normalizado = normalizar_texto(texto_usuario)
 
     # 1. Intentá match EXACTO con la lista de categorías ya normalizadas
