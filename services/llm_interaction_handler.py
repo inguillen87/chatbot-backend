@@ -9,8 +9,17 @@ from services.llm_orchestrator import llamar_llm_con_fallback
 from services.conversation_state import ConversationState
 from services.actions.municipio_actions import CrearReclamoActionHandler
 from services.municipio_responder import GreetingHandler, _get_main_menu_payload
-from services.flows.reclamos import _get_reclamos_menu
-from services.herramientas_municipio import TOOL_REGISTRY, es_consulta_general
+try:  # pragma: no cover - optional dependency in some environments
+    from services.flows.reclamos import _get_reclamos_menu
+except ModuleNotFoundError:  # pragma: no cover
+    _get_reclamos_menu = None
+try:  # pragma: no cover - es_consulta_general may be absent
+    from services.herramientas_municipio import TOOL_REGISTRY, es_consulta_general
+except ImportError:  # pragma: no cover
+    from services.herramientas_municipio import TOOL_REGISTRY
+
+    def es_consulta_general(*args, **kwargs):
+        return False
 from services.llm_utils import extract_multiple_contact_details_llm
 
 logger = logging.getLogger(__name__)
@@ -163,10 +172,22 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
         # Other actions... (this is a simplified version of the logic)
 
-        else: # Fallback for general conversation
-            contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
-            contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
-            return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text"}, contexto_municipio_actual
+        else:  # Fallback for general conversation or missing info
+            if (
+                estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+                and contexto_municipio_actual.get("esperando_info_llm_reclamo")
+            ):
+                contexto_municipio_actual.setdefault("historial_llm_reclamo", []).append(nuevo_turno_historial)
+                contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+            else:
+                contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
+                contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+
+            return {
+                "message_body": respuesta_usuario_llm,
+                "options_list": botones_llm,
+                "message_type": "interactive_buttons" if botones_llm else "text",
+            }, contexto_municipio_actual
 
     except Exception as e_llm:
         logger.error(f"[HANDLE_LLM] Error: {e_llm}", exc_info=True)
