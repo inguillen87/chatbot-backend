@@ -1,5 +1,8 @@
 import unittest
 import jwt
+import os
+
+os.environ.setdefault("CORS_ALLOWED_ORIGINS", "https://example.com")
 
 try:
     from app import create_app
@@ -53,14 +56,14 @@ class WidgetTokenEndpointTests(unittest.TestCase):
         resp = self.client.options(
             "/auth/widget-token", headers={"Origin": "https://example.com"}
         )
-        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://example.com")
 
     def test_widget_token_preflight_trailing_slash(self):
         resp = self.client.options(
             "/auth/widget-token/", headers={"Origin": "https://example.com"}
         )
-        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(resp.status_code, 200)
         self.assertEqual(
             resp.headers.get("Access-Control-Allow-Origin"), "https://example.com"
         )
@@ -69,6 +72,57 @@ class WidgetTokenEndpointTests(unittest.TestCase):
         resp = self.client.post(
             "/auth/widget-token/",
             headers={"Authorization": self.user.token, "Origin": "https://example.com"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("token", resp.get_json())
+        self.assertEqual(
+            resp.headers.get("Access-Control-Allow-Origin"), "https://example.com"
+        )
+
+    def test_widget_token_cors_wildcard(self):
+        os.environ["CORS_ALLOWED_ORIGINS"] = "*"
+        resp = self.client.options(
+            "/auth/widget-token", headers={"Origin": "https://foo.com"}
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "*")
+        os.environ["CORS_ALLOWED_ORIGINS"] = "https://example.com"
+
+    def test_widget_refresh_returns_new_jwt(self):
+        mint_resp = self.client.post(
+            "/auth/widget-token",
+            headers={"Authorization": self.user.token, "Origin": "https://example.com"},
+        )
+        token = mint_resp.get_json()["token"]
+        resp = self.client.post(
+            "/auth/widget-refresh",
+            json={"token": token},
+            headers={"Origin": "https://example.com"},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("token", resp.get_json())
+        self.assertEqual(
+            resp.headers.get("Access-Control-Allow-Origin"), "https://example.com"
+        )
+
+    def test_widget_refresh_preflight_trailing_slash(self):
+        resp = self.client.options(
+            "/auth/widget-refresh/", headers={"Origin": "https://example.com"}
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.headers.get("Access-Control-Allow-Origin"), "https://example.com"
+        )
+
+    def test_widget_refresh_post_trailing_slash(self):
+        token = self.client.post(
+            "/auth/widget-token",
+            headers={"Authorization": self.user.token, "Origin": "https://example.com"},
+        ).get_json()["token"]
+        resp = self.client.post(
+            "/auth/widget-refresh/",
+            json={"token": token},
+            headers={"Origin": "https://example.com"},
         )
         self.assertEqual(resp.status_code, 200)
         self.assertIn("token", resp.get_json())
