@@ -486,7 +486,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         if not isinstance(data, dict):
             return jsonify({"error": "Formato JSON inválido"}), 400
         comentario_texto = data.get("comentario")
-        attachment_info = data.get("attachment_info")
+        attachment_info = data.get("attachmentInfo") or data.get("attachment_info")
         archivos_subidos = [] # No files in JSON payload
         current_app.logger.info(f"Admin response via JSON: text='{comentario_texto}', attachment_info={attachment_info}")
     elif request.content_type.startswith('multipart/form-data'):
@@ -562,7 +562,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         else:
             current_app.logger.error(f"No se pudo guardar el comentario de texto para el ticket {ticket_id}.")
 
-    # If the request was JSON and had attachment_info, create a comment for it
+    # If the request was JSON and had attachmentInfo, create a comment for it
     if 'attachment_info' in locals() and attachment_info:
         file_comment_text = f"[Archivo adjunto: {attachment_info.get('name', 'archivo')}]"
         file_comment_obj = servicio_tickets.crear_comentario(

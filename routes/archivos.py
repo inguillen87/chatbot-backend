@@ -7,7 +7,13 @@ from werkzeug.utils import secure_filename
 from datetime import datetime
 from utils.auth_helpers import anon_o_token_requerido
 from routes.auth import token_requerido
-from services.gcs_service import upload_to_gcs, BUCKET_NAME, MAX_FILE_SIZE
+from services.gcs_service import (
+    upload_to_gcs,
+    BUCKET_NAME,
+    MAX_FILE_SIZE,
+    get_thumb_filename,
+    GCS_ENABLED,
+)
 from services.attachment_service import create_attachment_with_thumbnail
 from services.archivo_service import guardar_archivo_adjunto_ticket
 from services.ticket_service import servicio_tickets
@@ -413,7 +419,7 @@ def subir_archivo_admin(current_user: User):
 
         db.session.commit()
 
-        # Devolver el comentario serializado, que ya incluye 'attachment_info'
+        # Devolver el comentario serializado, que ya incluye 'attachmentInfo'
         return jsonify(comentario.to_dict()), 201
 
     except Exception as e:
@@ -580,19 +586,31 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
         db.session.commit()
 
         # Cargar metadatos del análisis si existen
-        analisis = AnalisisArchivo.query.filter_by(archivo_adjunto_id=adjunto.id, tipo_analisis='thumbnail_meta').first()
+        analisis = AnalisisArchivo.query.filter_by(
+            archivo_adjunto_id=adjunto.id, tipo_analisis='thumbnail_meta'
+        ).first()
         meta_data = analisis.datos_estructurados if analisis else None
+
+        # Construir la URL de la miniatura según metadatos o entorno de almacenamiento
+        thumb_url = meta_data.get("url") if meta_data else None
+        if not thumb_url:
+            thumb_filename = get_thumb_filename(adjunto.filename)
+            if GCS_ENABLED:
+                thumb_url = f"https://storage.googleapis.com/{BUCKET_NAME}/{thumb_filename}"
+            else:
+                thumb_url = os.path.join(os.path.dirname(adjunto.url), thumb_filename).replace("\\", "/")
 
         return jsonify({
             "ok": True,
-            "attachment_info": {
+            "attachmentInfo": {
                 "id": adjunto.id,
-                "original_url": adjunto.url,
-                "mime": adjunto.mime,
+                "url": adjunto.url,
+                "thumbUrl": thumb_url,
+                "mimeType": adjunto.mime,
                 "size": adjunto.tamano,
                 "name": adjunto.nombre_original,
-                "meta": meta_data
-            }
+                "meta": meta_data,
+            },
         }), 200
 
     except Exception as e:

@@ -67,7 +67,7 @@ def _parse_request(tipo_chat_fijo: str | None = None):
         contexto_previo = data.get("contexto_previo")
         rubro_id = data.get("rubro_id")
         rubro_clave = data.get("rubro_clave")
-        attachment_info = data.get("attachment_info")
+        attachment_info = data.get("attachmentInfo") or data.get("attachment_info")
         location = data.get("location")
         ticket_id = data.get("ticket_id")
         tipo_ticket = data.get("tipo_ticket")
@@ -76,7 +76,7 @@ def _parse_request(tipo_chat_fijo: str | None = None):
 
         if attachment_info:
             if not isinstance(attachment_info, dict) or not all(k in attachment_info for k in ['id', 'url', 'name', 'mimeType', 'size']):
-                raise ValueError("El campo 'attachment_info' es inválido o le faltan campos requeridos.")
+                raise ValueError("El campo 'attachmentInfo' es inválido o le faltan campos requeridos.")
 
         if location and not (
             isinstance(location, dict) and
@@ -254,7 +254,7 @@ def _procesar_chat(
                 "tipo_chat": tipo_chat,
                 "rubro_id": rubro_id,
                 "rubro_clave": rubro_clave,
-                "attachment_info": attachment_info,
+                "attachmentInfo": attachment_info,
                 "location": location,
                 "ticket_id": ticket_id,
                 "tipo_ticket": tipo_ticket,
@@ -406,7 +406,7 @@ def _procesar_chat(
                 }), 403
 
         # The logic for file analysis has been moved to the upload endpoint.
-        # The chat endpoint is only responsible for passing the attachment_info.
+        # The chat endpoint is only responsible for passing the attachmentInfo.
         analisis_archivo_resultado = None
 
         # Leer el X-Chat-Session-Id del header
