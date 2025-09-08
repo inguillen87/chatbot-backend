@@ -40,3 +40,16 @@ def test_accessibility_preferences_crud(client, app, init_database, viewer_user)
     data_get = resp.get_json()
     assert data_get["dyslexia"] is True
     assert data_get["simplified"] is False
+
+
+def test_accessibility_preflight_preserves_credentials(
+    client, app, init_database, viewer_user
+):
+    resp = client.options(
+        f"/api/accessibility/{viewer_user.id}", headers={"Origin": "http://example.com"}
+    )
+    assert resp.status_code == 204
+    assert resp.headers.get("Access-Control-Allow-Credentials") == "true"
+    allowed_headers = resp.headers.get("Access-Control-Allow-Headers", "")
+    assert "Authorization" in allowed_headers
+    assert "X-Chat-Session-Id" in allowed_headers

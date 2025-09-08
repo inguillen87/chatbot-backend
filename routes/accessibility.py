@@ -47,12 +47,32 @@ def accessibility_preferences(auth_user: User, user_id: int):
 def apply_cors(response):
     origin = request.headers.get("Origin")
     if origin:
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Vary"] = "Origin"
+        response.headers.setdefault("Access-Control-Allow-Origin", origin)
+        response.headers.setdefault("Vary", "Origin")
     else:
-        response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = (
-        "Content-Type,Authorization,X-Anon-Id,Anon-Id"
+        response.headers.setdefault("Access-Control-Allow-Origin", "*")
+
+    def _merge(header_name: str, values: list[str]):
+        existing = response.headers.get(header_name, "")
+        items = [h.strip() for h in existing.split(",") if h.strip()]
+        for v in values:
+            if v not in items:
+                items.append(v)
+        response.headers[header_name] = ",".join(items)
+
+    _merge(
+        "Access-Control-Allow-Headers",
+        [
+            "Content-Type",
+            "Authorization",
+            "Origin",
+            "Accept",
+            "X-Entity-Token",
+            "X-Chat-Session-Id",
+            "X-Anon-Id",
+            "Anon-Id",
+        ],
     )
-    response.headers["Access-Control-Allow-Methods"] = "GET,PUT,OPTIONS"
+    _merge("Access-Control-Allow-Methods", ["GET", "PUT", "OPTIONS"])
+    response.headers.setdefault("Access-Control-Allow-Credentials", "true")
     return response
