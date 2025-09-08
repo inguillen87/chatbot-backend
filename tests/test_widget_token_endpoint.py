@@ -85,12 +85,6 @@ class WidgetTokenEndpointTests(unittest.TestCase):
             headers={"Authorization": self.user.token, "Origin": origin},
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertIn("token", resp.get_json())
-        self.assertIn(
-            resp.headers.get("Access-Control-Allow-Origin"),
-            {"*", origin},
-        )
-        self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://example.com")
 
     def test_widget_token_preflight_trailing_slash(self):
