@@ -45,14 +45,14 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    @patch('services.google_text_to_speech.generate_audio_url')
-    def test_audio_response_is_generated_for_audio_input(self, mock_generate_audio_url):
+    @patch('services.tts_orchestrator.generar_audio_con_fallback')
+    def test_audio_response_is_generated_for_audio_input(self, mock_generar_audio):
         """
         Tests if an audio response is generated when the input was audio.
         """
         # --- Setup ---
         fake_audio_url = "/static/audio/test_audio.mp3"
-        mock_generate_audio_url.return_value = fake_audio_url
+        mock_generar_audio.return_value = fake_audio_url
 
         self.viewer_user.prefers_audio = True
         db.session.commit()
@@ -80,17 +80,16 @@ class TestAccessibilityAndMedia(unittest.TestCase):
             )
 
         # --- Assert ---
-        mock_generate_audio_url.assert_called_once()
-        args, _ = mock_generate_audio_url.call_args
+        mock_generar_audio.assert_called_once()
+        args, _ = mock_generar_audio.call_args
         self.assertEqual(args[0], "Esta es una respuesta de prueba.")
-        self.assertEqual(args[2], self.viewer_user)
         self.assertIn('audio_url', response_dict)
         self.assertEqual(response_dict['audio_url'], fake_audio_url)
 
-    @patch('services.google_text_to_speech.generate_audio_url')
-    def test_audio_generated_when_flag_missing_but_source_is_audio(self, mock_generate_audio_url):
+    @patch('services.tts_orchestrator.generar_audio_con_fallback')
+    def test_audio_generated_when_flag_missing_but_source_is_audio(self, mock_generar_audio):
         fake_audio_url = "/static/audio/test_audio.mp3"
-        mock_generate_audio_url.return_value = fake_audio_url
+        mock_generar_audio.return_value = fake_audio_url
 
         chat_session = ChatSessionContext(
             chat_session_id='auto_audio_session',
@@ -112,7 +111,37 @@ class TestAccessibilityAndMedia(unittest.TestCase):
                 chat_db_context=chat_session
             )
 
-        mock_generate_audio_url.assert_called_once()
+        mock_generar_audio.assert_called_once()
+        self.assertEqual(response_dict.get('audio_url'), fake_audio_url)
+
+    @patch('services.tts_orchestrator.generar_audio_con_fallback')
+    def test_audio_uses_message_to_user_when_message_body_missing(self, mock_generar_audio):
+        fake_audio_url = "/static/audio/test_audio.mp3"
+        mock_generar_audio.return_value = fake_audio_url
+
+        chat_session = ChatSessionContext(
+            chat_session_id='audio_message_to_user',
+            user_id=self.owner_user.id,
+            context_data={'source_is_audio': True}
+        )
+        db.session.add(chat_session)
+        db.session.commit()
+
+        with patch('services.logic.responder_municipio') as mock_responder_municipio:
+            mock_responder_municipio.return_value = {
+                "message_to_user": "Resumen del reclamo.",
+            }
+            response_dict = responder_chatboc(
+                pregunta="test",
+                owner_user=self.owner_user,
+                current_user=self.viewer_user,
+                rubro_obj=self.owner_user.rubro,
+                chat_db_context=chat_session
+            )
+
+        mock_generar_audio.assert_called_once()
+        args, _ = mock_generar_audio.call_args
+        self.assertEqual(args[0], "Resumen del reclamo.")
         self.assertEqual(response_dict.get('audio_url'), fake_audio_url)
 
     def test_button_fallback_formats_options_as_text_list(self):

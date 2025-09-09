@@ -299,8 +299,9 @@ def responder_chatboc(
     if response_data and response_data.get('generar_audio') and not response_data.get('audio_url'):
         text_to_speak = response_data.get('audio_text')
         if not text_to_speak:
+            base_text = response_data.get('message_body') or response_data.get('message_to_user', '')
             text_to_speak = render_audio_text(
-                response_data.get('message_body', ''),
+                base_text,
                 response_data.get('options_list'),
                 response_data.get('categorias'),
             )
