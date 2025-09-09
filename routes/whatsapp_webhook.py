@@ -347,27 +347,11 @@ def whatsapp_webhook():
         session_context_db_entry.context_data.pop('source_is_audio', None)
 
     # --- Location Handling ---
+    msg_type = post_vars.get("MessageType")
     latitud = post_vars.get("Latitude")
     longitud = post_vars.get("Longitude")
     location_info = None
-    if latitud and longitud:
-        location_info = {"latitude": latitud, "longitude": longitud}
-        address = post_vars.get("Address")
-        label = post_vars.get("Label")
-        if address:
-            location_info["address"] = address
-        else:
-            try:
-                addr = geocodificar_inversa_llm(latitud, longitud)
-                if addr and addr.get("formatted_address"):
-                    location_info["address"] = addr["formatted_address"]
-            except Exception as e:
-                current_app.logger.error(f"Error al geocodificar inversamente {latitud, longitud}: {e}")
-        if label:
-            location_info["label"] = label
-        print(f"Received location data: {location_info}")
-
-        # Persist location if a claim is already in progress
+    if msg_type == "location" and latitud and longitud:
         ctx = session_context_db_entry.context_data
         ctx.setdefault(CONTEXTO_MUNICIPIO, {})
         ctxm = ctx[CONTEXTO_MUNICIPIO]
@@ -380,15 +364,22 @@ def whatsapp_webhook():
             "ESPERANDO_CONFIRMACION_RECLAMO",
             "ESPERANDO_MENU_EDICION",
         )
+        try:
+            geo = reverse_geocode(float(latitud), float(longitud))
+            display = geo.get("display", f"Lat: {latitud}, Lon: {longitud}")
+        except Exception:
+            display = f"Lat: {latitud}, Lon: {longitud}"
+
+        datos.update(
+            {
+                "coordenadas": {"lat": latitud, "lon": longitud},
+                "ubicacion": display,
+                "label_ubicacion": post_vars.get("Label"),
+            }
+        )
+        ctxm["datos_parciales_llm_reclamo"] = datos
+
         if hay_reclamo_en_curso:
-            datos.update(
-                {
-                    "coordenadas": {"lat": latitud, "lon": longitud},
-                    "ubicacion": address or f"Lat: {latitud}, Lon: {longitud}",
-                    "label_ubicacion": label,
-                }
-            )
-            ctxm["datos_parciales_llm_reclamo"] = datos
             ctxm["estado_conversacion"] = (
                 "ESPERANDO_CONFIRMACION_UBICACION"
                 if estado_prev in (None, "ESPERANDO_DIRECCION_RECLAMO")
@@ -397,22 +388,61 @@ def whatsapp_webhook():
             safe_flag_modified(session_context_db_entry, "context_data")
             db.session.add(session_context_db_entry)
             db.session.commit()
-    else:
-        coordenadas = extraer_coordenadas_de_url_google_maps(incoming_text)
-        if coordenadas:
-            latitud, longitud = coordenadas
-            location_info = {"latitude": str(latitud), "longitude": str(longitud)}
-            try:
-                addr = geocodificar_inversa_llm(latitud, longitud)
-                if addr and addr.get("formatted_address"):
-                    location_info["address"] = addr["formatted_address"]
-            except Exception as e:
-                current_app.logger.error(
-                    f"Error al geocodificar inversamente {coordenadas}: {e}"
+            if twilio_client:
+                confirm_payload = {
+                    "type": "button",
+                    "body": {"text": f"¿Es esta tu dirección?\n{display}"},
+                    "action": {
+                        "buttons": [
+                            {"type": "reply", "reply": {"id": "confirmar_ubicacion", "title": "Confirmar"}},
+                            {"type": "reply", "reply": {"id": "editar_ubicacion", "title": "Editar"}},
+                        ]
+                    },
+                }
+                twilio_client.messages.create(
+                    from_=to_number_raw,
+                    to=from_number_raw,
+                    body="Seleccioná una opción",
+                    persistent_action=[f"whatsapp:{json.dumps(confirm_payload)}"],
                 )
-            # treat message as location input only
-            incoming_text = ""
-            message_body = ""
+            return "OK", 200
+        else:
+            ctxm["estado_conversacion"] = "ESPERANDO_INTENCION_UBICACION"
+            safe_flag_modified(session_context_db_entry, "context_data")
+            db.session.add(session_context_db_entry)
+            db.session.commit()
+            if twilio_client:
+                menu_payload = {
+                    "type": "button",
+                    "body": {"text": f"Recibí tu ubicación en {display}. ¿Qué te gustaría hacer?"},
+                    "action": {
+                        "buttons": [
+                            {
+                                "type": "reply",
+                                "reply": {
+                                    "id": "iniciar_reclamo_con_ubicacion",
+                                    "title": "Iniciar un Reclamo",
+                                },
+                            },
+                            {
+                                "type": "reply",
+                                "reply": {
+                                    "id": "enviar_sugerencia_con_ubicacion",
+                                    "title": "Enviar una Sugerencia",
+                                },
+                            },
+                            {"type": "reply", "reply": {"id": "cancelar", "title": "Cancelar"}},
+                            {"type": "reply", "reply": {"id": "menu_principal", "title": "Menú"}},
+                        ]
+                    },
+                }
+                twilio_client.messages.create(
+                    from_=to_number_raw,
+                    to=from_number_raw,
+                    body="Seleccioná una opción",
+                    persistent_action=[f"whatsapp:{json.dumps(menu_payload)}"],
+                )
+            return "OK", 200
 
     # --- Human Chat Check ---
     if session_context_db_entry.context_data.get("human_chat_in_progress"):

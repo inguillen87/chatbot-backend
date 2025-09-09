@@ -4520,11 +4520,11 @@ def responder_municipio(
             })
         else:
             opciones = [
-                {"texto": "Confirmar", "action_id": "confirmar_ubicacion"},
-                {"texto": "Editar", "action_id": "editar_ubicacion"},
+                {"texto": "1. Confirmar", "action_id": "confirmar_ubicacion"},
+                {"texto": "2. Editar", "action_id": "editar_ubicacion"},
             ]
             return _finalize_response({
-                "message_body": f"¿Es esta tu dirección: {ubicacion_display}?",
+                "message_body": f"¿Es esta tu dirección? *{ubicacion_display}*",
                 "options_list": opciones,
                 "message_type": "interactive_buttons",
                 "fuente": "confirmar_ubicacion",
