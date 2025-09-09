@@ -12,6 +12,7 @@ from services.notifications import (
 from services.herramientas_municipio import (
     parse_direccion_completa as parse_direccion,
     direccion_es_valida,
+    validar_y_formatear_direccion,
 )
 from services.ticket_utils import formatear_ticket_respuesta
 from services.common_utils import (
@@ -89,7 +90,23 @@ class CrearReclamoActionHandler(BaseActionHandler):
             if parsed_address and parsed_address.get('localidad'):
                 distrito_llm = parsed_address.get('localidad')
                 logger.info(f"Parsed district: {distrito_llm}")
+
         coordenadas_llm = action_data.get("coordenadas") or datos_parciales.get("coordenadas")
+
+        # Geocoding: validate and enrich address with coordinates and formatted text
+        if ubicacion_llm and not coordenadas_llm:
+            geo_info = validar_y_formatear_direccion(ubicacion_llm)
+            if geo_info:
+                ubicacion_llm = geo_info.get("formatted_address", ubicacion_llm)
+                coordenadas_llm = {
+                    "lat": geo_info.get("lat"),
+                    "lon": geo_info.get("lng"),
+                }
+                if not distrito_llm:
+                    parsed_geo = parse_direccion(ubicacion_llm)
+                    if parsed_geo and parsed_geo.get("localidad"):
+                        distrito_llm = parsed_geo["localidad"]
+                        logger.info(f"Parsed district from geocoded address: {distrito_llm}")
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
         # Lógica de fusión de datos de contacto mejorada

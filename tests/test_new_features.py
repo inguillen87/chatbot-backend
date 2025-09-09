@@ -60,6 +60,7 @@ class TestNewFeatures(unittest.TestCase):
         )
         self.assertIn("654321", message)
         self.assertTrue(any("pin=654321" in b.get("url", "") for b in buttons))
+        self.assertIn("https://example.com/tickets/99999?pin=654321", message)
 
     def test_formatear_ticket_respuesta_incluye_contacto(self):
         message, _ = formatear_ticket_respuesta(
@@ -77,6 +78,7 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("+549261000000", message)
         self.assertIn("ana@example.com", message)
         self.assertIn("Actualizar datos", message)
+        self.assertIn("https://example.com/tickets/88888", message)
 
     def test_greeting_handler_final_menu(self):
         """
