@@ -18,6 +18,7 @@ from services.ticket_service import servicio_tickets
 from utils.db_utils import safe_flag_modified
 # Compatibilidad hacia atrás para pruebas que parchean `flag_modified`
 flag_modified = safe_flag_modified
+import hashlib
 
 logger = logging.getLogger(__name__)
 from twilio.rest import Client
@@ -48,7 +49,6 @@ from .common_utils import (
     validar_telefono,
     formatear_telefono_e164,
     construir_respuesta_sugerir_registro,
-    extract_multiple_contact_details_regex,
 )
 from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
@@ -67,6 +67,7 @@ class ReclamoState(Enum):
     ESPERANDO_FOTO = auto()
     ESPERANDO_DATOS_CONTACTO = auto()
     ESPERANDO_CONFIRMACION = auto()
+    ESPERANDO_MENU_EDICION = auto()
 
 
 CANCEL_KEYWORDS = {
@@ -91,9 +92,121 @@ CANCEL_KEYWORDS = {
 # Simple cache to avoid recomputing responses for repeated municipal queries
 MUNICIPIO_RESPONSE_CACHE = TTLCache(maxsize=256, ttl=3600)
 
+# States where caching can cause stale responses; skip cache when in any of these
+SENSITIVE_STATES = {
+    "ESPERANDO_DIRECCION_RECLAMO",
+    "ESPERANDO_DATOS_CONTACTO",
+    "ESPERANDO_CONFIRMACION_RECLAMO",
+    "ESPERANDO_CONFIRMACION_UBICACION",
+    "ESPERANDO_MENU_EDICION",
+}
+
 def clear_municipio_cache() -> None:
     """Utility mainly for tests to clear the local municipio response cache."""
     MUNICIPIO_RESPONSE_CACHE.clear()
+
+# --- NUEVO: parsing compacto de datos de contacto ---
+CONTACT_FIELDS = ("nombre", "email", "telefono", "dni", "direccion_contacto")
+
+
+def _parse_contact_compact_text(texto: str) -> dict:
+    """Parsea datos de contacto en una sola línea separados por comas o espacios."""
+    data = {k: None for k in CONTACT_FIELDS}
+    t = " ".join([p.strip() for p in re.split(r"[,\n]+", texto) if p.strip()])
+
+    m = re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", t, re.I)
+    if m:
+        data["email"] = m.group(0)
+        t = t.replace(m.group(0), " ")
+
+    m = re.search(r"\b\+?\d{8,15}\b", t)
+    if m:
+        data["telefono"] = m.group(0)
+        t = t.replace(m.group(0), " ")
+
+    m = re.search(r"\b\d{7,9}\b", t)
+    if m:
+        data["dni"] = m.group(0)
+        t = t.replace(m.group(0), " ")
+
+    chunks = [c for c in re.split(r"\s{2,}|\s-\s", t) if c.strip()]
+    rem = " ".join(chunks).strip()
+    tokens = rem.split()
+    for i, tok in enumerate(tokens):
+        if tok.isdigit():
+            if i >= 2:
+                data["direccion_contacto"] = " ".join(tokens[i-2:]).strip()
+                nombre_candidato = " ".join(tokens[: i - 2]).strip()
+            else:
+                data["direccion_contacto"] = " ".join(tokens[i-1:]).strip()
+                nombre_candidato = " ".join(tokens[: i - 1]).strip()
+            if nombre_candidato:
+                data["nombre"] = nombre_candidato
+            break
+    else:
+        if rem:
+            data["nombre"] = rem
+
+    if data["email"] and not validar_email(data["email"]):
+        data["email"] = None
+    if data["telefono"] and not validar_telefono(data["telefono"]):
+        data["telefono"] = None
+
+    return data
+
+
+def _need_any_contact(datos: dict) -> bool:
+    return any(not datos.get(k) for k in CONTACT_FIELDS)
+
+
+def _merge_contact(base: dict, nuevo: dict) -> dict:
+    out = dict(base or {})
+    for k in CONTACT_FIELDS:
+        if not out.get(k) and nuevo.get(k):
+            out[k] = nuevo[k]
+    return out
+
+
+def _format_contact_summary(datos: dict) -> str:
+    return (
+        f"Nombre: {datos.get('nombre') or '-'}\n"
+        f"Email: {datos.get('email') or '-'}\n"
+        f"Teléfono: {datos.get('telefono') or '-'}\n"
+        f"DNI: {datos.get('dni') or '-'}\n"
+        f"Dirección contacto: {datos.get('direccion_contacto') or '-'}"
+    )
+
+
+def pedir_datos_contacto_compacto():
+    return {
+        "message_body": (
+            "Para seguir, enviá *en una sola línea* tus datos separados por comas o espacios, "
+            "en cualquier orden: *Nombre completo, Email, Teléfono, DNI, Dirección de contacto*.\n\n"
+            "Ejemplo: *Juan Perez, juan@mail.com, 2615551234, 30123456, Don Bosco 55 Junín*"
+        ),
+        "message_type": "text",
+    }
+
+
+def procesar_datos_contacto_compacto(texto: str, datos_existentes: dict) -> dict:
+    parsed = _parse_contact_compact_text(texto)
+    datos = _merge_contact(datos_existentes, parsed)
+    if _need_any_contact(datos):
+        try:
+            llm = extract_multiple_contact_details_llm(texto)
+            datos = _merge_contact(
+                datos,
+                {
+                    "nombre": llm.get("nombre"),
+                    "email": llm.get("email"),
+                    "telefono": llm.get("telefono"),
+                    "dni": llm.get("dni"),
+                    "direccion_contacto": llm.get("direccion"),
+                },
+            )
+        except Exception:
+            pass
+    return datos
 
 class ReclamoFlowHandler:
     def __init__(self, context, chat_db_context):
@@ -142,6 +255,8 @@ class ReclamoFlowHandler:
             return self.handle_datos_contacto(user_input)
         elif state == ReclamoState.ESPERANDO_CONFIRMACION:
             return self.handle_confirmacion(user_input, payload)
+        elif state == ReclamoState.ESPERANDO_MENU_EDICION:
+            return self.handle_menu_edicion(user_input, payload)
         else:
             logger.error(f"ReclamoFlowHandler: Estado desconocido o no manejado: {state_name}")
             return self.end_flow("Hubo un error en el proceso, por favor intentá de nuevo.", show_menu=True)
@@ -233,32 +348,31 @@ class ReclamoFlowHandler:
         }
 
     def handle_direccion(self, user_input, payload):
-        if payload.get("es_ubicacion") and payload.get("ubicacion_usuario"):
-            location_data = payload.get("ubicacion_usuario")
-            address = location_data.get("address")
-            if not address and location_data.get("latitude") and location_data.get("longitude"):
-                from .herramientas_municipio import obtener_direccion_de_coordenadas
-                direccion_info = obtener_direccion_de_coordenadas(
-                    location_data.get("latitude"),
-                    location_data.get("longitude"),
-                )
-                if direccion_info:
-                    address = direccion_info.get("formatted_address")
-            self.flow_context['datos_reclamo']['direccion'] = (
-                address
-                if address
-                else f"Lat: {location_data.get('latitude')}, Lon: {location_data.get('longitude')}"
-            )
-        elif len(user_input) < 5:
-            return {"message_body": "La dirección parece muy corta. Por favor, ingresá una dirección más completa (calle y número)."}
-        else:
-            self.flow_context['datos_reclamo']['direccion'] = user_input
+        datos = self.flow_context.setdefault('datos_reclamo', {})
+        ubic_ctx = self.municipal_ctx.get("ubicacion_contextual") or {}
+        coords = datos.get("coordenadas") or {}
 
-        # If a photo was already provided earlier in the flow or exists in the
-        # context (e.g. the user started the claim by sending an image), skip
-        # asking for it again and go straight to contact details.
-        if self.flow_context['datos_reclamo'].get('foto_url') or self.context.get('foto_url'):
-            self.flow_context['datos_reclamo'].setdefault('foto_url', self.context.get('foto_url'))
+        if payload.get("coordenadas"):
+            coords = payload["coordenadas"]
+        elif self.municipal_ctx.get("datos_parciales_llm_reclamo", {}).get("coordenadas"):
+            coords = self.municipal_ctx["datos_parciales_llm_reclamo"]["coordenadas"]
+
+        if coords:
+            datos["coordenadas"] = coords
+
+        direccion_display = (
+            ubic_ctx.get("address")
+            or self.municipal_ctx.get("datos_parciales_llm_reclamo", {}).get("ubicacion")
+            or user_input.strip()
+        )
+
+        if not direccion_display:
+            return {"message_body": "La dirección parece muy corta. Por favor, ingresá una dirección más completa (calle y número)."}
+
+        datos["direccion"] = direccion_display
+
+        if datos.get('foto_url') or self.context.get('foto_url'):
+            datos.setdefault('foto_url', self.context.get('foto_url'))
             return self.ask_for_contact_details()
 
         self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
@@ -301,6 +415,7 @@ class ReclamoFlowHandler:
         es_foto = payload.get("es_foto") or self.context.get("es_foto")
         if es_foto and foto_url:
             self.flow_context['datos_reclamo']['foto_url'] = foto_url
+            self.context['foto_url'] = foto_url
             return self.ask_for_contact_details()
 
         no_words = {"no", "omitir", "omitilo", "sin foto", "ninguna"}
@@ -320,45 +435,31 @@ class ReclamoFlowHandler:
     def ask_for_contact_details(self, force_prompt: bool = False):
         datos = self.flow_context.setdefault('datos_reclamo', {})
 
-        # If we are not forcing a prompt, skip directly to confirmation even if
-        # some fields are missing. The user can choose to editar los datos later
-        # if necessary.
-        if not force_prompt:
+        if not datos.get('email') or not datos.get('nombre'):
+            force_prompt = True
+
+        if not force_prompt and not _need_any_contact(datos):
             self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
             return self.get_confirmation_message()
 
-        # Otherwise, build a message showing what we already have and request
-        # only the missing pieces.
         self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
-        required_fields = ['nombre', 'dni', 'email', 'telefono']
-        known_parts = []
-        missing = []
-        field_labels = {'nombre': 'nombre', 'dni': 'DNI', 'email': 'email', 'telefono': 'teléfono'}
-        for field in required_fields:
-            if datos.get(field):
-                known_parts.append(f"{field_labels[field]}: {datos[field]}")
-            else:
-                missing.append(field_labels[field])
-
-        message = "Ya casi terminamos."
-        if known_parts:
-            message += " Tengo: " + ", ".join(known_parts) + "."
-        if missing:
-            message += " Por favor, indicame " + ", ".join(missing) + "."
-
-        return {"message_body": message}
+        return pedir_datos_contacto_compacto()
 
     def handle_datos_contacto(self, user_input):
-        contact_details = extract_multiple_contact_details_regex(user_input)
-        if not contact_details:
-            return {"message_body": "No pude identificar tus datos. Por favor, intentá de nuevo incluyendo nombre, DNI, email y teléfono."}
-
-        datos_reclamo = self.flow_context['datos_reclamo']
-        for k, v in contact_details.items():
-            if v:
-                datos_reclamo[k] = v
+        datos_reclamo = self.flow_context.setdefault('datos_reclamo', {})
+        nuevos = procesar_datos_contacto_compacto(user_input, datos_reclamo)
+        self.flow_context['datos_reclamo'] = nuevos
+        resumen = _format_contact_summary(nuevos)
         self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
-        return self.get_confirmation_message()
+        return {
+            "message_body": f"Perfecto, tomé estos datos:\n{resumen}\n\n¿Confirmás?",
+            "options_list": [
+                {"texto": "1. Confirmar", "action_id": "reclamo_confirmar_si"},
+                {"texto": "2. Editar", "action_id": "reclamo_confirmar_no"},
+                {"texto": "3. Cancelar", "action_id": "cancelar"},
+            ],
+            "message_type": "interactive_buttons",
+        }
 
     def get_confirmation_message(self):
         datos = self.flow_context.get('datos_reclamo', {})
@@ -417,10 +518,52 @@ class ReclamoFlowHandler:
             )
             return self.end_flow(error_message, show_menu=True)
         elif any(word in normalized for word in negatives) or action == "reclamo_confirmar_no":
-            return self.ask_for_contact_details(force_prompt=True)
+            self.flow_context['state'] = ReclamoState.ESPERANDO_MENU_EDICION.name
+            return self.get_edit_menu()
         else:  # Cancel or any other input
             cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
             return self.end_flow(cancel_msg, show_menu=True)
+
+    def get_edit_menu(self):
+        options = [
+            {"texto": "Dirección", "action_id": "edit_dir"},
+            {"texto": "Descripción", "action_id": "edit_desc"},
+            {"texto": "Foto", "action_id": "edit_foto"},
+            {"texto": "Contacto", "action_id": "edit_contacto"},
+        ]
+        return {
+            "message_body": "¿Qué querés editar?",
+            "options_list": options,
+            "message_type": "interactive_buttons",
+        }
+
+    def handle_menu_edicion(self, user_input, payload):
+        action = payload.get("action")
+        text = user_input.strip().lower()
+        mapping = {
+            "1": "edit_dir",
+            "direccion": "edit_dir",
+            "2": "edit_desc",
+            "descripcion": "edit_desc",
+            "3": "edit_foto",
+            "foto": "edit_foto",
+            "4": "edit_contacto",
+            "contacto": "edit_contacto",
+        }
+        selected = action or mapping.get(text)
+        if selected == "edit_dir":
+            self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
+            return {"message_body": "Indica la dirección corregida."}
+        if selected == "edit_desc":
+            self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
+            return {"message_body": "Escribí la descripción actualizada."}
+        if selected == "edit_foto":
+            self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
+            return {"message_body": "Enviá la nueva foto."}
+        if selected == "edit_contacto":
+            self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
+            return {"message_body": "Actualizá tus datos de contacto."}
+        return self.get_edit_menu()
 
     def end_flow(self, message, show_menu=False, image_url=None):
         self.flow_context.clear()
@@ -2771,13 +2914,13 @@ def _get_estacionamiento_menu():
 def _get_reclamos_menu():
     """Devuelve la estructura del menú de reclamos estandarizado, con íconos y negritas."""
     opciones = [
-        {"texto": "*Volver al inicio*", "id_accion": "0", "category_name": "Volver al inicio"},
-        {"texto": "💡 *Luminaria*", "id_accion": "1", "category_name": "Luminaria"},
-        {"texto": "🌳 *Arbolado*", "id_accion": "2", "category_name": "Arbolado"},
-        {"texto": "🗑️ *Limpieza y riego*", "id_accion": "3", "category_name": "Limpieza y riego"},
-        {"texto": "🚧 *Arreglo de calle*", "id_accion": "4", "category_name": "Arreglo de calle"},
-        {"texto": "💧 *Pérdida de agua*", "id_accion": "5", "category_name": "Pérdida de agua"},
-        {"texto": "⚫ *Otros*", "id_accion": "6", "category_name": "Otros"},
+        {"texto": "*Volver al inicio*", "action_id": "0", "category_name": "Volver al inicio"},
+        {"texto": "💡 *Luminaria*", "action_id": "1", "category_name": "Luminaria"},
+        {"texto": "🌳 *Arbolado*", "action_id": "2", "category_name": "Arbolado"},
+        {"texto": "🗑️ *Limpieza y riego*", "action_id": "3", "category_name": "Limpieza y riego"},
+        {"texto": "🚧 *Arreglo de calle*", "action_id": "4", "category_name": "Arreglo de calle"},
+        {"texto": "💧 *Pérdida de agua*", "action_id": "5", "category_name": "Pérdida de agua"},
+        {"texto": "⚫ *Otros*", "action_id": "6", "category_name": "Otros"},
     ]
     # El cuerpo del mensaje ahora instruye al usuario que puede responder con un número o seleccionar una opción.
     return {
@@ -2812,11 +2955,12 @@ def responder_municipio(
     # --- END DEBUG LOG ---
 
     normalized_question = None
+    cache_key = None
 
     def _finalize_response(response):
         """Return the response unchanged; also store it in cache for repeated queries."""
-        if normalized_question:
-            MUNICIPIO_RESPONSE_CACHE[normalized_question] = response
+        if cache_key:
+            MUNICIPIO_RESPONSE_CACHE[cache_key] = response
         return response
 
     logger_actual.info(
@@ -2854,9 +2998,17 @@ def responder_municipio(
         received_payload["pregunta"] = ""
 
     normalized_question = normalizar_texto(pregunta_str)
-    if normalized_question in MUNICIPIO_RESPONSE_CACHE:
-        logger_actual.info("responder_municipio: returning cached response")
-        return MUNICIPIO_RESPONSE_CACHE[normalized_question]
+    estado_actual = None
+    if chat_db_context and chat_db_context.context_data:
+        estado_actual = chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {}).get("estado_conversacion")
+
+    if estado_actual not in SENSITIVE_STATES:
+        session_id = getattr(chat_db_context, "chat_session_id", anon_id)
+        body_hash = hashlib.sha1(normalized_question.encode()).hexdigest()[:10]
+        cache_key = f"{session_id}:{estado_actual}:{body_hash}"
+        if cache_key in MUNICIPIO_RESPONSE_CACHE:
+            logger_actual.info("responder_municipio: returning cached response")
+            return MUNICIPIO_RESPONSE_CACHE[cache_key]
 
     if kwargs:
         for key, value in kwargs.items():
@@ -3001,16 +3153,43 @@ def responder_municipio(
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response(response_dict)
 
-        if contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_DIRECCION_RECLAMO.name:
-            respuesta, contexto_municipio_actual = handle_location_for_reclamo(
-                context,
-                viewer_user,
-                owner_user,
-                chat_db_context,
-                contexto_municipio_actual,
-                received_payload.get("ubicacion_usuario", {}),
+        estado = contexto_municipio_actual.get("estado_conversacion")
+        if (
+            estado in {
+                ConversationState.ESPERANDO_DIRECCION_RECLAMO.name,
+                ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name,
+            }
+            or contexto_municipio_actual.get("datos_parciales_llm_reclamo")
+        ):
+            loc = received_payload.get("ubicacion_usuario", {})
+            lat = loc.get("latitude")
+            lon = loc.get("longitude")
+            address = loc.get("address") or f"Lat: {lat}, Lon: {lon}"
+            datos = contexto_municipio_actual.setdefault(
+                "datos_parciales_llm_reclamo", {}
             )
-            return _finalize_response(respuesta), contexto_municipio_actual
+            datos["coordenadas"] = {"lat": lat, "lon": lon}
+            datos["ubicacion"] = address
+            contexto_municipio_actual[
+                "estado_conversacion"
+            ] = ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name
+            opciones = [
+                {"texto": "Confirmar", "action_id": "confirmar_ubicacion"},
+                {"texto": "Editar", "action_id": "editar_ubicacion"},
+            ]
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return (
+                _finalize_response(
+                    {
+                        "message_body": f"¿Es esta tu dirección: {address}?",
+                        "options_list": opciones,
+                        "message_type": "interactive_buttons",
+                        "fuente": "confirmar_ubicacion",
+                    }
+                ),
+                contexto_municipio_actual,
+            )
 
         # When already waiting for a location to answer a pending query (e.g., estacionamiento),
         # skip proactive handling so that the dedicated state logic can process it.
@@ -3382,7 +3561,7 @@ def responder_municipio(
                 reclamo_options = _get_reclamos_menu().get("options_list", [])
                 if pregunta_str_reclamo.isdigit():
                     for option in reclamo_options:
-                        if option.get("id_accion") == pregunta_str_reclamo:
+                        if option.get("action_id") == pregunta_str_reclamo:
                             selected_category_name = option.get("category_name")
                             break
                 if not selected_category_name:
@@ -3953,15 +4132,15 @@ def responder_municipio(
             logger_actual.info("Input requests reclamos menu again. Returning submenu.")
             return _finalize_response(_get_reclamos_menu())
 
-        # El menú se muestra numerado a partir de 1, mientras que los id_accion
-        # comienzan en 0. Convertimos la elección del usuario a id_accion.
+        # El menú se muestra numerado a partir de 1, mientras que los action_id
+        # comienzan en 0. Convertimos la elección del usuario a action_id.
         reclamo_options = _get_reclamos_menu().get("options_list", [])
         selected_category_name = None
 
         if pregunta_str_reclamo.isdigit():
             expected_id = str(int(pregunta_str_reclamo) - 1)
             for option in reclamo_options:
-                if option.get("id_accion") == expected_id:
+                if option.get("action_id") == expected_id:
                     selected_category_name = option.get("category_name")
                     break
 
@@ -4341,17 +4520,33 @@ def responder_municipio(
     # --- End Handle post-login resumption ---
 
     if contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name:
-        if "si" in pregunta_str.lower():
+        ubicacion_display = (
+            contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+            .get("ubicacion", "")
+        )
+        normalized = pregunta_str.strip().lower()
+        if normalized in {"1", "confirmar", "si", "sí"}:
             contexto_municipio_actual["ubicacion_confirmada"] = True
             contexto_municipio_actual["estado_conversacion"] = None
-        else:
+        elif normalized in {"2", "editar", "no"}:
             contexto_municipio_actual["ubicacion_confirmada"] = False
             contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
             return _finalize_response({
                 "message_body": "Por favor, decime la nueva ubicación.",
                 "options_list": [],
                 "message_type": "text",
-                "fuente": "pedir_nueva_ubicacion"
+                "fuente": "pedir_nueva_ubicacion",
+            })
+        else:
+            opciones = [
+                {"texto": "1. Confirmar", "action_id": "confirmar_ubicacion"},
+                {"texto": "2. Editar", "action_id": "editar_ubicacion"},
+            ]
+            return _finalize_response({
+                "message_body": f"¿Es esta tu dirección? *{ubicacion_display}*",
+                "options_list": opciones,
+                "message_type": "interactive_buttons",
+                "fuente": "confirmar_ubicacion",
             })
 
     elif estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name:
