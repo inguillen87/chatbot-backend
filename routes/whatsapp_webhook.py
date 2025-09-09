@@ -20,6 +20,7 @@ from services.llm_utils import extract_multiple_contact_details_llm
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
 from utils.maps_utils import extraer_coordenadas_de_url_google_maps
+from services.geo_service import reverse_geocode
 from services.openai_maps_service import geocodificar_inversa_llm
 from services.municipio_responder import CONTEXTO_MUNICIPIO
 
@@ -185,6 +186,53 @@ def whatsapp_webhook():
     if not isinstance(session_context_db_entry.context_data, dict):
         session_context_db_entry.context_data = {}
 
+    # --- Handle location messages and persist coordinates ---
+    msg_type = post_vars.get("MessageType")
+    if msg_type == "location":
+        lat = post_vars.get("Latitude")
+        lon = post_vars.get("Longitude")
+        ctx = session_context_db_entry.context_data
+        ctx.setdefault("contexto_municipio_v2", {})
+        ctxm = ctx["contexto_municipio_v2"]
+        datos = ctxm.get("datos_parciales_llm_reclamo", {})
+        datos.update({
+            "coordenadas": {"lat": lat, "lon": lon},
+        })
+        try:
+            geo = reverse_geocode(float(lat), float(lon))
+            display = geo.get("display", f"Lat: {lat}, Lon: {lon}")
+        except Exception:
+            display = f"Lat: {lat}, Lon: {lon}"
+        datos["ubicacion"] = display
+        ctxm["datos_parciales_llm_reclamo"] = datos
+        ctxm["estado_conversacion"] = "ESPERANDO_CONFIRMACION_UBICACION"
+        ctx["last_options_sent"] = [
+            {"texto": "Confirmar", "action_id": "confirmar_ubicacion"},
+            {"texto": "Editar", "action_id": "editar_ubicacion"},
+        ]
+        safe_flag_modified(session_context_db_entry, "context_data")
+        db.session.add(session_context_db_entry)
+        db.session.commit()
+
+        if twilio_client:
+            confirm_payload = {
+                "type": "button",
+                "body": {"text": f"¿Es esta tu dirección?\n{display}"},
+                "action": {
+                    "buttons": [
+                        {"type": "reply", "reply": {"id": "confirmar_ubicacion", "title": "Confirmar"}},
+                        {"type": "reply", "reply": {"id": "editar_ubicacion", "title": "Editar"}},
+                    ]
+                },
+            }
+            twilio_client.messages.create(
+                from_=to_number_raw,
+                to=from_number_raw,
+                body="Seleccioná una opción",
+                persistent_action=[f"whatsapp:{json.dumps(confirm_payload)}"],
+            )
+        return "OK", 200
+
     # Determine incoming text before any special handling
     button_payload = post_vars.get("ButtonPayload")
     list_id = post_vars.get("ListId")
@@ -299,41 +347,102 @@ def whatsapp_webhook():
         session_context_db_entry.context_data.pop('source_is_audio', None)
 
     # --- Location Handling ---
+    msg_type = post_vars.get("MessageType")
     latitud = post_vars.get("Latitude")
     longitud = post_vars.get("Longitude")
     location_info = None
-    if latitud and longitud:
-        location_info = {"latitude": latitud, "longitude": longitud}
-        address = post_vars.get("Address")
-        label = post_vars.get("Label")
-        if address:
-            location_info["address"] = address
-        else:
-            try:
-                addr = geocodificar_inversa_llm(latitud, longitud)
-                if addr and addr.get("formatted_address"):
-                    location_info["address"] = addr["formatted_address"]
-            except Exception as e:
-                current_app.logger.error(f"Error al geocodificar inversamente {latitud, longitud}: {e}")
-        if label:
-            location_info["label"] = label
-        print(f"Received location data: {location_info}")
-    else:
-        coordenadas = extraer_coordenadas_de_url_google_maps(incoming_text)
-        if coordenadas:
-            latitud, longitud = coordenadas
-            location_info = {"latitude": str(latitud), "longitude": str(longitud)}
-            try:
-                addr = geocodificar_inversa_llm(latitud, longitud)
-                if addr and addr.get("formatted_address"):
-                    location_info["address"] = addr["formatted_address"]
-            except Exception as e:
-                current_app.logger.error(
-                    f"Error al geocodificar inversamente {coordenadas}: {e}"
+    if msg_type == "location" and latitud and longitud:
+        ctx = session_context_db_entry.context_data
+        ctx.setdefault(CONTEXTO_MUNICIPIO, {})
+        ctxm = ctx[CONTEXTO_MUNICIPIO]
+        datos = ctxm.get("datos_parciales_llm_reclamo", {})
+        estado_prev = ctxm.get("estado_conversacion")
+        hay_reclamo_en_curso = bool(datos) or estado_prev in (
+            "ESPERANDO_DIRECCION_RECLAMO",
+            "ESPERANDO_DESCRIPCION_RECLAMO",
+            "ESPERANDO_FOTO_RECLAMO",
+            "ESPERANDO_CONFIRMACION_RECLAMO",
+            "ESPERANDO_MENU_EDICION",
+        )
+        try:
+            geo = reverse_geocode(float(latitud), float(longitud))
+            display = geo.get("display", f"Lat: {latitud}, Lon: {longitud}")
+        except Exception:
+            display = f"Lat: {latitud}, Lon: {longitud}"
+
+        datos.update(
+            {
+                "coordenadas": {"lat": latitud, "lon": longitud},
+                "ubicacion": display,
+                "label_ubicacion": post_vars.get("Label"),
+            }
+        )
+        ctxm["datos_parciales_llm_reclamo"] = datos
+
+        if hay_reclamo_en_curso:
+            ctxm["estado_conversacion"] = (
+                "ESPERANDO_CONFIRMACION_UBICACION"
+                if estado_prev in (None, "ESPERANDO_DIRECCION_RECLAMO")
+                else estado_prev
+            )
+            safe_flag_modified(session_context_db_entry, "context_data")
+            db.session.add(session_context_db_entry)
+            db.session.commit()
+            if twilio_client:
+                confirm_payload = {
+                    "type": "button",
+                    "body": {"text": f"¿Es esta tu dirección?\n{display}"},
+                    "action": {
+                        "buttons": [
+                            {"type": "reply", "reply": {"id": "confirmar_ubicacion", "title": "Confirmar"}},
+                            {"type": "reply", "reply": {"id": "editar_ubicacion", "title": "Editar"}},
+                        ]
+                    },
+                }
+                twilio_client.messages.create(
+                    from_=to_number_raw,
+                    to=from_number_raw,
+                    body="Seleccioná una opción",
+                    persistent_action=[f"whatsapp:{json.dumps(confirm_payload)}"],
                 )
-            # treat message as location input only
-            incoming_text = ""
-            message_body = ""
+            return "OK", 200
+        else:
+            ctxm["estado_conversacion"] = "ESPERANDO_INTENCION_UBICACION"
+            safe_flag_modified(session_context_db_entry, "context_data")
+            db.session.add(session_context_db_entry)
+            db.session.commit()
+            if twilio_client:
+                menu_payload = {
+                    "type": "button",
+                    "body": {"text": f"Recibí tu ubicación en {display}. ¿Qué te gustaría hacer?"},
+                    "action": {
+                        "buttons": [
+                            {
+                                "type": "reply",
+                                "reply": {
+                                    "id": "iniciar_reclamo_con_ubicacion",
+                                    "title": "Iniciar un Reclamo",
+                                },
+                            },
+                            {
+                                "type": "reply",
+                                "reply": {
+                                    "id": "enviar_sugerencia_con_ubicacion",
+                                    "title": "Enviar una Sugerencia",
+                                },
+                            },
+                            {"type": "reply", "reply": {"id": "cancelar", "title": "Cancelar"}},
+                            {"type": "reply", "reply": {"id": "menu_principal", "title": "Menú"}},
+                        ]
+                    },
+                }
+                twilio_client.messages.create(
+                    from_=to_number_raw,
+                    to=from_number_raw,
+                    body="Seleccioná una opción",
+                    persistent_action=[f"whatsapp:{json.dumps(menu_payload)}"],
+                )
+            return "OK", 200
 
     # --- Human Chat Check ---
     if session_context_db_entry.context_data.get("human_chat_in_progress"):
