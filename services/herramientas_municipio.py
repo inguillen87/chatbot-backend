@@ -244,17 +244,9 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
 
 # --- HERRAMIENTA 1: CONSULTA DE RECOLECCIÓN ---
 def consultar_recoleccion_por_direccion(direccion: str) -> str:
-    """
-    Herramienta profesional que usa la API de Google Maps para geocodificar una dirección
-    y luego determina el horario de recolección.
-    """
-    # ... (El código de esta función está perfecto, no necesita cambios)
-    logger.info(f"[HERRAMIENTA GEO] Buscando horario para: '{direccion}'")
+    """Determina el horario de recolección usando coordenadas de Nominatim."""
 
-    if not Maps_API_KEY:
-        logger.error("[HERRAMIENTA GEO] Clave de API de Google Maps (Maps_API_KEY) no configurada en el entorno.")
-        # Return a message that allows the flow to continue if this function is called unexpectedly during a reclamo.
-        return "Error de configuración: El servicio de mapas no está disponible en este momento. No se pudo validar la dirección geográficamente, pero puedes continuar con el reclamo si la dirección es correcta."
+    logger.info(f"[HERRAMIENTA GEO] Buscando horario para: '{direccion}'")
 
     ciudad = CONFIG_MUNICIPIO.get("ciudad", "")
     if ciudad and ciudad.lower() not in direccion.lower():
@@ -262,30 +254,34 @@ def consultar_recoleccion_por_direccion(direccion: str) -> str:
     else:
         direccion_completa = direccion
 
-    geocode_url = f"https://maps.googleapis.com/maps/api/geocode/json?address={requests.utils.quote(direccion_completa)}&key={Maps_API_KEY}"
+    geocode_result = geocode_address(direccion_completa)
+    if not geocode_result:
+        logger.warning(
+            f"[HERRAMIENTA GEO] No pude geocodificar la dirección: {direccion}"
+        )
+        return "No pude verificar esa dirección. ¿Puedes ser un poco más específico, incluyendo la ciudad?"
 
-    try:
-        response = requests.get(geocode_url)
-        response.raise_for_status()
-        data = response.json()
+    lat = geocode_result["lat"]
+    lng = geocode_result["lng"]
+    logger.info(
+        f"[HERRAMIENTA GEO] Coordenadas para '{direccion}': Lat={lat}, Lng={lng}"
+    )
 
-        if not data or data['status'] != 'OK' or not data.get('results'):
-            logger.warning(f"[HERRAMIENTA GEO] La API de Google no pudo geocodificar la dirección: {direccion}")
-            return "No pude verificar esa dirección. ¿Puedes ser un poco más específico, incluyendo la ciudad?"
-
-        location = data['results'][0]['geometry']['location']
-        lat, lng = location['lat'], location['lng']
-        logger.info(f"[HERRAMIENTA GEO] Coordenadas para '{direccion}': Lat={lat}, Lng={lng}")
-
-        if -34.595 <= lat <= -34.580 and -60.955 <= lng <= -60.935:
-            return f"Detecté que la dirección '{direccion}' está en la **zona céntrica**. Allí, la recolección es de **Lunes a Sábado por la noche (a partir de las 22:00 hs)**."
-        elif -34.580 <= lat <= -34.570 and -60.935 <= lng <= -60.920:
-            return f"Para la zona de **Villa Belgrano**, la recolección es los días **Martes, Jueves y Sábado por la mañana (a partir de las 08:00 hs)**."
-        else:
-            return "Según la ubicación, te corresponde el servicio de recolección zonal. Los días son **Lunes, Miércoles y Viernes por la noche (a partir de las 21:00 hs)**. Te recomiendo confirmarlo en la web del municipio."
-    except requests.exceptions.RequestException as e:
-        logger.error(f"[HERRAMIENTA GEO] Error de conexión con la API de Google: {e}")
-        return "Tuve un problema de comunicación con el servicio de mapas. Por favor, intenta de nuevo en unos momentos."
+    if -34.595 <= lat <= -34.580 and -60.955 <= lng <= -60.935:
+        return (
+            f"Detecté que la dirección '{direccion}' está en la **zona céntrica**. "
+            "Allí, la recolección es de **Lunes a Sábado por la noche (a partir de las 22:00 hs)**."
+        )
+    if -34.580 <= lat <= -34.570 and -60.935 <= lng <= -60.920:
+        return (
+            "Para la zona de **Villa Belgrano**, la recolección es los días **Martes, "
+            "Jueves y Sábado por la mañana (a partir de las 08:00 hs)**."
+        )
+    return (
+        "Según la ubicación, te corresponde el servicio de recolección zonal. "
+        "Los días son **Lunes, Miércoles y Viernes por la noche (a partir de las 21:00 hs)**. "
+        "Te recomiendo confirmarlo en la web del municipio."
+    )
 
 
 # --- HERRAMIENTA 2: CATEGORIZACIÓN DE RECLAMOS ---
