@@ -58,8 +58,12 @@ def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
 def _send_delayed_payload(client, to_number: str, from_number: str, payload: dict, delay: int):
     """Send a payload via WhatsApp after a delay using a background thread."""
 
+    # Capture the real application object so the background thread can safely
+    # create its own context without relying on the ambient ``current_app``.
+    app = current_app._get_current_object()
+
     def _send():
-        with current_app.app_context():
+        with app.app_context():
             from services.response_formatter import build_interactive_response
 
             formatted = build_interactive_response(
@@ -85,7 +89,7 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
             try:
                 client.messages.create(**params)
             except Exception as e:
-                current_app.logger.error(f"Error sending delayed message: {e}")
+                app.logger.error(f"Error sending delayed message: {e}")
 
     if client:
         timer = threading.Timer(delay, _send)
@@ -461,6 +465,7 @@ def whatsapp_webhook():
     esperando_info = _esperando_info_libre(municipio_ctx)
 
     # Solo traducir números a acciones cuando no estamos esperando información libre.
+    mapped_action = False
     if message_body.isdigit() and last_options and not esperando_info:
         idx = int(message_body) - 1
         if 0 <= idx < len(last_options):
@@ -471,6 +476,7 @@ def whatsapp_webhook():
                 or selected.get("texto")
                 or message_body
             )
+            mapped_action = True
 
     # --- Call Real Chatbot Logic: responder_chatboc ---
     # Initialize with a default error response
@@ -507,6 +513,16 @@ def whatsapp_webhook():
         if interpretacion_media_data and not interpretacion_media_data.get("error"):
             # This will now only contain data from actual images/files, not locations.
             kwargs_for_bot["datos_interpretados_archivo"] = interpretacion_media_data
+
+        payload_data = None
+        if button_payload:
+            payload_data = {"action_id": button_payload}
+        elif list_id:
+            payload_data = {"action_id": list_id}
+        elif mapped_action:
+            payload_data = {"action_id": message_body}
+        if payload_data:
+            kwargs_for_bot["payload"] = payload_data
 
         profile_name = post_vars.get("ProfileName")
         if profile_name:

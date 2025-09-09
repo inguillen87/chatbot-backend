@@ -18,6 +18,7 @@ from services.ticket_service import servicio_tickets
 from utils.db_utils import safe_flag_modified
 # Compatibilidad hacia atrás para pruebas que parchean `flag_modified`
 flag_modified = safe_flag_modified
+import hashlib
 
 logger = logging.getLogger(__name__)
 from twilio.rest import Client
@@ -90,6 +91,15 @@ CANCEL_KEYWORDS = {
 
 # Simple cache to avoid recomputing responses for repeated municipal queries
 MUNICIPIO_RESPONSE_CACHE = TTLCache(maxsize=256, ttl=3600)
+
+# States where caching can cause stale responses; skip cache when in any of these
+SENSITIVE_STATES = {
+    "ESPERANDO_DIRECCION_RECLAMO",
+    "ESPERANDO_DATOS_CONTACTO",
+    "ESPERANDO_CONFIRMACION_RECLAMO",
+    "ESPERANDO_CONFIRMACION_UBICACION",
+    "ESPERANDO_MENU_EDICION",
+}
 
 def clear_municipio_cache() -> None:
     """Utility mainly for tests to clear the local municipio response cache."""
@@ -2945,11 +2955,12 @@ def responder_municipio(
     # --- END DEBUG LOG ---
 
     normalized_question = None
+    cache_key = None
 
     def _finalize_response(response):
         """Return the response unchanged; also store it in cache for repeated queries."""
-        if normalized_question:
-            MUNICIPIO_RESPONSE_CACHE[normalized_question] = response
+        if cache_key:
+            MUNICIPIO_RESPONSE_CACHE[cache_key] = response
         return response
 
     logger_actual.info(
@@ -2987,9 +2998,17 @@ def responder_municipio(
         received_payload["pregunta"] = ""
 
     normalized_question = normalizar_texto(pregunta_str)
-    if normalized_question in MUNICIPIO_RESPONSE_CACHE:
-        logger_actual.info("responder_municipio: returning cached response")
-        return MUNICIPIO_RESPONSE_CACHE[normalized_question]
+    estado_actual = None
+    if chat_db_context and chat_db_context.context_data:
+        estado_actual = chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {}).get("estado_conversacion")
+
+    if estado_actual not in SENSITIVE_STATES:
+        session_id = getattr(chat_db_context, "chat_session_id", anon_id)
+        body_hash = hashlib.sha1(normalized_question.encode()).hexdigest()[:10]
+        cache_key = f"{session_id}:{estado_actual}:{body_hash}"
+        if cache_key in MUNICIPIO_RESPONSE_CACHE:
+            logger_actual.info("responder_municipio: returning cached response")
+            return MUNICIPIO_RESPONSE_CACHE[cache_key]
 
     if kwargs:
         for key, value in kwargs.items():
