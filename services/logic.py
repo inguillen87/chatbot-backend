@@ -305,6 +305,7 @@ def responder_chatboc(
         text_to_speak = response_data.get('audio_text')
         base_text = response_data.get('message_body') or response_data.get('message_to_user', '')
         if not text_to_speak:
+            base_text = response_data.get('message_body') or response_data.get('message_to_user', '')
             text_to_speak = render_audio_text(
                 base_text,
                 response_data.get('options_list'),
