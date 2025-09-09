@@ -260,9 +260,9 @@ def responder_chatboc(
     # Los handlers (responder_municipio, responder_pyme) son responsables de cargar/guardar
     # su propio contexto desde/hacia chat_db_context.context_data usando chat_session_uuid como posible sub-key si es necesario.
 
-    response_data = None
+    response = None
     if tipo_chat == "municipio":
-        response_data = responder_municipio(
+        response = responder_municipio(
             pregunta_original=pregunta, # La pregunta original del usuario
             owner_user=owner_user,
             rubro_obj=rubro_obj,
@@ -274,7 +274,7 @@ def responder_chatboc(
             **kwargs, # Contiene datos_interpretados_archivo y archivo_id_para_asociar
         )
     elif tipo_chat == "pyme":
-        response_data = responder_pyme(
+        response = responder_pyme(
             pregunta_original=pregunta,
             owner_user=owner_user,
             rubro_obj=rubro_obj,
@@ -288,12 +288,19 @@ def responder_chatboc(
     else:
         # Esto no debería ocurrir debido a las validaciones previas de tipo_chat
         logger.error(f"Error crítico: tipo_chat '{tipo_chat}' no es ni 'municipio' ni 'pyme' en la parte final de responder_chatboc.")
-        response_data = {"respuesta": "Error interno: tipo de chat no configurado correctamente.", "fuente": "sistema_error"}
+        response = {"respuesta": "Error interno: tipo de chat no configurado correctamente.", "fuente": "sistema_error"}
 
-    # Some handlers may return a tuple like ``(payload, status_code)``.  The
-    # rest of this function expects a dictionary payload, so normalize here.
-    if isinstance(response_data, tuple):
-        response_data = response_data[0] if response_data else {}
+    # Some handlers may return ``(payload, extras)`` or similar sequences.
+    # Normalize to separate the payload (dict) from optional extras so the rest
+    # of the function can safely operate on ``response_data`` without errors.
+    if isinstance(response, (tuple, list)):
+        response_data = response[0] or {}
+        extras = response[1] if len(response) > 1 else {}
+    else:
+        response_data = response or {}
+        extras = {}
+    if not isinstance(response_data, dict):
+        response_data = {}
 
     # Always enable audio responses for accessibility
     context_data = chat_db_context.context_data if chat_db_context else {}
@@ -301,7 +308,7 @@ def responder_chatboc(
         response_data['generar_audio'] = True
 
     # --- Audio Response Generation ---
-    if response_data and response_data.get('generar_audio'):
+    if isinstance(response_data, dict) and response_data.get('generar_audio'):
         text_to_speak = response_data.get('audio_text')
         base_text = response_data.get('message_body') or response_data.get('message_to_user', '')
         if not text_to_speak:

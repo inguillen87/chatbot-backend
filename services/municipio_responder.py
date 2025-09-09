@@ -67,6 +67,7 @@ class ReclamoState(Enum):
     ESPERANDO_FOTO = auto()
     ESPERANDO_DATOS_CONTACTO = auto()
     ESPERANDO_CONFIRMACION = auto()
+    ESPERANDO_MENU_EDICION = auto()
 
 
 CANCEL_KEYWORDS = {
@@ -142,6 +143,8 @@ class ReclamoFlowHandler:
             return self.handle_datos_contacto(user_input)
         elif state == ReclamoState.ESPERANDO_CONFIRMACION:
             return self.handle_confirmacion(user_input, payload)
+        elif state == ReclamoState.ESPERANDO_MENU_EDICION:
+            return self.handle_menu_edicion(user_input, payload)
         else:
             logger.error(f"ReclamoFlowHandler: Estado desconocido o no manejado: {state_name}")
             return self.end_flow("Hubo un error en el proceso, por favor intentá de nuevo.", show_menu=True)
@@ -301,6 +304,7 @@ class ReclamoFlowHandler:
         es_foto = payload.get("es_foto") or self.context.get("es_foto")
         if es_foto and foto_url:
             self.flow_context['datos_reclamo']['foto_url'] = foto_url
+            self.context['foto_url'] = foto_url
             return self.ask_for_contact_details()
 
         no_words = {"no", "omitir", "omitilo", "sin foto", "ninguna"}
@@ -417,10 +421,52 @@ class ReclamoFlowHandler:
             )
             return self.end_flow(error_message, show_menu=True)
         elif any(word in normalized for word in negatives) or action == "reclamo_confirmar_no":
-            return self.ask_for_contact_details(force_prompt=True)
+            self.flow_context['state'] = ReclamoState.ESPERANDO_MENU_EDICION.name
+            return self.get_edit_menu()
         else:  # Cancel or any other input
             cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
             return self.end_flow(cancel_msg, show_menu=True)
+
+    def get_edit_menu(self):
+        options = [
+            {"texto": "Dirección", "action_id": "edit_dir"},
+            {"texto": "Descripción", "action_id": "edit_desc"},
+            {"texto": "Foto", "action_id": "edit_foto"},
+            {"texto": "Contacto", "action_id": "edit_contacto"},
+        ]
+        return {
+            "message_body": "¿Qué querés editar?",
+            "options_list": options,
+            "message_type": "interactive_buttons",
+        }
+
+    def handle_menu_edicion(self, user_input, payload):
+        action = payload.get("action")
+        text = user_input.strip().lower()
+        mapping = {
+            "1": "edit_dir",
+            "direccion": "edit_dir",
+            "2": "edit_desc",
+            "descripcion": "edit_desc",
+            "3": "edit_foto",
+            "foto": "edit_foto",
+            "4": "edit_contacto",
+            "contacto": "edit_contacto",
+        }
+        selected = action or mapping.get(text)
+        if selected == "edit_dir":
+            self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
+            return {"message_body": "Indica la dirección corregida."}
+        if selected == "edit_desc":
+            self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
+            return {"message_body": "Escribí la descripción actualizada."}
+        if selected == "edit_foto":
+            self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
+            return {"message_body": "Enviá la nueva foto."}
+        if selected == "edit_contacto":
+            self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
+            return {"message_body": "Actualizá tus datos de contacto."}
+        return self.get_edit_menu()
 
     def end_flow(self, message, show_menu=False, image_url=None):
         self.flow_context.clear()

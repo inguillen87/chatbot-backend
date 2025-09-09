@@ -185,6 +185,25 @@ def whatsapp_webhook():
     if not isinstance(session_context_db_entry.context_data, dict):
         session_context_db_entry.context_data = {}
 
+    # --- Handle location messages and persist coordinates ---
+    msg_type = post_vars.get("MessageType")
+    if msg_type == "location":
+        lat = post_vars.get("Latitude")
+        lon = post_vars.get("Longitude")
+        ctx = session_context_db_entry.context_data
+        ctx.setdefault("contexto_municipio_v2", {})
+        ctxm = ctx["contexto_municipio_v2"]
+        datos = ctxm.get("datos_parciales_llm_reclamo", {})
+        datos.update({
+            "coordenadas": {"lat": lat, "lon": lon},
+            "ubicacion": f"Lat: {lat}, Lon: {lon}",
+        })
+        ctxm["datos_parciales_llm_reclamo"] = datos
+        ctxm["estado_conversacion"] = "ESPERANDO_CONFIRMACION_UBICACION"
+        safe_flag_modified(session_context_db_entry, "context_data")
+        db.session.add(session_context_db_entry)
+        db.session.commit()
+
     # Determine incoming text before any special handling
     button_payload = post_vars.get("ButtonPayload")
     list_id = post_vars.get("ListId")
