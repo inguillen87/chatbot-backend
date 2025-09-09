@@ -298,6 +298,7 @@ def responder_chatboc(
     # --- Audio Response Generation ---
     if response_data and response_data.get('generar_audio') and not response_data.get('audio_url'):
         text_to_speak = response_data.get('audio_text')
+        base_text = response_data.get('message_body') or response_data.get('message_to_user', '')
         if not text_to_speak:
             base_text = response_data.get('message_body') or response_data.get('message_to_user', '')
             text_to_speak = render_audio_text(
@@ -305,6 +306,9 @@ def responder_chatboc(
                 response_data.get('options_list'),
                 response_data.get('categorias'),
             )
+        elif base_text:
+            # Ensure provided audio_text is prefixed with the conversational summary
+            text_to_speak = f"{base_text}\n{text_to_speak}"
         if text_to_speak:
             from services.tts_orchestrator import generar_audio_con_fallback
             audio_url = generar_audio_con_fallback(text_to_speak)
