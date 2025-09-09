@@ -106,7 +106,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         if tiene_categoria and not tiene_ubicacion:
             contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
             return {
-                "message_body": "Para avanzar necesito la ubicación exacta del problema (calle y número).",
+                "message_body": (
+                    "Para avanzar necesito la ubicación exacta del problema: calle, número y barrio o distrito; "
+                    "si es en una esquina, indicá las calles aledañas."
+                ),
                 "options_list": [],
                 "message_type": "text",
             }, contexto_municipio_actual

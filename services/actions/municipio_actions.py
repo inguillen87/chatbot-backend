@@ -21,7 +21,7 @@ from services.common_utils import (
 )
 from services.config_loader import cargar_configuracion_municipio
 from models import MunicipioTicket, User
-from extensions import db
+from extensions import db as _db
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
         contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
         viewer_user = self.context.get("viewer_user_obj")
         if viewer_user and getattr(viewer_user, "id", None):
-            viewer_user = db.session.get(User, viewer_user.id)
+            viewer_user = _db.session.get(User, viewer_user.id)
             self.context["viewer_user_obj"] = viewer_user
 
         # Fusionar datos: action_data tiene prioridad, luego el contexto del reclamo, luego el perfil del usuario
@@ -238,9 +238,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 viewer_user.dni = dni_final
                 updated = True
             if updated:
-                from models import db
-                db.session.add(viewer_user)
-                db.session.commit()
+                _db.session.add(viewer_user)
+                _db.session.commit()
                 logger.info(f"User profile for {viewer_user.id} updated with new contact info.")
         pregunta_original = self.context.get("pregunta_actual_usuario", "")
 
@@ -746,7 +745,7 @@ class DerivarHumanoActionHandler(BaseActionHandler):
 
             # Since downstream functions need the object, fetch it from the DB
             from models import MunicipioTicket
-            sala_obj = db.session.get(MunicipioTicket, sala_dict['id'])
+            sala_obj = _db.session.get(MunicipioTicket, sala_dict['id'])
             if not sala_obj:
                 raise Exception(f"No se pudo recuperar el ticket recién creado con ID {sala_dict['id']}")
 

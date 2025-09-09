@@ -1811,7 +1811,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             return {
-                "message_body": "Para avanzar necesito la ubicación exacta del problema (calle y número).",
+                "message_body": (
+                    "Para avanzar necesito la ubicación exacta del problema: calle, número y barrio o distrito; "
+                    "si es en una esquina, indicá las calles aledañas."
+                ),
                 "options_list": [],
                 "message_type": "text",
             }, contexto_municipio_actual
@@ -2322,6 +2325,35 @@ MENU_KEYWORDS = {
 }
 
 from fuzzywuzzy import process
+
+def handle_location_for_reclamo(context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual, location_data):
+    """Attach a received location to an ongoing claim and create the ticket if possible."""
+    datos_reclamo = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
+    lat = location_data.get("latitude")
+    lon = location_data.get("longitude")
+    address = location_data.get("address") or f"Lat: {lat}, Lon: {lon}"
+    datos_reclamo["coordenadas"] = {"lat": lat, "lon": lon}
+    datos_reclamo.setdefault("ubicacion", address)
+
+    tiene_categoria = bool(datos_reclamo.get("categoria"))
+    tiene_descripcion = bool(datos_reclamo.get("descripcion"))
+
+    if tiene_categoria:
+        if not tiene_descripcion:
+            datos_reclamo["descripcion"] = context.get("pregunta_actual_usuario", "") or ""
+        handler = CrearReclamoActionHandler(context)
+        respuesta = handler.execute(datos_reclamo)
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+    else:
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
+        respuesta = {
+            "message_body": "¿Qué tipo de problema es? (por ejemplo arbolado, luminaria, limpieza)",
+            "options_list": [],
+            "message_type": "text",
+        }
+    if chat_db_context:
+        flag_modified(chat_db_context, "context_data")
+    return respuesta, contexto_municipio_actual
 
 def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None:
     """
@@ -2968,6 +3000,17 @@ def responder_municipio(
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response(response_dict)
+
+        if contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_DIRECCION_RECLAMO.name:
+            respuesta, contexto_municipio_actual = handle_location_for_reclamo(
+                context,
+                viewer_user,
+                owner_user,
+                chat_db_context,
+                contexto_municipio_actual,
+                received_payload.get("ubicacion_usuario", {}),
+            )
+            return _finalize_response(respuesta), contexto_municipio_actual
 
         # When already waiting for a location to answer a pending query (e.g., estacionamiento),
         # skip proactive handling so that the dedicated state logic can process it.
