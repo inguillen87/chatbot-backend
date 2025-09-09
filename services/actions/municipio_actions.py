@@ -190,7 +190,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
         logger.info(f"DEBUG: telefono_final: {telefono_final}")
         logger.info(f"DEBUG: email_final: {email_final}")
         logger.info(f"DEBUG: campos_faltantes before: {campos_faltantes}")
-        if not viewer_user and (nombre_vecino_final == "Vecino/a" or not telefono_final or not email_final or not dni_final):
+        if nombre_vecino_final == "Vecino/a" or not telefono_final or not email_final or not dni_final:
              if nombre_vecino_final == "Vecino/a":
                  campos_faltantes.append("nombre")
              if not telefono_final:
@@ -406,19 +406,26 @@ class CrearReclamoActionHandler(BaseActionHandler):
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/tickets/municipio')
             promo_image_url = municipio_config.get('promo_image_url')
             categoria_display = categoria
-            mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
-                "reclamo",
-                ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
-                descripcion,
-                categoria_display,
-                nro_ticket_str,
-                contacto_especializado,
-                base_chat_url,
-                dni=ticket_data_cleaned.get("dni_vecino"),
-                telefono=ticket_data_cleaned.get("telefono_vecino"),
-                email=ticket_data_cleaned.get("email_vecino"),
-                consulta_pin=pin_final,
-            )
+            try:
+                mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
+                    "reclamo",
+                    ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
+                    descripcion,
+                    categoria_display,
+                    nro_ticket_str,
+                    contacto_especializado,
+                    base_chat_url,
+                    dni=ticket_data_cleaned.get("dni_vecino"),
+                    telefono=ticket_data_cleaned.get("telefono_vecino"),
+                    email=ticket_data_cleaned.get("email_vecino"),
+                    consulta_pin=pin_final,
+                )
+            except Exception as e_fmt:
+                logger.exception("Error formateando resumen del ticket", exc_info=True)
+                mensaje_respuesta = (
+                    f"✅ *¡Reclamo recibido!*\nN° de Ticket: M-{nro_ticket_str}"
+                )
+                botones_finales = []
 
             # Log para debug
             logger.info(f"Respuesta formateada: '{mensaje_respuesta}', Botones: {botones_finales}")
