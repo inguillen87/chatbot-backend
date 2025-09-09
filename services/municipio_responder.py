@@ -2396,6 +2396,9 @@ RECLAMO_KEYWORDS = {
         "lampara",
         "poste caido",
         "poste caído",
+        "alumbrado",
+        "luz quemada",
+        "foco quemado",
     ],
     "Arbolado": [
         "arbolado",
@@ -2407,6 +2410,18 @@ RECLAMO_KEYWORDS = {
         "árbol caído",
         "tronco",
         "gajo",
+        "poda",
+        "poda de arbol",
+        "arbol seco",
+        "raiz",
+        "raíz",
+        "raices",
+        "raíces",
+        "planta",
+        "plantas",
+        "arbusto",
+        "arbol en medianera",
+        "arbol invade",
     ],
     "Limpieza y riego": [
         "limpieza",
@@ -2421,6 +2436,13 @@ RECLAMO_KEYWORDS = {
         "maleza",
         "desmalezado",
         "baldio",
+        "residuos",
+        "suciedad",
+        "carton",
+        "cartón",
+        "plastico",
+        "plástico",
+        "hojas",
     ],
     "Arreglo de calle": [
         "calle",
@@ -2432,6 +2454,11 @@ RECLAMO_KEYWORDS = {
         "hueco",
         "pavimento",
         "calzada",
+        "calle rota",
+        "pavimento levantado",
+        "asfalto roto",
+        "pozo en la calle",
+        "vereda rota",
     ],
     "Pérdida de agua": [
         "agua",
@@ -2441,6 +2468,9 @@ RECLAMO_KEYWORDS = {
         "fuga",
         "rotura",
         "tuberia",
+        "agua servida",
+        "canilla rota",
+        "cisterna",
     ],
     "Otros": ["otros", "otro", "varios"],
 }
@@ -2490,37 +2520,51 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
 def extract_reclamo_details_from_text(user_input: str, reclamo_options: list) -> dict:
     """Attempt to extract category, description and address from a user message.
 
-    The function first tries to leverage the LLM-based extractor so we obtain
-    a short category, concise description and any location mentioned by the
-    user. If the LLM fails or returns partial data we fall back to the legacy
-    keyword heuristics so the flow can still progress.
+    Heuristic keyword checks are applied first so simple claims can be resolved
+    without calling the LLM. If essential data remains missing the LLM is
+    invoked to complete the extraction.
     """
     details: dict[str, str] = {}
     if not user_input:
         return details
 
-    # --- Primary extraction using LLM ---
-    llm_details = extract_complaint_details_llm(user_input) or {}
-    if llm_details.get("tipo_problema"):
-        mapped = find_reclamo_category_by_input(llm_details["tipo_problema"], reclamo_options)
-        if mapped:
-            details["categoria_sugerida"] = mapped
-    if llm_details.get("descripcion_problema"):
-        details["descripcion_sugerida"] = llm_details["descripcion_problema"]
-    if llm_details.get("ubicacion_problema"):
-        details["direccion_sugerida"] = llm_details["ubicacion_problema"]
-    if llm_details.get("distrito_problema"):
-        details["distrito_sugerido"] = llm_details["distrito_problema"]
-    if llm_details.get("nombre_usuario"):
-        details["nombre_sugerido"] = llm_details["nombre_usuario"]
-    if llm_details.get("telefono_usuario"):
-        details["telefono_sugerido"] = llm_details["telefono_usuario"]
-    if llm_details.get("email_usuario"):
-        details["email_sugerido"] = llm_details["email_usuario"]
-    if llm_details.get("dni_usuario"):
-        details["dni_sugerido"] = llm_details["dni_usuario"]
+    # --- Heuristic extraction (cheap) ---
+    category = find_reclamo_category_by_input(user_input, reclamo_options)
+    if category:
+        details["categoria_sugerida"] = category
+        details.setdefault("descripcion_sugerida", user_input)
 
-    # Intentar obtener datos de contacto faltantes con otra llamada LLM
+    import re
+    match = re.search(r"([A-Za-zÀ-ÿ'\s]+?)\s+(\d{1,5})", user_input)
+    if match:
+        details["direccion_sugerida"] = f"{match.group(1).strip()} {match.group(2)}"
+
+    # --- LLM extraction only if heuristics incomplete ---
+    need_llm = "categoria_sugerida" not in details
+    if need_llm:
+        llm_details = extract_complaint_details_llm(user_input) or {}
+        if llm_details.get("tipo_problema") and "categoria_sugerida" not in details:
+            mapped = find_reclamo_category_by_input(
+                llm_details["tipo_problema"], reclamo_options
+            )
+            if mapped:
+                details["categoria_sugerida"] = mapped
+        if llm_details.get("descripcion_problema") and "descripcion_sugerida" not in details:
+            details["descripcion_sugerida"] = llm_details["descripcion_problema"]
+        if llm_details.get("ubicacion_problema") and "direccion_sugerida" not in details:
+            details["direccion_sugerida"] = llm_details["ubicacion_problema"]
+        if llm_details.get("distrito_problema") and "distrito_sugerido" not in details:
+            details["distrito_sugerido"] = llm_details["distrito_problema"]
+        if llm_details.get("nombre_usuario"):
+            details["nombre_sugerido"] = llm_details["nombre_usuario"]
+        if llm_details.get("telefono_usuario"):
+            details["telefono_sugerido"] = llm_details["telefono_usuario"]
+        if llm_details.get("email_usuario"):
+            details["email_sugerido"] = llm_details["email_usuario"]
+        if llm_details.get("dni_usuario"):
+            details["dni_sugerido"] = llm_details["dni_usuario"]
+
+    # --- Contact extraction (may still use LLM) ---
     missing_contact_fields = []
     if "nombre_sugerido" not in details:
         missing_contact_fields.append("nombre_cliente")
@@ -2532,7 +2576,9 @@ def extract_reclamo_details_from_text(user_input: str, reclamo_options: list) ->
         missing_contact_fields.append("dni_cliente")
 
     if missing_contact_fields:
-        contact_details = extract_multiple_contact_details_llm(user_input, missing_contact_fields) or {}
+        contact_details = extract_multiple_contact_details_llm(
+            user_input, missing_contact_fields
+        ) or {}
         if contact_details.get("nombre_cliente"):
             details["nombre_sugerido"] = contact_details["nombre_cliente"]
         if contact_details.get("telefono_cliente"):
@@ -2544,24 +2590,7 @@ def extract_reclamo_details_from_text(user_input: str, reclamo_options: list) ->
         if contact_details.get("direccion_cliente") and "direccion_sugerida" not in details:
             details["direccion_sugerida"] = contact_details["direccion_cliente"]
 
-    # --- Fallback heuristics when LLM data is missing ---
-    if "categoria_sugerida" not in details:
-        category = find_reclamo_category_by_input(user_input, reclamo_options)
-        if category:
-            details["categoria_sugerida"] = category
-            description_source = user_input
-            normalized = normalizar_texto(user_input)
-            for kw in RECLAMO_KEYWORDS.get(category, []):
-                if kw in normalized:
-                    import re
-                    pattern = re.compile(re.escape(kw), re.IGNORECASE)
-                    parts = pattern.split(user_input, 1)
-                    if len(parts) > 1 and parts[1].strip():
-                        description_source = parts[1].strip(" ,.-")
-                    break
-            if description_source and description_source != user_input and "descripcion_sugerida" not in details:
-                details["descripcion_sugerida"] = description_source
-
+    # --- Regex fallback for location if still missing ---
     if "direccion_sugerida" not in details:
         import re
         match = re.search(r"en\s+([A-Za-zÀ-ÿ'\s]+?)\s+(\d{1,5})", user_input, re.IGNORECASE)
