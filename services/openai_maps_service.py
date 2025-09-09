@@ -40,12 +40,19 @@ def geocodificar_inversa_llm(latitud: float, longitud: float) -> dict | None:
                 "additionalProperties": False,
             },
         }
-        response = client.responses.create(
-            model=DEFAULT_MODEL,
-            input=prompt,
-            response_format={"type": "json_schema", "json_schema": schema},
-        )
-        text = response.output[0].content[0].text
+        if hasattr(client, "responses"):
+            response = client.responses.create(
+                model=DEFAULT_MODEL,
+                input=prompt,
+                response_format={"type": "json_schema", "json_schema": schema},
+            )
+            text = response.output[0].content[0].text
+        else:
+            completion = client.chat.completions.create(
+                model=DEFAULT_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = completion.choices[0].message["content"]
         data = json.loads(text)
         return data
     except Exception as e:
