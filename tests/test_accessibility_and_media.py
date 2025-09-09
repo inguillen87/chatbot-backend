@@ -179,6 +179,7 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         assert 'Opción A' in spoken_text
         assert 'Opción B' in spoken_text
 
+
     @patch('routes.whatsapp_webhook.threading.Timer')
     @patch('services.response_formatter.build_interactive_response')
     def test_send_delayed_payload_uses_message_to_user_when_body_missing(

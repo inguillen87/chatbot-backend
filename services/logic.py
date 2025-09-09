@@ -290,13 +290,18 @@ def responder_chatboc(
         logger.error(f"Error crítico: tipo_chat '{tipo_chat}' no es ni 'municipio' ni 'pyme' en la parte final de responder_chatboc.")
         response_data = {"respuesta": "Error interno: tipo de chat no configurado correctamente.", "fuente": "sistema_error"}
 
+    # Some handlers may return a tuple like ``(payload, status_code)``.  The
+    # rest of this function expects a dictionary payload, so normalize here.
+    if isinstance(response_data, tuple):
+        response_data = response_data[0] if response_data else {}
+
     # Always enable audio responses for accessibility
     context_data = chat_db_context.context_data if chat_db_context else {}
     if isinstance(response_data, dict) and not response_data.get('generar_audio'):
         response_data['generar_audio'] = True
 
     # --- Audio Response Generation ---
-    if response_data and response_data.get('generar_audio') and not response_data.get('audio_url'):
+    if response_data and response_data.get('generar_audio'):
         text_to_speak = response_data.get('audio_text')
         base_text = response_data.get('message_body') or response_data.get('message_to_user', '')
         if not text_to_speak:
