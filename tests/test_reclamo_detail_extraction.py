@@ -61,3 +61,11 @@ def test_llm_called_when_keywords_missing(monkeypatch):
     assert details["categoria_sugerida"] == "Luminaria"
     assert details["descripcion_sugerida"] == "luz quemada"
     assert details["direccion_sugerida"] == "Sarmiento 100"
+
+
+def test_intersection_and_district_parsing():
+    details = extract_reclamo_details_from_text(
+        "Sarmiento 100 esquina San Martin Junin Mendoza", ["Arbolado"]
+    )
+    assert details["direccion_sugerida"] == "Sarmiento 100 esquina San Martin"
+    assert details["distrito_sugerido"] == "Junin Mendoza"
