@@ -1813,6 +1813,23 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
     else:
         historial_para_llm = contexto_municipio_actual.get("historial_conversacion_general_llm", [])
 
+    historial_formateado = []
+    if (
+        historial_para_llm
+        and isinstance(historial_para_llm, list)
+        and historial_para_llm
+        and "pregunta_usuario" in historial_para_llm[0]
+    ):
+        for turno in historial_para_llm:
+            pregunta = turno.get("pregunta_usuario")
+            respuesta = turno.get("respuesta_ia")
+            if pregunta:
+                historial_formateado.append({"role": "user", "parts": [{"text": pregunta}]})
+            if respuesta:
+                historial_formateado.append({"role": "model", "parts": [{"text": respuesta}]})
+    else:
+        historial_formateado = historial_para_llm or []
+
     try:
         # FIX: Pre-process expected data to prevent state loss if LLM fails to return it
         campo_esperado = contexto_municipio_actual.get("esperando_info_llm_reclamo")
@@ -1856,7 +1873,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 app=app,
                 mensaje_usuario=mensaje_para_llm,
                 usuario=usuario_info_llm,
-                historial=historial_para_llm,
+                historial=historial_formateado,
                 chat_session_id=context.get("chat_session_uuid")
             )
             logger.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
@@ -2492,6 +2509,40 @@ def extract_reclamo_details_from_text(user_input: str, reclamo_options: list) ->
         details["descripcion_sugerida"] = llm_details["descripcion_problema"]
     if llm_details.get("ubicacion_problema"):
         details["direccion_sugerida"] = llm_details["ubicacion_problema"]
+    if llm_details.get("distrito_problema"):
+        details["distrito_sugerido"] = llm_details["distrito_problema"]
+    if llm_details.get("nombre_usuario"):
+        details["nombre_sugerido"] = llm_details["nombre_usuario"]
+    if llm_details.get("telefono_usuario"):
+        details["telefono_sugerido"] = llm_details["telefono_usuario"]
+    if llm_details.get("email_usuario"):
+        details["email_sugerido"] = llm_details["email_usuario"]
+    if llm_details.get("dni_usuario"):
+        details["dni_sugerido"] = llm_details["dni_usuario"]
+
+    # Intentar obtener datos de contacto faltantes con otra llamada LLM
+    missing_contact_fields = []
+    if "nombre_sugerido" not in details:
+        missing_contact_fields.append("nombre_cliente")
+    if "telefono_sugerido" not in details:
+        missing_contact_fields.append("telefono_cliente")
+    if "email_sugerido" not in details:
+        missing_contact_fields.append("email_cliente")
+    if "dni_sugerido" not in details:
+        missing_contact_fields.append("dni_cliente")
+
+    if missing_contact_fields:
+        contact_details = extract_multiple_contact_details_llm(user_input, missing_contact_fields) or {}
+        if contact_details.get("nombre_cliente"):
+            details["nombre_sugerido"] = contact_details["nombre_cliente"]
+        if contact_details.get("telefono_cliente"):
+            details["telefono_sugerido"] = contact_details["telefono_cliente"]
+        if contact_details.get("email_cliente"):
+            details["email_sugerido"] = contact_details["email_cliente"]
+        if contact_details.get("dni_cliente"):
+            details["dni_sugerido"] = contact_details["dni_cliente"]
+        if contact_details.get("direccion_cliente") and "direccion_sugerida" not in details:
+            details["direccion_sugerida"] = contact_details["direccion_cliente"]
 
     # --- Fallback heuristics when LLM data is missing ---
     if "categoria_sugerida" not in details:
