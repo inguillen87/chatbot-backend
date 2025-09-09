@@ -144,6 +144,33 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         self.assertEqual(args[0], "Resumen del reclamo.")
         self.assertEqual(response_dict.get('audio_url'), fake_audio_url)
 
+    @patch('routes.whatsapp_webhook.threading.Timer')
+    @patch('services.response_formatter.build_interactive_response')
+    def test_send_delayed_payload_uses_message_to_user_when_body_missing(
+        self, mock_build_interactive_response, mock_timer
+    ):
+        """Ensure delayed payload uses message_to_user as fallback for body text."""
+
+        # Timer should execute the function immediately for test purposes
+        def immediate_timer(delay, func):
+            return SimpleNamespace(start=lambda: func())
+
+        mock_timer.side_effect = immediate_timer
+
+        client = SimpleNamespace(messages=SimpleNamespace(create=MagicMock()))
+        payload = {
+            'message_to_user': 'Resumen del reclamo.',
+            'options_list': []
+        }
+
+        from routes.whatsapp_webhook import _send_delayed_payload
+
+        _send_delayed_payload(client, 'to', 'from', payload, delay=0)
+
+        mock_build_interactive_response.assert_called_once()
+        _, kwargs = mock_build_interactive_response.call_args
+        self.assertEqual(kwargs.get('body_text'), 'Resumen del reclamo.')
+
     def test_button_fallback_formats_options_as_text_list(self):
         """
         Tests that the response formatter creates a text list when the 'botones' key is present.

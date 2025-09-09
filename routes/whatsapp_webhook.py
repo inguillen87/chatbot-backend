@@ -63,7 +63,7 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
 
             formatted = build_interactive_response(
                 options=payload.get("options_list", []),
-                body_text=payload.get("message_body", ""),
+                body_text=payload.get("message_body") or payload.get("message_to_user", ""),
                 channel="whatsapp",
                 message_type=payload.get("message_type", "text"),
                 original_bot_response=payload,
