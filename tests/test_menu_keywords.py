@@ -101,6 +101,13 @@ class TestMenuKeywords(unittest.TestCase):
         category = find_reclamo_category_by_input("hay un poste caido", options)
         self.assertEqual(category, "Luminaria")
 
+    def test_arbol_medianera_category_detection(self):
+        options = _get_reclamos_menu().get("options_list", [])
+        category = find_reclamo_category_by_input(
+            "tengo un arbol en mi medianera", options
+        )
+        self.assertEqual(category, "Arbolado")
+
     def test_sugerencia_phrase(self):
         phrase = "queria hacer una sugerencia"
         self.assertEqual(find_global_menu_action(phrase), "enviar_sugerencia")
