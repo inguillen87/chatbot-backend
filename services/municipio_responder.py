@@ -1802,10 +1802,14 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         if tiene_categoria and tiene_ubicacion:
             if not datos_reclamo.get("descripcion"):
                 datos_reclamo["descripcion"] = detalles_rapidos.get("descripcion_sugerida", pregunta_str)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
             handler = CrearReclamoActionHandler(context)
             return handler.execute(datos_reclamo), contexto_municipio_actual
         if tiene_categoria and not tiene_ubicacion:
             contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
             return {
                 "message_body": "Para avanzar necesito la ubicación exacta del problema (calle y número).",
                 "options_list": [],
@@ -1813,6 +1817,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             }, contexto_municipio_actual
         if tiene_ubicacion and not tiene_categoria:
             contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
             return {
                 "message_body": "¿Qué tipo de problema es? (por ejemplo arbolado, luminaria, limpieza)",
                 "options_list": [],
