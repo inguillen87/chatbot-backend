@@ -45,3 +45,36 @@ def test_responder_directamente_keeps_waiting_state():
     assert updated_context["historial_llm_reclamo"][0]["respuesta_ia"] == "De nada!"
     assert "historial_conversacion_general_llm" not in updated_context
     assert result["message_body"] == "De nada!"
+
+def test_address_completion_creates_claim_without_llm():
+    context = {"chat_session_uuid": "test-session"}
+    viewer_user = None
+    owner_user = None
+    chat_db_context = SimpleNamespace(context_data={})
+    contexto = {
+        "estado_conversacion": ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name,
+        "datos_parciales_llm_reclamo": {
+            "categoria": "Arbolado",
+            "descripcion": "arbol invade",
+        },
+        "historial_llm_reclamo": [],
+        "esperando_info_llm_reclamo": "ubicacion",
+    }
+
+    with patch("services.llm_interaction_handler.llamar_llm_con_fallback") as mock_llm, \
+         patch("services.llm_interaction_handler.CrearReclamoActionHandler") as mock_handler:
+        mock_handler.return_value.execute.return_value = {"message_body": "OK"}
+        result, updated = handle_llm_interaction(
+            app=None,
+            pregunta_str="Sarmiento 100 esquina San Martin Junin",
+            context=context,
+            viewer_user=viewer_user,
+            owner_user=owner_user,
+            chat_db_context=chat_db_context,
+            contexto_municipio_actual=contexto,
+        )
+
+    mock_llm.assert_not_called()
+    mock_handler.return_value.execute.assert_called_once()
+    assert result["message_body"] == "OK"
+    assert updated["datos_parciales_llm_reclamo"]["ubicacion"].startswith("Sarmiento 100")

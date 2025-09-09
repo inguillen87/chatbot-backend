@@ -5,12 +5,23 @@ from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
 import random
 from services.ticket_service import servicio_tickets
-from services.notifications import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
-from services.herramientas_municipio import parse_direccion_completa as parse_direccion, direccion_es_valida
+from services.notifications import (
+    enviar_notificacion_whatsapp_con_plantilla,
+    enviar_notificacion_sms,
+)
+from services.herramientas_municipio import (
+    parse_direccion_completa as parse_direccion,
+    direccion_es_valida,
+)
 from services.ticket_utils import formatear_ticket_respuesta
-from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
+from services.common_utils import (
+    validar_telefono,
+    formatear_telefono_e164,
+    validar_email,
+)
 from services.config_loader import cargar_configuracion_municipio
-from models import MunicipioTicket
+from models import MunicipioTicket, User
+from extensions import db as _db
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +70,9 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
         viewer_user = self.context.get("viewer_user_obj")
+        if viewer_user and getattr(viewer_user, "id", None):
+            viewer_user = _db.session.get(User, viewer_user.id)
+            self.context["viewer_user_obj"] = viewer_user
 
         # Fusionar datos: action_data tiene prioridad, luego el contexto del reclamo, luego el perfil del usuario
         datos_parciales = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
@@ -224,9 +238,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 viewer_user.dni = dni_final
                 updated = True
             if updated:
-                from models import db
-                db.session.add(viewer_user)
-                db.session.commit()
+                _db.session.add(viewer_user)
+                _db.session.commit()
                 logger.info(f"User profile for {viewer_user.id} updated with new contact info.")
         pregunta_original = self.context.get("pregunta_actual_usuario", "")
 
@@ -385,6 +398,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 contacto_especializado,
                 base_chat_url,
                 dni=ticket_data_cleaned.get("dni_vecino"),
+                telefono=ticket_data_cleaned.get("telefono_vecino"),
+                email=ticket_data_cleaned.get("email_vecino"),
                 consulta_pin=pin_final,
             )
 
@@ -730,7 +745,7 @@ class DerivarHumanoActionHandler(BaseActionHandler):
 
             # Since downstream functions need the object, fetch it from the DB
             from models import MunicipioTicket
-            sala_obj = db.session.get(MunicipioTicket, sala_dict['id'])
+            sala_obj = _db.session.get(MunicipioTicket, sala_dict['id'])
             if not sala_obj:
                 raise Exception(f"No se pudo recuperar el ticket recién creado con ID {sala_dict['id']}")
 

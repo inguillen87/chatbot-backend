@@ -8,7 +8,11 @@ from sqlalchemy.orm.attributes import flag_modified
 from services.llm_orchestrator import llamar_llm_con_fallback
 from services.conversation_state import ConversationState
 from services.actions.municipio_actions import CrearReclamoActionHandler
-from services.municipio_responder import GreetingHandler, _get_main_menu_payload
+from services.municipio_responder import (
+    GreetingHandler,
+    _get_main_menu_payload,
+    extract_reclamo_details_from_text,
+)
 try:  # pragma: no cover - optional dependency in some environments
     from services.flows.reclamos import _get_reclamos_menu
 except ModuleNotFoundError:  # pragma: no cover
@@ -76,6 +80,46 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         contexto_municipio_actual.pop("esperando_info_llm", None)
         contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
         estado_conversacion_para_llm = ConversationState.CONVERSACION_GENERAL_LLM.name
+
+    # --- Heuristic extraction prior to invoking the LLM ---
+    reclamo_opts = _get_reclamos_menu().get("options_list", []) if _get_reclamos_menu else []
+    detalles_rapidos = extract_reclamo_details_from_text(pregunta_str, reclamo_opts, use_llm=False)
+    if detalles_rapidos:
+        datos_reclamo = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
+        if detalles_rapidos.get("categoria_sugerida") and not datos_reclamo.get("categoria"):
+            datos_reclamo["categoria"] = detalles_rapidos["categoria_sugerida"]
+        if detalles_rapidos.get("descripcion_sugerida") and not datos_reclamo.get("descripcion"):
+            datos_reclamo["descripcion"] = detalles_rapidos["descripcion_sugerida"]
+        if detalles_rapidos.get("direccion_sugerida") and not datos_reclamo.get("ubicacion"):
+            datos_reclamo["ubicacion"] = detalles_rapidos["direccion_sugerida"]
+        if detalles_rapidos.get("distrito_sugerido") and not datos_reclamo.get("distrito"):
+            datos_reclamo["distrito"] = detalles_rapidos["distrito_sugerido"]
+
+        tiene_categoria = bool(datos_reclamo.get("categoria"))
+        tiene_ubicacion = bool(datos_reclamo.get("ubicacion"))
+
+        if tiene_categoria and tiene_ubicacion:
+            if not datos_reclamo.get("descripcion"):
+                datos_reclamo["descripcion"] = detalles_rapidos.get("descripcion_sugerida", pregunta_str)
+            handler = CrearReclamoActionHandler(context)
+            return handler.execute(datos_reclamo), contexto_municipio_actual
+        if tiene_categoria and not tiene_ubicacion:
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+            return {
+                "message_body": (
+                    "Para avanzar necesito la ubicación exacta del problema: calle, número y barrio o distrito; "
+                    "si es en una esquina, indicá las calles aledañas."
+                ),
+                "options_list": [],
+                "message_type": "text",
+            }, contexto_municipio_actual
+        if tiene_ubicacion and not tiene_categoria:
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
+            return {
+                "message_body": "¿Qué tipo de problema es? (por ejemplo arbolado, luminaria, limpieza)",
+                "options_list": [],
+                "message_type": "text",
+            }, contexto_municipio_actual
 
     if estado_conversacion_para_llm in [
         ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name,
