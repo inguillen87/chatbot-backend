@@ -47,6 +47,7 @@ def formatear_ticket_respuesta(
     link_informacion = None
     link_whatsapp = None
     botones = []
+    chat_url = None
 
     if contacto_especializado:
         nombre_asesor = contacto_especializado.get("nombre")
@@ -127,7 +128,11 @@ def formatear_ticket_respuesta(
 
 Te mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!"""
 
-    # Limpiar URLs redundantes del cuerpo del mensaje
-    respuesta_limpia = _remove_redundant_urls_from_message(respuesta, botones)
+    if chat_url:
+        respuesta += f"\n🔗 Seguimiento online: {chat_url}"
+
+    # Limpiar URLs redundantes del cuerpo del mensaje, preservando el enlace de seguimiento
+    botones_para_limpieza = [b for b in botones if b.get("texto") != "💬 Ver mi Ticket"]
+    respuesta_limpia = _remove_redundant_urls_from_message(respuesta, botones_para_limpieza)
 
     return respuesta_limpia, botones
