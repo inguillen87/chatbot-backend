@@ -1,38 +1,48 @@
-import unittest
-from unittest.mock import patch
+import requests
 
-class TestLocationService(unittest.TestCase):
-    @patch("services.location_service.GOOGLE_MAPS_API_KEY", "test")
-    @patch("services.location_service.googlemaps.Client")
-    def test_geocode_address_restricts_country(self, mock_client, *_):
-        from services import location_service as ls
-        mock_instance = mock_client.return_value
-        mock_instance.geocode.return_value = [
-            {"geometry": {"location": {"lat": -32.89, "lng": -68.83}}}
-        ]
-        result = ls.geocode_address("San Martin")
-        mock_instance.geocode.assert_called_once_with(
-            "San Martin",
-            region="ar",
-            components={"country": "AR"},
-        )
-        self.assertEqual(result["geometry"]["location"]["lat"], -32.89)
+from services.location_service import geocode_address
 
-    @patch("services.location_service.GOOGLE_MAPS_API_KEY", "test")
-    @patch("services.location_service.googlemaps.Client")
-    def test_autocomplete_address_uses_country(self, mock_client, *_):
-        from services import location_service as ls
-        mock_instance = mock_client.return_value
-        mock_instance.places_autocomplete.return_value = [
-            {"description": "San Martin, Mendoza, Argentina"}
-        ]
-        result = ls.autocomplete_address("San Martin")
-        mock_instance.places_autocomplete.assert_called_once_with(
-            input_text="San Martin",
-            language="es",
-            components={"country": "ar"},
-        )
-        self.assertEqual(result[0]["description"], "San Martin, Mendoza, Argentina")
 
-if __name__ == "__main__":
-    unittest.main()
+def test_geocode_address_success(monkeypatch):
+    """Geocoding returns coordinates when Nominatim responds with data."""
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return [
+                {
+                    "lat": "-34.6",
+                    "lon": "-58.4",
+                    "display_name": "Av. Siempre Viva 123, Ciudad",
+                }
+            ]
+
+    def fake_get(url, params=None, headers=None, timeout=5):
+        return FakeResponse()
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    result = geocode_address("Av Siempre Viva 123")
+    assert result["lat"] == -34.6
+    assert result["lng"] == -58.4
+    assert "maps_search_url" in result
+
+
+def test_geocode_address_failure(monkeypatch):
+    """When Nominatim returns empty data, function yields None."""
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return []
+
+    def fake_get(url, params=None, headers=None, timeout=5):
+        return FakeResponse()
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    result = geocode_address("some unknown place")
+    assert result is None
+

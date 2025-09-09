@@ -119,14 +119,20 @@ def _parse_contact_compact_text(texto: str) -> dict:
         data["email"] = m.group(0)
         t = t.replace(m.group(0), " ")
 
-    m = re.search(r"\b\+?\d{8,15}\b", t)
-    if m:
-        data["telefono"] = m.group(0)
-        t = t.replace(m.group(0), " ")
-
     m = re.search(r"\b\d{7,9}\b", t)
     if m:
-        data["dni"] = m.group(0)
+        data["dni"] = re.sub(r"\D", "", m.group(0))
+        t = t.replace(m.group(0), " ")
+
+    m = re.search(r"\+?\d[\d\s().-]{6,}\d", t)
+    if m:
+        raw_tel = re.sub(r"[^\d+]", "", m.group(0))
+        if validar_telefono(raw_tel):
+            data["telefono"] = (
+                raw_tel if raw_tel.startswith("+") else formatear_telefono_e164(raw_tel)
+            )
+        else:
+            data["telefono"] = raw_tel
         t = t.replace(m.group(0), " ")
 
     chunks = [c for c in re.split(r"\s{2,}|\s-\s", t) if c.strip()]
