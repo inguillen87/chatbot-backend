@@ -27,7 +27,19 @@ def _remove_redundant_urls_from_message(message_body, options_list):
 
     return message_body_str
 
-def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_ticket=None, contacto_especializado=None, base_chat_url=None, dni=None, consulta_pin=None):
+def formatear_ticket_respuesta(
+    tipo,
+    nombre_usuario,
+    descripcion,
+    categoria,
+    id_ticket=None,
+    contacto_especializado=None,
+    base_chat_url=None,
+    dni=None,
+    telefono=None,
+    email=None,
+    consulta_pin=None,
+):
     nombre_asesor = None
     titulo_asesor = None
     telefono_asesor = None
@@ -89,6 +101,10 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
 """
     if dni:
         respuesta += f"\n- *DNI:* {dni}"
+    if telefono:
+        respuesta += f"\n- *Teléfono:* {telefono}"
+    if email:
+        respuesta += f"\n- *Email:* {email}"
     if consulta_pin:
         respuesta += f"\n- *PIN:* {consulta_pin}"
 
@@ -103,6 +119,9 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
             respuesta += f"\n🕒 *Horario de atención:* {horario_asesor}"
         if link_informacion:
             respuesta += f"\n🔗 {link_informacion}"
+
+    if dni or telefono or email:
+        respuesta += "\n\nSi tus datos no son correctos, respondé *Actualizar datos*."
 
     respuesta += """
 

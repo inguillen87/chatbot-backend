@@ -1782,6 +1782,49 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
         estado_conversacion_para_llm = ConversationState.CONVERSACION_GENERAL_LLM.name
 
+    # --- Heuristic extraction before invoking the LLM ---
+    reclamo_opts = _get_reclamos_menu().get("options_list", []) if '_get_reclamos_menu' in globals() else []
+    detalles_rapidos = extract_reclamo_details_from_text(pregunta_str, reclamo_opts, use_llm=False)
+    if detalles_rapidos:
+        datos_reclamo = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
+        if detalles_rapidos.get("categoria_sugerida") and not datos_reclamo.get("categoria"):
+            datos_reclamo["categoria"] = detalles_rapidos["categoria_sugerida"]
+        if detalles_rapidos.get("descripcion_sugerida") and not datos_reclamo.get("descripcion"):
+            datos_reclamo["descripcion"] = detalles_rapidos["descripcion_sugerida"]
+        if detalles_rapidos.get("direccion_sugerida") and not datos_reclamo.get("ubicacion"):
+            datos_reclamo["ubicacion"] = detalles_rapidos["direccion_sugerida"]
+        if detalles_rapidos.get("distrito_sugerido") and not datos_reclamo.get("distrito"):
+            datos_reclamo["distrito"] = detalles_rapidos["distrito_sugerido"]
+
+        tiene_categoria = bool(datos_reclamo.get("categoria"))
+        tiene_ubicacion = bool(datos_reclamo.get("ubicacion"))
+
+        if tiene_categoria and tiene_ubicacion:
+            if not datos_reclamo.get("descripcion"):
+                datos_reclamo["descripcion"] = detalles_rapidos.get("descripcion_sugerida", pregunta_str)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            handler = CrearReclamoActionHandler(context)
+            return handler.execute(datos_reclamo), contexto_municipio_actual
+        if tiene_categoria and not tiene_ubicacion:
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return {
+                "message_body": "Para avanzar necesito la ubicación exacta del problema (calle y número).",
+                "options_list": [],
+                "message_type": "text",
+            }, contexto_municipio_actual
+        if tiene_ubicacion and not tiene_categoria:
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return {
+                "message_body": "¿Qué tipo de problema es? (por ejemplo arbolado, luminaria, limpieza)",
+                "options_list": [],
+                "message_type": "text",
+            }, contexto_municipio_actual
+
     if estado_conversacion_para_llm in [
         ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name,
         ConversationState.CONVERSACION_GENERAL_LLM.name,
@@ -1812,6 +1855,23 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         historial_para_llm = contexto_municipio_actual.get("historial_llm_reclamo", [])
     else:
         historial_para_llm = contexto_municipio_actual.get("historial_conversacion_general_llm", [])
+
+    historial_formateado = []
+    if (
+        historial_para_llm
+        and isinstance(historial_para_llm, list)
+        and historial_para_llm
+        and "pregunta_usuario" in historial_para_llm[0]
+    ):
+        for turno in historial_para_llm:
+            pregunta = turno.get("pregunta_usuario")
+            respuesta = turno.get("respuesta_ia")
+            if pregunta:
+                historial_formateado.append({"role": "user", "parts": [{"text": pregunta}]})
+            if respuesta:
+                historial_formateado.append({"role": "model", "parts": [{"text": respuesta}]})
+    else:
+        historial_formateado = historial_para_llm or []
 
     try:
         # FIX: Pre-process expected data to prevent state loss if LLM fails to return it
@@ -1856,7 +1916,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 app=app,
                 mensaje_usuario=mensaje_para_llm,
                 usuario=usuario_info_llm,
-                historial=historial_para_llm,
+                historial=historial_formateado,
                 chat_session_id=context.get("chat_session_uuid")
             )
             logger.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
@@ -2379,6 +2439,9 @@ RECLAMO_KEYWORDS = {
         "lampara",
         "poste caido",
         "poste caído",
+        "alumbrado",
+        "luz quemada",
+        "foco quemado",
     ],
     "Arbolado": [
         "arbolado",
@@ -2390,6 +2453,18 @@ RECLAMO_KEYWORDS = {
         "árbol caído",
         "tronco",
         "gajo",
+        "poda",
+        "poda de arbol",
+        "arbol seco",
+        "raiz",
+        "raíz",
+        "raices",
+        "raíces",
+        "planta",
+        "plantas",
+        "arbusto",
+        "arbol en medianera",
+        "arbol invade",
     ],
     "Limpieza y riego": [
         "limpieza",
@@ -2404,6 +2479,13 @@ RECLAMO_KEYWORDS = {
         "maleza",
         "desmalezado",
         "baldio",
+        "residuos",
+        "suciedad",
+        "carton",
+        "cartón",
+        "plastico",
+        "plástico",
+        "hojas",
     ],
     "Arreglo de calle": [
         "calle",
@@ -2415,6 +2497,11 @@ RECLAMO_KEYWORDS = {
         "hueco",
         "pavimento",
         "calzada",
+        "calle rota",
+        "pavimento levantado",
+        "asfalto roto",
+        "pozo en la calle",
+        "vereda rota",
     ],
     "Pérdida de agua": [
         "agua",
@@ -2424,6 +2511,9 @@ RECLAMO_KEYWORDS = {
         "fuga",
         "rotura",
         "tuberia",
+        "agua servida",
+        "canilla rota",
+        "cisterna",
     ],
     "Otros": ["otros", "otro", "varios"],
 }
@@ -2432,7 +2522,7 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
     """
     Finds a reclamo category based on user input, checking for number, first letter, or keywords.
     """
-    if not user_input or not reclamo_options:
+    if not user_input:
         return None
 
     normalized_input = normalizar_texto(user_input.strip())
@@ -2470,47 +2560,109 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
     return None
 
 
-def extract_reclamo_details_from_text(user_input: str, reclamo_options: list) -> dict:
+def extract_reclamo_details_from_text(user_input: str, reclamo_options: list, use_llm: bool = True) -> dict:
     """Attempt to extract category, description and address from a user message.
 
-    The function first tries to leverage the LLM-based extractor so we obtain
-    a short category, concise description and any location mentioned by the
-    user. If the LLM fails or returns partial data we fall back to the legacy
-    keyword heuristics so the flow can still progress.
+    Heuristic keyword checks are applied first so simple claims can be resolved
+    without calling the LLM. If essential data remains missing the LLM is
+    invoked to complete the extraction.
     """
     details: dict[str, str] = {}
     if not user_input:
         return details
 
-    # --- Primary extraction using LLM ---
-    llm_details = extract_complaint_details_llm(user_input) or {}
-    if llm_details.get("tipo_problema"):
-        mapped = find_reclamo_category_by_input(llm_details["tipo_problema"], reclamo_options)
-        if mapped:
-            details["categoria_sugerida"] = mapped
-    if llm_details.get("descripcion_problema"):
-        details["descripcion_sugerida"] = llm_details["descripcion_problema"]
-    if llm_details.get("ubicacion_problema"):
-        details["direccion_sugerida"] = llm_details["ubicacion_problema"]
+    # --- Heuristic extraction (cheap) ---
+    category = find_reclamo_category_by_input(user_input, reclamo_options)
+    if category:
+        details["categoria_sugerida"] = category
+        details.setdefault("descripcion_sugerida", user_input)
 
-    # --- Fallback heuristics when LLM data is missing ---
-    if "categoria_sugerida" not in details:
-        category = find_reclamo_category_by_input(user_input, reclamo_options)
-        if category:
-            details["categoria_sugerida"] = category
-            description_source = user_input
-            normalized = normalizar_texto(user_input)
-            for kw in RECLAMO_KEYWORDS.get(category, []):
-                if kw in normalized:
-                    import re
-                    pattern = re.compile(re.escape(kw), re.IGNORECASE)
-                    parts = pattern.split(user_input, 1)
-                    if len(parts) > 1 and parts[1].strip():
-                        description_source = parts[1].strip(" ,.-")
-                    break
-            if description_source and description_source != user_input and "descripcion_sugerida" not in details:
-                details["descripcion_sugerida"] = description_source
+    import re
+    normalized = user_input.strip()
+    if re.search(r"\besquina\b", normalized, re.IGNORECASE):
+        before, after = re.split(r"\besquina", normalized, maxsplit=1, flags=re.IGNORECASE)
+        addr_match = re.search(r"([A-Za-zÀ-ÿ'\s]+?)\s+(\d{1,5})", before)
+        if addr_match:
+            street = addr_match.group(1).strip()
+            number = addr_match.group(2)
+            parts = after.strip().split()
+            cross = ""
+            district = None
+            if len(parts) >= 4:
+                cross = " ".join(parts[:-2])
+                district = " ".join(parts[-2:])
+            elif len(parts) == 3:
+                cross = " ".join(parts[:-1])
+                district = parts[-1]
+            elif len(parts) == 2:
+                cross = parts[0]
+                district = parts[1]
+            elif parts:
+                cross = parts[0]
+            direccion = f"{street} {number}"
+            if cross:
+                direccion += f" esquina {cross}"
+            details["direccion_sugerida"] = direccion
+            if district:
+                details["distrito_sugerido"] = district
+    if "direccion_sugerida" not in details:
+        match = re.search(r"([A-Za-zÀ-ÿ'\s]+?)\s+(\d{1,5})", normalized)
+        if match:
+            details["direccion_sugerida"] = f"{match.group(1).strip()} {match.group(2)}"
 
+    # --- LLM extraction only if heuristics incomplete ---
+    need_llm = "categoria_sugerida" not in details
+    if need_llm and use_llm:
+        llm_details = extract_complaint_details_llm(user_input) or {}
+        if llm_details.get("tipo_problema") and "categoria_sugerida" not in details:
+            mapped = find_reclamo_category_by_input(
+                llm_details["tipo_problema"], reclamo_options
+            )
+            if mapped:
+                details["categoria_sugerida"] = mapped
+        if llm_details.get("descripcion_problema") and "descripcion_sugerida" not in details:
+            details["descripcion_sugerida"] = llm_details["descripcion_problema"]
+        if llm_details.get("ubicacion_problema") and "direccion_sugerida" not in details:
+            details["direccion_sugerida"] = llm_details["ubicacion_problema"]
+        if llm_details.get("distrito_problema") and "distrito_sugerido" not in details:
+            details["distrito_sugerido"] = llm_details["distrito_problema"]
+        if llm_details.get("nombre_usuario"):
+            details["nombre_sugerido"] = llm_details["nombre_usuario"]
+        if llm_details.get("telefono_usuario"):
+            details["telefono_sugerido"] = llm_details["telefono_usuario"]
+        if llm_details.get("email_usuario"):
+            details["email_sugerido"] = llm_details["email_usuario"]
+        if llm_details.get("dni_usuario"):
+            details["dni_sugerido"] = llm_details["dni_usuario"]
+
+    # --- Contact extraction (may still use LLM) ---
+    if use_llm:
+        missing_contact_fields = []
+        if "nombre_sugerido" not in details:
+            missing_contact_fields.append("nombre_cliente")
+        if "telefono_sugerido" not in details:
+            missing_contact_fields.append("telefono_cliente")
+        if "email_sugerido" not in details:
+            missing_contact_fields.append("email_cliente")
+        if "dni_sugerido" not in details:
+            missing_contact_fields.append("dni_cliente")
+
+        if missing_contact_fields:
+            contact_details = extract_multiple_contact_details_llm(
+                user_input, missing_contact_fields
+            ) or {}
+            if contact_details.get("nombre_cliente"):
+                details["nombre_sugerido"] = contact_details["nombre_cliente"]
+            if contact_details.get("telefono_cliente"):
+                details["telefono_sugerido"] = contact_details["telefono_cliente"]
+            if contact_details.get("email_cliente"):
+                details["email_sugerido"] = contact_details["email_cliente"]
+            if contact_details.get("dni_cliente"):
+                details["dni_sugerido"] = contact_details["dni_cliente"]
+            if contact_details.get("direccion_cliente") and "direccion_sugerida" not in details:
+                details["direccion_sugerida"] = contact_details["direccion_cliente"]
+
+    # --- Regex fallback for location if still missing ---
     if "direccion_sugerida" not in details:
         import re
         match = re.search(r"en\s+([A-Za-zÀ-ÿ'\s]+?)\s+(\d{1,5})", user_input, re.IGNORECASE)

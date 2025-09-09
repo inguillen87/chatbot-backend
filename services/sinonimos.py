@@ -23,6 +23,21 @@ TRAMITE_SYNONYMS: Dict[str, List[str]] = {
         "permiso de conducir",
         "brevete",
     ],
+    "arbolado": [
+        "arbol",
+        "arboles",
+        "arbol caido",
+        "poda",
+        "rama",
+        "ramas",
+    ],
+    "luminaria": [
+        "luz",
+        "farol",
+        "poste",
+        "foco",
+        "alumbrado",
+    ],
 }
 
 logger = logging.getLogger(__name__)
