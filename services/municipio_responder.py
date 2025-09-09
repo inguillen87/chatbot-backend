@@ -2572,9 +2572,37 @@ def extract_reclamo_details_from_text(user_input: str, reclamo_options: list, us
         details.setdefault("descripcion_sugerida", user_input)
 
     import re
-    match = re.search(r"([A-Za-zÀ-ÿ'\s]+?)\s+(\d{1,5})", user_input)
-    if match:
-        details["direccion_sugerida"] = f"{match.group(1).strip()} {match.group(2)}"
+    normalized = user_input.strip()
+    if re.search(r"\besquina\b", normalized, re.IGNORECASE):
+        before, after = re.split(r"\besquina", normalized, maxsplit=1, flags=re.IGNORECASE)
+        addr_match = re.search(r"([A-Za-zÀ-ÿ'\s]+?)\s+(\d{1,5})", before)
+        if addr_match:
+            street = addr_match.group(1).strip()
+            number = addr_match.group(2)
+            parts = after.strip().split()
+            cross = ""
+            district = None
+            if len(parts) >= 4:
+                cross = " ".join(parts[:-2])
+                district = " ".join(parts[-2:])
+            elif len(parts) == 3:
+                cross = " ".join(parts[:-1])
+                district = parts[-1]
+            elif len(parts) == 2:
+                cross = parts[0]
+                district = parts[1]
+            elif parts:
+                cross = parts[0]
+            direccion = f"{street} {number}"
+            if cross:
+                direccion += f" esquina {cross}"
+            details["direccion_sugerida"] = direccion
+            if district:
+                details["distrito_sugerido"] = district
+    if "direccion_sugerida" not in details:
+        match = re.search(r"([A-Za-zÀ-ÿ'\s]+?)\s+(\d{1,5})", normalized)
+        if match:
+            details["direccion_sugerida"] = f"{match.group(1).strip()} {match.group(2)}"
 
     # --- LLM extraction only if heuristics incomplete ---
     need_llm = "categoria_sugerida" not in details
