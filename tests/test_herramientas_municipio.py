@@ -1,7 +1,8 @@
 import pytest
-from unittest.mock import patch, Mock
+from unittest.mock import patch
 from services.herramientas_municipio import validar_y_formatear_direccion, consultar_noticias_municipio
 from models import MunicipioTicket, db
+from sqlalchemy import text
 from app import create_app
 from config import TestConfig
 from datetime import datetime
@@ -11,57 +12,28 @@ def app_context():
     app = create_app(TestConfig)
     with app.app_context():
         db.create_all()
+        db.session.execute(text("PRAGMA foreign_keys=OFF"))
         yield
         db.session.remove()
         db.drop_all()
 
-@patch('services.herramientas_municipio.Maps_API_KEY', 'fake_api_key')
-@patch('services.herramientas_municipio.requests.get')
-def test_validar_y_formatear_direccion_exitosa(mock_get):
-    # Arrange
-    mock_response = Mock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {
-        "results": [
-            {
-                "formatted_address": "Av. Siempreviva 742, Springfield, EE. UU.",
-                "geometry": {
-                    "location": {
-                        "lat": 40.7128,
-                        "lng": -74.0060
-                    }
-                }
-            }
-        ],
-        "status": "OK"
+@patch('services.herramientas_municipio.geocode_address')
+def test_validar_y_formatear_direccion_exitosa(mock_geo):
+    mock_geo.return_value = {
+        "display_name": "Av. Siempreviva 742, Springfield, EE. UU.",
+        "lat": 40.7128,
+        "lng": -74.0060,
     }
-    mock_get.return_value = mock_response
-
-    # Act
     resultado = validar_y_formatear_direccion("Av. Siempreviva 742")
-
-    # Assert
-    assert resultado is not None
-    assert resultado["formatted_address"] == "Av. Siempreviva 742, Springfield, EE. UU."
-    assert resultado["lat"] == 40.7128
-    assert resultado["lng"] == -74.0060
-
-@patch('services.herramientas_municipio.Maps_API_KEY', 'fake_api_key')
-@patch('services.herramientas_municipio.requests.get')
-def test_validar_y_formatear_direccion_invalida(mock_get):
-    # Arrange
-    mock_response = Mock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {
-        "results": [],
-        "status": "ZERO_RESULTS"
+    assert resultado == {
+        "formatted_address": "Av. Siempreviva 742, Springfield, EE. UU.",
+        "lat": 40.7128,
+        "lng": -74.0060,
     }
-    mock_get.return_value = mock_response
 
-    # Act
+@patch('services.herramientas_municipio.geocode_address', return_value=None)
+def test_validar_y_formatear_direccion_invalida(mock_geo):
     resultado = validar_y_formatear_direccion("una dirección inválida")
-
-    # Assert
     assert resultado is None
 
 def test_consultar_noticias_municipio_exitosa(app_context):
@@ -122,16 +94,7 @@ def test_generar_respuesta_audio_in_tool_registry():
     assert "parametros" in tool_info
     assert "text" in tool_info["parametros"]
 
-@patch('services.herramientas_municipio.Maps_API_KEY', 'fake_api_key')
-@patch('services.herramientas_municipio.requests.get')
-def test_validar_y_formatear_direccion_error_api(mock_get):
-    # Arrange
-    mock_response = Mock()
-    mock_response.status_code = 500
-    mock_get.return_value = mock_response
-
-    # Act
+@patch('services.herramientas_municipio.geocode_address', side_effect=Exception("boom"))
+def test_validar_y_formatear_direccion_error_api(mock_geo):
     resultado = validar_y_formatear_direccion("Av. Siempreviva 742")
-
-    # Assert
     assert resultado is None
