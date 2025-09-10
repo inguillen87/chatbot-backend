@@ -216,8 +216,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
             mensaje = (
                 "Para cerrar el reclamo, necesitás completar tus datos en *una sola línea* "
-                "(Nombre completo, Email, Teléfono, DNI, Dirección de contacto). "
-                "Ejemplo: Juan Perez, juan@mail.com, 2615551234, 30123456, Don Bosco 55 Junín"
+                "(Nombre completo, Email, Teléfono, DNI). "
+                "Ejemplo: Juan Perez, juan@mail.com, 2615551234, 30123456"
             )
             return {
                 "success": False,
