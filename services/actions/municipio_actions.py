@@ -84,6 +84,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
         ubicacion_llm = action_data.get("ubicacion") or datos_parciales.get("ubicacion")
         distrito_llm = action_data.get("distrito") or datos_parciales.get("distrito")
 
+        if ubicacion_llm:
+            ubicacion_llm = (
+                ubicacion_llm.strip().strip(" ,.;").replace("  ", " ")
+            )
+
         if ubicacion_llm and not distrito_llm:
             logger.info(f"Attempting to parse district from address: {ubicacion_llm}")
             parsed_address = parse_direccion(ubicacion_llm)
@@ -96,17 +101,45 @@ class CrearReclamoActionHandler(BaseActionHandler):
         # Geocoding: validate and enrich address with coordinates and formatted text
         if ubicacion_llm and not coordenadas_llm:
             geo_info = validar_y_formatear_direccion(ubicacion_llm, distrito_llm)
-            if geo_info:
-                ubicacion_llm = geo_info.get("formatted_address", ubicacion_llm)
-                coordenadas_llm = {
-                    "lat": geo_info.get("lat"),
-                    "lon": geo_info.get("lng"),
+            if not geo_info:
+                for key, value in [
+                    ("categoria_reclamo", categoria),
+                    ("descripcion_reclamo", descripcion),
+                    ("direccion_reclamo", ubicacion_llm),
+                ]:
+                    if value:
+                        contexto_reclamo[key] = value
+                contexto_reclamo.setdefault("datos_parciales_llm_reclamo", {})
+                contexto_reclamo["datos_parciales_llm_reclamo"].update(
+                    {
+                        "categoria": categoria,
+                        "descripcion": descripcion,
+                        "ubicacion": ubicacion_llm,
+                        "distrito": distrito_llm,
+                    }
+                )
+                self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
+                mensaje = (
+                    "No pude ubicar *{}* en Junín. Mandala así: "
+                    "*Calle 123, barrio* o *Calle1 y Calle2, barrio*."
+                ).format(ubicacion_llm)
+                return {
+                    "success": False,
+                    "message_to_user": mensaje,
+                    "message_type": "text",
+                    "next_state_hint": "ESPERANDO_DIRECCION_RECLAMO",
                 }
-                if not distrito_llm:
-                    parsed_geo = parse_direccion(ubicacion_llm)
-                    if parsed_geo and parsed_geo.get("localidad"):
-                        distrito_llm = parsed_geo["localidad"]
-                        logger.info(f"Parsed district from geocoded address: {distrito_llm}")
+
+            ubicacion_llm = geo_info.get("formatted_address", ubicacion_llm)
+            coordenadas_llm = {
+                "lat": geo_info.get("lat"),
+                "lon": geo_info.get("lng"),
+            }
+            if not distrito_llm:
+                parsed_geo = parse_direccion(ubicacion_llm)
+                if parsed_geo and parsed_geo.get("localidad"):
+                    distrito_llm = parsed_geo["localidad"]
+                    logger.info(f"Parsed district from geocoded address: {distrito_llm}")
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
         # Lógica de fusión de datos de contacto mejorada
@@ -171,6 +204,12 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if not direccion_contacto and viewer_user:
             direccion_contacto = getattr(viewer_user, "direccion", None)
 
+        cmv2 = self.context.get(CONTEXTO_MUNICIPIO, {}) or {}
+        contacto_ctx = cmv2.get("contacto_usuario") or {}
+        nombre_vecino_final = nombre_vecino_final or contacto_ctx.get("nombre")
+        telefono_final = telefono_final or contacto_ctx.get("telefono")
+        email_final = email_final or contacto_ctx.get("email")
+        dni_final = dni_final or contacto_ctx.get("dni")
 
         # Actualizar el contexto con los datos más recientes para persistencia
         for key, value in [
