@@ -611,6 +611,34 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertEqual(stored_ctx["estado_conversacion"], "ESPERANDO_DATOS_CONTACTO")
         self.assertEqual(stored_ctx["ultimo_menu"], "principal")
 
+    @patch('routes.whatsapp_webhook.responder_chatboc')
+    def test_interactive_sends_plain_text_first(self, mock_bot):
+        """Interactive payloads should always send a text message fallback before the interactive one."""
+        self._create_confirmed_session()
+        mock_bot.return_value = {
+            "message_body": "Hola",
+            "options_list": [{"texto": "Opción 1", "id": "opt1"}],
+            "message_type": "interactive_buttons",
+        }
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        with patch.dict(os.environ, {"WHATSAPP_ALLOW_INTERACTIVE": "true"}):
+            self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        # First call should be plain text, second the interactive payload
+        self.assertGreaterEqual(self.mock_twilio_create.call_count, 2)
+        first_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        second_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        self.assertIn("body", first_kwargs)
+        self.assertNotIn("persistent_action", first_kwargs)
+        self.assertIn("persistent_action", second_kwargs)
+
     @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_audio_attachment_transcribes_text(self, mock_requests_get):
         mock_response = MagicMock()
@@ -668,3 +696,15 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+def test_deep_merge_preserves_nested_fields():
+    from routes.whatsapp_webhook import deep_merge_dict
+
+    original = {"contexto_municipio_v2": {"estado_conversacion": "A"}, "other": 1}
+    update = {"contexto_municipio_v2": {"last_options_sent": [1]}, "other": 2}
+
+    merged = deep_merge_dict(original, update)
+
+    assert merged["contexto_municipio_v2"]["estado_conversacion"] == "A"
+    assert merged["contexto_municipio_v2"]["last_options_sent"] == [1]
+    assert merged["other"] == 2
