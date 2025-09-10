@@ -28,6 +28,42 @@ logger = logging.getLogger(__name__)
 
 CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
 
+
+def sanitize_contact_name(raw: str) -> str:
+    """Remove emails, long numbers and trailing address fragments from names."""
+    if not raw:
+        return "Vecino"
+    name = re.sub(r"\S+@\S+", "", raw)
+    name = re.sub(r"\b\+?\d{6,}\b", "", name)
+    name = re.sub(r"\s{2,}", " ", name).strip()
+    lowered = name.lower()
+    cut_tokens = [" sarmiento", " junin", " mendoza", " calle ", " av "]
+    cut = min([lowered.find(t) for t in cut_tokens if lowered.find(t) > 0] or [len(name)])
+    cleaned = name[:cut].strip()
+    return cleaned or "Vecino"
+
+
+def normalizar_categoria(cat_llm: str, detalles: str):
+    """Return normalized category and optional subtype."""
+    c = (cat_llm or "").strip().lower()
+    if "arbol" in c or "arbolado" in c:
+        subtipo = None
+        d = (detalles or "").lower()
+        if any(k in d for k in ["rama", "medianera", "hoja", "poda", "interferencia"]):
+            subtipo = "poda_intrusion"
+        return "Arbolado", subtipo
+    return cat_llm or "General", None
+
+
+def resolver_distrito_por_coords(coords, municipio_actual):
+    if not coords:
+        return None
+    try:
+        from services import distrito_service
+        return distrito_service.from_coords(coords, municipio=municipio_actual)
+    except Exception:
+        return None
+
 class BuscarEstacionamientoActionHandler(BaseActionHandler):
     action_name = "buscar_estacionamiento"
 
@@ -71,6 +107,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
         viewer_user = self.context.get("viewer_user_obj")
+        municipio_config = self.context.get("municipio_config_actual")
         if viewer_user and getattr(viewer_user, "id", None):
             viewer_user = _db.session.get(User, viewer_user.id)
             self.context["viewer_user_obj"] = viewer_user
@@ -81,32 +118,73 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if categoria:
             categoria = re.sub(r'^[^\w]+', '', categoria).strip()
         descripcion = action_data.get("descripcion") or datos_parciales.get("descripcion")
-        ubicacion_llm = action_data.get("ubicacion") or datos_parciales.get("ubicacion")
+        categoria_norm, subtipo_cat = normalizar_categoria(categoria, descripcion)
+        categoria_display = categoria_norm
+        categoria_ticket = f"{categoria_norm}::{subtipo_cat}" if subtipo_cat else categoria_norm
+
+        nueva_ubicacion = action_data.get("ubicacion")
+        if nueva_ubicacion is not None:
+            ubicacion_llm = nueva_ubicacion
+            coordenadas_llm = action_data.get("coordenadas")
+        else:
+            ubicacion_llm = datos_parciales.get("ubicacion")
+            coordenadas_llm = datos_parciales.get("coordenadas")
+
         distrito_llm = action_data.get("distrito") or datos_parciales.get("distrito")
+
+        if ubicacion_llm:
+            ubicacion_llm = re.sub(r"[,\.;\s]+$", "", (ubicacion_llm or "").strip()).replace("  ", " ")
 
         if ubicacion_llm and not distrito_llm:
             logger.info(f"Attempting to parse district from address: {ubicacion_llm}")
-            parsed_address = parse_direccion(ubicacion_llm)
+            parsed_address = parse_direccion(ubicacion_llm, municipio_config)
             if parsed_address and parsed_address.get('localidad'):
                 distrito_llm = parsed_address.get('localidad')
                 logger.info(f"Parsed district: {distrito_llm}")
 
-        coordenadas_llm = action_data.get("coordenadas") or datos_parciales.get("coordenadas")
-
         # Geocoding: validate and enrich address with coordinates and formatted text
         if ubicacion_llm and not coordenadas_llm:
-            geo_info = validar_y_formatear_direccion(ubicacion_llm, distrito_llm)
-            if geo_info:
-                ubicacion_llm = geo_info.get("formatted_address", ubicacion_llm)
-                coordenadas_llm = {
-                    "lat": geo_info.get("lat"),
-                    "lon": geo_info.get("lng"),
+            geo_info = validar_y_formatear_direccion(ubicacion_llm, municipio_config)
+            if not geo_info or not geo_info.get("lat") or not geo_info.get("lng"):
+                contexto_reclamo.pop("direccion_reclamo", None)
+                contexto_reclamo.pop("coordenadas_reclamo", None)
+                for key, value in [
+                    ("categoria_reclamo", categoria),
+                    ("descripcion_reclamo", descripcion),
+                ]:
+                    if value:
+                        contexto_reclamo[key] = value
+                contexto_reclamo.setdefault("datos_parciales_llm_reclamo", {})
+                contexto_reclamo["datos_parciales_llm_reclamo"].update(
+                    {
+                        "categoria": categoria,
+                        "descripcion": descripcion,
+                        "ubicacion": ubicacion_llm,
+                        "distrito": distrito_llm,
+                    }
+                )
+                self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
+                mensaje = (
+                    "No pude ubicar *{}* en Junín. Mandala así: "
+                    "*Calle 123, barrio* o *Calle1 y Calle2, barrio*."
+                ).format(ubicacion_llm)
+                return {
+                    "success": False,
+                    "message_to_user": mensaje,
+                    "message_type": "text",
+                    "next_state_hint": "ESPERANDO_DIRECCION_RECLAMO",
                 }
-                if not distrito_llm:
-                    parsed_geo = parse_direccion(ubicacion_llm)
-                    if parsed_geo and parsed_geo.get("localidad"):
-                        distrito_llm = parsed_geo["localidad"]
-                        logger.info(f"Parsed district from geocoded address: {distrito_llm}")
+
+            ubicacion_llm = geo_info.get("formatted_address", ubicacion_llm)
+            coordenadas_llm = {
+                "lat": geo_info.get("lat"),
+                "lon": geo_info.get("lng"),
+            }
+            if not distrito_llm:
+                parsed_geo = parse_direccion(ubicacion_llm)
+                if parsed_geo and parsed_geo.get("localidad"):
+                    distrito_llm = parsed_geo["localidad"]
+                    logger.info(f"Parsed district from geocoded address: {distrito_llm}")
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
         # Lógica de fusión de datos de contacto mejorada
@@ -137,6 +215,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         if len(nombre_vecino_final) > 60 or len(nombre_vecino_final.split()) > 6:
             nombre_vecino_final = "Vecino/a"
+        nombre_vecino_final = sanitize_contact_name(nombre_vecino_final)
 
         telefono_from_llm = (action_data.get("telefono") or datos_parciales.get("telefono") or
                              action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado"))
@@ -171,14 +250,27 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if not direccion_contacto and viewer_user:
             direccion_contacto = getattr(viewer_user, "direccion", None)
 
+        cmv2 = self.context.get(CONTEXTO_MUNICIPIO, {}) or {}
+        contacto_ctx = cmv2.get("contacto_usuario") or {}
+
+        nombre_final = datos_parciales.get("nombre") or contacto_ctx.get("nombre") or nombre_vecino_final
+        nombre_final = sanitize_contact_name(nombre_final)
+        telefono_final = telefono_final or contacto_ctx.get("telefono")
+        email_final = email_final or contacto_ctx.get("email")
+        dni_final = dni_final or contacto_ctx.get("dni")
+
+        logger.info(f"CONTACT_CTX: {contacto_ctx}")
+        logger.info(
+            f"CONTACT_FINAL nombre={nombre_final} tel={telefono_final} email={email_final} dni={dni_final}"
+        )
 
         # Actualizar el contexto con los datos más recientes para persistencia
         for key, value in [
-            ("categoria_reclamo", categoria),
+            ("categoria_reclamo", categoria_display),
             ("descripcion_reclamo", descripcion),
             ("direccion_reclamo", ubicacion_llm),
             ("coordenadas_reclamo", coordenadas_llm),
-            ("nombre_vecino", nombre_vecino_final),
+            ("nombre_vecino", nombre_final),
             ("telefono_vecino", telefono_final),
             ("email_vecino", email_final),
             ("dni_vecino", dni_final),
@@ -194,19 +286,15 @@ class CrearReclamoActionHandler(BaseActionHandler):
             campos_faltantes.append("descripcion")
         if not ubicacion_llm and not coordenadas_llm:
             campos_faltantes.append("ubicacion")
-        logger.info(f"DEBUG: viewer_user: {viewer_user}")
-        logger.info(f"DEBUG: nombre_vecino_final: {nombre_vecino_final}")
-        logger.info(f"DEBUG: telefono_final: {telefono_final}")
-        logger.info(f"DEBUG: email_final: {email_final}")
-        if not nombre_vecino_final or nombre_vecino_final == "Vecino/a":
-            campos_faltantes.append("nombre")
-        if not telefono_final:
-            campos_faltantes.append("telefono")
-        if not email_final:
-            campos_faltantes.append("email")
-        if not dni_final:
-            campos_faltantes.append("dni")
-        logger.info(f"DEBUG: campos_faltantes after: {campos_faltantes}")
+        for k, v in {
+            "nombre": nombre_final,
+            "telefono": telefono_final,
+            "email": email_final,
+            "dni": dni_final,
+        }.items():
+            if not v:
+                campos_faltantes.append(k)
+        logger.info(f"FALTANTES: {campos_faltantes}")
 
         # La lógica de confirmación ahora se maneja en 'municipio_responder.py'
         # Este handler ahora solo valida y crea.
@@ -216,8 +304,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
             mensaje = (
                 "Para cerrar el reclamo, necesitás completar tus datos en *una sola línea* "
-                "(Nombre completo, Email, Teléfono, DNI, Dirección de contacto). "
-                "Ejemplo: Juan Perez, juan@mail.com, 2615551234, 30123456, Don Bosco 55 Junín"
+                "(Nombre completo, Email, Teléfono, DNI). "
+                "Ejemplo: Juan Perez, juan@mail.com, 2615551234, 30123456"
             )
             return {
                 "success": False,
@@ -246,8 +334,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
         # Update viewer_user object if it exists and we have new info
         if viewer_user:
             updated = False
-            if nombre_vecino_final and not viewer_user.name:
-                viewer_user.name = nombre_vecino_final
+            if nombre_final and not viewer_user.name:
+                viewer_user.name = nombre_final
                 updated = True
             if telefono_final and not viewer_user.telefono:
                 viewer_user.telefono = telefono_final
@@ -264,13 +352,20 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 logger.info(f"User profile for {viewer_user.id} updated with new contact info.")
         pregunta_original = self.context.get("pregunta_actual_usuario", "")
 
+        resolved = servicio_tickets.resolve_user_id(email=email_final, telefono=telefono_final)
+        if resolved:
+            ticket_user_id = resolved
+            logger.info(f"[Ticket] user_id resuelto por email/tel: {resolved}")
+        else:
+            ticket_user_id = getattr(viewer_user, "id", None)
+
         contactos = cargar_configuracion_municipio(
             getattr(owner_user, "municipio_id", "default"),
             "contactos_especializados.json",
         )
         categoria_lookup = None
-        if categoria:
-            categoria_normalized = re.sub(r"[^\w\s]", "", categoria).strip().lower()
+        if categoria_display:
+            categoria_normalized = re.sub(r"[^\w\s]", "", categoria_display).strip().lower()
             for key in contactos.keys():
                 key_normalized = re.sub(r"[^\w\s]", "", key).strip().lower()
                 if (
@@ -281,25 +376,25 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     categoria_lookup = key
                     break
         if categoria_lookup:
-            categoria = categoria_lookup
+            categoria_display = categoria_lookup
         contacto_especializado = dict(contactos.get(categoria_lookup, contactos.get("default", {})))
 
         ticket_data = {
             "pregunta": pregunta_original,
-            "asunto": f"Reclamo (LLM): {categoria or 'General'}",
-            "categoria": categoria or "Reclamo General",
+            "asunto": f"Reclamo: {categoria_display}",
+            "categoria": categoria_ticket or "Reclamo General",
             "detalles": descripcion,
             "direccion": ubicacion_llm,
             "distrito": distrito_llm,
-            "nombre_vecino": nombre_vecino_final,
+            "nombre_vecino": nombre_final,
             "telefono_vecino": telefono_final,
             "email_vecino": email_final,
             "dni_vecino": dni_final,
             "direccion_contacto": direccion_contacto,
             "estado": "nuevo",
-            "user_id": getattr(viewer_user, "id", None),
+            "user_id": ticket_user_id,
             "anon_id": self.context.get("anon_id"),
-            "municipio_id": getattr(owner_user, "municipio_id", None),  # Asegurar que el municipio_id se pasa aquí
+            "municipio_id": getattr(owner_user, "municipio_id", None),
             "latitud": coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None,
             "longitud": coordenadas_llm.get("lon") if isinstance(coordenadas_llm, dict) else None,
             "origen_reclamo": "LLM_CHATBOT",
@@ -360,29 +455,17 @@ class CrearReclamoActionHandler(BaseActionHandler):
             if getattr(owner_user, "horario", None):
                 contacto_especializado.setdefault("horario", owner_user.horario)
 
-            # Limpiar contexto de reclamo después de la creación exitosa
-            # Guardamos la info del usuario y de contacto para no perderla.
-            user_info = contexto_reclamo.get('user', {})
-            contacto_usuario = {
-                "nombre": nombre_vecino_final,
-                "dni": dni_final,
-                "email": email_final,
-                "telefono": telefono_final,
-                "direccion": direccion_contacto,
+            # Limpiar contexto y dejar datos mínimos
+            from services.municipio_responder import ConversationState
+            self.context[CONTEXTO_MUNICIPIO] = {
+                "pin_ticket": pin_final,
+                "email_vecino": email_final,
+                "dni_vecino": dni_final,
             }
-            # Limpiamos TODO el contexto del municipio para evitar "context bleed".
-            if CONTEXTO_MUNICIPIO in self.context:
-                self.context[CONTEXTO_MUNICIPIO].clear()
-                if user_info:
-                    self.context[CONTEXTO_MUNICIPIO]['user'] = user_info
-                self.context[CONTEXTO_MUNICIPIO]['contacto_usuario'] = {
-                    k: v for k, v in contacto_usuario.items() if v
-                }
-                from services.municipio_responder import ConversationState
-                self.context[CONTEXTO_MUNICIPIO]['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
-                logger.info(
-                    f"Contexto de reclamo limpiado. Nuevo estado: {self.context[CONTEXTO_MUNICIPIO]['estado_conversacion']}"
-                )
+            self.context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+            logger.info(
+                f"Contexto de reclamo limpiado. Nuevo estado: {self.context[CONTEXTO_MUNICIPIO]['estado_conversacion']}"
+            )
 
 
             # Notificaciones
@@ -409,7 +492,6 @@ class CrearReclamoActionHandler(BaseActionHandler):
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/tickets/municipio')
             promo_image_url = municipio_config.get('promo_image_url')
-            categoria_display = categoria
             try:
                 mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
                     "reclamo",
