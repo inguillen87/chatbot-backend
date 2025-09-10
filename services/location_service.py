@@ -50,6 +50,8 @@ def geocode_address(address: str, district: str | None = None) -> Optional[dict]
     url = "https://nominatim.openstreetmap.org/search"
     params = {"q": query, "format": "json", "limit": 1}
 
+    url = "https://nominatim.openstreetmap.org/search"
+    params = {"q": query, "format": "json", "limit": 5}
     try:
         resp = requests.get(url, params=params, headers=_nominatim_headers(), timeout=5)
         resp.raise_for_status()
