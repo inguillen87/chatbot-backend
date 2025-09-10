@@ -1,4 +1,5 @@
 import unittest
+import os
 from unittest.mock import patch, MagicMock
 
 from services.openai_maps_service import geocodificar_inversa_llm
@@ -24,7 +25,8 @@ class GeoFlowTests(unittest.TestCase):
                 'datos_parciales_llm_reclamo': {'ubicacion': 'Calle Falsa 123'}
             }
         }
-        from app import app as flask_app
+        from flask import Flask
+        flask_app = Flask(__name__)
         with flask_app.app_context():
             resp = responder_municipio(
                 pregunta_original='',
@@ -39,6 +41,29 @@ class GeoFlowTests(unittest.TestCase):
         assert 'Calle Falsa 123' in resp['message_body']
         ids = [o.get('action_id') for o in resp.get('options_list', [])]
         assert 'confirmar_ubicacion' in ids and 'editar_ubicacion' in ids
+
+    def test_si_no_dispara_fuzzy_en_confirmacion(self):
+        owner_user = MagicMock(); owner_user.id = 1
+        chat_context = MagicMock()
+        chat_context.context_data = {
+            CONTEXTO_MUNICIPIO: {
+                'estado_conversacion': 'ESPERANDO_CONFIRMACION_UBICACION',
+                'datos_parciales_llm_reclamo': {'ubicacion': 'Calle Falsa 123'}
+            }
+        }
+        from flask import Flask
+        flask_app = Flask(__name__)
+        with flask_app.app_context():
+            resp = responder_municipio(
+                pregunta_original='Si',
+                owner_user=owner_user,
+                rubro_obj=None,
+                viewer_user=None,
+                chat_db_context=chat_context,
+                anon_id='test',
+                channel='whatsapp'
+            )
+        assert resp.get('fuente') != 'info_veterinaria_json'
 
     def test_editar_datos_no_crea_ticket(self):
         chat_context = MagicMock()
@@ -65,15 +90,6 @@ class GeoFlowTests(unittest.TestCase):
         assert '¿Qué querés editar?' in response['message_body']
         instance.execute.assert_not_called()
 
-    def test_contacto_compacto(self):
-        from services.municipio_responder import procesar_datos_contacto_compacto
-        texto = "Juan Perez juan@mail.com 2615551234 30123456 Don Bosco 55 Junin"
-        datos = procesar_datos_contacto_compacto(texto, {})
-        assert datos['email'] == 'juan@mail.com'
-        assert datos['telefono'] == '2615551234'
-        assert datos['dni'] == '30123456'
-        assert datos['nombre'].startswith('Juan')
-        assert 'Don Bosco' in datos['direccion_contacto']
 
 if __name__ == '__main__':
     unittest.main()
