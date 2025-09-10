@@ -629,7 +629,8 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         }
         headers = {"X-Twilio-Signature": "dummy_signature_valid"}
 
-        with patch.dict(os.environ, {"WHATSAPP_ALLOW_INTERACTIVE": "true"}):
+        with patch.dict(os.environ, {"WHATSAPP_ALLOW_INTERACTIVE": "true"}), \
+             patch('services.response_formatter.WHATSAPP_ALLOW_INTERACTIVE', True):
             self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
         # First call should be plain text, second the interactive payload
