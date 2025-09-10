@@ -688,14 +688,14 @@ def whatsapp_webhook():
                 }
                 fallback_body = interactive_payload.get("body", {}).get("text", "Por favor, mirá las opciones.")
 
-                # Always send a plain text version first so the user sees the
-                # content even if Twilio rejects the interactive payload.
+                # Always send a plain-text version first (with optional image)
+                # so the user sees the content even if Twilio rejects the
+                # interactive payload.
                 text_message_params = {
                     'from_': to_number_raw,
                     'to': from_number_raw,
                     'body': fallback_body,
                 }
-                twilio_client.messages.create(**text_message_params)
 
                 image_url = formatted_whatsapp_payload.get("image_url")
                 if not image_url:
@@ -706,11 +706,9 @@ def whatsapp_webhook():
                     if image_url.startswith('/'):
                         base_url = request.url_root.rstrip('/')
                         image_url = f"{base_url}{image_url}"
-                    twilio_client.messages.create(
-                        from_=to_number_raw,
-                        to=from_number_raw,
-                        media_url=[image_url],
-                    )
+                    text_message_params['media_url'] = [image_url]
+
+                twilio_client.messages.create(**text_message_params)
 
                 # Prepare the interactive message (without media)
                 message_params['body'] = fallback_body

@@ -634,11 +634,17 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
              patch('services.response_formatter.WHATSAPP_ALLOW_INTERACTIVE', True):
             self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
-        # Text with image first, then interactive payload
-        self.assertGreaterEqual(self.mock_twilio_create.call_count, 2)
-        calls = [c.kwargs for c in self.mock_twilio_create.call_args_list]
-        self.assertTrue(any('media_url' in c and 'body' in c for c in calls))
-        self.assertTrue(any('persistent_action' in c for c in calls))
+        # Expect two sends: plain text with optional image, then the interactive payload
+        self.assertEqual(self.mock_twilio_create.call_count, 2)
+        first_call = self.mock_twilio_create.call_args_list[0].kwargs
+        second_call = self.mock_twilio_create.call_args_list[1].kwargs
+
+        self.assertIn('body', first_call)
+        self.assertIn('media_url', first_call)
+
+        self.assertIn('body', second_call)
+        self.assertNotIn('media_url', second_call)
+        self.assertIn('persistent_action', second_call)
 
     @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_audio_attachment_transcribes_text(self, mock_requests_get):
