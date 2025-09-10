@@ -38,9 +38,6 @@ def geocode_address(address: str, district: str | None = None) -> Optional[dict]
     url = "https://nominatim.openstreetmap.org/search"
     params = {"q": query, "format": "json", "limit": 1}
 
-    if not query:
-        return []
-
     url = "https://nominatim.openstreetmap.org/search"
     params = {"q": query, "format": "json", "limit": 5}
     try:
