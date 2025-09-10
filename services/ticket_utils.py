@@ -1,5 +1,9 @@
 import re
 
+PUNTO_LIMPIO_URL = "https://www.juninmendoza.gov.ar/punto-limpio"
+OBRAS_URL = "https://www.juninmendoza.gov.ar/obras"
+MUNI_URL = "https://www.juninmendoza.gov.ar/"
+
 def _remove_redundant_urls_from_message(message_body, options_list):
     """
     Removes URLs from the message body if they are already present in the buttons.
@@ -122,17 +126,37 @@ def formatear_ticket_respuesta(
             respuesta += f"\n🔗 {link_informacion}"
 
     if dni or telefono or email:
-        respuesta += "\n\nSi tus datos no son correctos, respondé *Actualizar datos*."
+        respuesta += "\n\n🔎 Si tus datos no son correctos, respondé *Actualizar datos*."
 
-    respuesta += """
-
-Te mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!"""
-
+    respuesta += (
+        f"\n♻️ Junín Punto Limpio: {PUNTO_LIMPIO_URL}"
+        f"\n📰 Obras y novedades: {OBRAS_URL}"
+        f"\n🌐 Más información municipal: {MUNI_URL}"
+    )
     if chat_url:
-        respuesta += f"\n🔗 Seguimiento online: {chat_url}"
+        respuesta += f"\n💬 Ver mi Ticket: {chat_url}"
 
-    # Limpiar URLs redundantes del cuerpo del mensaje, preservando el enlace de seguimiento
-    botones_para_limpieza = [b for b in botones if b.get("texto") != "💬 Ver mi Ticket"]
+    respuesta += "\nTe mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!"
+
+    # Añadir botones estándar si no existen
+    existing_texts = {b.get("texto") for b in botones}
+    if "🌐 Más información" not in existing_texts:
+        botones.append({
+            "texto": "🌐 Más información",
+            "url": MUNI_URL,
+            "type": "url",
+        })
+    if chat_url and "💬 Ver mi Ticket" not in existing_texts:
+        botones.append({
+            "texto": "💬 Ver mi Ticket",
+            "url": chat_url,
+            "type": "url",
+        })
+
+    # Limpiar URLs redundantes del cuerpo del mensaje, preservando los enlaces principales
+    botones_para_limpieza = [
+        b for b in botones if b.get("texto") not in {"💬 Ver mi Ticket", "🌐 Más información"}
+    ]
     respuesta_limpia = _remove_redundant_urls_from_message(respuesta, botones_para_limpieza)
 
     return respuesta_limpia, botones

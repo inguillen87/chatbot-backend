@@ -5,6 +5,7 @@ from app import create_app, db
 from models import User, ChatSessionContext
 from types import SimpleNamespace
 from services.logic import responder_chatboc
+from services.municipio_responder import CONTEXTO_MUNICIPIO
 
 class ChatLogicTestCase(unittest.TestCase):
     def setUp(self):
@@ -174,6 +175,22 @@ class ChatLogicTestCase(unittest.TestCase):
         self.assertIn('options_list', response_dict)
         self.assertEqual(len(response_dict['options_list']), 1)
         self.assertEqual(response_dict['options_list'][0]['url'], test_url)
+
+    @patch('routes.chat.responder_chatboc')
+    def test_next_state_hint_updates_session(self, mock_responder):
+        """Session context stores state hints returned by the bot."""
+        mock_responder.return_value = {"message_body": "ok", "next_state_hint": "ESPERANDO_DATOS_CONTACTO"}
+        chat_session_id = "test-session"
+        with self.client:
+            resp = self.client.post(
+                '/ask/municipio',
+                json={'pregunta': 'hola'},
+                headers={'X-Chat-Session-Id': chat_session_id}
+            )
+            self.assertEqual(resp.status_code, 200)
+
+        ctx = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first().context_data
+        self.assertEqual(ctx[CONTEXTO_MUNICIPIO]['estado_conversacion'], 'ESPERANDO_DATOS_CONTACTO')
 
 
 if __name__ == '__main__':
