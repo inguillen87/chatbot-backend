@@ -45,6 +45,15 @@ class TestContactParser(unittest.TestCase):
         self.assertEqual(datos["direccion_contacto"], "don bosco 55 esquina sarmiento junin")
         self.assertNotIn("direccion_reclamo", datos)
 
+    def test_parse_line_separated_by_spaces(self):
+        linea = "Marcelo Guilen 32877851 2613168608 guillen.marce@gmail.com"
+        parsed = _parse_contact_compact_text(linea)
+        self.assertEqual(parsed["nombre"], "Marcelo Guilen")
+        self.assertEqual(parsed["dni"], "32877851")
+        self.assertEqual(parsed["email"], "guillen.marce@gmail.com")
+        self.assertTrue(parsed["telefono"].endswith("2613168608"))
+        self.assertIsNone(parsed.get("direccion_contacto"))
+
 
 if __name__ == "__main__":
     unittest.main()

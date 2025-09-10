@@ -9,6 +9,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from services.ticket_utils import formatear_ticket_respuesta
+from services.ticket_utils import _remove_redundant_urls_from_message
 from services.municipio_responder import GreetingHandler
 from services.municipio_responder import responder_municipio
 from config import TestConfig
@@ -97,6 +98,13 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("💬 Ver mi Ticket: https://example.com/tickets/77777?pin=111222", message)
         self.assertTrue(any(b.get("texto") == "💬 Ver mi Ticket" for b in buttons))
         self.assertTrue(any(b.get("texto") == "🌐 Más información" for b in buttons))
+
+    def test_remove_redundant_urls_fallback_to_original(self):
+        body = "https://example.com/tickets/1"
+        cleaned = _remove_redundant_urls_from_message(body, [
+            {"texto": "link", "url": "https://example.com/tickets/1", "type": "url"}
+        ])
+        self.assertEqual(cleaned, body)
 
     def test_greeting_handler_final_menu(self):
         """
