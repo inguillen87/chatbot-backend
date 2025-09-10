@@ -81,7 +81,15 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if categoria:
             categoria = re.sub(r'^[^\w]+', '', categoria).strip()
         descripcion = action_data.get("descripcion") or datos_parciales.get("descripcion")
-        ubicacion_llm = action_data.get("ubicacion") or datos_parciales.get("ubicacion")
+
+        nueva_ubicacion = action_data.get("ubicacion")
+        if nueva_ubicacion is not None:
+            ubicacion_llm = nueva_ubicacion
+            coordenadas_llm = action_data.get("coordenadas")
+        else:
+            ubicacion_llm = datos_parciales.get("ubicacion")
+            coordenadas_llm = datos_parciales.get("coordenadas")
+
         distrito_llm = action_data.get("distrito") or datos_parciales.get("distrito")
 
         if ubicacion_llm:
@@ -94,16 +102,15 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 distrito_llm = parsed_address.get('localidad')
                 logger.info(f"Parsed district: {distrito_llm}")
 
-        coordenadas_llm = action_data.get("coordenadas") or datos_parciales.get("coordenadas")
-
         # Geocoding: validate and enrich address with coordinates and formatted text
         if ubicacion_llm and not coordenadas_llm:
             geo_info = validar_y_formatear_direccion(ubicacion_llm, distrito_llm)
             if not geo_info:
+                contexto_reclamo.pop("direccion_reclamo", None)
+                contexto_reclamo.pop("coordenadas_reclamo", None)
                 for key, value in [
                     ("categoria_reclamo", categoria),
                     ("descripcion_reclamo", descripcion),
-                    ("direccion_reclamo", ubicacion_llm),
                 ]:
                     if value:
                         contexto_reclamo[key] = value
