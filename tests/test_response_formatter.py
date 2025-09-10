@@ -1,9 +1,9 @@
 import os
 
-# Enable interactive responses for these tests even though the production
-# default now falls back to plain text menus. Set the env var before importing
-# the module so the flag is read correctly.
-os.environ["WHATSAPP_FORCE_TEXT"] = "false"
+# Enable interactive responses for these tests even though production defaults
+# to plain text. Set the env var before importing the module so the flag is
+# read correctly.
+os.environ["WHATSAPP_ALLOW_INTERACTIVE"] = "true"
 
 import unittest
 from unittest import mock
@@ -157,9 +157,9 @@ class TestResponseFormatter(unittest.TestCase):
         self.assertEqual(response["type"], "interactive")
         self.assertEqual(response["interactive"]["type"], "button")
 
-    @unittest.mock.patch.dict(os.environ, {"WHATSAPP_FORCE_TEXT": "true"})
+    @unittest.mock.patch.dict(os.environ, {"WHATSAPP_ALLOW_INTERACTIVE": "false"})
     def test_force_text_via_env_var(self):
-        """If WHATSAPP_FORCE_TEXT=true even interactive calls return text."""
+        """If WHATSAPP_ALLOW_INTERACTIVE=false even interactive calls return text."""
         import importlib
         importlib.reload(rf)
 
@@ -172,10 +172,10 @@ class TestResponseFormatter(unittest.TestCase):
         self.assertEqual(response["type"], "text")
 
         # Restore default for remaining tests
-        os.environ["WHATSAPP_FORCE_TEXT"] = "false"
+        os.environ["WHATSAPP_ALLOW_INTERACTIVE"] = "true"
         importlib.reload(rf)
 
-    @unittest.mock.patch.dict(os.environ, {"WHATSAPP_FORCE_TEXT": "true"})
+    @unittest.mock.patch.dict(os.environ, {"WHATSAPP_ALLOW_INTERACTIVE": "false"})
     def test_text_menu_includes_url_and_actionable_numbers(self):
         """URL-only options should be rendered inline while action buttons keep numbering."""
         import importlib
@@ -200,7 +200,7 @@ class TestResponseFormatter(unittest.TestCase):
         self.assertEqual(last_options[0]["action_id"], "menu_principal")
 
         # Restore module with default env var
-        os.environ["WHATSAPP_FORCE_TEXT"] = "false"
+        os.environ["WHATSAPP_ALLOW_INTERACTIVE"] = "true"
         importlib.reload(rf)
 
 
