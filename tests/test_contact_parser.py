@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 import os
 import sys
 
@@ -22,6 +23,12 @@ class TestContactParser(unittest.TestCase):
         self.assertTrue(parsed["telefono"].startswith("+54"))
         self.assertEqual(parsed["dni"], "30123456")
         self.assertEqual(parsed["direccion_contacto"], "don bosco 55 junín")
+
+    def test_invalid_phone_is_cleared(self):
+        linea = "Juan Perez, juan@mail.com, 123, 30123456, Don Bosco 55 Junín"
+        with mock.patch("services.municipio_responder.validar_telefono", return_value=False):
+            parsed = _parse_contact_compact_text(linea)
+        self.assertIsNone(parsed["telefono"])
 
     def test_merge_overrides_placeholder_name(self):
         base = {"nombre": "Vecino/a", "email": None, "telefono": None, "dni": None, "direccion_contacto": None}

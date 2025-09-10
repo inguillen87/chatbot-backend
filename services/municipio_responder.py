@@ -115,9 +115,11 @@ def _parse_contact_compact_text(texto: str) -> dict:
     parsed = parse_contact_line(texto)
     data = {k: parsed.get(k) for k in CONTACT_FIELDS}
 
-    if data.get("telefono") and not data["telefono"].startswith("+"):
+    if data.get("telefono"):
         if validar_telefono(data["telefono"]):
             data["telefono"] = formatear_telefono_e164(data["telefono"])
+        else:
+            data["telefono"] = None
 
     if data.get("email") and not validar_email(data["email"]):
         data["email"] = None
