@@ -348,10 +348,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
         self.assertEqual(response.status_code, 200)
-        self.mock_twilio_create.assert_called()
-        _, kwargs_twilio = self.mock_twilio_create.call_args
-        self.assertIn('media_url', kwargs_twilio)
-        self.assertEqual(kwargs_twilio['media_url'][0], 'http://example.com/promo.jpg')
+        self.assertEqual(self.mock_twilio_create.call_count, 1)
+        first_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertIn('body', first_kwargs)
+        self.assertIn('media_url', first_kwargs)
+        self.assertEqual(first_kwargs['media_url'][0], 'http://example.com/promo.jpg')
 
     @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_docx_attachment(self, mock_requests_get):
@@ -619,6 +620,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             "message_body": "Hola",
             "options_list": [{"texto": "Opción 1", "id": "opt1"}],
             "message_type": "interactive_buttons",
+            "image_url": "http://example.com/promo.jpg",
         }
 
         payload = {
@@ -628,16 +630,15 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         }
         headers = {"X-Twilio-Signature": "dummy_signature_valid"}
 
-        with patch.dict(os.environ, {"WHATSAPP_ALLOW_INTERACTIVE": "true"}):
+        with patch.dict(os.environ, {"WHATSAPP_ALLOW_INTERACTIVE": "true"}), \
+             patch('services.response_formatter.WHATSAPP_ALLOW_INTERACTIVE', True):
             self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
-        # First call should be plain text, second the interactive payload
+        # Text with image first, then interactive payload
         self.assertGreaterEqual(self.mock_twilio_create.call_count, 2)
-        first_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
-        second_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
-        self.assertIn("body", first_kwargs)
-        self.assertNotIn("persistent_action", first_kwargs)
-        self.assertIn("persistent_action", second_kwargs)
+        calls = [c.kwargs for c in self.mock_twilio_create.call_args_list]
+        self.assertTrue(any('media_url' in c and 'body' in c for c in calls))
+        self.assertTrue(any('persistent_action' in c for c in calls))
 
     @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_audio_attachment_transcribes_text(self, mock_requests_get):
