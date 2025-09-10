@@ -680,38 +680,48 @@ def whatsapp_webhook():
                 'to': from_number_raw,
             }
 
+            image_url_to_send = None
+
             if formatted_whatsapp_payload.get("type") == "interactive":
-                interactive_payload = formatted_whatsapp_payload.get("interactive")
+                interactive_payload = formatted_whatsapp_payload.get("interactive") or {
+                    k: v for k, v in formatted_whatsapp_payload.items() if k not in {"type", "contexto_actualizado"}
+                }
                 fallback_body = interactive_payload.get("body", {}).get("text", "Por favor, mirá las opciones.")
 
-                # Always send a plain text version first so the user sees the
-                # content even if Twilio rejects the interactive payload.
+                # Always send a plain-text version first (with optional image)
+                # so the user sees the content even if Twilio rejects the
+                # interactive payload.
                 text_message_params = {
                     'from_': to_number_raw,
                     'to': from_number_raw,
                     'body': fallback_body,
                 }
+
                 image_url = formatted_whatsapp_payload.get("image_url")
+                if not image_url:
+                    header = interactive_payload.get("header") if interactive_payload else None
+                    if header and header.get("type") == "image":
+                        image_url = header.get("image", {}).get("link")
                 if image_url:
                     if image_url.startswith('/'):
                         base_url = request.url_root.rstrip('/')
                         image_url = f"{base_url}{image_url}"
                     text_message_params['media_url'] = [image_url]
+
                 twilio_client.messages.create(**text_message_params)
 
-                # Now prepare the interactive message. It still includes the
-                # body text so clients that support it render correctly.
+                # Prepare the interactive message (without media)
                 message_params['body'] = fallback_body
                 message_params['persistent_action'] = [f"whatsapp:{json.dumps(interactive_payload)}"]
             else:  # Text message
                 message_params['body'] = formatted_whatsapp_payload.get("text", {}).get("body", "No se pudo generar una respuesta.")
 
-                image_url = formatted_whatsapp_payload.get("image_url")
-                if image_url:
-                    if image_url.startswith('/'):
-                        base_url = request.url_root.rstrip('/')
-                        image_url = f"{base_url}{image_url}"
-                    message_params['media_url'] = [image_url]
+                image_url_to_send = formatted_whatsapp_payload.get("image_url")
+                if image_url_to_send and image_url_to_send.startswith('/'):
+                    base_url = request.url_root.rstrip('/')
+                    image_url_to_send = f"{base_url}{image_url_to_send}"
+                if image_url_to_send:
+                    message_params['media_url'] = [image_url_to_send]
 
             current_app.logger.debug(f"Sending WhatsApp message params: {message_params}")
 
@@ -731,6 +741,8 @@ def whatsapp_webhook():
                     'to': from_number_raw,
                     'body': chunks[0],
                 }
+                if 'media_url' in message_params:
+                    first_chunk_params['media_url'] = message_params['media_url']
                 main_message = twilio_client.messages.create(**first_chunk_params)
                 print(f"Mensaje parte 1/{len(chunks)} enviado a {from_number_raw}, SID: {main_message.sid}")
 
@@ -751,6 +763,7 @@ def whatsapp_webhook():
                         body="Seleccioná una opción",
                         persistent_action=[f"whatsapp:{json.dumps(more_payload)}"],
                     )
+
             else:
                 session_context_db_entry.context_data.pop('pending_chunks', None)
                 safe_flag_modified(session_context_db_entry, 'context_data')
