@@ -1,13 +1,15 @@
 import json
 import logging
-import requests
 import os
-import unicodedata # <--- ¡Importante agregar esta línea!
 import re
+import unicodedata  # <--- ¡Importante agregar esta línea!
+
+import requests
 from services.config_loader import cargar_configuracion_municipio
 from services.address_resolver import AddressResolver
 from services.location_service import geocode_address
 from services.tts_orchestrator import generar_audio_con_fallback
+from services.geo_service import reverse_geocode
 from models import MunicipioTicket
 from database import db
 from services.openai_bridge import client as openai_client
@@ -632,6 +634,38 @@ def buscar_puntos_de_interes(
 def log_uso_herramienta(nombre, usuario, parametros, resultado):
     logger.info(f"[USO_HERRAMIENTA] {nombre} | Usuario: {usuario} | Parámetros: {parametros} | Resultado: {resultado[:100]}")
 
+
+def _extract_coords_from_maps(url: str) -> tuple[float, float] | None:
+    """Extrae coordenadas de un enlace de Google Maps.
+
+    Soporta patrones comunes como ``@lat,lon`` o ``q=lat,lon``. Si el enlace
+    proviene de ``maps.app.goo.gl`` se sigue la redirección para obtener la URL
+    final.
+    """
+
+    if not url or "maps" not in url:
+        return None
+
+    try:
+        if "maps.app.goo.gl" in url:
+            # Expand short links
+            resp = requests.get(url, allow_redirects=True, timeout=5)
+            url = resp.url
+        patterns = [
+            r"@(-?\d+\.\d+),(-?\d+\.\d+)",
+            r"[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)",
+            r"[?&](?:ll|saddr|daddr|destination)=(-?\d+\.\d+),(-?\d+\.\d+)",
+            r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)",
+        ]
+        for pat in patterns:
+            m = re.search(pat, url)
+            if m:
+                return float(m.group(1)), float(m.group(2))
+    except Exception as e:
+        logger.error(f"[GEO] Error al parsear enlace de Google Maps '{url}': {e}")
+    return None
+
+
 def validar_y_formatear_direccion(
     direccion: str, municipio_config: dict | None = None
 ) -> dict | None:
@@ -644,10 +678,44 @@ def validar_y_formatear_direccion(
 
     try:
         resolver = AddressResolver(municipio_config or CONFIG_MUNICIPIO)
-        resolved = resolver.resolve(direccion)
     except Exception as e:
-        logger.error(f"[GEO] Error al geocodificar '{direccion}': {e}")
+        logger.error(f"[GEO] Error al inicializar AddressResolver: {e}")
         return None
+
+    coords = None
+    if direccion.startswith("http"):
+        coords = _extract_coords_from_maps(direccion)
+        if coords:
+            try:
+                addr = reverse_geocode(coords[0], coords[1])
+            except Exception as e:
+                logger.error(f"[GEO] Error en reverse_geocode: {e}")
+                return None
+            lat, lon = coords
+            validez = resolver._within_bounds(lat, lon) if hasattr(resolver, "_within_bounds") else True
+            formatted = addr.get("display")
+            resolved = {
+                "calle": addr.get("calle"),
+                "numero": addr.get("numero"),
+                "entre_calles": [],
+                "barrio": addr.get("barrio"),
+                "localidad": addr.get("localidad") or resolver.city,
+                "provincia": addr.get("provincia") or resolver.state,
+                "pais": resolver.country,
+                "lat": lat,
+                "lon": lon,
+                "precision": "point",
+                "formatted": formatted or f"{lat},{lon}",
+                "validez": validez,
+            }
+        else:
+            resolved = None
+    else:
+        try:
+            resolved = resolver.resolve(direccion)
+        except Exception as e:
+            logger.error(f"[GEO] Error al geocodificar '{direccion}': {e}")
+            return None
 
     if not resolved or not resolved.get("validez", True):
         logger.warning(
@@ -655,11 +723,21 @@ def validar_y_formatear_direccion(
         )
         return None
 
-    # Map canonical keys to legacy structure
+    lat = resolved.get("lat")
+    lon = resolved.get("lon")
+    maps_link = f"https://www.google.com/maps?q={lat},{lon}" if lat and lon else None
+    static_map_url = None
+    gkey = os.getenv("GOOGLE_MAPS_API_KEY")
+    if gkey and lat and lon:
+        static_map_url = (
+            "https://maps.googleapis.com/maps/api/staticmap?center="
+            f"{lat},{lon}&zoom=18&size=800x500&markers=color:red|{lat},{lon}&key={gkey}"
+        )
+
     return {
         "formatted_address": resolved.get("formatted"),
-        "lat": resolved.get("lat"),
-        "lng": resolved.get("lon"),
+        "lat": lat,
+        "lng": lon,
         "calle": resolved.get("calle"),
         "numero": resolved.get("numero"),
         "entre_calles": resolved.get("entre_calles"),
@@ -669,6 +747,8 @@ def validar_y_formatear_direccion(
         "pais": resolved.get("pais"),
         "precision": resolved.get("precision"),
         "validez": resolved.get("validez"),
+        "maps_link": maps_link,
+        "static_map_url": static_map_url,
     }
 
 def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
