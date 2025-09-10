@@ -1,5 +1,7 @@
 import requests
 
+import requests
+
 from services.location_service import geocode_address
 
 
@@ -70,5 +72,29 @@ def test_geocode_address_with_district(monkeypatch):
 
     geocode_address("Av Siempre Viva 123", district="Junin")
 
-    assert captured_params.get("q") == "Av Siempre Viva 123, Junin"
+    assert captured_params.get("q") == "Av Siempre Viva 123, Junin, Argentina"
+
+
+def test_geocode_normalizes_corner(monkeypatch):
+    captured_params = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return [
+                {"lat": "-33.0", "lon": "-60.0", "display_name": "Foo"}
+            ]
+
+    def fake_get(url, params=None, headers=None, timeout=5):
+        nonlocal captured_params
+        captured_params = params or {}
+        return FakeResponse()
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    geocode_address("don bosco esquina sarmiento", district="Junin")
+
+    assert captured_params.get("q") == "don bosco & sarmiento, Junin, Argentina"
 

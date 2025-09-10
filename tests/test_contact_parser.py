@@ -6,7 +6,11 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from services.municipio_responder import _parse_contact_compact_text
+from services.municipio_responder import (
+    _parse_contact_compact_text,
+    _merge_contact,
+    procesar_datos_contacto_compacto,
+)
 
 
 class TestContactParser(unittest.TestCase):
@@ -17,7 +21,21 @@ class TestContactParser(unittest.TestCase):
         self.assertEqual(parsed["email"], "juan@mail.com")
         self.assertTrue(parsed["telefono"].startswith("+54"))
         self.assertEqual(parsed["dni"], "30123456")
-        self.assertEqual(parsed["direccion_contacto"], "Don Bosco 55 Junín")
+        self.assertEqual(parsed["direccion_contacto"], "don bosco 55 junín")
+
+    def test_merge_overrides_placeholder_name(self):
+        base = {"nombre": "Vecino/a", "email": None, "telefono": None, "dni": None, "direccion_contacto": None}
+        nuevo = {"nombre": "Marcelo Guillen"}
+        merged = _merge_contact(base, nuevo)
+        self.assertEqual(merged["nombre"], "Marcelo Guillen")
+
+    def test_procesar_updates_reclamo_address(self):
+        texto = (
+            "Marcelo Guillen, guillen.marce@gmail.com, 2613168608, 32877851, don bosco 55 esquina sarmiento junin"
+        )
+        datos = procesar_datos_contacto_compacto(texto, {})
+        self.assertEqual(datos["nombre"], "Marcelo Guillen")
+        self.assertEqual(datos["direccion_reclamo"], "don bosco 55 esquina sarmiento junin")
 
 
 if __name__ == "__main__":

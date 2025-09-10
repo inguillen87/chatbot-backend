@@ -2,6 +2,7 @@ import logging
 import os
 from typing import Optional
 
+import re
 import requests
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,15 @@ NOMINATIM_USER_AGENT = os.environ.get(
 
 def _nominatim_headers() -> dict:
     return {"User-Agent": NOMINATIM_USER_AGENT}
+
+
+def _normalize_corner(addr: str) -> str:
+    if not addr:
+        return ""
+    addr = re.sub(r"\besq\.?\b", "esquina", addr, flags=re.I)
+    addr = re.sub(r"\besquina\b", "&", addr, flags=re.I)
+    addr = re.sub(r"\s+y\s+", " & ", addr, flags=re.I)
+    return re.sub(r"\s+", " ", addr).strip()
 
 
 def geocode_address(address: str, district: str | None = None) -> Optional[dict]:
@@ -31,9 +41,11 @@ def geocode_address(address: str, district: str | None = None) -> Optional[dict]
         return None
 
     # Append district if available and not already present
-    query = address
-    if district and district.lower() not in address.lower():
-        query = f"{address}, {district}"
+    query = _normalize_corner(address)
+    if district and district.lower() not in query.lower():
+        query = f"{query}, {district}"
+    if "argentina" not in query.lower():
+        query = f"{query}, Argentina"
 
     url = "https://nominatim.openstreetmap.org/search"
     params = {"q": query, "format": "json", "limit": 1}
@@ -51,7 +63,7 @@ def geocode_address(address: str, district: str | None = None) -> Optional[dict]
             "lat": float(item.get("lat")),
             "lng": float(item.get("lon")),
             "display_name": item.get("display_name"),
-            "maps_search_url": f"https://www.openstreetmap.org/search?query={requests.utils.quote(address)}",
+            "maps_search_url": f"https://www.openstreetmap.org/search?query={requests.utils.quote(query)}",
         }
     except requests.RequestException as e:
         logger.error(f"Error geocoding address via Nominatim: {e}")

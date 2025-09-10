@@ -50,6 +50,7 @@ from .common_utils import (
     formatear_telefono_e164,
     construir_respuesta_sugerir_registro,
 )
+from utils.parsers import parse_contact_line
 from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
 from services.tasks import process_image_for_chat_task
@@ -110,53 +111,16 @@ CONTACT_FIELDS = ("nombre", "email", "telefono", "dni", "direccion_contacto")
 
 
 def _parse_contact_compact_text(texto: str) -> dict:
-    """Parsea datos de contacto en una sola línea separados por comas o espacios."""
-    data = {k: None for k in CONTACT_FIELDS}
-    t = " ".join([p.strip() for p in re.split(r"[,\n]+", texto) if p.strip()])
+    """Parsea datos de contacto en una sola línea en cualquier orden."""
+    parsed = parse_contact_line(texto)
+    data = {k: parsed.get(k) for k in CONTACT_FIELDS}
 
-    m = re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", t, re.I)
-    if m:
-        data["email"] = m.group(0)
-        t = t.replace(m.group(0), " ")
+    if data.get("telefono") and not data["telefono"].startswith("+"):
+        if validar_telefono(data["telefono"]):
+            data["telefono"] = formatear_telefono_e164(data["telefono"])
 
-    m = re.search(r"\b\d{7,9}\b", t)
-    if m:
-        data["dni"] = re.sub(r"\D", "", m.group(0))
-        t = t.replace(m.group(0), " ")
-
-    m = re.search(r"\+?\d[\d\s().-]{6,}\d", t)
-    if m:
-        raw_tel = re.sub(r"[^\d+]", "", m.group(0))
-        if validar_telefono(raw_tel):
-            data["telefono"] = (
-                raw_tel if raw_tel.startswith("+") else formatear_telefono_e164(raw_tel)
-            )
-        else:
-            data["telefono"] = raw_tel
-        t = t.replace(m.group(0), " ")
-
-    chunks = [c for c in re.split(r"\s{2,}|\s-\s", t) if c.strip()]
-    rem = " ".join(chunks).strip()
-    tokens = rem.split()
-    for i, tok in enumerate(tokens):
-        if tok.isdigit():
-            if i >= 2:
-                data["direccion_contacto"] = " ".join(tokens[i-2:]).strip()
-                nombre_candidato = " ".join(tokens[: i - 2]).strip()
-            else:
-                data["direccion_contacto"] = " ".join(tokens[i-1:]).strip()
-                nombre_candidato = " ".join(tokens[: i - 1]).strip()
-            if nombre_candidato:
-                data["nombre"] = nombre_candidato
-            break
-    else:
-        if rem:
-            data["nombre"] = rem
-
-    if data["email"] and not validar_email(data["email"]):
+    if data.get("email") and not validar_email(data["email"]):
         data["email"] = None
-    if data["telefono"] and not validar_telefono(data["telefono"]):
-        data["telefono"] = None
 
     return data
 
@@ -168,8 +132,16 @@ def _need_any_contact(datos: dict) -> bool:
 def _merge_contact(base: dict, nuevo: dict) -> dict:
     out = dict(base or {})
     for k in CONTACT_FIELDS:
-        if not out.get(k) and nuevo.get(k):
-            out[k] = nuevo[k]
+        val_nuevo = nuevo.get(k)
+        if not val_nuevo:
+            continue
+        val_actual = out.get(k)
+        if k == "nombre":
+            if not val_actual or val_actual.strip().lower() in {"vecino/a", "vecino", "vecina"}:
+                out[k] = val_nuevo
+        else:
+            if not val_actual:
+                out[k] = val_nuevo
     return out
 
 
@@ -197,6 +169,8 @@ def pedir_datos_contacto_compacto():
 def procesar_datos_contacto_compacto(texto: str, datos_existentes: dict) -> dict:
     parsed = _parse_contact_compact_text(texto)
     datos = _merge_contact(datos_existentes, parsed)
+    if parsed.get("direccion_contacto"):
+        datos["direccion_reclamo"] = parsed["direccion_contacto"]
     if _need_any_contact(datos):
         try:
             llm = extract_multiple_contact_details_llm(texto)
