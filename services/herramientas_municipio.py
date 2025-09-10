@@ -6,6 +6,7 @@ import unicodedata # <--- ¡Importante agregar esta línea!
 import re
 from services.config_loader import cargar_configuracion_municipio
 from services.address_resolver import AddressResolver
+from services.location_service import geocode_address
 from services.tts_orchestrator import generar_audio_con_fallback
 from models import MunicipioTicket
 from database import db
