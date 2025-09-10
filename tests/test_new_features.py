@@ -307,7 +307,15 @@ class TestNewFeatures(unittest.TestCase):
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
     @patch('services.actions.municipio_actions.validar_email', return_value=True)
-    @patch('services.location_service.geocode_address', return_value=(-32.89, -68.83))
+    @patch(
+        'services.location_service.geocode_address',
+        return_value={
+            'lat': -32.89,
+            'lng': -68.83,
+            'display_name': 'X 1, Y',
+            'maps_search_url': 'https://www.openstreetmap.org/search?query=X%201,%20Y',
+        },
+    )
     @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
     @patch('services.actions.municipio_actions.enviar_notificacion_sms')
     @patch('services.actions.municipio_actions.formatear_telefono_e164', return_value='+5491111111111')
