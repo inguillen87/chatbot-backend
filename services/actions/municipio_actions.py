@@ -379,9 +379,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
             categoria_display = categoria_lookup
         contacto_especializado = dict(contactos.get(categoria_lookup, contactos.get("default", {})))
 
+        ticket_subject = categoria_display or "Reclamo"
         ticket_data = {
             "pregunta": pregunta_original,
-            "asunto": f"Reclamo: {categoria_display}",
+            "asunto": ticket_subject,
             "categoria": categoria_ticket or "Reclamo General",
             "detalles": descripcion,
             "direccion": ubicacion_llm,

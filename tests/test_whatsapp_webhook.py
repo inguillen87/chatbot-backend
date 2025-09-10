@@ -348,10 +348,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
         self.assertEqual(response.status_code, 200)
-        self.mock_twilio_create.assert_called()
-        _, kwargs_twilio = self.mock_twilio_create.call_args
-        self.assertIn('media_url', kwargs_twilio)
-        self.assertEqual(kwargs_twilio['media_url'][0], 'http://example.com/promo.jpg')
+        self.assertEqual(self.mock_twilio_create.call_count, 1)
+        kwargs = self.mock_twilio_create.call_args.kwargs
+        self.assertIn('body', kwargs)
+        self.assertIn('media_url', kwargs)
+        self.assertEqual(kwargs['media_url'][0], 'http://example.com/promo.jpg')
 
     @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_docx_attachment(self, mock_requests_get):
@@ -628,7 +629,8 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         }
         headers = {"X-Twilio-Signature": "dummy_signature_valid"}
 
-        with patch.dict(os.environ, {"WHATSAPP_ALLOW_INTERACTIVE": "true"}):
+        with patch.dict(os.environ, {"WHATSAPP_ALLOW_INTERACTIVE": "true"}), \
+             patch('services.response_formatter.WHATSAPP_ALLOW_INTERACTIVE', True):
             self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
         # First call should be plain text, second the interactive payload
