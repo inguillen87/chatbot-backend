@@ -29,6 +29,9 @@ def _remove_redundant_urls_from_message(message_body, options_list):
     if message_body_str == ':':
         message_body_str = ''
 
+    if not message_body_str.strip():
+        return message_body
+
     return message_body_str
 
 def formatear_ticket_respuesta(

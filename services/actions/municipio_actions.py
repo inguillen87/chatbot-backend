@@ -81,8 +81,19 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if categoria:
             categoria = re.sub(r'^[^\w]+', '', categoria).strip()
         descripcion = action_data.get("descripcion") or datos_parciales.get("descripcion")
-        ubicacion_llm = action_data.get("ubicacion") or datos_parciales.get("ubicacion")
+
+        nueva_ubicacion = action_data.get("ubicacion")
+        if nueva_ubicacion is not None:
+            ubicacion_llm = nueva_ubicacion
+            coordenadas_llm = action_data.get("coordenadas")
+        else:
+            ubicacion_llm = datos_parciales.get("ubicacion")
+            coordenadas_llm = datos_parciales.get("coordenadas")
+
         distrito_llm = action_data.get("distrito") or datos_parciales.get("distrito")
+
+        if ubicacion_llm:
+            ubicacion_llm = re.sub(r"[,\.;\s]+$", "", (ubicacion_llm or "").strip()).replace("  ", " ")
 
         if ubicacion_llm and not distrito_llm:
             logger.info(f"Attempting to parse district from address: {ubicacion_llm}")
@@ -91,22 +102,49 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 distrito_llm = parsed_address.get('localidad')
                 logger.info(f"Parsed district: {distrito_llm}")
 
-        coordenadas_llm = action_data.get("coordenadas") or datos_parciales.get("coordenadas")
-
         # Geocoding: validate and enrich address with coordinates and formatted text
         if ubicacion_llm and not coordenadas_llm:
             geo_info = validar_y_formatear_direccion(ubicacion_llm, distrito_llm)
-            if geo_info:
-                ubicacion_llm = geo_info.get("formatted_address", ubicacion_llm)
-                coordenadas_llm = {
-                    "lat": geo_info.get("lat"),
-                    "lon": geo_info.get("lng"),
+            if not geo_info or not geo_info.get("lat") or not geo_info.get("lng"):
+                contexto_reclamo.pop("direccion_reclamo", None)
+                contexto_reclamo.pop("coordenadas_reclamo", None)
+                for key, value in [
+                    ("categoria_reclamo", categoria),
+                    ("descripcion_reclamo", descripcion),
+                ]:
+                    if value:
+                        contexto_reclamo[key] = value
+                contexto_reclamo.setdefault("datos_parciales_llm_reclamo", {})
+                contexto_reclamo["datos_parciales_llm_reclamo"].update(
+                    {
+                        "categoria": categoria,
+                        "descripcion": descripcion,
+                        "ubicacion": ubicacion_llm,
+                        "distrito": distrito_llm,
+                    }
+                )
+                self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
+                mensaje = (
+                    "No pude ubicar *{}* en Junín. Mandala así: "
+                    "*Calle 123, barrio* o *Calle1 y Calle2, barrio*."
+                ).format(ubicacion_llm)
+                return {
+                    "success": False,
+                    "message_to_user": mensaje,
+                    "message_type": "text",
+                    "next_state_hint": "ESPERANDO_DIRECCION_RECLAMO",
                 }
-                if not distrito_llm:
-                    parsed_geo = parse_direccion(ubicacion_llm)
-                    if parsed_geo and parsed_geo.get("localidad"):
-                        distrito_llm = parsed_geo["localidad"]
-                        logger.info(f"Parsed district from geocoded address: {distrito_llm}")
+
+            ubicacion_llm = geo_info.get("formatted_address", ubicacion_llm)
+            coordenadas_llm = {
+                "lat": geo_info.get("lat"),
+                "lon": geo_info.get("lng"),
+            }
+            if not distrito_llm:
+                parsed_geo = parse_direccion(ubicacion_llm)
+                if parsed_geo and parsed_geo.get("localidad"):
+                    distrito_llm = parsed_geo["localidad"]
+                    logger.info(f"Parsed district from geocoded address: {distrito_llm}")
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
         # Lógica de fusión de datos de contacto mejorada
@@ -171,6 +209,18 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if not direccion_contacto and viewer_user:
             direccion_contacto = getattr(viewer_user, "direccion", None)
 
+        cmv2 = self.context.get(CONTEXTO_MUNICIPIO, {}) or {}
+        contacto_ctx = cmv2.get("contacto_usuario") or {}
+
+        nombre_final = datos_parciales.get("nombre") or contacto_ctx.get("nombre") or nombre_vecino_final
+        telefono_final = telefono_final or contacto_ctx.get("telefono")
+        email_final = email_final or contacto_ctx.get("email")
+        dni_final = dni_final or contacto_ctx.get("dni")
+
+        logger.info(f"CONTACT_CTX: {contacto_ctx}")
+        logger.info(
+            f"CONTACT_FINAL nombre={nombre_final} tel={telefono_final} email={email_final} dni={dni_final}"
+        )
 
         # Actualizar el contexto con los datos más recientes para persistencia
         for key, value in [
@@ -178,7 +228,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             ("descripcion_reclamo", descripcion),
             ("direccion_reclamo", ubicacion_llm),
             ("coordenadas_reclamo", coordenadas_llm),
-            ("nombre_vecino", nombre_vecino_final),
+            ("nombre_vecino", nombre_final),
             ("telefono_vecino", telefono_final),
             ("email_vecino", email_final),
             ("dni_vecino", dni_final),
@@ -194,19 +244,15 @@ class CrearReclamoActionHandler(BaseActionHandler):
             campos_faltantes.append("descripcion")
         if not ubicacion_llm and not coordenadas_llm:
             campos_faltantes.append("ubicacion")
-        logger.info(f"DEBUG: viewer_user: {viewer_user}")
-        logger.info(f"DEBUG: nombre_vecino_final: {nombre_vecino_final}")
-        logger.info(f"DEBUG: telefono_final: {telefono_final}")
-        logger.info(f"DEBUG: email_final: {email_final}")
-        if not nombre_vecino_final or nombre_vecino_final == "Vecino/a":
-            campos_faltantes.append("nombre")
-        if not telefono_final:
-            campos_faltantes.append("telefono")
-        if not email_final:
-            campos_faltantes.append("email")
-        if not dni_final:
-            campos_faltantes.append("dni")
-        logger.info(f"DEBUG: campos_faltantes after: {campos_faltantes}")
+        for k, v in {
+            "nombre": nombre_final,
+            "telefono": telefono_final,
+            "email": email_final,
+            "dni": dni_final,
+        }.items():
+            if not v:
+                campos_faltantes.append(k)
+        logger.info(f"FALTANTES: {campos_faltantes}")
 
         # La lógica de confirmación ahora se maneja en 'municipio_responder.py'
         # Este handler ahora solo valida y crea.
@@ -216,8 +262,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
             mensaje = (
                 "Para cerrar el reclamo, necesitás completar tus datos en *una sola línea* "
-                "(Nombre completo, Email, Teléfono, DNI, Dirección de contacto). "
-                "Ejemplo: Juan Perez, juan@mail.com, 2615551234, 30123456, Don Bosco 55 Junín"
+                "(Nombre completo, Email, Teléfono, DNI). "
+                "Ejemplo: Juan Perez, juan@mail.com, 2615551234, 30123456"
             )
             return {
                 "success": False,
@@ -246,8 +292,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
         # Update viewer_user object if it exists and we have new info
         if viewer_user:
             updated = False
-            if nombre_vecino_final and not viewer_user.name:
-                viewer_user.name = nombre_vecino_final
+            if nombre_final and not viewer_user.name:
+                viewer_user.name = nombre_final
                 updated = True
             if telefono_final and not viewer_user.telefono:
                 viewer_user.telefono = telefono_final
@@ -291,7 +337,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "detalles": descripcion,
             "direccion": ubicacion_llm,
             "distrito": distrito_llm,
-            "nombre_vecino": nombre_vecino_final,
+            "nombre_vecino": nombre_final,
             "telefono_vecino": telefono_final,
             "email_vecino": email_final,
             "dni_vecino": dni_final,
@@ -364,7 +410,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             # Guardamos la info del usuario y de contacto para no perderla.
             user_info = contexto_reclamo.get('user', {})
             contacto_usuario = {
-                "nombre": nombre_vecino_final,
+            "nombre": nombre_final,
                 "dni": dni_final,
                 "email": email_final,
                 "telefono": telefono_final,
