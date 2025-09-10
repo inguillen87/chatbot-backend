@@ -17,24 +17,78 @@ def app_context():
         db.session.remove()
         db.drop_all()
 
-@patch('services.herramientas_municipio.geocode_address')
-def test_validar_y_formatear_direccion_exitosa(mock_geo):
-    mock_geo.return_value = {
-        "display_name": "Av. Siempreviva 742, Springfield, EE. UU.",
-        "lat": 40.7128,
-        "lng": -74.0060,
+@patch('services.herramientas_municipio.AddressResolver.resolve')
+def test_validar_y_formatear_direccion_exitosa(mock_resolve, monkeypatch):
+    monkeypatch.setenv('GOOGLE_MAPS_API_KEY', 'TEST')
+    mock_resolve.return_value = {
+        "formatted": "Av. Siempreviva 742, Junín, Mendoza, AR",
+        "lat": -33.0,
+        "lon": -68.5,
+        "calle": "Av. Siempreviva",
+        "numero": "742",
+        "entre_calles": [],
+        "barrio": None,
+        "localidad": "Junín",
+        "provincia": "Mendoza",
+        "pais": "AR",
+        "precision": "point",
+        "validez": True,
     }
     resultado = validar_y_formatear_direccion("Av. Siempreviva 742")
     assert resultado == {
-        "formatted_address": "Av. Siempreviva 742, Springfield, EE. UU.",
-        "lat": 40.7128,
-        "lng": -74.0060,
+        "formatted_address": "Av. Siempreviva 742, Junín, Mendoza, AR",
+        "lat": -33.0,
+        "lng": -68.5,
+        "calle": "Av. Siempreviva",
+        "numero": "742",
+        "entre_calles": [],
+        "barrio": None,
+        "localidad": "Junín",
+        "provincia": "Mendoza",
+        "pais": "AR",
+        "precision": "point",
+        "validez": True,
+        "maps_link": "https://www.google.com/maps?q=-33.0,-68.5",
+        "static_map_url": "https://maps.googleapis.com/maps/api/staticmap?center=-33.0,-68.5&zoom=18&size=800x500&markers=color:red|-33.0,-68.5&key=TEST",
     }
 
-@patch('services.herramientas_municipio.geocode_address', return_value=None)
-def test_validar_y_formatear_direccion_invalida(mock_geo):
+@patch('services.herramientas_municipio.AddressResolver.resolve', return_value=None)
+def test_validar_y_formatear_direccion_invalida(mock_resolve):
     resultado = validar_y_formatear_direccion("una dirección inválida")
     assert resultado is None
+
+
+@patch('services.herramientas_municipio.reverse_geocode')
+def test_validar_y_formatear_direccion_maps_link(mock_reverse, monkeypatch):
+    monkeypatch.setenv('GOOGLE_MAPS_API_KEY', 'TEST')
+    mock_reverse.return_value = {
+        'calle': 'Sarmiento',
+        'numero': '100',
+        'barrio': None,
+        'localidad': 'Junín',
+        'provincia': 'Mendoza',
+        'display': 'Sarmiento 100, Junín, Mendoza, AR'
+    }
+    config = {"ciudad": "Junín", "provincia": "Mendoza", "pais": "AR", "bounds": (-68.6, -33.1, -68.4, -32.9)}
+    url = "https://www.google.com/maps?q=-33.0,-68.5"
+    resultado = validar_y_formatear_direccion(url, config)
+    assert resultado["lat"] == -33.0 and resultado["lng"] == -68.5
+    assert "google.com/maps" in resultado["maps_link"]
+
+
+@patch('services.herramientas_municipio.AddressResolver.resolve')
+@patch('services.herramientas_municipio.cargar_configuracion_municipio')
+def test_validar_y_formatear_direccion_con_id(mock_cfg, mock_resolve):
+    mock_cfg.return_value = {"ciudad": "Junín", "provincia": "Mendoza", "pais": "AR"}
+    mock_resolve.return_value = {
+        "formatted": "Calle Falsa 123, Junín, Mendoza, AR",
+        "lat": 1,
+        "lon": 2,
+        "validez": True,
+    }
+    resultado = validar_y_formatear_direccion("Calle Falsa 123", "junin")
+    assert mock_cfg.called
+    assert resultado["formatted_address"] == "Calle Falsa 123, Junín, Mendoza, AR"
 
 def test_consultar_noticias_municipio_exitosa(app_context):
     """
@@ -94,7 +148,7 @@ def test_generar_respuesta_audio_in_tool_registry():
     assert "parametros" in tool_info
     assert "text" in tool_info["parametros"]
 
-@patch('services.herramientas_municipio.geocode_address', side_effect=Exception("boom"))
-def test_validar_y_formatear_direccion_error_api(mock_geo):
+@patch('services.herramientas_municipio.AddressResolver.resolve', side_effect=Exception("boom"))
+def test_validar_y_formatear_direccion_error_api(mock_resolve):
     resultado = validar_y_formatear_direccion("Av. Siempreviva 742")
     assert resultado is None

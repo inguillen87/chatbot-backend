@@ -171,8 +171,6 @@ def pedir_datos_contacto_compacto():
 def procesar_datos_contacto_compacto(texto: str, datos_existentes: dict) -> dict:
     parsed = _parse_contact_compact_text(texto)
     datos = _merge_contact(datos_existentes, parsed)
-    if parsed.get("direccion_contacto"):
-        datos["direccion_reclamo"] = parsed["direccion_contacto"]
     if _need_any_contact(datos):
         try:
             llm = extract_multiple_contact_details_llm(texto)
@@ -3469,6 +3467,7 @@ def responder_municipio(
         and not pregunta_str.strip().isdigit()
         and normalizar_texto(pregunta_str) not in main_actions
         and estado_conversacion != ConversationState.ESPERANDO_INTENCION_UBICACION.name
+        and estado_conversacion != ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name
         and estado_conversacion != ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name
         and estado_conversacion != ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
         and estado_conversacion != ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
@@ -3623,10 +3622,19 @@ def responder_municipio(
         elif estado_conversacion == ConversationState.ESPERANDO_DATOS_CONTACTO.name:
             datos_prev = contexto_municipio_actual.get('datos_parciales_llm_reclamo', {})
             contacto_prev = contexto_municipio_actual.get('contacto_usuario', {})
-            nuevos = procesar_datos_contacto_compacto(pregunta_str, contacto_prev)
+            raw_contact = context.get('user_input_raw') or pregunta_str
+            nuevos = procesar_datos_contacto_compacto(raw_contact, contacto_prev)
             contexto_municipio_actual['contacto_usuario'] = nuevos
+            if _need_any_contact(nuevos):
+                faltan = [k for k in CONTACT_FIELDS if not nuevos.get(k)]
+                if chat_db_context:
+                    flag_modified(chat_db_context, 'context_data')
+                return _finalize_response({
+                    'message_body': f"Me faltan: {', '.join(faltan)}. Mandámelos en una sola línea como en el ejemplo.",
+                    'fuente': 'pedir_datos_contacto_compacto',
+                })
             datos_reclamo = {**datos_prev}
-            for k in ['nombre', 'email', 'telefono', 'dni']:
+            for k in ['nombre', 'email', 'telefono', 'dni', 'direccion_contacto']:
                 if nuevos.get(k):
                     datos_reclamo[k] = nuevos[k]
             handler = CrearReclamoActionHandler(context)
