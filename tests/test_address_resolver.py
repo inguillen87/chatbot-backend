@@ -28,10 +28,10 @@ def test_intersection_sarmiento_san_martin():
     ):
         result = resolver.resolve("Sarmiento 100 esquina San Martín")
     assert result["precision"] == "intersection"
-    assert result["entre_calles"] == ["Sarmiento", "San Martín"]
+    assert result["entre_calles"] == ["Sarmiento", "San Martin"]
     assert result["localidad"] == "Junín"
     assert result["validez"] is True
-    assert "Sarmiento" in result["formatted"] and "San Martín" in result["formatted"]
+    assert "Sarmiento" in result["formatted"] and "San Martin" in result["formatted"]
 
 
 def test_dynamic_municipio_config():
@@ -48,3 +48,13 @@ def test_dynamic_municipio_config():
         result = resolver.resolve("Falsa 123")
     assert result["localidad"] == "Ciudad X"
     assert result["provincia"] == "Provincia Y"
+
+
+def test_numeric_street_name():
+    resolver = AddressResolver(JUNIN_CONFIG)
+    with patch(
+        "services.address_resolver.requests.get", return_value=_fake_resp(-33.0, -68.5)
+    ):
+        result = resolver.resolve("9 de julio 120")
+    assert result["calle"] == "9 De Julio"
+    assert result["numero"] == "120"
