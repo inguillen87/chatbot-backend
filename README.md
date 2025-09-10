@@ -45,6 +45,7 @@ selection instructions to maintain full visibility of all choices.
 - `GET /catalogo/buscar` – query the vector catalog with `?q=` and optional
   `?limite=` to control how many products are returned (defaults to
   `CATALOGO_RESULT_LIMIT`).
+- Frontend developers can find tips for uploading media, sharing location and initiating video calls in `docs/webchat-realtime.md`.
 
 - `PUT /me` – update the logged in user's profile.
 - `GET /me` or `/perfil` – retrieve the full profile. The response includes the user's role
