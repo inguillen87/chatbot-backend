@@ -1,7 +1,7 @@
 # services/ticket_service.py
 import random
 from datetime import datetime, timedelta
-from typing import Dict, Any, Literal, Union
+from typing import Dict, Any, Literal, Union, Optional
 import logging
 
 from models import (
@@ -96,6 +96,22 @@ class ServicioTickets:
             "municipio": MunicipioTicketCreator(),
             "pyme": PymeTicketCreator()
         }
+
+    def resolve_user_id(self, email: Optional[str] = None, telefono: Optional[str] = None) -> Optional[int]:
+        """Find existing user ID by email or phone."""
+        from models import User
+
+        if email:
+            user = User.query.filter(db.func.lower(User.email) == db.func.lower(email)).first()
+            if user:
+                return user.id
+
+        if telefono:
+            user = User.query.filter(User.telefono == telefono).first()
+            if user:
+                return user.id
+
+        return None
 
     def crear_nuevo_ticket(self, tipo_ticket: Literal["municipio", "pyme"], ticket_data: Dict[str, Any]) -> Union[PymeTicket, MunicipioTicket, None, dict]:
         from models import User  # Import User model here to avoid circular import at module level
