@@ -543,6 +543,12 @@ def whatsapp_webhook():
             **kwargs_for_bot
         )
 
+        # Propagate any state hints returned by the bot into the session context
+        next_state = bot_response_dict.get("next_state_hint")
+        if next_state:
+            muni_ctx = session_context_db_entry.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+            muni_ctx["estado_conversacion"] = next_state
+
         # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
         if not end_user and bot_response_dict.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"]:
             contexto_actual = session_context_db_entry.context_data.get("contexto_municipio", {})
@@ -632,9 +638,17 @@ def whatsapp_webhook():
         current_app.logger.info(f"[CONTEXT_WHATSAPP] Contexto actualizado del turno actual: {updated_context}")
 
 
-        # Merge the contexts
+        # Merge the contexts, preserving nested structures like contexto_municipio_v2
         if updated_context:
-            merged_context = {**db_context, **updated_context}
+            merged_context = db_context.copy()
+            for key, value in updated_context.items():
+                if (
+                    isinstance(value, dict)
+                    and isinstance(merged_context.get(key), dict)
+                ):
+                    merged_context[key] = {**merged_context[key], **value}
+                else:
+                    merged_context[key] = value
         else:
             merged_context = db_context
 
@@ -666,21 +680,36 @@ def whatsapp_webhook():
 
             if formatted_whatsapp_payload.get("type") == "interactive":
                 interactive_payload = formatted_whatsapp_payload.get("interactive")
-                # The body is required, it's the fallback for notifications and older clients
-                message_params['body'] = interactive_payload.get("body", {}).get("text", "Por favor, mirá las opciones.")
-                # The PersistentAction is what actually sends the interactive message
-                # It needs to be a list of strings, with the format "channel:payload"
-                # For WhatsApp, the payload is a JSON string of the interactive object.
+                fallback_body = interactive_payload.get("body", {}).get("text", "Por favor, mirá las opciones.")
+
+                # Always send a plain text version first so the user sees the
+                # content even if Twilio rejects the interactive payload.
+                text_message_params = {
+                    'from_': to_number_raw,
+                    'to': from_number_raw,
+                    'body': fallback_body,
+                }
+                image_url = formatted_whatsapp_payload.get("image_url")
+                if image_url:
+                    if image_url.startswith('/'):
+                        base_url = request.url_root.rstrip('/')
+                        image_url = f"{base_url}{image_url}"
+                    text_message_params['media_url'] = [image_url]
+                twilio_client.messages.create(**text_message_params)
+
+                # Now prepare the interactive message. It still includes the
+                # body text so clients that support it render correctly.
+                message_params['body'] = fallback_body
                 message_params['persistent_action'] = [f"whatsapp:{json.dumps(interactive_payload)}"]
-            else: # Text message
+            else:  # Text message
                 message_params['body'] = formatted_whatsapp_payload.get("text", {}).get("body", "No se pudo generar una respuesta.")
 
-            image_url = formatted_whatsapp_payload.get("image_url")
-            if image_url and 'persistent_action' not in message_params:
-                if image_url.startswith('/'):
-                    base_url = request.url_root.rstrip('/')
-                    image_url = f"{base_url}{image_url}"
-                message_params['media_url'] = [image_url]
+                image_url = formatted_whatsapp_payload.get("image_url")
+                if image_url:
+                    if image_url.startswith('/'):
+                        base_url = request.url_root.rstrip('/')
+                        image_url = f"{base_url}{image_url}"
+                    message_params['media_url'] = [image_url]
 
             current_app.logger.debug(f"Sending WhatsApp message params: {message_params}")
 

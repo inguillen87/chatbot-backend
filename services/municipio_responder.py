@@ -1,7 +1,7 @@
 import os
 from flask import jsonify
 import pandas as pd
-from geopy.geocoders import GoogleV3
+from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 from dotenv import load_dotenv
 import sys
@@ -50,6 +50,7 @@ from .common_utils import (
     formatear_telefono_e164,
     construir_respuesta_sugerir_registro,
 )
+from utils.parsers import parse_contact_line
 from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
 from services.tasks import process_image_for_chat_task
@@ -110,47 +111,18 @@ CONTACT_FIELDS = ("nombre", "email", "telefono", "dni", "direccion_contacto")
 
 
 def _parse_contact_compact_text(texto: str) -> dict:
-    """Parsea datos de contacto en una sola línea separados por comas o espacios."""
-    data = {k: None for k in CONTACT_FIELDS}
-    t = " ".join([p.strip() for p in re.split(r"[,\n]+", texto) if p.strip()])
+    """Parsea datos de contacto en una sola línea en cualquier orden."""
+    parsed = parse_contact_line(texto)
+    data = {k: parsed.get(k) for k in CONTACT_FIELDS}
 
-    m = re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", t, re.I)
-    if m:
-        data["email"] = m.group(0)
-        t = t.replace(m.group(0), " ")
+    if data.get("telefono"):
+        if validar_telefono(data["telefono"]):
+            data["telefono"] = formatear_telefono_e164(data["telefono"])
+        else:
+            data["telefono"] = None
 
-    m = re.search(r"\b\+?\d{8,15}\b", t)
-    if m:
-        data["telefono"] = m.group(0)
-        t = t.replace(m.group(0), " ")
-
-    m = re.search(r"\b\d{7,9}\b", t)
-    if m:
-        data["dni"] = m.group(0)
-        t = t.replace(m.group(0), " ")
-
-    chunks = [c for c in re.split(r"\s{2,}|\s-\s", t) if c.strip()]
-    rem = " ".join(chunks).strip()
-    tokens = rem.split()
-    for i, tok in enumerate(tokens):
-        if tok.isdigit():
-            if i >= 2:
-                data["direccion_contacto"] = " ".join(tokens[i-2:]).strip()
-                nombre_candidato = " ".join(tokens[: i - 2]).strip()
-            else:
-                data["direccion_contacto"] = " ".join(tokens[i-1:]).strip()
-                nombre_candidato = " ".join(tokens[: i - 1]).strip()
-            if nombre_candidato:
-                data["nombre"] = nombre_candidato
-            break
-    else:
-        if rem:
-            data["nombre"] = rem
-
-    if data["email"] and not validar_email(data["email"]):
+    if data.get("email") and not validar_email(data["email"]):
         data["email"] = None
-    if data["telefono"] and not validar_telefono(data["telefono"]):
-        data["telefono"] = None
 
     return data
 
@@ -162,8 +134,16 @@ def _need_any_contact(datos: dict) -> bool:
 def _merge_contact(base: dict, nuevo: dict) -> dict:
     out = dict(base or {})
     for k in CONTACT_FIELDS:
-        if not out.get(k) and nuevo.get(k):
-            out[k] = nuevo[k]
+        val_nuevo = nuevo.get(k)
+        if not val_nuevo:
+            continue
+        val_actual = out.get(k)
+        if k == "nombre":
+            if not val_actual or val_actual.strip().lower() in {"vecino/a", "vecino", "vecina"}:
+                out[k] = val_nuevo
+        else:
+            if not val_actual:
+                out[k] = val_nuevo
     return out
 
 
@@ -191,6 +171,8 @@ def pedir_datos_contacto_compacto():
 def procesar_datos_contacto_compacto(texto: str, datos_existentes: dict) -> dict:
     parsed = _parse_contact_compact_text(texto)
     datos = _merge_contact(datos_existentes, parsed)
+    if parsed.get("direccion_contacto"):
+        datos["direccion_reclamo"] = parsed["direccion_contacto"]
     if _need_any_contact(datos):
         try:
             llm = extract_multiple_contact_details_llm(texto)
@@ -207,6 +189,15 @@ def procesar_datos_contacto_compacto(texto: str, datos_existentes: dict) -> dict
         except Exception:
             pass
     return datos
+
+
+def _execute_crear_reclamo(handler, datos_reclamo, contexto_municipio):
+    """Execute handler and store any state hints back into the municipal context."""
+    result = handler.execute(datos_reclamo)
+    hint = result.get("next_state_hint")
+    if hint:
+        contexto_municipio["estado_conversacion"] = hint
+    return result
 
 class ReclamoFlowHandler:
     def __init__(self, context, chat_db_context):
@@ -497,7 +488,7 @@ class ReclamoFlowHandler:
                 "foto_url_adjunta": datos.get("foto_url"),
             }
             handler = CrearReclamoActionHandler(self.context)
-            result = handler.execute(action_data)
+            result = _execute_crear_reclamo(handler, action_data, self.municipal_ctx)
             if result.get("success"):
                 nro_ticket = result.get("data", {}).get("nro_ticket")
                 message = result.get(
@@ -587,41 +578,22 @@ intent_classifier = IntentClassifier(intents_file_path=INTENTS_FILE_PATH)
 
 load_dotenv()
 
-# Placeholder for API key management
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-
 def configure_geolocator():
-    """Configura y retorna un geolocalizador con la API key."""
-    if not GOOGLE_API_KEY:
-        raise ValueError("La API key de Google Maps no está configurada.")
-    return GoogleV3(api_key=GOOGLE_API_KEY)
+    """Configura y retorna un geolocalizador gratuito basado en OSM."""
+    return Nominatim(user_agent="chatbot-backend")
 
 def obtener_municipios_cercanos(latitud, longitud, radio_km=5):
-    """
-    Encuentra municipios cercanos a una latitud y longitud dadas.
-    """
+    """Encuentra municipios cercanos a una latitud y longitud dadas."""
     geolocator = configure_geolocator()
     try:
-        # Intenta obtener la dirección (localidad) desde las coordenadas
         location = geolocator.reverse((latitud, longitud), exactly_one=True)
-        address = location.raw.get('address_components', [])
-
-        # Busca el componente de la dirección que corresponde a la localidad
-        municipio_actual = None
-        for component in address:
-            if 'locality' in component.get('types', []):
-                municipio_actual = component.get('long_name')
-                break
-
+        address = location.raw.get('address', {}) if location else {}
+        municipio_actual = address.get('town') or address.get('city') or address.get('village')
         if not municipio_actual:
             return jsonify({"error": "No se pudo determinar la localidad desde las coordenadas proporcionadas."}), 404
 
-        # Simulación de búsqueda en un radio (esto debería ser más complejo en una app real)
-        # Aquí simplemente devolvemos la localidad encontrada como ejemplo
         municipios_encontrados = [municipio_actual]
-
         return jsonify({"municipios_cercanos": municipios_encontrados})
-
     except (GeocoderTimedOut, GeocoderServiceError) as e:
         return jsonify({"error": f"Error en el servicio de geolocalización: {e}"}), 500
     except Exception as e:
@@ -863,6 +835,7 @@ class ConversationState(Enum):
     ESPERANDO_EMAIL_VECINO = auto()
     ESPERANDO_DESCRIPCION_RECLAMO = auto()
     ESPERANDO_ADJUNTOS_RECLAMO = auto()
+    ESPERANDO_DATOS_CONTACTO = auto()
     ESPERANDO_CONFIRMACION_RECLAMO = auto()
     ESPERANDO_SELECCION_TRAMITE = auto()
     ESPERANDO_PREGUNTA_CURSO_LICENCIA = auto()
@@ -1833,7 +1806,8 @@ from services.llm_orchestrator import llamar_llm_con_fallback
 def accion_crear_reclamo_municipio(datos_reclamo, context):
     """Wrapper que delega la creación de reclamos al ActionHandler dedicado."""
     handler = CrearReclamoActionHandler(context=context)
-    return handler.execute(datos_reclamo)
+    contexto = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+    return _execute_crear_reclamo(handler, datos_reclamo, contexto)
 def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm):
     """
     Prepares the confirmation message for the user before creating a ticket.
@@ -1948,7 +1922,14 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             handler = CrearReclamoActionHandler(context)
-            return handler.execute(datos_reclamo), contexto_municipio_actual
+            response = _execute_crear_reclamo(handler, datos_reclamo, contexto_municipio_actual)
+            if response.get('message_to_user') and 'message_body' not in response:
+                response['message_body'] = response.pop('message_to_user')
+            if response.get('message_to_user') and 'message_body' not in response:
+                response['message_body'] = response.pop('message_to_user')
+            if response.get('message_to_user') and 'message_body' not in response:
+                response['message_body'] = response.pop('message_to_user')
+            return response, contexto_municipio_actual
         if tiene_categoria and not tiene_ubicacion:
             contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
             if chat_db_context:
@@ -2099,14 +2080,19 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         nuevo_turno_historial = {"pregunta_usuario": pregunta_str, "respuesta_ia": respuesta_usuario_llm}
 
         if accion_backend_llm == "saludar":
-            logger.info("LLM detectó un saludo. Invocando GreetingHandler.")
-            # The 'context' dict passed to handle_llm_interaction has the necessary nested structure.
-            handler = GreetingHandler(context)
-            response = handler.handle({})  # Pass empty payload
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-            # The handler's response is the full dict ready to be returned by responder_municipio
-            return response, contexto_municipio_actual
+            estado_actual = contexto_municipio_actual.get("estado_conversacion", "")
+            if isinstance(estado_actual, str) and estado_actual.startswith("ESPERANDO_"):
+                logger.info("[GreetingHandler] Saludo ignorado por flujo activo.")
+                return None, contexto_municipio_actual
+            else:
+                logger.info("LLM detectó un saludo. Invocando GreetingHandler.")
+                # The 'context' dict passed to handle_llm_interaction has the necessary nested structure.
+                handler = GreetingHandler(context)
+                response = handler.handle({})  # Pass empty payload
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                # The handler's response is the full dict ready to be returned by responder_municipio
+                return response, contexto_municipio_actual
 
         if accion_backend_llm in ["crear_reclamo", "iniciar_reclamo"] and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
             # Si es el inicio de un nuevo reclamo, limpiar el contexto anterior para evitar "context bleed".
@@ -2140,7 +2126,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 # if the handler then asks for more information.
                 logger_actual.info("[HANDLE_LLM] LLM provided all data. Executing CrearReclamoActionHandler for validation and creation.")
                 handler = CrearReclamoActionHandler(context)
-                handler_response = handler.execute(datos_actuales)
+                handler_response = _execute_crear_reclamo(handler, datos_actuales, contexto_municipio_actual)
 
                 # The handler's response is the final one, whether it's a success message
                 # or a request for more info. We return it directly, ignoring the LLM's
@@ -2485,7 +2471,7 @@ def handle_location_for_reclamo(context, viewer_user, owner_user, chat_db_contex
         if not tiene_descripcion:
             datos_reclamo["descripcion"] = context.get("pregunta_actual_usuario", "") or ""
         handler = CrearReclamoActionHandler(context)
-        respuesta = handler.execute(datos_reclamo)
+        respuesta = _execute_crear_reclamo(handler, datos_reclamo, contexto_municipio_actual)
         contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
     else:
         contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
@@ -3634,6 +3620,22 @@ def responder_municipio(
                         "fuente": "proactive_location_handler",
                     }
                 )
+        elif estado_conversacion == ConversationState.ESPERANDO_DATOS_CONTACTO.name:
+            datos_prev = contexto_municipio_actual.get('datos_parciales_llm_reclamo', {})
+            contacto_prev = contexto_municipio_actual.get('contacto_usuario', {})
+            nuevos = procesar_datos_contacto_compacto(pregunta_str, contacto_prev)
+            contexto_municipio_actual['contacto_usuario'] = nuevos
+            datos_reclamo = {**datos_prev}
+            for k in ['nombre', 'email', 'telefono', 'dni']:
+                if nuevos.get(k):
+                    datos_reclamo[k] = nuevos[k]
+            handler = CrearReclamoActionHandler(context)
+            response = _execute_crear_reclamo(handler, datos_reclamo, contexto_municipio_actual)
+            if response.get('message_to_user') and 'message_body' not in response:
+                response['message_body'] = response.pop('message_to_user')
+            if chat_db_context:
+                flag_modified(chat_db_context, 'context_data')
+            return _finalize_response(response)
 
 
         elif estado_conversacion == ConversationState.ESPERANDO_NUMERO_TICKET.name:
@@ -3843,7 +3845,7 @@ def responder_municipio(
             ):
                 datos_confirmados = contexto_municipio_actual.pop('datos_sugerencia', {})
                 handler = CrearReclamoActionHandler(context)
-                response = handler.execute(datos_confirmados)
+                response = _execute_crear_reclamo(handler, datos_confirmados, contexto_municipio_actual)
                 if response.get("success"):
                     response["message_to_user"] = f"✅ ¡Hemos recibido tu sugerencia! Muchas gracias por tu aporte. Lo hemos registrado con el número de ticket `{response.get('data', {}).get('nro_ticket', 'N/A')}` para su seguimiento."
                     contexto_municipio_actual['estado_conversacion'] = None
@@ -4342,7 +4344,7 @@ def responder_municipio(
 
             # Llamar a la acción de creación de reclamo
             handler = CrearReclamoActionHandler(context)
-            response = handler.execute(datos_confirmados)
+            response = _execute_crear_reclamo(handler, datos_confirmados, contexto_municipio_actual)
 
             # Limpiar el estado de la conversación solo si la creación fue exitosa
             if response.get("success"):
@@ -4574,7 +4576,7 @@ def responder_municipio(
             })
 
         handler = CrearReclamoActionHandler(context)
-        response = handler.execute(datos_sugerencia)
+        response = _execute_crear_reclamo(handler, datos_sugerencia, contexto_municipio_actual)
 
         # Modificar el mensaje de éxito para que sea específico para sugerencias
         if response.get("success"):

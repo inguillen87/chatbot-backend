@@ -95,7 +95,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         # Geocoding: validate and enrich address with coordinates and formatted text
         if ubicacion_llm and not coordenadas_llm:
-            geo_info = validar_y_formatear_direccion(ubicacion_llm)
+            geo_info = validar_y_formatear_direccion(ubicacion_llm, distrito_llm)
             if geo_info:
                 ubicacion_llm = geo_info.get("formatted_address", ubicacion_llm)
                 coordenadas_llm = {
