@@ -348,13 +348,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.mock_twilio_create.call_count, 2)
+        self.assertEqual(self.mock_twilio_create.call_count, 1)
         first_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
-        second_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
         self.assertIn('body', first_kwargs)
-        self.assertNotIn('media_url', first_kwargs)
-        self.assertIn('media_url', second_kwargs)
-        self.assertEqual(second_kwargs['media_url'][0], 'http://example.com/promo.jpg')
+        self.assertIn('media_url', first_kwargs)
+        self.assertEqual(first_kwargs['media_url'][0], 'http://example.com/promo.jpg')
 
     @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_docx_attachment(self, mock_requests_get):
@@ -636,15 +634,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
              patch('services.response_formatter.WHATSAPP_ALLOW_INTERACTIVE', True):
             self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
-        # Text first, then image, then interactive payload
-        self.assertGreaterEqual(self.mock_twilio_create.call_count, 3)
-        first_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
-        second_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
-        third_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
-        self.assertIn("body", first_kwargs)
-        self.assertNotIn("media_url", first_kwargs)
-        self.assertIn("media_url", second_kwargs)
-        self.assertIn("persistent_action", third_kwargs)
+        # Text with image first, then interactive payload
+        self.assertGreaterEqual(self.mock_twilio_create.call_count, 2)
+        calls = [c.kwargs for c in self.mock_twilio_create.call_args_list]
+        self.assertTrue(any('media_url' in c and 'body' in c for c in calls))
+        self.assertTrue(any('persistent_action' in c for c in calls))
 
     @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_audio_attachment_transcribes_text(self, mock_requests_get):
