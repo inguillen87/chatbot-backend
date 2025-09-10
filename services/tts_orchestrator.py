@@ -43,10 +43,14 @@ def generar_audio_con_fallback(text: str, channel: str | None = None) -> str | N
     Returns:
         str: The public URL path to the generated audio file, or None if all providers fail.
     """
-    if channel == "whatsapp" and os.getenv("WHATSAPP_TTS_DEFAULT", "false").lower() != "true":
-        return None
+    if channel == "whatsapp":
+        policy = os.getenv("WHATSAPP_TTS_POLICY", "auto").lower()
+        if policy == "off":
+            return None
 
     text = sanitize_for_tts(text)
+    if len(text) > 500:
+        text = text[:500]
     logger.info(f"TTS Orchestrator: Attempting to generate audio for text: '{text[:50]}...'")
 
     cache_dir = "static/audio_cache"

@@ -53,6 +53,7 @@ from services.llm_utils import clasificar_entidad_con_llm
 from services.municipio_responder import responder_municipio
 from services.pymes import responder_pyme
 from services.response_formatter import render_audio_text
+from services import preferences
 
 # PROMPT_CLASIFICACION_INTENCION y _clasificar_intencion_con_llm han sido eliminados.
 # La clasificación de intención ahora es responsabilidad de llamar_llm_con_fallback con JULES_SYSTEM_PROMPT.
@@ -306,15 +307,77 @@ def responder_chatboc(
     audio_requested = False
     if channel == "whatsapp":
         normalized_q = normalizar_texto(str(pregunta))
-        if "audio" in normalized_q or "escuchar" in normalized_q:
+        if normalized_q == "audio on":
+            if chat_db_context:
+                preferences.set_audio_enabled(context_data, True)
+                safe_flag_modified(chat_db_context, "context_data")
+            if current_user is not None:
+                current_user.prefers_audio = True
+                db.session.add(current_user)
+                db.session.commit()
+            return {"message_body": "🔊 Activé los audios.", "message_type": "text"}
+        if normalized_q == "audio off":
+            if chat_db_context:
+                preferences.set_audio_enabled(context_data, False)
+                safe_flag_modified(chat_db_context, "context_data")
+            if current_user is not None:
+                current_user.prefers_audio = False
+                db.session.add(current_user)
+                db.session.commit()
+            return {"message_body": "📝 Desactivé los audios.", "message_type": "text"}
+        if any(
+            phrase in normalized_q
+            for phrase in ["mandamelo en audio", "manda en audio", "no puedo leer"]
+        ):
+            audio_requested = True
+            if chat_db_context:
+                preferences.set_audio_enabled(context_data, True)
+                safe_flag_modified(chat_db_context, "context_data")
+        elif "audio" in normalized_q or "escuchar" in normalized_q:
             audio_requested = True
     tts_forced = context_data.get("tts_forced")
-    whatsapp_default = os.getenv("WHATSAPP_TTS_DEFAULT", "false").lower() == "true"
-    generar_audio_default = True
-    if channel == "whatsapp" and not (whatsapp_default or audio_requested or tts_forced):
-        generar_audio_default = False
-    if isinstance(response_data, dict) and response_data.get('generar_audio') is None:
-        response_data['generar_audio'] = generar_audio_default or audio_requested or tts_forced
+    policy = os.getenv("WHATSAPP_TTS_POLICY", "auto").lower()
+    generar_audio = False
+    reason = None
+    if isinstance(response_data, dict):
+        long_msg = len(
+            (response_data.get('message_body') or '')
+            + (response_data.get('message_to_user') or '')
+        ) > 150
+        is_menu = response_data.get('message_type') in {'interactive_buttons', 'options_list'}
+        pref_audio = preferences.is_audio_enabled(context_data, user=current_user)
+        if policy == 'always':
+            generar_audio = True
+            reason = 'policy'
+        elif policy == 'off':
+            if audio_requested or tts_forced:
+                generar_audio = True
+                reason = 'pedido_usuario' if audio_requested else 'forzado'
+        else:  # auto
+            if tts_forced:
+                generar_audio = True
+                reason = 'forzado'
+            elif audio_requested:
+                generar_audio = True
+                reason = 'pedido_usuario'
+            elif pref_audio:
+                generar_audio = True
+                reason = 'preferencia'
+            elif long_msg and not is_menu:
+                generar_audio = True
+                reason = 'largo'
+            elif response_data.get('es_confirmacion_final'):
+                generar_audio = True
+                reason = 'confirmacion'
+        if is_menu and not pref_audio and reason not in {'pedido_usuario', 'forzado'}:
+            generar_audio = False
+            reason = None
+        if response_data.get('generar_audio') is None:
+            response_data['generar_audio'] = generar_audio
+        if generar_audio:
+            logger.info(f"tts_sent=true reason={reason}")
+        else:
+            logger.info("tts_sent=false")
 
     # --- Audio Response Generation ---
     if isinstance(response_data, dict) and response_data.get('generar_audio'):
