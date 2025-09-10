@@ -2,12 +2,12 @@ import json
 import logging
 import os
 import re
-import unicodedata  # <--- ¡Importante agregar esta línea!
+import unicodedata
 
 import requests
 from services.config_loader import cargar_configuracion_municipio
 from services.address_resolver import AddressResolver
-from services.location_service import geocode_address
+from services.location_service import geocode_address  # required for legacy helpers
 from services.tts_orchestrator import generar_audio_con_fallback
 from services.geo_service import reverse_geocode
 from models import MunicipioTicket
