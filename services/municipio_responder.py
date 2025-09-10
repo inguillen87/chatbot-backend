@@ -161,8 +161,9 @@ def pedir_datos_contacto_compacto():
     return {
         "message_body": (
             "Para seguir, enviá *en una sola línea* tus datos separados por comas o espacios, "
-            "en cualquier orden: *Nombre completo, Email, Teléfono, DNI, Dirección de contacto*.\n\n"
-            "Ejemplo: *Juan Perez, juan@mail.com, 2615551234, 30123456, Don Bosco 55 Junín*"
+            "en cualquier orden: *Nombre completo, Email, Teléfono, DNI*. "
+            "Si querés, podés agregar tu dirección de contacto.\n\n"
+            "Ejemplo: *Juan Perez, juan@mail.com, 2615551234, 30123456*"
         ),
         "message_type": "text",
     }
