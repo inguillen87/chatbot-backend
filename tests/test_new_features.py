@@ -45,7 +45,8 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("Juan Obras", message_body)
         self.assertIn("Jefe de Bacheo", message_body)
         self.assertIn("+5491122334455", message_body)
-        self.assertEqual(len(buttons), 0)
+        # Se agrega botón de información municipal por defecto
+        self.assertTrue(any(b.get("texto") == "🌐 Más información" for b in buttons))
 
     def test_formatear_ticket_respuesta_incluye_pin_y_url(self):
         message, buttons = formatear_ticket_respuesta(
@@ -79,6 +80,23 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("ana@example.com", message)
         self.assertIn("Actualizar datos", message)
         self.assertIn("https://example.com/tickets/88888", message)
+
+    def test_formatear_ticket_respuesta_incluye_links_promocionales(self):
+        message, buttons = formatear_ticket_respuesta(
+            "reclamo",
+            "Ana",
+            "Descripción",
+            "Categoria",
+            "M-77777",
+            base_chat_url="https://example.com/tickets",
+            consulta_pin="111222",
+        )
+        self.assertIn("Junín Punto Limpio: https://www.juninmendoza.gov.ar/punto-limpio", message)
+        self.assertIn("Obras y novedades: https://www.juninmendoza.gov.ar/obras", message)
+        self.assertIn("Más información municipal: https://www.juninmendoza.gov.ar/", message)
+        self.assertIn("💬 Ver mi Ticket: https://example.com/tickets/77777?pin=111222", message)
+        self.assertTrue(any(b.get("texto") == "💬 Ver mi Ticket" for b in buttons))
+        self.assertTrue(any(b.get("texto") == "🌐 Más información" for b in buttons))
 
     def test_greeting_handler_final_menu(self):
         """
@@ -289,7 +307,15 @@ class TestNewFeatures(unittest.TestCase):
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
     @patch('services.actions.municipio_actions.validar_email', return_value=True)
-    @patch('services.location_service.geocode_address', return_value=(-32.89, -68.83))
+    @patch(
+        'services.location_service.geocode_address',
+        return_value={
+            'lat': -32.89,
+            'lng': -68.83,
+            'display_name': 'X 1, Y',
+            'maps_search_url': 'https://www.openstreetmap.org/search?query=X%201,%20Y',
+        },
+    )
     @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
     @patch('services.actions.municipio_actions.enviar_notificacion_sms')
     @patch('services.actions.municipio_actions.formatear_telefono_e164', return_value='+5491111111111')

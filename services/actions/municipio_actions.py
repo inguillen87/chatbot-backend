@@ -95,7 +95,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         # Geocoding: validate and enrich address with coordinates and formatted text
         if ubicacion_llm and not coordenadas_llm:
-            geo_info = validar_y_formatear_direccion(ubicacion_llm)
+            geo_info = validar_y_formatear_direccion(ubicacion_llm, distrito_llm)
             if geo_info:
                 ubicacion_llm = geo_info.get("formatted_address", ubicacion_llm)
                 coordenadas_llm = {
@@ -117,17 +117,26 @@ class CrearReclamoActionHandler(BaseActionHandler):
             or action_data.get("nombre_usuario_detectado")
             or datos_parciales.get("nombre_usuario_detectado")
         )
+        ctx_contact = (
+            self.context.get("contexto_municipio_v2", {})
+            .get("contacto_usuario", {})
+            .get("nombre")
+        )
         profile_name_from_user_obj = getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None)
-        profile_name_from_context = self.context.get("profile_name")
+        profile_name_from_context = self.context.get("profile_name") or self.context.get("contexto_municipio_v2", {}).get("nombre_vecino")
 
-        # Prioritize LLM name, then profile from user object, then profile from context.
-        nombre_vecino_final = "Vecino/a"  # Default
-        if isinstance(llm_name, str) and llm_name.strip():
-            nombre_vecino_final = llm_name
-        elif isinstance(profile_name_from_user_obj, str) and profile_name_from_user_obj.strip():
-            nombre_vecino_final = profile_name_from_user_obj
-        elif isinstance(profile_name_from_context, str) and profile_name_from_context.strip():
-            nombre_vecino_final = profile_name_from_context
+        # Prioritize LLM name, then context contact, then stored profile names.
+        nombre_vecino_final = next(
+            (
+                n
+                for n in [llm_name, ctx_contact, profile_name_from_user_obj, profile_name_from_context]
+                if isinstance(n, str) and n.strip()
+            ),
+            "Vecino/a",
+        )
+
+        if len(nombre_vecino_final) > 60 or len(nombre_vecino_final.split()) > 6:
+            nombre_vecino_final = "Vecino/a"
 
         telefono_from_llm = (action_data.get("telefono") or datos_parciales.get("telefono") or
                              action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado"))
