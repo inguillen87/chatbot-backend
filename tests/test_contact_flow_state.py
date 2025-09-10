@@ -24,7 +24,7 @@ class ContactFlowStateTest(unittest.TestCase):
             inst = mock_handler.return_value
             inst.execute.return_value = {'success': True, 'message_to_user': 'ok', 'data': {}}
             resp = responder_municipio(
-                pregunta_original='Juan Perez juan@mail.com +5492611111111 30123456 Calle 1 Junin',
+                pregunta_original='Juan Perez, juan@mail.com, +5492611111111, 30123456, Calle 1 Junin',
                 owner_user=owner,
                 rubro_obj=None,
                 viewer_user=viewer,

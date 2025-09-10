@@ -42,7 +42,8 @@ class TestContactParser(unittest.TestCase):
         )
         datos = procesar_datos_contacto_compacto(texto, {})
         self.assertEqual(datos["nombre"], "Marcelo Guillen")
-        self.assertEqual(datos["direccion_reclamo"], "don bosco 55 esquina sarmiento junin")
+        self.assertEqual(datos["direccion_contacto"], "don bosco 55 esquina sarmiento junin")
+        self.assertNotIn("direccion_reclamo", datos)
 
 
 if __name__ == "__main__":
