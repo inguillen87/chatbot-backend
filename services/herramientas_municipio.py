@@ -621,10 +621,18 @@ def buscar_puntos_de_interes(
 def log_uso_herramienta(nombre, usuario, parametros, resultado):
     logger.info(f"[USO_HERRAMIENTA] {nombre} | Usuario: {usuario} | Parámetros: {parametros} | Resultado: {resultado[:100]}")
 
-def validar_y_formatear_direccion(direccion: str) -> dict | None:
-    """Valida y formatea una dirección utilizando Nominatim (OSM)."""
+def validar_y_formatear_direccion(direccion: str, distrito: str | None = None) -> dict | None:
+    """Valida y formatea una dirección utilizando Nominatim (OSM).
+
+    Parameters
+    ----------
+    direccion: str
+        Dirección tal como la ingresó el usuario.
+    distrito: str | None
+        Distrito o ciudad para mejorar la precisión del geocodificador.
+    """
     try:
-        geocode_result = geocode_address(direccion)
+        geocode_result = geocode_address(direccion, distrito)
     except Exception as e:
         logger.error(f"[GEO] Error al geocodificar '{direccion}': {e}")
         return None

@@ -16,15 +16,33 @@ def _nominatim_headers() -> dict:
     return {"User-Agent": NOMINATIM_USER_AGENT}
 
 
-def geocode_address(address: str) -> Optional[dict]:
-    """Geocode an address using the free OpenStreetMap Nominatim API."""
+def geocode_address(address: str, district: str | None = None) -> Optional[dict]:
+    """Geocode an address using the free OpenStreetMap Nominatim API.
+
+    Parameters
+    ----------
+    address: str
+        Base street address provided by the user.
+    district: str | None
+        Optional district or city name to bias the search.
+    """
 
     if not address:
         return None
 
-    url = "https://nominatim.openstreetmap.org/search"
-    params = {"q": address, "format": "json", "limit": 1}
+    # Append district if available and not already present
+    query = address
+    if district and district.lower() not in address.lower():
+        query = f"{address}, {district}"
 
+    url = "https://nominatim.openstreetmap.org/search"
+    params = {"q": query, "format": "json", "limit": 1}
+
+    if not query:
+        return []
+
+    url = "https://nominatim.openstreetmap.org/search"
+    params = {"q": query, "format": "json", "limit": 5}
     try:
         resp = requests.get(url, params=params, headers=_nominatim_headers(), timeout=5)
         resp.raise_for_status()

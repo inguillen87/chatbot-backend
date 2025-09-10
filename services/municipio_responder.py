@@ -859,6 +859,7 @@ class ConversationState(Enum):
     ESPERANDO_EMAIL_VECINO = auto()
     ESPERANDO_DESCRIPCION_RECLAMO = auto()
     ESPERANDO_ADJUNTOS_RECLAMO = auto()
+    ESPERANDO_DATOS_CONTACTO = auto()
     ESPERANDO_CONFIRMACION_RECLAMO = auto()
     ESPERANDO_SELECCION_TRAMITE = auto()
     ESPERANDO_PREGUNTA_CURSO_LICENCIA = auto()
@@ -1946,6 +1947,12 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 flag_modified(chat_db_context, "context_data")
             handler = CrearReclamoActionHandler(context)
             response = _execute_crear_reclamo(handler, datos_reclamo, contexto_municipio_actual)
+            if response.get('message_to_user') and 'message_body' not in response:
+                response['message_body'] = response.pop('message_to_user')
+            if response.get('message_to_user') and 'message_body' not in response:
+                response['message_body'] = response.pop('message_to_user')
+            if response.get('message_to_user') and 'message_body' not in response:
+                response['message_body'] = response.pop('message_to_user')
             return response, contexto_municipio_actual
         if tiene_categoria and not tiene_ubicacion:
             contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
@@ -3637,6 +3644,22 @@ def responder_municipio(
                         "fuente": "proactive_location_handler",
                     }
                 )
+        elif estado_conversacion == ConversationState.ESPERANDO_DATOS_CONTACTO.name:
+            datos_prev = contexto_municipio_actual.get('datos_parciales_llm_reclamo', {})
+            contacto_prev = contexto_municipio_actual.get('contacto_usuario', {})
+            nuevos = procesar_datos_contacto_compacto(pregunta_str, contacto_prev)
+            contexto_municipio_actual['contacto_usuario'] = nuevos
+            datos_reclamo = {**datos_prev}
+            for k in ['nombre', 'email', 'telefono', 'dni']:
+                if nuevos.get(k):
+                    datos_reclamo[k] = nuevos[k]
+            handler = CrearReclamoActionHandler(context)
+            response = _execute_crear_reclamo(handler, datos_reclamo, contexto_municipio_actual)
+            if response.get('message_to_user') and 'message_body' not in response:
+                response['message_body'] = response.pop('message_to_user')
+            if chat_db_context:
+                flag_modified(chat_db_context, 'context_data')
+            return _finalize_response(response)
 
 
         elif estado_conversacion == ConversationState.ESPERANDO_NUMERO_TICKET.name:
