@@ -543,6 +543,12 @@ def whatsapp_webhook():
             **kwargs_for_bot
         )
 
+        # Propagate any state hints returned by the bot into the session context
+        next_state = bot_response_dict.get("next_state_hint")
+        if next_state:
+            muni_ctx = session_context_db_entry.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+            muni_ctx["estado_conversacion"] = next_state
+
         # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
         if not end_user and bot_response_dict.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"]:
             contexto_actual = session_context_db_entry.context_data.get("contexto_municipio", {})

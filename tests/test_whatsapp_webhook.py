@@ -562,6 +562,28 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             self.assertTrue(kwargs_twilio["body"].startswith("Ok"))
             self.mock_welcome.assert_not_called()
 
+    @patch('routes.whatsapp_webhook.responder_chatboc')
+    def test_state_hint_persists_in_session(self, mock_bot):
+        """Ensure next_state_hint from bot updates the stored conversation state."""
+        self._create_confirmed_session()
+        session = ChatSessionContext.query.first()
+        session.context_data[CONTEXTO_MUNICIPIO] = {"estado_conversacion": "ESPERANDO_DIRECCION_RECLAMO"}
+        db.session.commit()
+
+        mock_bot.return_value = {"message_body": "Ok", "next_state_hint": "ESPERANDO_DATOS_CONTACTO"}
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        updated = ChatSessionContext.query.first().context_data[CONTEXTO_MUNICIPIO]["estado_conversacion"]
+        self.assertEqual(updated, "ESPERANDO_DATOS_CONTACTO")
+
     @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_audio_attachment_transcribes_text(self, mock_requests_get):
         mock_response = MagicMock()
