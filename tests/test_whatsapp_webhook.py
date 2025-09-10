@@ -348,13 +348,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.mock_twilio_create.call_count, 2)
-        first_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
-        second_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
-        self.assertIn('body', first_kwargs)
-        self.assertNotIn('media_url', first_kwargs)
-        self.assertIn('media_url', second_kwargs)
-        self.assertEqual(second_kwargs['media_url'][0], 'http://example.com/promo.jpg')
+        self.assertEqual(self.mock_twilio_create.call_count, 1)
+        kwargs = self.mock_twilio_create.call_args.kwargs
+        self.assertIn('body', kwargs)
+        self.assertIn('media_url', kwargs)
+        self.assertEqual(kwargs['media_url'][0], 'http://example.com/promo.jpg')
 
     @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_docx_attachment(self, mock_requests_get):
