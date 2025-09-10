@@ -3469,6 +3469,7 @@ def responder_municipio(
         and not pregunta_str.strip().isdigit()
         and normalizar_texto(pregunta_str) not in main_actions
         and estado_conversacion != ConversationState.ESPERANDO_INTENCION_UBICACION.name
+        and estado_conversacion != ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name
         and estado_conversacion != ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name
         and estado_conversacion != ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
         and estado_conversacion != ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
