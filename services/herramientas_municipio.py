@@ -5,7 +5,7 @@ import os
 import unicodedata # <--- ¡Importante agregar esta línea!
 import re
 from services.config_loader import cargar_configuracion_municipio
-from services.location_service import geocode_address
+from services.address_resolver import AddressResolver
 from services.tts_orchestrator import generar_audio_con_fallback
 from models import MunicipioTicket
 from database import db
@@ -622,29 +622,39 @@ def log_uso_herramienta(nombre, usuario, parametros, resultado):
     logger.info(f"[USO_HERRAMIENTA] {nombre} | Usuario: {usuario} | Parámetros: {parametros} | Resultado: {resultado[:100]}")
 
 def validar_y_formatear_direccion(direccion: str, distrito: str | None = None) -> dict | None:
-    """Valida y formatea una dirección utilizando Nominatim (OSM).
+    """Valida y formatea una dirección utilizando `AddressResolver`.
 
-    Parameters
-    ----------
-    direccion: str
-        Dirección tal como la ingresó el usuario.
-    distrito: str | None
-        Distrito o ciudad para mejorar la precisión del geocodificador.
+    La resolución está forzada al ámbito municipal de Junín (Mendoza, AR).
+    Devuelve un diccionario con campos canónicos como `calle`, `numero`,
+    `entre_calles` y coordenadas, además del `formatted_address` para
+    compatibilidad retroactiva.
     """
+
     try:
-        geocode_result = geocode_address(direccion, distrito)
+        resolver = AddressResolver()
+        resolved = resolver.resolve(direccion)
     except Exception as e:
         logger.error(f"[GEO] Error al geocodificar '{direccion}': {e}")
         return None
 
-    if not geocode_result:
-        logger.warning(f"[GEO] No se pudo geocodificar '{direccion}' con Nominatim.")
+    if not resolved or not resolved.get("validez", True):
+        logger.warning(f"[GEO] No se pudo geocodificar '{direccion}' dentro de Junín.")
         return None
 
+    # Map canonical keys to legacy structure
     return {
-        "formatted_address": geocode_result.get("display_name"),
-        "lat": geocode_result.get("lat"),
-        "lng": geocode_result.get("lng"),
+        "formatted_address": resolved.get("formatted"),
+        "lat": resolved.get("lat"),
+        "lng": resolved.get("lon"),
+        "calle": resolved.get("calle"),
+        "numero": resolved.get("numero"),
+        "entre_calles": resolved.get("entre_calles"),
+        "barrio": resolved.get("barrio"),
+        "localidad": resolved.get("localidad"),
+        "provincia": resolved.get("provincia"),
+        "pais": resolved.get("pais"),
+        "precision": resolved.get("precision"),
+        "validez": resolved.get("validez"),
     }
 
 def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:

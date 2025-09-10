@@ -17,22 +17,40 @@ def app_context():
         db.session.remove()
         db.drop_all()
 
-@patch('services.herramientas_municipio.geocode_address')
-def test_validar_y_formatear_direccion_exitosa(mock_geo):
-    mock_geo.return_value = {
-        "display_name": "Av. Siempreviva 742, Springfield, EE. UU.",
-        "lat": 40.7128,
-        "lng": -74.0060,
+@patch('services.herramientas_municipio.AddressResolver.resolve')
+def test_validar_y_formatear_direccion_exitosa(mock_resolve):
+    mock_resolve.return_value = {
+        "formatted": "Av. Siempreviva 742, Junín, Mendoza, AR",
+        "lat": -33.0,
+        "lon": -68.5,
+        "calle": "Av. Siempreviva",
+        "numero": "742",
+        "entre_calles": [],
+        "barrio": None,
+        "localidad": "Junín",
+        "provincia": "Mendoza",
+        "pais": "AR",
+        "precision": "point",
+        "validez": True,
     }
     resultado = validar_y_formatear_direccion("Av. Siempreviva 742")
     assert resultado == {
-        "formatted_address": "Av. Siempreviva 742, Springfield, EE. UU.",
-        "lat": 40.7128,
-        "lng": -74.0060,
+        "formatted_address": "Av. Siempreviva 742, Junín, Mendoza, AR",
+        "lat": -33.0,
+        "lng": -68.5,
+        "calle": "Av. Siempreviva",
+        "numero": "742",
+        "entre_calles": [],
+        "barrio": None,
+        "localidad": "Junín",
+        "provincia": "Mendoza",
+        "pais": "AR",
+        "precision": "point",
+        "validez": True,
     }
 
-@patch('services.herramientas_municipio.geocode_address', return_value=None)
-def test_validar_y_formatear_direccion_invalida(mock_geo):
+@patch('services.herramientas_municipio.AddressResolver.resolve', return_value=None)
+def test_validar_y_formatear_direccion_invalida(mock_resolve):
     resultado = validar_y_formatear_direccion("una dirección inválida")
     assert resultado is None
 
@@ -94,7 +112,7 @@ def test_generar_respuesta_audio_in_tool_registry():
     assert "parametros" in tool_info
     assert "text" in tool_info["parametros"]
 
-@patch('services.herramientas_municipio.geocode_address', side_effect=Exception("boom"))
-def test_validar_y_formatear_direccion_error_api(mock_geo):
+@patch('services.herramientas_municipio.AddressResolver.resolve', side_effect=Exception("boom"))
+def test_validar_y_formatear_direccion_error_api(mock_resolve):
     resultado = validar_y_formatear_direccion("Av. Siempreviva 742")
     assert resultado is None
