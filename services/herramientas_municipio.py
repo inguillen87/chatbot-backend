@@ -666,8 +666,19 @@ def _extract_coords_from_maps(url: str) -> tuple[float, float] | None:
     return None
 
 
+def _resolve_municipio_config(cfg: dict | str | None) -> dict:
+    """Return a full municipio config, loading from ID if needed."""
+    if isinstance(cfg, dict) and cfg:
+        return {**_DEFAULT_GEO_CONFIG, **cfg}
+    if isinstance(cfg, str) and cfg:
+        loaded = cargar_configuracion_municipio(cfg, "config.json")
+        if loaded:
+            return {**_DEFAULT_GEO_CONFIG, **loaded}
+    return CONFIG_MUNICIPIO
+
+
 def validar_y_formatear_direccion(
-    direccion: str, municipio_config: dict | None = None
+    direccion: str, municipio_config: dict | str | None = None
 ) -> dict | None:
     """Valida y formatea una dirección utilizando ``AddressResolver``.
 
@@ -676,8 +687,9 @@ def validar_y_formatear_direccion(
     coordenadas, además del ``formatted_address`` para compatibilidad.
     """
 
+    cfg = _resolve_municipio_config(municipio_config)
     try:
-        resolver = AddressResolver(municipio_config or CONFIG_MUNICIPIO)
+        resolver = AddressResolver(cfg)
     except Exception as e:
         logger.error(f"[GEO] Error al inicializar AddressResolver: {e}")
         return None
