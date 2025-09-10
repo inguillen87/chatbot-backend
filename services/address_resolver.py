@@ -119,12 +119,12 @@ class AddressResolver:
                 "validez": validez,
             }
 
-        # Single street with optional number
-        match = re.match(r"([^0-9]+)(\d+)?", normalized)
-        if not match:
+        # Single street with optional number (allow numeric street names)
+        match = re.match(r"(.*?)(?:\s+(\d+))?$", normalized)
+        street = match.group(1).strip() if match else ""
+        number = match.group(2) if match else None
+        if not street or street.isdigit():
             return None
-        street = match.group(1).strip()
-        number = match.group(2)
         street_query = f"{street} {number}" if number else street
         try:
             geo = self._geocode(street_query)
