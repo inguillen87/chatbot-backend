@@ -680,6 +680,12 @@ def whatsapp_webhook():
                 'to': from_number_raw,
             }
 
+            image_url = formatted_whatsapp_payload.get("image_url")
+            if image_url:
+                if image_url.startswith('/'):
+                    base_url = request.url_root.rstrip('/')
+                    image_url = f"{base_url}{image_url}"
+
             if formatted_whatsapp_payload.get("type") == "interactive":
                 interactive_payload = formatted_whatsapp_payload.get("interactive")
                 fallback_body = interactive_payload.get("body", {}).get("text", "Por favor, mirá las opciones.")
@@ -691,27 +697,15 @@ def whatsapp_webhook():
                     'to': from_number_raw,
                     'body': fallback_body,
                 }
-                image_url = formatted_whatsapp_payload.get("image_url")
-                if image_url:
-                    if image_url.startswith('/'):
-                        base_url = request.url_root.rstrip('/')
-                        image_url = f"{base_url}{image_url}"
-                    text_message_params['media_url'] = [image_url]
                 twilio_client.messages.create(**text_message_params)
 
-                # Now prepare the interactive message. It still includes the
-                # body text so clients that support it render correctly.
+                # Prepare the interactive message (without media). It still
+                # includes the body text so clients that support it render
+                # correctly.
                 message_params['body'] = fallback_body
                 message_params['persistent_action'] = [f"whatsapp:{json.dumps(interactive_payload)}"]
             else:  # Text message
                 message_params['body'] = formatted_whatsapp_payload.get("text", {}).get("body", "No se pudo generar una respuesta.")
-
-                image_url = formatted_whatsapp_payload.get("image_url")
-                if image_url:
-                    if image_url.startswith('/'):
-                        base_url = request.url_root.rstrip('/')
-                        image_url = f"{base_url}{image_url}"
-                    message_params['media_url'] = [image_url]
 
             current_app.logger.debug(f"Sending WhatsApp message params: {message_params}")
 
@@ -758,6 +752,17 @@ def whatsapp_webhook():
                 db.session.commit()
                 main_message = twilio_client.messages.create(**message_params)
                 print(f"Mensaje principal enviado a {from_number_raw}, SID: {main_message.sid}")
+
+            # Send image separately so text always arrives even if media fails
+            if image_url:
+                image_message_params = {
+                    'from_': to_number_raw,
+                    'to': from_number_raw,
+                    'media_url': [image_url]
+                }
+                current_app.logger.debug(f"Sending WhatsApp image params: {image_message_params}")
+                image_message = twilio_client.messages.create(**image_message_params)
+                print(f"Imagen enviada a {from_number_raw}, SID: {image_message.sid}")
 
             # Second, if there is an audio URL, send it as a separate media message.
             audio_url = bot_response_dict.get('audio_url')
