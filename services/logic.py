@@ -302,10 +302,19 @@ def responder_chatboc(
     if not isinstance(response_data, dict):
         response_data = {}
 
-    # Always enable audio responses for accessibility
     context_data = chat_db_context.context_data if chat_db_context else {}
-    if isinstance(response_data, dict) and not response_data.get('generar_audio'):
-        response_data['generar_audio'] = True
+    audio_requested = False
+    if channel == "whatsapp":
+        normalized_q = normalizar_texto(str(pregunta))
+        if "audio" in normalized_q or "escuchar" in normalized_q:
+            audio_requested = True
+    tts_forced = context_data.get("tts_forced")
+    whatsapp_default = os.getenv("WHATSAPP_TTS_DEFAULT", "false").lower() == "true"
+    generar_audio_default = True
+    if channel == "whatsapp" and not (whatsapp_default or audio_requested or tts_forced):
+        generar_audio_default = False
+    if isinstance(response_data, dict) and response_data.get('generar_audio') is None:
+        response_data['generar_audio'] = generar_audio_default or audio_requested or tts_forced
 
     # --- Audio Response Generation ---
     if isinstance(response_data, dict) and response_data.get('generar_audio'):
@@ -323,7 +332,7 @@ def responder_chatboc(
             text_to_speak = f"{base_text}\n{text_to_speak}"
         if text_to_speak:
             from services.tts_orchestrator import generar_audio_con_fallback
-            audio_url = generar_audio_con_fallback(text_to_speak)
+            audio_url = generar_audio_con_fallback(text_to_speak, channel=channel)
             if audio_url:
                 response_data['audio_url'] = audio_url
                 logger.info(f"Generated audio response at {audio_url}")
