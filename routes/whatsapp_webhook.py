@@ -55,6 +55,16 @@ def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
     return parts
 
 
+def deep_merge_dict(target: dict, source: dict) -> dict:
+    """Recursively merge `source` into `target` and return the merged dict."""
+    for k, v in source.items():
+        if isinstance(v, dict) and isinstance(target.get(k), dict):
+            deep_merge_dict(target[k], v)
+        else:
+            target[k] = v
+    return target
+
+
 def _send_delayed_payload(client, to_number: str, from_number: str, payload: dict, delay: int):
     """Send a payload via WhatsApp after a delay using a background thread."""
 
@@ -638,17 +648,9 @@ def whatsapp_webhook():
         current_app.logger.info(f"[CONTEXT_WHATSAPP] Contexto actualizado del turno actual: {updated_context}")
 
 
-        # Merge the contexts, preserving nested structures like contexto_municipio_v2
+        # Merge contexts deeply so nested keys like contexto_municipio_v2/estado_conversacion persist
         if updated_context:
-            merged_context = db_context.copy()
-            for key, value in updated_context.items():
-                if (
-                    isinstance(value, dict)
-                    and isinstance(merged_context.get(key), dict)
-                ):
-                    merged_context[key] = {**merged_context[key], **value}
-                else:
-                    merged_context[key] = value
+            merged_context = deep_merge_dict(db_context.copy(), updated_context)
         else:
             merged_context = db_context
 

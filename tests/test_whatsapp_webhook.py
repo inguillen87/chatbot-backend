@@ -696,3 +696,15 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+def test_deep_merge_preserves_nested_fields():
+    from routes.whatsapp_webhook import deep_merge_dict
+
+    original = {"contexto_municipio_v2": {"estado_conversacion": "A"}, "other": 1}
+    update = {"contexto_municipio_v2": {"last_options_sent": [1]}, "other": 2}
+
+    merged = deep_merge_dict(original, update)
+
+    assert merged["contexto_municipio_v2"]["estado_conversacion"] == "A"
+    assert merged["contexto_municipio_v2"]["last_options_sent"] == [1]
+    assert merged["other"] == 2
