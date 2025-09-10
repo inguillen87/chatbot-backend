@@ -692,6 +692,10 @@ def whatsapp_webhook():
                     'body': fallback_body,
                 }
                 image_url = formatted_whatsapp_payload.get("image_url")
+                if not image_url:
+                    header = interactive_payload.get("header") if interactive_payload else None
+                    if header and header.get("type") == "image":
+                        image_url = header.get("image", {}).get("link")
                 if image_url:
                     if image_url.startswith('/'):
                         base_url = request.url_root.rstrip('/')
