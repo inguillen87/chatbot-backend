@@ -680,38 +680,25 @@ def whatsapp_webhook():
                 'to': from_number_raw,
             }
 
+            image_url = formatted_whatsapp_payload.get("image_url")
+            if image_url:
+                if image_url.startswith('/'):
+                    base_url = request.url_root.rstrip('/')
+                    image_url = f"{base_url}{image_url}"
+                message_params['media_url'] = [image_url]
+
             if formatted_whatsapp_payload.get("type") == "interactive":
                 interactive_payload = formatted_whatsapp_payload.get("interactive")
-                fallback_body = interactive_payload.get("body", {}).get("text", "Por favor, mirá las opciones.")
-
-                # Always send a plain text version first so the user sees the
-                # content even if Twilio rejects the interactive payload.
-                text_message_params = {
-                    'from_': to_number_raw,
-                    'to': from_number_raw,
-                    'body': fallback_body,
-                }
-                image_url = formatted_whatsapp_payload.get("image_url")
-                if image_url:
-                    if image_url.startswith('/'):
-                        base_url = request.url_root.rstrip('/')
-                        image_url = f"{base_url}{image_url}"
-                    text_message_params['media_url'] = [image_url]
-                twilio_client.messages.create(**text_message_params)
-
-                # Now prepare the interactive message. It still includes the
-                # body text so clients that support it render correctly.
-                message_params['body'] = fallback_body
-                message_params['persistent_action'] = [f"whatsapp:{json.dumps(interactive_payload)}"]
+                message_params['body'] = interactive_payload.get("body", {}).get("text", "Por favor, mirá las opciones.")
+                message_params['persistent_action'] = [
+                    f"whatsapp:{json.dumps(interactive_payload)}"
+                ]
             else:  # Text message
-                message_params['body'] = formatted_whatsapp_payload.get("text", {}).get("body", "No se pudo generar una respuesta.")
-
-                image_url = formatted_whatsapp_payload.get("image_url")
-                if image_url:
-                    if image_url.startswith('/'):
-                        base_url = request.url_root.rstrip('/')
-                        image_url = f"{base_url}{image_url}"
-                    message_params['media_url'] = [image_url]
+                message_params['body'] = (
+                    formatted_whatsapp_payload.get("text", {}).get(
+                        "body", "No se pudo generar una respuesta."
+                    )
+                )
 
             current_app.logger.debug(f"Sending WhatsApp message params: {message_params}")
 
