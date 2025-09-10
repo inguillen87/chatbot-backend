@@ -9,20 +9,32 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class AddressResolver:
-    """Resolve and geocode user provided addresses within Junín (Mendoza, AR)."""
 
-    CITY = "Junín"
-    STATE = "Mendoza"
-    COUNTRY = "AR"
-    # Approx bounding box for Junín, Mendoza (lon_min, lat_min, lon_max, lat_max)
-    BOUNDS = (-68.6, -33.1, -68.4, -32.9)
+class AddressResolver:
+    """Resolve and geocode user-provided addresses constrained to a municipality.
+
+    Parameters are supplied via ``municipio_config`` which should include:
+    ``ciudad`` (city/locality name), ``provincia`` (state/province), ``pais``
+    (country code) and ``bounds`` (lon_min, lat_min, lon_max, lat_max).  An
+    optional ``conflicting_jurisdicciones`` list can be provided to mark text
+    fragments that should be treated as external jurisdictions (e.g.,
+    ``"san martin"`` for Junín).
+    """
 
     INTERSECTION_TOKENS = ["esquina", "esq", "y", "&", "/"]
     DISTRICT_KEYWORDS = ["distrito", "departamento", "dpto", "partido"]
 
-    def __init__(self):
-        pass
+    def __init__(self, municipio_config: Dict[str, Any]):
+        self.city = municipio_config.get("ciudad")
+        self.state = municipio_config.get("provincia")
+        self.country = municipio_config.get("pais", "AR")
+        self.bounds = municipio_config.get("bounds")
+        self.conflicting = [
+            self._normalize(n)
+            for n in municipio_config.get("conflicting_jurisdicciones", [])
+        ]
+        if not all([self.city, self.state, self.country, self.bounds]):
+            raise ValueError("Municipio config must include ciudad, provincia, pais and bounds")
 
     # Normalization
     def _normalize(self, text: str) -> str:
@@ -49,12 +61,12 @@ class AddressResolver:
         url = "https://nominatim.openstreetmap.org/search"
         params = {
             "street": street_query,
-            "city": self.CITY,
-            "state": self.STATE,
-            "countrycodes": self.COUNTRY,
+            "city": self.city,
+            "state": self.state,
+            "countrycodes": self.country,
             "format": "json",
             "limit": 1,
-            "viewbox": f"{self.BOUNDS[0]},{self.BOUNDS[3]},{self.BOUNDS[2]},{self.BOUNDS[1]}",
+            "viewbox": f"{self.bounds[0]},{self.bounds[3]},{self.bounds[2]},{self.bounds[1]}",
             "bounded": 1,
         }
         headers = {"User-Agent": NOMINATIM_USER_AGENT}
@@ -70,13 +82,13 @@ class AddressResolver:
             return None
         normalized = self._normalize(raw_address)
 
-        # Determine if 'San Martin' is used as jurisdiction
-        if "san martin" in normalized:
-            for kw in self.DISTRICT_KEYWORDS:
-                if re.search(rf"{kw}[^a-zA-Z]+san martin", normalized):
-                    # If user specifies San Martín as district, it's outside Junín
-                    logger.info("Detected jurisdiction San Martín outside Junín")
-                    return {"validez": False}
+        # Detect external jurisdictions mentioned explicitly
+        for j in self.conflicting:
+            if j in normalized:
+                for kw in self.DISTRICT_KEYWORDS:
+                    if re.search(rf"{kw}[^a-zA-Z]+{j}", normalized):
+                        logger.info("Detected conflicting jurisdiction '%s'", j)
+                        return {"validez": False}
 
         inter = self._parse_intersection(normalized)
         if inter:
@@ -91,15 +103,15 @@ class AddressResolver:
             lat = float(geo.get("lat"))
             lon = float(geo.get("lon"))
             validez = self._within_bounds(lat, lon)
-            formatted = f"{inter['streets'][0].title()} y {inter['streets'][1].title()}, {self.CITY}, {self.STATE}, {self.COUNTRY}"
+            formatted = f"{inter['streets'][0].title()} y {inter['streets'][1].title()}, {self.city}, {self.state}, {self.country}"
             return {
                 "calle": None,
                 "numero": None,
                 "entre_calles": [s.title() for s in inter["streets"]],
                 "barrio": None,
-                "localidad": self.CITY,
-                "provincia": self.STATE,
-                "pais": self.COUNTRY,
+                "localidad": self.city,
+                "provincia": self.state,
+                "pais": self.country,
                 "lat": lat,
                 "lon": lon,
                 "precision": "intersection",
@@ -124,16 +136,16 @@ class AddressResolver:
         lat = float(geo.get("lat"))
         lon = float(geo.get("lon"))
         validez = self._within_bounds(lat, lon)
-        formatted = f"{street.title()}" + (f" {number}" if number else "") + f", {self.CITY}, {self.STATE}, {self.COUNTRY}"
+        formatted = f"{street.title()}" + (f" {number}" if number else "") + f", {self.city}, {self.state}, {self.country}"
         precision = "point" if number else "approx"
         return {
             "calle": street.title(),
             "numero": number,
             "entre_calles": [],
             "barrio": None,
-            "localidad": self.CITY,
-            "provincia": self.STATE,
-            "pais": self.COUNTRY,
+            "localidad": self.city,
+            "provincia": self.state,
+            "pais": self.country,
             "lat": lat,
             "lon": lon,
             "precision": precision,
@@ -142,5 +154,5 @@ class AddressResolver:
         }
 
     def _within_bounds(self, lat: float, lon: float) -> bool:
-        lon_min, lat_min, lon_max, lat_max = self.BOUNDS
+        lon_min, lat_min, lon_max, lat_max = self.bounds
         return lat_min <= lat <= lat_max and lon_min <= lon <= lon_max

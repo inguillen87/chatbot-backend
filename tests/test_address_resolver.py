@@ -1,22 +1,50 @@
 from services.address_resolver import AddressResolver
 from unittest.mock import patch
 
-
 def _fake_resp(lat, lon, display="Stub"):
     class FakeResponse:
         def raise_for_status(self):
             pass
+
         def json(self):
             return [{"lat": str(lat), "lon": str(lon), "display_name": display}]
+
     return FakeResponse()
 
 
+JUNIN_CONFIG = {
+    "ciudad": "Junín",
+    "provincia": "Mendoza",
+    "pais": "AR",
+    "bounds": (-68.6, -33.1, -68.4, -32.9),
+    "conflicting_jurisdicciones": ["san martin"],
+}
+
+
 def test_intersection_sarmiento_san_martin():
-    resolver = AddressResolver()
-    with patch('services.address_resolver.requests.get', return_value=_fake_resp(-33.0, -68.5)):
+    resolver = AddressResolver(JUNIN_CONFIG)
+    with patch(
+        "services.address_resolver.requests.get", return_value=_fake_resp(-33.0, -68.5)
+    ):
         result = resolver.resolve("Sarmiento 100 esquina San Martín")
     assert result["precision"] == "intersection"
     assert result["entre_calles"] == ["Sarmiento", "San Martín"]
     assert result["localidad"] == "Junín"
     assert result["validez"] is True
     assert "Sarmiento" in result["formatted"] and "San Martín" in result["formatted"]
+
+
+def test_dynamic_municipio_config():
+    config = {
+        "ciudad": "Ciudad X",
+        "provincia": "Provincia Y",
+        "pais": "AR",
+        "bounds": (-1.0, -1.0, 1.0, 1.0),
+    }
+    resolver = AddressResolver(config)
+    with patch(
+        "services.address_resolver.requests.get", return_value=_fake_resp(0.0, 0.0)
+    ):
+        result = resolver.resolve("Falsa 123")
+    assert result["localidad"] == "Ciudad X"
+    assert result["provincia"] == "Provincia Y"

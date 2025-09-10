@@ -100,6 +100,16 @@ Maps_API_KEY = os.environ.get("Maps_API_KEY")
 MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
 CONFIG_MUNICIPIO = cargar_configuracion_municipio(MUNICIPIO_ID, "config.json")
 
+# Default geocoding config; can be overridden by municipio-specific values
+_DEFAULT_GEO_CONFIG = {
+    "ciudad": "Junín",
+    "provincia": "Mendoza",
+    "pais": "AR",
+    "bounds": (-68.6, -33.1, -68.4, -32.9),
+    "conflicting_jurisdicciones": ["san martin"],
+}
+CONFIG_MUNICIPIO = {**_DEFAULT_GEO_CONFIG, **CONFIG_MUNICIPIO}
+
 
 # --- NUEVA FUNCIÓN DE NORMALIZACIÓN ---
 def normalizar_texto(texto: str) -> str:
@@ -621,24 +631,27 @@ def buscar_puntos_de_interes(
 def log_uso_herramienta(nombre, usuario, parametros, resultado):
     logger.info(f"[USO_HERRAMIENTA] {nombre} | Usuario: {usuario} | Parámetros: {parametros} | Resultado: {resultado[:100]}")
 
-def validar_y_formatear_direccion(direccion: str, distrito: str | None = None) -> dict | None:
-    """Valida y formatea una dirección utilizando `AddressResolver`.
+def validar_y_formatear_direccion(
+    direccion: str, municipio_config: dict | None = None
+) -> dict | None:
+    """Valida y formatea una dirección utilizando ``AddressResolver``.
 
-    La resolución está forzada al ámbito municipal de Junín (Mendoza, AR).
-    Devuelve un diccionario con campos canónicos como `calle`, `numero`,
-    `entre_calles` y coordenadas, además del `formatted_address` para
-    compatibilidad retroactiva.
+    La resolución se restringe al ámbito provisto en ``municipio_config`` para
+    devolver campos canónicos como ``calle``, ``numero``, ``entre_calles`` y
+    coordenadas, además del ``formatted_address`` para compatibilidad.
     """
 
     try:
-        resolver = AddressResolver()
+        resolver = AddressResolver(municipio_config or CONFIG_MUNICIPIO)
         resolved = resolver.resolve(direccion)
     except Exception as e:
         logger.error(f"[GEO] Error al geocodificar '{direccion}': {e}")
         return None
 
     if not resolved or not resolved.get("validez", True):
-        logger.warning(f"[GEO] No se pudo geocodificar '{direccion}' dentro de Junín.")
+        logger.warning(
+            f"[GEO] No se pudo geocodificar '{direccion}' dentro de los límites municipales."
+        )
         return None
 
     # Map canonical keys to legacy structure
