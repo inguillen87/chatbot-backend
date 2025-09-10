@@ -638,9 +638,17 @@ def whatsapp_webhook():
         current_app.logger.info(f"[CONTEXT_WHATSAPP] Contexto actualizado del turno actual: {updated_context}")
 
 
-        # Merge the contexts
+        # Merge the contexts, preserving nested structures like contexto_municipio_v2
         if updated_context:
-            merged_context = {**db_context, **updated_context}
+            merged_context = db_context.copy()
+            for key, value in updated_context.items():
+                if (
+                    isinstance(value, dict)
+                    and isinstance(merged_context.get(key), dict)
+                ):
+                    merged_context[key] = {**merged_context[key], **value}
+                else:
+                    merged_context[key] = value
         else:
             merged_context = db_context
 
