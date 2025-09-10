@@ -620,6 +620,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             "message_body": "Hola",
             "options_list": [{"texto": "Opción 1", "id": "opt1"}],
             "message_type": "interactive_buttons",
+            "image_url": "http://example.com/promo.jpg",
         }
 
         payload = {
@@ -638,6 +639,8 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         first_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
         second_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
         self.assertIn("body", first_kwargs)
+        self.assertIn("media_url", first_kwargs)
+        self.assertEqual(first_kwargs["media_url"][0], "http://example.com/promo.jpg")
         self.assertNotIn("persistent_action", first_kwargs)
         self.assertIn("persistent_action", second_kwargs)
 
