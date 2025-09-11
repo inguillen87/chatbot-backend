@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, List
 
 import requests
 
-from services.location_service import NOMINATIM_USER_AGENT
+from services.location_service import NOMINATIM_USER_AGENT, geocode_address
 import logging
 
 logger = logging.getLogger(__name__)
@@ -56,7 +56,7 @@ class AddressResolver:
         number_hint = number_hint_match.group(0) if number_hint_match else None
         return {"streets": [street_a, street_b], "number_hint": number_hint}
 
-    # Geocoding using Nominatim with bounding box
+    # Geocoding using Nominatim with bounding box and Google fallback
     def _geocode(self, street_query: str) -> Optional[Dict[str, Any]]:
         url = "https://nominatim.openstreetmap.org/search"
         params = {
@@ -70,12 +70,31 @@ class AddressResolver:
             "bounded": 1,
         }
         headers = {"User-Agent": NOMINATIM_USER_AGENT}
-        resp = requests.get(url, params=params, headers=headers, timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
-        if not data:
-            return None
-        return data[0]
+        try:
+            resp = requests.get(url, params=params, headers=headers, timeout=5)
+            resp.raise_for_status()
+            data = resp.json()
+            if data:
+                return data[0]
+        except Exception as e:
+            logger.warning("Geocode via Nominatim failed for '%s': %s", street_query, e)
+
+        # Fallback to generic geocoder (Google Maps if available)
+        try:
+            alt = geocode_address(
+                street_query,
+                geo_ctx={
+                    "city": self.city,
+                    "state": self.state,
+                    "country": self.country,
+                    "bounds": self.bounds,
+                },
+            )
+            if alt:
+                return {"lat": alt.get("lat"), "lon": alt.get("lng")}
+        except Exception as e:
+            logger.error("Fallback geocode failed for '%s': %s", street_query, e)
+        return None
 
     def resolve(self, raw_address: str) -> Optional[Dict[str, Any]]:
         if not raw_address:
