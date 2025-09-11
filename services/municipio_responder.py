@@ -549,6 +549,8 @@ class ReclamoFlowHandler:
     def start_flow(self, datos_iniciales=None, categoria_inicial=None):
         logger.info("Iniciando flujo de reclamo v2.")
         self.flow_context.clear()
+        self.municipal_ctx.pop("numero_ticket_consulta", None)
+        self.municipal_ctx["estado_conversacion"] = None
         self.flow_context['datos_reclamo'] = datos_iniciales or {}
 
         # Si la conversación comenzó con una foto (context['foto_url']) pero
