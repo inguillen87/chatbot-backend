@@ -29,6 +29,8 @@ class AddressResolver:
         self.state = municipio_config.get("provincia")
         self.country = municipio_config.get("pais", "AR")
         self.bounds = municipio_config.get("bounds")
+        self.region_hint = municipio_config.get("region_hint")
+        self.locale = municipio_config.get("locale")
         self.conflicting = [
             self._normalize(n)
             for n in municipio_config.get("conflicting_jurisdicciones", [])
@@ -75,7 +77,15 @@ class AddressResolver:
             resp.raise_for_status()
             data = resp.json()
             if data:
-                return data[0]
+                item = data[0]
+                lat = float(item.get("lat"))
+                lon = float(item.get("lon"))
+                return {
+                    "lat": lat,
+                    "lon": lon,
+                    "display_name": item.get("display_name"),
+                    "maps_search_url": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+                }
         except Exception as e:
             logger.warning("Geocode via Nominatim failed for '%s': %s", street_query, e)
 
@@ -88,10 +98,20 @@ class AddressResolver:
                     "state": self.state,
                     "country": self.country,
                     "bounds": self.bounds,
+                    "region_hint": self.region_hint,
+                    "locale": self.locale,
                 },
             )
             if alt:
-                return {"lat": alt.get("lat"), "lon": alt.get("lng")}
+                lat = alt.get("lat")
+                lon = alt.get("lng")
+                return {
+                    "lat": lat,
+                    "lon": lon,
+                    "display_name": alt.get("display_name"),
+                    "maps_search_url": alt.get("maps_search_url")
+                    or f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+                }
         except Exception as e:
             logger.error("Fallback geocode failed for '%s': %s", street_query, e)
         return None
@@ -136,6 +156,8 @@ class AddressResolver:
                 "precision": "intersection",
                 "formatted": formatted,
                 "validez": validez,
+                "display_name": geo.get("display_name"),
+                "maps_search_url": geo.get("maps_search_url"),
             }
 
         # Single street with optional number (allow numeric street names)
@@ -170,6 +192,8 @@ class AddressResolver:
             "precision": precision,
             "formatted": formatted,
             "validez": validez,
+            "display_name": geo.get("display_name"),
+            "maps_search_url": geo.get("maps_search_url"),
         }
 
     def _within_bounds(self, lat: float, lon: float) -> bool:
