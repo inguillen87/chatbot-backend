@@ -37,6 +37,12 @@ class TestDniExtractionAndConfirmation(unittest.TestCase):
             "don bosco 55 esquina sarmiento ciudad de junin mendoza",
         )
 
+    def test_address_not_misclassified_as_name(self):
+        text = "don bosco 55 esquina sarmiento"
+        data = extract_multiple_contact_details_regex(text, ["nombre", "direccion"])
+        self.assertIsNone(data.get("nombre"))
+        self.assertEqual(data.get("direccion"), "don bosco 55 esquina sarmiento")
+
     def test_text_confirmation(self):
         context = {"chat_db_context_data": {CONTEXTO_MUNICIPIO: {"reclamo_flow_v2": {
             "datos_reclamo": {
