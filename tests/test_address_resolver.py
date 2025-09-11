@@ -68,3 +68,12 @@ def test_numeric_street_name():
         result = resolver.resolve("9 de julio 120")
     assert result["calle"] == "9 De Julio"
     assert result["numero"] == "120"
+
+
+def test_resolver_includes_maps_search_url():
+    resolver = AddressResolver(JUNIN_CONFIG)
+    with patch(
+        "services.address_resolver.requests.get", return_value=_fake_resp(-33.0, -68.5)
+    ):
+        result = resolver.resolve("Sarmiento 100 esquina San Martín")
+    assert result["maps_search_url"].startswith("https://www.google.com/maps/search/")
