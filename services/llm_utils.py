@@ -15,8 +15,6 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     VISION_CLIENT = None
 
-WHATSAPP_LLM_ENABLED = os.getenv("WHATSAPP_LLM_ENABLED", "false").lower() == "true"
-
 # Intenta importar errores específicos de Cohere.
 # El nombre exacto puede variar según la versión de la librería 'cohere'.
 # Comunes son cohere.CohereError, cohere.APIError, cohere.CohereAPIError
@@ -275,7 +273,12 @@ def extract_multiple_contact_details_llm(
 
     return extracted_data
 
-def extract_complaint_details_llm(text: str, default_localidad: str | None = None, default_provincia: str | None = None) -> Dict[str, str]:
+def extract_complaint_details_llm(
+    text: str,
+    default_localidad: str | None = None,
+    default_provincia: str | None = None,
+    use_llm: bool = True,
+) -> Dict[str, str]:
     """
     Uses an LLM to extract key details from a user's complaint message,
     considering default location context.
@@ -294,7 +297,7 @@ def extract_complaint_details_llm(text: str, default_localidad: str | None = Non
     if not text:
         return {}
 
-    if not WHATSAPP_LLM_ENABLED:
+    if not use_llm:
         return {}
 
     location_context_instruction = ""

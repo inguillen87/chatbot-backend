@@ -18,7 +18,6 @@ from services.gcs_service import upload_to_gcs
 from services.attachment_service import create_attachment_with_thumbnail
 from services.llm_utils import (
     extract_multiple_contact_details_llm,
-    WHATSAPP_LLM_ENABLED,
 )
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
@@ -37,6 +36,8 @@ webhook_bp = Blueprint('whatsapp_webhook', __name__)
 # chunks that comply with Twilio's limits and send them sequentially.
 
 MAX_TWILIO_BODY_LENGTH = 1600
+
+WHATSAPP_LLM_ENABLED = os.getenv("WHATSAPP_LLM_ENABLED", "false").lower() == "true"
 
 
 def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
