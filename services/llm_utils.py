@@ -187,7 +187,11 @@ def _close_open_json_structures(json_str: str) -> str:
 
     return json_str
 
-def extract_multiple_contact_details_llm(text: str, potential_fields: List[str]) -> Dict[str, Any]:
+def extract_multiple_contact_details_llm(
+    text: str,
+    potential_fields: List[str],
+    use_llm: bool = True,
+) -> Dict[str, Any]:
     """
     Uses an LLM to extract multiple contact details from a given text.
 
@@ -219,7 +223,7 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
     )
 
     extracted_data = {}
-    if WHATSAPP_LLM_ENABLED:
+    if use_llm:
         try:
             response_content = robust_chat(message=prompt)
             if response_content:

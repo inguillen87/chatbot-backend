@@ -16,7 +16,10 @@ from utils.db_utils import safe_flag_modified
 from services.notifications import enviar_bienvenida_whatsapp
 from services.gcs_service import upload_to_gcs
 from services.attachment_service import create_attachment_with_thumbnail
-from services.llm_utils import extract_multiple_contact_details_llm
+from services.llm_utils import (
+    extract_multiple_contact_details_llm,
+    WHATSAPP_LLM_ENABLED,
+)
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
 from utils.maps_utils import extraer_coordenadas_de_url_google_maps
@@ -579,7 +582,9 @@ def whatsapp_webhook():
             # Extraer info del mensaje actual del usuario
             potential_fields = ["nombre_cliente", "telefono_cliente", "email_cliente"]
             current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracting {potential_fields} from: {message_body}")
-            extracted_data = extract_multiple_contact_details_llm(message_body, potential_fields)
+            extracted_data = extract_multiple_contact_details_llm(
+                message_body, potential_fields, use_llm=WHATSAPP_LLM_ENABLED
+            )
             current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracted: {extracted_data}")
 
             # Actualizar datos del reclamo con la info extraída
