@@ -105,6 +105,31 @@ def test_geocode_normalizes_corner(monkeypatch):
     assert captured_params.get("q") == "don bosco & sarmiento, Junin, Argentina"
 
 
+def test_geocode_normalizes_corner_with_e(monkeypatch):
+    monkeypatch.delenv("GOOGLE_MAPS_API_KEY", raising=False)
+    captured_params = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return [
+                {"lat": "-33.0", "lon": "-60.0", "display_name": "Foo"}
+            ]
+
+    def fake_get(url, params=None, headers=None, timeout=5):
+        nonlocal captured_params
+        captured_params = params or {}
+        return FakeResponse()
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    geocode_address("don bosco e sarmiento", district="Junin")
+
+    assert captured_params.get("q") == "don bosco & sarmiento, Junin, Argentina"
+
+
 def test_geocode_address_uses_google(monkeypatch):
     """If Google API key is present, the Google endpoint is used."""
 
@@ -175,9 +200,10 @@ def test_geocode_address_with_geo_context_google(monkeypatch):
     geocode_address("Don Bosco 55", geo_ctx=geo_ctx)
 
     assert captured["params"]["components"] == (
-        "country:AR|administrative_area_level_1:Mendoza|locality:Junin"
+        "country:AR|administrative_area:Mendoza|locality:Junin"
     )
     assert captured["params"]["region"] == "ar"
+    assert captured["params"]["language"] == "es-AR"
     assert (
         captured["params"]["bounds"]
         == "-33.2,-68.6|-32.9,-68.3"
@@ -218,4 +244,5 @@ def test_geocode_address_with_geo_context_nominatim(monkeypatch):
     assert captured["state"] == "Mendoza"
     assert captured["countrycodes"] == "ar"
     assert captured["viewbox"] == "-68.6,-32.9,-68.3,-33.2"
+    assert captured["accept-language"] == "es-AR"
 
