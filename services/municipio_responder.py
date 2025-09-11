@@ -52,6 +52,7 @@ from .common_utils import (
     construir_respuesta_sugerir_registro,
     extract_multiple_contact_details_regex,
 )
+from utils.validators import looks_like_address
 from utils.parsers import parse_contact_line
 from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
@@ -94,6 +95,32 @@ CANCEL_KEYWORDS = {
         "empezar de cero",
     ]
 }
+
+RECLAMO_HINTS = [
+    "árbol",
+    "arbol",
+    "rama",
+    "ramas",
+    "hoja",
+    "hojas",
+    "basura",
+    "rotas",
+    "caido",
+    "caída",
+    "caida",
+]
+
+
+def decide_flow(text: str) -> str:
+    """Rudimentary router between reclamo and sugerencia."""
+    texto_norm = normalizar_texto(text or "")
+    hay_direccion = looks_like_address(texto_norm)
+    hay_palabras_reclamo = fast_reclamo_detect(texto_norm)
+    if hay_palabras_reclamo or (
+        hay_direccion and any(k in texto_norm for k in RECLAMO_HINTS)
+    ):
+        return "reclamo"
+    return "sugerencia"
 
 
 GREET_WORDS = r"(hola|buenas|buenos\s*d[ií]as|buenas\s*tardes|buenas\s*noches|men[úu])"
@@ -3400,6 +3427,19 @@ def responder_municipio(
     }
     # --- FIN REFACTOR ---
 
+    ctx_state = (
+        context.get("chat_db_context_data", {})
+        .get(CONTEXTO_MUNICIPIO, {})
+        .get("estado_conversacion")
+    )
+    if ctx_state in (None, ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name):
+        if decide_flow(pregunta_str) == "reclamo":
+            handler = ReclamoFlowHandler(context, chat_db_context)
+            response = handler.start_flow(datos_iniciales={"descripcion": pregunta_str})
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response)
+
     # --- Manejo rápido de reclamos detectados vía imagen ---
     datos_interpretados_archivo = context.get("datos_interpretados_archivo")
     flujo_activo = (
@@ -3819,8 +3859,30 @@ def responder_municipio(
         return _finalize_response(response)
 
     # If it's not a simple greeting, proceed with intent classification
-    intent, intent_payload = intent_classifier.classify(pregunta_str)
-    logger_actual.info(f"[IntentClassifier] Classified intent: {intent} with payload: {intent_payload}")
+    intent_data, intent_payload = intent_classifier.classify(pregunta_str)
+    intent = intent_data.get("categoria") if isinstance(intent_data, dict) else intent_data
+    logger_actual.info(
+        f"[IntentClassifier] Classified intent: {intent} with payload: {intent_payload}"
+    )
+
+    estado = (
+        context.get("chat_db_context_data", {})
+        .get(CONTEXTO_MUNICIPIO, {})
+        .get("estado_conversacion")
+    )
+    if estado in {
+        ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name,
+        ConversationState.ESPERANDO_DIRECCION_RECLAMO.name,
+        ConversationState.ESPERANDO_DATOS_CONTACTO.name,
+    }:
+        t = normalizar_texto(pregunta_str or "")
+        cruces_con_y = bool(re.search(r"\b[a-záéíóúñ]{3,}\s+y\s+[a-záéíóúñ]{3,}\b", t))
+        if looks_like_address(t) or "esquina" in t or "esq." in t or cruces_con_y:
+            intent = None
+            logger_actual.info(
+                "[IntentGuard][%s] Anulando intent de FAQ por mensaje con patrón de dirección/cruce",
+                estado,
+            )
 
     if intent == "saludar":
         logger_actual.info("Greeting intent detected. Bypassing LLM and showing main menu.")
@@ -4199,8 +4261,12 @@ def responder_municipio(
                 pregunta_str, campos_requeridos + ["telefono"]
             )
             for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
-                if nuevos_datos.get(campo):
-                    datos_guardados[campo] = nuevos_datos[campo]
+                valor = nuevos_datos.get(campo)
+                if not valor:
+                    continue
+                if campo == "nombre" and looks_like_address(valor):
+                    continue
+                datos_guardados[campo] = valor
 
             campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
 
@@ -4212,8 +4278,11 @@ def responder_municipio(
                     )
                     if llm_datos:
                         for campo, valor in llm_datos.items():
-                            if valor and campo in ["nombre", "dni", "email", "direccion", "telefono"]:
-                                datos_guardados[campo] = valor
+                            if not valor or campo not in ["nombre", "dni", "email", "direccion", "telefono"]:
+                                continue
+                            if campo == "nombre" and looks_like_address(valor):
+                                continue
+                            datos_guardados[campo] = valor
                 except Exception as e:
                     logger.error("[DATOS_SUGERENCIA] LLM fallback failed: %s", e)
                 campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
