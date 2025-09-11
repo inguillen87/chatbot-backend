@@ -2224,7 +2224,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
     if estado_conversacion_para_llm == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name:
         if pregunta_str.strip().lower() in ("si", "sí", "confirmo", "ok"):
-            ticket = crear_ticket(context)
+            ticket = crear_ticket({"contexto_municipio_v2": contexto_municipio_actual})
             contexto_municipio_actual["estado_conversacion"] = "activo"
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")

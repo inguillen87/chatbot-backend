@@ -57,3 +57,30 @@ def test_no_pedir_tipo_if_categoria_present(owner_user):
         owner_user=owner_user,
     )
     assert result.ctx.get("estado_conversacion") != "ESPERANDO_INFO_RECLAMO_LLM"
+
+
+def test_ticket_confirmation_uses_stored_context(monkeypatch, owner_user):
+    captured = {}
+
+    def fake_crear_nuevo_ticket(kind, data):
+        captured.update(data)
+        return {"nro_ticket": "T-1"}
+
+    from services.ticket_service import servicio_tickets
+
+    monkeypatch.setattr(servicio_tickets, "crear_nuevo_ticket", fake_crear_nuevo_ticket)
+
+    preset = {
+        "categoria": "Arbolado",
+        "descripcion": "desc",
+        "ubicacion": "Calle Falsa 123",
+        "coordenadas": {"lat": -33.0, "lng": -68.5},
+        "nombre": "Juan",
+        "telefono": "+5492611111111",
+        "dni": "12345678",
+    }
+
+    run_turn("confirmo", state="ESPERANDO_CONFIRMACION_RECLAMO", preset_dp=preset, owner_user=owner_user)
+
+    assert captured["categoria"] == "Arbolado"
+    assert captured["direccion"] == "Calle Falsa 123"
