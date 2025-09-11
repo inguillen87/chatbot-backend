@@ -29,6 +29,14 @@ class TestDniExtractionAndConfirmation(unittest.TestCase):
         self.assertEqual(data.get("telefono"), "+5491112345678")
         self.assertEqual(data.get("ciudad"), "CABA")
 
+    def test_address_with_intersection(self):
+        text = "don bosco 55 esquina sarmiento ciudad de junin mendoza"
+        data = extract_multiple_contact_details_regex(text, ["direccion"])
+        self.assertEqual(
+            data.get("direccion"),
+            "don bosco 55 esquina sarmiento ciudad de junin mendoza",
+        )
+
     def test_text_confirmation(self):
         context = {"chat_db_context_data": {CONTEXTO_MUNICIPIO: {"reclamo_flow_v2": {
             "datos_reclamo": {

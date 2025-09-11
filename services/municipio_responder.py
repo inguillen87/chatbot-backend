@@ -50,6 +50,7 @@ from .common_utils import (
     validar_telefono,
     formatear_telefono_e164,
     construir_respuesta_sugerir_registro,
+    extract_multiple_contact_details_regex,
 )
 from utils.parsers import parse_contact_line
 from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
