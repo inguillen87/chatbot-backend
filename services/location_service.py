@@ -22,7 +22,7 @@ def _normalize_corner(addr: str) -> str:
         return ""
     addr = re.sub(r"\besq\.?\b", "esquina", addr, flags=re.I)
     addr = re.sub(r"\besquina\b", "&", addr, flags=re.I)
-    addr = re.sub(r"\s+y\s+", " & ", addr, flags=re.I)
+    addr = re.sub(r"\s+(?:y|e)\s+", " & ", addr, flags=re.I)
     return re.sub(r"\s+", " ", addr).strip()
 
 
@@ -53,6 +53,7 @@ def geocode_address(
 
     # Build Google / Nominatim bias parameters from geo_ctx or district
     city = state = country = bounds = region = None
+    language = (geo_ctx or {}).get("locale") or "es-AR"
     components = []
     if geo_ctx:
         city = geo_ctx.get("city") or geo_ctx.get("ciudad")
@@ -74,7 +75,7 @@ def geocode_address(
     if country:
         components.append(f"country:{country}")
     if state:
-        components.append(f"administrative_area_level_1:{state}")
+        components.append(f"administrative_area:{state}")
     if city:
         components.append(f"locality:{city}")
 
@@ -82,7 +83,7 @@ def geocode_address(
     gkey = os.environ.get("GOOGLE_MAPS_API_KEY")
     if gkey:
         try:
-            g_params = {"address": query, "key": gkey}
+            g_params = {"address": query, "key": gkey, "language": language}
             if region:
                 g_params["region"] = region
             if components:
@@ -112,7 +113,7 @@ def geocode_address(
 
     # Fallback to Nominatim
     url = "https://nominatim.openstreetmap.org/search"
-    params = {"q": query, "format": "json", "limit": 5}
+    params = {"q": query, "format": "json", "limit": 1, "accept-language": language}
     if city:
         params["city"] = city
     if state:

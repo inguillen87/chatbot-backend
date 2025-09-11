@@ -21,7 +21,7 @@ class AddressResolver:
     ``"san martin"`` for Junín).
     """
 
-    INTERSECTION_TOKENS = ["esquina", "esq", "y", "&", "/"]
+    INTERSECTION_TOKENS = ["esquina", "esq", "y", "e", "&", "/"]
     DISTRICT_KEYWORDS = ["distrito", "departamento", "dpto", "partido"]
 
     def __init__(self, municipio_config: Dict[str, Any]):
@@ -44,7 +44,7 @@ class AddressResolver:
 
     # Detect intersection
     def _parse_intersection(self, text: str) -> Optional[Dict[str, Any]]:
-        pattern = r"\b(?:esquina|esq\.?|y|&|/)\b"
+        pattern = r"\b(?:esquina|esq\.?|y|e|&|/)\b"
         if not re.search(pattern, text):
             return None
         parts = [p.strip() for p in re.split(pattern, text) if p.strip()]
@@ -79,7 +79,7 @@ class AddressResolver:
         except Exception as e:
             logger.warning("Geocode via Nominatim failed for '%s': %s", street_query, e)
 
-        # Fallback to generic geocoder (Google Maps if available)
+        # Fallback multi-tenant (Google si hay key; si no, Nominatim sesgado)
         try:
             alt = geocode_address(
                 street_query,

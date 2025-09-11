@@ -3,5 +3,6 @@
   "state": "Mendoza",
   "country": "AR",
   "region_hint": "ar",
+  "locale": "es-AR",
   "bounds": [-68.6, -33.2, -68.3, -32.9]
 }
