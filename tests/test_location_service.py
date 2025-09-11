@@ -255,6 +255,10 @@ def test_geocode_address_with_geo_context_nominatim(monkeypatch):
 <<<<<<< codex/implement-geolocation-for-address-inputs-bacrr5
     assert "q" not in captured
 =======
+<<<<<<< codex/implement-geolocation-for-address-inputs-bacrr5
+    assert "q" not in captured
+=======
+>>>>>>> main
 >>>>>>> main
 
 
