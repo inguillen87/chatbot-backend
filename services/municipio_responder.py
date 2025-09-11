@@ -3859,8 +3859,30 @@ def responder_municipio(
         return _finalize_response(response)
 
     # If it's not a simple greeting, proceed with intent classification
-    intent, intent_payload = intent_classifier.classify(pregunta_str)
-    logger_actual.info(f"[IntentClassifier] Classified intent: {intent} with payload: {intent_payload}")
+    intent_data, intent_payload = intent_classifier.classify(pregunta_str)
+    intent = intent_data.get("categoria") if isinstance(intent_data, dict) else intent_data
+    logger_actual.info(
+        f"[IntentClassifier] Classified intent: {intent} with payload: {intent_payload}"
+    )
+
+    estado = (
+        context.get("chat_db_context_data", {})
+        .get(CONTEXTO_MUNICIPIO, {})
+        .get("estado_conversacion")
+    )
+    if estado in {
+        ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name,
+        ConversationState.ESPERANDO_DIRECCION_RECLAMO.name,
+        ConversationState.ESPERANDO_DATOS_CONTACTO.name,
+    }:
+        t = normalizar_texto(pregunta_str or "")
+        cruces_con_y = bool(re.search(r"\b[a-záéíóúñ]{3,}\s+y\s+[a-záéíóúñ]{3,}\b", t))
+        if looks_like_address(t) or "esquina" in t or "esq." in t or cruces_con_y:
+            intent = None
+            logger_actual.info(
+                "[IntentGuard][%s] Anulando intent de FAQ por mensaje con patrón de dirección/cruce",
+                estado,
+            )
 
     estado = (
         context.get("chat_db_context_data", {})
