@@ -346,10 +346,14 @@ def build_ticket_summary(ticket, pin, ctx_muni: dict) -> str:
 
 def api_ticket_get(numero: str, pin: str, municipio_id: str | int):
     """Retrieve a ticket for the given municipality, number and PIN."""
-    muni_id = int(municipio_id) if municipio_id is not None else None
-    query = MunicipioTicket.query.filter_by(
-        nro_ticket=numero, consulta_pin=pin, municipio_id=muni_id
-    )
+    try:
+        muni_id = int(municipio_id) if municipio_id is not None else None
+    except (TypeError, ValueError):
+        muni_id = None
+
+    query = MunicipioTicket.query.filter_by(nro_ticket=numero, consulta_pin=pin)
+    if muni_id is not None:
+        query = query.filter_by(municipio_id=muni_id)
     t = query.first()
     if not t:
         raise ValueError("Ticket no encontrado")

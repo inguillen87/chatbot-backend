@@ -6,6 +6,7 @@ from services.municipio_responder import (
     is_greeting,
     responder_municipio,
     CONTEXTO_MUNICIPIO,
+    api_ticket_get,
 )
 from models import ChatSessionContext
 from app import db
@@ -87,3 +88,24 @@ def test_invalid_ticket_pin(monkeypatch, owner_user):
     result = run_turn("111111", state="ESPERANDO_PIN_TICKET", numero="111111", owner_user=owner_user)
     assert "No encontramos un ticket" in result.response["message_body"]
     assert result.ctx["estado_conversacion"] == "ESPERANDO_PIN_TICKET"
+
+
+def test_api_ticket_get_non_numeric_muni(monkeypatch):
+    calls = []
+
+    class FakeQuery:
+        def filter_by(self, **kwargs):
+            calls.append(kwargs)
+            return self
+
+        def first(self):
+            return types.SimpleNamespace(
+                nro_ticket="123", categoria="Cat", detalles="Desc", pregunta="", estado="nuevo"
+            )
+
+    fake_model = types.SimpleNamespace(query=FakeQuery())
+    monkeypatch.setattr("services.municipio_responder.MunicipioTicket", fake_model)
+
+    ticket = api_ticket_get("123", "456", "default")
+    assert ticket.numero == "123"
+    assert calls == [{"nro_ticket": "123", "consulta_pin": "456"}]
