@@ -27,6 +27,12 @@ def mapa_calor_datos(current_user):
     return jsonify(puntos)
 
 
+@estadisticas_bp.route("/mapa_calor/datos", methods=["OPTIONS"])
+def mapa_calor_datos_options():
+    """Preflight CORS for heatmap data."""
+    return "", 200
+
+
 @estadisticas_bp.route("/usuarios/ubicaciones", methods=["GET"])
 @token_requerido
 @admin_o_empleado_requerido
