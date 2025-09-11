@@ -35,7 +35,7 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
     @patch('routes.estadisticas.servicio_tickets')
     def test_estadisticas_tickets_returns_heatmap(self, mock_servicio):
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = [
-            {"location": {"lat": 1, "lng": 2}, "weight": 3}
+            {"location": {"lat": 1, "lng": 2}, "weight": 3, "categoria": None, "direccion": "dir", "distrito": "barrio"}
         ]
         current_user = SimpleNamespace(municipio_id=1, rubro_id=None)
         import routes.estadisticas as estats
@@ -44,7 +44,7 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.get_json(),
-            {"heatmap": [{"location": {"lat": 1, "lng": 2}, "weight": 3}]},
+            {"heatmap": [{"location": {"lat": 1, "lng": 2}, "weight": 3, "categoria": None, "direccion": "dir", "distrito": "barrio"}]},
         )
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='municipio',
@@ -55,6 +55,7 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             categoria=None,
             estado=None,
             satisfactorio=None,
+            distrito=None,
         )
 
 

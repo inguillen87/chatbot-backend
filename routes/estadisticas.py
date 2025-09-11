@@ -22,6 +22,7 @@ def mapa_calor_datos(current_user):
         categoria=args.get("categoria"),
         estado=args.get("estado"),
         satisfactorio=args.get("satisfactorio", type=lambda v: str(v).lower() == "true"),
+        distrito=args.get("distrito"),
     )
     return jsonify(puntos)
 
@@ -80,6 +81,7 @@ def estadisticas_tickets(current_user):
         satisfactorio=args.get(
             "satisfactorio", type=lambda v: str(v).lower() == "true"
         ),
+        distrito=args.get("distrito"),
     )
 
     return jsonify({"heatmap": puntos})
