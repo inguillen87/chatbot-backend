@@ -354,21 +354,26 @@ def responder_chatboc(
                 generar_audio = True
                 reason = 'pedido_usuario' if audio_requested else 'forzado'
         else:  # auto
-            if tts_forced:
-                generar_audio = True
-                reason = 'forzado'
-            elif audio_requested:
-                generar_audio = True
-                reason = 'pedido_usuario'
-            elif pref_audio:
-                generar_audio = True
-                reason = 'preferencia'
-            elif long_msg and not is_menu:
-                generar_audio = True
-                reason = 'largo'
-            elif response_data.get('es_confirmacion_final'):
-                generar_audio = True
-                reason = 'confirmacion'
+            if channel == 'whatsapp':
+                if audio_requested or tts_forced:
+                    generar_audio = True
+                    reason = 'pedido_usuario' if audio_requested else 'forzado'
+            else:
+                if tts_forced:
+                    generar_audio = True
+                    reason = 'forzado'
+                elif audio_requested:
+                    generar_audio = True
+                    reason = 'pedido_usuario'
+                elif pref_audio:
+                    generar_audio = True
+                    reason = 'preferencia'
+                elif long_msg and not is_menu:
+                    generar_audio = True
+                    reason = 'largo'
+                elif response_data.get('es_confirmacion_final'):
+                    generar_audio = True
+                    reason = 'confirmacion'
         if is_menu and not pref_audio and reason not in {'pedido_usuario', 'forzado'}:
             generar_audio = False
             reason = None

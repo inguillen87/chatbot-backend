@@ -25,6 +25,7 @@ from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.geo_service import reverse_geocode
 from services.openai_maps_service import geocodificar_inversa_llm
 from services.municipio_responder import CONTEXTO_MUNICIPIO
+from services.audio_transcription_service import transcribe_audio_from_url
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -152,6 +153,23 @@ def whatsapp_webhook():
 
     if not validator.validate(url, post_vars, signature):
         abort(403, "Invalid Twilio signature")
+
+    # Extraer pin de ubicación si viene incluido
+    lat = request.form.get("Latitude")
+    lon = request.form.get("Longitude")
+    if lat and lon:
+        coords = {"lat": float(lat), "lng": float(lon)}
+        post_vars["ubicacion_usuario"] = {"lat": coords["lat"], "lon": coords["lng"]}
+        post_vars["location"] = coords
+
+    # Transcribir notas de voz o audios adjuntos
+    if request.form.get("MessageType") == "voice" or post_vars.get("NumMedia") == "1":
+        media_url = post_vars.get("MediaUrl0")
+        if media_url and TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+            transcript = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            if transcript:
+                body = post_vars.get("Body", "")
+                post_vars["Body"] = f"{body} {transcript}".strip()
 
     to_number_raw = post_vars.get("To", "")
     from_number_raw = post_vars.get("From", "")

@@ -55,10 +55,13 @@ from utils.parsers import parse_contact_line
 from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
 from services.tasks import process_image_for_chat_task
-from services.intent_classifier import IntentClassifier
+from services.intent_classifier import IntentClassifier, fast_reclamo_detect
 from services.multimodal_analyzer import analizar_imagen_con_fallback
 import json
 from services.ticket_utils import formatear_ticket_respuesta
+from services.address_resolver import AddressResolver
+from services.geo_service import reverse_geocode
+from types import SimpleNamespace
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
@@ -97,6 +100,7 @@ MUNICIPIO_RESPONSE_CACHE = TTLCache(maxsize=256, ttl=3600)
 # States where caching can cause stale responses; skip cache when in any of these
 SENSITIVE_STATES = {
     "ESPERANDO_DIRECCION_RECLAMO",
+    "ESPERANDO_DATOS_PERSONALES",
     "ESPERANDO_DATOS_CONTACTO",
     "ESPERANDO_CONFIRMACION_RECLAMO",
     "ESPERANDO_CONFIRMACION_UBICACION",
@@ -109,6 +113,86 @@ def clear_municipio_cache() -> None:
 
 # --- NUEVO: parsing compacto de datos de contacto ---
 CONTACT_FIELDS = ("nombre", "email", "telefono", "dni", "direccion_contacto")
+
+
+def extract_personal_data(text: str) -> dict:
+    """Extrae nombre, DNI y teléfono usando regex simples."""
+    data = {}
+    if not text:
+        return data
+    tel_match = re.search(r"\+?\d[\d\s-]{6,}\d", text)
+    dni_match = re.search(r"\b\d{7,8}\b", text)
+    if tel_match:
+        data["telefono"] = re.sub(r"\s+", "", tel_match.group())
+    if dni_match:
+        data["dni"] = dni_match.group()
+    nombre = text
+    if tel_match:
+        nombre = nombre.replace(tel_match.group(), "")
+    if dni_match:
+        nombre = nombre.replace(dni_match.group(), "")
+    nombre = nombre.strip().strip(",")
+    if nombre:
+        data["nombre"] = nombre
+    return data
+
+
+def build_resumen(datos: dict) -> str:
+    """Construye un resumen textual del reclamo para confirmar con el usuario."""
+    partes = [
+        f"Categoría: {datos.get('categoria')}",
+        f"Descripción: {datos.get('descripcion')}",
+        f"Ubicación: {datos.get('ubicacion')}",
+        f"Nombre: {datos.get('nombre')}",
+        f"DNI: {datos.get('dni')}",
+        f"Teléfono: {datos.get('telefono')}",
+    ]
+    return "\n".join(p for p in partes if p and not p.endswith('None'))
+
+
+def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
+    """Unifica la resolución de dirección desde pin o texto."""
+    try:
+        resolver = AddressResolver(municipio_cfg)
+    except Exception:
+        resolver = None
+    if incoming.get("location"):
+        coords = incoming["location"]
+        lat = coords.get("lat") or coords.get("latitude")
+        lng = coords.get("lng") or coords.get("longitude")
+        rev = reverse_geocode(lat, lng)
+        direccion = rev.get("display")
+        distrito = rev.get("localidad")
+        return {
+            "ubicacion": direccion,
+            "coordenadas": {"lat": lat, "lng": lng},
+            "distrito": distrito,
+        }
+    parsed = resolver.resolve(user_input) if resolver else None
+    if parsed:
+        return {
+            "ubicacion": parsed.get("formatted") or parsed.get("display_name"),
+            "coordenadas": {"lat": parsed.get("lat"), "lng": parsed.get("lon")},
+            "distrito": parsed.get("localidad"),
+        }
+    return None
+
+
+def crear_ticket(ctx: dict):
+    datos = ctx.get("contexto_municipio_v2", {}).get("datos_parciales_llm_reclamo", {})
+    ticket_data = {
+        "categoria": datos.get("categoria"),
+        "detalles": datos.get("descripcion"),
+        "direccion": datos.get("ubicacion"),
+        "latitud": (datos.get("coordenadas") or {}).get("lat"),
+        "longitud": (datos.get("coordenadas") or {}).get("lng"),
+        "nombre_vecino": datos.get("nombre"),
+        "telefono_vecino": datos.get("telefono"),
+        "dni_vecino": datos.get("dni"),
+        "fecha": datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")),
+    }
+    t = servicio_tickets.crear_nuevo_ticket("municipio", ticket_data)
+    return SimpleNamespace(codigo=t.get("nro_ticket"))
 
 
 def _parse_contact_compact_text(texto: str) -> dict:
@@ -880,6 +964,7 @@ class ConversationState(Enum):
     ESPERANDO_EMAIL_VECINO = auto()
     ESPERANDO_DESCRIPCION_RECLAMO = auto()
     ESPERANDO_ADJUNTOS_RECLAMO = auto()
+    ESPERANDO_DATOS_PERSONALES = auto()
     ESPERANDO_DATOS_CONTACTO = auto()
     ESPERANDO_CONFIRMACION_RECLAMO = auto()
     ESPERANDO_SELECCION_TRAMITE = auto()
@@ -1773,7 +1858,7 @@ def safe_llm_call(prompt, preamble, fallback=None):
     except ValueError as ve: logger.error(f"[LLM_FALLBACK] Problema con la respuesta del LLM: {ve}"); return fallback or "No pude encontrar una respuesta directa a tu consulta. ¿Podrías reformularla o preferís que te muestre opciones generales como hacer un reclamo o consultar trámites?"
     except Exception as e: logger.error(f"[LLM_FALLBACK] Error general en llamada a LLM: {e}", exc_info=True); return fallback or "Hubo un inconveniente al procesar tu solicitud en este momento. ¿Podrías reformularla o preferís que te muestre opciones generales como hacer un reclamo o consultar trámites?"
 
-RECLAMO_STATES = [ConversationState.ESPERANDO_CATEGORIA_RECLAMO, ConversationState.ESPERANDO_DIRECCION_RECLAMO, ConversationState.ESPERANDO_NOMBRE_VECINO, ConversationState.ESPERANDO_TELEFONO_VECINO, ConversationState.ESPERANDO_EMAIL_VECINO, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO]
+RECLAMO_STATES = [ConversationState.ESPERANDO_CATEGORIA_RECLAMO, ConversationState.ESPERANDO_DIRECCION_RECLAMO, ConversationState.ESPERANDO_NOMBRE_VECINO, ConversationState.ESPERANDO_TELEFONO_VECINO, ConversationState.ESPERANDO_EMAIL_VECINO, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO, ConversationState.ESPERANDO_DATOS_PERSONALES, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO]
 
 def serializar_enum(obj):
     if isinstance(obj, Enum): return obj.name
@@ -1921,6 +2006,96 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
     estado_conversacion_para_llm = contexto_municipio_actual.get("estado_conversacion")
     invocar_llm = False
+
+    if estado_conversacion_para_llm == ConversationState.ESPERANDO_DIRECCION_RECLAMO.name:
+        loc = handle_direccion(
+            pregunta_str,
+            {"location": context.get("ubicacion_usuario")},
+            context.get("municipio_config_actual", {}),
+        )
+        if loc:
+            datos = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
+            datos.update(
+                {
+                    "ubicacion": loc.get("ubicacion"),
+                    "coordenadas": loc.get("coordenadas"),
+                    "distrito": loc.get("distrito"),
+                    "descripcion": datos.get("descripcion") or pregunta_str,
+                }
+            )
+            contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_DATOS_PERSONALES"
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return (
+                {
+                    "message_body": (
+                        "Perfecto. Ahora necesito tus datos para el ticket:\n1) *Nombre y apellido*\n2) *DNI*\n3) *Teléfono*"
+                    ),
+                    "options_list": [],
+                    "message_type": "text",
+                },
+                contexto_municipio_actual,
+            )
+        return (
+            {
+                "message_body": "¿Me pasás la dirección exacta o enviá el *pin de ubicación*?",
+                "options_list": [],
+                "message_type": "text",
+            },
+            contexto_municipio_actual,
+        )
+
+    if estado_conversacion_para_llm == "ESPERANDO_DATOS_PERSONALES":
+        datos = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
+        datos.update(extract_personal_data(pregunta_str))
+        faltan = [k for k in ("nombre", "dni", "telefono") if not datos.get(k)]
+        if faltan:
+            return (
+                {
+                    "message_body": f"Me falta: {', '.join(faltan)}.",
+                    "options_list": [],
+                    "message_type": "text",
+                },
+                contexto_municipio_actual,
+            )
+        contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_CONFIRMACION_RECLAMO"
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        resumen = build_resumen(datos)
+        return (
+            {
+                "message_body": f"📌 *Confirmación*\n{resumen}\n\n¿Confirmás? *Sí/No*",
+                "options_list": [],
+                "message_type": "text",
+            },
+            contexto_municipio_actual,
+        )
+
+    if estado_conversacion_para_llm == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name:
+        if pregunta_str.strip().lower() in ("si", "sí", "confirmo", "ok"):
+            ticket = crear_ticket(context)
+            contexto_municipio_actual["estado_conversacion"] = "activo"
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return (
+                {
+                    "message_body": f"✅ Ticket *#{ticket.codigo}* creado. Te avisamos cualquier novedad.",
+                    "options_list": [],
+                    "message_type": "text",
+                },
+                contexto_municipio_actual,
+            )
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return (
+            {
+                "message_body": "Entendido. Volvamos a la dirección.",
+                "options_list": [],
+                "message_type": "text",
+            },
+            contexto_municipio_actual,
+        )
 
     # Si se está esperando info de un reclamo pero el usuario consulta un servicio
     if (
@@ -2121,6 +2296,11 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         accion_backend_llm = respuesta_llm_dict.get("accion_backend")
         datos_estructura_llm = respuesta_llm_dict.get("datos_estructura")
         pedir_info_llm = respuesta_llm_dict.get("pedir_info")
+        if accion_backend_llm == "pedir_info":
+            datos_previos = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+            if datos_previos.get("categoria"):
+                accion_backend_llm = None
+                pedir_info_llm = None
         if isinstance(pedir_info_llm, list):
             pedir_info_llm = pedir_info_llm[0] if pedir_info_llm else None
         if isinstance(pedir_info_llm, str) and "," in pedir_info_llm:
@@ -2584,19 +2764,7 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
             if button_text_norm.startswith(normalized_input):
                 return button.get("action_id")
 
-    # 4. For longer free-form phrases, skip fuzzy matching to avoid
-    # misclassifying natural sentences as menu keywords. Let higher-level
-    # NLU or LLM logic handle these cases instead.
-    if len(normalized_input.split()) > 7:
-        logger.info(
-            f"DEBUG: Skipping fuzzy match for long input: '{normalized_input}'"
-        )
-        logger.warning(
-            f"DEBUG: No menu action found for input: '{user_input}' (normalized: '{normalized_input}')"
-        )
-        return None
-
-    # 5. Check for keyword match (fuzzy matching for natural language)
+    # 4. Check for keyword match (fuzzy matching for natural language)
     local_keywords = {}
     for button in menu_buttons:
         action_id = button.get('action_id')
@@ -2821,6 +2989,8 @@ def extract_reclamo_details_from_text(user_input: str, reclamo_options: list, us
             details["direccion_sugerida"] = direccion
             if district:
                 details["distrito_sugerido"] = district
+        else:
+            details["direccion_sugerida"] = normalized
     if "direccion_sugerida" not in details:
         match = re.search(r"([A-Za-zÀ-ÿ'\s]+?)\s+(\d{1,5})", normalized)
         if match:
@@ -3203,14 +3373,28 @@ def responder_municipio(
             or contexto_municipio_actual.get("datos_parciales_llm_reclamo")
         ):
             loc = received_payload.get("ubicacion_usuario", {})
-            lat = loc.get("latitude")
-            lon = loc.get("longitude")
+            lat = loc.get("latitude") or loc.get("lat")
+            lon = loc.get("longitude") or loc.get("lon")
             address = loc.get("address") or f"Lat: {lat}, Lon: {lon}"
             datos = contexto_municipio_actual.setdefault(
                 "datos_parciales_llm_reclamo", {}
             )
             datos["coordenadas"] = {"lat": lat, "lon": lon}
             datos["ubicacion"] = address
+            if estado == ConversationState.ESPERANDO_DIRECCION_RECLAMO.name:
+                contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_DATOS_PERSONALES"
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return (
+                    _finalize_response(
+                        {
+                            "message_body": "Perfecto. Ahora necesito tus datos para el ticket:\n1) *Nombre y apellido*\n2) *DNI*\n3) *Teléfono*",
+                            "options_list": [],
+                            "message_type": "text",
+                        }
+                    ),
+                    contexto_municipio_actual,
+                )
             contexto_municipio_actual[
                 "estado_conversacion"
             ] = ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name
@@ -3581,6 +3765,16 @@ def responder_municipio(
                     return _finalize_response(response)
             else:
                 logger_actual.info(f"Input '{pregunta_str_menu}' is not a menu option. Treating as a general query.")
+                fr = fast_reclamo_detect(pregunta_str_menu)
+                if fr:
+                    ctxm = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
+                    ctxm.update({"categoria": fr["categoria"], "descripcion": pregunta_str_menu})
+                    contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_DIRECCION_RECLAMO"
+                    if chat_db_context: flag_modified(chat_db_context, "context_data")
+                    return _finalize_response({
+                        "message_body": "Para avanzar necesito la ubicación exacta: calle y número o *en qué esquina*.",
+                        "options_list": []
+                    })
                 contexto_municipio_actual['estado_conversacion'] = None
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
 
