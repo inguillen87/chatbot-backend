@@ -26,7 +26,11 @@ from services.utils_placeholders import sugerencias_por_rubro
 from services.logic import es_rubro_publico
 from services.ticket_service import servicio_tickets
 from services.webinfo import obtener_info_web
-from .common_utils import construir_respuesta_sugerir_registro # <--- NUEVA IMPORTACIÓN
+from .common_utils import (
+    construir_respuesta_sugerir_registro,
+    validar_telefono,
+    formatear_telefono_e164,
+)  # <--- NUEVA IMPORTACIÓN
 from services.preferences import add_preference
 from services import cart as cart_service
 from services.promocion_service import promocion_service
@@ -699,8 +703,9 @@ def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> O
     if not phone_number or not owner_user:
         return None
 
-    # Intentar encontrar el usuario existente por teléfono
-    user = models.User.query.filter_by(telefono=phone_number, empresa_id=owner_user.id).first()
+    telefono_norm = formatear_telefono_e164(phone_number) if validar_telefono(phone_number) else phone_number
+    # Intentar encontrar el usuario existente por teléfono normalizado
+    user = models.User.query.filter_by(telefono=telefono_norm, empresa_id=owner_user.id).first()
     if user:
         return user
 
@@ -708,7 +713,7 @@ def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> O
     logger.info(f"No se encontró un usuario para el teléfono '{phone_number}'. Creando uno nuevo.")
 
     nuevo_usuario = models.User(
-        telefono=phone_number,
+        telefono=telefono_norm,
         email=None,  # No autogenerar emails ficticios para usuarios de WhatsApp
         rubro_id=owner_user.rubro_id,
         empresa_id=owner_user.id,

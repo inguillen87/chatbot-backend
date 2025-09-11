@@ -298,7 +298,7 @@ def whatsapp_webhook():
 
     # --- Message and Media Handling SECOND ---
     num_media = int(post_vars.get("NumMedia", "0") or 0)
-    media_url = post_vars.get("MediaUrl0")
+    media_url = post_vars.get("MediaUrl0")  # TODO: soportar múltiples adjuntos
     media_content_type = post_vars.get("MediaContentType0")
     uploaded_file_info = None
     message_body = incoming_text
@@ -347,6 +347,8 @@ def whatsapp_webhook():
                 transcribed_text = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
                 if transcribed_text:
                     message_body = transcribed_text
+                    if uploaded_file_info is None:
+                        uploaded_file_info = {}
                     uploaded_file_info['transcribed_text'] = transcribed_text
                 else:
                     current_app.logger.warning("Audio transcription failed or returned empty.")
@@ -364,7 +366,7 @@ def whatsapp_webhook():
             if media_content_type.startswith("image/"):
                 ctx = session_context_db_entry.context_data
                 ctx["es_foto"] = True
-                ctx["foto_url"] = media_url
+                ctx["foto_url"] = (uploaded_file_info or {}).get("url") or media_url
                 safe_flag_modified(session_context_db_entry, "context_data")
                 db.session.add(session_context_db_entry)
                 db.session.commit()
@@ -529,7 +531,7 @@ def whatsapp_webhook():
             kwargs_for_bot["uploaded_file_info"] = uploaded_file_info
         if num_media > 0 and media_url and media_content_type and media_content_type.startswith("image/"):
             kwargs_for_bot["es_foto"] = True
-            kwargs_for_bot["foto_url"] = media_url
+            kwargs_for_bot["foto_url"] = (uploaded_file_info or {}).get("url") or media_url
         if location_info:
             # Pass location_info and mark it explicitly as a location payload
             kwargs_for_bot["location"] = location_info
