@@ -115,3 +115,16 @@ def extract_dni(text: str) -> Optional[str]:
     if match:
         return match.group(0)
     return None
+
+
+ADDRESS_RE = re.compile(
+    r"\b([a-záéíóúñ]{2,}(?:\s+[a-záéíóúñ]{2,}){0,3}\s+\d{1,5}(?:\s+(?:esq\.?|esquina|y)\s+[a-záéíóúñ]{2,})?)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_address(text: str) -> bool:
+    """Return True if text resembles a street address."""
+    if not text:
+        return False
+    return bool(ADDRESS_RE.search(text))
