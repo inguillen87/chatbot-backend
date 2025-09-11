@@ -55,14 +55,19 @@ def geocode_address(
     city = state = country = bounds = region = None
     language = (geo_ctx or {}).get("locale") or "es-AR"
     components = []
+    def _clean(v: str | None) -> str | None:
+        if not v:
+            return v
+        return re.sub(r"\s+", " ", v.split(",")[0].strip())
+
     if geo_ctx:
-        city = geo_ctx.get("city") or geo_ctx.get("ciudad")
-        state = geo_ctx.get("state") or geo_ctx.get("provincia")
-        country = geo_ctx.get("country") or geo_ctx.get("pais")
+        city = _clean(geo_ctx.get("city") or geo_ctx.get("ciudad"))
+        state = _clean(geo_ctx.get("state") or geo_ctx.get("provincia"))
+        country = _clean(geo_ctx.get("country") or geo_ctx.get("pais"))
         region = geo_ctx.get("region_hint") or geo_ctx.get("region")
         bounds = geo_ctx.get("bounds")
     elif district:
-        city = district
+        city = _clean(district)
         country = "Argentina"
 
     if city and city.lower() not in query.lower():
@@ -113,13 +118,17 @@ def geocode_address(
 
     # Fallback to Nominatim
     url = "https://nominatim.openstreetmap.org/search"
-    params = {"q": query, "format": "json", "limit": 1, "accept-language": language}
-    if city:
-        params["city"] = city
-    if state:
-        params["state"] = state
-    if country:
-        params["countrycodes"] = country.lower()
+    params = {"format": "json", "limit": 1, "accept-language": language}
+    if "&" in query or " esquina " in address.lower():
+        params["q"] = query
+    else:
+        params["q"] = query
+        if city:
+            params["city"] = city
+        if state:
+            params["state"] = state
+        if country:
+            params["countrycodes"] = country.lower()
     if bounds:
         params["viewbox"] = f"{bounds[0]},{bounds[3]},{bounds[2]},{bounds[1]}"
         params["bounded"] = 1
