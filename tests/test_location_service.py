@@ -2,7 +2,11 @@ import requests
 
 import requests
 
-from services.location_service import geocode_address
+from services.location_service import (
+    geocode_address,
+    _normalize_corner,
+    _extract_from_maps_url,
+)
 
 
 def test_geocode_address_success(monkeypatch):
@@ -280,4 +284,20 @@ def test_nominatim_sanitizes_city(monkeypatch):
     assert captured["city"] == "Junin"
     assert captured["street"] == "Don Bosco 55"
     assert "q" not in captured
+
+
+def test_normalize_corner_removes_number():
+    assert _normalize_corner("Don Bosco 55 esquina Sarmiento") == "Don Bosco & Sarmiento"
+
+
+def test_extract_from_maps_url(monkeypatch):
+    class FakeResp:
+        url = "https://www.google.com/maps/@-33.1,-68.5,17z"
+
+    def fake_get(url, allow_redirects=True, timeout=5):
+        return FakeResp()
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    data = _extract_from_maps_url("https://maps.app.goo.gl/abc")
+    assert data["lat"] == -33.1 and data["lng"] == -68.5
 

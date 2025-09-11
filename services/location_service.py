@@ -4,6 +4,8 @@ from typing import Optional
 
 import re
 import requests
+from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +25,32 @@ def _normalize_corner(addr: str) -> str:
     addr = re.sub(r"\besq\.?\b", "esquina", addr, flags=re.I)
     addr = re.sub(r"\besquina\b", "&", addr, flags=re.I)
     addr = re.sub(r"\s+(?:y|e)\s+", " & ", addr, flags=re.I)
+    # If an intersection is present, remove standalone numbers near '&'
+    if "&" in addr:
+        addr = re.sub(r"\b\d+\s*&", "&", addr)
+        addr = re.sub(r"&\s*\d+\b", "&", addr)
     return re.sub(r"\s+", " ", addr).strip()
+
+
+def _extract_from_maps_url(url: str) -> dict:
+    """Extract coordinates or query text from a Google Maps URL."""
+    try:
+        resp = requests.get(url, allow_redirects=True, timeout=5)
+        final = resp.url
+    except requests.RequestException:
+        final = url
+    parsed = urlparse(final)
+    qs = parse_qs(parsed.query)
+    if "q" in qs:
+        q = unquote(qs["q"][0])
+        m = re.match(r"\s*(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)", q)
+        if m:
+            return {"lat": float(m.group(1)), "lng": float(m.group(2))}
+        return {"text": q}
+    m = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", final)
+    if m:
+        return {"lat": float(m.group(1)), "lng": float(m.group(2))}
+    return {"text": unquote(parsed.path)}
 
 
 def geocode_address(
@@ -48,6 +75,44 @@ def geocode_address(
 
     if not address:
         return None
+
+    # Support direct Google Maps links
+    if address.startswith("http"):
+        info = _extract_from_maps_url(address)
+        if info.get("lat") and info.get("lng"):
+            lat, lng = info["lat"], info["lng"]
+            gkey = os.environ.get("GOOGLE_MAPS_API_KEY")
+            if gkey:
+                try:
+                    r_params = {
+                        "latlng": f"{lat},{lng}",
+                        "key": gkey,
+                        "language": (geo_ctx or {}).get("locale") or "es-AR",
+                    }
+                    resp = requests.get(
+                        "https://maps.googleapis.com/maps/api/geocode/json",
+                        params=r_params,
+                        timeout=5,
+                    )
+                    resp.raise_for_status()
+                    results = resp.json().get("results", [])
+                    if results:
+                        formatted = results[0].get("formatted_address")
+                        return {
+                            "lat": lat,
+                            "lng": lng,
+                            "display_name": formatted,
+                            "maps_search_url": f"https://www.google.com/maps/search/?api=1&query={lat},{lng}",
+                        }
+                except requests.RequestException as e:
+                    logger.error(f"Error reverse geocoding via Google Maps: {e}")
+            return {
+                "lat": lat,
+                "lng": lng,
+                "maps_search_url": f"https://www.google.com/maps/search/?api=1&query={lat},{lng}",
+            }
+        elif info.get("text"):
+            address = info["text"]
 
     query = _normalize_corner(address)
 
