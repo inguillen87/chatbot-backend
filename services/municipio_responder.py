@@ -344,8 +344,13 @@ def build_ticket_summary(ticket, pin, ctx_muni: dict) -> str:
     )
 
 
-def api_ticket_get(numero: str, pin: str):
-    t = MunicipioTicket.query.filter_by(nro_ticket=numero, consulta_pin=pin).first()
+def api_ticket_get(numero: str, pin: str, municipio_id: str | int):
+    """Retrieve a ticket for the given municipality, number and PIN."""
+    muni_id = int(municipio_id) if municipio_id is not None else None
+    query = MunicipioTicket.query.filter_by(
+        nro_ticket=numero, consulta_pin=pin, municipio_id=muni_id
+    )
+    t = query.first()
     if not t:
         raise ValueError("Ticket no encontrado")
     return SimpleNamespace(
@@ -356,8 +361,20 @@ def api_ticket_get(numero: str, pin: str):
     )
 
 
-def handle_ticket_lookup(numero: str, pin: str, contexto: dict):
-    ticket = api_ticket_get(numero, pin)
+def handle_ticket_lookup(numero: str, pin: str, contexto: dict, municipio_id: str | int):
+    """Return payload with ticket summary or a friendly error if lookup fails."""
+    try:
+        ticket = api_ticket_get(numero, pin, municipio_id)
+    except ValueError:
+        return {
+            "message_body": "No encontramos un ticket con ese número y PIN. Revisá los datos e intentá nuevamente.",
+            "options_list": [
+                {"texto": "Menú", "action_id": "menu_principal"},
+                {"texto": "Cancelar", "action_id": "cancelar"},
+            ],
+            "message_type": "interactive_buttons",
+        }
+
     text = build_ticket_summary(ticket, pin, contexto)
     payload = {
         "message_body": text,
@@ -3625,6 +3642,7 @@ def responder_municipio(
         "rubro_obj": rubro_obj,
         "channel": channel,
         "municipio_config_actual": final_municipio_config,
+        "municipio_id": owner_user_municipio_id_str,
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
         "chat_db_context_data": chat_db_context_live_data,
         "profile_name": kwargs.get("profile_name"),
@@ -3703,7 +3721,12 @@ def responder_municipio(
     if estado_prev == ConversationState.ESPERANDO_PIN_TICKET.name:
         pin = extract_pin(pregunta_str)
         if pin:
-            payload = handle_ticket_lookup(contexto_municipio_actual.get("numero_ticket_consulta", ""), pin, contexto_municipio_actual)
+            payload = handle_ticket_lookup(
+                contexto_municipio_actual.get("numero_ticket_consulta", ""),
+                pin,
+                contexto_municipio_actual,
+                context.get("municipio_id"),
+            )
             if chat_db_context: flag_modified(chat_db_context, "context_data")
             return _finalize_response(payload)
         return _finalize_response({"message_body": "El PIN debe tener *6 dígitos*. Probá de nuevo (ej: 734774)."})
@@ -4086,7 +4109,12 @@ def responder_municipio(
         elif estado_conversacion == ConversationState.ESPERANDO_PIN_TICKET.name:
             pin = extract_pin(pregunta_str)
             if pin:
-                payload = handle_ticket_lookup(contexto_municipio_actual.get('numero_ticket_consulta', ''), pin, contexto_municipio_actual)
+                payload = handle_ticket_lookup(
+                    contexto_municipio_actual.get('numero_ticket_consulta', ''),
+                    pin,
+                    contexto_municipio_actual,
+                    context.get("municipio_id"),
+                )
                 if chat_db_context: flag_modified(chat_db_context, 'context_data')
                 return _finalize_response(payload)
             return _finalize_response({"message_body": "El PIN debe tener *6 dígitos*. Probá de nuevo (ej: 734774)."})
