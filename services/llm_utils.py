@@ -221,6 +221,7 @@ def extract_multiple_contact_details_llm(
     )
 
     extracted_data = {}
+    # LLM usage is controlled per call; callers pass use_llm=False to skip the model
     if use_llm:
         try:
             response_content = robust_chat(message=prompt)
