@@ -252,7 +252,7 @@ def test_geocode_address_with_geo_context_nominatim(monkeypatch):
     assert captured["countrycodes"] == "ar"
     assert captured["viewbox"] == "-68.6,-32.9,-68.3,-33.2"
     assert captured["accept-language"] == "es-AR"
-
+    assert "q" not in captured
 
 
 def test_nominatim_sanitizes_city(monkeypatch):
