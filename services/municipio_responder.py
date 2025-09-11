@@ -463,6 +463,8 @@ class ReclamoFlowHandler:
             user_input, datos_reclamo, channel=self.context.get("channel")
         )
         datos_reclamo.update({k: v for k, v in nuevos.items() if v})
+        if datos_reclamo.get('email', '').endswith('@whatsapp.chatboc.com'):
+            datos_reclamo['email'] = None
         contacto_prev = self.municipal_ctx.get('contacto_usuario', {})
         self.municipal_ctx['contacto_usuario'] = _merge_contact(contacto_prev, nuevos)
         resumen = _format_contact_summary(self.municipal_ctx['contacto_usuario'])

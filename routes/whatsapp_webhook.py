@@ -147,7 +147,7 @@ def whatsapp_webhook():
 
     signature = request.headers.get("X-Twilio-Signature", "")
     url = request.url
-    post_vars = request.form.to_dict()
+    post_vars = request.form.to_dict(flat=True)
 
     if not validator.validate(url, post_vars, signature):
         abort(403, "Invalid Twilio signature")
@@ -303,7 +303,13 @@ def whatsapp_webhook():
     uploaded_file_info = None
     message_body = incoming_text
 
-    if num_media > 0 and media_url and media_content_type:
+    if num_media > 0 and media_url:
+        if not media_content_type:
+            lower_url = media_url.lower()
+            if lower_url.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
+                media_content_type = "image/*"
+            elif lower_url.endswith((".mp4", ".mov", ".avi", ".mkv", ".webm")):
+                media_content_type = "video/*"
         try:
             # Download the file from Twilio's URL first
             auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
@@ -332,6 +338,7 @@ def whatsapp_webhook():
                 uploaded_file_info = {
                     "id": adjunto.id,
                     "url": adjunto.url,
+                    "public_url": getattr(adjunto, "public_url", None),
                     "mime_type": adjunto.mime,
                     "name": adjunto.nombre_original,
                     "source": "whatsapp"
@@ -340,7 +347,7 @@ def whatsapp_webhook():
             else:
                 current_app.logger.error("create_attachment_with_thumbnail failed to process the WhatsApp media")
 
-            if media_content_type.startswith("audio/"):
+            if media_content_type and media_content_type.startswith("audio/"):
                 session_context_db_entry.context_data['source_is_audio'] = True
                 from services.audio_transcription_service import transcribe_audio_from_url
                 # We pass the direct URL to the transcription service
@@ -363,10 +370,10 @@ def whatsapp_webhook():
             # Reset uploaded_file_info if processing fails
             uploaded_file_info = None
         finally:
-            if media_content_type.startswith("image/"):
+            if media_content_type and media_content_type.startswith("image/"):
                 ctx = session_context_db_entry.context_data
                 ctx["es_foto"] = True
-                ctx["foto_url"] = (uploaded_file_info or {}).get("url") or media_url
+                ctx["foto_url"] = (uploaded_file_info or {}).get("public_url") or (uploaded_file_info or {}).get("url") or media_url
                 safe_flag_modified(session_context_db_entry, "context_data")
                 db.session.add(session_context_db_entry)
                 db.session.commit()
@@ -531,7 +538,7 @@ def whatsapp_webhook():
             kwargs_for_bot["uploaded_file_info"] = uploaded_file_info
         if num_media > 0 and media_url and media_content_type and media_content_type.startswith("image/"):
             kwargs_for_bot["es_foto"] = True
-            kwargs_for_bot["foto_url"] = (uploaded_file_info or {}).get("url") or media_url
+            kwargs_for_bot["foto_url"] = (uploaded_file_info or {}).get("public_url") or (uploaded_file_info or {}).get("url") or media_url
         if location_info:
             # Pass location_info and mark it explicitly as a location payload
             kwargs_for_bot["location"] = location_info
