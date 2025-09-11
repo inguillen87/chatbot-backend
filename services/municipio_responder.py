@@ -55,10 +55,13 @@ from utils.parsers import parse_contact_line
 from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
 from services.tasks import process_image_for_chat_task
-from services.intent_classifier import IntentClassifier
+from services.intent_classifier import IntentClassifier, fast_reclamo_detect
 from services.multimodal_analyzer import analizar_imagen_con_fallback
 import json
 from services.ticket_utils import formatear_ticket_respuesta
+from services.address_resolver import AddressResolver
+from services.geo_service import reverse_geocode
+from types import SimpleNamespace
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
@@ -91,12 +94,42 @@ CANCEL_KEYWORDS = {
     ]
 }
 
+
+GREET_WORDS = r"(hola|buenas|buenos\s*d[ií]as|buenas\s*tardes|buenas\s*noches|men[úu])"
+GREET_RE = re.compile(rf"^\s*{GREET_WORDS}\b", re.I)
+
+
+def is_greeting(text: str, ctx_state: str | None) -> bool:
+    if not text:
+        return False
+    if any(ch.isdigit() for ch in text):
+        return False
+    if ctx_state in {"ESPERANDO_NUMERO_TICKET", "ESPERANDO_PIN_TICKET"}:
+        return False
+    if len(text.split()) <= 6 and GREET_RE.search(text):
+        return True
+    return False
+
+
+CONSULT_KEYWORDS = (
+    "consultar reclamo",
+    "consultar estado",
+    "consultar ticket",
+    "ver mi ticket",
+    "ver ticket",
+    "estado del reclamo",
+    "mi reclamo",
+    "seguimiento reclamo",
+    "ver estado",
+)
+
 # Simple cache to avoid recomputing responses for repeated municipal queries
 MUNICIPIO_RESPONSE_CACHE = TTLCache(maxsize=256, ttl=3600)
 
 # States where caching can cause stale responses; skip cache when in any of these
 SENSITIVE_STATES = {
     "ESPERANDO_DIRECCION_RECLAMO",
+    "ESPERANDO_DATOS_PERSONALES",
     "ESPERANDO_DATOS_CONTACTO",
     "ESPERANDO_CONFIRMACION_RECLAMO",
     "ESPERANDO_CONFIRMACION_UBICACION",
@@ -109,6 +142,126 @@ def clear_municipio_cache() -> None:
 
 # --- NUEVO: parsing compacto de datos de contacto ---
 CONTACT_FIELDS = ("nombre", "email", "telefono", "dni", "direccion_contacto")
+
+
+def extract_personal_data(text: str) -> dict:
+    """Extrae nombre, DNI y teléfono usando regex simples."""
+    data = {}
+    if not text:
+        return data
+    tel_match = re.search(r"\+?\d[\d\s-]{6,}\d", text)
+    dni_match = re.search(r"\b\d{7,8}\b", text)
+    if tel_match:
+        data["telefono"] = re.sub(r"\s+", "", tel_match.group())
+    if dni_match:
+        data["dni"] = dni_match.group()
+    nombre = text
+    if tel_match:
+        nombre = nombre.replace(tel_match.group(), "")
+    if dni_match:
+        nombre = nombre.replace(dni_match.group(), "")
+    nombre = nombre.strip().strip(",")
+    if nombre:
+        data["nombre"] = nombre
+    return data
+
+
+def build_resumen(datos: dict) -> str:
+    """Construye un resumen textual del reclamo para confirmar con el usuario."""
+    partes = [
+        f"Categoría: {datos.get('categoria')}",
+        f"Descripción: {datos.get('descripcion')}",
+        f"Ubicación: {datos.get('ubicacion')}",
+        f"Nombre: {datos.get('nombre')}",
+        f"DNI: {datos.get('dni')}",
+        f"Teléfono: {datos.get('telefono')}",
+    ]
+    return "\n".join(p for p in partes if p and not p.endswith('None'))
+
+
+def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
+    """Unifica la resolución de dirección desde pin o texto."""
+    try:
+        resolver = AddressResolver(municipio_cfg)
+    except Exception:
+        resolver = None
+    if incoming.get("location"):
+        coords = incoming["location"]
+        lat = coords.get("lat") or coords.get("latitude")
+        lng = coords.get("lng") or coords.get("longitude")
+        rev = reverse_geocode(lat, lng)
+        direccion = rev.get("display")
+        distrito = rev.get("localidad")
+        return {
+            "ubicacion": direccion,
+            "coordenadas": {"lat": lat, "lng": lng},
+            "distrito": distrito,
+        }
+    parsed = resolver.resolve(user_input) if resolver else None
+    if parsed:
+        return {
+            "ubicacion": parsed.get("formatted") or parsed.get("display_name"),
+            "coordenadas": {"lat": parsed.get("lat"), "lng": parsed.get("lon")},
+            "distrito": parsed.get("localidad"),
+        }
+    return None
+
+
+# --- Ticket lookup helpers ---
+TICKET_RE = re.compile(
+    r"""(?ix)
+    (?:^|\b)
+    (?:n[°ºo]\s*[:\-#]?\s*|ticket\s*[:\-#]?\s*|reclamo\s*[:\-#]?\s*|m(?:unicipalidad)?\s*[:\-#]?\s*)?
+    (?:[m]\s*[- ]?)?
+    (?P<num>\d{5,8})
+    (?:\b|$)
+    """
+)
+
+PIN_RE = re.compile(r"(?i)(?:^|\b)pin\s*[:\-#]?\s*(?P<pin>\d{6})(?:\b|$)")
+ONLY_DIGITS_RE = re.compile(r"^\s*(?P<d>\d{5,8})\s*$")
+ONLY_PIN_RE = re.compile(r"^\s*(?P<pin>\d{6})\s*$")
+
+
+def extract_ticket_number(text: str) -> str | None:
+    if not text:
+        return None
+    m = TICKET_RE.search(text)
+    if m:
+        return m.group("num")
+    m = ONLY_DIGITS_RE.match(text)
+    if m:
+        return m.group("d")
+    return None
+
+
+def extract_pin(text: str) -> str | None:
+    if not text:
+        return None
+    m = PIN_RE.search(text)
+    if m:
+        return m.group("pin")
+    m = ONLY_PIN_RE.match(text)
+    if m:
+        return m.group("pin")
+    return None
+
+
+def crear_ticket(ctx: dict):
+    datos = ctx.get("contexto_municipio_v2", {}).get("datos_parciales_llm_reclamo", {})
+    ticket_data = {
+        "categoria": datos.get("categoria"),
+        "detalles": datos.get("descripcion"),
+        "direccion": datos.get("ubicacion"),
+        "latitud": (datos.get("coordenadas") or {}).get("lat"),
+        "longitud": (datos.get("coordenadas") or {}).get("lng"),
+        "nombre_vecino": datos.get("nombre"),
+        "telefono_vecino": datos.get("telefono"),
+        "dni_vecino": datos.get("dni"),
+        "fecha": datetime.now(ZoneInfo("America/Argentina/Buenos_Aires")),
+    }
+    t = servicio_tickets.crear_nuevo_ticket("municipio", ticket_data)
+    return SimpleNamespace(codigo=t.get("nro_ticket"))
 
 
 def _parse_contact_compact_text(texto: str) -> dict:
@@ -163,6 +316,78 @@ def _format_contact_summary(datos: dict) -> str:
         f"DNI: {datos.get('dni') or '-'}\n"
         f"Dirección contacto: {datos.get('direccion_contacto') or '-'}"
     )
+
+
+PUNTO_LIMPIO_LOGO_URL = "https://www.juninmendoza.gov.ar/recursos/punto-limpio-logo.jpg"
+PUNTO_LIMPIO_URL = "https://www.juninmendoza.gov.ar/punto-limpio"
+OBRAS_URL = "https://www.juninmendoza.gov.ar/obras"
+SITE_URL = "https://www.juninmendoza.gov.ar/"
+
+
+def build_ticket_summary(ticket, pin, ctx_muni: dict) -> str:
+    nombre = ctx_muni.get("contacto_usuario", {}).get("nombre", "Vecino/a")
+    return (
+        f"✅ *¡Reclamo recibido, {nombre}!*\n\n"
+        "📄 *Resumen de tu Reclamo:*\n"
+        f"- *N° de Ticket:* `M-{ticket.numero}`\n"
+        f"- *Categoría:* {ticket.categoria}\n"
+        f"- *Descripción:* {ticket.descripcion}\n\n"
+        f"- *PIN:* {pin}\n"
+        "📞 *Contacto para seguimiento:* Atención al Vecino - Mesa de Ayuda General - +5492613168608\n"
+        "🕒 *Horario de atención:* Lunes a Viernes de 8:00 a 18:00 hs.\n"
+        f"♻️ Junín Punto Limpio: {PUNTO_LIMPIO_URL}\n"
+        f"📰 Obras y novedades: {OBRAS_URL}\n"
+        f"🌐 Más información municipal: {SITE_URL}\n"
+        f"💬 Ver mi Ticket: https://www.chatboc.ar/chat/{ticket.numero}?pin={pin}\n"
+        "Te mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!\n\n"
+        f"🔔 *Estado actual:* {ticket.estado_actual}"
+    )
+
+
+def api_ticket_get(numero: str, pin: str, municipio_id: str | int):
+    """Retrieve a ticket for the given municipality, number and PIN."""
+    muni_id = int(municipio_id) if municipio_id is not None else None
+    query = MunicipioTicket.query.filter_by(
+        nro_ticket=numero, consulta_pin=pin, municipio_id=muni_id
+    )
+    t = query.first()
+    if not t:
+        raise ValueError("Ticket no encontrado")
+    return SimpleNamespace(
+        numero=str(t.nro_ticket),
+        categoria=t.categoria,
+        descripcion=t.detalles or t.pregunta or "",
+        estado_actual=t.estado,
+    )
+
+
+def handle_ticket_lookup(numero: str, pin: str, contexto: dict, municipio_id: str | int):
+    """Return payload with ticket summary or a friendly error if lookup fails."""
+    try:
+        ticket = api_ticket_get(numero, pin, municipio_id)
+    except ValueError:
+        return {
+            "message_body": "No encontramos un ticket con ese número y PIN. Revisá los datos e intentá nuevamente.",
+            "options_list": [
+                {"texto": "Menú", "action_id": "menu_principal"},
+                {"texto": "Cancelar", "action_id": "cancelar"},
+            ],
+            "message_type": "interactive_buttons",
+        }
+
+    text = build_ticket_summary(ticket, pin, contexto)
+    payload = {
+        "message_body": text,
+        "message_type": "interactive_buttons",
+        "options_list": [
+            {"texto": "💬 Ver mi Ticket", "url": f"https://www.chatboc.ar/chat/{numero}?pin={pin}", "type": "url"},
+            {"texto": "🌐 Más información", "url": SITE_URL, "type": "url"},
+        ],
+        "image_url": PUNTO_LIMPIO_LOGO_URL,
+        "suppress_followup_menu": True,
+    }
+    contexto["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+    return payload
 
 
 def pedir_datos_contacto_compacto():
@@ -872,6 +1097,7 @@ class ConversationState(Enum):
     ESPERANDO_CONFIRMACION_CIERRE = auto()
     ESPERANDO_CALIFICACION = auto()
     ESPERANDO_NUMERO_TICKET = auto()
+    ESPERANDO_PIN_TICKET = auto()
     ESPERANDO_PARAM_RECOLECCION = auto()
     ESPERANDO_CATEGORIA_RECLAMO = auto()
     ESPERANDO_DIRECCION_RECLAMO = auto()
@@ -880,6 +1106,7 @@ class ConversationState(Enum):
     ESPERANDO_EMAIL_VECINO = auto()
     ESPERANDO_DESCRIPCION_RECLAMO = auto()
     ESPERANDO_ADJUNTOS_RECLAMO = auto()
+    ESPERANDO_DATOS_PERSONALES = auto()
     ESPERANDO_DATOS_CONTACTO = auto()
     ESPERANDO_CONFIRMACION_RECLAMO = auto()
     ESPERANDO_SELECCION_TRAMITE = auto()
@@ -1773,7 +2000,7 @@ def safe_llm_call(prompt, preamble, fallback=None):
     except ValueError as ve: logger.error(f"[LLM_FALLBACK] Problema con la respuesta del LLM: {ve}"); return fallback or "No pude encontrar una respuesta directa a tu consulta. ¿Podrías reformularla o preferís que te muestre opciones generales como hacer un reclamo o consultar trámites?"
     except Exception as e: logger.error(f"[LLM_FALLBACK] Error general en llamada a LLM: {e}", exc_info=True); return fallback or "Hubo un inconveniente al procesar tu solicitud en este momento. ¿Podrías reformularla o preferís que te muestre opciones generales como hacer un reclamo o consultar trámites?"
 
-RECLAMO_STATES = [ConversationState.ESPERANDO_CATEGORIA_RECLAMO, ConversationState.ESPERANDO_DIRECCION_RECLAMO, ConversationState.ESPERANDO_NOMBRE_VECINO, ConversationState.ESPERANDO_TELEFONO_VECINO, ConversationState.ESPERANDO_EMAIL_VECINO, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO]
+RECLAMO_STATES = [ConversationState.ESPERANDO_CATEGORIA_RECLAMO, ConversationState.ESPERANDO_DIRECCION_RECLAMO, ConversationState.ESPERANDO_NOMBRE_VECINO, ConversationState.ESPERANDO_TELEFONO_VECINO, ConversationState.ESPERANDO_EMAIL_VECINO, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO, ConversationState.ESPERANDO_DATOS_PERSONALES, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO]
 
 def serializar_enum(obj):
     if isinstance(obj, Enum): return obj.name
@@ -1921,6 +2148,96 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
     estado_conversacion_para_llm = contexto_municipio_actual.get("estado_conversacion")
     invocar_llm = False
+
+    if estado_conversacion_para_llm == ConversationState.ESPERANDO_DIRECCION_RECLAMO.name:
+        loc = handle_direccion(
+            pregunta_str,
+            {"location": context.get("ubicacion_usuario")},
+            context.get("municipio_config_actual", {}),
+        )
+        if loc:
+            datos = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
+            datos.update(
+                {
+                    "ubicacion": loc.get("ubicacion"),
+                    "coordenadas": loc.get("coordenadas"),
+                    "distrito": loc.get("distrito"),
+                    "descripcion": datos.get("descripcion") or pregunta_str,
+                }
+            )
+            contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_DATOS_PERSONALES"
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return (
+                {
+                    "message_body": (
+                        "Perfecto. Ahora necesito tus datos para el ticket:\n1) *Nombre y apellido*\n2) *DNI*\n3) *Teléfono*"
+                    ),
+                    "options_list": [],
+                    "message_type": "text",
+                },
+                contexto_municipio_actual,
+            )
+        return (
+            {
+                "message_body": "¿Me pasás la dirección exacta o enviá el *pin de ubicación*?",
+                "options_list": [],
+                "message_type": "text",
+            },
+            contexto_municipio_actual,
+        )
+
+    if estado_conversacion_para_llm == "ESPERANDO_DATOS_PERSONALES":
+        datos = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
+        datos.update(extract_personal_data(pregunta_str))
+        faltan = [k for k in ("nombre", "dni", "telefono") if not datos.get(k)]
+        if faltan:
+            return (
+                {
+                    "message_body": f"Me falta: {', '.join(faltan)}.",
+                    "options_list": [],
+                    "message_type": "text",
+                },
+                contexto_municipio_actual,
+            )
+        contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_CONFIRMACION_RECLAMO"
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        resumen = build_resumen(datos)
+        return (
+            {
+                "message_body": f"📌 *Confirmación*\n{resumen}\n\n¿Confirmás? *Sí/No*",
+                "options_list": [],
+                "message_type": "text",
+            },
+            contexto_municipio_actual,
+        )
+
+    if estado_conversacion_para_llm == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name:
+        if pregunta_str.strip().lower() in ("si", "sí", "confirmo", "ok"):
+            ticket = crear_ticket(context)
+            contexto_municipio_actual["estado_conversacion"] = "activo"
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return (
+                {
+                    "message_body": f"✅ Ticket *#{ticket.codigo}* creado. Te avisamos cualquier novedad.",
+                    "options_list": [],
+                    "message_type": "text",
+                },
+                contexto_municipio_actual,
+            )
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return (
+            {
+                "message_body": "Entendido. Volvamos a la dirección.",
+                "options_list": [],
+                "message_type": "text",
+            },
+            contexto_municipio_actual,
+        )
 
     # Si se está esperando info de un reclamo pero el usuario consulta un servicio
     if (
@@ -2121,6 +2438,11 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         accion_backend_llm = respuesta_llm_dict.get("accion_backend")
         datos_estructura_llm = respuesta_llm_dict.get("datos_estructura")
         pedir_info_llm = respuesta_llm_dict.get("pedir_info")
+        if accion_backend_llm == "pedir_info":
+            datos_previos = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+            if datos_previos.get("categoria"):
+                accion_backend_llm = None
+                pedir_info_llm = None
         if isinstance(pedir_info_llm, list):
             pedir_info_llm = pedir_info_llm[0] if pedir_info_llm else None
         if isinstance(pedir_info_llm, str) and "," in pedir_info_llm:
@@ -2584,19 +2906,7 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
             if button_text_norm.startswith(normalized_input):
                 return button.get("action_id")
 
-    # 4. For longer free-form phrases, skip fuzzy matching to avoid
-    # misclassifying natural sentences as menu keywords. Let higher-level
-    # NLU or LLM logic handle these cases instead.
-    if len(normalized_input.split()) > 7:
-        logger.info(
-            f"DEBUG: Skipping fuzzy match for long input: '{normalized_input}'"
-        )
-        logger.warning(
-            f"DEBUG: No menu action found for input: '{user_input}' (normalized: '{normalized_input}')"
-        )
-        return None
-
-    # 5. Check for keyword match (fuzzy matching for natural language)
+    # 4. Check for keyword match (fuzzy matching for natural language)
     local_keywords = {}
     for button in menu_buttons:
         action_id = button.get('action_id')
@@ -2821,6 +3131,8 @@ def extract_reclamo_details_from_text(user_input: str, reclamo_options: list, us
             details["direccion_sugerida"] = direccion
             if district:
                 details["distrito_sugerido"] = district
+        else:
+            details["direccion_sugerida"] = normalized
     if "direccion_sugerida" not in details:
         match = re.search(r"([A-Za-zÀ-ÿ'\s]+?)\s+(\d{1,5})", normalized)
         if match:
@@ -3203,14 +3515,28 @@ def responder_municipio(
             or contexto_municipio_actual.get("datos_parciales_llm_reclamo")
         ):
             loc = received_payload.get("ubicacion_usuario", {})
-            lat = loc.get("latitude")
-            lon = loc.get("longitude")
+            lat = loc.get("latitude") or loc.get("lat")
+            lon = loc.get("longitude") or loc.get("lon")
             address = loc.get("address") or f"Lat: {lat}, Lon: {lon}"
             datos = contexto_municipio_actual.setdefault(
                 "datos_parciales_llm_reclamo", {}
             )
             datos["coordenadas"] = {"lat": lat, "lon": lon}
             datos["ubicacion"] = address
+            if estado == ConversationState.ESPERANDO_DIRECCION_RECLAMO.name:
+                contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_DATOS_PERSONALES"
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return (
+                    _finalize_response(
+                        {
+                            "message_body": "Perfecto. Ahora necesito tus datos para el ticket:\n1) *Nombre y apellido*\n2) *DNI*\n3) *Teléfono*",
+                            "options_list": [],
+                            "message_type": "text",
+                        }
+                    ),
+                    contexto_municipio_actual,
+                )
             contexto_municipio_actual[
                 "estado_conversacion"
             ] = ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name
@@ -3316,6 +3642,7 @@ def responder_municipio(
         "rubro_obj": rubro_obj,
         "channel": channel,
         "municipio_config_actual": final_municipio_config,
+        "municipio_id": owner_user_municipio_id_str,
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
         "chat_db_context_data": chat_db_context_live_data,
         "profile_name": kwargs.get("profile_name"),
@@ -3362,6 +3689,56 @@ def responder_municipio(
                 if "pregunta" in received_payload:
                     received_payload["pregunta"] = pregunta_str
 
+
+    # --- Ticket lookup direct shortcuts ---
+    normalized = normalizar_texto(pregunta_str or "")
+    estado_prev = contexto_municipio_actual.get("estado_conversacion")
+    if estado_prev in {None, ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name, ConversationState.ESPERANDO_SELECCION_DE_LISTA.name}:
+        num = extract_ticket_number(pregunta_str)
+        if num:
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_PIN_TICKET.name
+            contexto_municipio_actual["numero_ticket_consulta"] = num
+            if chat_db_context: flag_modified(chat_db_context, "context_data")
+            return _finalize_response({
+                "message_body": "Ingresá el PIN de 6 dígitos asociado al ticket.\n\n1. Menú\n2. Cancelar",
+                "options_list": [{"texto": "Menú", "action_id": "menu_principal"}, {"texto": "Cancelar", "action_id": "cancelar"}],
+                "message_type": "interactive_buttons",
+            })
+
+    if estado_prev == ConversationState.ESPERANDO_NUMERO_TICKET.name:
+        num = extract_ticket_number(pregunta_str)
+        if num:
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_PIN_TICKET.name
+            contexto_municipio_actual["numero_ticket_consulta"] = num
+            if chat_db_context: flag_modified(chat_db_context, "context_data")
+            return _finalize_response({
+                "message_body": "Ingresá el PIN de 6 dígitos asociado al ticket.\n\n1. Menú\n2. Cancelar",
+                "options_list": [{"texto": "Menú", "action_id": "menu_principal"}, {"texto": "Cancelar", "action_id": "cancelar"}],
+                "message_type": "interactive_buttons",
+            })
+        return _finalize_response({"message_body": "Por favor, escribí el *número de tu ticket* (ej: M-397871 o 397871)."})
+
+    if estado_prev == ConversationState.ESPERANDO_PIN_TICKET.name:
+        pin = extract_pin(pregunta_str)
+        if pin:
+            payload = handle_ticket_lookup(
+                contexto_municipio_actual.get("numero_ticket_consulta", ""),
+                pin,
+                contexto_municipio_actual,
+                context.get("municipio_id"),
+            )
+            if chat_db_context: flag_modified(chat_db_context, "context_data")
+            return _finalize_response(payload)
+        return _finalize_response({"message_body": "El PIN debe tener *6 dígitos*. Probá de nuevo (ej: 734774)."})
+
+    if any(k in normalized for k in CONSULT_KEYWORDS):
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_NUMERO_TICKET.name
+        if chat_db_context: flag_modified(chat_db_context, "context_data")
+        return _finalize_response({
+            "message_body": "Por favor, ingresá el número de tu reclamo para consultar el estado.",
+            "options_list": [{"texto": "Menú", "action_id": "menu_principal"}, {"texto": "Cancelar", "action_id": "cancelar"}],
+            "message_type": "interactive_buttons",
+        })
 
     # --- INICIO FIX: Manejo explícito de solicitud de menú principal ---
     # Si el usuario pide explícitamente el menú, lo mostramos directamente sin pasar por el LLM.
@@ -3428,8 +3805,8 @@ def responder_municipio(
     # --- START INTENT CLASSIFICATION ---
     # FIX: First, check for simple keywords and __INIT__ to be more robust and cost-effective
     normalized_input_for_greeting = normalizar_texto(pregunta_str or "").strip()
-    if normalized_input_for_greeting in SIMPLE_GREETINGS or pregunta_str == "__INIT__":
-        logger_actual.info(f"Simple greeting or __INIT__ keyword detected ('{pregunta_str}'). Bypassing LLM and showing main menu.")
+    if is_greeting(pregunta_str, contexto_municipio_actual.get("estado_conversacion")) or pregunta_str == "__INIT__":
+        logger_actual.info(f"Greeting or __INIT__ detected ('{pregunta_str}'). Bypassing LLM and showing main menu.")
         handler = GreetingHandler(context)
         response = handler.handle(received_payload)
         if chat_db_context:
@@ -3581,6 +3958,16 @@ def responder_municipio(
                     return _finalize_response(response)
             else:
                 logger_actual.info(f"Input '{pregunta_str_menu}' is not a menu option. Treating as a general query.")
+                fr = fast_reclamo_detect(pregunta_str_menu)
+                if fr:
+                    ctxm = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
+                    ctxm.update({"categoria": fr["categoria"], "descripcion": pregunta_str_menu})
+                    contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_DIRECCION_RECLAMO"
+                    if chat_db_context: flag_modified(chat_db_context, "context_data")
+                    return _finalize_response({
+                        "message_body": "Para avanzar necesito la ubicación exacta: calle y número o *en qué esquina*.",
+                        "options_list": []
+                    })
                 contexto_municipio_actual['estado_conversacion'] = None
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
 
@@ -3719,69 +4106,18 @@ def responder_municipio(
             return _finalize_response(response)
 
 
-        elif estado_conversacion == ConversationState.ESPERANDO_NUMERO_TICKET.name:
-            numero_guardado = contexto_municipio_actual.get('numero_ticket_consulta')
-            if not numero_guardado:
-                numero_ticket = ''.join(filter(str.isdigit, pregunta_str or ''))
-                if not numero_ticket:
-                    return _finalize_response({
-                        "message_body": "Por favor, ingresá un número de reclamo válido.",
-                        "fuente": "handler_consultar_reclamo"
-                    })
-                contexto_municipio_actual['numero_ticket_consulta'] = numero_ticket
-                if chat_db_context: flag_modified(chat_db_context, "context_data")
-                return _finalize_response({
-                    "message_body": "Ingresá el PIN de 6 dígitos asociado al ticket.",
-                    "fuente": "handler_consultar_reclamo"
-                })
-
-            pin = ''.join(filter(str.isdigit, pregunta_str or ''))
-            if len(pin) != 6:
-                return _finalize_response({
-                    "message_body": "El PIN debe tener 6 dígitos.",
-                    "fuente": "handler_consultar_reclamo"
-                })
-
-            municipio_id = context.get("municipio_id", MUNICIPIO_ID)
-            ticket_query = MunicipioTicket.query.filter_by(nro_ticket=numero_guardado, consulta_pin=pin)
-            try:
-                ticket_query = ticket_query.filter_by(municipio_id=int(municipio_id))
-            except (TypeError, ValueError):
-                pass
-            ticket = ticket_query.first()
-
-            contexto_municipio_actual.pop('numero_ticket_consulta', None)
-            contexto_municipio_actual['estado_conversacion'] = None
-            if chat_db_context: flag_modified(chat_db_context, "context_data")
-
-
-            botones = []
-            if ticket:
-                contactos = cargar_configuracion_municipio(municipio_id, "contactos_especializados.json")
-                contacto_especializado = contactos.get(ticket.categoria, contactos.get("default", {})) if isinstance(contactos, dict) else {}
-                municipio_config = context.get("municipio_config_actual", {})
-                base_chat_url = municipio_config.get("base_chat_url", "https://www.chatboc.ar/chat")
-                mensaje, botones = formatear_ticket_respuesta(
-                    "reclamo",
-                    ticket.nombre_vecino or "Vecino/a",
-                    ticket.detalles or ticket.pregunta or "",
-                    ticket.categoria,
-                    f"M-{ticket.nro_ticket}",
-                    contacto_especializado,
-                    base_chat_url,
-                    consulta_pin=ticket.consulta_pin,
+        elif estado_conversacion == ConversationState.ESPERANDO_PIN_TICKET.name:
+            pin = extract_pin(pregunta_str)
+            if pin:
+                payload = handle_ticket_lookup(
+                    contexto_municipio_actual.get('numero_ticket_consulta', ''),
+                    pin,
+                    contexto_municipio_actual,
+                    context.get("municipio_id"),
                 )
-                mensaje += f"\n\n🔔 *Estado actual:* {ticket.estado}"
-            else:
-                mensaje = (
-                    "No encontramos un ticket con ese número y PIN. Por favor, verifica los datos e intenta nuevamente."
-                )
-            final_payload = _message_with_menu(mensaje, context)
-            final_payload['fuente'] = 'handler_consultar_reclamo'
-            if botones:
-                final_payload['options_list'] = botones + final_payload.get('options_list', [])
-                final_payload['message_type'] = 'interactive_buttons'
-            return _finalize_response(final_payload)
+                if chat_db_context: flag_modified(chat_db_context, 'context_data')
+                return _finalize_response(payload)
+            return _finalize_response({"message_body": "El PIN debe tener *6 dígitos*. Probá de nuevo (ej: 734774)."})
         elif estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name:
             switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context)
             if switch_response:

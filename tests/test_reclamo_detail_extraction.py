@@ -69,3 +69,10 @@ def test_intersection_and_district_parsing():
     )
     assert details["direccion_sugerida"] == "Sarmiento 100 esquina San Martin"
     assert details["distrito_sugerido"] == "Junin Mendoza"
+
+
+def test_intersection_without_number_parsing():
+    details = extract_reclamo_details_from_text(
+        "Don Bosco esquina Sarmiento", ["Arbolado"]
+    )
+    assert details["direccion_sugerida"] == "Don Bosco esquina Sarmiento"
