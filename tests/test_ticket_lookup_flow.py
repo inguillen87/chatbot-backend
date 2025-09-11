@@ -68,7 +68,8 @@ def test_ticket_summary_has_links(monkeypatch, owner_user):
         descripcion = "Árbol caído en mi zona"
         estado_actual = "nuevo"
 
-    def fake_get(numero, pin):
+    def fake_get(numero, pin, municipio_id):
+        assert str(municipio_id) == str(owner_user.municipio_id)
         return Ticket()
 
     monkeypatch.setattr("services.municipio_responder.api_ticket_get", fake_get)
@@ -76,3 +77,13 @@ def test_ticket_summary_has_links(monkeypatch, owner_user):
     body = result.response["message_body"]
     assert "Junín Punto Limpio" in body
     assert "Ver mi Ticket" in body
+
+
+def test_invalid_ticket_pin(monkeypatch, owner_user):
+    def fake_get(numero, pin, municipio_id):
+        raise ValueError("Ticket no encontrado")
+
+    monkeypatch.setattr("services.municipio_responder.api_ticket_get", fake_get)
+    result = run_turn("111111", state="ESPERANDO_PIN_TICKET", numero="111111", owner_user=owner_user)
+    assert "No encontramos un ticket" in result.response["message_body"]
+    assert result.ctx["estado_conversacion"] == "ESPERANDO_PIN_TICKET"
