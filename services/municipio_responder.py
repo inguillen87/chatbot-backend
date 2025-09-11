@@ -189,9 +189,14 @@ def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
         coords = incoming["location"]
         lat = coords.get("lat") or coords.get("latitude")
         lng = coords.get("lng") or coords.get("longitude")
-        rev = reverse_geocode(lat, lng)
-        direccion = rev.get("display")
-        distrito = rev.get("localidad")
+        try:
+            rev = reverse_geocode(lat, lng)
+            direccion = rev.get("display")
+            distrito = rev.get("localidad")
+        except Exception as e:  # pragma: no cover - network failures
+            logger.warning("reverse_geocode failed for %s,%s: %s", lat, lng, e)
+            direccion = f"Lat: {lat}, Lon: {lng}"
+            distrito = None
         return {
             "ubicacion": direccion,
             "coordenadas": {"lat": lat, "lng": lng},
