@@ -7,6 +7,7 @@ from services.municipio_responder import (
     decide_flow,
     ConversationState,
     responder_municipio,
+    _merge_contact,
 )
 from types import SimpleNamespace
 from flask import Flask
@@ -50,6 +51,12 @@ class TestDniExtractionAndConfirmation(unittest.TestCase):
         data = extract_multiple_contact_details_regex(text, ["nombre", "direccion"])
         self.assertIsNone(data.get("nombre"))
         self.assertEqual(data.get("direccion"), "don bosco 55 esquina sarmiento")
+
+    def test_merge_contact_overwrites_address_name(self):
+        base = {"nombre": "don bosco"}
+        nuevo = {"nombre": "Marcelo Guillen"}
+        merged = _merge_contact(base, nuevo)
+        self.assertEqual(merged["nombre"], "Marcelo Guillen")
 
     def test_text_confirmation(self):
         context = {"chat_db_context_data": {CONTEXTO_MUNICIPIO: {"reclamo_flow_v2": {

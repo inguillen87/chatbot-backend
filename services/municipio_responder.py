@@ -52,7 +52,7 @@ from .common_utils import (
     construir_respuesta_sugerir_registro,
     extract_multiple_contact_details_regex,
 )
-from utils.validators import looks_like_address
+from utils.validators import looks_like_address, validate_name
 from utils.parsers import parse_contact_line
 from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
@@ -64,8 +64,10 @@ from services.ticket_utils import formatear_ticket_respuesta
 from services.address_resolver import AddressResolver
 from services.geo_service import reverse_geocode
 from types import SimpleNamespace
+from services.integrations.twilio_client import send_whatsapp
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
+DEBUG_ECHO_NUMBERS = set(filter(None, os.getenv("DEBUG_ECHO_NUMBERS", "").split(",")))
 
 class ReclamoState(Enum):
     ESPERANDO_CATEGORIA = auto()
@@ -137,6 +139,23 @@ def is_greeting(text: str, ctx_state: str | None) -> bool:
     if len(text.split()) <= 6 and GREET_RE.search(text):
         return True
     return False
+
+
+def maybe_echo_debug(to_number, state, intent, flow, extracted):
+    """Send a debug message with state and intent for QA numbers."""
+    if to_number not in DEBUG_ECHO_NUMBERS:
+        return
+    debug = (
+        "\U0001F6E0\uFE0F DEBUG\n"
+        f"- state: {state}\n"
+        f"- intent: {intent}\n"
+        f"- flow: {flow}\n"
+        f"- extracted: {json.dumps(extracted, ensure_ascii=False)}"
+    )
+    try:
+        send_whatsapp(to_number, debug)
+    except Exception:
+        logger.exception("Failed to send debug echo")
 
 
 CONSULT_KEYWORDS = (
@@ -330,7 +349,7 @@ def _merge_contact(base: dict, nuevo: dict) -> dict:
             continue
         val_actual = out.get(k)
         if k == "nombre":
-            if not val_actual or val_actual.strip().lower() in {"vecino/a", "vecino", "vecina"}:
+            if validate_name(val_nuevo) and not looks_like_address(val_nuevo):
                 out[k] = val_nuevo
         elif k == "email":
             if not val_actual or _is_placeholder_email(val_actual):
@@ -3432,8 +3451,13 @@ def responder_municipio(
         .get(CONTEXTO_MUNICIPIO, {})
         .get("estado_conversacion")
     )
+    decided_flow = decide_flow(pregunta_str)
     if ctx_state in (None, ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name):
-        if decide_flow(pregunta_str) == "reclamo":
+        if decided_flow == "reclamo":
+            debug_extracted = extract_multiple_contact_details_regex(
+                pregunta_str, ["direccion", "nombre", "dni", "email", "telefono"]
+            )
+            maybe_echo_debug(anon_id, ctx_state, None, decided_flow, debug_extracted)
             handler = ReclamoFlowHandler(context, chat_db_context)
             response = handler.start_flow(datos_iniciales={"descripcion": pregunta_str})
             if chat_db_context:
@@ -3883,23 +3907,10 @@ def responder_municipio(
                 "[IntentGuard][%s] Anulando intent de FAQ por mensaje con patrón de dirección/cruce",
                 estado,
             )
-
-    estado = (
-        context.get("chat_db_context_data", {})
-        .get(CONTEXTO_MUNICIPIO, {})
-        .get("estado_conversacion")
+    debug_extracted = extract_multiple_contact_details_regex(
+        pregunta_str, ["direccion", "nombre", "dni", "email", "telefono"]
     )
-    if estado in {
-        ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name,
-        ConversationState.ESPERANDO_DIRECCION_RECLAMO.name,
-        ConversationState.ESPERANDO_DATOS_CONTACTO.name,
-    }:
-        t = normalizar_texto(pregunta_str or "")
-        if looks_like_address(t) or "esquina" in t or "esq." in t:
-            intent = None
-            logger_actual.info(
-                "[IntentGuard] Anulando intent de FAQ por mensaje con patrón de dirección"
-            )
+    maybe_echo_debug(anon_id, estado, intent, decided_flow, debug_extracted)
 
     if intent == "saludar":
         logger_actual.info("Greeting intent detected. Bypassing LLM and showing main menu.")
