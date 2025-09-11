@@ -781,6 +781,7 @@ def extract_multiple_contact_details_regex(
         extract_name,
         extract_dni,
         validate_name,
+        looks_like_address,
     )
 
     extracted_data: dict[str, str] = {}
@@ -813,7 +814,16 @@ def extract_multiple_contact_details_regex(
         name_candidate = extract_name(remaining_text)
         if not name_candidate:
             tokens = remaining_text.split()
-            if len(tokens) >= 2:
+            address_prefixes = {
+                "calle", "avenida", "av", "av.", "ruta", "pasaje",
+                "diagonal", "don", "doña", "boulevard", "bulevar", "bv", "plaza"
+            }
+            cruces_con_y = re.search(r"\b[a-záéíóúñ]{3,}\s+y\s+[a-záéíóúñ]{3,}\b", remaining_text.lower())
+            if (
+                not cruces_con_y
+                and len(tokens) >= 2
+                and tokens[0].lower() not in address_prefixes
+            ):
                 candidate = " ".join(tokens[:2])
                 if validate_name(candidate):
                     name_candidate = candidate
@@ -860,5 +870,6 @@ def extract_multiple_contact_details_regex(
             candidate = " ".join(tokens[:2])
             if validate_name(candidate):
                 extracted_data["nombre"] = candidate
-
+    if "nombre" in extracted_data and looks_like_address(extracted_data["nombre"]):
+        extracted_data.pop("nombre")
     return extracted_data

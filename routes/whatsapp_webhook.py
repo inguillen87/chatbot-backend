@@ -23,6 +23,10 @@ from services.llm_utils import (
 )
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
+from services.media_analysis import (
+    analyze_image_from_url,
+    analyze_video_from_url,
+)
 from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.geo_service import reverse_geocode
 from services.openai_maps_service import geocodificar_inversa_llm
@@ -182,11 +186,21 @@ def whatsapp_webhook():
         post_vars["ubicacion_usuario"] = {"lat": coords["lat"], "lon": coords["lng"]}
         post_vars["location"] = coords
 
-    # Transcribir notas de voz o audios adjuntos
-    if request.form.get("MessageType") == "voice" or post_vars.get("NumMedia") == "1":
+    # Transcribir notas de voz o audios adjuntos (ignorar imágenes u otros medios)
+    message_type = request.form.get("MessageType", "")
+    media_content_type = request.form.get("MediaContentType0", "")
+    if (
+        transcribe_audio_from_url
+        and (
+            message_type in ("voice", "audio")
+            or media_content_type.startswith("audio/")
+        )
+    ):
         media_url = post_vars.get("MediaUrl0")
         if media_url and TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
-            transcript = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            transcript = transcribe_audio_from_url(
+                media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+            )
             if transcript:
                 body = post_vars.get("Body", "")
                 post_vars["Body"] = f"{body} {transcript}".strip()
@@ -388,7 +402,6 @@ def whatsapp_webhook():
 
             if media_content_type and media_content_type.startswith("audio/"):
                 session_context_db_entry.context_data['source_is_audio'] = True
-                from services.audio_transcription_service import transcribe_audio_from_url
                 # We pass the direct URL to the transcription service
                 transcribed_text = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
                 if transcribed_text:
@@ -567,8 +580,23 @@ def whatsapp_webhook():
         interpretacion_media_data = None
         if uploaded_file_info:
             mime_type = uploaded_file_info.get("mime_type", "")
-            if not mime_type.startswith("audio/"):
-                interpretacion_media_data = clasificar_adjunto_whatsapp(uploaded_file_info, client_user)
+            if mime_type.startswith("video/") and media_url:
+                interpretacion_media_data = analyze_video_from_url(
+                    media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+                )
+            elif not mime_type.startswith("audio/"):
+                interpretacion_media_data = clasificar_adjunto_whatsapp(
+                    uploaded_file_info, client_user
+                )
+        elif media_url and media_content_type:
+            if media_content_type.startswith("video/"):
+                interpretacion_media_data = analyze_video_from_url(
+                    media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+                )
+            elif media_content_type.startswith("image/"):
+                interpretacion_media_data = analyze_image_from_url(
+                    media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+                )
         # Location info should not be treated as interpreted media.
         # It should be passed directly as location data.
 
