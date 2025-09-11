@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, List
 
 import requests
 
-from services.location_service import NOMINATIM_USER_AGENT
+from services.location_service import NOMINATIM_USER_AGENT, geocode_address
 import logging
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ class AddressResolver:
     ``"san martin"`` for Junín).
     """
 
-    INTERSECTION_TOKENS = ["esquina", "esq", "y", "&", "/"]
+    INTERSECTION_TOKENS = ["esquina", "esq", "y", "e", "&", "/"]
     DISTRICT_KEYWORDS = ["distrito", "departamento", "dpto", "partido"]
 
     def __init__(self, municipio_config: Dict[str, Any]):
@@ -29,6 +29,8 @@ class AddressResolver:
         self.state = municipio_config.get("provincia")
         self.country = municipio_config.get("pais", "AR")
         self.bounds = municipio_config.get("bounds")
+        self.region_hint = municipio_config.get("region_hint")
+        self.locale = municipio_config.get("locale")
         self.conflicting = [
             self._normalize(n)
             for n in municipio_config.get("conflicting_jurisdicciones", [])
@@ -44,7 +46,7 @@ class AddressResolver:
 
     # Detect intersection
     def _parse_intersection(self, text: str) -> Optional[Dict[str, Any]]:
-        pattern = r"\b(?:esquina|esq\.?|y|&|/)\b"
+        pattern = r"\b(?:esquina|esq\.?|y|e|&|/)\b"
         if not re.search(pattern, text):
             return None
         parts = [p.strip() for p in re.split(pattern, text) if p.strip()]
@@ -56,7 +58,7 @@ class AddressResolver:
         number_hint = number_hint_match.group(0) if number_hint_match else None
         return {"streets": [street_a, street_b], "number_hint": number_hint}
 
-    # Geocoding using Nominatim with bounding box
+    # Geocoding using Nominatim with bounding box and Google fallback
     def _geocode(self, street_query: str) -> Optional[Dict[str, Any]]:
         url = "https://nominatim.openstreetmap.org/search"
         params = {
@@ -70,12 +72,49 @@ class AddressResolver:
             "bounded": 1,
         }
         headers = {"User-Agent": NOMINATIM_USER_AGENT}
-        resp = requests.get(url, params=params, headers=headers, timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
-        if not data:
-            return None
-        return data[0]
+        try:
+            resp = requests.get(url, params=params, headers=headers, timeout=5)
+            resp.raise_for_status()
+            data = resp.json()
+            if data:
+                item = data[0]
+                lat = float(item.get("lat"))
+                lon = float(item.get("lon"))
+                return {
+                    "lat": lat,
+                    "lon": lon,
+                    "display_name": item.get("display_name"),
+                    "maps_search_url": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+                }
+        except Exception as e:
+            logger.warning("Geocode via Nominatim failed for '%s': %s", street_query, e)
+
+        # Fallback multi-tenant (Google si hay key; si no, Nominatim sesgado)
+        try:
+            alt = geocode_address(
+                street_query,
+                geo_ctx={
+                    "city": self.city,
+                    "state": self.state,
+                    "country": self.country,
+                    "bounds": self.bounds,
+                    "region_hint": self.region_hint,
+                    "locale": self.locale,
+                },
+            )
+            if alt:
+                lat = alt.get("lat")
+                lon = alt.get("lng")
+                return {
+                    "lat": lat,
+                    "lon": lon,
+                    "display_name": alt.get("display_name"),
+                    "maps_search_url": alt.get("maps_search_url")
+                    or f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+                }
+        except Exception as e:
+            logger.error("Fallback geocode failed for '%s': %s", street_query, e)
+        return None
 
     def resolve(self, raw_address: str) -> Optional[Dict[str, Any]]:
         if not raw_address:
@@ -117,6 +156,8 @@ class AddressResolver:
                 "precision": "intersection",
                 "formatted": formatted,
                 "validez": validez,
+                "display_name": geo.get("display_name"),
+                "maps_search_url": geo.get("maps_search_url"),
             }
 
         # Single street with optional number (allow numeric street names)
@@ -151,6 +192,8 @@ class AddressResolver:
             "precision": precision,
             "formatted": formatted,
             "validez": validez,
+            "display_name": geo.get("display_name"),
+            "maps_search_url": geo.get("maps_search_url"),
         }
 
     def _within_bounds(self, lat: float, lon: float) -> bool:

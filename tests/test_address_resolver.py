@@ -34,6 +34,16 @@ def test_intersection_sarmiento_san_martin():
     assert "Sarmiento" in result["formatted"] and "San Martin" in result["formatted"]
 
 
+def test_intersection_with_e_connector():
+    resolver = AddressResolver(JUNIN_CONFIG)
+    with patch(
+        "services.address_resolver.requests.get", return_value=_fake_resp(-33.0, -68.5)
+    ):
+        result = resolver.resolve("Don Bosco e Sarmiento")
+    assert result["precision"] == "intersection"
+    assert result["entre_calles"] == ["Don Bosco", "Sarmiento"]
+
+
 def test_dynamic_municipio_config():
     config = {
         "ciudad": "Ciudad X",
@@ -58,3 +68,12 @@ def test_numeric_street_name():
         result = resolver.resolve("9 de julio 120")
     assert result["calle"] == "9 De Julio"
     assert result["numero"] == "120"
+
+
+def test_resolver_includes_maps_search_url():
+    resolver = AddressResolver(JUNIN_CONFIG)
+    with patch(
+        "services.address_resolver.requests.get", return_value=_fake_resp(-33.0, -68.5)
+    ):
+        result = resolver.resolve("Sarmiento 100 esquina San Martín")
+    assert result["maps_search_url"].startswith("https://www.google.com/maps/search/")
