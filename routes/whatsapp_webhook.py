@@ -185,10 +185,18 @@ def whatsapp_webhook():
     # Transcribir notas de voz o audios adjuntos (ignorar imágenes u otros medios)
     message_type = request.form.get("MessageType", "")
     media_content_type = request.form.get("MediaContentType0", "")
-    if message_type in ("voice", "audio") or media_content_type.startswith("audio/"):
+    if (
+        transcribe_audio_from_url
+        and (
+            message_type in ("voice", "audio")
+            or media_content_type.startswith("audio/")
+        )
+    ):
         media_url = post_vars.get("MediaUrl0")
         if media_url and TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
-            transcript = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            transcript = transcribe_audio_from_url(
+                media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+            )
             if transcript:
                 body = post_vars.get("Body", "")
                 post_vars["Body"] = f"{body} {transcript}".strip()
