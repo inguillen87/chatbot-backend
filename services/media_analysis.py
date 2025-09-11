@@ -31,12 +31,20 @@ def analyze_image_from_url(url: str, sid: str, token: str) -> Dict[str, Any]:
         vision = analyze_image_smart(raw)
         text = vision.get("text", "")
         details = _derive_details(text, "Foto adjunta de la situación.")
-        details.update({"evidence": "image", "text": text})
-        return details
+        return {
+            "es_reclamo": True,
+            "categoria_sugerida": details["category"],
+            "descripcion_sugerida": details["description"],
+            "texto_ocr": text,
+            "evidence": "image",
+            "text": text,
+        }
     except Exception as e:  # pragma: no cover - network or vision errors
         return {
-            "category": "Otros",
-            "description": "Foto adjunta de la situación.",
+            "es_reclamo": True,
+            "categoria_sugerida": "Otros",
+            "descripcion_sugerida": "Foto adjunta de la situación.",
+            "texto_ocr": "",
             "evidence": "image",
             "error": str(e),
         }
@@ -56,12 +64,20 @@ def analyze_video_from_url(url: str, sid: str, token: str) -> Dict[str, Any]:
         vision = analyze_image_smart(img_bytes)
         text = vision.get("text", "")
         details = _derive_details(text, "Video adjunto de la situación.")
-        details.update({"evidence": "video", "text": text})
-        return details
+        return {
+            "es_reclamo": True,
+            "categoria_sugerida": details["category"],
+            "descripcion_sugerida": details["description"],
+            "texto_ocr": text,
+            "evidence": "video",
+            "text": text,
+        }
     except Exception as e:  # pragma: no cover - fallback for missing deps
         return {
-            "category": "Otros",
-            "description": "Video adjunto de la situación.",
+            "es_reclamo": True,
+            "categoria_sugerida": "Otros",
+            "descripcion_sugerida": "Video adjunto de la situación.",
+            "texto_ocr": "",
             "evidence": "video",
             "error": str(e),
         }

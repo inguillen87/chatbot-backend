@@ -263,10 +263,8 @@ def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
 TICKET_RE = re.compile(
     r"""(?ix)
     (?:^|\b)
-    (?:n[°ºo]\s*[:\-#]?\s*|ticket\s*[:\-#]?\s*|reclamo\s*[:\-#]?\s*|m(?:unicipalidad)?\s*[:\-#]?\s*)?
-    (?:[m]\s*[- ]?)?
-    (?P<num>\d{5,8})
-    (?:\b|$)
+    (?:^|\b)(?:n[°ºo]|ticket|reclamo|nro|m(?:unicipalidad)?)\s*[:\-#]?\s*
+    (?:m\s*[- ]?)?(?P<num>\d{5,8})(?:\b|$)
     """
 )
 
@@ -281,7 +279,7 @@ def extract_ticket_number(text: str) -> str | None:
     m = TICKET_RE.search(text)
     if m:
         return m.group("num")
-    m = ONLY_DIGITS_RE.match(text)
+    m = ONLY_DIGITS_RE.match(text.strip())
     if m:
         return m.group("d")
     return None
@@ -551,6 +549,8 @@ class ReclamoFlowHandler:
     def start_flow(self, datos_iniciales=None, categoria_inicial=None):
         logger.info("Iniciando flujo de reclamo v2.")
         self.flow_context.clear()
+        self.municipal_ctx.pop("numero_ticket_consulta", None)
+        self.municipal_ctx["estado_conversacion"] = None
         self.flow_context['datos_reclamo'] = datos_iniciales or {}
 
         # Si la conversación comenzó con una foto (context['foto_url']) pero
