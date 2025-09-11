@@ -182,8 +182,10 @@ def whatsapp_webhook():
         post_vars["ubicacion_usuario"] = {"lat": coords["lat"], "lon": coords["lng"]}
         post_vars["location"] = coords
 
-    # Transcribir notas de voz o audios adjuntos
-    if request.form.get("MessageType") == "voice" or post_vars.get("NumMedia") == "1":
+    # Transcribir notas de voz o audios adjuntos (ignorar imágenes u otros medios)
+    message_type = request.form.get("MessageType", "")
+    media_content_type = request.form.get("MediaContentType0", "")
+    if message_type in ("voice", "audio") or media_content_type.startswith("audio/"):
         media_url = post_vars.get("MediaUrl0")
         if media_url and TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
             transcript = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
@@ -388,7 +390,6 @@ def whatsapp_webhook():
 
             if media_content_type and media_content_type.startswith("audio/"):
                 session_context_db_entry.context_data['source_is_audio'] = True
-                from services.audio_transcription_service import transcribe_audio_from_url
                 # We pass the direct URL to the transcription service
                 transcribed_text = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
                 if transcribed_text:
