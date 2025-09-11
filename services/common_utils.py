@@ -813,7 +813,11 @@ def extract_multiple_contact_details_regex(
         name_candidate = extract_name(remaining_text)
         if not name_candidate:
             tokens = remaining_text.split()
-            if len(tokens) >= 2:
+            address_prefixes = {
+                "calle", "avenida", "av", "av.", "ruta", "pasaje",
+                "diagonal", "don", "doña", "boulevard", "bulevar", "bv", "plaza"
+            }
+            if len(tokens) >= 2 and tokens[0].lower() not in address_prefixes:
                 candidate = " ".join(tokens[:2])
                 if validate_name(candidate):
                     name_candidate = candidate
