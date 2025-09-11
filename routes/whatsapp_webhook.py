@@ -6,6 +6,8 @@ import requests
 import io
 import json
 import threading
+import hashlib
+import time
 from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
 from extensions import db  # Import db instance for database operations
@@ -58,6 +60,24 @@ def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
         text = text[split_idx:].lstrip()
     parts.append(text)
     return parts
+
+
+def _media_sig(url: str) -> str:
+    return hashlib.md5(url.encode("utf-8")).hexdigest()
+
+
+def _should_send_media(ctx: dict, url: str, ttl: int = 300) -> bool:
+    if not url:
+        return False
+    sig = _media_sig(url)
+    last_sig = ctx.get("last_media_sig")
+    last_ts = ctx.get("last_media_ts", 0)
+    now = time.time()
+    if last_sig == sig and now - last_ts < ttl:
+        return False
+    ctx["last_media_sig"] = sig
+    ctx["last_media_ts"] = now
+    return True
 
 
 def deep_merge_dict(target: dict, source: dict) -> dict:
@@ -751,7 +771,8 @@ def whatsapp_webhook():
                     if image_url.startswith('/'):
                         base_url = request.url_root.rstrip('/')
                         image_url = f"{base_url}{image_url}"
-                    text_message_params['media_url'] = [image_url]
+                    if _should_send_media(session_context_db_entry.context_data, image_url):
+                        text_message_params['media_url'] = [image_url]
 
                 twilio_client.messages.create(**text_message_params)
 
@@ -765,8 +786,10 @@ def whatsapp_webhook():
                 if image_url_to_send and image_url_to_send.startswith('/'):
                     base_url = request.url_root.rstrip('/')
                     image_url_to_send = f"{base_url}{image_url_to_send}"
-                if image_url_to_send:
+                if image_url_to_send and _should_send_media(session_context_db_entry.context_data, image_url_to_send):
                     message_params['media_url'] = [image_url_to_send]
+                else:
+                    image_url_to_send = None
 
             current_app.logger.debug(f"Sending WhatsApp message params: {message_params}")
 
@@ -816,15 +839,6 @@ def whatsapp_webhook():
                 db.session.commit()
                 main_message = twilio_client.messages.create(**message_params)
                 print(f"Mensaje principal enviado a {from_number_raw}, SID: {main_message.sid}")
-
-                if image_url_to_send:
-                    image_message_params = {
-                        'from_': to_number_raw,
-                        'to': from_number_raw,
-                        'media_url': [image_url_to_send]
-                    }
-                    image_message = twilio_client.messages.create(**image_message_params)
-                    print(f"Imagen enviada a {from_number_raw}, SID: {image_message.sid}")
 
             # Second, if there is an audio URL, send it as a separate media message.
             audio_url = bot_response_dict.get('audio_url')
