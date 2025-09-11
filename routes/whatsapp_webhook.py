@@ -16,7 +16,9 @@ from utils.db_utils import safe_flag_modified
 from services.notifications import enviar_bienvenida_whatsapp
 from services.gcs_service import upload_to_gcs
 from services.attachment_service import create_attachment_with_thumbnail
-from services.llm_utils import extract_multiple_contact_details_llm
+from services.llm_utils import (
+    extract_multiple_contact_details_llm,
+)
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
 from utils.maps_utils import extraer_coordenadas_de_url_google_maps
@@ -34,6 +36,8 @@ webhook_bp = Blueprint('whatsapp_webhook', __name__)
 # chunks that comply with Twilio's limits and send them sequentially.
 
 MAX_TWILIO_BODY_LENGTH = 1600
+
+WHATSAPP_LLM_ENABLED = os.getenv("WHATSAPP_LLM_ENABLED", "false").lower() == "true"
 
 
 def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
@@ -144,7 +148,7 @@ def whatsapp_webhook():
 
     signature = request.headers.get("X-Twilio-Signature", "")
     url = request.url
-    post_vars = request.form.to_dict()
+    post_vars = request.form.to_dict(flat=True)
 
     if not validator.validate(url, post_vars, signature):
         abort(403, "Invalid Twilio signature")
@@ -294,12 +298,19 @@ def whatsapp_webhook():
         db.session.commit()
 
     # --- Message and Media Handling SECOND ---
-    media_url = post_vars.get("MediaUrl0")
+    num_media = int(post_vars.get("NumMedia", "0") or 0)
+    media_url = post_vars.get("MediaUrl0")  # TODO: soportar múltiples adjuntos
     media_content_type = post_vars.get("MediaContentType0")
     uploaded_file_info = None
     message_body = incoming_text
 
-    if media_url and media_content_type:
+    if num_media > 0 and media_url:
+        if not media_content_type:
+            lower_url = media_url.lower()
+            if lower_url.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
+                media_content_type = "image/*"
+            elif lower_url.endswith((".mp4", ".mov", ".avi", ".mkv", ".webm")):
+                media_content_type = "video/*"
         try:
             # Download the file from Twilio's URL first
             auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
@@ -328,6 +339,7 @@ def whatsapp_webhook():
                 uploaded_file_info = {
                     "id": adjunto.id,
                     "url": adjunto.url,
+                    "public_url": getattr(adjunto, "public_url", None),
                     "mime_type": adjunto.mime,
                     "name": adjunto.nombre_original,
                     "source": "whatsapp"
@@ -336,13 +348,15 @@ def whatsapp_webhook():
             else:
                 current_app.logger.error("create_attachment_with_thumbnail failed to process the WhatsApp media")
 
-            if media_content_type.startswith("audio/"):
+            if media_content_type and media_content_type.startswith("audio/"):
                 session_context_db_entry.context_data['source_is_audio'] = True
                 from services.audio_transcription_service import transcribe_audio_from_url
                 # We pass the direct URL to the transcription service
                 transcribed_text = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
                 if transcribed_text:
                     message_body = transcribed_text
+                    if uploaded_file_info is None:
+                        uploaded_file_info = {}
                     uploaded_file_info['transcribed_text'] = transcribed_text
                 else:
                     current_app.logger.warning("Audio transcription failed or returned empty.")
@@ -356,6 +370,14 @@ def whatsapp_webhook():
             current_app.logger.error(f"Error processing WhatsApp media file: {e}", exc_info=True)
             # Reset uploaded_file_info if processing fails
             uploaded_file_info = None
+        finally:
+            if media_content_type and media_content_type.startswith("image/"):
+                ctx = session_context_db_entry.context_data
+                ctx["es_foto"] = True
+                ctx["foto_url"] = (uploaded_file_info or {}).get("public_url") or (uploaded_file_info or {}).get("url") or media_url
+                safe_flag_modified(session_context_db_entry, "context_data")
+                db.session.add(session_context_db_entry)
+                db.session.commit()
     else:
         # If no media, ensure the flag is not present
         session_context_db_entry.context_data.pop('source_is_audio', None)
@@ -515,6 +537,9 @@ def whatsapp_webhook():
         kwargs_for_bot = {"source_channel": "whatsapp"}
         if uploaded_file_info:
             kwargs_for_bot["uploaded_file_info"] = uploaded_file_info
+        if num_media > 0 and media_url and media_content_type and media_content_type.startswith("image/"):
+            kwargs_for_bot["es_foto"] = True
+            kwargs_for_bot["foto_url"] = (uploaded_file_info or {}).get("public_url") or (uploaded_file_info or {}).get("url") or media_url
         if location_info:
             # Pass location_info and mark it explicitly as a location payload
             kwargs_for_bot["location"] = location_info
@@ -567,7 +592,9 @@ def whatsapp_webhook():
             # Extraer info del mensaje actual del usuario
             potential_fields = ["nombre_cliente", "telefono_cliente", "email_cliente"]
             current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracting {potential_fields} from: {message_body}")
-            extracted_data = extract_multiple_contact_details_llm(message_body, potential_fields)
+            extracted_data = extract_multiple_contact_details_llm(
+                message_body, potential_fields, use_llm=WHATSAPP_LLM_ENABLED
+            )
             current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracted: {extracted_data}")
 
             # Actualizar datos del reclamo con la info extraída

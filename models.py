@@ -52,9 +52,13 @@ class Sugerencia(db.Model):
 
 class User(db.Model, UserMixin):
     __tablename__ = "user"
+    __table_args__ = (
+        db.UniqueConstraint("empresa_id", "telefono", name="uq_user_empresa_telefono"),
+        db.Index("ix_user_empresa_telefono", "empresa_id", "telefono"),
+    )
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
-    email = db.Column(db.String(120), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=True)
     password_hash = db.Column(db.String(128), nullable=False)
     token = db.Column(db.String(255), nullable=True)
     rol = db.Column(db.String(30), default="usuario")
