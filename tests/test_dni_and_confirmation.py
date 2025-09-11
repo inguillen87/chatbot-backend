@@ -31,7 +31,7 @@ class TestDniExtractionAndConfirmation(unittest.TestCase):
         self.assertEqual(data.get("telefono"), "+2613168608")
 
     def test_enumerated_name_phone_city(self):
-        text = "1. Juan Perez\n2. +5491112345678\n3. CABA"
+        text = "1. Juan Perez\n2. 5491112345678\n3. CABA"
         data = extract_multiple_contact_details_regex(text)
         self.assertEqual(data.get("nombre"), "Juan Perez")
         self.assertEqual(data.get("telefono"), "+5491112345678")
@@ -108,6 +108,84 @@ class TestDniExtractionAndConfirmation(unittest.TestCase):
                         owner_user.rubro,
                         chat_db_context=chat_ctx,
                     )
+        self.assertIn('confirmá si los datos', resp['message_body'])
+        self.assertEqual(
+            chat_ctx.context_data[CONTEXTO_MUNICIPIO]['estado_conversacion'],
+            ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name,
+        )
+
+    def test_guard_cruce_con_y_avanza(self):
+        app = Flask(__name__)
+        owner_user = SimpleNamespace(id=1, municipio_id=1, rubro=SimpleNamespace(), tipo_chat='municipio')
+        chat_ctx = SimpleNamespace(
+            chat_session_id='test',
+            context_data={
+                CONTEXTO_MUNICIPIO: {
+                    'estado_conversacion': ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name,
+                    'datos_sugerencia': {
+                        'categoria': 'Sugerencia',
+                        'descripcion': 'desc',
+                        'nombre': 'Vecino',
+                        'dni': '123',
+                        'email': 'a@a.com',
+                    },
+                    'contacto_usuario': {
+                        'nombre': 'Vecino',
+                        'dni': '123',
+                        'email': 'a@a.com',
+                    },
+                }
+            },
+        )
+        with app.app_context():
+            with patch('services.municipio_responder.flag_modified', lambda *a, **k: None):
+                with patch('services.municipio_responder.extract_multiple_contact_details_llm', return_value={}):
+                    with patch('services.municipio_responder.intent_classifier.classify', return_value=({'categoria': 'horarios_municipio', 'respuesta': ''}, 50)):
+                        resp = responder_municipio(
+                            'don bosco y sarmiento',
+                            owner_user,
+                            owner_user.rubro,
+                            chat_db_context=chat_ctx,
+                        )
+        self.assertIn('confirmá si los datos', resp['message_body'])
+        self.assertEqual(
+            chat_ctx.context_data[CONTEXTO_MUNICIPIO]['estado_conversacion'],
+            ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name,
+        )
+
+    def test_guard_cruce_con_y_avanza_con_acentos(self):
+        app = Flask(__name__)
+        owner_user = SimpleNamespace(id=1, municipio_id=1, rubro=SimpleNamespace(), tipo_chat='municipio')
+        chat_ctx = SimpleNamespace(
+            chat_session_id='test',
+            context_data={
+                CONTEXTO_MUNICIPIO: {
+                    'estado_conversacion': ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name,
+                    'datos_sugerencia': {
+                        'categoria': 'Sugerencia',
+                        'descripcion': 'desc',
+                        'nombre': 'Vecino',
+                        'dni': '123',
+                        'email': 'a@a.com',
+                    },
+                    'contacto_usuario': {
+                        'nombre': 'Vecino',
+                        'dni': '123',
+                        'email': 'a@a.com',
+                    },
+                }
+            },
+        )
+        with app.app_context():
+            with patch('services.municipio_responder.flag_modified', lambda *a, **k: None):
+                with patch('services.municipio_responder.extract_multiple_contact_details_llm', return_value={}):
+                    with patch('services.municipio_responder.intent_classifier.classify', return_value=({'categoria': 'horarios_municipio', 'respuesta': ''}, 50)):
+                        resp = responder_municipio(
+                            'san martín y pérez',
+                            owner_user,
+                            owner_user.rubro,
+                            chat_db_context=chat_ctx,
+                        )
         self.assertIn('confirmá si los datos', resp['message_body'])
         self.assertEqual(
             chat_ctx.context_data[CONTEXTO_MUNICIPIO]['estado_conversacion'],

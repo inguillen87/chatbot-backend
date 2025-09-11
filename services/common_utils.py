@@ -818,7 +818,12 @@ def extract_multiple_contact_details_regex(
                 "calle", "avenida", "av", "av.", "ruta", "pasaje",
                 "diagonal", "don", "doña", "boulevard", "bulevar", "bv", "plaza"
             }
-            if len(tokens) >= 2 and tokens[0].lower() not in address_prefixes:
+            cruces_con_y = re.search(r"\b[a-záéíóúñ]{3,}\s+y\s+[a-záéíóúñ]{3,}\b", remaining_text.lower())
+            if (
+                not cruces_con_y
+                and len(tokens) >= 2
+                and tokens[0].lower() not in address_prefixes
+            ):
                 candidate = " ".join(tokens[:2])
                 if validate_name(candidate):
                     name_candidate = candidate
