@@ -130,6 +130,15 @@ class TicketServiceTests(unittest.TestCase):
         self.assertTrue(found_loc1, "Location (10.0, 20.0) with weight 2 not found")
         self.assertTrue(found_loc2, "Location (11.0, 21.0) with weight 1 not found")
 
+        # Non-grouped version should return each ticket separately
+        with patch.object(ts, 'MunicipioTicket', DummyModel):
+            service = ServicioTickets()
+            res_no_group = service.obtener_tickets_con_ubicacion_para_mapa(
+                tipo_ticket='municipio', municipio_id=5, agrupar=False
+            )
+        self.assertEqual(len(res_no_group), 3)
+        self.assertTrue(all('weight' not in r for r in res_no_group))
+
     def test_preserves_user_provided_phone_when_user_exists(self):
         service = ServicioTickets()
         class DummyCreator:

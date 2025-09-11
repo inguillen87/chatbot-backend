@@ -134,6 +134,18 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         if ubicacion_llm:
             ubicacion_llm = re.sub(r"[,\.;\s]+$", "", (ubicacion_llm or "").strip()).replace("  ", " ")
+            # Reunify address and district if the split is not clearly marked by comma/keyword
+            from utils.address_parse import split_ubicacion_y_distrito
+
+            combinado = f"{ubicacion_llm} {distrito_llm}".strip() if distrito_llm else ubicacion_llm
+            ubicacion_llm, distrito_detectado = split_ubicacion_y_distrito(combinado)
+            if distrito_llm:
+                if not distrito_detectado:
+                    # The original 'distrito' was actually part of the address
+                    distrito_llm = None
+                    ubicacion_llm = combinado
+            else:
+                distrito_llm = distrito_detectado
 
         if ubicacion_llm and not distrito_llm:
             logger.info(f"Attempting to parse district from address: {ubicacion_llm}")

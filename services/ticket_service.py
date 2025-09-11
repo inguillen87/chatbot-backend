@@ -368,11 +368,14 @@ class ServicioTickets:
         categoria: str | None = None,
         estado: str | None = None, # Nuevo parámetro de estado
         satisfactorio: bool | None = None,
+        agrupar: bool = True,
     ) -> list[dict]:
         """
-        Devuelve los tickets con ubicación, opcionalmente filtrados por estado,
-        agrupados por ubicación y con un peso (cantidad de tickets).
-        Permite filtrar por municipio/rubro, rango de fechas y categoría.
+        Devuelve los tickets con ubicación, opcionalmente filtrados por estado.
+        Si ``agrupar`` es True (por defecto), agrupa por ubicación y devuelve un
+        ``weight`` con la cantidad de tickets en esa coordenada. Si es False,
+        se devuelve cada ticket individual con sus metadatos básicos para que el
+        frontend pueda renderizarlos uno a uno.
         """
         Model = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
         try:
@@ -436,25 +439,28 @@ class ServicioTickets:
                 len(tickets),
             )
 
-            # El agrupamiento por ubicación y el cálculo de 'weight' permanecen igual.
-            # Si se desea devolver todos los puntos individualmente para que el frontend agrupe/clusterice:
-            # return [
-            #     {
-            #         "id": t.id, "lat": t.latitud, "lng": t.longitud, "estado": t.estado,
-            #         "asunto": t.asunto, "nro_ticket": t.nro_ticket, "categoria": t.categoria
-            #     } for t in tickets
-            # ]
-            # Por ahora, mantendremos la agrupación existente que devuelve 'weight'.
+            if not agrupar:
+                resultado = [
+                    {
+                        "id": t.id,
+                        "location": {"lat": t.latitud, "lng": t.longitud},
+                        "estado": t.estado,
+                        "asunto": getattr(t, "asunto", None),
+                        "nro_ticket": getattr(t, "nro_ticket", None),
+                        "categoria": getattr(t, "categoria", None),
+                    }
+                    for t in tickets
+                ]
+                logger.info(
+                    "[TICKET_SERVICE_MAPA] puntos_individuales=%s",
+                    len(resultado),
+                )
+                return resultado
 
             ubicaciones_agrupadas = {}  # (lat, lng, categoria) -> count
 
             for t in tickets:
                 # Redondear lat/lng a un número de decimales para agrupar puntos cercanos.
-                # Ajustar el número de decimales según la precisión deseada.
-                # 5 decimales dan una precisión de ~1.1 metros.
-                # 4 decimales dan una precisión de ~11 metros.
-                # 3 decimales dan una precisión de ~110 metros.
-                # Consideremos 4 decimales para agrupar problemáticas en una misma "zona pequeña".
                 lat_lng_key = (
                     round(t.latitud, 4),
                     round(t.longitud, 4),
