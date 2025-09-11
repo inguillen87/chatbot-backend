@@ -32,7 +32,7 @@ def sanitize_for_tts(raw: str) -> str:
     return " ".join(cleaned.split())
 
 
-def generar_audio_con_fallback(text: str) -> str | None:
+def generar_audio_con_fallback(text: str, channel: str | None = None) -> str | None:
     """
     Generates audio from text using a fallback mechanism.
     It tries OpenAI first, luego Cohere y finalmente Google.
@@ -43,7 +43,14 @@ def generar_audio_con_fallback(text: str) -> str | None:
     Returns:
         str: The public URL path to the generated audio file, or None if all providers fail.
     """
+    if channel == "whatsapp":
+        policy = os.getenv("WHATSAPP_TTS_POLICY", "auto").lower()
+        if policy == "off":
+            return None
+
     text = sanitize_for_tts(text)
+    if len(text) > 500:
+        text = text[:500]
     logger.info(f"TTS Orchestrator: Attempting to generate audio for text: '{text[:50]}...'")
 
     cache_dir = "static/audio_cache"

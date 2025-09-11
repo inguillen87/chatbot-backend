@@ -19,6 +19,7 @@ from utils.db_utils import safe_flag_modified
 # Compatibilidad hacia atrás para pruebas que parchean `flag_modified`
 flag_modified = safe_flag_modified
 import hashlib
+import time
 
 logger = logging.getLogger(__name__)
 from twilio.rest import Client
@@ -133,6 +134,10 @@ def _need_any_contact(datos: dict) -> bool:
 
 def _merge_contact(base: dict, nuevo: dict) -> dict:
     out = dict(base or {})
+
+    def _is_placeholder_email(value: str | None) -> bool:
+        return bool(value and value.endswith("@whatsapp.chatboc.com"))
+
     for k in CONTACT_FIELDS:
         val_nuevo = nuevo.get(k)
         if not val_nuevo:
@@ -140,6 +145,9 @@ def _merge_contact(base: dict, nuevo: dict) -> dict:
         val_actual = out.get(k)
         if k == "nombre":
             if not val_actual or val_actual.strip().lower() in {"vecino/a", "vecino", "vecina"}:
+                out[k] = val_nuevo
+        elif k == "email":
+            if not val_actual or _is_placeholder_email(val_actual):
                 out[k] = val_nuevo
         else:
             if not val_actual:
@@ -169,12 +177,21 @@ def pedir_datos_contacto_compacto():
     }
 
 
-def procesar_datos_contacto_compacto(texto: str, datos_existentes: dict) -> dict:
+def procesar_datos_contacto_compacto(
+    texto: str, datos_existentes: dict, channel: str | None = None
+) -> dict:
     parsed = _parse_contact_compact_text(texto)
     datos = _merge_contact(datos_existentes, parsed)
-    if _need_any_contact(datos):
+    usar_llm = (
+        _need_any_contact(datos)
+        and channel != "whatsapp"
+        or os.getenv("WHATSAPP_LLM_ENABLED", "false").lower() == "true"
+    )
+    if usar_llm:
         try:
-            llm = extract_multiple_contact_details_llm(texto)
+            llm = extract_multiple_contact_details_llm(
+                texto, ["nombre", "email", "telefono", "dni", "direccion"]
+            )
             datos = _merge_contact(
                 datos,
                 {
@@ -408,8 +425,8 @@ class ReclamoFlowHandler:
             self.context['foto_url'] = foto_url
             return self.ask_for_contact_details()
 
-        no_words = {"no", "omitir", "omitilo", "sin foto", "ninguna"}
-        yes_words = {"si", "sí", "enviar", "adjunto", "mandar"}
+        no_words = {"no", "omitir", "omitilo", "sin foto", "ninguna", "2"}
+        yes_words = {"si", "sí", "enviar", "adjunto", "mandar", "1"}
 
         if any(w in normalized for w in no_words) or action == "reclamo_adjuntar_foto_no":
             self.flow_context['datos_reclamo']['foto_url'] = None
@@ -417,8 +434,13 @@ class ReclamoFlowHandler:
         elif any(w in normalized for w in yes_words) or action == "reclamo_adjuntar_foto_si":
             return {"message_body": "Por favor, enviá la foto ahora."}
         else:
+            intentos = self.flow_context.setdefault('foto_intentos', 0) + 1
+            self.flow_context['foto_intentos'] = intentos
+            if intentos >= 2:
+                self.flow_context['datos_reclamo']['foto_url'] = None
+                return self.ask_for_contact_details()
             return {
-                "message_body": "No entendí tu respuesta. Por favor, enviá una foto o elegí una de las opciones.",
+                "message_body": "No entendí tu respuesta. Si tenés foto, enviála ahora; si no, elegí 'Omitir'.",
                 "options_list": [{"texto": "Omitir foto", "action_id": "reclamo_adjuntar_foto_no"}],
             }
 
@@ -437,9 +459,14 @@ class ReclamoFlowHandler:
 
     def handle_datos_contacto(self, user_input):
         datos_reclamo = self.flow_context.setdefault('datos_reclamo', {})
-        nuevos = procesar_datos_contacto_compacto(user_input, datos_reclamo)
-        self.flow_context['datos_reclamo'] = nuevos
-        resumen = _format_contact_summary(nuevos)
+        nuevos = procesar_datos_contacto_compacto(
+            user_input, datos_reclamo, channel=self.context.get("channel")
+        )
+        datos_reclamo.update({k: v for k, v in nuevos.items() if v})
+        self.flow_context['datos_reclamo'] = datos_reclamo
+        contacto_prev = self.municipal_ctx.get('contacto_usuario', {})
+        self.municipal_ctx['contacto_usuario'] = _merge_contact(contacto_prev, nuevos)
+        resumen = _format_contact_summary(self.municipal_ctx['contacto_usuario'])
         self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
         return {
             "message_body": f"Perfecto, tomé estos datos:\n{resumen}\n\n¿Confirmás?",
@@ -486,10 +513,29 @@ class ReclamoFlowHandler:
                 "telefono": datos.get("telefono"),
                 "foto_url_adjunta": datos.get("foto_url"),
             }
+            cache = self.municipal_ctx.setdefault('ticket_cache', {})
+            payload_hash = hashlib.sha256(
+                json.dumps(action_data, sort_keys=True).encode()
+            ).hexdigest()
+            now = time.time()
+            entry = cache.get('entry')
+            if entry and entry.get('hash') == payload_hash and now - entry.get('ts', 0) < 300:
+                nro_ticket = entry.get('ticket')
+                message = f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{nro_ticket}*. Te mantendremos informado sobre el estado del mismo por este medio."
+                message += (
+                    "\n\n¿Sabías que estamos trabajando para una Junín más limpia?\n"
+                    "Planta de recolección, reciclaje y elaboración de productos sustentables.\n"
+                    "Ladrillos, tejas, postes, mangueras, impresión 3D, luminarias LED y paneles solares.\n"
+                    "Más info: https://www.juninmendoza.gov.ar/punto-limpio/"
+                )
+                punto_limpio_logo = "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png"
+                return self.end_flow(message, show_menu=True, image_url=punto_limpio_logo)
+
             handler = CrearReclamoActionHandler(self.context)
             result = _execute_crear_reclamo(handler, action_data, self.municipal_ctx)
             if result.get("success"):
                 nro_ticket = result.get("data", {}).get("nro_ticket")
+                cache['entry'] = {'hash': payload_hash, 'ts': now, 'ticket': nro_ticket}
                 message = result.get(
                     "message_to_user",
                     f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{nro_ticket}*. Te mantendremos informado sobre el estado del mismo por este medio.",
@@ -1412,7 +1458,14 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
         user_input = context.get("user_input_raw", "")
         reclamo_opts = _get_reclamos_menu().get("options_list", [])
-        details = extract_reclamo_details_from_text(user_input, reclamo_opts)
+        details = extract_reclamo_details_from_text(
+            user_input,
+            reclamo_opts,
+            use_llm=(
+                context.get("channel") != "whatsapp"
+                or os.getenv("WHATSAPP_LLM_ENABLED", "false").lower() == "true"
+            ),
+        )
         detected_category = details.pop("categoria_sugerida", None)
         handler = ReclamoFlowHandler(context, chat_db_context)
         if detected_category:
@@ -3344,7 +3397,14 @@ def responder_municipio(
     if not contexto_municipio_actual.get("estado_conversacion"):
         reclamo_options = _get_reclamos_menu().get("options_list", [])
         plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
-        details = extract_reclamo_details_from_text(pregunta_str, plain_text_options)
+        details = extract_reclamo_details_from_text(
+            pregunta_str,
+            plain_text_options,
+            use_llm=(
+                context.get("channel") != "whatsapp"
+                or os.getenv("WHATSAPP_LLM_ENABLED", "false").lower() == "true"
+            ),
+        )
         detected_category = details.pop("categoria_sugerida", None)
         if detected_category:
             handler = ReclamoFlowHandler(context, chat_db_context)
@@ -3552,7 +3612,14 @@ def responder_municipio(
                             break
                 if not selected_category_name:
                     plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
-                    details = extract_reclamo_details_from_text(pregunta_str_reclamo, plain_text_options)
+                    details = extract_reclamo_details_from_text(
+                        pregunta_str_reclamo,
+                        plain_text_options,
+                        use_llm=(
+                            context.get("channel") != "whatsapp"
+                            or os.getenv("WHATSAPP_LLM_ENABLED", "false").lower() == "true"
+                        ),
+                    )
                     selected_category_name = details.pop("categoria_sugerida", None)
 
             if selected_category_name:
@@ -3624,7 +3691,9 @@ def responder_municipio(
             datos_prev = contexto_municipio_actual.get('datos_parciales_llm_reclamo', {})
             contacto_prev = contexto_municipio_actual.get('contacto_usuario', {})
             raw_contact = context.get('user_input_raw') or pregunta_str
-            nuevos = procesar_datos_contacto_compacto(raw_contact, contacto_prev)
+            nuevos = procesar_datos_contacto_compacto(
+                raw_contact, contacto_prev, channel=context.get("channel")
+            )
             contexto_municipio_actual['contacto_usuario'] = nuevos
             if _need_any_contact(nuevos):
                 faltan = [k for k in CONTACT_FIELDS if not nuevos.get(k)]
@@ -4159,7 +4228,14 @@ def responder_municipio(
         details = {}
         if not selected_category_name:
             plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
-            details = extract_reclamo_details_from_text(pregunta_str_reclamo, plain_text_options)
+            details = extract_reclamo_details_from_text(
+                pregunta_str_reclamo,
+                plain_text_options,
+                use_llm=(
+                    context.get("channel") != "whatsapp"
+                    or os.getenv("WHATSAPP_LLM_ENABLED", "false").lower() == "true"
+                ),
+            )
             selected_category_name = details.pop("categoria_sugerida", None)
 
         if selected_category_name:

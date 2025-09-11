@@ -709,14 +709,14 @@ def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> O
 
     nuevo_usuario = models.User(
         telefono=phone_number,
-        email=f"{phone_number}@whatsapp.chatboc.com", # Email de marcador de posición
+        email=None,  # No autogenerar emails ficticios para usuarios de WhatsApp
         rubro_id=owner_user.rubro_id,
         empresa_id=owner_user.id,
         rol='usuario',
         tipo_chat=owner_user.tipo_chat,
         plan='gratis',
-        acepto_terminos=True, # Asumimos aceptación para que el sistema funcione
-        fecha_aceptacion_terminos=datetime.utcnow()
+        acepto_terminos=True,  # Asumimos aceptación para que el sistema funcione
+        fecha_aceptacion_terminos=datetime.utcnow(),
     )
     nuevo_usuario.name = "Vecino/a"
     nuevo_usuario.set_password(str(uuid.uuid4())) # Contraseña aleatoria y segura
