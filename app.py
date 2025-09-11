@@ -2,6 +2,13 @@
 import os
 import sys
 import logging
+import time
+
+os.environ.setdefault("TZ", "America/Argentina/Buenos_Aires")
+try:
+    time.tzset()
+except Exception:
+    pass
 
 # --- Modo "solo migraciones" para que Alembic no cargue nada pesado ---
 MIGRATIONS_ONLY = os.getenv("FLASK_MIGRATIONS_ONLY") == "1"

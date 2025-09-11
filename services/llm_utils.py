@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 from typing import Dict, List, Any, Optional # Added Optional
 from utils.validators import (
@@ -13,6 +14,8 @@ try:
     from services.google_vision_service import VISION_CLIENT
 except Exception:  # pragma: no cover - optional dependency
     VISION_CLIENT = None
+
+WHATSAPP_LLM_ENABLED = os.getenv("WHATSAPP_LLM_ENABLED", "false").lower() == "true"
 
 # Intenta importar errores específicos de Cohere.
 # El nombre exacto puede variar según la versión de la librería 'cohere'.
@@ -216,24 +219,30 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
     )
 
     extracted_data = {}
-    try:
-        response_content = robust_chat(message=prompt) # Removed model_override
-        if response_content:
-            cleaned_response = _clean_llm_json_output(response_content)
-            if cleaned_response:
-                extracted_data = json.loads(cleaned_response)
-                # Ensure only requested fields are returned
-                extracted_data = {k: v for k, v in extracted_data.items() if k in potential_fields and v}
+    if WHATSAPP_LLM_ENABLED:
+        try:
+            response_content = robust_chat(message=prompt)
+            if response_content:
+                cleaned_response = _clean_llm_json_output(response_content)
+                if cleaned_response:
+                    extracted_data = json.loads(cleaned_response)
+                    extracted_data = {k: v for k, v in extracted_data.items() if k in potential_fields and v}
+                else:
+                    logger.info(
+                        f"[LLM_CONTACT_EXTRACT] LLM response was empty after cleaning for text: {text}"
+                    )
             else:
-                logger.info(f"[LLM_CONTACT_EXTRACT] LLM response was empty after cleaning for text: {text}")
-        else:
-            logger.info(f"[LLM_CONTACT_EXTRACT] LLM returned empty response for text: {text}")
-
-    except json.JSONDecodeError as e:
-        logger.error(f"[LLM_CONTACT_EXTRACT] JSONDecodeError parsing LLM response: {e}. Response: '{response_content}' for text: '{text}'")
-        # Optionally, try a more lenient parsing or regex for simple cases if JSON fails often
-    except Exception as e:
-        logger.error(f"[LLM_CONTACT_EXTRACT] Error in extract_multiple_contact_details_llm: {e} for text: '{text}'")
+                logger.info(
+                    f"[LLM_CONTACT_EXTRACT] LLM returned empty response for text: {text}"
+                )
+        except json.JSONDecodeError as e:
+            logger.info(
+                f"[LLM_CONTACT_EXTRACT] Unable to parse LLM response; using heuristics. Response: '{response_content}' for text: '{text}'. Error: {e}"
+            )
+        except Exception as e:
+            logger.error(
+                f"[LLM_CONTACT_EXTRACT] Error in extract_multiple_contact_details_llm: {e} for text: '{text}'"
+            )
 
     # Fallback heuristics for fields not provided by LLM
     for field in potential_fields:
@@ -279,6 +288,9 @@ def extract_complaint_details_llm(text: str, default_localidad: str | None = Non
         "dni_usuario").  Returns an empty dictionary on error.
     """
     if not text:
+        return {}
+
+    if not WHATSAPP_LLM_ENABLED:
         return {}
 
     location_context_instruction = ""

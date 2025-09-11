@@ -100,7 +100,7 @@ class User(db.Model, UserMixin):
     empresa = db.relationship('User', remote_side=[id], backref='clientes')
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
     rubro = db.relationship("Rubro", backref="usuarios")
-    prefers_audio = db.Column(db.Boolean, default=False)
+    prefers_audio = db.Column(db.Boolean, nullable=True)
     accesibilidad = db.Column(JSONType, nullable=True)
     catalogo_items = db.relationship('CatalogoItem', backref='user', lazy=True)
     catalogo_embeddings = db.relationship('CatalogoEmbedding', backref='user', lazy=True)

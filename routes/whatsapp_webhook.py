@@ -294,12 +294,13 @@ def whatsapp_webhook():
         db.session.commit()
 
     # --- Message and Media Handling SECOND ---
+    num_media = int(post_vars.get("NumMedia", "0") or 0)
     media_url = post_vars.get("MediaUrl0")
     media_content_type = post_vars.get("MediaContentType0")
     uploaded_file_info = None
     message_body = incoming_text
 
-    if media_url and media_content_type:
+    if num_media > 0 and media_url and media_content_type:
         try:
             # Download the file from Twilio's URL first
             auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
@@ -356,6 +357,14 @@ def whatsapp_webhook():
             current_app.logger.error(f"Error processing WhatsApp media file: {e}", exc_info=True)
             # Reset uploaded_file_info if processing fails
             uploaded_file_info = None
+        finally:
+            if media_content_type.startswith("image/"):
+                ctx = session_context_db_entry.context_data
+                ctx["es_foto"] = True
+                ctx["foto_url"] = media_url
+                safe_flag_modified(session_context_db_entry, "context_data")
+                db.session.add(session_context_db_entry)
+                db.session.commit()
     else:
         # If no media, ensure the flag is not present
         session_context_db_entry.context_data.pop('source_is_audio', None)
@@ -515,6 +524,9 @@ def whatsapp_webhook():
         kwargs_for_bot = {"source_channel": "whatsapp"}
         if uploaded_file_info:
             kwargs_for_bot["uploaded_file_info"] = uploaded_file_info
+        if num_media > 0 and media_url and media_content_type and media_content_type.startswith("image/"):
+            kwargs_for_bot["es_foto"] = True
+            kwargs_for_bot["foto_url"] = media_url
         if location_info:
             # Pass location_info and mark it explicitly as a location payload
             kwargs_for_bot["location"] = location_info

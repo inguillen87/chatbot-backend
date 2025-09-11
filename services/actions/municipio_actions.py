@@ -226,13 +226,20 @@ class CrearReclamoActionHandler(BaseActionHandler):
              telefono_final = formatear_telefono_e164(str(viewer_user.telefono))
 
 
-        email_from_llm = (action_data.get("email") or datos_parciales.get("email") or
-                          action_data.get("email_detectado") or datos_parciales.get("email_detectado"))
+        email_from_llm = (
+            action_data.get("email")
+            or datos_parciales.get("email")
+            or action_data.get("email_detectado")
+            or datos_parciales.get("email_detectado")
+        )
         email_final = None
+        viewer_email = getattr(viewer_user, "email", None) if viewer_user else None
+        if viewer_email and viewer_email.endswith("@whatsapp.chatboc.com"):
+            viewer_email = None
         if email_from_llm and validar_email(email_from_llm):
             email_final = email_from_llm.lower()
-        elif viewer_user and getattr(viewer_user, "email", None) and validar_email(str(viewer_user.email)):
-            email_final = str(viewer_user.email).lower()
+        elif viewer_email and validar_email(str(viewer_email)):
+            email_final = str(viewer_email).lower()
 
         dni_from_llm = action_data.get("dni") or datos_parciales.get("dni")
         dni_final = None
@@ -256,7 +263,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
         nombre_final = datos_parciales.get("nombre") or contacto_ctx.get("nombre") or nombre_vecino_final
         nombre_final = sanitize_contact_name(nombre_final)
         telefono_final = telefono_final or contacto_ctx.get("telefono")
-        email_final = email_final or contacto_ctx.get("email")
+        contacto_email = contacto_ctx.get("email")
+        if contacto_email and contacto_email.endswith("@whatsapp.chatboc.com"):
+            contacto_email = None
+        email_final = email_final or contacto_email
         dni_final = dni_final or contacto_ctx.get("dni")
 
         logger.info(f"CONTACT_CTX: {contacto_ctx}")
