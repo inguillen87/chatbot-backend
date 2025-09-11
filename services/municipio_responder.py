@@ -182,15 +182,14 @@ def procesar_datos_contacto_compacto(
 ) -> dict:
     parsed = _parse_contact_compact_text(texto)
     datos = _merge_contact(datos_existentes, parsed)
-    usar_llm = (
-        _need_any_contact(datos)
-        and channel != "whatsapp"
-        or os.getenv("WHATSAPP_LLM_ENABLED", "false").lower() == "true"
-    )
+    flag_llm = os.getenv("WHATSAPP_LLM_ENABLED", "false").lower() == "true"
+    usar_llm = _need_any_contact(datos) and (channel != "whatsapp" or flag_llm)
     if usar_llm:
         try:
             llm = extract_multiple_contact_details_llm(
-                texto, ["nombre", "email", "telefono", "dni", "direccion"]
+                texto,
+                ["nombre", "email", "telefono", "dni", "direccion"],
+                use_llm=True,
             )
             datos = _merge_contact(
                 datos,
