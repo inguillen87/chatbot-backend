@@ -8,7 +8,7 @@ if project_root_logic not in sys.path:
     sys.path.insert(0, project_root_logic)
 
 from flask import current_app
-from models import db
+from extensions import db
 from services.interpretacion_service import interpretacion_service
 from services.archivo_service import archivo_service
 # servicio_tickets se importa/usa en los handlers específicos (municipios.py, pymes.py)
@@ -372,8 +372,7 @@ def responder_chatboc(
         if is_menu and not pref_audio and reason not in {'pedido_usuario', 'forzado'}:
             generar_audio = False
             reason = None
-        if response_data.get('generar_audio') is None:
-            response_data['generar_audio'] = generar_audio
+        response_data['generar_audio'] = generar_audio
         if generar_audio:
             logger.info(f"tts_sent=true reason={reason}")
         else:
@@ -395,7 +394,11 @@ def responder_chatboc(
             text_to_speak = f"{base_text}\n{text_to_speak}"
         if text_to_speak:
             from services.tts_orchestrator import generar_audio_con_fallback
-            audio_url = generar_audio_con_fallback(text_to_speak, channel=channel)
+            audio_url = generar_audio_con_fallback(
+                text_to_speak,
+                channel=channel,
+                allow_if_policy_off=policy == 'off',
+            )
             if audio_url:
                 response_data['audio_url'] = audio_url
                 logger.info(f"Generated audio response at {audio_url}")

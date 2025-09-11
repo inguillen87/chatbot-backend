@@ -187,7 +187,11 @@ def _close_open_json_structures(json_str: str) -> str:
 
     return json_str
 
-def extract_multiple_contact_details_llm(text: str, potential_fields: List[str]) -> Dict[str, Any]:
+def extract_multiple_contact_details_llm(
+    text: str,
+    potential_fields: List[str],
+    use_llm: bool = True,
+) -> Dict[str, Any]:
     """
     Uses an LLM to extract multiple contact details from a given text.
 
@@ -219,7 +223,8 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
     )
 
     extracted_data = {}
-    if WHATSAPP_LLM_ENABLED:
+    # LLM usage is controlled per call; callers pass use_llm=False to skip the model
+    if use_llm:
         try:
             response_content = robust_chat(message=prompt)
             if response_content:
@@ -271,7 +276,12 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
 
     return extracted_data
 
-def extract_complaint_details_llm(text: str, default_localidad: str | None = None, default_provincia: str | None = None) -> Dict[str, str]:
+def extract_complaint_details_llm(
+    text: str,
+    default_localidad: str | None = None,
+    default_provincia: str | None = None,
+    use_llm: bool = True,
+) -> Dict[str, str]:
     """
     Uses an LLM to extract key details from a user's complaint message,
     considering default location context.
@@ -290,7 +300,7 @@ def extract_complaint_details_llm(text: str, default_localidad: str | None = Non
     if not text:
         return {}
 
-    if not WHATSAPP_LLM_ENABLED:
+    if not use_llm:
         return {}
 
     location_context_instruction = ""

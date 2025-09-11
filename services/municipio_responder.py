@@ -182,15 +182,14 @@ def procesar_datos_contacto_compacto(
 ) -> dict:
     parsed = _parse_contact_compact_text(texto)
     datos = _merge_contact(datos_existentes, parsed)
-    usar_llm = (
-        _need_any_contact(datos)
-        and channel != "whatsapp"
-        or os.getenv("WHATSAPP_LLM_ENABLED", "false").lower() == "true"
-    )
+    flag_llm = os.getenv("WHATSAPP_LLM_ENABLED", "false").lower() == "true"
+    usar_llm = _need_any_contact(datos) and (channel != "whatsapp" or flag_llm)
     if usar_llm:
         try:
             llm = extract_multiple_contact_details_llm(
-                texto, ["nombre", "email", "telefono", "dni", "direccion"]
+                texto,
+                ["nombre", "email", "telefono", "dni", "direccion"],
+                use_llm=True,
             )
             datos = _merge_contact(
                 datos,
@@ -463,7 +462,8 @@ class ReclamoFlowHandler:
             user_input, datos_reclamo, channel=self.context.get("channel")
         )
         datos_reclamo.update({k: v for k, v in nuevos.items() if v})
-        self.flow_context['datos_reclamo'] = datos_reclamo
+        if datos_reclamo.get('email', '').endswith('@whatsapp.chatboc.com'):
+            datos_reclamo['email'] = None
         contacto_prev = self.municipal_ctx.get('contacto_usuario', {})
         self.municipal_ctx['contacto_usuario'] = _merge_contact(contacto_prev, nuevos)
         resumen = _format_contact_summary(self.municipal_ctx['contacto_usuario'])
