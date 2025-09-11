@@ -158,10 +158,12 @@ def municipal_tickets_map_data(current_user):
         return jsonify({"error": "Usuario no asociado a un municipio"}), 400
 
     estado = request.args.get("estado")
+    distrito = request.args.get("distrito")
     tickets_con_ubicacion = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
         tipo_ticket="municipio",
         municipio_id=municipio_id_del_admin,
         estado=estado,
+        distrito=distrito,
     )
     return jsonify(tickets_con_ubicacion)
 
