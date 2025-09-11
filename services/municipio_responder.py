@@ -2121,6 +2121,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         accion_backend_llm = respuesta_llm_dict.get("accion_backend")
         datos_estructura_llm = respuesta_llm_dict.get("datos_estructura")
         pedir_info_llm = respuesta_llm_dict.get("pedir_info")
+        if isinstance(pedir_info_llm, list):
+            pedir_info_llm = pedir_info_llm[0] if pedir_info_llm else None
         if isinstance(pedir_info_llm, str) and "," in pedir_info_llm:
             pedir_info_llm = [p.strip() for p in pedir_info_llm.split(",") if p.strip()]
         botones_llm = respuesta_llm_dict.get("botones", [])
@@ -2390,13 +2392,14 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
             # State transition logic based on 'pedir_info'
             if pedir_info_llm:
-                next_state_obj = PEDIR_INFO_TO_STATE.get(pedir_info_llm)
+                key_lookup = pedir_info_llm[0] if isinstance(pedir_info_llm, list) else pedir_info_llm
+                next_state_obj = PEDIR_INFO_TO_STATE.get(key_lookup)
                 if next_state_obj:
                     contexto_municipio_actual["estado_conversacion"] = next_state_obj.name
                 else:
                     # Fallback if a new 'pedir_info' value isn't in our map
                     contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-                contexto_municipio_actual["esperando_info_llm"] = pedir_info_llm
+                contexto_municipio_actual["esperando_info_llm"] = key_lookup
             else:
                 # If no more info is needed, decide what to do
                 if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
