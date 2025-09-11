@@ -781,6 +781,7 @@ def extract_multiple_contact_details_regex(
         extract_name,
         extract_dni,
         validate_name,
+        looks_like_address,
     )
 
     extracted_data: dict[str, str] = {}
@@ -864,5 +865,6 @@ def extract_multiple_contact_details_regex(
             candidate = " ".join(tokens[:2])
             if validate_name(candidate):
                 extracted_data["nombre"] = candidate
-
+    if "nombre" in extracted_data and looks_like_address(extracted_data["nombre"]):
+        extracted_data.pop("nombre")
     return extracted_data
