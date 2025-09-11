@@ -41,7 +41,7 @@ class MunicipalTicketsMapDataRouteTest(unittest.TestCase):
             resp = self.muni.municipal_tickets_map_data(user)
         self.assertEqual(resp.status_code, 200)
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
-            tipo_ticket='municipio', municipio_id=1, estado=None
+            tipo_ticket='municipio', municipio_id=1, estado=None, distrito=None
         )
 
     @patch('services.ticket_service.servicio_tickets')
@@ -52,7 +52,7 @@ class MunicipalTicketsMapDataRouteTest(unittest.TestCase):
             resp = self.muni.municipal_tickets_map_data(user)
         self.assertEqual(resp.status_code, 200)
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
-            tipo_ticket='municipio', municipio_id=1, estado='cerrado'
+            tipo_ticket='municipio', municipio_id=1, estado='cerrado', distrito=None
         )
 
 

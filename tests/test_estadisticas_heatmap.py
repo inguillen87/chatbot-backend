@@ -35,7 +35,7 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
     @patch('routes.estadisticas.servicio_tickets')
     def test_mapa_calor_datos(self, mock_servicio):
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = [
-            {"location": {"lat": 1, "lng": 2}, "weight": 3, "categoria": None}
+            {"location": {"lat": 1, "lng": 2}, "weight": 3, "categoria": None, "direccion": "dir", "distrito": "barrio"}
         ]
         import routes.estadisticas as estats
         with self.app.test_request_context('/estadisticas/mapa_calor/datos?tipo_ticket=municipio'):
@@ -43,7 +43,7 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.get_json(),
-            [{"location": {"lat": 1, "lng": 2}, "weight": 3, "categoria": None}],
+            [{"location": {"lat": 1, "lng": 2}, "weight": 3, "categoria": None, "direccion": "dir", "distrito": "barrio"}],
         )
 
 

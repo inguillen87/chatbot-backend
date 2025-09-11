@@ -368,6 +368,7 @@ class ServicioTickets:
         categoria: str | None = None,
         estado: str | None = None, # Nuevo parámetro de estado
         satisfactorio: bool | None = None,
+        distrito: str | None = None,
     ) -> list[dict]:
         """
         Devuelve los tickets con ubicación, opcionalmente filtrados por estado,
@@ -388,6 +389,8 @@ class ServicioTickets:
             )
 
             query = Model.query.filter(Model.latitud.isnot(None), Model.longitud.isnot(None))
+            if distrito and hasattr(Model, "distrito"):
+                query = query.filter(Model.distrito == distrito)
 
             # Filtrar por estado si se proporciona. Si el estado solicitado es
             # "resuelto", también incluimos aquellos marcados como "cerrado" para
@@ -446,7 +449,7 @@ class ServicioTickets:
             # ]
             # Por ahora, mantendremos la agrupación existente que devuelve 'weight'.
 
-            ubicaciones_agrupadas = {}  # (lat, lng, categoria) -> count
+            ubicaciones_agrupadas = {}  # (lat, lng, categoria, direccion, distrito) -> count
 
             for t in tickets:
                 # Redondear lat/lng a un número de decimales para agrupar puntos cercanos.
@@ -459,18 +462,22 @@ class ServicioTickets:
                     round(t.latitud, 4),
                     round(t.longitud, 4),
                     getattr(t, "categoria", None),
+                    getattr(t, "direccion", None),
+                    getattr(t, "distrito", None),
                 )
                 if lat_lng_key not in ubicaciones_agrupadas:
                     ubicaciones_agrupadas[lat_lng_key] = 0
                 ubicaciones_agrupadas[lat_lng_key] += 1
 
             resultado_heatmap = []
-            for (lat, lng, cat), weight in ubicaciones_agrupadas.items():
+            for (lat, lng, cat, dirc, dist), weight in ubicaciones_agrupadas.items():
                 resultado_heatmap.append(
                     {
                         "location": {"lat": lat, "lng": lng},
                         "weight": weight,
                         "categoria": cat,
+                        "direccion": dirc,
+                        "distrito": dist,
                     }
                 )
             logger.info(
