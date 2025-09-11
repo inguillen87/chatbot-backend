@@ -31,7 +31,9 @@ from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.geo_service import reverse_geocode
 from services.openai_maps_service import geocodificar_inversa_llm
 from services.municipio_responder import CONTEXTO_MUNICIPIO
-from services.audio_transcription_service import transcribe_audio_from_url
+from services.audio_transcription_service import (
+    transcribe_audio_from_url as stt_transcribe_audio_from_url,
+)
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -190,7 +192,7 @@ def whatsapp_webhook():
     message_type = request.form.get("MessageType", "")
     media_content_type = request.form.get("MediaContentType0", "")
     if (
-        transcribe_audio_from_url
+        stt_transcribe_audio_from_url
         and (
             message_type in ("voice", "audio")
             or media_content_type.startswith("audio/")
@@ -198,7 +200,7 @@ def whatsapp_webhook():
     ):
         media_url = post_vars.get("MediaUrl0")
         if media_url and TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
-            transcript = transcribe_audio_from_url(
+            transcript = stt_transcribe_audio_from_url(
                 media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
             )
             if transcript:
@@ -403,7 +405,9 @@ def whatsapp_webhook():
             if media_content_type and media_content_type.startswith("audio/"):
                 session_context_db_entry.context_data['source_is_audio'] = True
                 # We pass the direct URL to the transcription service
-                transcribed_text = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+                transcribed_text = stt_transcribe_audio_from_url(
+                    media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+                )
                 if transcribed_text:
                     message_body = transcribed_text
                     if uploaded_file_info is None:

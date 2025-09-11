@@ -263,10 +263,8 @@ def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
 TICKET_RE = re.compile(
     r"""(?ix)
     (?:^|\b)
-    (?:n[°ºo]\s*[:\-#]?\s*|ticket\s*[:\-#]?\s*|reclamo\s*[:\-#]?\s*|m(?:unicipalidad)?\s*[:\-#]?\s*)?
-    (?:[m]\s*[- ]?)?
-    (?P<num>\d{5,8})
-    (?:\b|$)
+    (?:^|\b)(?:n[°ºo]|ticket|reclamo|nro|m(?:unicipalidad)?)\s*[:\-#]?\s*
+    (?:m\s*[- ]?)?(?P<num>\d{5,8})(?:\b|$)
     """
 )
 
@@ -281,7 +279,7 @@ def extract_ticket_number(text: str) -> str | None:
     m = TICKET_RE.search(text)
     if m:
         return m.group("num")
-    m = ONLY_DIGITS_RE.match(text)
+    m = ONLY_DIGITS_RE.match(text.strip())
     if m:
         return m.group("d")
     return None
