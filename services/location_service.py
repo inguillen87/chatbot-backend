@@ -22,36 +22,107 @@ def _normalize_corner(addr: str) -> str:
         return ""
     addr = re.sub(r"\besq\.?\b", "esquina", addr, flags=re.I)
     addr = re.sub(r"\besquina\b", "&", addr, flags=re.I)
-    addr = re.sub(r"\s+y\s+", " & ", addr, flags=re.I)
+    addr = re.sub(r"\s+(?:y|e)\s+", " & ", addr, flags=re.I)
     return re.sub(r"\s+", " ", addr).strip()
 
 
-def geocode_address(address: str, district: str | None = None) -> Optional[dict]:
-    """Geocode an address using the free OpenStreetMap Nominatim API.
+def geocode_address(
+    address: str,
+    district: str | None = None,
+    geo_ctx: dict | None = None,
+) -> Optional[dict]:
+    """Geocode an address using Google Maps if available, falling back to Nominatim.
 
     Parameters
     ----------
     address: str
         Base street address provided by the user.
     district: str | None
-        Optional district or city name to bias the search.
+        Optional district or city name to bias the search. Retained for
+        backwards compatibility but superseded by ``geo_ctx``.
+    geo_ctx: dict | None
+        Geographical context with keys like ``city``, ``state``, ``country``,
+        ``region_hint`` and ``bounds`` to bias the lookup for multi-tenant
+        deployments.
     """
 
     if not address:
         return None
 
-    # Append district if available and not already present
     query = _normalize_corner(address)
-    if district and district.lower() not in query.lower():
-        query = f"{query}, {district}"
-    if "argentina" not in query.lower():
-        query = f"{query}, Argentina"
 
-    url = "https://nominatim.openstreetmap.org/search"
-    params = {"q": query, "format": "json", "limit": 1}
+    # Build Google / Nominatim bias parameters from geo_ctx or district
+    city = state = country = bounds = region = None
+    language = (geo_ctx or {}).get("locale") or "es-AR"
+    components = []
+    if geo_ctx:
+        city = geo_ctx.get("city") or geo_ctx.get("ciudad")
+        state = geo_ctx.get("state") or geo_ctx.get("provincia")
+        country = geo_ctx.get("country") or geo_ctx.get("pais")
+        region = geo_ctx.get("region_hint") or geo_ctx.get("region")
+        bounds = geo_ctx.get("bounds")
+    elif district:
+        city = district
+        country = "Argentina"
 
+    if city and city.lower() not in query.lower():
+        query = f"{query}, {city}"
+    if state and state.lower() not in query.lower():
+        query = f"{query}, {state}"
+    if country and country.lower() not in query.lower():
+        query = f"{query}, {country}"
+
+    if country:
+        components.append(f"country:{country}")
+    if state:
+        components.append(f"administrative_area:{state}")
+    if city:
+        components.append(f"locality:{city}")
+
+    # Try Google Maps Geocoding API first if the key is configured
+    gkey = os.environ.get("GOOGLE_MAPS_API_KEY")
+    if gkey:
+        try:
+            g_params = {"address": query, "key": gkey, "language": language}
+            if region:
+                g_params["region"] = region
+            if components:
+                g_params["components"] = "|".join(components)
+            if bounds:
+                # bounds stored as (lon_min, lat_min, lon_max, lat_max)
+                g_params["bounds"] = (
+                    f"{bounds[1]},{bounds[0]}|{bounds[3]},{bounds[2]}"
+                )
+            resp = requests.get(
+                "https://maps.googleapis.com/maps/api/geocode/json",
+                params=g_params,
+                timeout=5,
+            )
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            if results:
+                location = results[0]["geometry"]["location"]
+                return {
+                    "lat": float(location.get("lat")),
+                    "lng": float(location.get("lng")),
+                    "display_name": results[0].get("formatted_address"),
+                    "maps_search_url": f"https://www.google.com/maps/search/?api=1&query={requests.utils.quote(query)}",
+                }
+        except requests.RequestException as e:
+            logger.error(f"Error geocoding address via Google Maps: {e}")
+
+    # Fallback to Nominatim
     url = "https://nominatim.openstreetmap.org/search"
-    params = {"q": query, "format": "json", "limit": 5}
+    params = {"q": query, "format": "json", "limit": 1, "accept-language": language}
+    if city:
+        params["city"] = city
+    if state:
+        params["state"] = state
+    if country:
+        params["countrycodes"] = country.lower()
+    if bounds:
+        params["viewbox"] = f"{bounds[0]},{bounds[3]},{bounds[2]},{bounds[1]}"
+        params["bounded"] = 1
     try:
         resp = requests.get(url, params=params, headers=_nominatim_headers(), timeout=5)
         resp.raise_for_status()
