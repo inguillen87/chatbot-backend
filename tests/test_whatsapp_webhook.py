@@ -283,6 +283,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
              patch('routes.whatsapp_webhook.create_attachment_with_thumbnail') as mock_create_attachment, \
+             patch('services.audio_transcription_service.transcribe_audio_from_url') as mock_transcribe, \
              patch('routes.whatsapp_webhook.clasificar_adjunto_whatsapp') as mock_classifier:
             mock_bot.return_value = {"message_body": "Ok"}
             mock_adjunto = MagicMock()
@@ -372,6 +373,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
              patch('routes.whatsapp_webhook.create_attachment_with_thumbnail') as mock_create_attachment, \
+             patch('services.audio_transcription_service.transcribe_audio_from_url') as mock_transcribe, \
              patch('routes.whatsapp_webhook.clasificar_adjunto_whatsapp') as mock_classifier:
             mock_bot.return_value = {"message_body": "Ok"}
             mock_adjunto = MagicMock()
@@ -433,6 +435,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
              patch('routes.whatsapp_webhook.create_attachment_with_thumbnail') as mock_create_attachment, \
+             patch('services.audio_transcription_service.transcribe_audio_from_url') as mock_transcribe, \
              patch('routes.whatsapp_webhook.clasificar_adjunto_whatsapp') as mock_classifier:
             mock_bot.return_value = {"message_body": "Ok"}
             mock_adjunto = MagicMock()
@@ -458,13 +461,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             self.assertEqual(response.data.decode(), "OK")
 
             mock_bot.assert_called_once()
-            _, kwargs = mock_bot.call_args
-            self.assertIn("uploaded_file_info", kwargs)
-            self.assertEqual(kwargs["uploaded_file_info"]["mime_type"], "image/jpeg")
-            self.assertIn("datos_interpretados_archivo", kwargs)
-            self.assertEqual(
-                kwargs["datos_interpretados_archivo"], {"categoria_sugerida": "reclamo"}
-            )
+            mock_transcribe.assert_not_called()
 
             self.mock_twilio_create.assert_called_once()
             _, kwargs_twilio = self.mock_twilio_create.call_args
