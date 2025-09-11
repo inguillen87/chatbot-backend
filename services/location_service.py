@@ -68,13 +68,13 @@ def geocode_address(
         bounds = geo_ctx.get("bounds")
     elif district:
         city = _clean(district)
-        country = "Argentina"
+        country = "AR"
 
-    if city and city.lower() not in query.lower():
+    if city and not re.search(rf"\b{re.escape(city)}\b", query, flags=re.I):
         query = f"{query}, {city}"
-    if state and state.lower() not in query.lower():
+    if state and not re.search(rf"\b{re.escape(state)}\b", query, flags=re.I):
         query = f"{query}, {state}"
-    if country and country.lower() not in query.lower():
+    if country and not re.search(rf"\b{re.escape(country)}\b", query, flags=re.I):
         query = f"{query}, {country}"
 
     if country:
@@ -116,22 +116,39 @@ def geocode_address(
         except requests.RequestException as e:
             logger.error(f"Error geocoding address via Google Maps: {e}")
 
-    # Fallback to Nominatim
+    # Fallback to Nominatim (exclusive modes: free-form "q" OR structured params)
     url = "https://nominatim.openstreetmap.org/search"
-    params = {"format": "json", "limit": 1, "accept-language": language}
-    if "&" in query or " esquina " in address.lower():
-        params["q"] = query
+    is_corner = ("&" in query) or (" esquina " in address.lower())
+
+    if is_corner:
+        # Free-form search for intersections
+        params = {
+            "format": "json",
+            "limit": 1,
+            "accept-language": language,
+            "q": query,
+        }
+        if bounds:
+            params["viewbox"] = f"{bounds[0]},{bounds[3]},{bounds[2]},{bounds[1]}"
+            params["bounded"] = 1
     else:
-        params["q"] = query
+        # Structured search for addresses with optional number
+        street_only = _normalize_corner(address)
+        params = {
+            "format": "json",
+            "limit": 1,
+            "accept-language": language,
+            "street": street_only,
+        }
         if city:
             params["city"] = city
         if state:
             params["state"] = state
         if country:
             params["countrycodes"] = country.lower()
-    if bounds:
-        params["viewbox"] = f"{bounds[0]},{bounds[3]},{bounds[2]},{bounds[1]}"
-        params["bounded"] = 1
+        if bounds:
+            params["viewbox"] = f"{bounds[0]},{bounds[3]},{bounds[2]},{bounds[1]}"
+            params["bounded"] = 1
     try:
         resp = requests.get(url, params=params, headers=_nominatim_headers(), timeout=5)
         resp.raise_for_status()
