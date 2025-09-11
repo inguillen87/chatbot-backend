@@ -4,12 +4,40 @@ import unicodedata
 import logging
 from fuzzywuzzy import process, fuzz
 
+
+# Umbral reducido para permitir lenguaje natural más libre
+INTENT_THRESHOLD = 0.35
+
+# Mapeo rápido de palabras clave a categorías de reclamo
+KEYWORDS_CATEGORIA = {
+    "arbol": "Arbolado",
+    "ramas": "Arbolado",
+    "árbol": "Arbolado",
+    "luminaria": "Luminaria",
+    "luz": "Luminaria",
+    "poste": "Luminaria",
+    "bache": "Bacheo",
+    "pozo": "Bacheo",
+    "basura": "Limpieza",
+    "residuos": "Limpieza",
+    "agua": "Agua",
+}
+
+
+def fast_reclamo_detect(text: str):
+    """Detecta rápidamente si el texto contiene palabras clave de reclamo."""
+    t = text.lower()
+    for k, cat in KEYWORDS_CATEGORIA.items():
+        if k in t:
+            return {"intent": "reclamo", "categoria": cat}
+    return None
+
 logger = logging.getLogger(__name__)
 
 class IntentClassifier:
-    def __init__(self, intents_file_path, min_confidence=85):
+    def __init__(self, intents_file_path, min_confidence: float = INTENT_THRESHOLD * 100):
         self.intents_file_path = intents_file_path
-        self.min_confidence = min_confidence
+        self.min_confidence = int(min_confidence)
         self.intents_by_rubro = self._load_intents()
 
     def _load_intents(self):
