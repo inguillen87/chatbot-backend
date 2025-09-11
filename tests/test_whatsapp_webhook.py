@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, ANY
 import os
 import sys
 
@@ -559,6 +559,60 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             self.assertEqual(kwargs_twilio["to"], f"whatsapp:{self.test_user_number_str}")
             self.assertTrue(kwargs_twilio["body"].startswith("Ok"))
             self.mock_welcome.assert_not_called()
+
+    @patch('routes.whatsapp_webhook.requests.get')
+    def test_whatsapp_webhook_video_attachment(self, mock_requests_get):
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.content = b'fake-video-content'
+        mock_requests_get.return_value = mock_response
+
+        self.mock_validator.validate.return_value = True
+        mock_twilio_message = MagicMock()
+        mock_twilio_message.sid = "SM_video_test"
+        self.mock_twilio_create.return_value = mock_twilio_message
+
+        self._create_confirmed_session()
+
+        with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
+             patch('routes.whatsapp_webhook.create_attachment_with_thumbnail') as mock_create_attachment, \
+             patch('services.audio_transcription_service.transcribe_audio_from_url') as mock_transcribe, \
+             patch('routes.whatsapp_webhook.analyze_video_from_url') as mock_video_analyze:
+            mock_bot.return_value = {"message_body": "Ok"}
+            mock_adjunto = MagicMock()
+            mock_adjunto.id = 4
+            mock_adjunto.url = 'http://fake.storage/test.mp4'
+            mock_adjunto.mime = 'video/mp4'
+            mock_adjunto.nombre_original = 'test.mp4'
+            mock_create_attachment.return_value = mock_adjunto
+            mock_video_analyze.return_value = {
+                "category": "Arbolado",
+                "description": "rama",
+                "evidence": "video",
+            }
+
+            payload = {
+                "To": f"whatsapp:{self.test_whatsapp_number_str}",
+                "From": f"whatsapp:{self.test_user_number_str}",
+                "Body": "Video", 
+                "MediaUrl0": "http://example.com/test.mp4",
+                "MediaContentType0": "video/mp4",
+            }
+            headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+            self.assertEqual(response.status_code, 200)
+            mock_bot.assert_called_once()
+            mock_transcribe.assert_not_called()
+            mock_video_analyze.assert_called_once_with(
+                "http://example.com/test.mp4", ANY, ANY
+            )
+            _, kwargs_bot = mock_bot.call_args
+            self.assertEqual(
+                kwargs_bot.get("datos_interpretados_archivo"),
+                {"category": "Arbolado", "description": "rama", "evidence": "video"},
+            )
 
     @patch('routes.whatsapp_webhook.responder_chatboc')
     def test_state_hint_persists_in_session(self, mock_bot):

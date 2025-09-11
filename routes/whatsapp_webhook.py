@@ -23,6 +23,10 @@ from services.llm_utils import (
 )
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
+from services.media_analysis import (
+    analyze_image_from_url,
+    analyze_video_from_url,
+)
 from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.geo_service import reverse_geocode
 from services.openai_maps_service import geocodificar_inversa_llm
@@ -576,8 +580,23 @@ def whatsapp_webhook():
         interpretacion_media_data = None
         if uploaded_file_info:
             mime_type = uploaded_file_info.get("mime_type", "")
-            if not mime_type.startswith("audio/"):
-                interpretacion_media_data = clasificar_adjunto_whatsapp(uploaded_file_info, client_user)
+            if mime_type.startswith("video/") and media_url:
+                interpretacion_media_data = analyze_video_from_url(
+                    media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+                )
+            elif not mime_type.startswith("audio/"):
+                interpretacion_media_data = clasificar_adjunto_whatsapp(
+                    uploaded_file_info, client_user
+                )
+        elif media_url and media_content_type:
+            if media_content_type.startswith("video/"):
+                interpretacion_media_data = analyze_video_from_url(
+                    media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+                )
+            elif media_content_type.startswith("image/"):
+                interpretacion_media_data = analyze_image_from_url(
+                    media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+                )
         # Location info should not be treated as interpreted media.
         # It should be passed directly as location data.
 
