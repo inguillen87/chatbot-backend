@@ -187,6 +187,11 @@ def clear_municipio_cache() -> None:
     """Utility mainly for tests to clear the local municipio response cache."""
     MUNICIPIO_RESPONSE_CACHE.clear()
 
+
+def flow_active(ctx: dict) -> bool:
+    """Return True if a claim flow is currently active in the given context."""
+    return bool(ctx.get("reclamo_flow_v2", {}).get("state"))
+
 # --- NUEVO: parsing compacto de datos de contacto ---
 CONTACT_FIELDS = ("nombre", "email", "telefono", "dni", "direccion_contacto")
 
@@ -550,7 +555,8 @@ class ReclamoFlowHandler:
         logger.info("Iniciando flujo de reclamo v2.")
         self.flow_context.clear()
         self.municipal_ctx.pop("numero_ticket_consulta", None)
-        self.municipal_ctx["estado_conversacion"] = None
+        # Mark global state so other routers ignore ticket/PIN handlers
+        self.municipal_ctx["estado_conversacion"] = "EN_FLUJO_RECLAMO"
         self.flow_context['datos_reclamo'] = datos_iniciales or {}
 
         # Si la conversación comenzó con una foto (context['foto_url']) pero
@@ -887,6 +893,10 @@ class ReclamoFlowHandler:
         # Remove flow data from municipio context so subsequent turns don't
         # enter this handler unintentionally.
         self.municipal_ctx.pop("reclamo_flow_v2", None)
+        # Reset conversation state so normal routing resumes after the flow ends
+        self.municipal_ctx["estado_conversacion"] = (
+            ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name if show_menu else None
+        )
 
         payload = {"message_body": message, "message_type": "text"}
         if image_url:
@@ -3699,8 +3709,13 @@ def responder_municipio(
     chat_db_context_live_data = {}
     if chat_db_context and chat_db_context.context_data is not None:
         chat_db_context_live_data = chat_db_context.context_data
-    
+
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
+
+    # If a claim flow is already in progress, ensure the global state
+    # reflects it so other handlers (like ticket/PIN) are skipped.
+    if flow_active(contexto_municipio_actual):
+        contexto_municipio_actual["estado_conversacion"] = "EN_FLUJO_RECLAMO"
 
     context = {
         CONTEXTO_MUNICIPIO: contexto_municipio_actual,
@@ -3757,6 +3772,18 @@ def responder_municipio(
                 # Update the payload so subsequent logic sees the transcribed text
                 if "pregunta" in received_payload:
                     received_payload["pregunta"] = pregunta_str
+
+
+    # --- Prioritize ongoing claim flow before any other state checks ---
+    if flow_active(contexto_municipio_actual):
+        logger_actual.info(
+            f"Reclamo flow is active. State: {contexto_municipio_actual['reclamo_flow_v2'].get('state')}. Routing to ReclamoFlowHandler."
+        )
+        contexto_municipio_actual["estado_conversacion"] = "EN_FLUJO_RECLAMO"
+        handler = ReclamoFlowHandler(context, chat_db_context)
+        response = handler.handle(pregunta_str, received_payload)
+        safe_flag_modified(chat_db_context, "context_data")
+        return _finalize_response(response)
 
 
     # --- Ticket lookup direct shortcuts ---
@@ -3821,15 +3848,6 @@ def responder_municipio(
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return _finalize_response(response)
-    # --- INICIO: Manejo del Flujo de Reclamos Activo ---
-    if "reclamo_flow_v2" in contexto_municipio_actual and contexto_municipio_actual["reclamo_flow_v2"].get("state"):
-        logger_actual.info(f"Reclamo flow is active. State: {contexto_municipio_actual['reclamo_flow_v2'].get('state')}. Handing off to ReclamoFlowHandler.")
-        handler = ReclamoFlowHandler(context, chat_db_context)
-        response = handler.handle(pregunta_str, received_payload)
-        safe_flag_modified(chat_db_context, "context_data")
-        return _finalize_response(response)
-    # --- FIN: Manejo del Flujo de Reclamos Activo ---
-
     # --- START GLOBAL MENU SHORTCUTS ---
     if not contexto_municipio_actual.get("estado_conversacion") and pregunta_str:
         inferred_action = find_global_menu_action(pregunta_str)
