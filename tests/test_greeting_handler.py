@@ -59,3 +59,23 @@ def test_no_reset_after_ticket():
     handler = GreetingHandler(ctx)
     assert handler.handle({}) is None
 
+
+def test_ignore_greeting_during_active_flow():
+    ctx = {
+        "chat_db_context_data": {
+            CONTEXTO_MUNICIPIO: {"estado_conversacion": "EN_FLUJO_RECLAMO"}
+        }
+    }
+    handler = GreetingHandler(ctx)
+    assert handler.handle({}) is None
+
+
+def test_ignore_greeting_when_flow_state_present():
+    ctx = {
+        "chat_db_context_data": {
+            CONTEXTO_MUNICIPIO: {"reclamo_flow_v2": {"state": "ESPERANDO_CATEGORIA"}}
+        }
+    }
+    handler = GreetingHandler(ctx)
+    assert handler.handle({}) is None
+
