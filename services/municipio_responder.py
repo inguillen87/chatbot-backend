@@ -2265,12 +2265,16 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             opciones = [
-                {"texto": "Confirmar", "action_id": "confirmar_ubicacion"},
-                {"texto": "Editar", "action_id": "editar_ubicacion"},
+                {"texto": "1) Sí, es acá", "action_id": "confirmar_ubicacion"},
+                {"texto": "2) No, corregir", "action_id": "editar_ubicacion"},
             ]
-            msg = f"¿Es esta tu dirección? {loc.get('ubicacion')}"
+            msg = (
+                "📍 Ubicación detectada:\n"
+                f"{loc.get('ubicacion')}\n¿Es acá?\n"
+                "1) Sí, es acá\n2) No, corregir"
+            )
             if loc.get("maps_search_url"):
-                msg += f"\n{loc['maps_search_url']}"
+                msg += f"\n🔗 Abrir mapa: {loc['maps_search_url']}"
             return (
                 {
                     "message_body": msg,
@@ -3660,15 +3664,18 @@ def responder_municipio(
                 "estado_conversacion"
             ] = ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name
             opciones = [
-                {"texto": "Confirmar", "action_id": "confirmar_ubicacion"},
-                {"texto": "Editar", "action_id": "editar_ubicacion"},
+                {"texto": "1) Sí, es acá", "action_id": "confirmar_ubicacion"},
+                {"texto": "2) No, corregir", "action_id": "editar_ubicacion"},
             ]
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             maps_url = datos.get("maps_search_url")
-            msg = f"¿Es esta tu dirección: {address}?"
+            msg = (
+                "📍 Ubicación detectada:\n"
+                f"{address}\n¿Es acá?\n1) Sí, es acá\n2) No, corregir"
+            )
             if maps_url:
-                msg += f"\n{maps_url}"
+                msg += f"\n🔗 Abrir mapa: {maps_url}"
             return (
                 _finalize_response(
                     {
@@ -5143,12 +5150,15 @@ def responder_municipio(
             })
         else:
             opciones = [
-                {"texto": "1. Confirmar", "action_id": "confirmar_ubicacion"},
-                {"texto": "2. Editar", "action_id": "editar_ubicacion"},
+                {"texto": "1) Sí, es acá", "action_id": "confirmar_ubicacion"},
+                {"texto": "2) No, corregir", "action_id": "editar_ubicacion"},
             ]
-            msg = f"¿Es esta tu dirección? *{ubicacion_display}*"
+            msg = (
+                "📍 Ubicación detectada:\n"
+                f"*{ubicacion_display}*\n¿Es acá?\n1) Sí, es acá\n2) No, corregir"
+            )
             if maps_url:
-                msg += f"\n{maps_url}"
+                msg += f"\n🔗 Abrir mapa: {maps_url}"
             return _finalize_response({
                 "message_body": msg,
                 "options_list": opciones,
