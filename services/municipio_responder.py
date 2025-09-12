@@ -463,12 +463,15 @@ def handle_ticket_lookup(numero: str, pin: str, contexto: dict, municipio_id: st
 
 
 def pedir_datos_contacto_compacto():
+    """Prompt al usuario para que comparta sus datos de contacto en un formato accesible."""
     return {
         "message_body": (
-            "Para seguir, enviá *en una sola línea* tus datos separados por comas o espacios, "
-            "en cualquier orden: *Nombre completo, Email, Teléfono, DNI*. "
-            "Si querés, podés agregar tu dirección de contacto.\n\n"
-            "Ejemplo: *Juan Perez, juan@mail.com, 2615551234, 30123456*"
+            "\U0001F512 *Necesito estos datos:*\n"
+            "• *Nombre y apellido* — _Ej.: Juan Pérez_\n"
+            "• *DNI* — _Ej.: 30123456_\n"
+            "• *Teléfono* — _solo números_\n"
+            "• *Email* — _tu correo_\n"
+            "Podés mandarlos en una sola línea o de a uno."
         ),
         "message_type": "text",
     }

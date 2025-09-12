@@ -339,9 +339,12 @@ class CrearReclamoActionHandler(BaseActionHandler):
             campos_faltantes = sorted(list(set(campos_faltantes)))
             self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
             mensaje = (
-                "Para cerrar el reclamo, necesitás completar tus datos en *una sola línea* "
-                "(Nombre completo, Email, Teléfono, DNI). "
-                "Ejemplo: Juan Perez, juan@mail.com, 2615551234, 30123456"
+                "\U0001F512 *Necesito estos datos:*\n"
+                "• *Nombre y apellido* — _Ej.: Juan Pérez_\n"
+                "• *Email* — _Ej.: juan@mail.com_\n"
+                "• *Teléfono* — _solo números_\n"
+                "• *DNI* — _Ej.: 30123456_\n"
+                "Mandalo en una sola línea o de a uno."
             )
             return {
                 "success": False,
