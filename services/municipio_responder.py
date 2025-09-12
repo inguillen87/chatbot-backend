@@ -769,7 +769,16 @@ class ReclamoFlowHandler:
 
         if not force_prompt and not faltantes:
             self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
-            return self.get_confirmation_message()
+            msg = self.get_confirmation_message()
+            opciones = msg.get("options_list", [])
+            opciones.extend(
+                [
+                    {"texto": "4. Repetir", "action_id": "reclamo_confirmar_repetir"},
+                    {"texto": "5. Ayuda", "action_id": "reclamo_confirmar_ayuda"},
+                ]
+            )
+            msg["options_list"] = opciones
+            return msg
 
         self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
         return pedir_datos_contacto_compacto(faltantes)
@@ -798,6 +807,8 @@ class ReclamoFlowHandler:
                 {"texto": "1. Confirmar", "action_id": "reclamo_confirmar_si"},
                 {"texto": "2. Editar", "action_id": "reclamo_confirmar_no"},
                 {"texto": "3. Cancelar", "action_id": "cancelar"},
+                {"texto": "4. Repetir", "action_id": "reclamo_confirmar_repetir"},
+                {"texto": "5. Ayuda", "action_id": "reclamo_confirmar_ayuda"},
             ],
             "message_type": "interactive_buttons",
         }
@@ -880,6 +891,27 @@ class ReclamoFlowHandler:
         elif any(word in normalized for word in negatives) or action == "reclamo_confirmar_no":
             self.flow_context['state'] = ReclamoState.ESPERANDO_MENU_EDICION.name
             return self.get_edit_menu()
+        elif action == "reclamo_confirmar_repetir" or normalized in {"repetir", "4"}:
+            return self.ask_for_contact_details()
+        elif action == "reclamo_confirmar_ayuda" or normalized in {"ayuda", "5"}:
+            ayuda_msg = (
+                "Para confirmar los datos, elegí '1. Confirmar'. "
+                "Si necesitás corregir algo, seleccioná '2. Editar'. "
+                "Para cancelar el reclamo, elegí '3. Cancelar'. "
+                "Si querés ver nuevamente el resumen, tocá '4. Repetir'."
+            )
+            options = [
+                {"texto": "1. Confirmar", "action_id": "reclamo_confirmar_si"},
+                {"texto": "2. Editar", "action_id": "reclamo_confirmar_no"},
+                {"texto": "3. Cancelar", "action_id": "cancelar"},
+                {"texto": "4. Repetir", "action_id": "reclamo_confirmar_repetir"},
+                {"texto": "5. Ayuda", "action_id": "reclamo_confirmar_ayuda"},
+            ]
+            return {
+                "message_body": ayuda_msg,
+                "options_list": options,
+                "message_type": "interactive_buttons",
+            }
         else:  # Cancel or any other input
             cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
             return self.end_flow(cancel_msg, show_menu=True)
