@@ -379,8 +379,12 @@ def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
                 "options_list": options,
                 "candidates": candidates,
             }
+
         lat = parsed.get("lat")
         lon = parsed.get("lon")
+        if lat is None or lon is None:
+            return None
+
         static_map_url = None
         gkey = os.getenv("GOOGLE_MAPS_API_KEY")
         if gkey and lat and lon:
@@ -388,12 +392,24 @@ def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
                 "https://maps.googleapis.com/maps/api/staticmap?center="
                 f"{lat},{lon}&zoom=18&size=800x500&markers=color:red|{lat},{lon}&key={gkey}"
             )
+
+        maps_url = parsed.get("maps_search_url")
+        if not maps_url:
+            maps_url = f"https://maps.google.com/?q={lat},{lon}"
+
+        ubicacion = parsed.get("formatted") or parsed.get("display_name") or ""
+        if ubicacion:
+            ubicacion = ", ".join(
+                part.strip()
+                for part in ubicacion.split(",")
+                if part and part.strip().lower() != "none"
+            )
+
         return {
-            "ubicacion": parsed.get("formatted") or parsed.get("display_name"),
+            "ubicacion": ubicacion,
             "coordenadas": {"lat": lat, "lng": lon},
             "distrito": parsed.get("localidad"),
-            "maps_search_url": parsed.get("maps_search_url")
-            or f"https://maps.google.com/?q={lat},{lon}",
+            "maps_search_url": maps_url,
             "static_map_url": static_map_url,
         }
     return None
