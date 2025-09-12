@@ -203,7 +203,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 not geo_info
                 or not geo_info.get("lat")
                 or not geo_info.get("lng")
-                or not geo_info.get("barrio")
+                or (not geo_info.get("barrio") and not distrito_llm)
             ):
                 contexto_reclamo.pop("direccion_reclamo", None)
                 contexto_reclamo.pop("coordenadas_reclamo", None)
@@ -232,6 +232,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     "next_state_hint": "ESPERANDO_BARRIO_RECLAMO",
                 }
 
+            if not geo_info.get("barrio") and distrito_llm:
+                geo_info["barrio"] = distrito_llm
             ubicacion_llm = geo_info.get("formatted_address", ubicacion_llm)
             coordenadas_llm = {
                 "lat": geo_info.get("lat"),
