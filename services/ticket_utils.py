@@ -1,7 +1,5 @@
 import re
 
-PUNTO_LIMPIO_URL = "https://www.juninmendoza.gov.ar/punto-limpio"
-OBRAS_URL = "https://www.juninmendoza.gov.ar/obras"
 MUNI_URL = "https://www.juninmendoza.gov.ar/"
 
 def _remove_redundant_urls_from_message(message_body, options_list):
@@ -132,8 +130,6 @@ def formatear_ticket_respuesta(
         respuesta += "\n\n🔎 Si tus datos no son correctos, respondé *Actualizar datos*."
 
     respuesta += (
-        f"\n♻️ Junín Punto Limpio: {PUNTO_LIMPIO_URL}"
-        f"\n📰 Obras y novedades: {OBRAS_URL}"
         f"\n🌐 Más información municipal: {MUNI_URL}"
     )
     if chat_url:

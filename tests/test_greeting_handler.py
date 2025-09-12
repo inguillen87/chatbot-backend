@@ -60,3 +60,15 @@ def test_greeting_skips_after_recent_ticket():
     }
     handler = GreetingHandler(ctx)
     assert handler.handle({}) is None
+
+
+def test_single_promo_block():
+    from services.promo_service import send_post_ticket_promo
+
+    ctx: dict = {}
+    first = send_post_ticket_promo(ctx)
+    second = send_post_ticket_promo(ctx)
+
+    assert first is not None
+    assert "Junín Punto Limpio" in first["message_body"]
+    assert second is None
