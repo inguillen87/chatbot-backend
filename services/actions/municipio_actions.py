@@ -21,6 +21,7 @@ from services.common_utils import (
     validar_email,
 )
 from services.config_loader import cargar_configuracion_municipio
+from services.archivo_service import archivo_service
 from models import MunicipioTicket, User
 from extensions import db as _db
 
@@ -49,6 +50,38 @@ def normalizar_telefono(telefono: str | None, waid: str | None) -> str | None:
         if digits.isdigit():
             return f"+{digits}"
     return telefono
+
+
+def _asociar_archivos_si_corresponde(ticket_id: int, ctx: dict) -> None:
+    """Vincula archivos cargados previamente al ticket recién creado."""
+    try:
+        archivo_ids = ctx.get("ids_archivos_para_asociar")
+        if not archivo_ids:
+            archivo_id = ctx.get("archivo_id_para_asociar")
+            archivo_ids = [archivo_id] if archivo_id else []
+        session_id = ctx.get("chat_session_uuid") or ctx.get("session_id")
+        user_id = ctx.get("cliente_id")
+        if archivo_ids:
+            archivo_service.asociar_archivos_a_ticket(
+                ticket_id=ticket_id,
+                tipo_ticket="municipio",
+                ids_archivos=archivo_ids,
+                session_id=session_id,
+                user_id=user_id,
+            )
+    except Exception as e:
+        logger.error(
+            f"Error asociando archivos al ticket {ticket_id}: {e}", exc_info=True
+        )
+    finally:
+        if ctx.get("archivo_id_para_asociar"):
+            ctx.pop("archivo_id_para_asociar", None)
+        if ctx.get("ids_archivos_para_asociar"):
+            ctx.pop("ids_archivos_para_asociar", None)
+        chat_ctx = ctx.get("chat_db_context_data")
+        if isinstance(chat_ctx, dict):
+            chat_ctx.pop("archivo_id_para_asociar", None)
+            chat_ctx.pop("ids_archivos_para_asociar", None)
 
 
 def normalizar_categoria(cat_llm: str, detalles: str):
@@ -498,6 +531,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             nro_ticket_str = f"M-{ticket_nro}"
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
 
+            _asociar_archivos_si_corresponde(ticket_creado.get('id'), self.context)
+
             # Completar datos desde tramites.json si existen
             tramites_cfg = cargar_configuracion_municipio(
                 getattr(owner_user, "municipio_id", "default"),
@@ -812,6 +847,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
 
             nro_ticket_str = f"S-{ticket_creado.get('nro_ticket')}"
             logger.info(f"Ticket de sugerencia {nro_ticket_str} creado exitosamente.")
+            _asociar_archivos_si_corresponde(ticket_creado.get('id'), self.context)
 
             # Limpiar el contexto para evitar estados pegajosos
             user_info = self.context.get(CONTEXTO_MUNICIPIO, {}).get('user', {})
@@ -954,6 +990,8 @@ class DerivarHumanoActionHandler(BaseActionHandler):
             sala_dict = servicio_tickets.crear_nuevo_ticket(tipo_ticket=ticket_type, ticket_data=ticket_data_cleaned)
             if not sala_dict:
                 raise Exception("crear_nuevo_ticket devolvió None")
+
+            _asociar_archivos_si_corresponde(sala_dict.get('id'), self.context)
 
             # Since downstream functions need the object, fetch it from the DB
             from models import MunicipioTicket
