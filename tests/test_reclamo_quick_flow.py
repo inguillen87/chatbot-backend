@@ -4,7 +4,7 @@ from models import ChatSessionContext
 from app import db
 
 
-def run_turn(message, state=None, preset_dp=None, location=None, owner_user=None):
+def run_turn(message, state=None, preset_dp=None, location=None, owner_user=None, flow_state=None):
     existing = ChatSessionContext.query.get("test_session")
     if existing:
         db.session.delete(existing)
@@ -13,6 +13,8 @@ def run_turn(message, state=None, preset_dp=None, location=None, owner_user=None
     ctx.context_data = {}
     muni = ctx.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
     muni["estado_conversacion"] = state or "ESPERANDO_SELECCION_MENU_PRINCIPAL"
+    if flow_state:
+        muni["reclamo_flow_v2"] = {"state": flow_state, "datos_reclamo": {}}
     if preset_dp:
         muni["datos_parciales_llm_reclamo"] = preset_dp
     db.session.add(ctx)
@@ -36,9 +38,33 @@ def run_turn(message, state=None, preset_dp=None, location=None, owner_user=None
 
 
 def test_free_text_sets_category_and_asks_address(owner_user):
-    result = run_turn("tengo ramas y arboles caidos", owner_user=owner_user)
-    assert result.ctx["estado_conversacion"] == "ESPERANDO_DIRECCION_RECLAMO"
-    assert result.ctx["datos_parciales_llm_reclamo"]["categoria"] == "Arbolado"
+    result = run_turn("hay un agujero en mi cuadra", owner_user=owner_user)
+    assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Arreglo de calle"
+
+
+def test_numeric_selection_maps_to_category(owner_user):
+    result = run_turn(
+        "5",
+        state="EN_FLUJO_RECLAMO",
+        flow_state="ESPERANDO_CATEGORIA",
+        owner_user=owner_user,
+    )
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Arreglo de calle"
+
+
+def test_free_text_in_category_state(owner_user):
+    result = run_turn(
+        "hay un agujero en mi cuadra",
+        state="EN_FLUJO_RECLAMO",
+        flow_state="ESPERANDO_CATEGORIA",
+        owner_user=owner_user,
+    )
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Arreglo de calle"
+    assert flow["datos_reclamo"]["descripcion"] == "hay un agujero en mi cuadra"
 
 
 def test_pin_moves_to_personal_data(owner_user):
