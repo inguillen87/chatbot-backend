@@ -2,7 +2,6 @@
 import logging
 import re
 import time
-import logging
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
 import random
@@ -13,7 +12,6 @@ from services.notifications import (
 )
 from services.herramientas_municipio import (
     parse_direccion_completa as parse_direccion,
-    direccion_es_valida,
     validar_y_formatear_direccion,
 )
 from services.ticket_utils import formatear_ticket_respuesta
