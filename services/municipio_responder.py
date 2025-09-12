@@ -48,6 +48,15 @@ from .herramientas_municipio import (
 )
 from .points_of_interest_handler import PointsOfInterestHandler
 from .categorias_municipio import CATEGORIAS_RECLAMO, categorias_normalizadas
+
+CATEGORY_EMOJIS = {
+    "Luminaria": "💡",
+    "Arbolado": "🌳",
+    "Limpieza y riego": "🗑️",
+    "Arreglo de calle": "🚧",
+    "Pérdida de agua": "💧",
+    "Otros": "⚫",
+}
 from .common_utils import (
     validar_email,
     validar_telefono,
@@ -1135,20 +1144,34 @@ class ReclamoFlowHandler:
 
     def get_confirmation_message(self):
         datos = self.flow_context.get('datos_reclamo', {})
-        mensaje = "Por favor, confirmá que los datos de tu reclamo son correctos:\n\nDatos del reclamo:\n"
-        mensaje += f"- Categoría: {datos.get('categoria', 'No especificada')}\n"
-        mensaje += f"- Dirección: {datos.get('direccion', 'No especificada')}\n"
-        mensaje += f"- Descripción: {datos.get('descripcion', 'No especificada')}\n\n"
-        mensaje += "Datos personales:\n"
-        mensaje += f"- Nombre: {datos.get('nombre', 'No especificado')}\n"
-        mensaje += f"- DNI: {datos.get('dni', 'No especificado')}\n"
-        mensaje += f"- Email: {datos.get('email', 'No especificado')}\n"
-        mensaje += f"- Teléfono: {datos.get('telefono', 'No especificado')}\n"
-        mensaje += f"- Foto adjunta: {'Sí' if datos.get('foto_url') else 'No'}\n"
+        categoria = datos.get('categoria', 'No especificada')
+        cat_emoji = CATEGORY_EMOJIS.get(categoria, '')
+        direccion = datos.get('direccion', 'No especificada')
+        descripcion = datos.get('descripcion', 'No especificada')
+
+        contacto_prev = self.municipal_ctx.get('contacto_usuario', {})
+        nombre = datos.get('nombre') or contacto_prev.get('nombre') or 'No especificado'
+        dni = datos.get('dni') or contacto_prev.get('dni') or 'No especificado'
+        telefono = datos.get('telefono') or contacto_prev.get('telefono') or 'No especificado'
+        email = datos.get('email') or contacto_prev.get('email')
+        if email and email.endswith('@whatsapp.chatboc.com'):
+            email = None
+
+        mensaje = "Por favor, confirmá que los datos de tu reclamo son correctos:\n\n"
+        mensaje += "📝 *Datos del reclamo:*\n"
+        mensaje += f"- {cat_emoji}Categoría: {categoria}\n"
+        mensaje += f"- 📍 Dirección: {direccion}\n"
+        mensaje += f"- 📝 Descripción: {descripcion}\n\n"
+        mensaje += "👤 *Datos personales:*\n"
+        mensaje += f"- 🧑 Nombre: {nombre}\n"
+        mensaje += f"- 🆔 DNI: {dni}\n"
+        mensaje += f"- 📞 Teléfono: {telefono}\n"
+        mensaje += f"- 📧 Email: {email if email else 'No especificado'}\n"
+        mensaje += f"- 📷 Foto adjunta: {'Sí' if datos.get('foto_url') else 'No'}\n"
         maps_link = datos.get('maps_link') or datos.get('maps_search_url')
         static_map_url = datos.get('static_map_url')
         if maps_link:
-            mensaje += f"- Mapa: {maps_link}\n"
+            mensaje += f"- 🗺️ Mapa: {maps_link}\n"
         opciones = [
             {"texto": "Confirmar", "action_id": "reclamo_confirmar_si"},
             {"texto": "Editar", "action_id": "reclamo_confirmar_no"},
