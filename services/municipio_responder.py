@@ -48,6 +48,15 @@ from .herramientas_municipio import (
 )
 from .points_of_interest_handler import PointsOfInterestHandler
 from .categorias_municipio import CATEGORIAS_RECLAMO, categorias_normalizadas
+
+CATEGORY_EMOJIS = {
+    "Luminaria": "💡",
+    "Arbolado": "🌳",
+    "Limpieza y riego": "🗑️",
+    "Arreglo de calle": "🚧",
+    "Pérdida de agua": "💧",
+    "Otros": "⚫",
+}
 from .common_utils import (
     validar_email,
     validar_telefono,
@@ -332,11 +341,19 @@ def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
             logger.warning("reverse_geocode failed for %s,%s: %s", lat, lng, e)
             direccion = f"Lat: {lat}, Lon: {lng}"
             distrito = None
+        static_map_url = None
+        gkey = os.getenv("GOOGLE_MAPS_API_KEY")
+        if gkey and lat and lng:
+            static_map_url = (
+                "https://maps.googleapis.com/maps/api/staticmap?center="
+                f"{lat},{lng}&zoom=18&size=800x500&markers=color:red|{lat},{lng}&key={gkey}"
+            )
         return {
             "ubicacion": direccion,
             "coordenadas": {"lat": lat, "lng": lng},
             "distrito": distrito,
             "maps_search_url": f"https://maps.google.com/?q={lat},{lng}",
+            "static_map_url": static_map_url,
         }
     parsed = resolver.resolve(user_input) if resolver else None
     if not parsed:
@@ -362,12 +379,22 @@ def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
                 "options_list": options,
                 "candidates": candidates,
             }
+        lat = parsed.get("lat")
+        lon = parsed.get("lon")
+        static_map_url = None
+        gkey = os.getenv("GOOGLE_MAPS_API_KEY")
+        if gkey and lat and lon:
+            static_map_url = (
+                "https://maps.googleapis.com/maps/api/staticmap?center="
+                f"{lat},{lon}&zoom=18&size=800x500&markers=color:red|{lat},{lon}&key={gkey}"
+            )
         return {
             "ubicacion": parsed.get("formatted") or parsed.get("display_name"),
-            "coordenadas": {"lat": parsed.get("lat"), "lng": parsed.get("lon")},
+            "coordenadas": {"lat": lat, "lng": lon},
             "distrito": parsed.get("localidad"),
             "maps_search_url": parsed.get("maps_search_url")
-            or f"https://maps.google.com/?q={parsed.get('lat')},{parsed.get('lon')}",
+            or f"https://maps.google.com/?q={lat},{lon}",
+            "static_map_url": static_map_url,
         }
     return None
 
@@ -472,9 +499,14 @@ def _merge_contact(base: dict, nuevo: dict) -> dict:
 
 
 def _format_contact_summary(datos: dict) -> str:
+    """Render a short summary of the stored contact details."""
+    email = datos.get("email") or "-"
+    # Avoid showing placeholder emails like "+549...@whatsapp.chatboc.com"
+    if isinstance(email, str) and email.endswith("@whatsapp.chatboc.com"):
+        email = "-"
     return (
         f"Nombre: {datos.get('nombre') or '-'}\n"
-        f"Email: {datos.get('email') or '-'}\n"
+        f"Email: {email}\n"
         f"Teléfono: {datos.get('telefono') or '-'}\n"
         f"DNI: {datos.get('dni') or '-'}\n"
         f"Dirección contacto: {datos.get('direccion_contacto') or '-'}"
@@ -838,8 +870,10 @@ class ReclamoFlowHandler:
                 use_llm=True,
             )
             categoria = detalles.get("categoria_sugerida")
-            if detalles.get("descripcion_sugerida"):
-                self.flow_context.setdefault("datos_reclamo", {})["descripcion"] = detalles["descripcion_sugerida"]
+            desc_sug = detalles.get("descripcion_sugerida")
+            dir_sug = detalles.get("direccion_sugerida")
+            if desc_sug and desc_sug != dir_sug and not looks_like_address(desc_sug):
+                self.flow_context.setdefault("datos_reclamo", {})["descripcion"] = desc_sug
             if detalles.get("direccion_sugerida"):
                 self.flow_context.setdefault("datos_reclamo", {})["direccion"] = detalles["direccion_sugerida"]
 
@@ -858,6 +892,7 @@ class ReclamoFlowHandler:
     def handle_direccion(self, user_input, payload):
         datos = self.flow_context.setdefault('datos_reclamo', {})
         municipio_cfg = self.context.get("municipio_config_actual", {})
+        prev_desc = datos.get("descripcion")
 
         estado_conv = self.municipal_ctx.get("estado_conversacion")
         if estado_conv == ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name:
@@ -935,7 +970,11 @@ class ReclamoFlowHandler:
                 datos["coordenadas"] = loc["coordenadas"]
             if loc.get("maps_search_url"):
                 datos["maps_search_url"] = loc["maps_search_url"]
+            if loc.get("static_map_url"):
+                datos["static_map_url"] = loc["static_map_url"]
             datos["direccion"] = direccion_display
+            if prev_desc and datos.get("descripcion") == direccion_display:
+                datos["descripcion"] = prev_desc
             self.municipal_ctx["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name
             self.municipal_ctx["address_confirmed"] = False
             opciones = [
@@ -949,11 +988,15 @@ class ReclamoFlowHandler:
             maps_url = datos.get("maps_search_url")
             if maps_url:
                 msg += f"\n🔗 Abrir mapa: {maps_url}"
-            return {
+            response = {
                 "message_body": msg,
                 "options_list": opciones,
                 "message_type": "interactive_buttons",
             }
+            if datos.get("static_map_url"):
+                response["image_url"] = datos["static_map_url"]
+                response["image_alt_text"] = "Mapa de la ubicación"
+            return response
 
         # If no location could be resolved, ask explicitly for the district
         msg = get_message("preguntar_barrio", direccion=user_input)
@@ -1135,20 +1178,34 @@ class ReclamoFlowHandler:
 
     def get_confirmation_message(self):
         datos = self.flow_context.get('datos_reclamo', {})
-        mensaje = "Por favor, confirmá que los datos de tu reclamo son correctos:\n\nDatos del reclamo:\n"
-        mensaje += f"- Categoría: {datos.get('categoria', 'No especificada')}\n"
-        mensaje += f"- Dirección: {datos.get('direccion', 'No especificada')}\n"
-        mensaje += f"- Descripción: {datos.get('descripcion', 'No especificada')}\n\n"
-        mensaje += "Datos personales:\n"
-        mensaje += f"- Nombre: {datos.get('nombre', 'No especificado')}\n"
-        mensaje += f"- DNI: {datos.get('dni', 'No especificado')}\n"
-        mensaje += f"- Email: {datos.get('email', 'No especificado')}\n"
-        mensaje += f"- Teléfono: {datos.get('telefono', 'No especificado')}\n"
-        mensaje += f"- Foto adjunta: {'Sí' if datos.get('foto_url') else 'No'}\n"
+        categoria = datos.get('categoria', 'No especificada')
+        cat_emoji = CATEGORY_EMOJIS.get(categoria, '')
+        direccion = datos.get('direccion', 'No especificada')
+        descripcion = datos.get('descripcion', 'No especificada')
+
+        contacto_prev = self.municipal_ctx.get('contacto_usuario', {})
+        nombre = datos.get('nombre') or contacto_prev.get('nombre') or 'No especificado'
+        dni = datos.get('dni') or contacto_prev.get('dni') or 'No especificado'
+        telefono = datos.get('telefono') or contacto_prev.get('telefono') or 'No especificado'
+        email = datos.get('email') or contacto_prev.get('email')
+        if email and email.endswith('@whatsapp.chatboc.com'):
+            email = None
+
+        mensaje = "Por favor, confirmá que los datos de tu reclamo son correctos:\n\n"
+        mensaje += "📝 *Datos del reclamo:*\n"
+        mensaje += f"- {cat_emoji}Categoría: {categoria}\n"
+        mensaje += f"- 📍 Dirección: {direccion}\n"
+        mensaje += f"- 📝 Descripción: {descripcion}\n\n"
+        mensaje += "👤 *Datos personales:*\n"
+        mensaje += f"- 🧑 Nombre: {nombre}\n"
+        mensaje += f"- 🆔 DNI: {dni}\n"
+        mensaje += f"- 📞 Teléfono: {telefono}\n"
+        mensaje += f"- 📧 Email: {email if email else 'No especificado'}\n"
+        mensaje += f"- 📷 Foto adjunta: {'Sí' if datos.get('foto_url') else 'No'}\n"
         maps_link = datos.get('maps_link') or datos.get('maps_search_url')
         static_map_url = datos.get('static_map_url')
         if maps_link:
-            mensaje += f"- Mapa: {maps_link}\n"
+            mensaje += f"- 🗺️ Mapa: {maps_link}\n"
         opciones = [
             {"texto": "Confirmar", "action_id": "reclamo_confirmar_si"},
             {"texto": "Editar", "action_id": "reclamo_confirmar_no"},
@@ -1217,6 +1274,18 @@ class ReclamoFlowHandler:
                 )
                 punto_limpio_logo = "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png"
                 return self.end_flow(message, show_menu=True, image_url=punto_limpio_logo)
+
+            next_hint = result.get("next_state_hint")
+            if next_hint:
+                # The action needs more information (e.g., missing district).
+                # Keep the flow active and transition to the hinted state
+                self.flow_context['state'] = next_hint
+                return {
+                    "message_body": result.get("message_to_user", ""),
+                    "options_list": result.get("options_list"),
+                    "message_type": result.get("message_type", "text"),
+                }
+
             error_message = result.get(
                 "message_to_user",
                 "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde.",
@@ -2188,10 +2257,12 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             )
         # Map remaining suggested fields into initial data
         datos_iniciales = {}
-        if details.get("descripcion_sugerida"):
-            datos_iniciales["descripcion"] = details["descripcion_sugerida"]
-        if details.get("direccion_sugerida"):
-            datos_iniciales["direccion"] = details["direccion_sugerida"]
+        desc_sug = details.get("descripcion_sugerida")
+        dir_sug = details.get("direccion_sugerida")
+        if desc_sug and desc_sug != dir_sug and not looks_like_address(desc_sug):
+            datos_iniciales["descripcion"] = desc_sug
+        if dir_sug:
+            datos_iniciales["direccion"] = dir_sug
         response_dict = handler.start_flow(
             datos_iniciales=datos_iniciales or None,
             categoria_inicial=detected_category,
@@ -3488,7 +3559,8 @@ def _detect_reclamo_during_sugerencia(pregunta_str: str, contexto_municipio_actu
         contexto_municipio_actual.pop('ubicacion_contextual_sugerencia', None)
         contexto_municipio_actual.pop('estado_conversacion', None)
         handler = ReclamoFlowHandler(context, chat_db_context)
-        response = handler.start_flow(datos_iniciales={"descripcion": pregunta_str})
+        datos_ini = None if looks_like_address(pregunta_str) else {"descripcion": pregunta_str}
+        response = handler.start_flow(datos_iniciales=datos_ini)
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return response
