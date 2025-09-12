@@ -1965,6 +1965,9 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             ),
         )
         detected_category = details.pop("categoria_sugerida", None)
+        if not detected_category and user_input:
+            sugeridas = sugerir_categorias_relevantes(user_input)
+            detected_category = sugeridas[0] if sugeridas else None
         handler = ReclamoFlowHandler(context, chat_db_context)
         if detected_category:
             logger.info(
@@ -4162,6 +4165,9 @@ def responder_municipio(
             ),
         )
         detected_category = details.pop("categoria_sugerida", None)
+        if not detected_category and pregunta_str:
+            sugeridas = sugerir_categorias_relevantes(pregunta_str)
+            detected_category = sugeridas[0] if sugeridas else None
         if detected_category:
             handler = ReclamoFlowHandler(context, chat_db_context)
             datos_iniciales = {}
@@ -4453,6 +4459,9 @@ def responder_municipio(
                         ),
                     )
                     selected_category_name = details.pop("categoria_sugerida", None)
+                    if not selected_category_name and pregunta_str_reclamo:
+                        sugeridas = sugerir_categorias_relevantes(pregunta_str_reclamo)
+                        selected_category_name = sugeridas[0] if sugeridas else None
 
             if selected_category_name:
                 handler = ReclamoFlowHandler(context, chat_db_context)
@@ -5028,6 +5037,9 @@ def responder_municipio(
                 ),
             )
             selected_category_name = details.pop("categoria_sugerida", None)
+            if not selected_category_name and pregunta_str_reclamo:
+                sugeridas = sugerir_categorias_relevantes(pregunta_str_reclamo)
+                selected_category_name = sugeridas[0] if sugeridas else None
 
         if selected_category_name:
             if selected_category_name == "Pérdida de agua":
