@@ -562,10 +562,42 @@ def calcular_faltantes(ctx: dict) -> list:
 
 PUNTO_LIMPIO_LOGO_URL = "https://www.juninmendoza.gov.ar/recursos/punto-limpio-logo.jpg"
 SITE_URL = "https://www.juninmendoza.gov.ar/"
+# Iconos SVG accesibles de Twemoji para cada categoría de reclamo
+TWEMOJI_BASE_URL = "https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/svg/"
+CATEGORY_ICON_URLS = {
+    "Luminaria": f"{TWEMOJI_BASE_URL}1f4a1.svg",  # 💡
+    "Arbolado": f"{TWEMOJI_BASE_URL}1f333.svg",  # 🌳
+    "Limpieza y riego": f"{TWEMOJI_BASE_URL}1f5d1.svg",  # 🗑️
+    "Arreglo de calle": f"{TWEMOJI_BASE_URL}1f6a7.svg",  # 🚧
+    "Pérdida de agua": f"{TWEMOJI_BASE_URL}1f4a7.svg",  # 💧
+    "Otros": f"{TWEMOJI_BASE_URL}26ab.svg",  # ⚫
+}
 
 
 def build_ticket_summary(ticket, pin, ctx_muni: dict) -> str:
     nombre = ctx_muni.get("contacto_usuario", {}).get("nombre", "Vecino/a")
+    municipio_id = ctx_muni.get("municipio_id", MUNICIPIO_ID)
+    contactos_info = cargar_configuracion_municipio(
+        municipio_id, "contactos_especializados.json"
+    ) or {}
+    contacto = contactos_info.get(ticket.categoria) or contactos_info.get("default", {})
+    partes_contacto = [
+        contacto.get("nombre"),
+        contacto.get("titulo"),
+        contacto.get("telefono"),
+    ]
+    contacto_line = ""
+    if any(partes_contacto):
+        contacto_line = (
+            "📞 *Contacto para seguimiento:* "
+            + " - ".join(filter(None, partes_contacto))
+            + "\n"
+        )
+    horario_line = (
+        f"🕒 *Horario de atención:* {contacto.get('horario')}\n"
+        if contacto.get("horario")
+        else ""
+    )
     return (
         f"✅ *¡Reclamo recibido, {nombre}!*\n\n"
         "📄 *Resumen de tu Reclamo:*\n"
@@ -573,8 +605,8 @@ def build_ticket_summary(ticket, pin, ctx_muni: dict) -> str:
         f"- *Categoría:* {ticket.categoria}\n"
         f"- *Descripción:* {ticket.descripcion}\n\n"
         f"- *PIN:* {pin}\n"
-        "📞 *Contacto para seguimiento:* Atención al Vecino - Mesa de Ayuda General - +5492613168608\n"
-        "🕒 *Horario de atención:* Lunes a Viernes de 8:00 a 18:00 hs.\n"
+        f"{contacto_line}"
+        f"{horario_line}"
         f"🌐 Más información municipal: {SITE_URL}\n"
         f"💬 Ver mi Ticket: https://www.chatboc.ar/chat/{ticket.numero}?pin={pin}\n"
         "Te mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!\n\n"
@@ -836,6 +868,8 @@ class ReclamoFlowHandler:
             # Construct a message confirming the data we have
             categoria = self.flow_context['datos_reclamo']['categoria']
             descripcion = self.flow_context['datos_reclamo'].get('descripcion', 'No especificada')
+            cat_emoji = CATEGORY_EMOJIS.get(categoria, '')
+            icon_url = CATEGORY_ICON_URLS.get(categoria)
 
             # If the description came from an image, it might be generic.
             # We can tailor the message.
@@ -844,11 +878,18 @@ class ReclamoFlowHandler:
                     "reclamo_pedir_direccion_desde_imagen",
                     categoria=categoria,
                     descripcion=descripcion,
+                    emoji=cat_emoji,
                 )
-                return {"message_body": msg}
             else:
-                msg = get_message("reclamo_pedir_direccion", categoria=categoria)
-                return {"message_body": msg}
+                msg = get_message(
+                    "reclamo_pedir_direccion",
+                    categoria=categoria,
+                    emoji=cat_emoji,
+                )
+            payload = {"message_body": msg}
+            if icon_url:
+                payload["image_url"] = icon_url
+            return payload
         else:
             # All initial data is present, move to confirmation or next step
             return self.ask_for_contact_details()
@@ -2598,15 +2639,32 @@ def handle_location_update(data):
         return {"respuesta": "No se pudo obtener la ubicación."}
 
     direccion_info = obtener_direccion_de_coordenadas(lat, lon)
+    display = (
+        direccion_info.get("formatted_address")
+        if direccion_info
+        else f"Lat: {lat}, Lon: {lon}"
+    )
 
-    if not direccion_info:
-        return {"respuesta": "No se pudo obtener la dirección desde las coordenadas."}
+    ctx = session.setdefault("context_data", {})
+    ctx_muni = ctx.setdefault(CONTEXTO_MUNICIPIO, {})
+    datos = ctx_muni.setdefault("datos_parciales_llm_reclamo", {})
+    datos.update({"ubicacion": display, "coordenadas": {"lat": lat, "lon": lon}})
 
-    session["user_location"] = direccion_info
+    estado_prev = ctx_muni.get("estado_conversacion")
+    if estado_prev in (None, ConversationState.ESPERANDO_DIRECCION_RECLAMO.name):
+        ctx_muni["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name
+
     session.modified = True
 
     return {
-        "respuesta": f"Ubicación actualizada a: {direccion_info.get('formatted_address')}"
+        "respuesta": (
+            "📍 Ubicación detectada:\n"
+            f"{display}\n¿Es acá?\n1) Sí, es acá\n2) No, corregir"
+        ),
+        "options_list": [
+            {"texto": "1) Sí, es acá", "action_id": "confirmar_ubicacion"},
+            {"texto": "2) No, corregir", "action_id": "editar_ubicacion"},
+        ],
     }
 
 BOTONES_COMANDOS_MUNICIPIO = {

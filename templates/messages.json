@@ -1,6 +1,6 @@
 {
-  "reclamo_pedir_direccion": "\uD83D\uDCCD Reclamo por *{categoria}*\n\nPor favor, indicá la dirección exacta del problema.",
-  "reclamo_pedir_direccion_desde_imagen": "\uD83D\uDCF8 Gracias por la imagen. Entiendo que el reclamo es por *{categoria}* (ej: \"{descripcion}\").\n\n\uD83D\uDCCD Indicá la dirección exacta del problema.",
+  "reclamo_pedir_direccion": "{emoji} Reclamo por *{categoria}*\n\nPor favor, indicá la dirección exacta del problema. \uD83D\uDCCD También podés compartir tu ubicación.",
+  "reclamo_pedir_direccion_desde_imagen": "\uD83D\uDCF8 Gracias por la imagen. Entiendo que el reclamo es por *{categoria}* (ej: \"{descripcion}\").\n\n{emoji} Indicá la dirección exacta del problema. \uD83D\uDCCD También podés compartir tu ubicación.",
   "preguntar_barrio": "\uD83D\uDCCD ¿En qué *barrio* o *distrito* queda '{direccion}'? Necesito esa información para ubicar la dirección.",
   "preguntar_barrio_no_ubique": "\uD83D\uDCCD No pude ubicar '{direccion}'. ¿En qué *barrio* o *distrito* queda?"
 }
