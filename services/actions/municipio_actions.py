@@ -24,6 +24,7 @@ from services.config_loader import cargar_configuracion_municipio
 from services.archivo_service import archivo_service
 from models import MunicipioTicket, User
 from extensions import db as _db
+from services.message_templates import get_message
 
 logger = logging.getLogger(__name__)
 
@@ -223,9 +224,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 )
                 contexto_reclamo["estado_conversacion"] = "ESPERANDO_BARRIO_RECLAMO"
                 self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
-                mensaje = (
-                    f"¿En qué barrio o distrito queda '{ubicacion_llm}'? Necesito esa información para ubicar la dirección."
-                )
+                mensaje = get_message("preguntar_barrio", direccion=ubicacion_llm)
                 return {
                     "success": False,
                     "message_to_user": mensaje,
