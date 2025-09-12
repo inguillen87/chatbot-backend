@@ -753,7 +753,12 @@ class ReclamoFlowHandler:
             self.municipal_ctx['contacto_usuario'] = contacto_prev
 
         if categoria_inicial and not self.flow_context['datos_reclamo'].get('categoria'):
-            self.flow_context['datos_reclamo']['categoria'] = categoria_inicial
+            resolved = find_reclamo_category_by_input(
+                str(categoria_inicial), _get_reclamos_menu().get("options_list", [])
+            )
+            self.flow_context['datos_reclamo']['categoria'] = resolved or str(
+                categoria_inicial
+            )
 
         # Check what data is missing and transition to the correct state
         if not self.flow_context['datos_reclamo'].get('categoria'):
@@ -2781,7 +2786,9 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 "emoji": opt.get("texto", "")[:1],
             }
         )
-    detalles_rapidos = extract_reclamo_details_from_text(pregunta_str, plain_opts, use_llm=False)
+    detalles_rapidos = extract_reclamo_details_from_text(
+        pregunta_str, plain_opts, use_llm=True
+    )
     if detalles_rapidos:
         datos_reclamo = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
         if detalles_rapidos.get("categoria_sugerida") and not datos_reclamo.get("categoria"):
@@ -3569,7 +3576,7 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
     normalized_opts = []
     for opt in reclamo_options:
         if isinstance(opt, str):
-            normalized_opts.append({"texto": opt})
+            normalized_opts.append({"texto": opt, "category_name": opt})
         else:
             normalized_opts.append(opt)
 
@@ -3580,27 +3587,32 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
         try:
             num = int(user_input.strip())
             if 1 <= num <= len(normalized_opts):
-                return normalized_opts[num - 1].get("texto")
+                opt = normalized_opts[num - 1]
+                return opt.get("category_name") or opt.get("texto")
         except ValueError:
             pass
         for option in normalized_opts:
             if str(option.get("action_id")) == user_input.strip():
-                return option.get("texto")
+                return option.get("category_name") or option.get("texto")
 
     # 2. Check for emoji or exact name matches
     for option in normalized_opts:
         emoji = option.get("emoji")
-        name_norm = normalizar_texto(option.get("texto", ""))
+        name_norm = normalizar_texto(
+            option.get("category_name") or option.get("texto", "")
+        )
         if emoji and emoji in user_input:
-            return option.get("texto")
+            return option.get("category_name") or option.get("texto")
         if normalized_input == name_norm:
-            return option.get("texto")
+            return option.get("category_name") or option.get("texto")
 
     # 3. Check for first-letter shortcuts
     if len(normalized_input) == 1:
         for option in normalized_opts:
-            if normalizar_texto(option.get("texto", "")).startswith(normalized_input):
-                return option.get("texto")
+            if normalizar_texto(
+                option.get("category_name") or option.get("texto", "")
+            ).startswith(normalized_input):
+                return option.get("category_name") or option.get("texto")
 
     # 4. Check for keyword match within the input
     for category, keywords in RECLAMO_KEYWORDS.items():

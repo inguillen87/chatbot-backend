@@ -97,6 +97,31 @@ def test_free_text_in_category_state(owner_user):
     assert flow["datos_reclamo"]["descripcion"] == "hay un agujero en mi cuadra"
 
 
+def test_llm_fallback_supplies_missing_fields(monkeypatch, owner_user):
+    def fake_llm(text):
+        return {
+            "tipo_problema": "Arbolado",
+            "descripcion_problema": "ramas caidas",
+            "ubicacion_problema": "Don Bosco 55",
+        }
+
+    monkeypatch.setattr(
+        "services.municipio_responder.extract_complaint_details_llm",
+        fake_llm,
+    )
+
+    result = run_turn(
+        "texto completamente desconocido",
+        state="EN_FLUJO_RECLAMO",
+        flow_state="ESPERANDO_CATEGORIA",
+        owner_user=owner_user,
+    )
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Arbolado"
+    assert flow["datos_reclamo"]["direccion"] == "Don Bosco 55"
+    assert flow["datos_reclamo"]["descripcion"] == "ramas caidas"
+
+
 def test_prefill_dni_from_contact(owner_user):
     contact = {
         "dni": "32877851",
