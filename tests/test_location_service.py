@@ -294,10 +294,45 @@ def test_extract_from_maps_url(monkeypatch):
     class FakeResp:
         url = "https://www.google.com/maps/@-33.1,-68.5,17z"
 
-    def fake_get(url, allow_redirects=True, timeout=5):
+    calls = {"head": 0}
+
+    def fake_head(url, allow_redirects=True, timeout=5):
+        calls["head"] += 1
         return FakeResp()
 
+    def fake_get(*args, **kwargs):  # pragma: no cover - should not be called
+        raise AssertionError("GET should not be used for short-link resolution")
+
+    monkeypatch.setattr(requests, "head", fake_head)
     monkeypatch.setattr(requests, "get", fake_get)
+    from services import location_service
+
+    location_service._RESOLVED_URL_CACHE.clear()
     data = _extract_from_maps_url("https://maps.app.goo.gl/abc")
     assert data["lat"] == -33.1 and data["lng"] == -68.5
+    assert calls["head"] == 1
+
+
+def test_extract_from_maps_url_cache(monkeypatch):
+    class FakeResp:
+        url = "https://www.google.com/maps/@-33.2,-68.6,17z"
+
+    calls = {"head": 0}
+
+    def fake_head(url, allow_redirects=True, timeout=5):
+        calls["head"] += 1
+        return FakeResp()
+
+    def fake_get(*args, **kwargs):  # pragma: no cover - should not be called
+        raise AssertionError("GET should not be used for short-link resolution")
+
+    monkeypatch.setattr(requests, "head", fake_head)
+    monkeypatch.setattr(requests, "get", fake_get)
+    from services import location_service
+
+    location_service._RESOLVED_URL_CACHE.clear()
+    url = "https://maps.app.goo.gl/xyz"
+    _extract_from_maps_url(url)
+    _extract_from_maps_url(url)
+    assert calls["head"] == 1
 
