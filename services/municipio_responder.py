@@ -209,6 +209,29 @@ def detect_modalidad(msg) -> str:
     return "text"
 
 
+def decide_modalidad(msg):
+    """Determina la modalidad del mensaje y la acción derivada.
+
+    Devuelve una tupla ``(modalidad, accion)`` donde ``modalidad`` es una de
+    ``image``, ``location``, ``voice``, ``video`` o ``text``. La ``accion``
+    asociada indica el procesamiento sugerido:
+
+    - ``cv`` para imágenes o videos (analizar con visión por computadora).
+    - ``confirm_location`` cuando se detecta una ubicación.
+    - ``asr`` para mensajes de voz (usar reconocimiento de voz).
+    - ``text`` para texto plano.
+    """
+
+    modalidad = detect_modalidad(msg)
+    action_map = {
+        "image": "cv",
+        "video": "cv",
+        "location": "confirm_location",
+        "voice": "asr",
+    }
+    return modalidad, action_map.get(modalidad, "text")
+
+
 CONSULT_KEYWORDS = (
     "consultar reclamo",
     "consultar estado",
