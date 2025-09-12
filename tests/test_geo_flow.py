@@ -3,7 +3,14 @@ import os
 from unittest.mock import patch, MagicMock
 
 from services.openai_maps_service import geocodificar_inversa_llm
-from services.municipio_responder import responder_municipio, CONTEXTO_MUNICIPIO, detect_modalidad
+from services.municipio_responder import (
+    responder_municipio,
+    CONTEXTO_MUNICIPIO,
+    detect_modalidad,
+    ReclamoFlowHandler,
+    ReclamoState,
+    ConversationState,
+)
 
 class GeoFlowTests(unittest.TestCase):
     @patch('services.openai_maps_service.reverse_geocode')
@@ -124,6 +131,37 @@ class GeoFlowTests(unittest.TestCase):
         self.assertEqual(detect_modalidad({'location': location}), 'location')
         self.assertIn('Recibí tu ubicación', resp['message_body'])
         self.assertIn('Calle Falsa 123', resp['message_body'])
+
+    def test_handle_direccion_confirms_and_links(self):
+        chat_context = MagicMock()
+        chat_context.context_data = {}
+        flow_context = {
+            'state': ReclamoState.ESPERANDO_DIRECCION.name,
+            'datos_reclamo': {'categoria': 'Bache', 'descripcion': 'desc'},
+        }
+        context = {
+            'chat_db_context_data': {CONTEXTO_MUNICIPIO: {'reclamo_flow_v2': flow_context}}
+        }
+        handler = ReclamoFlowHandler(context, chat_context)
+        with patch('services.municipio_responder.handle_direccion') as mock_resolver:
+            mock_resolver.return_value = {
+                'ubicacion': 'Calle Falsa 123',
+                'coordenadas': {'lat': 1.0, 'lng': 2.0},
+                'maps_search_url': 'https://maps.google.com/?q=1.0,2.0',
+            }
+            resp = handler.handle_direccion('Calle Falsa 123', {})
+        assert (
+            context['chat_db_context_data'][CONTEXTO_MUNICIPIO]['estado_conversacion']
+            == ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name
+        )
+        assert 'https://maps.google.com/?q=1.0,2.0' in resp['message_body']
+        assert any(
+            o.get('action_id') == 'confirmar_ubicacion' for o in resp.get('options_list', [])
+        )
+        resp2 = handler.handle_direccion('1', {'action_id': 'confirmar_ubicacion'})
+        assert handler.municipal_ctx.get('estado_conversacion') is None
+        assert handler.flow_context['state'] == ReclamoState.ESPERANDO_FOTO.name
+        assert 'foto' in resp2['message_body'].lower()
 
     def test_no_duplicate_prompts(self):
         owner_user = MagicMock(); owner_user.id = 1

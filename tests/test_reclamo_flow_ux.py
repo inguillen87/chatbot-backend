@@ -25,8 +25,8 @@ class TestReclamoFlowUX(unittest.TestCase):
         }
         handler = self._build_handler(flow_context)
         resp = handler.handle_direccion("Calle 123", {})
-        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
-        self.assertIn("foto adjunta", resp["message_body"].lower())
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
+        self.assertNotIn("foto", resp["message_body"].lower())
 
     def test_contact_details_prefilled_goes_to_confirmation(self):
         flow_context = {
