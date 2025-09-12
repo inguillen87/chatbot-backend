@@ -24,7 +24,7 @@ class GeoFlowTests(unittest.TestCase):
                 'estado_conversacion': 'ESPERANDO_CONFIRMACION_UBICACION',
                 'datos_parciales_llm_reclamo': {
                     'ubicacion': 'Calle Falsa 123',
-                    'maps_search_url': 'http://maps.example'
+                    'coordenadas': {'lat': 1.0, 'lng': 2.0}
                 }
             }
         }
@@ -42,8 +42,8 @@ class GeoFlowTests(unittest.TestCase):
             )
         assert '📍 Ubicación detectada' in resp['message_body']
         assert 'Calle Falsa 123' in resp['message_body']
-        assert 'http://maps.example' in resp['message_body']
-        assert '1) Sí, es acá' in resp['message_body']
+        assert 'https://maps.google.com/?q=1.0,2.0' in resp['message_body']
+        assert '1) Sí' in resp['message_body']
         assert resp.get('image_url')
         assert resp.get('image_alt_text')
         ids = [o.get('action_id') for o in resp.get('options_list', [])]

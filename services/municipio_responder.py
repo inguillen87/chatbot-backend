@@ -304,7 +304,7 @@ def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
             "ubicacion": direccion,
             "coordenadas": {"lat": lat, "lng": lng},
             "distrito": distrito,
-            "maps_search_url": f"https://www.google.com/maps/search/?api=1&query={lat},{lng}",
+            "maps_search_url": f"https://maps.google.com/?q={lat},{lng}",
         }
     parsed = resolver.resolve(user_input) if resolver else None
     if parsed:
@@ -326,7 +326,8 @@ def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
             "ubicacion": parsed.get("formatted") or parsed.get("display_name"),
             "coordenadas": {"lat": parsed.get("lat"), "lng": parsed.get("lon")},
             "distrito": parsed.get("localidad"),
-            "maps_search_url": parsed.get("maps_search_url"),
+            "maps_search_url": parsed.get("maps_search_url")
+            or f"https://maps.google.com/?q={parsed.get('lat')},{parsed.get('lon')}",
         }
     return None
 
@@ -2383,24 +2384,26 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             contexto_municipio_actual["estado_conversacion"] = (
                 ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name
             )
+            contexto_municipio_actual["address_confirmed"] = False
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             opciones = [
-                {"texto": "1) Sí, es acá", "action_id": "confirmar_ubicacion"},
-                {"texto": "2) No, corregir", "action_id": "editar_ubicacion"},
+                {"texto": "1) Sí", "action_id": "confirmar_ubicacion"},
+                {"texto": "2) No", "action_id": "editar_ubicacion"},
             ]
             msg = (
                 "📍 Ubicación detectada:\n"
                 f"{loc.get('ubicacion')}\n¿Es acá?\n"
-                "1) Sí, es acá\n2) No, corregir"
+                "1) Sí\n2) No"
             )
             image_url = None
             image_alt = None
-            if loc.get("maps_search_url"):
-                msg += f"\n🔗 Abrir mapa: {loc['maps_search_url']}"
-                coords = loc.get("coordenadas") or {}
-                lat = coords.get("lat", 0)
-                lon = coords.get("lon", 0)
+            coords = loc.get("coordenadas") or {}
+            lat = coords.get("lat", 0)
+            lon = coords.get("lon", 0)
+            if lat and lon:
+                maps_url = f"https://maps.google.com/?q={lat},{lon}"
+                msg += f"\n🔗 Abrir mapa: {maps_url}"
                 try:
                     image_url, image_alt = generate_static_map(lat, lon)
                 except Exception:
@@ -3791,12 +3794,9 @@ def responder_municipio(
             datos = contexto_municipio_actual.setdefault(
                 "datos_parciales_llm_reclamo", {}
             )
-            datos["coordenadas"] = {"lat": lat, "lon": lon}
+            datos["coordenadas"] = {"lat": lat, "lng": lon}
             datos["ubicacion"] = address
-            datos["maps_search_url"] = (
-                loc.get("maps_search_url")
-                or f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
-            )
+            datos["maps_search_url"] = f"https://maps.google.com/?q={lat},{lon}"
             if estado == ConversationState.ESPERANDO_DIRECCION_RECLAMO.name:
                 contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_DATOS_PERSONALES"
                 if chat_db_context:
@@ -3814,16 +3814,17 @@ def responder_municipio(
             contexto_municipio_actual[
                 "estado_conversacion"
             ] = ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name
+            contexto_municipio_actual["address_confirmed"] = False
             opciones = [
-                {"texto": "1) Sí, es acá", "action_id": "confirmar_ubicacion"},
-                {"texto": "2) No, corregir", "action_id": "editar_ubicacion"},
+                {"texto": "1) Sí", "action_id": "confirmar_ubicacion"},
+                {"texto": "2) No", "action_id": "editar_ubicacion"},
             ]
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             maps_url = datos.get("maps_search_url")
             msg = (
                 "📍 Ubicación detectada:\n"
-                f"{address}\n¿Es acá?\n1) Sí, es acá\n2) No, corregir"
+                f"{address}\n¿Es acá?\n1) Sí\n2) No"
             )
             if maps_url:
                 msg += f"\n🔗 Abrir mapa: {maps_url}"
@@ -5290,13 +5291,17 @@ def responder_municipio(
             contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
             .get("ubicacion", "")
         )
-        maps_url = (
+        coords = (
             contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
-            .get("maps_search_url")
+            .get("coordenadas", {})
         )
+        lat = coords.get("lat") or coords.get("latitude")
+        lon = coords.get("lng") or coords.get("lon") or coords.get("longitude")
+        maps_url = f"https://maps.google.com/?q={lat},{lon}" if lat and lon else None
         normalized = pregunta_str.strip().lower()
         if normalized in {"1", "confirmar", "si", "sí"}:
             contexto_municipio_actual["ubicacion_confirmada"] = True
+            contexto_municipio_actual["address_confirmed"] = True
             contexto_municipio_actual["estado_conversacion"] = None
             return _finalize_response({
                 "message_body": (
@@ -5307,6 +5312,7 @@ def responder_municipio(
             })
         elif normalized in {"2", "editar", "no"}:
             contexto_municipio_actual["ubicacion_confirmada"] = False
+            contexto_municipio_actual.pop("address_confirmed", None)
             contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
             return _finalize_response({
                 "message_body": "Por favor, decime la nueva ubicación.",
@@ -5316,23 +5322,17 @@ def responder_municipio(
             })
         else:
             opciones = [
-                {"texto": "1) Sí, es acá", "action_id": "confirmar_ubicacion"},
-                {"texto": "2) No, corregir", "action_id": "editar_ubicacion"},
+                {"texto": "1) Sí", "action_id": "confirmar_ubicacion"},
+                {"texto": "2) No", "action_id": "editar_ubicacion"},
             ]
             msg = (
                 "📍 Ubicación detectada:\n"
-                f"*{ubicacion_display}*\n¿Es acá?\n1) Sí, es acá\n2) No, corregir"
+                f"*{ubicacion_display}*\n¿Es acá?\n1) Sí\n2) No"
             )
             image_url = None
             image_alt = None
             if maps_url:
                 msg += f"\n🔗 Abrir mapa: {maps_url}"
-                coords = (
-                    contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
-                    .get("coordenadas", {})
-                )
-                lat = coords.get("lat", 0)
-                lon = coords.get("lon", 0)
                 try:
                     image_url, image_alt = generate_static_map(lat, lon)
                 except Exception:

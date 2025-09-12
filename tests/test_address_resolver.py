@@ -77,7 +77,7 @@ def test_resolver_includes_maps_search_url():
         "services.address_resolver.requests.get", return_value=_fake_resp(-33.0, -68.5)
     ):
         result = resolver.resolve("Sarmiento 100 esquina San Martín")
-    assert result["maps_search_url"].startswith("https://www.google.com/maps/search/")
+    assert result["maps_search_url"].startswith("https://maps.google.com/?q=")
 
 
 def test_resolver_ignores_na_input():
