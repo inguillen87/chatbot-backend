@@ -508,8 +508,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "pin_ticket": pin_final,
                 "email_vecino": email_final,
                 "dni_vecino": dni_final,
-                "last_system_event": {"type": "ticket_created", "ts": time.time()},
             }
+            self.context["last_event"] = {"type": "ticket_created", "ts": time.time()}
             self.context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
             logger.info(
                 f"Contexto de reclamo limpiado. Nuevo estado: {self.context[CONTEXTO_MUNICIPIO]['estado_conversacion']}"
@@ -792,7 +792,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 ctx_muni['contacto_usuario'] = {k: v for k, v in contacto_usuario.items() if v}
                 from services.municipio_responder import ConversationState
                 ctx_muni['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
-                ctx_muni['last_system_event'] = {"type": "ticket_created", "ts": time.time()}
+                self.context["last_event"] = {"type": "ticket_created", "ts": time.time()}
 
             # Obtener la URL base del chat del contexto para el botón "Ver mi Ticket"
             municipio_config = self.context.get('municipio_config_actual', {})

@@ -1599,7 +1599,7 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         chat_db_context_data = self.context.get("chat_db_context_data")
-        evt = (self.context.get(CONTEXTO_MUNICIPIO, {}) or {}).get("last_system_event", {})
+        evt = self.context.get("last_event") or {}
         if evt.get("type") == "ticket_created" and time.time() - evt.get("ts", 0) < 60:
             logger.info("[GreetingHandler] Ignorando saludo por ticket recién creado")
             return None
