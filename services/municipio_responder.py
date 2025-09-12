@@ -51,6 +51,7 @@ from .common_utils import (
     formatear_telefono_e164,
     construir_respuesta_sugerir_registro,
     extract_multiple_contact_details_regex,
+    formatear_opciones,
 )
 from utils.validators import looks_like_address, validate_name
 from utils.parsers import parse_contact_line
@@ -844,16 +845,7 @@ class ReclamoFlowHandler:
 
         if not force_prompt and not faltantes:
             self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
-            msg = self.get_confirmation_message()
-            opciones = msg.get("options_list", [])
-            opciones.extend(
-                [
-                    {"texto": "4. Repetir", "action_id": "reclamo_confirmar_repetir"},
-                    {"texto": "5. Ayuda", "action_id": "reclamo_confirmar_ayuda"},
-                ]
-            )
-            msg["options_list"] = opciones
-            return msg
+            return self.get_confirmation_message()
 
         self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
         return pedir_datos_contacto_compacto(faltantes)
@@ -876,15 +868,15 @@ class ReclamoFlowHandler:
 
         resumen = _format_contact_summary(self.municipal_ctx['contacto_usuario'])
         self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
+        opciones = [
+            {"texto": "Confirmar", "action_id": "reclamo_confirmar_si"},
+            {"texto": "Editar", "action_id": "reclamo_confirmar_no"},
+            {"texto": "Cancelar", "action_id": "cancelar"},
+        ]
+        opciones = formatear_opciones(opciones)
         return {
             "message_body": f"Perfecto, tomé estos datos:\n{resumen}\n\n¿Confirmás?",
-            "options_list": [
-                {"texto": "1. Confirmar", "action_id": "reclamo_confirmar_si"},
-                {"texto": "2. Editar", "action_id": "reclamo_confirmar_no"},
-                {"texto": "3. Cancelar", "action_id": "cancelar"},
-                {"texto": "4. Repetir", "action_id": "reclamo_confirmar_repetir"},
-                {"texto": "5. Ayuda", "action_id": "reclamo_confirmar_ayuda"},
-            ],
+            "options_list": opciones,
             "message_type": "interactive_buttons",
         }
 
@@ -900,10 +892,16 @@ class ReclamoFlowHandler:
         mensaje += f"- Email: {datos.get('email', 'No especificado')}\n"
         mensaje += f"- Teléfono: {datos.get('telefono', 'No especificado')}\n"
         mensaje += f"- Foto adjunta: {'Sí' if datos.get('foto_url') else 'No'}\n"
+        opciones = [
+            {"texto": "Confirmar", "action_id": "reclamo_confirmar_si"},
+            {"texto": "Editar", "action_id": "reclamo_confirmar_no"},
+            {"texto": "Cancelar", "action_id": "cancelar"},
+        ]
+        opciones = formatear_opciones(opciones)
         return {
             "message_body": mensaje,
-            "options_list": [{"texto": "✅ Confirmar", "action_id": "reclamo_confirmar_si"}, {"texto": "✏️ Editar datos", "action_id": "reclamo_confirmar_no"}, {"texto": "❌ Cancelar", "action_id": "reclamo_cancelar"}],
-            "message_type": "interactive_buttons"
+            "options_list": opciones,
+            "message_type": "interactive_buttons",
         }
 
     def handle_confirmacion(self, user_input, payload):
@@ -976,12 +974,11 @@ class ReclamoFlowHandler:
                 "Si querés ver nuevamente el resumen, tocá '4. Repetir'."
             )
             options = [
-                {"texto": "1. Confirmar", "action_id": "reclamo_confirmar_si"},
-                {"texto": "2. Editar", "action_id": "reclamo_confirmar_no"},
-                {"texto": "3. Cancelar", "action_id": "cancelar"},
-                {"texto": "4. Repetir", "action_id": "reclamo_confirmar_repetir"},
-                {"texto": "5. Ayuda", "action_id": "reclamo_confirmar_ayuda"},
+                {"texto": "Confirmar", "action_id": "reclamo_confirmar_si"},
+                {"texto": "Editar", "action_id": "reclamo_confirmar_no"},
+                {"texto": "Cancelar", "action_id": "cancelar"},
             ]
+            options = formatear_opciones(options)
             return {
                 "message_body": ayuda_msg,
                 "options_list": options,
