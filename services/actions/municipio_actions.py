@@ -188,7 +188,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
                 mensaje = (
                     "No pude ubicar *{}* en Junín. Mandala así: "
-                    "*Calle 123, barrio* o *Calle1 y Calle2, barrio*."
+                    "*Calle 123, barrio/distrito* o *Calle1 y Calle2, barrio/distrito*."
                 ).format(ubicacion_llm)
                 return {
                     "success": False,
