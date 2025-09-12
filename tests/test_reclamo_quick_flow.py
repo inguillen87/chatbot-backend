@@ -138,6 +138,31 @@ def test_prefill_dni_from_contact(owner_user):
     assert flow["datos_reclamo"]["dni"] == "32877851"
 
 
+def test_handle_direccion_uses_normalizer(monkeypatch, owner_user):
+    def fake_norm(addr, cfg):
+        return {
+            "lat": -33.1,
+            "lon": -68.6,
+            "formatted": "Don Bosco 55",
+            "maps_search_url": "http://maps" ,
+        }
+
+    monkeypatch.setattr(
+        "services.address_normalizer.normalize_and_geocode", fake_norm
+    )
+
+    result = run_turn(
+        "Don Bosco 55",
+        state="EN_FLUJO_RECLAMO",
+        flow_state="ESPERANDO_DIRECCION",
+        owner_user=owner_user,
+    )
+
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["coordenadas"] == {"lat": -33.1, "lng": -68.6}
+    assert "¿Es acá?" in result.response["message_body"]
+
+
 def test_pin_moves_to_personal_data(owner_user):
     location = {"latitude": -33.0, "longitude": -68.5, "address": "Calle Falsa 123"}
     result = run_turn("", state="ESPERANDO_DIRECCION_RECLAMO", location=location, owner_user=owner_user)
