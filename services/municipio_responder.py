@@ -816,7 +816,7 @@ class ReclamoFlowHandler:
             )
 
         if not direccion_display:
-            return {"message_body": "La dirección parece muy corta. Por favor, ingresá una dirección más completa (calle y número)."}
+            return {"message_body": "La dirección parece muy corta. Por favor, ingresá una dirección más completa (calle, número y barrio/distrito)."}
 
         datos["direccion"] = direccion_display
 
@@ -840,7 +840,7 @@ class ReclamoFlowHandler:
         self.flow_context['datos_reclamo']['descripcion'] = user_input
         if not self.flow_context['datos_reclamo'].get('direccion'):
             self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
-            return {"message_body": "Gracias. ¿Cuál es la dirección exacta del problema (calle y número)?"}
+            return {"message_body": "Gracias. ¿Cuál es la dirección exacta del problema (calle, número y barrio/distrito)?"}
         else:
             # If a photo was already provided earlier or is present in the
             # context, do not ask for another one.
