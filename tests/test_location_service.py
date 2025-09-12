@@ -1,12 +1,12 @@
 import requests
 
-import requests
-
 from services.location_service import (
     geocode_address,
     _normalize_corner,
     _extract_from_maps_url,
 )
+
+extract_location = geocode_address
 
 
 def test_geocode_address_success(monkeypatch):
@@ -334,5 +334,63 @@ def test_extract_from_maps_url_cache(monkeypatch):
     url = "https://maps.app.goo.gl/xyz"
     _extract_from_maps_url(url)
     _extract_from_maps_url(url)
+    assert calls["head"] == 1
+
+
+def test_extract_location_shortlink_at_coords(monkeypatch):
+    monkeypatch.delenv("GOOGLE_MAPS_API_KEY", raising=False)
+
+    class HeadResp:
+        url = "https://www.google.com/maps/@-33.1,-68.5,17z"
+
+    calls = {"head": 0}
+
+    def fake_head(url, allow_redirects=True, timeout=5):
+        calls["head"] += 1
+        return HeadResp()
+
+    def fake_get(*args, **kwargs):  # pragma: no cover - should not be called
+        raise AssertionError("GET should not be used when resolving short link")
+
+    monkeypatch.setattr(requests, "head", fake_head)
+    monkeypatch.setattr(requests, "get", fake_get)
+    from services import location_service
+
+    location_service._RESOLVED_URL_CACHE.clear()
+    result = extract_location("https://maps.app.goo.gl/atxyz")
+    assert result["lat"] == -33.1 and result["lng"] == -68.5
+    assert (
+        result["maps_search_url"]
+        == "https://www.google.com/maps/search/?api=1&query=-33.1,-68.5"
+    )
+    assert calls["head"] == 1
+
+
+def test_extract_location_shortlink_q_coords(monkeypatch):
+    monkeypatch.delenv("GOOGLE_MAPS_API_KEY", raising=False)
+
+    class HeadResp:
+        url = "https://www.google.com/maps?q=-33.2,-68.6"
+
+    calls = {"head": 0}
+
+    def fake_head(url, allow_redirects=True, timeout=5):
+        calls["head"] += 1
+        return HeadResp()
+
+    def fake_get(*args, **kwargs):  # pragma: no cover - should not be called
+        raise AssertionError("GET should not be used when resolving short link")
+
+    monkeypatch.setattr(requests, "head", fake_head)
+    monkeypatch.setattr(requests, "get", fake_get)
+    from services import location_service
+
+    location_service._RESOLVED_URL_CACHE.clear()
+    result = extract_location("https://maps.app.goo.gl/qxyz")
+    assert result["lat"] == -33.2 and result["lng"] == -68.6
+    assert (
+        result["maps_search_url"]
+        == "https://www.google.com/maps/search/?api=1&query=-33.2,-68.6"
+    )
     assert calls["head"] == 1
 
