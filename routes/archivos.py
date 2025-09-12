@@ -534,7 +534,11 @@ ALLOWED_CHAT_MIMES = {
     "image/jpeg",
     "image/png",
     "image/webp",
-    "application/pdf"
+    "application/pdf",
+    "audio/webm",
+    "audio/ogg",
+    "audio/mpeg",
+    "video/mp4",
 }
 
 @archivos_bp.route('/upload/chat_attachment', methods=['OPTIONS'])

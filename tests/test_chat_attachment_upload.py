@@ -61,6 +61,34 @@ class ChatAttachmentUploadTests(unittest.TestCase):
         self.assertIn("thumbUrl", info)
         self.assertEqual(info["thumbUrl"], "/static/uploads/foto_thumb.webp")
 
+    def test_upload_chat_attachment_accepts_audio_webm(self):
+        data = {"file": (BytesIO(b"fake"), "voz.webm", "audio/webm")}
+
+        adjunto_mock = SimpleNamespace(
+            id=1,
+            url="/static/uploads/voz.webm",
+            mime="audio/webm",
+            tamano=4,
+            nombre_original="voz.webm",
+            filename="voz.webm",
+        )
+
+        with self.app.test_request_context(
+            "/archivos/upload/chat_attachment",
+            method="POST",
+            data=data,
+            content_type="multipart/form-data",
+            headers={"X-Chat-Session-Id": "abc"},
+        ):
+            with patch(
+                "routes.archivos.create_attachment_with_thumbnail", return_value=adjunto_mock
+            ):
+                resp = archivos_route.upload_chat_attachment.__wrapped__(current_user=self.user)
+
+        self.assertEqual(resp[1], 200)
+        info = resp[0].get_json()["attachmentInfo"]
+        self.assertEqual(info["mimeType"], "audio/webm")
+
     def test_upload_chat_attachment_uses_meta_thumbUrl(self):
         data = {"file": (BytesIO(b"fake"), "foto.png")}
 
