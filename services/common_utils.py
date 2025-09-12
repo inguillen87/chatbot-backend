@@ -148,6 +148,26 @@ def parse_precio_flexible(precio_str: str) -> Tuple[str, Optional[float], Option
 
     return precio_str_limpio_retorno, precio_float, moneda_detectada
 
+
+def formatear_opciones(opts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Numera opciones y agrega "Repetir" y "Ayuda" al final."""
+    formatted: List[Dict[str, Any]] = []
+    for idx, opt in enumerate(opts, start=1):
+        nuevo = dict(opt)
+        texto = opt.get("texto", "")
+        texto = re.sub(r"^\d+\.\s*", "", texto)
+        nuevo["texto"] = f"{idx}. {texto}"
+        formatted.append(nuevo)
+
+    formatted.append(
+        {"texto": f"{len(formatted) + 1}. Repetir", "action_id": "reclamo_confirmar_repetir"}
+    )
+    formatted.append(
+        {"texto": f"{len(formatted) + 1}. Ayuda", "action_id": "reclamo_confirmar_ayuda"}
+    )
+    return formatted
+
+
 def crear_mapa_de_columnas_inteligente(df: pd.DataFrame, umbral_similitud: float = 0.8) -> Optional[Tuple[Dict[str, Any], int]]:
     """
     PLACEHOLDER: Intelligent column mapping.
