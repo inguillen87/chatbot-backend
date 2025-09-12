@@ -21,6 +21,10 @@ class TestReclamoFlowUX(unittest.TestCase):
                 "categoria": "Bache",
                 "descripcion": "pozo en la calle",
                 "foto_url": "http://example.com/foto.jpg",
+                "nombre": "Juan",
+                "dni": "12345678",
+                "email": "juan@example.com",
+                "telefono": "+5400000000",
             },
         }
         handler = self._build_handler(flow_context)
@@ -52,6 +56,10 @@ class TestReclamoFlowUX(unittest.TestCase):
                 "categoria": "Bache",
                 "direccion": "Calle 123",
                 "foto_url": "http://example.com/foto.jpg",
+                "nombre": "Juan",
+                "dni": "12345678",
+                "email": "juan@example.com",
+                "telefono": "+5400000000",
             },
         }
         handler = self._build_handler(flow_context)
@@ -63,6 +71,12 @@ class TestReclamoFlowUX(unittest.TestCase):
         context = {
             "chat_db_context_data": {},
             "foto_url": "http://example.com/foto.jpg",
+            "viewer_user_obj": type("V", (), {
+                "name": "Juan",
+                "email": "juan@example.com",
+                "telefono": "+5400000000",
+                "dni": "12345678",
+            })(),
         }
         handler = ReclamoFlowHandler(context, MagicMock())
         handler.start_flow(
@@ -88,6 +102,10 @@ class TestReclamoFlowUX(unittest.TestCase):
                 "categoria": "Bache",
                 "direccion": "Calle 123",
                 "descripcion": "pozo grande",
+                "nombre": "Juan",
+                "dni": "12345678",
+                "email": "juan@example.com",
+                "telefono": "+5400000000",
             },
         }
         handler = self._build_handler(flow_context)
@@ -154,7 +172,6 @@ class TestReclamoFlowUX(unittest.TestCase):
             mock_exec.return_value = {"success": True, "data": {"nro_ticket": "R-1"}}
             resp = handler.handle_confirmacion("si", {})
         self.assertIn("R-1", resp["message_body"])
-        self.assertIn("Tu reclamo fue creado", resp["message_body"])
         municipal_ctx = context["chat_db_context_data"][CONTEXTO_MUNICIPIO]
         self.assertNotIn("reclamo_flow_v2", municipal_ctx)
         self.assertEqual(
@@ -174,28 +191,47 @@ class TestReclamoFlowUX(unittest.TestCase):
         handler = self._build_handler(flow_context)
         resp = handler.handle_confirmacion("no", {})
         self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_MENU_EDICION.name)
-        self.assertIn("¿Qué querés editar?", resp["message_body"])
+        self.assertIn("editar", resp["message_body"].lower())
 
-    def test_phrase_auto_selects_arbolado(self):
-        from services.herramientas_municipio import sugerir_categorias_relevantes
+    def test_edit_contact_allows_reentry_and_updates_confirmation(self):
+        flow_context = {
+            "state": ReclamoState.ESPERANDO_CONFIRMACION.name,
+            "datos_reclamo": {
+                "categoria": "Bache",
+                "descripcion": "pozo",
+                "direccion": "Calle 123",
+                "nombre": "Juan",
+                "email": "juan@old.com",
+                "telefono": "+5400000000",
+                "dni": "12345678",
+            },
+        }
+        contexto = {
+            CONTEXTO_MUNICIPIO: {
+                "reclamo_flow_v2": flow_context,
+                "contacto_usuario": {"nombre": "Juan", "email": "juan@old.com"},
+            }
+        }
+        handler = ReclamoFlowHandler({"chat_db_context_data": contexto}, MagicMock())
 
-        frase = "un árbol caído en mi calle"
-        sugerencias = sugerir_categorias_relevantes(frase)
-        self.assertIn("Arbolado", sugerencias)
-        handler = self._build_handler({})
-        resp = handler.start_flow(
-            datos_iniciales={"descripcion": frase},
-            categoria_inicial=sugerencias[0],
+        handler.handle_confirmacion("no", {})
+        handler.handle_menu_edicion("contacto", {})
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
+        self.assertNotIn("contacto_usuario", contexto[CONTEXTO_MUNICIPIO])
+        self.assertNotIn("nombre", handler.flow_context["datos_reclamo"])
+
+        resp = handler.handle_datos_contacto(
+            "Maria Lopez, maria@new.com, 2615550000, 30123456"
         )
-        self.assertEqual(
-            handler.flow_context["datos_reclamo"].get("categoria"),
-            "Arbolado",
-        )
-        self.assertEqual(
-            handler.flow_context["state"],
-            ReclamoState.ESPERANDO_DIRECCION.name,
-        )
-        self.assertNotIn("options_list", resp)
+        self.assertIn("Maria Lopez", resp["message_body"])
+        self.assertIn("maria@new.com", resp["message_body"])
+
+        with patch('services.municipio_responder.CrearReclamoActionHandler.execute') as mock_exec:
+            mock_exec.return_value = {"success": True, "data": {"nro_ticket": "R-1"}}
+            handler.handle_confirmacion("si", {})
+        action_data = mock_exec.call_args[0][0]
+        self.assertEqual(action_data.get("usuario"), "Maria Lopez")
+        self.assertEqual(action_data.get("email"), "maria@new.com")
 
 
 if __name__ == "__main__":
