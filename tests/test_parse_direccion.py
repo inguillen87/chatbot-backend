@@ -19,5 +19,19 @@ class TestParseDireccionFallback(unittest.TestCase):
         self.assertEqual(result['calle'], 'Sarmiento')
         mock_cohere_client.generate.assert_called_once()
 
+    @patch.object(hm, 'parse_direccion_completa')
+    @patch.object(hm, 'geocode_address')
+    def test_direccion_es_valida_llm_fallback(self, mock_geo, mock_parse):
+        mock_geo.side_effect = [None, {"lat": -33.0, "lng": -68.0}]
+        mock_parse.return_value = {
+            "calle": "Sarmiento",
+            "numero": "100",
+            "localidad": "Junin",
+            "provincia": "Mendoza",
+        }
+        self.assertTrue(hm.direccion_es_valida("Sarmiento 100"))
+        self.assertEqual(mock_geo.call_count, 2)
+        mock_parse.assert_called_once()
+
 if __name__ == '__main__':
     unittest.main()
