@@ -654,6 +654,37 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertEqual(ticket_kwargs['longitud'], -68.8)
         self.assertEqual(ticket_kwargs['direccion_contacto'], 'Calle Falsa 123')
 
+    @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
+    @patch('services.actions.municipio_actions.formatear_telefono_e164', return_value="+5492611234567")
+    @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
+    @patch('services.actions.municipio_actions.validar_email', return_value=True)
+    @patch('services.actions.municipio_actions.validar_y_formatear_direccion', return_value={"formatted_address": "Calle Falsa 123", "lat": -32.9, "lng": -68.8})
+    @patch('services.actions.municipio_actions.parse_direccion', return_value={"calle": "Calle Falsa", "numero": "123", "localidad": "Junin"})
+    def test_nombre_placeholder_dispara_pedido_contacto(
+        self, mock_parse, mock_validar_dir, mock_validar_email, mock_validar_tel,
+        mock_formatear_tel, mock_enviar
+    ):
+        datos_llm = {
+            "categoria": "Arbolado",
+            "descripcion": "Ramas caídas",
+            "ubicacion": "Calle Falsa 123",
+            "usuario": "Vecino/a",
+            "telefono": "2611234567",
+            "email": "vecino@example.com",
+            "dni": "30111222",
+        }
+        context = {
+            "viewer_user_obj": None,
+            "user_obj": MagicMock(id=1, municipio_id="default"),
+            "anon_id": "anon123",
+            "municipio_config_actual": {},
+        }
+        handler = CrearReclamoActionHandler(context)
+        respuesta = handler.execute(datos_llm)
+
+        assert respuesta["next_state_hint"] == "ESPERANDO_DATOS_CONTACTO"
+        assert "Nombre y apellido" in respuesta["message_to_user"]
+
     @patch('services.municipio_responder.handle_llm_interaction', return_value=(None, {}))
     @patch('services.municipio_responder.google_search')
     def test_fallback_handler(self, mock_google_search, mock_handle_llm):
