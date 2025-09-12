@@ -239,13 +239,13 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         )
         self.assertEqual(formatted_payload['text']['body'], expected_body)
 
-    @patch('services.municipio_responder.llamar_gemini')
-    def test_finalizar_tramite_action_resets_context(self, mock_llamar_gemini):
+    @patch('services.municipio_responder.llamar_openai')
+    def test_finalizar_tramite_action_resets_context(self, mock_llamar_openai):
         """
         Tests if the 'finalizar_tramite' action correctly resets the conversation context.
         """
         # --- Setup ---
-        mock_llamar_gemini.return_value = (
+        mock_llamar_openai.return_value = (
             {
                 "message_body": "De nada. ¡Hasta luego!",
                 "accion_backend": "finalizar_tramite",
@@ -289,15 +289,15 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         self.assertEqual(final_context.get('estado_conversacion'), ConversationState.CONVERSACION_GENERAL_LLM.name)
 
     @unittest.skip("Test is flawed and needs to be rewritten. Mocks wrong handler.")
-    @patch('services.pymes.llamar_gemini')
+    @patch('services.pymes.llamar_openai')
     @patch('requests.get')
     @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat')
-    def test_media_and_location_data_is_passed_to_handler(self, mock_interpretar_imagen, mock_requests_get, mock_llamar_gemini):
+    def test_media_and_location_data_is_passed_to_handler(self, mock_interpretar_imagen, mock_requests_get, mock_llamar_openai):
         """
         Tests that location and interpreted image data are correctly passed to the final handler.
         """
         # --- Setup ---
-        mock_llamar_gemini.return_value = {"accion_backend": "responder_directamente", "message_body": "OK"}
+        mock_llamar_openai.return_value = {"accion_backend": "responder_directamente", "message_body": "OK"}
         mock_response = MagicMock()
         mock_response.raise_for_status.return_value = None
         mock_response.content = b'fake_image_bytes'

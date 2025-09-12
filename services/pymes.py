@@ -791,6 +791,10 @@ def get_or_create_pyme_user_by_token(token: str) -> Optional[models.User]:
 from services.llm_orchestrator import llamar_llm_con_fallback
 from .chat_orchestrator import ChatOrchestrator # Importar el nuevo Orchestrator
 
+# Alias para el LLM principal (OpenAI con Cohere). Puede parchearse en tests
+# como ``llamar_openai``.
+llamar_openai = llamar_llm_con_fallback
+
 def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, chat_db_context=None, anon_id=None, channel: str = "web", **kwargs):
     request_id = str(uuid.uuid4())
     logger_actual = current_app.logger if current_app else logger
