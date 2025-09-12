@@ -17,6 +17,7 @@ from models import MunicipioTicket, TicketComentario, db, SitioWebInfo, Conversa
 from services.ticket_service import servicio_tickets
 from services.promo_service import send_post_ticket_promo
 from utils.db_utils import safe_flag_modified
+from services.message_templates import get_message
 # Compatibilidad hacia atrás para pruebas que parchean `flag_modified`
 flag_modified = safe_flag_modified
 import hashlib
@@ -791,9 +792,15 @@ class ReclamoFlowHandler:
             # If the description came from an image, it might be generic.
             # We can tailor the message.
             if self.flow_context['datos_reclamo'].get('origen_descripcion') == 'imagen':
-                 return {"message_body": f"Gracias a tu imagen, entiendo que el reclamo es por *{categoria}* (problema similar a: '{descripcion}').\n\nPara continuar, por favor, indicame la dirección exacta del problema."}
+                msg = get_message(
+                    "reclamo_pedir_direccion_desde_imagen",
+                    categoria=categoria,
+                    descripcion=descripcion,
+                )
+                return {"message_body": msg}
             else:
-                 return {"message_body": f"Reclamo por *{categoria}*.\n\nPara continuar, por favor, indicame la dirección exacta del problema."}
+                msg = get_message("reclamo_pedir_direccion", categoria=categoria)
+                return {"message_body": msg}
         else:
             # All initial data is present, move to confirmation or next step
             return self.ask_for_contact_details()
@@ -949,8 +956,9 @@ class ReclamoFlowHandler:
             }
 
         # If no location could be resolved, ask explicitly for the district
+        msg = get_message("preguntar_barrio", direccion=user_input)
         return {
-            "message_body": f"¿En qué barrio o distrito queda '{user_input}'? Necesito esa información para ubicar la dirección.",
+            "message_body": msg,
             "options_list": None,
         }
 
@@ -1002,8 +1010,9 @@ class ReclamoFlowHandler:
         geo = validar_y_formatear_direccion(direccion_completa, municipio_cfg)
         if not geo or not geo.get("lat") or not geo.get("lng"):
             self.municipal_ctx["estado_conversacion"] = "ESPERANDO_BARRIO_RECLAMO"
+            msg = get_message("preguntar_barrio_no_ubique", direccion=direccion_completa)
             return {
-                "message_body": f"No pude ubicar '{direccion_completa}'. ¿En qué barrio o distrito queda?",
+                "message_body": msg,
                 "fuente": "handle_barrio_reclamo",
             }
 

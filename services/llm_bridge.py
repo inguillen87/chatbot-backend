@@ -102,6 +102,9 @@ def llamar_llm_para_generacion_texto(
             messages.append({"role": "system", "content": system_prompt_especifico})
         messages.append({"role": "user", "content": user_prompt})
 
+        if json_output and not any("json" in (m.get("content", "").lower()) for m in messages):
+            messages.insert(0, {"role": "system", "content": "Responde solo con un objeto JSON válido."})
+
         kwargs = {"model": "gpt-4o-mini", "messages": messages, "temperature": temperature}
         if json_output:
             kwargs["response_format"] = {"type": "json_object"}
