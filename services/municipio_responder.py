@@ -39,6 +39,7 @@ from .herramientas_municipio import (
     categorizar_reclamo_por_palabra_clave,
     sugerir_categorias_relevantes,
     parse_direccion_completa,
+    validar_y_formatear_direccion,
     normalizar_texto,
     direccion_es_valida,
     TOOL_REGISTRY,
@@ -833,6 +834,40 @@ class ReclamoFlowHandler:
             ],
             "message_type": "interactive_buttons",
         }
+
+    def handle_barrio_reclamo(self, user_input: str):
+        """Merge a barrio/district with the stored address and retry geocoding."""
+        datos_ctx = self.municipal_ctx.setdefault("datos_parciales_llm_reclamo", {})
+        direccion_base = datos_ctx.get("ubicacion")
+        if not direccion_base:
+            return {
+                "message_body": "No tengo una dirección previa. Indicá la dirección completa nuevamente.",
+                "fuente": "handle_barrio_reclamo",
+            }
+
+        municipio_cfg = self.context.get("municipio_config_actual", {})
+        direccion_completa = f"{direccion_base} {user_input}".strip()
+        geo = validar_y_formatear_direccion(direccion_completa, municipio_cfg)
+        if not geo or not geo.get("lat") or not geo.get("lng"):
+            self.municipal_ctx["estado_conversacion"] = "ESPERANDO_BARRIO_RECLAMO"
+            return {
+                "message_body": f"No pude ubicar '{direccion_completa}'. ¿En qué barrio o distrito queda?",
+                "fuente": "handle_barrio_reclamo",
+            }
+
+        datos_ctx.update(
+            {
+                "ubicacion": geo.get("formatted_address", direccion_completa),
+                "coordenadas": {"lat": geo.get("lat"), "lng": geo.get("lng")},
+                "distrito": geo.get("barrio") or user_input,
+            }
+        )
+
+        handler = CrearReclamoActionHandler(self.context)
+        response = _execute_crear_reclamo(handler, datos_ctx, self.municipal_ctx)
+        if response.get("message_to_user") and "message_body" not in response:
+            response["message_body"] = response.pop("message_to_user")
+        return response
 
     def handle_descripcion(self, user_input):
         if len(user_input) < 10:
@@ -4519,6 +4554,12 @@ def responder_municipio(
                         "fuente": "proactive_location_handler",
                     }
                 )
+        elif estado_conversacion == "ESPERANDO_BARRIO_RECLAMO":
+            handler = ReclamoFlowHandler(context, chat_db_context)
+            response = handler.handle_barrio_reclamo(pregunta_str)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response)
         elif estado_conversacion == ConversationState.ESPERANDO_DATOS_CONTACTO.name:
             datos_prev = contexto_municipio_actual.get('datos_parciales_llm_reclamo', {})
             contacto_prev = contexto_municipio_actual.get('contacto_usuario', {})

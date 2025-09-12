@@ -3,7 +3,13 @@ import os
 from unittest.mock import patch, MagicMock
 
 from services.openai_maps_service import geocodificar_inversa_llm
-from services.municipio_responder import responder_municipio, CONTEXTO_MUNICIPIO, detect_modalidad
+from services.municipio_responder import (
+    responder_municipio,
+    CONTEXTO_MUNICIPIO,
+    detect_modalidad,
+    ReclamoFlowHandler,
+)
+from services.actions.municipio_actions import CrearReclamoActionHandler
 
 class GeoFlowTests(unittest.TestCase):
     @patch('services.openai_maps_service.reverse_geocode')
@@ -154,6 +160,67 @@ class GeoFlowTests(unittest.TestCase):
         self.assertIn('necesito estos datos', body)
         self.assertNotIn('ubicación', body)
         self.assertNotIn('foto', body)
+
+    @patch('services.actions.municipio_actions.validar_y_formatear_direccion')
+    def test_estado_barrio_reclamo(self, mock_geo):
+        mock_geo.return_value = {"formatted_address": "Calle Falsa 123"}
+        datos_llm = {
+            "categoria": "Alumbrado",
+            "descripcion": "Luz rota",
+            "ubicacion": "Calle Falsa 123",
+            "usuario": "Test User",
+        }
+        ctx = {
+            "viewer_user_obj": None,
+            "user_obj": MagicMock(id=1, municipio_id="testmuni"),
+            "anon_id": "test",
+            CONTEXTO_MUNICIPIO: {},
+        }
+        handler = CrearReclamoActionHandler(ctx)
+        handler.execute(datos_llm)
+        self.assertEqual(
+            ctx[CONTEXTO_MUNICIPIO]["estado_conversacion"],
+            "ESPERANDO_BARRIO_RECLAMO",
+        )
+
+    @patch('services.municipio_responder.validar_y_formatear_direccion')
+    @patch('services.actions.municipio_actions.validar_y_formatear_direccion')
+    def test_handle_barrio_reintento_exitoso(self, mock_geo_action, mock_geo_responder):
+        mock_geo_action.return_value = {"formatted_address": "Calle Falsa 123"}
+        mock_geo_responder.return_value = {
+            "formatted_address": "Calle Falsa 123, Centro",
+            "lat": 1.0,
+            "lng": 2.0,
+            "barrio": "Centro",
+        }
+        datos_llm = {
+            "categoria": "Alumbrado",
+            "descripcion": "Luz rota",
+            "ubicacion": "Calle Falsa 123",
+            "usuario": "Test User",
+        }
+        muni_ctx = {}
+        context = {
+            "viewer_user_obj": None,
+            "user_obj": MagicMock(id=1, municipio_id="testmuni"),
+            "anon_id": "test",
+            CONTEXTO_MUNICIPIO: muni_ctx,
+            "chat_db_context_data": {CONTEXTO_MUNICIPIO: muni_ctx},
+        }
+        CrearReclamoActionHandler(context).execute(datos_llm)
+        self.assertEqual(muni_ctx["estado_conversacion"], "ESPERANDO_BARRIO_RECLAMO")
+        handler = ReclamoFlowHandler(context, MagicMock())
+        resp = handler.handle_barrio_reclamo("Centro")
+        self.assertEqual(muni_ctx["estado_conversacion"], "ESPERANDO_DATOS_CONTACTO")
+        self.assertEqual(
+            muni_ctx.get("coordenadas_reclamo"),
+            {"lat": 1.0, "lng": 2.0},
+        )
+        self.assertEqual(
+            muni_ctx.get("datos_parciales_llm_reclamo", {}).get("distrito"),
+            "Centro",
+        )
+        self.assertEqual(resp.get("next_state_hint"), "ESPERANDO_DATOS_CONTACTO")
 
 
 if __name__ == '__main__':
