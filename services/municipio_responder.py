@@ -772,6 +772,53 @@ class ReclamoFlowHandler:
         datos = self.flow_context.setdefault('datos_reclamo', {})
         municipio_cfg = self.context.get("municipio_config_actual", {})
 
+        estado_conv = self.municipal_ctx.get("estado_conversacion")
+        if estado_conv == ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name:
+            normalized = normalizar_texto(user_input)
+            action = (payload.get("action_id") or payload.get("action") or "").lower()
+            if normalized in {"1", "si", "sí"} or action == "confirmar_ubicacion":
+                self.municipal_ctx["estado_conversacion"] = None
+                self.municipal_ctx["address_confirmed"] = True
+                if datos.get('foto_url') or self.context.get('foto_url'):
+                    datos.setdefault('foto_url', self.context.get('foto_url'))
+                    return self.ask_for_contact_details()
+                self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
+                return {
+                    "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
+                    "options_list": [
+                        {"texto": "Sí, agregar foto", "action_id": "reclamo_adjuntar_foto_si"},
+                        {"texto": "No, omitir foto", "action_id": "reclamo_adjuntar_foto_no"},
+                    ],
+                    "message_type": "interactive_buttons",
+                }
+            elif normalized in {"2", "no"} or action == "editar_ubicacion":
+                self.municipal_ctx["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+                self.municipal_ctx.pop("address_confirmed", None)
+                for k in ["direccion", "coordenadas", "maps_search_url"]:
+                    datos.pop(k, None)
+                datos.pop("address_candidates", None)
+                return {
+                    "message_body": "Entendido, indicame la dirección exacta del problema.",
+                }
+            else:
+                maps_url = datos.get("maps_search_url")
+                direccion_display = datos.get("direccion") or ""
+                msg = (
+                    "📍 Ubicación detectada:\n"
+                    f"{direccion_display}\n¿Es acá?\n1) Sí\n2) No"
+                )
+                if maps_url:
+                    msg += f"\n🔗 Abrir mapa: {maps_url}"
+                opciones = [
+                    {"texto": "1) Sí", "action_id": "confirmar_ubicacion"},
+                    {"texto": "2) No", "action_id": "editar_ubicacion"},
+                ]
+                return {
+                    "message_body": msg,
+                    "options_list": opciones,
+                    "message_type": "interactive_buttons",
+                }
+
         if user_input.strip().isdigit() and datos.get("address_candidates"):
             idx = int(user_input.strip()) - 1
             candidates = datos.pop("address_candidates")
@@ -801,20 +848,39 @@ class ReclamoFlowHandler:
                 datos["coordenadas"] = loc["coordenadas"]
             if loc.get("maps_search_url"):
                 datos["maps_search_url"] = loc["maps_search_url"]
-        else:
-            ubic_ctx = self.municipal_ctx.get("ubicacion_contextual") or {}
-            coords = datos.get("coordenadas") or {}
-            if payload.get("coordenadas"):
-                coords = payload["coordenadas"]
-            elif self.municipal_ctx.get("datos_parciales_llm_reclamo", {}).get("coordenadas"):
-                coords = self.municipal_ctx["datos_parciales_llm_reclamo"]["coordenadas"]
-            if coords:
-                datos["coordenadas"] = coords
-            direccion_display = (
-                ubic_ctx.get("address")
-                or self.municipal_ctx.get("datos_parciales_llm_reclamo", {}).get("ubicacion")
-                or user_input.strip()
+            datos["direccion"] = direccion_display
+            self.municipal_ctx["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name
+            self.municipal_ctx["address_confirmed"] = False
+            opciones = [
+                {"texto": "1) Sí", "action_id": "confirmar_ubicacion"},
+                {"texto": "2) No", "action_id": "editar_ubicacion"},
+            ]
+            msg = (
+                "📍 Ubicación detectada:\n"
+                f"{direccion_display}\n¿Es acá?\n1) Sí\n2) No"
             )
+            maps_url = datos.get("maps_search_url")
+            if maps_url:
+                msg += f"\n🔗 Abrir mapa: {maps_url}"
+            return {
+                "message_body": msg,
+                "options_list": opciones,
+                "message_type": "interactive_buttons",
+            }
+
+        ubic_ctx = self.municipal_ctx.get("ubicacion_contextual") or {}
+        coords = datos.get("coordenadas") or {}
+        if payload.get("coordenadas"):
+            coords = payload["coordenadas"]
+        elif self.municipal_ctx.get("datos_parciales_llm_reclamo", {}).get("coordenadas"):
+            coords = self.municipal_ctx["datos_parciales_llm_reclamo"]["coordenadas"]
+        if coords:
+            datos["coordenadas"] = coords
+        direccion_display = (
+            ubic_ctx.get("address")
+            or self.municipal_ctx.get("datos_parciales_llm_reclamo", {}).get("ubicacion")
+            or user_input.strip()
+        )
 
         if not direccion_display:
             return {"message_body": "La dirección parece muy corta. Por favor, ingresá una dirección más completa (calle, número y barrio/distrito)."}
