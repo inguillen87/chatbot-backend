@@ -44,6 +44,7 @@ def test_free_text_sets_category_and_asks_address(owner_user):
     assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
     flow = result.ctx["reclamo_flow_v2"]
     assert flow["datos_reclamo"]["categoria"] == "Arreglo de calle"
+    assert "Reclamo por *Arreglo de calle*" in result.response["message_body"]
 
 
 def test_tree_text_triggers_arbolado(owner_user):
@@ -53,6 +54,13 @@ def test_tree_text_triggers_arbolado(owner_user):
     assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
     flow = result.ctx["reclamo_flow_v2"]
     assert flow["datos_reclamo"]["categoria"] == "Arbolado"
+
+
+def test_hueco_en_vereda_maps_to_arreglo(owner_user):
+    result = run_turn("hay un hueco en la vereda", owner_user=owner_user)
+    assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Arreglo de calle"
 
 
 def test_numeric_selection_maps_to_category(owner_user):

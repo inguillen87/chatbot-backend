@@ -3556,12 +3556,22 @@ RECLAMO_KEYWORDS = {
 }
 
 def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> str | None:
-    """
-    Finds a reclamo category based on user input, checking for numbers, emojis,
-    direct names or keyword matches.
+    """Resolve a category name from user input using menu options and keywords.
+
+    ``reclamo_options`` may be a list of strings (category names) or dictionaries
+    with ``texto``, ``action_id`` and ``emoji`` keys. The helper normalizes the
+    structure so tests or callers can pass whichever is convenient.
     """
     if not user_input:
         return None
+
+    # Normalize options into dictionaries to simplify downstream logic.
+    normalized_opts = []
+    for opt in reclamo_options:
+        if isinstance(opt, str):
+            normalized_opts.append({"texto": opt})
+        else:
+            normalized_opts.append(opt)
 
     normalized_input = normalizar_texto(user_input.strip())
 
@@ -3569,16 +3579,16 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
     if user_input.strip().isdigit():
         try:
             num = int(user_input.strip())
-            if 1 <= num <= len(reclamo_options):
-                return reclamo_options[num - 1].get("texto")
+            if 1 <= num <= len(normalized_opts):
+                return normalized_opts[num - 1].get("texto")
         except ValueError:
             pass
-        for option in reclamo_options:
+        for option in normalized_opts:
             if str(option.get("action_id")) == user_input.strip():
                 return option.get("texto")
 
     # 2. Check for emoji or exact name matches
-    for option in reclamo_options:
+    for option in normalized_opts:
         emoji = option.get("emoji")
         name_norm = normalizar_texto(option.get("texto", ""))
         if emoji and emoji in user_input:
@@ -3588,7 +3598,7 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
 
     # 3. Check for first-letter shortcuts
     if len(normalized_input) == 1:
-        for option in reclamo_options:
+        for option in normalized_opts:
             if normalizar_texto(option.get("texto", "")).startswith(normalized_input):
                 return option.get("texto")
 
