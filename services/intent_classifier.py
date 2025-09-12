@@ -4,9 +4,24 @@ import unicodedata
 import logging
 from fuzzywuzzy import process, fuzz
 
+from .herramientas_municipio import categorizar_reclamo_por_palabra_clave
+
 
 # Umbral reducido para permitir lenguaje natural más libre
 INTENT_THRESHOLD = 0.35
+
+# Palabras clave que disparan el flujo de reclamo
+KW_RECLAMO = [
+    "árbol",
+    "arbol",
+    "rama",
+    "luminaria",
+    "poste",
+    "bache",
+    "pozo",
+    "basura",
+    "residuos",
+]
 
 # Mapeo rápido de palabras clave a categorías de reclamo
 KEYWORDS_CATEGORIA = {
@@ -32,9 +47,20 @@ KEYWORDS_CATEGORIA = {
 }
 
 
+def clasificar_por_kw_y_cv(texto: str) -> str:
+    return categorizar_reclamo_por_palabra_clave(texto)
+
+
+def enrutar_a_reclamo(categoria: str) -> dict:
+    return {"intent": "reclamo", "categoria": categoria}
+
+
 def fast_reclamo_detect(text: str):
     """Detecta rápidamente si el texto contiene palabras clave de reclamo."""
     t = text.lower()
+    if any(k in t for k in KW_RECLAMO):
+        categoria = clasificar_por_kw_y_cv(text)
+        return enrutar_a_reclamo(categoria)
     for k, cat in KEYWORDS_CATEGORIA.items():
         if k in t:
             return {"intent": "reclamo", "categoria": cat}
