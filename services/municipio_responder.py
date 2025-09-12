@@ -737,6 +737,19 @@ class ReclamoFlowHandler:
             for campo in ['nombre', 'email', 'telefono', 'dni']:
                 datos.setdefault(campo, contacto_prev.get(campo))
 
+        # Use the profile name captured from the messaging platform when
+        # there is no explicit viewer information or the stored name is the
+        # generic placeholder.
+        profile_name = (
+            self.context.get("profile_name")
+            or self.context.get("chat_db_context_data", {}).get("profile_name")
+        )
+        if profile_name and datos.get("nombre") in (None, "", "Vecino/a"):
+            datos["nombre"] = profile_name
+        if profile_name and contacto_prev.get("nombre") in (None, "", "Vecino/a"):
+            contacto_prev["nombre"] = profile_name
+            self.municipal_ctx['contacto_usuario'] = contacto_prev
+
         if categoria_inicial and not self.flow_context['datos_reclamo'].get('categoria'):
             self.flow_context['datos_reclamo']['categoria'] = categoria_inicial
 
@@ -766,10 +779,48 @@ class ReclamoFlowHandler:
             return self.ask_for_contact_details()
 
     def handle_categoria(self, user_input):
-        self.flow_context['datos_reclamo']['categoria'] = user_input
+        """Resolve and store the complaint category from user input.
+
+        Accepts either a numeric option, a textual category name or a free-form
+        description. When a description is provided it attempts to classify it
+        using the same helper employed during the initial turn so the user is
+        not forced to pick from the menu again.
+        """
+
+        opciones_menu = _get_reclamos_menu().get("options_list", [])
+        plain_options = [{"texto": opt.get("category_name")} for opt in opciones_menu]
+
+        categoria = find_reclamo_category_by_input(user_input, plain_options)
+
+        if categoria:
+            normalized_input = normalizar_texto(user_input)
+            if not user_input.strip().isdigit() and normalized_input != normalizar_texto(categoria):
+                self.flow_context.setdefault("datos_reclamo", {})["descripcion"] = user_input
+        else:
+            detalles = extract_reclamo_details_from_text(
+                user_input,
+                plain_options,
+                use_llm=(
+                    self.context.get("channel") != "whatsapp"
+                    or os.getenv("WHATSAPP_LLM_ENABLED", "false").lower() == "true"
+                ),
+            )
+            categoria = detalles.get("categoria_sugerida")
+            if detalles.get("descripcion_sugerida"):
+                self.flow_context.setdefault("datos_reclamo", {})["descripcion"] = detalles["descripcion_sugerida"]
+            if detalles.get("direccion_sugerida"):
+                self.flow_context.setdefault("datos_reclamo", {})["direccion"] = detalles["direccion_sugerida"]
+
+        if not categoria:
+            return _get_reclamos_menu()
+
+        self.flow_context.setdefault('datos_reclamo', {})['categoria'] = categoria
         self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
         return {
-            "message_body": f"Perfecto. Iniciemos tu reclamo por *{user_input}*.\n\nPor favor, describí brevemente el problema."
+            "message_body": (
+                f"Perfecto. Iniciemos tu reclamo por *{categoria}*.\n\n"
+                "Por favor, describí brevemente el problema."
+            )
         }
 
     def handle_direccion(self, user_input, payload):
@@ -3523,6 +3574,20 @@ def extract_reclamo_details_from_text(user_input: str, reclamo_options: list, us
     if category:
         details["categoria_sugerida"] = category
         details.setdefault("descripcion_sugerida", user_input)
+    else:
+        # Fallback to the broader keyword helper so that phrases like
+        # "ramas y árbol partido" trigger the *Arbolado* category even when
+        # the quick matcher fails (e.g. due to casing or missing accents).
+        from services.herramientas_municipio import (
+            categorizar_reclamo_por_palabra_clave,
+        )
+
+        kw_cat = categorizar_reclamo_por_palabra_clave(user_input)
+        if kw_cat and kw_cat.lower() != "otros":
+            mapped = find_reclamo_category_by_input(kw_cat, reclamo_options)
+            if mapped:
+                details["categoria_sugerida"] = mapped
+                details.setdefault("descripcion_sugerida", user_input)
 
     import re
     normalized = user_input.strip()
@@ -3846,7 +3911,28 @@ def responder_municipio(
             )
             maybe_echo_debug(anon_id, ctx_state, None, decided_flow, debug_extracted)
             handler = ReclamoFlowHandler(context, chat_db_context)
-            response = handler.start_flow(datos_iniciales={"descripcion": pregunta_str})
+            reclamo_opts = _get_reclamos_menu().get("options_list", [])
+            plain_opts = [{"texto": opt.get("category_name")} for opt in reclamo_opts]
+            details = extract_reclamo_details_from_text(
+                pregunta_str,
+                plain_opts,
+                use_llm=(
+                    context.get("channel") != "whatsapp"
+                    or os.getenv("WHATSAPP_LLM_ENABLED", "false").lower() == "true"
+                ),
+            )
+            categoria = details.pop("categoria_sugerida", None)
+            datos_iniciales = {}
+            if details.get("descripcion_sugerida"):
+                datos_iniciales["descripcion"] = details["descripcion_sugerida"]
+            if details.get("direccion_sugerida"):
+                datos_iniciales["direccion"] = details["direccion_sugerida"]
+            if not datos_iniciales:
+                datos_iniciales = {"descripcion": pregunta_str}
+            response = handler.start_flow(
+                datos_iniciales=datos_iniciales,
+                categoria_inicial=categoria,
+            )
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response(response)
@@ -4262,7 +4348,8 @@ def responder_municipio(
     # --- END GLOBAL MENU SHORTCUTS ---
 
     # --- START DIRECT RECLAMO DETECTION FOR TEXT OR AUDIO ---
-    if not contexto_municipio_actual.get("estado_conversacion"):
+    estado_conv = contexto_municipio_actual.get("estado_conversacion")
+    if estado_conv in (None, ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name):
         reclamo_options = _get_reclamos_menu().get("options_list", [])
         plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
         details = extract_reclamo_details_from_text(
