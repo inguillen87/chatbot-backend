@@ -82,3 +82,13 @@ def test_resolver_includes_maps_search_url():
 def test_resolver_ignores_na_input():
     resolver = AddressResolver(JUNIN_CONFIG)
     assert resolver.resolve("N/A") is None
+
+
+def test_resolver_skips_bounds_when_disabled():
+    cfg = dict(JUNIN_CONFIG)
+    resolver = AddressResolver(cfg, enforce_bounds=False)
+    with patch(
+        "services.address_resolver.requests.get", return_value=_fake_resp(-34.5, -69.2)
+    ):
+        result = resolver.resolve("Fuera 1")
+    assert result["validez"] is True
