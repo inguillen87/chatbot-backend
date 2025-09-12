@@ -1272,6 +1272,18 @@ class ReclamoFlowHandler:
                 )
                 punto_limpio_logo = "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png"
                 return self.end_flow(message, show_menu=True, image_url=punto_limpio_logo)
+
+            next_hint = result.get("next_state_hint")
+            if next_hint:
+                # The action needs more information (e.g., missing district).
+                # Keep the flow active and transition to the hinted state
+                self.flow_context['state'] = next_hint
+                return {
+                    "message_body": result.get("message_to_user", ""),
+                    "options_list": result.get("options_list"),
+                    "message_type": result.get("message_type", "text"),
+                }
+
             error_message = result.get(
                 "message_to_user",
                 "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde.",
