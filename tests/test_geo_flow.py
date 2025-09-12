@@ -44,6 +44,8 @@ class GeoFlowTests(unittest.TestCase):
         assert 'Calle Falsa 123' in resp['message_body']
         assert 'http://maps.example' in resp['message_body']
         assert '1) Sí, es acá' in resp['message_body']
+        assert resp.get('image_url')
+        assert resp.get('image_alt_text')
         ids = [o.get('action_id') for o in resp.get('options_list', [])]
         assert 'confirmar_ubicacion' in ids and 'editar_ubicacion' in ids
 

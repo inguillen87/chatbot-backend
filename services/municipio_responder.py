@@ -65,6 +65,7 @@ from services.address_resolver import AddressResolver
 from services.geo_service import reverse_geocode
 from types import SimpleNamespace
 from services.integrations.twilio_client import send_whatsapp
+from .map_preview import generate_static_map
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 DEBUG_ECHO_NUMBERS = set(filter(None, os.getenv("DEBUG_ECHO_NUMBERS", "").split(",")))
@@ -2286,15 +2287,28 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 f"{loc.get('ubicacion')}\n¿Es acá?\n"
                 "1) Sí, es acá\n2) No, corregir"
             )
+            image_url = None
+            image_alt = None
             if loc.get("maps_search_url"):
                 msg += f"\n🔗 Abrir mapa: {loc['maps_search_url']}"
+                coords = loc.get("coordenadas") or {}
+                lat = coords.get("lat", 0)
+                lon = coords.get("lon", 0)
+                try:
+                    image_url, image_alt = generate_static_map(lat, lon)
+                except Exception:
+                    logger_actual.exception("Error generating static map preview")
+            response_payload = {
+                "message_body": msg,
+                "options_list": opciones,
+                "message_type": "interactive_buttons",
+                "fuente": "confirmar_ubicacion",
+            }
+            if image_url:
+                response_payload["image_url"] = image_url
+                response_payload["image_alt_text"] = image_alt
             return (
-                {
-                    "message_body": msg,
-                    "options_list": opciones,
-                    "message_type": "interactive_buttons",
-                    "fuente": "confirmar_ubicacion",
-                },
+                response_payload,
                 contexto_municipio_actual,
             )
         return (
@@ -5170,14 +5184,30 @@ def responder_municipio(
                 "📍 Ubicación detectada:\n"
                 f"*{ubicacion_display}*\n¿Es acá?\n1) Sí, es acá\n2) No, corregir"
             )
+            image_url = None
+            image_alt = None
             if maps_url:
                 msg += f"\n🔗 Abrir mapa: {maps_url}"
-            return _finalize_response({
+                coords = (
+                    contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+                    .get("coordenadas", {})
+                )
+                lat = coords.get("lat", 0)
+                lon = coords.get("lon", 0)
+                try:
+                    image_url, image_alt = generate_static_map(lat, lon)
+                except Exception:
+                    logger_actual.exception("Error generating static map preview")
+            payload = {
                 "message_body": msg,
                 "options_list": opciones,
                 "message_type": "interactive_buttons",
                 "fuente": "confirmar_ubicacion",
-            })
+            }
+            if image_url:
+                payload["image_url"] = image_url
+                payload["image_alt_text"] = image_alt
+            return _finalize_response(payload)
 
     elif estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name:
         sugerencia_texto = pregunta_str
