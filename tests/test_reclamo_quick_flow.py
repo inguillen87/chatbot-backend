@@ -4,7 +4,7 @@ from models import ChatSessionContext
 from app import db
 
 
-def run_turn(message, state=None, preset_dp=None, location=None, owner_user=None):
+def run_turn(message, state=None, preset_dp=None, location=None, owner_user=None, flow_state=None, contact_info=None):
     existing = ChatSessionContext.query.get("test_session")
     if existing:
         db.session.delete(existing)
@@ -12,7 +12,11 @@ def run_turn(message, state=None, preset_dp=None, location=None, owner_user=None
     ctx = ChatSessionContext(chat_session_id="test_session")
     ctx.context_data = {}
     muni = ctx.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+    if contact_info:
+        muni["contacto_usuario"] = contact_info
     muni["estado_conversacion"] = state or "ESPERANDO_SELECCION_MENU_PRINCIPAL"
+    if flow_state:
+        muni["reclamo_flow_v2"] = {"state": flow_state, "datos_reclamo": {}}
     if preset_dp:
         muni["datos_parciales_llm_reclamo"] = preset_dp
     db.session.add(ctx)
@@ -36,9 +40,102 @@ def run_turn(message, state=None, preset_dp=None, location=None, owner_user=None
 
 
 def test_free_text_sets_category_and_asks_address(owner_user):
-    result = run_turn("tengo ramas y arboles caidos", owner_user=owner_user)
-    assert result.ctx["estado_conversacion"] == "ESPERANDO_DIRECCION_RECLAMO"
-    assert result.ctx["datos_parciales_llm_reclamo"]["categoria"] == "Arbolado"
+    result = run_turn("hay un agujero en mi cuadra", owner_user=owner_user)
+    assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Arreglo de calle"
+    assert "Reclamo por *Arreglo de calle*" in result.response["message_body"]
+
+
+def test_tree_text_triggers_arbolado(owner_user):
+    result = run_turn(
+        "ramas y arbol partido en mitad de la cuadra", owner_user=owner_user
+    )
+    assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Arbolado"
+
+
+def test_hueco_en_vereda_maps_to_arreglo(owner_user):
+    result = run_turn("hay un hueco en la vereda", owner_user=owner_user)
+    assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Arreglo de calle"
+
+
+def test_numeric_selection_maps_to_category(owner_user):
+    result = run_turn(
+        "5",
+        state="EN_FLUJO_RECLAMO",
+        flow_state="ESPERANDO_CATEGORIA",
+        owner_user=owner_user,
+    )
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Arreglo de calle"
+
+
+def test_emoji_selection_maps_to_category(owner_user):
+    result = run_turn(
+        "🌳",
+        state="EN_FLUJO_RECLAMO",
+        flow_state="ESPERANDO_CATEGORIA",
+        owner_user=owner_user,
+    )
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Arbolado"
+
+
+def test_free_text_in_category_state(owner_user):
+    result = run_turn(
+        "hay un agujero en mi cuadra",
+        state="EN_FLUJO_RECLAMO",
+        flow_state="ESPERANDO_CATEGORIA",
+        owner_user=owner_user,
+    )
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Arreglo de calle"
+    assert flow["datos_reclamo"]["descripcion"] == "hay un agujero en mi cuadra"
+
+
+def test_llm_fallback_supplies_missing_fields(monkeypatch, owner_user):
+    def fake_llm(text):
+        return {
+            "tipo_problema": "Arbolado",
+            "descripcion_problema": "ramas caidas",
+            "ubicacion_problema": "Don Bosco 55",
+        }
+
+    monkeypatch.setattr(
+        "services.municipio_responder.extract_complaint_details_llm",
+        fake_llm,
+    )
+
+    result = run_turn(
+        "texto completamente desconocido",
+        state="EN_FLUJO_RECLAMO",
+        flow_state="ESPERANDO_CATEGORIA",
+        owner_user=owner_user,
+    )
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Arbolado"
+    assert flow["datos_reclamo"]["direccion"] == "Don Bosco 55"
+    assert flow["datos_reclamo"]["descripcion"] == "ramas caidas"
+
+
+def test_prefill_dni_from_contact(owner_user):
+    contact = {
+        "dni": "32877851",
+        "email": "vecino@example.com",
+        "nombre": "Vecino",
+        "telefono": "+5492610000000",
+    }
+    result = run_turn(
+        "ramas caidas en la vereda",
+        owner_user=owner_user,
+        contact_info=contact,
+    )
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["dni"] == "32877851"
 
 
 def test_pin_moves_to_personal_data(owner_user):
