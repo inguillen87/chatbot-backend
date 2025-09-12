@@ -96,8 +96,22 @@ def deep_merge_dict(target: dict, source: dict) -> dict:
     return target
 
 
-def _send_delayed_payload(client, to_number: str, from_number: str, payload: dict, delay: int):
-    """Send a payload via WhatsApp after a delay using a background thread."""
+def _send_delayed_payload(client, to_number: str, from_number: str, payload: dict, delay: int,
+                          session_id: str | None = None, token: str | None = None):
+    """Send a payload via WhatsApp after a delay using a background thread.
+
+    Parameters
+    ----------
+    client: Twilio client used to send the message.
+    to_number/from_number: WhatsApp numbers.
+    payload: Bot response payload to format and send.
+    delay: Seconds to wait before sending.
+    session_id: Optional chat session identifier used to validate whether the
+        delayed payload is still relevant.
+    token: Optional token stored in the chat context.  If the token saved in the
+        database no longer matches when the delayed task executes, the message
+        is skipped (e.g. user already interacted again).
+    """
 
     # Capture the real application object so the background thread can safely
     # create its own context without relying on the ambient ``current_app``.
@@ -106,6 +120,17 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
     def _send():
         with app.app_context():
             from services.response_formatter import build_interactive_response
+
+            # If a session id and token were provided, verify the token still
+            # matches what's stored in the DB. Otherwise skip sending.
+            ctx_entry = None
+            if session_id and token:
+                ctx_entry = ChatSessionContext.query.filter_by(
+                    chat_session_id=session_id
+                ).first()
+                ctx_data = ctx_entry.context_data if ctx_entry else {}
+                if ctx_data.get("pending_delayed_token") != token:
+                    return
 
             formatted = build_interactive_response(
                 options=payload.get("options_list", []),
@@ -129,6 +154,12 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
 
             try:
                 client.messages.create(**params)
+                # Remove the token so additional delayed payloads are not sent
+                if ctx_entry and token:
+                    ctx_entry.context_data.pop("pending_delayed_token", None)
+                    safe_flag_modified(ctx_entry, "context_data")
+                    db.session.add(ctx_entry)
+                    db.session.commit()
             except Exception as e:
                 app.logger.error(f"Error sending delayed message: {e}")
 
@@ -257,6 +288,13 @@ def whatsapp_webhook():
     # Ensure context_data is a dict
     if not isinstance(session_context_db_entry.context_data, dict):
         session_context_db_entry.context_data = {}
+
+    # Cancel any pending delayed payload when a new user message arrives.
+    ctx_root = session_context_db_entry.context_data
+    if ctx_root.pop("pending_delayed_token", None) is not None:
+        safe_flag_modified(session_context_db_entry, "context_data")
+        db.session.add(session_context_db_entry)
+        db.session.commit()
 
     # --- Handle location messages and persist coordinates ---
     msg_type = post_vars.get("MessageType")
@@ -934,12 +972,19 @@ def whatsapp_webhook():
         and bot_response_dict.get("delayed_payload")
         and bot_response_dict.get("delay_seconds")
     ):
+        delayed_token = str(uuid.uuid4())
+        session_context_db_entry.context_data["pending_delayed_token"] = delayed_token
+        safe_flag_modified(session_context_db_entry, "context_data")
+        db.session.add(session_context_db_entry)
+        db.session.commit()
         _send_delayed_payload(
             twilio_client,
             to_number_raw,
             from_number_raw,
             bot_response_dict["delayed_payload"],
             bot_response_dict["delay_seconds"],
+            chat_session_id_internal,
+            delayed_token,
         )
 
     return "OK", 200

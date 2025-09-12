@@ -57,7 +57,9 @@ def normalize_and_geocode(raw_address: str, municipio_cfg: Dict[str, Any]) -> Op
                 return parsed
         # Even if geocoding fails, return a structured representation so the
         # caller can continue the flow without repeatedly asking for barrio.
-        formatted = f"{cleaned.title()}, {municipio_cfg.get('ciudad')}, {municipio_cfg.get('provincia')}, {municipio_cfg.get('pais', 'AR')}"
+        country = municipio_cfg.get("pais") or "AR"
+        parts_fmt = [cleaned.title(), municipio_cfg.get("ciudad"), municipio_cfg.get("provincia"), country]
+        formatted = ", ".join(p for p in parts_fmt if p)
         return {
             "calle": calle.title() if calle else None,
             "numero": numero,
@@ -65,7 +67,7 @@ def normalize_and_geocode(raw_address: str, municipio_cfg: Dict[str, Any]) -> Op
             "barrio": barrio.title() if isinstance(barrio, str) else None,
             "localidad": municipio_cfg.get("ciudad"),
             "provincia": municipio_cfg.get("provincia"),
-            "pais": municipio_cfg.get("pais", "AR"),
+            "pais": country,
             "lat": None,
             "lon": None,
             "precision": "manual",

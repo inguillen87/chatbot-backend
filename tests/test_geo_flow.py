@@ -163,6 +163,23 @@ class GeoFlowTests(unittest.TestCase):
         assert handler.flow_context['state'] == ReclamoState.ESPERANDO_FOTO.name
         assert 'foto' in resp2['message_body'].lower()
 
+    @patch('services.municipio_responder.AddressResolver.resolve')
+    def test_handle_direccion_requires_coords(self, mock_resolve):
+        mock_resolve.return_value = {
+            'formatted': 'Don Bosco 55',
+            'lat': None,
+            'lon': None,
+        }
+        municipio_cfg = {
+            'ciudad': 'Junín',
+            'provincia': 'Mendoza',
+            'pais': 'AR',
+            'bounds': (0, 0, 1, 1),
+        }
+        from services.municipio_responder import handle_direccion
+        result = handle_direccion('Don Bosco 55', {}, municipio_cfg)
+        assert result is None
+
     def test_no_duplicate_prompts(self):
         owner_user = MagicMock(); owner_user.id = 1
         chat_context = MagicMock()
