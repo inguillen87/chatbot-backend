@@ -788,6 +788,7 @@ def validar_y_formatear_direccion(
         logger.warning(
             f"[GEO] No se pudo geocodificar '{direccion}' dentro de los límites municipales."
         )
+        resolved = None
         # Intento de fallback usando LLM para parsear y reintentar geocodificación
         try:
             parsed = parse_direccion_completa(direccion, cfg)
@@ -802,20 +803,28 @@ def validar_y_formatear_direccion(
             query = ", ".join(parts)
             geo = geocode_address(query)
             if geo:
-                resolved = {
-                    "calle": parsed.get("calle"),
-                    "numero": parsed.get("numero"),
-                    "entre_calles": parsed.get("entre_calles", []),
-                    "barrio": parsed.get("barrio"),
-                    "localidad": loc,
-                    "provincia": prov,
-                    "pais": cfg.get("pais"),
-                    "lat": geo.get("lat"),
-                    "lon": geo.get("lng"),
-                    "precision": parsed.get("precision", "approx"),
-                    "formatted": geo.get("display_name"),
-                    "validez": True,
-                }
+                lat = geo.get("lat")
+                lon = geo.get("lng")
+                validez = (
+                    resolver._within_bounds(lat, lon)
+                    if hasattr(resolver, "_within_bounds")
+                    else True
+                )
+                if validez:
+                    resolved = {
+                        "calle": parsed.get("calle"),
+                        "numero": parsed.get("numero"),
+                        "entre_calles": parsed.get("entre_calles", []),
+                        "barrio": parsed.get("barrio"),
+                        "localidad": loc,
+                        "provincia": prov,
+                        "pais": cfg.get("pais"),
+                        "lat": lat,
+                        "lon": lon,
+                        "precision": parsed.get("precision", "approx"),
+                        "formatted": geo.get("display_name"),
+                        "validez": True,
+                    }
         if not resolved:
             return None
 
