@@ -323,6 +323,24 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertIn("necesito algunos datos más: **dni, email, telefono, ubicacion**", respuesta["message_to_user"])
         mock_crear_ticket.assert_not_called()
 
+    @patch('services.actions.municipio_actions.parse_direccion', return_value=None)
+    @patch('services.actions.municipio_actions.validar_y_formatear_direccion')
+    def test_accion_crear_reclamo_pide_barrio(self, mock_validar, mock_parse):
+        mock_validar.return_value = {"formatted_address": "Calle Falsa 123", "lng": -68.8}
+        datos_llm = {
+            "categoria": "Alumbrado",
+            "descripcion": "Luz rota",
+            "ubicacion": "Calle Falsa 123",
+            "usuario": "Test User",
+        }
+        context = {"viewer_user_obj": None, "user_obj": MagicMock(id=1, municipio_id="testmuni"), "anon_id": "testanon", "contexto_municipio_v2": {}}
+        handler = CrearReclamoActionHandler(context)
+        respuesta = handler.execute(datos_llm)
+        self.assertFalse(respuesta["success"])
+        self.assertIn("barrio", respuesta["message_to_user"].lower())
+        self.assertEqual(respuesta["next_state_hint"], "ESPERANDO_BARRIO_RECLAMO")
+        self.assertIn("categoria_reclamo", handler.context["contexto_municipio_v2"])
+
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
     @patch('services.actions.municipio_actions.validar_email', return_value=True)

@@ -167,7 +167,12 @@ class CrearReclamoActionHandler(BaseActionHandler):
         # Geocoding: validate and enrich address with coordinates and formatted text
         if ubicacion_llm and not coordenadas_llm:
             geo_info = validar_y_formatear_direccion(ubicacion_llm, municipio_config)
-            if not geo_info or not geo_info.get("lat") or not geo_info.get("lng"):
+            if (
+                not geo_info
+                or not geo_info.get("lat")
+                or not geo_info.get("lng")
+                or not geo_info.get("barrio")
+            ):
                 contexto_reclamo.pop("direccion_reclamo", None)
                 contexto_reclamo.pop("coordenadas_reclamo", None)
                 for key, value in [
@@ -185,16 +190,16 @@ class CrearReclamoActionHandler(BaseActionHandler):
                         "distrito": distrito_llm,
                     }
                 )
+                contexto_reclamo["estado_conversacion"] = "ESPERANDO_BARRIO_RECLAMO"
                 self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
                 mensaje = (
-                    "No pude ubicar *{}* en Junín. Mandala así: "
-                    "*Calle 123, barrio/distrito* o *Calle1 y Calle2, barrio/distrito*."
-                ).format(ubicacion_llm)
+                    f"¿En qué barrio o distrito queda '{ubicacion_llm}'? Necesito esa información para ubicar la dirección."
+                )
                 return {
                     "success": False,
                     "message_to_user": mensaje,
                     "message_type": "text",
-                    "next_state_hint": "ESPERANDO_DIRECCION_RECLAMO",
+                    "next_state_hint": "ESPERANDO_BARRIO_RECLAMO",
                 }
 
             ubicacion_llm = geo_info.get("formatted_address", ubicacion_llm)
