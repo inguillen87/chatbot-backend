@@ -147,6 +147,75 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertIn("Editar", respuesta["message_to_user"])
         self.assertTrue(any(o.get("action_id") == "editar_reclamo" for o in respuesta.get("options_list", [])))
 
+    @patch('services.actions.municipio_actions.archivo_service.asociar_archivos_a_ticket')
+    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
+    @patch('services.actions.municipio_actions.validar_telefono')
+    @patch('services.actions.municipio_actions.validar_email')
+    @patch('services.location_service.geocode_address')
+    @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
+    @patch('services.actions.municipio_actions.formatear_telefono_e164')
+    @patch('services.herramientas_municipio.parse_direccion_completa')
+    def test_crear_reclamo_asocia_archivo(
+        self,
+        mock_parse_direccion,
+        mock_formatear_tel,
+        mock_enviar_whatsapp,
+        mock_geocode_address,
+        mock_validar_email,
+        mock_validar_telefono,
+        mock_crear_ticket,
+        mock_asociar_archivos,
+    ):
+        mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "12345", "consulta_pin": "555444"}
+        mock_validar_telefono.return_value = True
+        mock_formatear_tel.return_value = "+5491122334455"
+        mock_validar_email.return_value = True
+        mock_parse_direccion.return_value = {"calle": "Calle Falsa", "numero": "123", "localidad": "Springfield"}
+
+        datos_llm = {
+            "categoria": "Alumbrado",
+            "descripcion": "Poste de luz caído",
+            "ubicacion": "Calle Falsa 123, Springfield",
+            "coordenadas": {"lat": -32.8908, "lon": -68.8272},
+            "usuario": "Homero Simpson",
+            "telefono": "91122334455",
+            "email": "homero@example.com",
+            "pin": "555444",
+            "dni": "12345678",
+        }
+
+        mock_viewer_user = MagicMock(spec=User)
+        mock_viewer_user.id = 100
+        mock_viewer_user.telefono = "2615550000"
+        mock_viewer_user.email = "hsimpson@springfield.com"
+        mock_viewer_user.nombre = "Homero J. Simpson"
+
+        mock_owner_user = MagicMock(spec=User)
+        mock_owner_user.id = 1
+        mock_owner_user.municipio_id = "springfield_municipio"
+
+        context = {
+            "viewer_user_obj": mock_viewer_user,
+            "user_obj": mock_owner_user,
+            "anon_id": "session123",
+            "municipio_config_actual": {"ejemplo_direccion": "Av. Siempreviva 742"},
+            "chat_session_uuid": "sess-abc",
+            "chat_db_context_data": {"processed_idempotency_keys": {}},
+            "archivo_id_para_asociar": 42,
+        }
+
+        handler = CrearReclamoActionHandler(context)
+        respuesta = handler.execute(datos_llm)
+
+        self.assertTrue(respuesta["success"])
+        mock_asociar_archivos.assert_called_once_with(
+            ticket_id=1,
+            tipo_ticket="municipio",
+            ids_archivos=[42],
+            session_id="sess-abc",
+            user_id=None,
+        )
+
     @patch('services.actions.municipio_actions.parse_direccion', return_value={"calle": "Calle Falsa", "numero": "123", "localidad": "Junin"})
     @patch('services.actions.municipio_actions.validar_y_formatear_direccion', return_value={"lat": -32.89, "lng": -68.83, "formatted_address": "Calle Falsa 123"})
     @patch('services.actions.municipio_actions.validar_email', return_value=True)
