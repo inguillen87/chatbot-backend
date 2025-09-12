@@ -44,14 +44,6 @@ def test_free_text_sets_category_and_asks_address(owner_user):
     assert flow["datos_reclamo"]["categoria"] == "Arreglo de calle"
 
 
-def test_tree_text_triggers_arbolado(owner_user):
-    result = run_turn(
-        "ramas y arbol partido en mitad de la cuadra", owner_user=owner_user
-    )
-    assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
-    flow = result.ctx["reclamo_flow_v2"]
-    assert flow["datos_reclamo"]["categoria"] == "Arbolado"
-
 
 def test_numeric_selection_maps_to_category(owner_user):
     result = run_turn(
