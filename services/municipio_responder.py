@@ -2626,6 +2626,11 @@ BOTONES_COMANDOS_MUNICIPIO = {
 # Utiliza el orquestador de LLMs que intenta OpenAI y Cohere.
 from services.llm_orchestrator import llamar_llm_con_fallback
 
+# Alias para el LLM principal que utiliza OpenAI con Cohere como respaldo.
+# Las integraciones o tests pueden parchear ``llamar_openai`` para interceptar
+# estas llamadas de manera segura.
+llamar_openai = llamar_llm_con_fallback
+
 # Imports necesarios para la función accion_crear_reclamo_municipio
 # (Algunos pueden estar ya importados globalmente en el archivo)
 # from models import MunicipioTicket, db as global_db, User, ArchivoAdjunto, AnalisisArchivo # db ya está como global_db
