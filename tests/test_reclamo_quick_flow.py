@@ -44,6 +44,7 @@ def test_free_text_sets_category_and_asks_address(owner_user):
     assert flow["datos_reclamo"]["categoria"] == "Arreglo de calle"
 
 
+
 def test_numeric_selection_maps_to_category(owner_user):
     result = run_turn(
         "5",
