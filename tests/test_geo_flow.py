@@ -3,7 +3,7 @@ import os
 from unittest.mock import patch, MagicMock
 
 from services.openai_maps_service import geocodificar_inversa_llm
-from services.municipio_responder import responder_municipio, CONTEXTO_MUNICIPIO
+from services.municipio_responder import responder_municipio, CONTEXTO_MUNICIPIO, detect_modalidad
 
 class GeoFlowTests(unittest.TestCase):
     @patch('services.openai_maps_service.reverse_geocode')
@@ -94,6 +94,34 @@ class GeoFlowTests(unittest.TestCase):
             response = handler.handle_confirmacion('', {'action': 'reclamo_confirmar_no'})
         assert '¿Qué querés editar?' in response['message_body']
         instance.execute.assert_not_called()
+
+    def test_location_first_triggers_confirmation(self):
+        owner_user = MagicMock()
+        owner_user.id = 1
+        owner_user.municipio_id = 'default'
+
+        chat_context = MagicMock()
+        chat_context.context_data = {}
+
+        location = {'latitude': -32.9, 'longitude': -68.8, 'address': 'Calle Falsa 123'}
+
+        from flask import Flask
+        flask_app = Flask(__name__)
+        with flask_app.app_context():
+            resp = responder_municipio(
+                pregunta_original='',
+                owner_user=owner_user,
+                rubro_obj=None,
+                viewer_user=None,
+                chat_db_context=chat_context,
+                anon_id='test',
+                channel='whatsapp',
+                location=location
+            )
+
+        self.assertEqual(detect_modalidad({'location': location}), 'location')
+        self.assertIn('Recibí tu ubicación', resp['message_body'])
+        self.assertIn('Calle Falsa 123', resp['message_body'])
 
 
 if __name__ == '__main__':

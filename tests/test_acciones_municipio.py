@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import sys
 import os
+import json
 
 # Añadir el directorio raíz del proyecto al sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -16,6 +17,7 @@ from services.actions.municipio_actions import (
 )
 from services.herramientas_municipio import direccion_es_valida
 from models import User
+from services.municipio_responder import responder_municipio, detect_modalidad
 from config import Config
 
 class TestConfigAll(Config):
@@ -42,6 +44,42 @@ class TestAccionesMunicipio(unittest.TestCase):
         db.session.remove()
         db.drop_all()
         self.app_context.pop()
+
+    @patch('services.municipio_responder.analizar_imagen_con_fallback')
+    def test_image_first_triggers_cv_analyzer(self, mock_analyzer):
+        mock_analyzer.return_value = {
+            'raw_response': json.dumps({
+                'intent': 'crear_reclamo',
+                'data': {'categoria': 'Luminaria', 'descripcion': 'Poste caído'}
+            })
+        }
+
+        owner_user = MagicMock(spec=User)
+        owner_user.id = 1
+        owner_user.municipio_id = 'default'
+
+        chat_context = MagicMock()
+        chat_context.context_data = {}
+
+        payload = {
+            'media_url': 'http://example.com/foto.jpg',
+            'media_content_type': 'image/jpeg'
+        }
+
+        with self.app.app_context():
+            resp = responder_municipio(
+                pregunta_original=payload,
+                owner_user=owner_user,
+                rubro_obj=None,
+                viewer_user=None,
+                chat_db_context=chat_context,
+                anon_id='test',
+                channel='whatsapp'
+            )
+
+        self.assertEqual(detect_modalidad(payload), 'image')
+        mock_analyzer.assert_called_once()
+        self.assertIn('Luminaria', resp.get('message_body', ''))
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono')
