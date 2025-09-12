@@ -122,14 +122,14 @@ class TestChatIntegration(unittest.TestCase):
     #     self.assertEqual(contexto_actualizado.get("tipo_sugerido_imagen"), "Alumbrado Público")
     #     self.assertEqual(contexto_actualizado.get("archivo_id_reclamo_actual"), archivo_id)
 
-    @patch('services.municipio_responder.llamar_gemini')
-    def test_anonymous_chat_municipio_loads_default_owner(self, mock_llamar_gemini):
+    @patch('services.municipio_responder.llamar_openai')
+    def test_anonymous_chat_municipio_loads_default_owner(self, mock_llamar_openai):
         """
         Tests that an anonymous request to /ask/municipio
         successfully loads a default owner user and returns a valid response.
         This test now also verifies the new keyword-based GreetingHandler.
         """
-        mock_llamar_gemini.return_value = (
+        mock_llamar_openai.return_value = (
             {
                 "accion_backend": "saludar",
                 "message_body": "¡Hola! ...", # Mock message, will be replaced by handler
@@ -152,10 +152,10 @@ class TestChatIntegration(unittest.TestCase):
         self.assertNotIn("error", data)
 
     @patch('services.tts_orchestrator.generar_audio_con_fallback', return_value=None)
-    @patch('services.municipio_responder.llamar_gemini')
-    def test_anonymous_chat_greets_with_saved_name(self, mock_llamar_gemini, mock_tts):
+    @patch('services.municipio_responder.llamar_openai')
+    def test_anonymous_chat_greets_with_saved_name(self, mock_llamar_openai, mock_tts):
         """Ensure the greeting uses the stored profile name from a prior request."""
-        mock_llamar_gemini.return_value = (
+        mock_llamar_openai.return_value = (
             {"accion_backend": "saludar"},
             {}
         )
@@ -191,10 +191,10 @@ class TestChatIntegration(unittest.TestCase):
         self.assertIsNotNone(data.get("options_list"))  # The new format uses 'options_list' for buttons/menu items.
 
     @patch('services.tts_orchestrator.generar_audio_con_fallback', return_value=None)
-    @patch('services.municipio_responder.llamar_gemini')
-    def test_authenticated_chat_prefers_profile_name(self, mock_llamar_gemini, mock_tts):
+    @patch('services.municipio_responder.llamar_openai')
+    def test_authenticated_chat_prefers_profile_name(self, mock_llamar_openai, mock_tts):
         """An authenticated request should still greet with the stored profile name."""
-        mock_llamar_gemini.return_value = (
+        mock_llamar_openai.return_value = (
             {"accion_backend": "saludar"},
             {},
         )
