@@ -3709,8 +3709,13 @@ def responder_municipio(
     chat_db_context_live_data = {}
     if chat_db_context and chat_db_context.context_data is not None:
         chat_db_context_live_data = chat_db_context.context_data
-    
+
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
+
+    # If a claim flow is already in progress, ensure the global state
+    # reflects it so other handlers (like ticket/PIN) are skipped.
+    if flow_active(contexto_municipio_actual):
+        contexto_municipio_actual["estado_conversacion"] = "EN_FLUJO_RECLAMO"
 
     context = {
         CONTEXTO_MUNICIPIO: contexto_municipio_actual,
