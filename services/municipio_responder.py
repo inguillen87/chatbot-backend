@@ -697,39 +697,43 @@ class ReclamoFlowHandler:
             self.flow_context['datos_reclamo']['foto_url'] = self.context.get("foto_url")
 
         # Pre-fill contact details from the viewer if available so we do not
-        # ask the user for information we already have.
+        # ask the user for information we already have. At the same time, make
+        # sure any previously stored contact info belongs to this viewer to
+        # avoid reusing stale data from another session.
         viewer = self.context.get("viewer_user_obj")
+        viewer_contact = {}
         if viewer:
-            datos = self.flow_context['datos_reclamo']
-            # Some viewer objects store attributes with different names. Fall back
-            # to common alternatives to avoid asking for data we already have.
-            datos.setdefault(
-                'nombre',
-                getattr(viewer, 'name', None)
+            viewer_contact = {
+                'nombre': getattr(viewer, 'name', None)
                 or getattr(viewer, 'nombre', None)
                 or getattr(viewer, 'nombre_vecino', None),
-            )
-            datos.setdefault(
-                'email',
-                getattr(viewer, 'email', None)
+                'email': getattr(viewer, 'email', None)
                 or getattr(viewer, 'email_vecino', None),
-            )
-            datos.setdefault(
-                'telefono',
-                getattr(viewer, 'telefono', None)
+                'telefono': getattr(viewer, 'telefono', None)
                 or getattr(viewer, 'telefono_vecino', None),
-            )
-            datos.setdefault(
-                'dni',
-                getattr(viewer, 'dni', None)
+                'dni': getattr(viewer, 'dni', None)
                 or getattr(viewer, 'dni_vecino', None)
                 or getattr(viewer, 'documento', None),
-            )
+            }
 
-        # Reuse previously provided contact info stored in municipal context
-        contacto_prev = self.municipal_ctx.get('contacto_usuario', {})
+        contacto_prev = self.municipal_ctx.get('contacto_usuario') or {}
+        if viewer:
+            # If the stored contact differs from the current viewer's data,
+            # reset it to the viewer's details to prevent stale values.
+            if contacto_prev and any(
+                viewer_contact.get(k) and contacto_prev.get(k) and viewer_contact.get(k) != contacto_prev.get(k)
+                for k in ['nombre', 'email', 'telefono', 'dni']
+            ):
+                contacto_prev = {k: v for k, v in viewer_contact.items() if v}
+                self.municipal_ctx['contacto_usuario'] = contacto_prev
+            elif not contacto_prev and any(viewer_contact.values()):
+                contacto_prev = {k: v for k, v in viewer_contact.items() if v}
+                self.municipal_ctx['contacto_usuario'] = contacto_prev
+
+        datos = self.flow_context['datos_reclamo']
+        for campo, valor in viewer_contact.items():
+            datos.setdefault(campo, valor)
         if contacto_prev:
-            datos = self.flow_context['datos_reclamo']
             for campo in ['nombre', 'email', 'telefono', 'dni']:
                 datos.setdefault(campo, contacto_prev.get(campo))
 
@@ -989,6 +993,11 @@ class ReclamoFlowHandler:
 
     def ask_for_contact_details(self, force_prompt: bool = False):
         datos = self.flow_context.setdefault('datos_reclamo', {})
+        if force_prompt:
+            for k in ["nombre", "dni", "telefono", "email"]:
+                datos.pop(k, None)
+            self.municipal_ctx.pop('contacto_usuario', None)
+
         contacto_prev = self.municipal_ctx.get('contacto_usuario', {})
         faltantes = [
             k
@@ -1186,8 +1195,7 @@ class ReclamoFlowHandler:
             self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
             return {"message_body": "Enviá la nueva foto."}
         if selected == "edit_contacto":
-            self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
-            return {"message_body": "Actualizá tus datos de contacto."}
+            return self.ask_for_contact_details(force_prompt=True)
         return self.get_edit_menu()
 
     def end_flow(self, message, show_menu=False, image_url=None):
