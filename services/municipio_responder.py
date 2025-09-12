@@ -550,7 +550,7 @@ class ReclamoFlowHandler:
         logger.info("Iniciando flujo de reclamo v2.")
         self.flow_context.clear()
         self.municipal_ctx.pop("numero_ticket_consulta", None)
-        self.municipal_ctx["estado_conversacion"] = None
+        self.municipal_ctx["estado_conversacion"] = ConversationState.EN_FLUJO_RECLAMO.name
         self.flow_context['datos_reclamo'] = datos_iniciales or {}
 
         # Si la conversación comenzó con una foto (context['foto_url']) pero
@@ -887,6 +887,8 @@ class ReclamoFlowHandler:
         # Remove flow data from municipio context so subsequent turns don't
         # enter this handler unintentionally.
         self.municipal_ctx.pop("reclamo_flow_v2", None)
+        # Explicitly reset the global conversation state to a neutral default.
+        self.municipal_ctx["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
 
         payload = {"message_body": message, "message_type": "text"}
         if image_url:
@@ -1150,6 +1152,7 @@ MUNICIPIO_DIRECCION = CONFIG_MUNICIPIO.get("direccion", "Dirección del municipi
 EJEMPLO_DIRECCION = CONFIG_MUNICIPIO.get("ejemplo_direccion", "Avenida Siempreviva 123")
 
 class ConversationState(Enum):
+    EN_FLUJO_RECLAMO = auto()
     ESPERANDO_CONFIRMACION_CIERRE = auto()
     ESPERANDO_CALIFICACION = auto()
     ESPERANDO_NUMERO_TICKET = auto()
@@ -3809,6 +3812,18 @@ def responder_municipio(
             "message_type": "interactive_buttons",
         })
 
+    # --- INICIO: Manejo del Flujo de Reclamos Activo (PRIORITARIO) ---
+    # Si existe un flujo de reclamo v2 activo, SIEMPRE tiene prioridad sobre cualquier otro estado.
+    if "reclamo_flow_v2" in contexto_municipio_actual and contexto_municipio_actual["reclamo_flow_v2"].get("state"):
+        logger_actual.info(f"Prioritized: Reclamo flow is active. State: {contexto_municipio_actual['reclamo_flow_v2'].get('state')}. Handing off to ReclamoFlowHandler.")
+        # Sincronizar el estado global para reflejar que estamos en un flujo.
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.EN_FLUJO_RECLAMO.name
+        handler = ReclamoFlowHandler(context, chat_db_context)
+        response = handler.handle(pregunta_str, received_payload)
+        safe_flag_modified(chat_db_context, "context_data")
+        return _finalize_response(response)
+    # --- FIN: Manejo del Flujo de Reclamos Activo ---
+
     # --- INICIO FIX: Manejo explícito de solicitud de menú principal ---
     # Si el usuario pide explícitamente el menú, lo mostramos directamente sin pasar por el LLM.
     context["user_input_raw"] = pregunta_str
@@ -3821,14 +3836,6 @@ def responder_municipio(
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return _finalize_response(response)
-    # --- INICIO: Manejo del Flujo de Reclamos Activo ---
-    if "reclamo_flow_v2" in contexto_municipio_actual and contexto_municipio_actual["reclamo_flow_v2"].get("state"):
-        logger_actual.info(f"Reclamo flow is active. State: {contexto_municipio_actual['reclamo_flow_v2'].get('state')}. Handing off to ReclamoFlowHandler.")
-        handler = ReclamoFlowHandler(context, chat_db_context)
-        response = handler.handle(pregunta_str, received_payload)
-        safe_flag_modified(chat_db_context, "context_data")
-        return _finalize_response(response)
-    # --- FIN: Manejo del Flujo de Reclamos Activo ---
 
     # --- START GLOBAL MENU SHORTCUTS ---
     if not contexto_municipio_actual.get("estado_conversacion") and pregunta_str:
