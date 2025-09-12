@@ -893,6 +893,10 @@ class ReclamoFlowHandler:
         # Remove flow data from municipio context so subsequent turns don't
         # enter this handler unintentionally.
         self.municipal_ctx.pop("reclamo_flow_v2", None)
+        # Reset conversation state so normal routing resumes after the flow ends
+        self.municipal_ctx["estado_conversacion"] = (
+            ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name if show_menu else None
+        )
 
         payload = {"message_body": message, "message_type": "text"}
         if image_url:
