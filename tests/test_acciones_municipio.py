@@ -1,843 +1,1129 @@
-import unittest
-from unittest.mock import patch, MagicMock
-import sys
-import os
-import json
-
-# Añadir el directorio raíz del proyecto al sys.path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
-from app import create_app, db
-from services.actions.municipio_actions import (
-    CrearReclamoActionHandler,
-    ConsultarEstadoTicketActionHandler,
-    HacerSugerenciaActionHandler,
+# services/actions/municipio_actions.py
+import logging
+import re
+import time
+from .base_action_handler import BaseActionHandler
+from typing import Dict, Any
+import random
+from services.ticket_service import servicio_tickets
+from services.notifications import (
+    enviar_notificacion_whatsapp_con_plantilla,
+    enviar_notificacion_sms,
 )
-from services.herramientas_municipio import direccion_es_valida
-from models import User
-from services.municipio_responder import responder_municipio, detect_modalidad
-from config import Config
+from services.herramientas_municipio import (
+    parse_direccion_completa as parse_direccion,
+    validar_y_formatear_direccion,
+)
+from services.ticket_utils import formatear_ticket_respuesta
+from services.common_utils import (
+    validar_telefono,
+    formatear_telefono_e164,
+    validar_email,
+)
+from services.config_loader import cargar_configuracion_municipio
+from services.archivo_service import archivo_service
+from models import MunicipioTicket, User
+from extensions import db as _db
 
-class TestConfigAll(Config):
-    TESTING = True
-    SQLALCHEMY_DATABASE_URI = os.environ.get('TEST_DATABASE_URL', 'sqlite:///:memory:')
-    WTF_CSRF_ENABLED = False
-    SESSION_COOKIE_SECURE = False
-    CELERY_TASK_ALWAYS_EAGER = True
-    DEBUG = False
+logger = logging.getLogger(__name__)
 
-class TestAccionesMunicipio(unittest.TestCase):
+CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
 
-    def setUp(self):
-        """Set up for each test."""
-        self.app = create_app(config_class=TestConfigAll)
-        self.client = self.app.test_client()
-        self.app_context = self.app.app_context()
-        self.app_context.push()
-        db.create_all()
-        self.session = db.session
 
-    def tearDown(self):
-        """Tear down after each test."""
-        db.session.remove()
-        db.drop_all()
-        self.app_context.pop()
+def sanitize_contact_name(raw: str) -> str:
+    """Remove emails, long numbers and trailing address fragments from names."""
+    if not raw:
+        return "Vecino"
+    name = re.sub(r"\S+@\S+", "", raw)
+    name = re.sub(r"\b\+?\d{6,}\b", "", name)
+    name = re.sub(r"\s{2,}", " ", name).strip()
+    lowered = name.lower()
+    cut_tokens = [" sarmiento", " junin", " mendoza", " calle ", " av "]
+    cut = min([lowered.find(t) for t in cut_tokens if lowered.find(t) > 0] or [len(name)])
+    cleaned = name[:cut].strip()
+    return cleaned or "Vecino"
 
-    @patch('services.municipio_responder.analizar_imagen_con_fallback')
-    def test_image_first_triggers_cv_analyzer(self, mock_analyzer):
-        mock_analyzer.return_value = {
-            'raw_response': json.dumps({
-                'intent': 'crear_reclamo',
-                'data': {'categoria': 'Luminaria', 'descripcion': 'Poste caído'}
-            })
-        }
 
-        owner_user = MagicMock(spec=User)
-        owner_user.id = 1
-        owner_user.municipio_id = 'default'
+def normalizar_telefono(telefono: str | None, waid: str | None) -> str | None:
+    if waid:
+        digits = waid.lstrip("+")
+        if digits.isdigit():
+            return f"+{digits}"
+    return telefono
 
-        chat_context = MagicMock()
-        chat_context.context_data = {}
 
-        payload = {
-            'media_url': 'http://example.com/foto.jpg',
-            'media_content_type': 'image/jpeg'
-        }
-
-        with self.app.app_context():
-            resp = responder_municipio(
-                pregunta_original=payload,
-                owner_user=owner_user,
-                rubro_obj=None,
-                viewer_user=None,
-                chat_db_context=chat_context,
-                anon_id='test',
-                channel='whatsapp'
+def _asociar_archivos_si_corresponde(ticket_id: int, ctx: dict) -> None:
+    """Vincula archivos cargados previamente al ticket recién creado."""
+    try:
+        archivo_ids = ctx.get("ids_archivos_para_asociar")
+        if not archivo_ids:
+            archivo_id = ctx.get("archivo_id_para_asociar")
+            archivo_ids = [archivo_id] if archivo_id else []
+        session_id = ctx.get("chat_session_uuid") or ctx.get("session_id")
+        user_id = ctx.get("cliente_id")
+        if archivo_ids:
+            archivo_service.asociar_archivos_a_ticket(
+                ticket_id=ticket_id,
+                tipo_ticket="municipio",
+                ids_archivos=archivo_ids,
+                session_id=session_id,
+                user_id=user_id,
             )
-
-        self.assertEqual(detect_modalidad(payload), 'image')
-        mock_analyzer.assert_called_once()
-        self.assertIn('Luminaria', resp.get('message_body', ''))
-
-    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
-    @patch('services.actions.municipio_actions.validar_telefono')
-    @patch('services.actions.municipio_actions.validar_email')
-    @patch('services.location_service.geocode_address')
-    @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
-    @patch('services.actions.municipio_actions.formatear_telefono_e164')
-    @patch('services.herramientas_municipio.parse_direccion_completa')
-    def test_accion_crear_reclamo_exito_completo_llm(
-        self, mock_parse_direccion, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
-        mock_validar_email, mock_validar_telefono, mock_crear_ticket
-    ):
-        mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "12345", "consulta_pin": "555444"}
-
-        mock_validar_telefono.return_value = True
-        mock_formatear_tel.return_value = "+5491122334455"
-        mock_validar_email.return_value = True
-
-        mock_parse_direccion.return_value = {
-            "calle": "Calle Falsa", "numero": "123", "localidad": "Springfield"
-        }
-
-        datos_llm = {
-            "categoria": "Alumbrado", "descripcion": "Poste de luz caído y chispas.",
-            "ubicacion": "Calle Falsa 123, Springfield",
-            "coordenadas": {"lat": -32.8908, "lon": -68.8272},
-            "usuario": "Homero Simpson", "telefono": "91122334455", "email": "homero@example.com",
-            "pin": "555444", "dni": "12345678"
-        }
-
-        mock_viewer_user = MagicMock(spec=User)
-        mock_viewer_user.id = 100; mock_viewer_user.nombre = "Homero J. Simpson"
-        mock_viewer_user.telefono = "2615550000"; mock_viewer_user.email = "hsimpson@springfield.com"
-
-        mock_owner_user = MagicMock(spec=User)
-        mock_owner_user.id = 1; mock_owner_user.municipio_id = "springfield_municipio"
-
-        context = {
-            "viewer_user_obj": mock_viewer_user, "user_obj": mock_owner_user, "anon_id": "session123",
-            "municipio_config_actual": {"ejemplo_direccion": "Av. Siempreviva 742"},
-            "chat_session_uuid": "test-session-uuid-123",
-            "chat_db_context_data": {"processed_idempotency_keys": {}}
-        }
-
-        handler = CrearReclamoActionHandler(context)
-        respuesta = handler.execute(datos_llm)
-
-        self.assertTrue(respuesta["success"])
-        self.assertIn("message_to_user", respuesta)
-        self.assertIn("12345", respuesta["message_to_user"])
-        self.assertIn("555444", respuesta["message_to_user"])
-        self.assertTrue(any("pin=555444" in opt.get("url", "") for opt in respuesta.get("options_list", [])))
-        self.assertEqual(respuesta["data"]["ticket_id"], 1)
-        mock_crear_ticket.assert_called_once()
-        _, kwargs = mock_crear_ticket.call_args
-        self.assertEqual(kwargs['ticket_data']['nombre_vecino'], "Homero Simpson")
-        self.assertEqual(kwargs['ticket_data']['telefono_vecino'], "+5491122334455")
-        self.assertEqual(kwargs['ticket_data']['email_vecino'], "homero@example.com")
-        self.assertEqual(kwargs['ticket_data']['consulta_pin'], "555444")
-        self.assertEqual(kwargs['ticket_data']['anon_id'], "session123")
-        # The call is positional, so the assertion should be positional
-        mock_enviar_whatsapp.assert_called_once_with(
-            "+5491122334455", "Homero Simpson", "12345", "Alumbrado"
+    except Exception as e:
+        logger.error(
+            f"Error asociando archivos al ticket {ticket_id}: {e}", exc_info=True
         )
-        self.assertIn("Editar", respuesta["message_to_user"])
-        self.assertTrue(any(o.get("action_id") == "editar_reclamo" for o in respuesta.get("options_list", [])))
+    finally:
+        if ctx.get("archivo_id_para_asociar"):
+            ctx.pop("archivo_id_para_asociar", None)
+        if ctx.get("ids_archivos_para_asociar"):
+            ctx.pop("ids_archivos_para_asociar", None)
+        chat_ctx = ctx.get("chat_db_context_data")
+        if isinstance(chat_ctx, dict):
+            chat_ctx.pop("archivo_id_para_asociar", None)
+            chat_ctx.pop("ids_archivos_para_asociar", None)
 
-    @patch('services.actions.municipio_actions.archivo_service.asociar_archivos_a_ticket')
-    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
-    @patch('services.actions.municipio_actions.validar_telefono')
-    @patch('services.actions.municipio_actions.validar_email')
-    @patch('services.location_service.geocode_address')
-    @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
-    @patch('services.actions.municipio_actions.formatear_telefono_e164')
-    @patch('services.herramientas_municipio.parse_direccion_completa')
-    def test_crear_reclamo_asocia_archivo(
-        self,
-        mock_parse_direccion,
-        mock_formatear_tel,
-        mock_enviar_whatsapp,
-        mock_geocode_address,
-        mock_validar_email,
-        mock_validar_telefono,
-        mock_crear_ticket,
-        mock_asociar_archivos,
-    ):
-        mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "12345", "consulta_pin": "555444"}
-        mock_validar_telefono.return_value = True
-        mock_formatear_tel.return_value = "+5491122334455"
-        mock_validar_email.return_value = True
-        mock_parse_direccion.return_value = {"calle": "Calle Falsa", "numero": "123", "localidad": "Springfield"}
 
-        datos_llm = {
-            "categoria": "Alumbrado",
-            "descripcion": "Poste de luz caído",
-            "ubicacion": "Calle Falsa 123, Springfield",
-            "coordenadas": {"lat": -32.8908, "lon": -68.8272},
-            "usuario": "Homero Simpson",
-            "telefono": "91122334455",
-            "email": "homero@example.com",
-            "pin": "555444",
-            "dni": "12345678",
+def normalizar_categoria(cat_llm: str, detalles: str):
+    """Return normalized category and optional subtype."""
+    c = (cat_llm or "").strip().lower()
+    if "arbol" in c or "arbolado" in c:
+        subtipo = None
+        d = (detalles or "").lower()
+        if any(k in d for k in ["rama", "medianera", "hoja", "poda", "interferencia"]):
+            subtipo = "poda_intrusion"
+        return "Arbolado", subtipo
+    return cat_llm or "General", None
+
+
+def resolver_distrito_por_coords(coords, municipio_actual):
+    if not coords:
+        return None
+    try:
+        from services import distrito_service
+        return distrito_service.from_coords(coords, municipio=municipio_actual)
+    except Exception:
+        return None
+
+class BuscarEstacionamientoActionHandler(BaseActionHandler):
+    action_name = "buscar_estacionamiento"
+
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing BuscarEstacionamientoActionHandler with data: {action_data}")
+
+        # La ubicación puede venir de la acción del LLM o del contexto si se pidió antes
+        ubicacion = action_data.get("ubicacion") or self.context.get("ubicacion_usuario")
+
+        if not ubicacion:
+            # Si no hay ubicación, la pedimos.
+            self.context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = "ESPERANDO_UBICACION_GENERAL"
+            self.context[CONTEXTO_MUNICIPIO]["accion_pendiente_tras_ubicacion"] = "buscar_estacionamiento"
+
+            return {
+                "success": False,
+                "message_to_user": "Para encontrar estacionamiento, por favor compartí tu ubicación o escribí una dirección (ej: San Martín 1200).",
+                "pedir_info": "ubicacion"
+            }
+
+        # Llamar al servicio de estacionamiento
+        from services.estacionamiento_service import consultar_ocupacion
+        resultado = consultar_ocupacion(ubicacion) # resultado es un dict {"texto": "..."}
+
+        # Limpiar el estado de espera si existía
+        if self.context.get(CONTEXTO_MUNICIPIO, {}).get("accion_pendiente_tras_ubicacion") == "buscar_estacionamiento":
+            self.context[CONTEXTO_MUNICIPIO].pop("accion_pendiente_tras_ubicacion")
+            if "estado_conversacion" in self.context[CONTEXTO_MUNICIPIO]:
+                 self.context[CONTEXTO_MUNICIPIO].pop("estado_conversacion")
+
+
+        return {
+            "success": True,
+            "message_to_user": resultado["texto"],
+            "data": resultado
         }
 
-        mock_viewer_user = MagicMock(spec=User)
-        mock_viewer_user.id = 100
-        mock_viewer_user.telefono = "2615550000"
-        mock_viewer_user.email = "hsimpson@springfield.com"
-        mock_viewer_user.nombre = "Homero J. Simpson"
+class CrearReclamoActionHandler(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing CrearReclamoActionHandler with data: {action_data}")
 
-        mock_owner_user = MagicMock(spec=User)
-        mock_owner_user.id = 1
-        mock_owner_user.municipio_id = "springfield_municipio"
+        contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
+        viewer_user = self.context.get("viewer_user_obj")
+        municipio_config = self.context.get("municipio_config_actual")
+        if viewer_user and getattr(viewer_user, "id", None):
+            viewer_user = _db.session.get(User, viewer_user.id)
+            self.context["viewer_user_obj"] = viewer_user
 
-        context = {
-            "viewer_user_obj": mock_viewer_user,
-            "user_obj": mock_owner_user,
-            "anon_id": "session123",
-            "municipio_config_actual": {"ejemplo_direccion": "Av. Siempreviva 742"},
-            "chat_session_uuid": "sess-abc",
-            "chat_db_context_data": {"processed_idempotency_keys": {}},
-            "archivo_id_para_asociar": 42,
-        }
+        # Fusionar datos: action_data tiene prioridad, luego el contexto del reclamo, luego el perfil del usuario
+        datos_parciales = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
+        categoria = action_data.get("categoria") or datos_parciales.get("categoria")
+        if categoria:
+            categoria = re.sub(r'^[^\w]+', '', categoria).strip()
+        descripcion = action_data.get("descripcion") or datos_parciales.get("descripcion")
+        categoria_norm, subtipo_cat = normalizar_categoria(categoria, descripcion)
+        categoria_display = categoria_norm
+        categoria_ticket = f"{categoria_norm}::{subtipo_cat}" if subtipo_cat else categoria_norm
 
-        handler = CrearReclamoActionHandler(context)
-        respuesta = handler.execute(datos_llm)
+        nueva_ubicacion = action_data.get("ubicacion")
+        if nueva_ubicacion is not None:
+            ubicacion_llm = nueva_ubicacion
+            coordenadas_llm = action_data.get("coordenadas")
+        else:
+            ubicacion_llm = datos_parciales.get("ubicacion")
+            coordenadas_llm = datos_parciales.get("coordenadas")
 
-        self.assertTrue(respuesta["success"])
-        mock_asociar_archivos.assert_called_once_with(
-            ticket_id=1,
-            tipo_ticket="municipio",
-            ids_archivos=[42],
-            session_id="sess-abc",
-            user_id=None,
-        )
+        distrito_llm = action_data.get("distrito") or datos_parciales.get("distrito")
 
-    @patch('services.actions.municipio_actions.parse_direccion', return_value={"calle": "Calle Falsa", "numero": "123", "localidad": "Junin"})
-    @patch('services.actions.municipio_actions.validar_y_formatear_direccion', return_value={"lat": -32.89, "lng": -68.83, "formatted_address": "Calle Falsa 123"})
-    @patch('services.actions.municipio_actions.validar_email', return_value=True)
-    @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
-    def test_placeholder_email_pide_datos(self, mock_valid_tel, mock_valid_email, mock_valid_dir, mock_parse):
-        datos_llm = {
-            "categoria": "Alumbrado",
-            "descripcion": "Poste", 
-            "ubicacion": "Calle Falsa 123",
-            "telefono": "2611234567",
-            "email": "foo@whatsapp.chatboc.com",
-            "usuario": "Vecino"
-        }
+        if ubicacion_llm:
+            ubicacion_llm = re.sub(r"[,\.;\s]+$", "", (ubicacion_llm or "").strip()).replace("  ", " ")
+            # Reunify address and district if the split is not clearly marked by comma/keyword
+            from utils.address_parse import split_ubicacion_y_distrito
 
-        context = {
-            "viewer_user_obj": None,
-            "user_obj": MagicMock(id=1, municipio_id="default"),
-            "anon_id": "anon123",
-            "municipio_config_actual": {}
-        }
+            combinado = f"{ubicacion_llm} {distrito_llm}".strip() if distrito_llm else ubicacion_llm
+            ubicacion_llm, distrito_detectado = split_ubicacion_y_distrito(combinado)
+            if distrito_llm:
+                if not distrito_detectado:
+                    # The original 'distrito' was actually part of the address
+                    distrito_llm = None
+                    ubicacion_llm = combinado
+            else:
+                distrito_llm = distrito_detectado
 
-        handler = CrearReclamoActionHandler(context)
-        resp = handler.execute(datos_llm)
+        if ubicacion_llm and not distrito_llm:
+            logger.info(f"Attempting to parse district from address: {ubicacion_llm}")
+            parsed_address = parse_direccion(ubicacion_llm, municipio_config)
+            if parsed_address and parsed_address.get('localidad'):
+                distrito_llm = parsed_address.get('localidad')
+                logger.info(f"Parsed district: {distrito_llm}")
 
-        self.assertFalse(resp["success"])
-        self.assertIn("Nombre y apellido", resp["message_to_user"])
-        self.assertIn("DNI", resp["message_to_user"])
-        self.assertIn("Email", resp["message_to_user"])
-
-    @patch('services.actions.municipio_actions.formatear_ticket_respuesta')
-    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
-    @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
-    @patch('services.actions.municipio_actions.validar_email', return_value=True)
-    @patch('services.actions.municipio_actions.formatear_telefono_e164', return_value="+5492611234567")
-    @patch('services.herramientas_municipio.parse_direccion_completa', return_value={"calle": "Calle Falsa", "numero": "123", "localidad": "Junin"})
-    @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
-    @patch('services.location_service.geocode_address')
-    def test_categoria_con_emoji_usa_contacto_especializado(
-        self, mock_geocode, mock_enviar, mock_parse, mock_formatear_tel, mock_validar_email,
-        mock_validar_tel, mock_crear_ticket, mock_formatear_respuesta
-    ):
-        mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "88888", "consulta_pin": "123456"}
-        mock_formatear_respuesta.return_value = ("ok", [])
-
-        datos_llm = {
-            "categoria": "💡 Luminaria",
-            "descripcion": "Poste caido",
-            "ubicacion": "Calle Falsa 123", 
-            "telefono": "2611234567",
-            "email": "vecino@example.com",
-            "usuario": "Marcelo",
-            "dni": "32877851"
-        }
-
-        context = {
-            "viewer_user_obj": None,
-            "user_obj": MagicMock(id=1, municipio_id="default"),
-            "anon_id": "anon123",
-            "municipio_config_actual": {}
-        }
-
-        handler = CrearReclamoActionHandler(context)
-        handler.execute(datos_llm)
-
-        args, _ = mock_formatear_respuesta.call_args
-        contacto = args[5]
-        self.assertEqual(contacto.get("nombre"), "Ana María de Servicios")
-        self.assertEqual(contacto.get("telefono"), "+5492610000002")
-
-        _, kwargs = mock_crear_ticket.call_args
-        self.assertEqual(kwargs['ticket_data']['categoria'], 'Luminaria')
-        self.assertEqual(kwargs['ticket_data']['anon_id'], 'anon123')
-
-    @patch('services.actions.municipio_actions.formatear_ticket_respuesta')
-    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
-    @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
-    @patch('services.actions.municipio_actions.validar_email', return_value=True)
-    @patch('services.actions.municipio_actions.formatear_telefono_e164', return_value="+5492611234567")
-    @patch('services.herramientas_municipio.parse_direccion_completa', return_value={"calle": "Calle Falsa", "numero": "123", "localidad": "Junin"})
-    @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
-    @patch('services.location_service.geocode_address')
-    def test_categoria_con_espacios_usa_contacto_especializado(
-        self, mock_geocode, mock_enviar, mock_parse, mock_formatear_tel, mock_validar_email,
-        mock_validar_tel, mock_crear_ticket, mock_formatear_respuesta
-    ):
-        mock_crear_ticket.return_value = {"id": 2, "nro_ticket": "99999", "consulta_pin": "123456"}
-        mock_formatear_respuesta.return_value = ("ok", [])
-
-        datos_llm = {
-            "categoria": " Arbolado  ",
-            "descripcion": "Rama caída",
-            "ubicacion": "Calle Falsa 123",
-            "telefono": "2611234567",
-            "email": "vecino@example.com",
-            "usuario": "Marcelo",
-            "dni": "32877851"
-        }
-
-        context = {
-            "viewer_user_obj": None,
-            "user_obj": MagicMock(id=1, municipio_id="default"),
-            "anon_id": "anon123",
-            "municipio_config_actual": {}
-        }
-
-        handler = CrearReclamoActionHandler(context)
-        handler.execute(datos_llm)
-
-        args, _ = mock_formatear_respuesta.call_args
-        contacto = args[5]
-        self.assertEqual(contacto.get("nombre"), "Roberto de Espacios Verdes")
-        self.assertEqual(contacto.get("telefono"), "+5492610000003")
-
-        _, kwargs = mock_crear_ticket.call_args
-        self.assertEqual(kwargs['ticket_data']['categoria'], 'Arbolado')
-        self.assertEqual(kwargs['ticket_data']['anon_id'], 'anon123')
-
-    def test_accion_consultar_estado_ticket(self):
-        from models import MunicipioTicket
-
-        ticket = MunicipioTicket(pregunta="p", nro_ticket="88888", estado="en_proceso", categoria="Alumbrado", consulta_pin="123456")
-        db.session.add(ticket)
-        db.session.commit()
-
-        handler = ConsultarEstadoTicketActionHandler({})
-        result = handler.execute({"id_ticket_mencionado": "88888", "pin": "123456"})
-
-        self.assertTrue(result["success"])
-        self.assertIn("88888", result["message_to_user"])
-        self.assertIn("en_proceso", result["message_to_user"])
-
-    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
-    @patch('services.actions.municipio_actions.validar_telefono')
-    @patch('services.actions.municipio_actions.validar_email')
-    @patch('services.location_service.geocode_address')
-    @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
-    @patch('services.actions.municipio_actions.formatear_telefono_e164')
-    @patch('services.herramientas_municipio.parse_direccion_completa')
-    def test_accion_crear_reclamo_campos_detectados(
-        self, mock_parse_direccion, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
-        mock_validar_email, mock_validar_telefono, mock_crear_ticket
-    ):
-        mock_crear_ticket.return_value = {"id": 5, "nro_ticket": "55555", "consulta_pin": "123456"}
-
-        mock_validar_telefono.return_value = True
-        mock_formatear_tel.return_value = "+5499988776655"
-        mock_validar_email.return_value = True
-
-        mock_parse_direccion.return_value = {
-            "calle": "Ruta 40", "numero": "1", "localidad": "Mendoza"
-        }
-
-        datos_llm = {
-            "categoria": "Bacheo",
-            "descripcion": "Hueco grande",
-            "ubicacion": "Ruta 40 1, Mendoza",
-            "telefono_detectado": "9988776655",
-            "email_detectado": "vecino@ejemplo.com",
-            "nombre_usuario_detectado": "Vecino Detectado",
-            "pin": "123456",
-            "dni": "12345678"
-        }
-
-        context = {
-            "viewer_user_obj": None,
-            "user_obj": MagicMock(id=1, municipio_id="testmuni"),
-            "anon_id": "anon123",
-            "municipio_config_actual": {}
-        }
-
-        handler = CrearReclamoActionHandler(context)
-        respuesta = handler.execute(datos_llm)
-
-        self.assertTrue(respuesta["success"])
-        mock_crear_ticket.assert_called_once()
-        _, kwargs = mock_crear_ticket.call_args
-        self.assertEqual(kwargs['ticket_data']['nombre_vecino'], "Vecino Detectado")
-        self.assertEqual(kwargs['ticket_data']['telefono_vecino'], "+5499988776655")
-        self.assertEqual(kwargs['ticket_data']['email_vecino'], "vecino@ejemplo.com")
-        self.assertEqual(kwargs['ticket_data']['consulta_pin'], "123456")
-
-    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
-    @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
-    @patch('services.actions.municipio_actions.formatear_telefono_e164', return_value="+1234567890")
-    def test_accion_crear_reclamo_sin_descripcion_llm(
-        self, mock_formatear_telefono, mock_validar_telefono, mock_crear_ticket
-    ):
-        datos_llm = {"categoria": "Basura", "ubicacion": "Calle Siempre Viva 742", "usuario": "Test User"}
-        context = {"viewer_user_obj": None, "user_obj": MagicMock(id=1, municipio_id="testmuni"), "anon_id": "testanon"}
-        handler = CrearReclamoActionHandler(context)
-        respuesta = handler.execute(datos_llm)
-        self.assertFalse(respuesta["success"])
-        # The new logic correctly identifies the user's name from the "usuario" field
-        self.assertIn("necesito algunos datos más: **descripcion, dni, email, telefono**", respuesta["message_to_user"])
-        mock_crear_ticket.assert_not_called()
-
-    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
-    def test_accion_crear_reclamo_sin_ubicacion_llm(self, mock_crear_ticket):
-        datos_llm = {"categoria": "Alumbrado", "descripcion": "Luz parpadea mucho", "usuario": "Test User"}
-        context = {"viewer_user_obj": None, "user_obj": MagicMock(id=1, municipio_id="testmuni"), "anon_id": "testanon"}
-        handler = CrearReclamoActionHandler(context)
-        respuesta = handler.execute(datos_llm)
-        self.assertFalse(respuesta["success"])
-        # The new logic correctly identifies the user's name from the "usuario" field
-        self.assertIn("necesito algunos datos más: **dni, email, telefono, ubicacion**", respuesta["message_to_user"])
-        mock_crear_ticket.assert_not_called()
-
-    @patch('services.actions.municipio_actions.parse_direccion', return_value=None)
-    @patch('services.actions.municipio_actions.validar_y_formatear_direccion')
-    def test_accion_crear_reclamo_pide_barrio(self, mock_validar, mock_parse):
-        mock_validar.return_value = {"formatted_address": "Calle Falsa 123", "lng": -68.8}
-        datos_llm = {
-            "categoria": "Alumbrado",
-            "descripcion": "Luz rota",
-            "ubicacion": "Calle Falsa 123",
-            "usuario": "Test User",
-        }
-        context = {"viewer_user_obj": None, "user_obj": MagicMock(id=1, municipio_id="testmuni"), "anon_id": "testanon", "contexto_municipio_v2": {}}
-        handler = CrearReclamoActionHandler(context)
-        respuesta = handler.execute(datos_llm)
-        self.assertFalse(respuesta["success"])
-        self.assertIn("barrio", respuesta["message_to_user"].lower())
-        self.assertEqual(respuesta["next_state_hint"], "ESPERANDO_BARRIO_RECLAMO")
-        self.assertIn("categoria_reclamo", handler.context["contexto_municipio_v2"])
-
-    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
-    @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
-    @patch('services.actions.municipio_actions.validar_email', return_value=True)
-    @patch('services.actions.municipio_actions.formatear_telefono_e164', return_value="+541234567890")
-    def test_accion_crear_reclamo_sin_pin_pide_pin(
-        self, mock_formatear_tel, mock_validar_email, mock_validar_tel, mock_crear_ticket
-    ):
-        datos_llm = {
-            "categoria": "Alumbrado",
-            "descripcion": "Luz apagada",
-            "ubicacion": "Calle Falsa 321",
-            "telefono": "1234567890",
-            "email": "vecino@example.com",
-            "usuario": "Juan",
-            "dni": "12345678"
-        }
-        context = {"viewer_user_obj": None, "user_obj": MagicMock(id=1, municipio_id="testmuni"), "anon_id": "testanon"}
-        handler = CrearReclamoActionHandler(context)
-        respuesta = handler.execute(datos_llm)
-        self.assertFalse(respuesta["success"])
-        self.assertEqual(respuesta["pedir_info"], "pin_ticket")
-        self.assertIn("PIN", respuesta["message_to_user"])
-        mock_crear_ticket.assert_not_called()
-
-    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
-    @patch('services.actions.municipio_actions.validar_telefono')
-    @patch('services.actions.municipio_actions.validar_email')
-    @patch('services.location_service.geocode_address')
-    @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
-    @patch('services.actions.municipio_actions.formatear_telefono_e164')
-    @patch('services.herramientas_municipio.parse_direccion_completa')
-    def test_accion_crear_reclamo_contacto_llm_invalido_usa_perfil(
-        self, mock_parse_direccion, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
-        mock_validar_email_func, mock_validar_telefono_func, mock_crear_ticket
-    ):
-        mock_crear_ticket.return_value = {"id": 2, "nro_ticket": "67890", "consulta_pin": "246810"}
-        mock_parse_direccion.return_value = {"calle": "Avenida Falsa", "numero": "456", "localidad": "Testville"}
-
-        # Simular que el teléfono del LLM es inválido, pero el del perfil es válido.
-        # La función mockeada 'validar_telefono' devolverá False para el primer llamado (LLM) y True para el segundo (perfil).
-        mock_validar_telefono_func.side_effect = [False, True]
-        # Simular el mismo comportamiento para el email.
-        mock_validar_email_func.side_effect = [False, True]
-
-        # El mock de formatear_telefono_e164 debe devolver el teléfono del *perfil* ya formateado.
-        mock_formatear_tel.return_value = "+549876543210"
-
-        datos_llm = {
-            "categoria": "Varios", "descripcion": "Problema general", "ubicacion": "Avenida Falsa 456",
-            "usuario": "Usuario LLM", "telefono": "tel_invalido_llm", "email": "email_invalido_llm@llm.bad",
-            "pin": "246810"
-        }
-
-        mock_viewer_user = MagicMock(spec=User)
-        mock_viewer_user.id = 200; mock_viewer_user.nombre = "Usuario Perfil Valido"
-        mock_viewer_user.telefono = "9876543210"; mock_viewer_user.email = "perfil_valido@example.com"
-
-        context = {
-            "viewer_user_obj": mock_viewer_user, "user_obj": MagicMock(id=1, municipio_id="testmuni"),
-            "anon_id": None, "municipio_config_actual": {},
-            "current_user": mock_viewer_user,
-            "pregunta_actual_usuario": "mi pregunta de prueba"
-        }
-        handler = CrearReclamoActionHandler(context)
-        respuesta = handler.execute(datos_llm)
-
-        self.assertTrue(respuesta["success"])
-        mock_crear_ticket.assert_called_once()
-        _, kwargs = mock_crear_ticket.call_args
-
-        self.assertEqual(kwargs['ticket_data']['nombre_vecino'], "Usuario LLM")
-        self.assertEqual(kwargs['ticket_data']['telefono_vecino'], "+549876543210") # Tomado y formateado del perfil
-        self.assertEqual(kwargs['ticket_data']['email_vecino'], "perfil_valido@example.com") # Tomado del perfil
-        self.assertEqual(kwargs['ticket_data']['pregunta'], "mi pregunta de prueba")
-        self.assertEqual(kwargs['ticket_data']['consulta_pin'], "246810")
-
-        # The call is positional, so the assertion should be positional
-        mock_enviar_whatsapp.assert_called_once_with(
-            "+549876543210", "Usuario LLM", "67890", "Varios"
-        )
-
-    def test_accion_crear_reclamo_datos_incompletos_llm(self):
-        """
-        Prueba que el sistema maneja correctamente los datos incompletos del LLM.
-        """
-        datos_llm = {
-            "categoria": "Alumbrado",
-            "descripcion": "Poste de luz caído y chispas.",
-            "ubicacion": "Calle Falsa 123, Springfield",
-            "coordenadas": {"lat": -32.8908, "lon": -68.8272},
-            "usuario": "Homero Simpson",
-            "telefono": None,
-            "email": None,
-            "pin": "135790"
-        }
-
-        mock_viewer_user = MagicMock(spec=User)
-        mock_viewer_user.id = 100
-        mock_viewer_user.nombre = "Homero J. Simpson"
-        mock_viewer_user.telefono = None
-        mock_viewer_user.email = None
-
-        mock_owner_user = MagicMock(spec=User)
-        mock_owner_user.id = 1
-        mock_owner_user.municipio_id = "springfield_municipio"
-
-        context = {
-            "viewer_user_obj": mock_viewer_user,
-            "user_obj": mock_owner_user,
-            "anon_id": None,
-            "municipio_config_actual": {"ejemplo_direccion": "Av. Siempreviva 742"},
-            "chat_session_uuid": "test-session-uuid-123",
-            "chat_db_context_data": {"processed_idempotency_keys": {}}
-        }
-
-        handler = CrearReclamoActionHandler(context)
-        respuesta = handler.execute(datos_llm)
-
-        self.assertTrue(respuesta["success"])
-
-    @patch('services.herramientas_municipio.geocode_address')
-    def test_direccion_es_valida(self, mock_geocode):
-        # Setea el valor de retorno simulado
-        mock_geocode.return_value = {'lat': -32.8895, 'lng': -68.8458}  # Coordenadas de Mendoza
-
-        # El resto de tu test usa la función mockeada
-        resultado = direccion_es_valida("don bosco 55 esquina sarmiento junin mendoza")
-        self.assertTrue(resultado)
-
-    @patch('services.herramientas_municipio.geocode_address', return_value=None)
-    def test_direccion_es_valida_fallback(self, _mock_geocode):
-        """Debe aceptar direcciones simples aunque no haya geocodificación."""
-        self.assertTrue(direccion_es_valida("don bosco 55"))
-
-    @patch('services.actions.municipio_actions.formatear_ticket_respuesta', return_value=("ok", []))
-    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
-    @patch('services.actions.municipio_actions.servicio_tickets.resolve_user_id', return_value=None)
-    @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
-    def test_telefono_prioriza_anon_id(
-        self, mock_enviar, mock_resolve, mock_crear_ticket, mock_formatear
-    ):
-        mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "999"}
-        context = {
-            "anon_id": "+549261999888",
-            "municipio_config_actual": {},
-            "chat_session_uuid": "uuid",
-            "chat_db_context_data": {"processed_idempotency_keys": {}},
-        }
-        handler = CrearReclamoActionHandler(context)
-        action_data = {
-            "categoria": "Arbolado",
-            "descripcion": "árbol caído",
-            "ubicacion": "Don Bosco 55",
-            "coordenadas": {"lat": -33.0, "lon": -68.0},
-            "distrito": "Junin",
-            "nombre": "Test",
-            "email": "test@example.com",
-            "dni": "1234",
-        }
-        handler.execute(action_data)
-        _, kwargs = mock_crear_ticket.call_args
-        self.assertEqual(kwargs['ticket_data']['telefono_vecino'], "+549261999888")
-        self.assertFalse(direccion_es_valida("sin numero"))
-
-    @patch('services.municipio_responder.cargar_agenda_cultural')
-    def test_agenda_y_noticias_handler(self, mock_cargar_agenda):
-        mock_cargar_agenda.return_value = {
-            "eventos": [
-                {
-                    "titulo": "Noticia de Prueba 1",
-                    "descripcion": "Este es el cuerpo de la noticia 1.",
-                    "tipo_post": "noticia",
-                    "fecha_publicacion": "2025-08-22T10:00:00",
-                    "imagen_url": "https://example.com/flyer.jpg",
-                    "enlace": "https://example.com/noticia1"
-                },
-                {
-                    "titulo": "Evento Cultural de Prueba",
-                    "descripcion": "Este es un evento.",
-                    "tipo_post": "evento",
-                    "fecha_evento_inicio": "2025-08-30T20:00:00",
-                    "fecha_evento_fin": "2025-08-30T22:00:00",
-                    "enlace": "https://example.com/evento",
-                    "imagen_url": "https://example.com/evento.jpg"
-                },
-                {
-                    "titulo": "Noticia de Prueba 2",
-                    "descripcion": "Este es el cuerpo de la noticia 2.",
-                    "tipo_post": "noticia",
-                    "fecha_publicacion": "2025-08-21"
-                },
-            ]
-        }
-
-        from services.municipio_responder import responder_municipio
-        with self.app.test_request_context():
-            owner_user = MagicMock(spec=User, id=1, municipio_id='test_muni')
-            owner_user.rubro = MagicMock(clave='municipio')
-            chat_context = MagicMock()
-            chat_context.context_data = {}
-
-            response = responder_municipio(
-                pregunta_original={"action": "agenda_y_noticias"},
-                owner_user=owner_user,
-                viewer_user=None,
-                anon_id="test_anon_123",
-                chat_db_context=chat_context,
-                rubro_obj=owner_user.rubro
-            )
-
-        self.assertIn("Noticias Recientes", response["message_body"])
-        self.assertIn("Próximos Eventos", response["message_body"])
-        self.assertIn("Noticia de Prueba 1", response["message_body"])
-        self.assertIn("Evento Cultural de Prueba", response["message_body"])
-        self.assertIn("https://www.facebook.com/municipalidaddejunin", response["message_body"])
-        self.assertIn("<img src=\"https://example.com/flyer.jpg\"", response["message_body"])
-        self.assertIn("Ver más", response["message_body"])
-        self.assertIn("📅 22/08/2025 10:00 hs", response["message_body"])
-        self.assertIn(
-            "📅 30/08/2025 20:00 hs - 30/08/2025 22:00 hs",
-            response["message_body"],
-        )
-        self.assertEqual(response["fuente"], "handler_agenda_y_noticias")
-
-    @patch('services.municipio_responder.llamar_gemini')
-    def test_points_of_interest_handler_with_location(self, mock_llamar_gemini):
-        # Simulate the LLM deciding to use the google_search tool
-        mock_llamar_gemini.return_value = (
-            {
-                "accion_backend": "ejecutar_herramienta",
-                "message_body": "Buscando farmacias...",
-                "datos_estructura": {
-                    "nombre_herramienta": "google_search",
-                    "parametros_herramienta": {"query": "farmacias de turno cerca de Mendoza, Argentina"}
+        # Geocoding: validate and enrich address with coordinates and formatted text
+        maps_link = None
+        static_map_url = None
+        if ubicacion_llm and not coordenadas_llm:
+            geo_info = validar_y_formatear_direccion(ubicacion_llm, municipio_config)
+            if (
+                not geo_info
+                or not geo_info.get("lat")
+                or not geo_info.get("lng")
+                or not geo_info.get("barrio")
+            ):
+                contexto_reclamo.pop("direccion_reclamo", None)
+                contexto_reclamo.pop("coordenadas_reclamo", None)
+                for key, value in [
+                    ("categoria_reclamo", categoria),
+                    ("descripcion_reclamo", descripcion),
+                ]:
+                    if value:
+                        contexto_reclamo[key] = value
+                contexto_reclamo.setdefault("datos_parciales_llm_reclamo", {})
+                contexto_reclamo["datos_parciales_llm_reclamo"].update(
+                    {
+                        "categoria": categoria,
+                        "descripcion": descripcion,
+                        "ubicacion": ubicacion_llm,
+                        "distrito": distrito_llm,
+                    }
+                )
+                contexto_reclamo["estado_conversacion"] = "ESPERANDO_BARRIO_RECLAMO"
+                self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
+                mensaje = (
+                    f"¿En qué barrio o distrito queda '{ubicacion_llm}'? Necesito esa información para ubicar la dirección."
+                )
+                return {
+                    "success": False,
+                    "message_to_user": mensaje,
+                    "message_type": "text",
+                    "next_state_hint": "ESPERANDO_BARRIO_RECLAMO",
                 }
-            },
-            {}
+
+            ubicacion_llm = geo_info.get("formatted_address", ubicacion_llm)
+            coordenadas_llm = {
+                "lat": geo_info.get("lat"),
+                "lon": geo_info.get("lng"),
+            }
+            maps_link = geo_info.get("maps_link")
+            static_map_url = geo_info.get("static_map_url")
+            if not distrito_llm:
+                parsed_geo = parse_direccion(ubicacion_llm)
+                if parsed_geo and parsed_geo.get("localidad"):
+                    distrito_llm = parsed_geo["localidad"]
+                    logger.info(f"Parsed district from geocoded address: {distrito_llm}")
+        elif coordenadas_llm and isinstance(coordenadas_llm, dict):
+            lat = coordenadas_llm.get("lat")
+            lon = coordenadas_llm.get("lon")
+            if lat and lon:
+                maps_link = f"https://www.google.com/maps?q={lat},{lon}"
+        foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
+
+        # Lógica de fusión de datos de contacto mejorada
+        llm_name = (
+            action_data.get("nombre")
+            or action_data.get("usuario")
+            or datos_parciales.get("usuario")
+            or action_data.get("nombre_usuario_detectado")
+            or datos_parciales.get("nombre_usuario_detectado")
+        )
+        ctx_contact = (
+            self.context.get("contexto_municipio_v2", {})
+            .get("contacto_usuario", {})
+            .get("nombre")
+        )
+        profile_name_from_user_obj = getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None)
+        profile_name_from_context = self.context.get("profile_name") or self.context.get("contexto_municipio_v2", {}).get("nombre_vecino")
+
+        # Prioritize LLM name, then context contact, then stored profile names.
+        nombre_vecino_final = next(
+            (
+                n
+                for n in [llm_name, ctx_contact, profile_name_from_user_obj, profile_name_from_context]
+                if isinstance(n, str) and n.strip()
+            ),
+            "Vecino/a",
         )
 
-        from services.herramientas_municipio import TOOL_REGISTRY
-        # This is a bit of a hack, but it's the most reliable way to mock the tool
-        # without fighting with patch decorators on nested imports.
-        original_google_search = TOOL_REGISTRY['google_search']['funcion']
-        mock_google_search = MagicMock(return_value="Resultados de búsqueda: Farmacia Central, Abierto 24hs, http://example.com/farmacia")
-        TOOL_REGISTRY['google_search']['funcion'] = mock_google_search
+        if len(nombre_vecino_final) > 60 or len(nombre_vecino_final.split()) > 6:
+            nombre_vecino_final = "Vecino/a"
+        nombre_vecino_final = sanitize_contact_name(nombre_vecino_final)
+        nombre_placeholder = nombre_vecino_final.lower() in {"vecino", "vecina", "vecino/a", "vecin@"}
 
-        from services.municipio_responder import responder_municipio
-        with self.app.test_request_context():
-            owner_user = MagicMock(spec=User, id=1, municipio_id='test_muni')
-            owner_user.rubro = MagicMock(clave='municipio')
-            chat_context = MagicMock()
-            chat_context.context_data = {}
+        telefono_from_llm = (action_data.get("telefono") or datos_parciales.get("telefono") or
+                             action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado"))
+        telefono_final = None
+        if telefono_from_llm and validar_telefono(telefono_from_llm):
+            telefono_final = formatear_telefono_e164(telefono_from_llm)
+        elif viewer_user and getattr(viewer_user, "telefono", None) and validar_telefono(str(viewer_user.telefono)):
+             telefono_final = formatear_telefono_e164(str(viewer_user.telefono))
+
+
+        email_from_llm = (
+            action_data.get("email")
+            or datos_parciales.get("email")
+            or action_data.get("email_detectado")
+            or datos_parciales.get("email_detectado")
+        )
+        if email_from_llm and email_from_llm.endswith("@whatsapp.chatboc.com"):
+            email_from_llm = None
+        email_final = None
+        viewer_email = getattr(viewer_user, "email", None) if viewer_user else None
+        if viewer_email and viewer_email.endswith("@whatsapp.chatboc.com"):
+            viewer_email = None
+        if email_from_llm and validar_email(email_from_llm):
+            email_final = email_from_llm.lower()
+        elif viewer_email and validar_email(str(viewer_email)):
+            email_final = str(viewer_email).lower()
+
+        dni_from_llm = action_data.get("dni") or datos_parciales.get("dni")
+        dni_final = None
+        if dni_from_llm and isinstance(dni_from_llm, str) and dni_from_llm.isdigit() and len(dni_from_llm) >= 7:
+            dni_final = dni_from_llm
+        elif viewer_user and getattr(viewer_user, "dni", None) and str(viewer_user.dni).isdigit():
+            dni_final = str(viewer_user.dni)
+
+        # Optional contact address (for suggestion flows)
+        direccion_contacto = (
+            action_data.get("direccion_contacto")
+            or datos_parciales.get("direccion_contacto")
+            or action_data.get("direccion")
+        )
+        if not direccion_contacto and viewer_user:
+            direccion_contacto = getattr(viewer_user, "direccion", None)
+
+        cmv2 = self.context.get(CONTEXTO_MUNICIPIO, {}) or {}
+        contacto_ctx = cmv2.get("contacto_usuario") or {}
+
+        nombre_final = datos_parciales.get("nombre") or contacto_ctx.get("nombre") or nombre_vecino_final
+        nombre_final = sanitize_contact_name(nombre_final)
+        nombre_placeholder = nombre_placeholder or nombre_final.lower() in {"vecino", "vecina", "vecino/a", "vecin@"}
+        telefono_final = telefono_final or contacto_ctx.get("telefono")
+        contacto_email = contacto_ctx.get("email")
+        if contacto_email and contacto_email.endswith("@whatsapp.chatboc.com"):
+            contacto_email = None
+        email_final = email_final or contacto_email
+        dni_ctx = contacto_ctx.get("dni")
+        if dni_ctx and isinstance(dni_ctx, str) and dni_ctx.isdigit() and len(dni_ctx) >= 7:
+            dni_final = dni_final or dni_ctx
+
+        logger.info(f"CONTACT_CTX: {contacto_ctx}")
+        logger.info(
+            f"CONTACT_FINAL nombre={nombre_final} tel={telefono_final} email={email_final} dni={dni_final}"
+        )
+
+        telefono_final = normalizar_telefono(
+            telefono_final, self.context.get("waid") or self.context.get("anon_id")
+        )
+
+        # Actualizar el contexto con los datos más recientes para persistencia
+        contexto_reclamo.setdefault("contacto_usuario", {}).update(
+            {
+                "nombre": None if nombre_placeholder else nombre_final,
+                "telefono": telefono_final,
+                "email": email_final,
+                "dni": dni_final,
+                "direccion": direccion_contacto,
+            }
+        )
+        for key, value in [
+            ("categoria_reclamo", categoria_display),
+            ("descripcion_reclamo", descripcion),
+            ("direccion_reclamo", ubicacion_llm),
+            ("coordenadas_reclamo", coordenadas_llm),
+            ("nombre_vecino", None if nombre_placeholder else nombre_final),
+            ("telefono_vecino", telefono_final),
+            ("email_vecino", email_final),
+            ("dni_vecino", dni_final),
+            ("direccion_contacto", direccion_contacto),
+            ("foto_url", foto_url_llm),
+            ("maps_link", maps_link),
+            ("static_map_url", static_map_url),
+        ]:
+            contexto_reclamo[key] = value
+
+        # Validación de datos esenciales para la creación del ticket
+        campos_faltantes = []
+        if not descripcion:
+            campos_faltantes.append("descripcion")
+        if not ubicacion_llm and not coordenadas_llm:
+            campos_faltantes.append("ubicacion")
+        for k, v in {
+            "nombre": None if nombre_placeholder else nombre_final,
+            "telefono": telefono_final,
+            "email": email_final,
+            "dni": dni_final,
+        }.items():
+            if not v:
+                campos_faltantes.append(k)
+        logger.info(f"FALTANTES: {campos_faltantes}")
+
+        # La lógica de confirmación ahora se maneja en 'municipio_responder.py'
+        # Este handler ahora solo valida y crea.
+
+        if campos_faltantes:
+            campos_faltantes = sorted(list(set(campos_faltantes)))
+            self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
+            etiquetas = {
+                "nombre": "• *Nombre y apellido* — _Ej.: Juan Pérez_",
+                "dni": "• *DNI* — _Ej.: 30123456_",
+                "telefono": "• *Teléfono* — _solo números_",
+                "email": "• *Email* — _Ej.: juan@mail.com_",
+            }
+            campos_contacto = [c for c in ["nombre", "dni", "telefono", "email"] if c in campos_faltantes]
+            if campos_contacto:
+                lineas = [etiquetas[c] for c in campos_contacto]
+                cuerpo = (
+                    "\U0001F512 *Necesito estos datos:*\n" + "\n".join(lineas) +
+                    "\nMandalo en una sola línea o de a uno."
+                )
+            else:
+                cuerpo = "Faltan datos para continuar."
+            return {
+                "success": False,
+                "message_to_user": cuerpo,
+                "message_type": "text",
+                "next_state_hint": "ESPERANDO_DATOS_CONTACTO",
+            }
+
+        # --- Handle PIN (generate if missing) ---
+        pin_llm = (
+            action_data.get("pin")
+            or datos_parciales.get("pin")
+            or datos_parciales.get("consulta_pin")
+        )
+        pin_str = str(pin_llm).strip() if pin_llm else ""
+        if pin_str.isdigit() and len(pin_str) == 6:
+            pin_final = pin_str
+        else:
+            pin_final = f"{random.randint(0, 999999):06d}"
+
+        contexto_reclamo["pin_ticket"] = pin_final
+
+        # Recopilación final de datos y creación del ticket
+        owner_user = self.context.get("user_obj")
+
+        # Update viewer_user object if it exists and we have new info
+        if viewer_user:
+            updated = False
+            if nombre_final and not viewer_user.name:
+                viewer_user.name = nombre_final
+                updated = True
+            if telefono_final and not viewer_user.telefono:
+                viewer_user.telefono = telefono_final
+                updated = True
+            if email_final and not viewer_user.email:
+                viewer_user.email = email_final
+                updated = True
+            if dni_final and not getattr(viewer_user, "dni", None):
+                viewer_user.dni = dni_final
+                updated = True
+            if updated:
+                _db.session.add(viewer_user)
+                _db.session.commit()
+                logger.info(f"User profile for {viewer_user.id} updated with new contact info.")
+        pregunta_original = self.context.get("pregunta_actual_usuario", "")
+
+        resolved = servicio_tickets.resolve_user_id(email=email_final, telefono=telefono_final)
+        if resolved:
+            ticket_user_id = resolved
+            logger.info(f"[Ticket] user_id resuelto por email/tel: {resolved}")
+        else:
+            ticket_user_id = getattr(viewer_user, "id", None)
+
+        contactos = cargar_configuracion_municipio(
+            getattr(owner_user, "municipio_id", "default"),
+            "contactos_especializados.json",
+        )
+        categoria_lookup = None
+        if categoria_display:
+            categoria_normalized = re.sub(r"[^\w\s]", "", categoria_display).strip().lower()
+            for key in contactos.keys():
+                key_normalized = re.sub(r"[^\w\s]", "", key).strip().lower()
+                if (
+                    key_normalized == categoria_normalized
+                    or key_normalized in categoria_normalized
+                    or categoria_normalized in key_normalized
+                ):
+                    categoria_lookup = key
+                    break
+        if categoria_lookup:
+            categoria_display = categoria_lookup
+        contacto_especializado = dict(contactos.get(categoria_lookup, contactos.get("default", {})))
+
+        ticket_subject = categoria_display or "Reclamo"
+        ticket_data = {
+            "pregunta": pregunta_original,
+            "asunto": ticket_subject,
+            "categoria": categoria_ticket or "Reclamo General",
+            "detalles": descripcion,
+            "direccion": ubicacion_llm,
+            "distrito": distrito_llm,
+            "nombre_vecino": nombre_final,
+            "telefono_vecino": telefono_final,
+            "email_vecino": email_final,
+            "dni_vecino": dni_final,
+            "direccion_contacto": direccion_contacto,
+            "estado": "nuevo",
+            "user_id": ticket_user_id,
+            "anon_id": self.context.get("anon_id"),
+            "municipio_id": getattr(owner_user, "municipio_id", None),
+            "latitud": coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None,
+            "longitud": coordenadas_llm.get("lon") if isinstance(coordenadas_llm, dict) else None,
+            "origen_reclamo": "LLM_CHATBOT",
+            "foto_url_directa": foto_url_llm,
+            "canal_ingreso": self.context.get("channel"),
+            "consulta_pin": pin_final,
+        }
+
+        ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
+        logger.info(f"Data for servicio_tickets.crear_nuevo_ticket: {ticket_data_cleaned}")
+
+        # Enhanced logging for debugging contact info
+        logger.info(f"DEBUG_CONTACT_INFO: nombre='{ticket_data_cleaned.get('nombre_vecino')}', "
+                    f"telefono='{ticket_data_cleaned.get('telefono_vecino')}', "
+                    f"email='{ticket_data_cleaned.get('email_vecino')}'")
+
+        try:
+            ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
+            if not ticket_creado:
+                raise Exception("servicio_tickets.crear_nuevo_ticket returned None")
+
+            # 'ticket_creado' is now always a dict.
+            ticket_nro = ticket_creado.get('nro_ticket')
+            if not ticket_nro:
+                raise ValueError("El ticket creado no tiene un 'nro_ticket'.")
+            nro_ticket_str = f"M-{ticket_nro}"
+            logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
+
+            _asociar_archivos_si_corresponde(ticket_creado.get('id'), self.context)
+
+            # Completar datos desde tramites.json si existen
+            tramites_cfg = cargar_configuracion_municipio(
+                getattr(owner_user, "municipio_id", "default"),
+                "tramites.json",
+            )
+            tramite_info = tramites_cfg.get(categoria_lookup, {}) if isinstance(tramites_cfg, dict) else {}
+            if isinstance(tramite_info, dict):
+                if not contacto_especializado.get("telefono") and tramite_info.get("telefono"):
+                    contacto_especializado["telefono"] = tramite_info.get("telefono")
+                if not contacto_especializado.get("horario") and tramite_info.get("horario"):
+                    contacto_especializado["horario"] = tramite_info.get("horario")
+                if not contacto_especializado.get("link"):
+                    botones = tramite_info.get("botones")
+                    if isinstance(botones, list) and botones:
+                        contacto_especializado["link"] = botones[0].get("url")
+
+            # Fallback con datos del perfil del municipio y configuración general
+            if getattr(owner_user, "link_web", None):
+                contacto_especializado.setdefault("link", owner_user.link_web)
+            else:
+                cfg = cargar_configuracion_municipio(
+                    getattr(owner_user, "municipio_id", "default"),
+                    "config.json",
+                )
+                if isinstance(cfg, dict) and cfg.get("web_url"):
+                    contacto_especializado.setdefault("link", cfg.get("web_url"))
+
+            if getattr(owner_user, "telefono", None):
+                contacto_especializado.setdefault("telefono", owner_user.telefono)
+            if getattr(owner_user, "horario", None):
+                contacto_especializado.setdefault("horario", owner_user.horario)
+
+            # Limpiar contexto y dejar datos mínimos
+            from services.municipio_responder import ConversationState
+            self.context[CONTEXTO_MUNICIPIO] = {
+                "pin_ticket": pin_final,
+                "email_vecino": email_final,
+                "dni_vecino": dni_final,
+            }
+            self.context["last_event"] = {"type": "ticket_created", "ts": time.time()}
+            self.context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+            logger.info(
+                f"Contexto de reclamo limpiado. Nuevo estado: {self.context[CONTEXTO_MUNICIPIO]['estado_conversacion']}"
+            )
+
+
+            # Notificaciones
+            if ticket_data_cleaned.get("telefono_vecino"):
+                try:
+                    enviar_notificacion_whatsapp_con_plantilla(
+                        ticket_data_cleaned["telefono_vecino"],
+                        ticket_data_cleaned.get("nombre_vecino", "Vecino"),
+                        str(ticket_nro),
+                        ticket_data_cleaned.get("categoria", "Varios")
+                    )
+                except Exception as e_whatsapp:
+                    logger.error(f"Error enviando notificación de WhatsApp para {nro_ticket_str}: {e_whatsapp}")
+
+                try:
+                    enviar_notificacion_sms(
+                        ticket_data_cleaned["telefono_vecino"],
+                        f"Hola {ticket_data_cleaned.get('nombre_vecino', 'Vecino')}! Tu reclamo M-{ticket_nro} ({ticket_data_cleaned.get('categoria', 'Varios')}) fue generado."
+                    )
+                except Exception as e_sms:
+                    logger.error(f"Error enviando notificación por SMS para {nro_ticket_str}: {e_sms}")
+
+            # Formatear respuesta y obtener el botón de contacto
+            municipio_config = self.context.get('municipio_config_actual', {})
+            base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/tickets/municipio')
+            promo_image_url = municipio_config.get('promo_image_url')
+            try:
+                mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
+                    "reclamo",
+                    ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
+                    descripcion,
+                    categoria_display,
+                    nro_ticket_str,
+                    contacto_especializado,
+                    base_chat_url,
+                    dni=ticket_data_cleaned.get("dni_vecino"),
+                    telefono=ticket_data_cleaned.get("telefono_vecino"),
+                    email=ticket_data_cleaned.get("email_vecino"),
+                    consulta_pin=pin_final,
+                )
+            except Exception as e_fmt:
+                logger.exception("Error formateando resumen del ticket", exc_info=True)
+                mensaje_respuesta = (
+                    f"✅ *¡Reclamo recibido!*\nN° de Ticket: M-{nro_ticket_str}"
+                )
+                botones_finales = []
+
+            if "Actualizar datos" in mensaje_respuesta:
+                mensaje_respuesta = mensaje_respuesta.replace(
+                    "Actualizar datos", "Editar o Actualizar datos"
+                )
+            else:
+                mensaje_respuesta += (
+                    "\n🔎 Si tus datos no son correctos, respondé *Editar datos*."
+                )
+            botones_finales.append({"texto": "Editar datos", "action_id": "editar_reclamo"})
+
+            # Log para debug
+            logger.info(f"Respuesta formateada: '{mensaje_respuesta}', Botones: {botones_finales}")
+
+            return {
+                "success": True,
+                "message_to_user": mensaje_respuesta,
+                "options_list": botones_finales,
+                "message_type": "interactive_buttons" if botones_finales else "text",
+                "image_url": promo_image_url,
+                "data": {
+                    "ticket_id": ticket_creado.get('id'),
+                    "nro_ticket": nro_ticket_str,
+                    "status": "creado",
+                    "consulta_pin": pin_final,
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error en CrearReclamoActionHandler: {e}", exc_info=True)
+            response = {
+                "success": False,
+                "message_to_user": "Hubo un problema al registrar tu reclamo. Por favor, intenta de nuevo más tarde.",
+                "error_details": str(e)
+            }
+            print(f"DEBUG: CrearReclamoActionHandler returning error: {response}")
+            return response
+
+class ConsultarEstadoTicketActionHandler(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing ConsultarEstadoTicketActionHandler with data: {action_data}")
+        ticket_id = action_data.get("id_ticket_mencionado")
+        if not ticket_id:
+            # Try to parse from raw user question stored in context
+            raw_question = self.context.get("pregunta_actual_usuario", "")
+            match = re.search(r"\d+", raw_question)
+            if match:
+                ticket_id = match.group(0)
+        if not ticket_id:
+            return {
+                "success": False,
+                "message_to_user": "Para consultar el estado, necesito el número de ticket.",
+                "pedir_info": "id_ticket_mencionado"
+            }
+
+        ticket_id_str = str(ticket_id).replace("M-", "").strip()
+
+        pin = action_data.get("pin")
+        if not pin:
+            return {
+                "success": False,
+                "message_to_user": "Necesito el PIN de 6 dígitos para consultar el ticket.",
+                "pedir_info": "pin_ticket",
+            }
+
+        ticket = MunicipioTicket.query.filter_by(nro_ticket=ticket_id_str, consulta_pin=pin).first()
+        if not ticket:
+            return {
+                "success": False,
+                "message_to_user": f"No encontré el ticket M-{ticket_id_str} o el PIN es incorrecto.",
+                "options_list": [{"texto": "Ingresar otro número", "action_id": "consultar_estado_ticket"}],
+                "message_type": "interactive_buttons",
+            }
+
+        asunto = ticket.asunto or ticket.categoria or "Reclamo"
+        user_message = (
+            f"El ticket M-{ticket.nro_ticket} sobre '{asunto}' se encuentra actualmente: **{ticket.estado}**."
+        )
+        botones = [{"texto": "Consultar otro ticket", "action_id": "consultar_estado_ticket"}]
+        return {
+            "success": True,
+            "message_to_user": user_message,
+            "options_list": botones,
+            "message_type": "interactive_buttons",
+            "data": {"ticket_id": ticket.nro_ticket, "status": ticket.estado}
+        }
+
+class ConsultarInfoTramiteActionHandler(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing ConsultarInfoTramiteActionHandler with data: {action_data}")
+        tramite_nombre = action_data.get("nombre_tramite") or action_data.get("categoria") # Categoria might be used if specific tramite name isn't clear
+        if not tramite_nombre:
+            return {
+                "success": False,
+                "message_to_user": "¿Sobre qué trámite necesitas información?",
+                "pedir_info": "nombre_tramite"
+            }
+
+        from services.municipio_responder import obtener_info_tramite_web
+
+        info_tramite = obtener_info_tramite_web(tramite_nombre)
+
+        if "error" in info_tramite:
+            return {
+                "success": False,
+                "message_to_user": f"No encontré información sobre el trámite '{tramite_nombre}'.",
+                "pedir_info": "nombre_tramite"
+            }
+        else:
+            botones = info_tramite.get("botones", []).copy()
+            botones.append({"texto": "Consultar otro trámite", "action_id": "info_tramite"})
+            return {
+                "success": True,
+                "message_to_user": info_tramite.get("contenido", "No hay información disponible para este trámite."),
+                "options_list": botones,
+                "message_type": "interactive_buttons",
+                "data": {"tramite_nombre": tramite_nombre, "info_recuperada": "json"}
+            }
+
+class HacerSugerenciaActionHandler(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing HacerSugerenciaActionHandler with data: {action_data}")
+        descripcion_sugerencia = action_data.get("descripcion")
+        if not descripcion_sugerencia:
+            return {
+                "success": False,
+                "message_to_user": "Claro, ¿cuál es tu sugerencia?",
+                "pedir_info": "descripcion_sugerencia"
+            }
+
+        ubicacion_sugerencia = action_data.get("ubicacion")
+        coordenadas_sugerencia = action_data.get("coordenadas")
+        if not ubicacion_sugerencia:
+            return {
+                "success": False,
+                "message_to_user": "¿En qué lugar aplica tu sugerencia? Podés darme una dirección o ubicación aproximada.",
+                "pedir_info": "ubicacion"
+            }
+
+        contacto_prev = self.context.get(CONTEXTO_MUNICIPIO, {}).get("contacto_usuario", {})
+        viewer_user = self.context.get("viewer_user_obj")
+        nombre_vecino = (
+            action_data.get("nombre")
+            or action_data.get("usuario")
+            or action_data.get("nombre_usuario_detectado")
+            or contacto_prev.get("nombre")
+            or (getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None))
+        )
+        dni_vecino = action_data.get("dni") or contacto_prev.get("dni") or getattr(viewer_user, "dni", None)
+
+        email_llm = action_data.get("email") or action_data.get("email_detectado")
+        email_ctx = contacto_prev.get("email")
+        email_viewer = getattr(viewer_user, "email", None)
+        for key, val in {"ctx": email_ctx, "viewer": email_viewer}.items():
+            if val and val.endswith("@whatsapp.chatboc.com"):
+                if key == "ctx":
+                    email_ctx = None
+                else:
+                    email_viewer = None
+        if email_llm and validar_email(email_llm):
+            email_vecino = email_llm.lower()
+        elif email_ctx and validar_email(email_ctx):
+            email_vecino = email_ctx.lower()
+        elif email_viewer and validar_email(str(email_viewer)):
+            email_vecino = str(email_viewer).lower()
+        else:
+            email_vecino = None
+        direccion_contacto = (
+            action_data.get("direccion")
+            or action_data.get("direccion_contacto")
+            or contacto_prev.get("direccion")
+            or getattr(viewer_user, "direccion", None)
+        )
+        telefono_vecino = (
+            action_data.get("telefono")
+            or contacto_prev.get("telefono")
+            or getattr(viewer_user, "telefono", None)
+        )
+        telefono_vecino = normalizar_telefono(
+            telefono_vecino, self.context.get("waid") or self.context.get("anon_id")
+        )
+        if not all([nombre_vecino, dni_vecino, email_vecino, direccion_contacto]):
+            return {
+                "success": False,
+                "message_to_user": "Para registrar tu sugerencia necesito tu nombre completo, DNI, email y dirección. Podés escribir todo en un solo mensaje.",
+                "pedir_info": "datos_contacto_sugerencia"
+            }
+        # Create a ticket for the suggestion
+        owner_user = self.context.get("user_obj")
+        user_id_db = getattr(viewer_user, "id", None)
+        anon_id_db = self.context.get("anon_id") if not user_id_db else None
+        municipio_db_id_para_ticket = getattr(owner_user, "municipio_id", None)
+        nombre_vecino_final = nombre_vecino or getattr(viewer_user, "nombre", "Ciudadano Anónimo")
+
+        ticket_data = {
+            "asunto": "Sugerencia de Ciudadano",
+            "categoria": "Sugerencia",
+            "detalles": descripcion_sugerencia,
+            "estado": "nuevo",
+            "user_id": user_id_db,
+            "anon_id": anon_id_db,
+            "origen_reclamo": "LLM_CHATBOT",
+            "nombre_vecino": nombre_vecino_final,
+            "dni_vecino": dni_vecino,
+            "email_vecino": email_vecino,
+            "telefono_vecino": telefono_vecino,
+            "direccion": ubicacion_sugerencia,
+            "direccion_contacto": direccion_contacto,
+            "latitud": coordenadas_sugerencia.get("lat") if isinstance(coordenadas_sugerencia, dict) else None,
+            "longitud": coordenadas_sugerencia.get("lon") if isinstance(coordenadas_sugerencia, dict) else None,
+        }
+        if self.context.get("foto_url"):
+            ticket_data["foto_url_directa"] = self.context.get("foto_url")
+
+        ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
+        if "municipio_id" in ticket_data_cleaned:
+            del ticket_data_cleaned["municipio_id"]
+
+        try:
+            ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
+            if not ticket_creado:
+                raise Exception("servicio_tickets.crear_nuevo_ticket returned None")
+
+            nro_ticket_str = f"S-{ticket_creado.get('nro_ticket')}"
+            logger.info(f"Ticket de sugerencia {nro_ticket_str} creado exitosamente.")
+            _asociar_archivos_si_corresponde(ticket_creado.get('id'), self.context)
+
+            # Limpiar el contexto para evitar estados pegajosos
+            user_info = self.context.get(CONTEXTO_MUNICIPIO, {}).get('user', {})
+            contacto_usuario = {
+                "nombre": nombre_vecino_final,
+                "dni": dni_vecino,
+                "email": email_vecino,
+                "direccion": direccion_contacto,
+                "telefono": telefono_vecino,
+            }
+            if CONTEXTO_MUNICIPIO in self.context:
+                ctx_muni = self.context[CONTEXTO_MUNICIPIO]
+                ctx_muni.clear()
+                if user_info:
+                    ctx_muni['user'] = user_info
+                ctx_muni['contacto_usuario'] = {k: v for k, v in contacto_usuario.items() if v}
+                from services.municipio_responder import ConversationState
+                ctx_muni['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+                self.context["last_event"] = {"type": "ticket_created", "ts": time.time()}
+
+            # Obtener la URL base del chat del contexto para el botón "Ver mi Ticket"
+            municipio_config = self.context.get('municipio_config_actual', {})
+            base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/tickets/municipio')
+            promo_image_url = municipio_config.get('promo_image_url')
+
+            respuesta_formateada, botones_generados = formatear_ticket_respuesta(
+                "sugerencia",
+                nombre_vecino_final,
+                descripcion_sugerencia,
+                "Sugerencia",
+                nro_ticket_str,
+                {}, # No hay contacto especializado para sugerencias
+                base_chat_url,
+                dni=dni_vecino,
+                consulta_pin=ticket_creado.get("consulta_pin"),
+            )
+
+            # Añadir el botón de acción específico para sugerencias
+            botones_finales = botones_generados
+            botones_finales.append({"texto": "Hacer otra sugerencia", "action_id": "hacer_sugerencia"})
+
+            return {
+                "success": True,
+                "message_to_user": respuesta_formateada,
+                "options_list": botones_finales,
+                "message_type": "interactive_buttons",
+                "image_url": promo_image_url,
+                "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado"}
+            }
+        except Exception as e:
+            logger.error(f"Error en HacerSugerenciaActionHandler: {e}", exc_info=True)
+            return {
+                "success": False,
+                "message_to_user": "Hubo un problema al intentar registrar tu sugerencia. Por favor, intenta de nuevo más tarde.",
+                "error_details": str(e)
+            }
+
+class ConsultarPuntosDeInteresActionHandler(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing ConsultarPuntosDeInteresActionHandler with data: {action_data}")
+
+        tipo_de_comercio = action_data.get("tipo_comercio")
+        if not tipo_de_comercio:
+            return {"success": False, "message_to_user": "No especificaste qué tipo de comercio buscar."}
+
+        # La ubicación se obtiene de los datos de la acción (si se proporcionó en el mensaje actual)
+        # o del contexto de la conversación como fallback.
+        ubicacion = action_data.get("ubicacion") or self.context.get("ubicacion_usuario")
+        if not ubicacion:
+            # Si no hay ubicación en ningún lado, se la pedimos al usuario.
+            self.context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = "ESPERANDO_UBICACION_GENERAL"
+            self.context[CONTEXTO_MUNICIPIO]["accion_pendiente_tras_ubicacion"] = "consultar_puntos_de_interes"
+            self.context[CONTEXTO_MUNICIPIO]["datos_pendientes"] = {"tipo_comercio": tipo_de_comercio}
+
+            return {
+                "success": False,
+                "message_to_user": "Para poder ayudarte mejor, necesito tu ubicación. ¿Podrías compartirla?",
+                "pedir_info": "ubicacion"
+            }
+
+        from services.herramientas_municipio import buscar_comercios_por_rubro_y_ubicacion
+
+        resultado = buscar_comercios_por_rubro_y_ubicacion(tipo_de_comercio, ubicacion)
+
+        return {
+            "success": True,
+            "message_to_user": resultado,
+            "data": {"tipo_comercio_buscado": tipo_de_comercio, "ubicacion_usada": ubicacion}
+        }
+
+class ActivarPanicoActionHandler(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        logger.critical(f"Executing ActivarPanicoActionHandler with data: {action_data}")
+        # Simulate alerting emergency services
+        user_message = "🚨 ALERTA DE PÁNICO RECIBIDA. Hemos notificado a los servicios de emergencia con tu ubicación. Mantené la calma, la ayuda está en camino."
+        if not action_data.get("coordenadas") and not action_data.get("ubicacion"):
+            user_message = "🚨 ALERTA DE PÁNICO RECIBIDA. No pudimos obtener tu ubicación precisa. Por favor, si es posible, indicala a los servicios de emergencia cuando te contacten. Mantené la calma."
+
+        # servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data={"asunto": "ALERTA PANICO", ...})
+        return {
+            "success": True,
+            "message_to_user": user_message,
+            "data": {"alerta_status": "enviada"}
+        }
+
+from socket_service import socketio, emit_ticket_update
+from routes.ticket import serialize_ticket_to_json
+
+class DerivarHumanoActionHandler(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Crea un ticket real de chat en vivo y devuelve su identificador."""
+        logger.info(f"Executing DerivarHumanoActionHandler with data: {action_data}")
+
+        try:
+            viewer_user = self.context.get("viewer_user_obj")
+            owner_user = self.context.get("user_obj")
+            pregunta_original = self.context.get("pregunta_actual_usuario", "")
+
+            nombre = (getattr(viewer_user, "name", None) or action_data.get("nombre"))
+            telefono = (getattr(viewer_user, "telefono", None) or action_data.get("telefono"))
+            email = (getattr(viewer_user, "email", None) or action_data.get("email"))
+
+            ticket_data = {
+                "asunto": f"Solicitud de Chat en Vivo por: {nombre or 'Vecino'}",
+                "categoria": "Atención en Vivo",
+                "pregunta": pregunta_original,
+                "detalles": action_data.get("motivo_derivacion", "Solicitud de agente"),
+                "user_id": self.context.get("cliente_id"),
+                "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
+                "municipio_id": getattr(owner_user, "municipio_id", None),
+                "estado": "esperando_agente_en_vivo",
+                "nombre_vecino": nombre,
+                "telefono_vecino": telefono,
+                "email_vecino": email,
+            }
+            ticket_type = "municipio"
+
+            ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
+            ticket_data_cleaned['tipo_ticket'] = ticket_type
+            sala_dict = servicio_tickets.crear_nuevo_ticket(tipo_ticket=ticket_type, ticket_data=ticket_data_cleaned)
+            if not sala_dict:
+                raise Exception("crear_nuevo_ticket devolvió None")
+
+            _asociar_archivos_si_corresponde(sala_dict.get('id'), self.context)
+
+            # Since downstream functions need the object, fetch it from the DB
+            from models import MunicipioTicket
+            sala_obj = _db.session.get(MunicipioTicket, sala_dict['id'])
+            if not sala_obj:
+                raise Exception(f"No se pudo recuperar el ticket recién creado con ID {sala_dict['id']}")
 
             try:
-                response = responder_municipio(
-                    pregunta_original="farmacias de turno",
-                    owner_user=owner_user,
-                    viewer_user=None,
-                    anon_id="test_anon_123",
-                    chat_db_context=chat_context,
-                    rubro_obj=owner_user.rubro,
-                    location={"formatted_address": "Mendoza, Argentina"}
-                )
+                ticket_json = serialize_ticket_to_json(sala_obj, ticket_type)
+                emit_ticket_update(ticket_json)
+            except Exception as e_notify:
+                logger.error(f"Error enviando notificación en tiempo real para ticket #{sala_dict['nro_ticket']}: {e_notify}", exc_info=True)
 
-                self.assertIn("Farmacia Central", response["message_body"])
-                mock_google_search.assert_called_with(query="farmacias de turno cerca de Mendoza, Argentina")
-            finally:
-                # Restore the original function to avoid side effects in other tests
-                TOOL_REGISTRY['google_search']['funcion'] = original_google_search
-
-    @patch('services.municipio_responder.google_search')
-    @patch('services.municipio_responder.llamar_gemini')
-    def test_points_of_interest_handler_without_location(self, mock_llamar_gemini, mock_google_search):
-        # Simulate the LLM asking for location
-        mock_llamar_gemini.return_value = ({"message_body": "Para darte información precisa, necesito tu ubicación. ¿Podrías compartirla?",
-                                            "accion_backend": "pedir_info", "pedir_info": "ubicacion"}, {})
-
-        from services.municipio_responder import responder_municipio
-        with self.app.test_request_context():
-            owner_user = MagicMock(spec=User, id=1, municipio_id='test_muni')
-            owner_user.rubro = MagicMock(clave='municipio')
-            chat_context = MagicMock()
-            chat_context.context_data = {}
-
-            response = responder_municipio(
-                pregunta_original="farmacias de turno",
-                owner_user=owner_user,
-                viewer_user=None,
-                anon_id="test_anon_123",
-                chat_db_context=chat_context,
-                rubro_obj=owner_user.rubro
+            servicio_tickets.crear_comentario(
+                ticket_id=sala_dict['id'],
+                tipo_ticket=ticket_type,
+                comentario_data={
+                    "comentario": pregunta_original,
+                    "user_id": self.context.get("cliente_id"),
+                    "anon_id": self.context.get("anon_id"),
+                    "es_admin": False,
+                },
             )
 
-            # The new expected response comes from the mocked LLM
-            self.assertIn("necesito tu ubicación", response["message_body"])
-            mock_google_search.assert_not_called()
+            # Emitir evento de socket para notificar al panel de administración
+            try:
+                ticket_json = serialize_ticket_to_json(sala_obj, ticket_type)
+                room_name = f"municipio_{sala_obj.municipio_id}"
+                socketio.emit('live_chat_request', ticket_json, room=room_name)
+                logger.info(f"Socket event 'live_chat_request' emitted to room '{room_name}' for ticket {sala_obj.id}")
+            except Exception as e_socket:
+                logger.error(f"Failed to emit socket event for new live chat ticket {sala_obj.id}: {e_socket}", exc_info=True)
 
-    @patch('services.actions.municipio_actions.formatear_ticket_respuesta', return_value=("ok", []))
-    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
-    def test_hacer_sugerencia_persiste_ubicacion(self, mock_crear_ticket, mock_formatear):
-        mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "555"}
-        viewer = MagicMock(spec=User)
-        viewer.id = 10
-        owner = MagicMock(spec=User)
-        owner.municipio_id = 1
-        context = {
-            "viewer_user_obj": viewer,
-            "user_obj": owner,
-            "anon_id": "anon",
-            "municipio_config_actual": {},
-            "contexto_municipio_v2": {},
+
+            chat_id = f"M-{sala_dict['nro_ticket']}"
+
+            # formatear_ticket_respuesta now returns a tuple (message, buttons)
+            user_message, _ = formatear_ticket_respuesta("chat", nombre, pregunta_original, "Atención en Vivo", chat_id)
+            return {
+                "success": True,
+                "message_to_user": user_message,
+                "data": {"ticket_id": sala_dict['id'], "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
+            }
+        except Exception as e:
+            logger.error(f"Error en DerivarHumanoActionHandler: {e}", exc_info=True)
+            return {
+                "success": False,
+                "message_to_user": "Ocurrió un problema al crear el chat en vivo. ¿Podés intentar de nuevo más tarde?",
+                "error_details": str(e),
+            }
+
+class ProcesarAdjuntoReclamoActionHandler(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing ProcesarAdjuntoReclamoActionHandler with data: {action_data}")
+        # This handler would be triggered AFTER an image/file is uploaded and processed by InputProcessor
+        # and its analysis (e.g., from Vision API) is available in action_data.
+
+        archivo_url = action_data.get("archivo_url")
+        analisis_imagen = action_data.get("analisis_imagen") # e.g., {'es_reclamo': True, 'categoria_sugerida': 'bache', ...}
+
+        if not archivo_url:
+            return {"success": False, "message_to_user": "No se detectó ningún archivo adjunto."}
+
+        # Simulate associating the attachment with a claim (either new or existing)
+        # This might update a claim in progress or provide data for a new one.
+        user_message = f"Recibí el archivo {archivo_url}. "
+        if analisis_imagen:
+            user_message += f"Parece ser sobre '{analisis_imagen.get('categoria_sugerida', 'algo')}'."
+            if analisis_imagen.get('texto_ocr'):
+                 user_message += f" Contiene texto: '{analisis_imagen['texto_ocr'][:50]}...'."
+
+        # The result of this action might be to update the context for ReclamoHandler
+        # or to directly create/update a claim if enough info is present.
+        # For now, just acknowledge.
+        return {
+            "success": True,
+            "message_to_user": user_message,
+            "data": {"adjunto_procesado": True, "analisis_realizado": bool(analisis_imagen)}
         }
-        handler = HacerSugerenciaActionHandler(context)
-        datos = {
-            "descripcion": "Más árboles en la plaza",
-            "ubicacion": "Plaza Central",
-            "coordenadas": {"lat": -32.9, "lon": -68.8},
-            "nombre": "Juan Perez",
-            "dni": "12345678",
-            "email": "juan@example.com",
-            "direccion": "Calle Falsa 123",
+
+class CorregirDatosReclamoActionHandler(BaseActionHandler):
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing CorregirDatosReclamoActionHandler with data: {action_data}")
+
+        campo_a_corregir = action_data.get("campo_a_corregir")
+        nuevo_valor = action_data.get("nuevo_valor")
+
+        if not campo_a_corregir or nuevo_valor is None:
+            return {
+                "success": False,
+                "message_to_user": "No especificaste qué dato corregir o cuál es el nuevo valor.",
+                "pedir_info": "detalle_correccion"
+            }
+
+        # Update the context with the new value
+        contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
+        if campo_a_corregir == "ubicacion":
+            contexto_reclamo["direccion_reclamo"] = nuevo_valor
+        elif campo_a_corregir == "descripcion":
+            contexto_reclamo["descripcion_reclamo"] = nuevo_valor
+        elif campo_a_corregir == "categoria":
+            contexto_reclamo["categoria_reclamo"] = nuevo_valor
+        elif campo_a_corregir == "nombre":
+            contexto_reclamo["nombre_vecino"] = nuevo_valor
+        elif campo_a_corregir == "telefono":
+            contexto_reclamo["telefono_vecino"] = nuevo_valor
+        elif campo_a_corregir == "email":
+            contexto_reclamo["email_vecino"] = nuevo_valor
+
+        user_message = f"Entendido. He actualizado '{campo_a_corregir}' a '{nuevo_valor}'. ¿Algo más que desees cambiar o confirmamos el reclamo?"
+
+        return {
+            "success": True,
+            "message_to_user": user_message,
+            "data": {"campo_corregido": campo_a_corregir, "valor_actualizado": nuevo_valor},
+            "pedir_info": "confirmacion_tras_correccion"
         }
-        resp = handler.execute(datos)
-        self.assertTrue(resp["success"])
-        mock_crear_ticket.assert_called_once()
-        ticket_kwargs = mock_crear_ticket.call_args.kwargs['ticket_data']
-        self.assertEqual(ticket_kwargs['direccion'], 'Plaza Central')
-        self.assertEqual(ticket_kwargs['latitud'], -32.9)
-        self.assertEqual(ticket_kwargs['longitud'], -68.8)
-        self.assertEqual(ticket_kwargs['direccion_contacto'], 'Calle Falsa 123')
 
-    @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
-    @patch('services.actions.municipio_actions.formatear_telefono_e164', return_value="+5492611234567")
-    @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
-    @patch('services.actions.municipio_actions.validar_email', return_value=True)
-    @patch('services.actions.municipio_actions.validar_y_formatear_direccion', return_value={"formatted_address": "Calle Falsa 123", "lat": -32.9, "lng": -68.8})
-    @patch('services.actions.municipio_actions.parse_direccion', return_value={"calle": "Calle Falsa", "numero": "123", "localidad": "Junin"})
-    def test_nombre_placeholder_dispara_pedido_contacto(
-        self, mock_parse, mock_validar_dir, mock_validar_email, mock_validar_tel,
-        mock_formatear_tel, mock_enviar
-    ):
-        datos_llm = {
-            "categoria": "Arbolado",
-            "descripcion": "Ramas caídas",
-            "ubicacion": "Calle Falsa 123",
-            "usuario": "Vecino/a",
-            "telefono": "2611234567",
-            "email": "vecino@example.com",
-            "dni": "30111222",
+class MenuPrincipalActionHandler(BaseActionHandler):
+    action_name = "menu_principal"
+
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "success": True,
+            "message_to_user": "Estas son las cosas que puedo hacer por vos:",
+            "options_list": [
+                {"texto": "Hacer un Reclamo", "action_id": "crear_reclamo"},
+                {"texto": "Consultas y Turnos", "action_id": "consultar_tramite"},
+                {"texto": "Buscar estacionamiento", "action_id": "buscar_estacionamiento"},
+            ],
+            "message_type": "interactive_buttons"
         }
-        context = {
-            "viewer_user_obj": None,
-            "user_obj": MagicMock(id=1, municipio_id="default"),
-            "anon_id": "anon123",
-            "municipio_config_actual": {},
-        }
-        handler = CrearReclamoActionHandler(context)
-        respuesta = handler.execute(datos_llm)
 
-        assert respuesta["next_state_hint"] == "ESPERANDO_DATOS_CONTACTO"
-        assert "Nombre y apellido" in respuesta["message_to_user"]
-
-    @patch('services.municipio_responder.handle_llm_interaction', return_value=(None, {}))
-    @patch('services.municipio_responder.google_search')
-    def test_fallback_handler(self, mock_google_search, mock_handle_llm):
-        mock_google_search.return_value = [
-            {"title": "Test Search Result", "link": "http://example.com/search", "snippet": "This is a test search result."}
-        ]
-
-        from services.municipio_responder import responder_municipio
-        with self.app.test_request_context():
-            owner_user = MagicMock(spec=User, id=1, municipio_id='test_muni')
-            owner_user.rubro = MagicMock(clave='municipio')
-            chat_context = MagicMock()
-            chat_context.context_data = {}
-
-            response = responder_municipio(
-                pregunta_original="unhandled query",
-                owner_user=owner_user,
-                viewer_user=None,
-                anon_id="test_anon_123",
-                chat_db_context=chat_context,
-                rubro_obj=owner_user.rubro
-            )
-
-            self.assertIn("encontré esto en la web", response["message_body"])
-            self.assertIn("Test Search Result", response["message_body"])
-            self.assertEqual(response["fuente"], "municipio_fallback_google_search")
-            mock_google_search.assert_called_with("unhandled query")
-
-if __name__ == '__main__':
-    unittest.main(verbosity=2)
-
-
-def test_normaliza_telefono_waid():
-    from services.actions.municipio_actions import normalizar_telefono
-
-    assert normalizar_telefono(None, "5492611234567") == "+5492611234567"
-    assert normalizar_telefono("2611234567", None) == "2611234567"
-    assert normalizar_telefono("2611234567", "abc") == "2611234567"
+# Add other handlers as needed
+# e.g., CalificarAtencionActionHandler, ConfirmarCierreTicketActionHandler

@@ -188,15 +188,29 @@ def responder_chatboc(
     # --- Inicio: Lógica de manejo de archivo adjunto y su análisis ---
     uploaded_file_info = kwargs.get("uploaded_file_info")
     datos_interpretados_de_archivo = kwargs.get("datos_interpretados_archivo")
-    archivo_id_para_asociar_al_ticket = None
-    procesamiento_archivo_en_curso = False # Nueva bandera
+    procesamiento_archivo_en_curso = False  # Nueva bandera
+
+    ids_archivos_para_asociar = []
+    if chat_db_context and chat_db_context.context_data is not None:
+        ids_archivos_para_asociar = chat_db_context.context_data.get(
+            "ids_archivos_para_asociar", []
+        )
 
     if uploaded_file_info and isinstance(uploaded_file_info, dict):
-        logger.info(f"DEBUG: Processing uploaded_file_info in responder_chatboc: {uploaded_file_info}")
-        if uploaded_file_info.get("id"):
-            archivo_id_para_asociar_al_ticket = uploaded_file_info.get("id")
+        logger.info(
+            f"DEBUG: Processing uploaded_file_info in responder_chatboc: {uploaded_file_info}"
+        )
+        archivo_id = uploaded_file_info.get("id")
+        if archivo_id:
+            if archivo_id not in ids_archivos_para_asociar:
+                ids_archivos_para_asociar.append(archivo_id)
+                if chat_db_context and chat_db_context.context_data is not None:
+                    chat_db_context.context_data["ids_archivos_para_asociar"] = (
+                        ids_archivos_para_asociar
+                    )
+                    safe_flag_modified(chat_db_context, "context_data")
             current_app.logger.info(
-                f"[LOGIC] Procesando uploaded_file_info para ArchivoAdjunto ID: {archivo_id_para_asociar_al_ticket}"
+                f"[LOGIC] Procesando uploaded_file_info para ArchivoAdjunto ID: {archivo_id}"
             )
         if uploaded_file_info.get("source") == "whatsapp":
             from services.document_processing_service import document_processing_service
@@ -237,19 +251,34 @@ def responder_chatboc(
                     if doc_ai_result:
                         # Aquí puedes procesar el resultado de Document AI
                         # Por ahora, solo extraemos el texto
-                        datos_interpretados_de_archivo = {"texto_extraido": doc_ai_result.text}
+                        datos_interpretados_de_archivo = {
+                            "texto_extraido": doc_ai_result.text
+                        }
                     else:
-                        datos_interpretados_de_archivo = {"error": "No se pudo procesar el documento."}
+                        datos_interpretados_de_archivo = {
+                            "error": "No se pudo procesar el documento."
+                        }
             except requests.exceptions.RequestException as e:
-                current_app.logger.error(f"Error descargando archivo de WhatsApp: {e}")
-                datos_interpretados_de_archivo = {"error": "No se pudo descargar el archivo."}
+                current_app.logger.error(
+                    f"Error descargando archivo de WhatsApp: {e}"
+                )
+                datos_interpretados_de_archivo = {
+                    "error": "No se pudo descargar el archivo."
+                }
+
+    archivo_id_para_asociar_al_ticket = (
+        ids_archivos_para_asociar[-1] if ids_archivos_para_asociar else None
+    )
 
     # Actualizar kwargs para pasar la información a los handlers específicos
     kwargs["datos_interpretados_archivo"] = datos_interpretados_de_archivo
     kwargs["archivo_id_para_asociar"] = archivo_id_para_asociar_al_ticket
+    kwargs["ids_archivos_para_asociar"] = (
+        ids_archivos_para_asociar if ids_archivos_para_asociar else None
+    )
     kwargs["procesamiento_archivo_en_curso"] = procesamiento_archivo_en_curso
 
-    if "uploaded_file_info" in kwargs: # Limpiar para no pasarlo si ya se usó.
+    if "uploaded_file_info" in kwargs:  # Limpiar para no pasarlo si ya se usó.
         del kwargs["uploaded_file_info"]
     # --- Fin: Lógica de manejo de archivo adjunto ---
 
