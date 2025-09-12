@@ -187,6 +187,19 @@ def direccion_es_valida(texto: str) -> bool:
         return False
 
     geocode_result = geocode_address(texto)
+    if geocode_result is None:
+        try:
+            parsed = parse_direccion_completa(texto, CONFIG_MUNICIPIO)
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.error("Error en parse_direccion_completa: %s", exc)
+            parsed = None
+        if parsed:
+            reconstruida = "{} {}".format(parsed.get("calle", "").strip(), parsed.get("numero", "").strip()).strip()
+            localidad = parsed.get("localidad")
+            provincia = parsed.get("provincia")
+            partes = [p for p in [reconstruida, localidad, provincia] if p]
+            consulta = ", ".join(partes)
+            geocode_result = geocode_address(consulta)
     if geocode_result is not None:
         return True
 
@@ -775,7 +788,36 @@ def validar_y_formatear_direccion(
         logger.warning(
             f"[GEO] No se pudo geocodificar '{direccion}' dentro de los límites municipales."
         )
-        return None
+        # Intento de fallback usando LLM para parsear y reintentar geocodificación
+        try:
+            parsed = parse_direccion_completa(direccion, cfg)
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.error("[GEO] Fallback LLM parse failed: %s", exc)
+            parsed = None
+        if parsed:
+            base = "{} {}".format(parsed.get("calle", "").strip(), parsed.get("numero", "").strip()).strip()
+            loc = parsed.get("localidad") or cfg.get("ciudad")
+            prov = parsed.get("provincia") or cfg.get("provincia")
+            parts = [p for p in [base, loc, prov] if p]
+            query = ", ".join(parts)
+            geo = geocode_address(query)
+            if geo:
+                resolved = {
+                    "calle": parsed.get("calle"),
+                    "numero": parsed.get("numero"),
+                    "entre_calles": parsed.get("entre_calles", []),
+                    "barrio": parsed.get("barrio"),
+                    "localidad": loc,
+                    "provincia": prov,
+                    "pais": cfg.get("pais"),
+                    "lat": geo.get("lat"),
+                    "lon": geo.get("lng"),
+                    "precision": parsed.get("precision", "approx"),
+                    "formatted": geo.get("display_name"),
+                    "validez": True,
+                }
+        if not resolved:
+            return None
 
     lat = resolved.get("lat")
     lon = resolved.get("lon")
