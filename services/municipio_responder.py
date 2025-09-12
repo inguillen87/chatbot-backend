@@ -870,8 +870,10 @@ class ReclamoFlowHandler:
                 use_llm=True,
             )
             categoria = detalles.get("categoria_sugerida")
-            if detalles.get("descripcion_sugerida"):
-                self.flow_context.setdefault("datos_reclamo", {})["descripcion"] = detalles["descripcion_sugerida"]
+            desc_sug = detalles.get("descripcion_sugerida")
+            dir_sug = detalles.get("direccion_sugerida")
+            if desc_sug and desc_sug != dir_sug and not looks_like_address(desc_sug):
+                self.flow_context.setdefault("datos_reclamo", {})["descripcion"] = desc_sug
             if detalles.get("direccion_sugerida"):
                 self.flow_context.setdefault("datos_reclamo", {})["direccion"] = detalles["direccion_sugerida"]
 
@@ -2255,10 +2257,12 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             )
         # Map remaining suggested fields into initial data
         datos_iniciales = {}
-        if details.get("descripcion_sugerida"):
-            datos_iniciales["descripcion"] = details["descripcion_sugerida"]
-        if details.get("direccion_sugerida"):
-            datos_iniciales["direccion"] = details["direccion_sugerida"]
+        desc_sug = details.get("descripcion_sugerida")
+        dir_sug = details.get("direccion_sugerida")
+        if desc_sug and desc_sug != dir_sug and not looks_like_address(desc_sug):
+            datos_iniciales["descripcion"] = desc_sug
+        if dir_sug:
+            datos_iniciales["direccion"] = dir_sug
         response_dict = handler.start_flow(
             datos_iniciales=datos_iniciales or None,
             categoria_inicial=detected_category,
@@ -3555,7 +3559,8 @@ def _detect_reclamo_during_sugerencia(pregunta_str: str, contexto_municipio_actu
         contexto_municipio_actual.pop('ubicacion_contextual_sugerencia', None)
         contexto_municipio_actual.pop('estado_conversacion', None)
         handler = ReclamoFlowHandler(context, chat_db_context)
-        response = handler.start_flow(datos_iniciales={"descripcion": pregunta_str})
+        datos_ini = None if looks_like_address(pregunta_str) else {"descripcion": pregunta_str}
+        response = handler.start_flow(datos_iniciales=datos_ini)
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return response
