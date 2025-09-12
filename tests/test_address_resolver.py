@@ -81,6 +81,26 @@ def test_resolver_handles_city_suffix():
     assert result["numero"] == "55"
 
 
+def test_resolver_handles_city_and_province_suffix():
+    resolver = AddressResolver(JUNIN_CONFIG)
+    with patch(
+        "services.address_resolver.requests.get", return_value=_fake_resp(-33.0, -68.5)
+    ):
+        result = resolver.resolve("Don Bosco 55 Junin Mendoza")
+    assert result["calle"] == "Don Bosco"
+    assert result["numero"] == "55"
+
+
+def test_resolver_keeps_province_street_name():
+    resolver = AddressResolver(JUNIN_CONFIG)
+    with patch(
+        "services.address_resolver.requests.get", return_value=_fake_resp(-33.0, -68.5)
+    ):
+        result = resolver.resolve("Mendoza 500")
+    assert result["calle"] == "Mendoza"
+    assert result["numero"] == "500"
+
+
 def test_resolver_includes_maps_search_url():
     resolver = AddressResolver(JUNIN_CONFIG)
     with patch(

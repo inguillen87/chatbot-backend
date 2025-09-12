@@ -134,11 +134,18 @@ class AddressResolver:
         if raw_address.strip().upper() == "N/A":
             return None
         normalized = self._normalize(raw_address)
-        # Remove occurrences of the municipality city/province to allow
-        # inputs like "Don Bosco 55 Junin" or "Sarmiento y San Martin Junin"
-        for token in (self._city_norm, self._state_norm):
-            if token:
-                normalized = re.sub(rf"\b{re.escape(token)}\b", "", normalized)
+        # Remove trailing occurrences of the municipality city/province to allow
+        # inputs like "Don Bosco 55 Junin" or "Sarmiento y San Martin Junin".
+        tokens = [t for t in (self._city_norm, self._state_norm) if t]
+        changed = True
+        while changed:
+            changed = False
+            for token in tokens:
+                pattern = rf"(?:,\s*)?\b{re.escape(token)}\b\s*$"
+                new_normalized = re.sub(pattern, "", normalized).strip()
+                if new_normalized != normalized:
+                    normalized = new_normalized
+                    changed = True
         normalized = re.sub(r"\s+", " ", normalized).strip().strip(",")
 
         # Detect external jurisdictions mentioned explicitly
