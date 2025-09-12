@@ -125,6 +125,36 @@ class GeoFlowTests(unittest.TestCase):
         self.assertIn('Recibí tu ubicación', resp['message_body'])
         self.assertIn('Calle Falsa 123', resp['message_body'])
 
+    def test_no_duplicate_prompts(self):
+        owner_user = MagicMock(); owner_user.id = 1
+        chat_context = MagicMock()
+        chat_context.context_data = {
+            CONTEXTO_MUNICIPIO: {
+                'media_recibida': True,
+                'ubicacion_confirmada': True,
+                'contacto_usuario': {'nombre': 'Juan'},
+                'estado_conversacion': None,
+            }
+        }
+        from flask import Flask
+        flask_app = Flask(__name__)
+        with flask_app.app_context():
+            resp = responder_municipio(
+                pregunta_original='',
+                owner_user=owner_user,
+                rubro_obj=None,
+                viewer_user=None,
+                chat_db_context=chat_context,
+                anon_id='test',
+                channel='whatsapp',
+            )
+
+        # Should only ask for remaining contact data, not for media or location again
+        body = resp['message_body'].lower()
+        self.assertIn('necesito estos datos', body)
+        self.assertNotIn('ubicación', body)
+        self.assertNotIn('foto', body)
+
 
 if __name__ == '__main__':
     unittest.main()

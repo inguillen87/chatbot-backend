@@ -441,6 +441,37 @@ def _format_contact_summary(datos: dict) -> str:
     )
 
 
+def calcular_faltantes(ctx: dict) -> list:
+    """Return a list of pending data pieces for the current flow.
+
+    Evaluates three high level requirements in ``ctx``:
+
+    * ``media_recibida``: whether the user already sent a photo or other media.
+    * ``ubicacion_confirmada``: if the location for the claim/suggestion was
+      confirmed by the user.
+    * ``datos_contacto``: basic contact details. This is derived from the
+      ``contacto_usuario`` entry and considers the contact complete only when
+      all required fields are present.
+
+    The returned list contains the keys of the missing items so callers can
+    prompt only for the pending information and avoid duplicate requests.
+    """
+
+    faltantes: list[str] = []
+
+    if not ctx.get("media_recibida") and not ctx.get("foto_url"):
+        faltantes.append("media_recibida")
+
+    if not ctx.get("ubicacion_confirmada"):
+        faltantes.append("ubicacion_confirmada")
+
+    contacto = ctx.get("contacto_usuario") or {}
+    if _need_any_contact(contacto):
+        faltantes.append("datos_contacto")
+
+    return faltantes
+
+
 PUNTO_LIMPIO_LOGO_URL = "https://www.juninmendoza.gov.ar/recursos/punto-limpio-logo.jpg"
 PUNTO_LIMPIO_URL = "https://www.juninmendoza.gov.ar/punto-limpio"
 OBRAS_URL = "https://www.juninmendoza.gov.ar/obras"
@@ -4215,6 +4246,46 @@ def responder_municipio(
     # Obtener el estado actual de la conversación antes de evaluar acciones
     estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
     action = received_payload.get("action")
+
+    # Si no hay estado activo ni acción explícita, revisamos si hay datos
+    # pendientes para continuar con un flujo previo. De esta forma evitamos
+    # repetir preguntas ya respondidas.
+    if not estado_conversacion and not action and not pregunta_str:
+        faltantes = calcular_faltantes(contexto_municipio_actual)
+        if faltantes:
+            if "media_recibida" in faltantes:
+                return _finalize_response({
+                    "message_body": "Por favor, enviá una foto del problema.",
+                })
+            if "ubicacion_confirmada" in faltantes:
+                contexto_municipio_actual[
+                    "estado_conversacion"
+                ] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(
+                    {
+                        "message_body": "Para avanzar necesito la ubicación exacta: calle y número o *en qué esquina*.",
+                        "options_list": [],
+                    }
+                )
+            if "datos_contacto" in faltantes:
+                contexto_municipio_actual[
+                    "estado_conversacion"
+                ] = ConversationState.ESPERANDO_DATOS_CONTACTO.name
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                contacto_prev = contexto_municipio_actual.get(
+                    "contacto_usuario", {}
+                )
+                faltantes_contacto = [
+                    k
+                    for k in ["nombre", "dni", "telefono", "email"]
+                    if not contacto_prev.get(k)
+                ]
+                return _finalize_response(
+                    pedir_datos_contacto_compacto(faltantes_contacto)
+                )
 
     # If the client sends an explicit action (e.g., button press) and there is
     # no active conversation state, handle it immediately via the main menu
