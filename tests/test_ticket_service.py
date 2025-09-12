@@ -139,6 +139,46 @@ class TicketServiceTests(unittest.TestCase):
         self.assertEqual(len(res_no_group), 3)
         self.assertTrue(all('weight' not in r for r in res_no_group))
 
+    def test_mapa_filtra_por_distrito(self):
+        class DummyQuery(list):
+            def filter(self, *criterion):
+                if criterion and isinstance(criterion[0], tuple):
+                    _, key, value = criterion[0]
+                    return DummyQuery([t for t in self if getattr(t, key) == value])
+                return self
+            def filter_by(self, **kwargs):
+                return DummyQuery([t for t in self if all(getattr(t, k, None) == v for k, v in kwargs.items())])
+            def all(self):
+                return list(self)
+
+        class DummyColumn:
+            def __init__(self, key):
+                self.key = key
+            def __eq__(self, other):
+                return ('eq', self.key, other)
+
+        class DummyModel:
+            latitud = MagicMock(); latitud.isnot.return_value = True
+            longitud = MagicMock(); longitud.isnot.return_value = True
+            distrito = DummyColumn('distrito')
+            def __init__(self, **kwargs):
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        data = DummyQuery([
+            DummyModel(id=1, latitud=1.0, longitud=2.0, distrito="Centro"),
+            DummyModel(id=2, latitud=3.0, longitud=4.0, distrito="Norte"),
+        ])
+        DummyModel.query = data
+
+        with patch.object(ts, 'MunicipioTicket', DummyModel):
+            service = ServicioTickets()
+            res = service.obtener_tickets_con_ubicacion_para_mapa(
+                tipo_ticket='municipio', distrito="Centro"
+            )
+        self.assertEqual(len(res), 1)
+        self.assertAlmostEqual(res[0]['location']['lat'], 1.0)
+
     def test_preserves_user_provided_phone_when_user_exists(self):
         service = ServicioTickets()
         class DummyCreator:

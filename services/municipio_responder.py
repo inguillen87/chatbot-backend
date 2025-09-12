@@ -105,7 +105,18 @@ RECLAMO_HINTS = [
     "ramas",
     "hoja",
     "hojas",
+    "luminaria",
+    "poste",
+    "bache",
+    "pozo",
     "basura",
+    "residuos",
+    "alumbrado",
+    "perdida",
+    "pérdida",
+    "fuga",
+    "perro",
+    "animal",
     "rotas",
     "caido",
     "caída",
@@ -1409,6 +1420,10 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         chat_db_context_data = self.context.get("chat_db_context_data")
+        evt = (self.context.get(CONTEXTO_MUNICIPIO, {}) or {}).get("last_system_event", {})
+        if evt.get("type") == "ticket_created" and time.time() - evt.get("ts", 0) < 60:
+            logger.info("[GreetingHandler] Ignorando saludo por ticket recién creado")
+            return None
 
         if not chat_db_context_data:
             logger.warning("[GreetingHandler] chat_db_context_data no encontrado. No se puede hacer un reseteo completo.")
@@ -4283,7 +4298,10 @@ def responder_municipio(
                 "telefono": getattr(viewer_user_obj, "telefono", None) or contacto_prev.get("telefono"),
             }
 
-            campos_faltantes = [c for c in ["nombre", "dni", "email", "direccion"] if not datos_sugerencia.get(c)]
+            direccion_existente = datos_sugerencia.get("direccion") or contacto_prev.get("direccion")
+            campos_faltantes = [c for c in ["nombre", "dni", "email"] if not datos_sugerencia.get(c)]
+            if not direccion_existente:
+                campos_faltantes.append("direccion")
             contexto_municipio_actual['datos_sugerencia'] = datos_sugerencia
             contexto_municipio_actual['contacto_usuario'] = {
                 k: datos_sugerencia.get(k)

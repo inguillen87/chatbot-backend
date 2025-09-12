@@ -366,9 +366,11 @@ class ServicioTickets:
         fecha_inicio: str | None = None,
         fecha_fin: str | None = None,
         categoria: str | None = None,
-        estado: str | None = None, # Nuevo parámetro de estado
+        estado: str | None = None,  # Nuevo parámetro de estado
+        distrito: str | None = None,
         satisfactorio: bool | None = None,
         agrupar: bool = True,
+        **kwargs,
     ) -> list[dict]:
         """
         Devuelve los tickets con ubicación, opcionalmente filtrados por estado.
@@ -380,7 +382,7 @@ class ServicioTickets:
         Model = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
         try:
             logger.info(
-                "[TICKET_SERVICE_MAPA] tipo=%s municipio_id=%s rubro_id=%s fecha_inicio=%s fecha_fin=%s categoria=%s estado=%s",
+                "[TICKET_SERVICE_MAPA] tipo=%s municipio_id=%s rubro_id=%s fecha_inicio=%s fecha_fin=%s categoria=%s estado=%s distrito=%s",
                 tipo_ticket,
                 municipio_id,
                 rubro_id,
@@ -388,9 +390,11 @@ class ServicioTickets:
                 fecha_fin,
                 categoria,
                 estado,
+                distrito or kwargs.get("distrito"),
             )
 
             query = Model.query.filter(Model.latitud.isnot(None), Model.longitud.isnot(None))
+            distrito = distrito or kwargs.get("distrito")
             if distrito and hasattr(Model, "distrito"):
                 query = query.filter(Model.distrito == distrito)
 
