@@ -207,6 +207,42 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         _, kwargs = mock_build_interactive_response.call_args
         self.assertEqual(kwargs.get('body_text'), 'Resumen del reclamo.')
 
+    @patch('routes.whatsapp_webhook.threading.Timer')
+    @patch('services.response_formatter.build_interactive_response')
+    def test_delayed_payload_skipped_if_token_mismatch(self, mock_build_interactive_response, mock_timer):
+        """Delayed payload should not send if session token differs."""
+
+        def immediate_timer(delay, func):
+            return SimpleNamespace(start=lambda: func())
+
+        mock_timer.side_effect = immediate_timer
+        mock_build_interactive_response.return_value = {'type': 'text', 'text': {'body': 'hola'}}
+
+        client = SimpleNamespace(messages=SimpleNamespace(create=MagicMock()))
+
+        session_id = 'session_token_test'
+        ctx = ChatSessionContext(
+            chat_session_id=session_id,
+            user_id=self.owner_user.id,
+            context_data={'pending_delayed_token': 'old'}
+        )
+        db.session.add(ctx)
+        db.session.commit()
+
+        from routes.whatsapp_webhook import _send_delayed_payload
+
+        _send_delayed_payload(
+            client,
+            'to',
+            'from',
+            {'message_body': 'hola'},
+            delay=0,
+            session_id=session_id,
+            token='new'
+        )
+
+        client.messages.create.assert_not_called()
+
     def test_button_fallback_formats_options_as_text_list(self):
         """
         Tests that the response formatter creates a text list when the 'botones' key is present.
