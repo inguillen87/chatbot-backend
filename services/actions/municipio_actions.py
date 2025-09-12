@@ -2,7 +2,6 @@
 import logging
 import re
 import time
-import logging
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
 import random
@@ -13,7 +12,6 @@ from services.notifications import (
 )
 from services.herramientas_municipio import (
     parse_direccion_completa as parse_direccion,
-    direccion_es_valida,
     validar_y_formatear_direccion,
 )
 from services.ticket_utils import formatear_ticket_respuesta
@@ -165,6 +163,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 logger.info(f"Parsed district: {distrito_llm}")
 
         # Geocoding: validate and enrich address with coordinates and formatted text
+        maps_link = None
+        static_map_url = None
         if ubicacion_llm and not coordenadas_llm:
             geo_info = validar_y_formatear_direccion(ubicacion_llm, municipio_config)
             if not geo_info or not geo_info.get("lat") or not geo_info.get("lng"):
@@ -202,11 +202,18 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "lat": geo_info.get("lat"),
                 "lon": geo_info.get("lng"),
             }
+            maps_link = geo_info.get("maps_link")
+            static_map_url = geo_info.get("static_map_url")
             if not distrito_llm:
                 parsed_geo = parse_direccion(ubicacion_llm)
                 if parsed_geo and parsed_geo.get("localidad"):
                     distrito_llm = parsed_geo["localidad"]
                     logger.info(f"Parsed district from geocoded address: {distrito_llm}")
+        elif coordenadas_llm and isinstance(coordenadas_llm, dict):
+            lat = coordenadas_llm.get("lat")
+            lon = coordenadas_llm.get("lon")
+            if lat and lon:
+                maps_link = f"https://www.google.com/maps?q={lat},{lon}"
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
         # Lógica de fusión de datos de contacto mejorada
@@ -314,6 +321,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             ("dni_vecino", dni_final),
             ("direccion_contacto", direccion_contacto),
             ("foto_url", foto_url_llm),
+            ("maps_link", maps_link),
+            ("static_map_url", static_map_url),
         ]:
             if value:
                 contexto_reclamo[key] = value
