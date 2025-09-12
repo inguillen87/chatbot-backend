@@ -364,6 +364,9 @@ class ProcesarAdjuntoPedidoAction(BaseActionHandler):
 
         archivo_id = self.context.get("archivo_id_para_asociar")
         if not archivo_id:
+            ids = self.context.get("ids_archivos_para_asociar") or []
+            archivo_id = ids[-1] if ids else None
+        if not archivo_id:
             return {"success": False, "message_to_user": "No se encontró un archivo para procesar."}
 
         from services.document_processing_service import document_processing_service

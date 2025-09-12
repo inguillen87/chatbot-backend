@@ -879,6 +879,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         "action_button_payload": received_payload.get("action"),
         "uploaded_file_info": received_payload.get("uploaded_file_info") or received_payload.get("uploaded_file_info_whatsapp"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"), # Si ya se subió un archivo
+        "ids_archivos_para_asociar": kwargs.get("ids_archivos_para_asociar"),
     }
 
     # --- 5. Ejecutar Acción vía ChatOrchestrator ---

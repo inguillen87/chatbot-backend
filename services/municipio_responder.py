@@ -3942,6 +3942,7 @@ def responder_municipio(
         "action": received_payload.get("action"),
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
+        "ids_archivos_para_asociar": kwargs.get("ids_archivos_para_asociar"),
     }
 
     # Detectar modalidad del mensaje inicial y ajustar flags del contexto
@@ -5682,6 +5683,7 @@ def responder_municipio(
         "action": received_payload.get("action"), # From button clicks, etc.
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
+        "ids_archivos_para_asociar": kwargs.get("ids_archivos_para_asociar"),
     }
     if not (chat_db_context and hasattr(chat_db_context, 'context_data')):
         logger_actual.critical("chat_db_context.context_data no disponible al inicializar 'context'. Usando dict vacío. Esto es problemático.")
