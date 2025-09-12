@@ -6,6 +6,7 @@ from services.municipio_responder import (
     handle_llm_interaction,
     ConversationState,
 )
+import time
 
 def test_greeting_handler_whatsapp_menu():
     # Create a mock context for WhatsApp
@@ -48,3 +49,14 @@ def test_saludo_ignorado_en_flujo_activo(mock_handler, mock_llm):
     assert updated["estado_conversacion"] == ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
     # response should be None to trigger fallback or re-prompt
     assert response is None
+
+
+def test_greeting_skips_after_recent_ticket():
+    ctx = {
+        CONTEXTO_MUNICIPIO: {
+            "last_system_event": {"type": "ticket_created", "ts": time.time()}
+        },
+        "chat_db_context_data": {},
+    }
+    handler = GreetingHandler(ctx)
+    assert handler.handle({}) is None

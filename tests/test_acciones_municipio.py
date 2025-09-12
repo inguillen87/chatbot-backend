@@ -418,6 +418,35 @@ class TestAccionesMunicipio(unittest.TestCase):
     def test_direccion_es_valida_fallback(self, _mock_geocode):
         """Debe aceptar direcciones simples aunque no haya geocodificación."""
         self.assertTrue(direccion_es_valida("don bosco 55"))
+
+    @patch('services.actions.municipio_actions.formatear_ticket_respuesta', return_value=("ok", []))
+    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
+    @patch('services.actions.municipio_actions.servicio_tickets.resolve_user_id', return_value=None)
+    @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
+    def test_telefono_prioriza_anon_id(
+        self, mock_enviar, mock_resolve, mock_crear_ticket, mock_formatear
+    ):
+        mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "999"}
+        context = {
+            "anon_id": "+549261999888",
+            "municipio_config_actual": {},
+            "chat_session_uuid": "uuid",
+            "chat_db_context_data": {"processed_idempotency_keys": {}},
+        }
+        handler = CrearReclamoActionHandler(context)
+        action_data = {
+            "categoria": "Arbolado",
+            "descripcion": "árbol caído",
+            "ubicacion": "Don Bosco 55",
+            "coordenadas": {"lat": -33.0, "lon": -68.0},
+            "distrito": "Junin",
+            "nombre": "Test",
+            "email": "test@example.com",
+            "dni": "1234",
+        }
+        handler.execute(action_data)
+        _, kwargs = mock_crear_ticket.call_args
+        self.assertEqual(kwargs['ticket_data']['telefono_vecino'], "+549261999888")
         self.assertFalse(direccion_es_valida("sin numero"))
 
     @patch('services.municipio_responder.cargar_agenda_cultural')

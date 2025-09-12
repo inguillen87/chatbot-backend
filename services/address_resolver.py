@@ -119,6 +119,8 @@ class AddressResolver:
     def resolve(self, raw_address: str) -> Optional[Dict[str, Any]]:
         if not raw_address:
             return None
+        if raw_address.strip().upper() == "N/A":
+            return None
         normalized = self._normalize(raw_address)
 
         # Detect external jurisdictions mentioned explicitly
