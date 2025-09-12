@@ -684,3 +684,11 @@ class TestAccionesMunicipio(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+def test_normaliza_telefono_waid():
+    from services.actions.municipio_actions import normalizar_telefono
+
+    assert normalizar_telefono(None, "5492611234567") == "+5492611234567"
+    assert normalizar_telefono("2611234567", None) == "2611234567"
+    assert normalizar_telefono("2611234567", "abc") == "2611234567"
