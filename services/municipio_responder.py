@@ -309,7 +309,12 @@ def build_resumen(datos: dict) -> str:
 
 
 def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
-    """Unifica la resolución de dirección desde pin o texto."""
+    """Unifica la resolución de dirección desde pin o texto.
+
+    Se intenta geocodificar directamente; si no se consigue una coincidencia
+    válida se recurre a un fallback con LLM para mejorar el parseo de la
+    dirección antes de reintentar la búsqueda.
+    """
     try:
         resolver = AddressResolver(municipio_cfg)
     except Exception:
@@ -333,6 +338,11 @@ def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
             "maps_search_url": f"https://maps.google.com/?q={lat},{lng}",
         }
     parsed = resolver.resolve(user_input) if resolver else None
+    if not parsed:
+        from services.address_normalizer import normalize_and_geocode
+
+        parsed = normalize_and_geocode(user_input, municipio_cfg)
+
     if parsed:
         candidates = parsed.get("candidates", [])
         if len(candidates) > 1:
@@ -342,7 +352,10 @@ def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
                 name = cand.get("display_name")
                 lines.append(f"{idx}. {name}")
                 options.append({"texto": str(idx)})
-            body = "Encontré varias coincidencias, indicá el número correcto:\n" + "\n".join(lines)
+            body = (
+                "Encontré varias coincidencias, indicá el número correcto:\n"
+                + "\n".join(lines)
+            )
             return {
                 "message_body": body,
                 "options_list": options,
@@ -934,6 +947,12 @@ class ReclamoFlowHandler:
                 "options_list": opciones,
                 "message_type": "interactive_buttons",
             }
+
+        # If no location could be resolved, ask explicitly for the district
+        return {
+            "message_body": f"¿En qué barrio o distrito queda '{user_input}'? Necesito esa información para ubicar la dirección.",
+            "options_list": None,
+        }
 
         ubic_ctx = self.municipal_ctx.get("ubicacion_contextual") or {}
         coords = datos.get("coordenadas") or {}
