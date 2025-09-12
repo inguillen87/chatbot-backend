@@ -170,6 +170,45 @@ def maybe_echo_debug(to_number, state, intent, flow, extracted):
         logger.exception("Failed to send debug echo")
 
 
+def detect_modalidad(msg) -> str:
+    """Clasifica el mensaje inicial según su modalidad.
+
+    Devuelve una de las categorías: ``image``, ``location``, ``voice``,
+    ``video`` o ``text``. Se aceptan diccionarios provenientes de
+    distintos canales o una cadena simple.
+    """
+    if isinstance(msg, dict):
+        media_type = (msg.get("media_content_type") or msg.get("mime_type") or "").lower()
+
+        # Ubicación explícita o marcada
+        if (
+            msg.get("es_ubicacion")
+            or "location" in msg
+            or "ubicacion_usuario" in msg
+            or ({"latitude", "longitude"} <= msg.keys())
+        ):
+            return "location"
+
+        if msg.get("es_foto") or msg.get("foto_url") or media_type.startswith("image/"):
+            return "image"
+
+        if media_type.startswith("audio/"):
+            return "voice"
+
+        if media_type.startswith("video/"):
+            return "video"
+
+        url = (msg.get("media_url") or "").lower()
+        if url.endswith((".png", ".jpg", ".jpeg", ".gif")):
+            return "image"
+        if url.endswith((".mp3", ".wav", ".ogg", ".m4a")):
+            return "voice"
+        if url.endswith((".mp4", ".mov", ".avi", ".3gp")):
+            return "video"
+
+    return "text"
+
+
 CONSULT_KEYWORDS = (
     "consultar reclamo",
     "consultar estado",
@@ -3589,6 +3628,23 @@ def responder_municipio(
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
     }
+
+    # Detectar modalidad del mensaje inicial y ajustar flags del contexto
+    payload_for_modality = dict(received_payload)
+    if location and "location" not in payload_for_modality:
+        payload_for_modality["location"] = location
+    modalidad = detect_modalidad(payload_for_modality)
+    context["modalidad"] = modalidad
+
+    if modalidad == "image":
+        context["es_foto"] = received_payload["es_foto"] = True
+        received_payload.setdefault("foto_url", received_payload.get("media_url"))
+    elif modalidad == "location":
+        context["es_ubicacion"] = received_payload["es_ubicacion"] = True
+        if location and not received_payload.get("ubicacion_usuario"):
+            received_payload["ubicacion_usuario"] = location
+            context["ubicacion_usuario"] = location
+
     # --- FIN REFACTOR ---
 
     ctx_state = (
@@ -3878,12 +3934,27 @@ def responder_municipio(
         "profile_name": kwargs.get("profile_name"),
         # Other kwargs will be in received_payload
     }
+    # Detect modality again after context rebuild
+    payload_for_modality = dict(received_payload)
+    if location and "location" not in payload_for_modality:
+        payload_for_modality["location"] = location
+    modalidad = detect_modalidad(payload_for_modality)
+    context["modalidad"] = modalidad
+    if modalidad == "image":
+        context["es_foto"] = received_payload["es_foto"] = True
+        received_payload.setdefault("foto_url", received_payload.get("media_url"))
+    elif modalidad == "location":
+        context["es_ubicacion"] = received_payload["es_ubicacion"] = True
+        if location and not received_payload.get("ubicacion_usuario"):
+            received_payload["ubicacion_usuario"] = location
+            context["ubicacion_usuario"] = location
+
     # --- END CONTEXT INITIALIZATION ---
 
     # For simple greetings, bypass LLM and show the main menu directly.
     # --- Audio Processing Logic ---
     is_from_audio = False
-    if isinstance(pregunta_original, dict) and "media_url" in pregunta_original:
+    if modalidad in {"voice", "video"} and received_payload.get("media_url"):
         from services.audio_transcription_service import transcribe_audio_from_url
         is_from_audio = True
 
@@ -3891,13 +3962,13 @@ def responder_municipio(
         if viewer_user:
             audio_message_count = contexto_municipio_actual.get('audio_message_count', 0) + 1
             contexto_municipio_actual['audio_message_count'] = audio_message_count
-            if audio_message_count >= 2 and not viewer_user.prefers_audio:
+            if audio_message_count >= 2 and not getattr(viewer_user, 'prefers_audio', False):
                 viewer_user.prefers_audio = True
                 db.session.add(viewer_user)
                 db.session.commit()
                 logger_actual.info(f"User {viewer_user.id} prefers audio after {audio_message_count} audio messages.")
 
-        transcription_result = transcribe_audio_from_url(pregunta_original["media_url"])
+        transcription_result = transcribe_audio_from_url(received_payload["media_url"])
         if transcription_result:
             transcript = transcription_result.get("transcript")
             confidence = transcription_result.get("confidence", 1.0)
