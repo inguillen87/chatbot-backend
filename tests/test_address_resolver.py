@@ -1,5 +1,6 @@
 from services.address_resolver import AddressResolver
 from unittest.mock import patch
+from services.municipio_responder import handle_direccion
 
 def _fake_resp(lat, lon, display="Stub"):
     class FakeResponse:
@@ -92,3 +93,23 @@ def test_resolver_skips_bounds_when_disabled():
     ):
         result = resolver.resolve("Fuera 1")
     assert result["validez"] is True
+
+
+def test_ambiguous_address_candidates():
+    class MultiResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return [
+                {"lat": "-33.0", "lon": "-68.5", "display_name": "Opcion A"},
+                {"lat": "-33.01", "lon": "-68.51", "display_name": "Opcion B"},
+            ]
+
+    municipio_cfg = JUNIN_CONFIG
+    with patch("services.address_resolver.requests.get", return_value=MultiResp()):
+        response = handle_direccion("Sarmiento 100", {}, municipio_cfg)
+
+    assert "options_list" in response
+    assert len(response["options_list"]) == 2
+    assert "1" in response["options_list"][0]["texto"]
