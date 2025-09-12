@@ -697,6 +697,32 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertNotIn('media_url', second_call)
         self.assertIn('persistent_action', second_call)
 
+    @patch('routes.whatsapp_webhook.reverse_geocode')
+    def test_location_message_sends_confirmation(self, mock_geo):
+        """Location messages should trigger a text confirmation with the detected address."""
+        self._create_confirmed_session()
+        mock_geo.return_value = {"display": "Fake Street 123"}
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "MessageType": "location",
+            "Latitude": "-33.0",
+            "Longitude": "-68.0",
+            "SmsSid": "SMloc",
+            "SmsMessageSid": "SMloc",
+            "SmsStatus": "received",
+            "NumMedia": "0",
+            "Body": "",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.mock_twilio_create.assert_called()
+        kwargs = self.mock_twilio_create.call_args.kwargs
+        self.assertIn("Recibí tu ubicación", kwargs["body"])
+
     @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_audio_attachment_transcribes_text(self, mock_requests_get):
         mock_response = MagicMock()
