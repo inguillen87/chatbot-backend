@@ -752,19 +752,6 @@ class ReclamoFlowHandler:
             contacto_prev["nombre"] = profile_name
             self.municipal_ctx['contacto_usuario'] = contacto_prev
 
-        # Use the profile name captured from the messaging platform when
-        # there is no explicit viewer information or the stored name is the
-        # generic placeholder.
-        profile_name = (
-            self.context.get("profile_name")
-            or self.context.get("chat_db_context_data", {}).get("profile_name")
-        )
-        if profile_name and datos.get("nombre") in (None, "", "Vecino/a"):
-            datos["nombre"] = profile_name
-        if profile_name and contacto_prev.get("nombre") in (None, "", "Vecino/a"):
-            contacto_prev["nombre"] = profile_name
-            self.municipal_ctx['contacto_usuario'] = contacto_prev
-
         if categoria_inicial and not self.flow_context['datos_reclamo'].get('categoria'):
             self.flow_context['datos_reclamo']['categoria'] = categoria_inicial
 
