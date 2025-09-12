@@ -188,7 +188,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
                 mensaje = (
                     "No pude ubicar *{}* en Junín. Mandala así: "
-                    "*Calle 123, barrio* o *Calle1 y Calle2, barrio*."
+                    "*Calle 123, barrio/distrito* o *Calle1 y Calle2, barrio/distrito*."
                 ).format(ubicacion_llm)
                 return {
                     "success": False,
@@ -284,6 +284,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         nombre_final = datos_parciales.get("nombre") or contacto_ctx.get("nombre") or nombre_vecino_final
         nombre_final = sanitize_contact_name(nombre_final)
+        if nombre_final and nombre_final.lower() in {"vecino", "vecina", "vecino/a"}:
+            nombre_final = None
         telefono_final = telefono_final or contacto_ctx.get("telefono")
         contacto_email = contacto_ctx.get("email")
         if contacto_email and contacto_email.endswith("@whatsapp.chatboc.com"):
