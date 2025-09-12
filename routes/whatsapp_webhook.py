@@ -275,12 +275,13 @@ def whatsapp_webhook():
             display = geo.get("display", f"Lat: {lat}, Lon: {lon}")
         except Exception:
             display = f"Lat: {lat}, Lon: {lon}"
+        maps_url = f"https://www.google.com/maps/search/?q={lat},{lon}"
         datos["ubicacion"] = display
         ctxm["datos_parciales_llm_reclamo"] = datos
         ctxm["estado_conversacion"] = "ESPERANDO_CONFIRMACION_UBICACION"
         ctx["last_options_sent"] = [
-            {"texto": "Confirmar", "action_id": "confirmar_ubicacion"},
-            {"texto": "Editar", "action_id": "editar_ubicacion"},
+            {"texto": "1) Sí, es acá", "action_id": "confirmar_ubicacion"},
+            {"texto": "2) No, corregir", "action_id": "editar_ubicacion"},
         ]
         safe_flag_modified(session_context_db_entry, "context_data")
         db.session.add(session_context_db_entry)
@@ -289,11 +290,23 @@ def whatsapp_webhook():
         if twilio_client:
             confirm_payload = {
                 "type": "button",
-                "body": {"text": f"¿Es esta tu dirección?\n{display}"},
+                "body": {
+                    "text": (
+                        "📍 Ubicación detectada:\n"
+                        f"{display}\n¿Es acá?\n1) Sí, es acá\n2) No, corregir\n"
+                        f"🔗 Abrir mapa: {maps_url}"
+                    )
+                },
                 "action": {
                     "buttons": [
-                        {"type": "reply", "reply": {"id": "confirmar_ubicacion", "title": "Confirmar"}},
-                        {"type": "reply", "reply": {"id": "editar_ubicacion", "title": "Editar"}},
+                        {
+                            "type": "reply",
+                            "reply": {"id": "confirmar_ubicacion", "title": "1) Sí, es acá"},
+                        },
+                        {
+                            "type": "reply",
+                            "reply": {"id": "editar_ubicacion", "title": "2) No, corregir"},
+                        },
                     ]
                 },
             }
@@ -476,17 +489,34 @@ def whatsapp_webhook():
                 if estado_prev in (None, "ESPERANDO_DIRECCION_RECLAMO")
                 else estado_prev
             )
+            ctx["last_options_sent"] = [
+                {"texto": "1) Sí, es acá", "action_id": "confirmar_ubicacion"},
+                {"texto": "2) No, corregir", "action_id": "editar_ubicacion"},
+            ]
             safe_flag_modified(session_context_db_entry, "context_data")
             db.session.add(session_context_db_entry)
             db.session.commit()
             if twilio_client:
+                maps_url = f"https://www.google.com/maps/search/?q={latitud},{longitud}"
                 confirm_payload = {
                     "type": "button",
-                    "body": {"text": f"¿Es esta tu dirección?\n{display}"},
+                    "body": {
+                        "text": (
+                            "📍 Ubicación detectada:\n"
+                            f"{display}\n¿Es acá?\n1) Sí, es acá\n2) No, corregir\n"
+                            f"🔗 Abrir mapa: {maps_url}"
+                        )
+                    },
                     "action": {
                         "buttons": [
-                            {"type": "reply", "reply": {"id": "confirmar_ubicacion", "title": "Confirmar"}},
-                            {"type": "reply", "reply": {"id": "editar_ubicacion", "title": "Editar"}},
+                            {
+                                "type": "reply",
+                                "reply": {"id": "confirmar_ubicacion", "title": "1) Sí, es acá"},
+                            },
+                            {
+                                "type": "reply",
+                                "reply": {"id": "editar_ubicacion", "title": "2) No, corregir"},
+                            },
                         ]
                     },
                 }
