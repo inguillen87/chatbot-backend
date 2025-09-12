@@ -427,88 +427,90 @@ class CrearReclamoActionHandler(BaseActionHandler):
             or datos_parciales.get("pin")
             or datos_parciales.get("consulta_pin")
         )
-        pin_str = str(pin_llm).strip() if pin_llm else ""
-        if pin_str.isdigit() and len(pin_str) == 6:
-            pin_final = pin_str
-        else:
-            pin_final = f"{random.randint(0, 999999):06d}"
+        self.assertIn("Editar", respuesta["message_to_user"])
+        self.assertTrue(any(o.get("action_id") == "editar_reclamo" for o in respuesta.get("options_list", [])))
 
-        contexto_reclamo["pin_ticket"] = pin_final
+    @patch('services.actions.municipio_actions.archivo_service.asociar_archivos_a_ticket')
+    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
+    @patch('services.actions.municipio_actions.validar_telefono')
+    @patch('services.actions.municipio_actions.validar_email')
+    @patch('services.location_service.geocode_address')
+    @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
+    @patch('services.actions.municipio_actions.formatear_telefono_e164')
+    @patch('services.herramientas_municipio.parse_direccion_completa')
+    def test_crear_reclamo_asocia_archivo(
+        self,
+        mock_parse_direccion,
+        mock_formatear_tel,
+        mock_enviar_whatsapp,
+        mock_geocode_address,
+        mock_validar_email,
+        mock_validar_telefono,
+        mock_crear_ticket,
+        mock_asociar_archivos,
+    ):
+        mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "12345", "consulta_pin": "555444"}
+        mock_validar_telefono.return_value = True
+        mock_formatear_tel.return_value = "+5491122334455"
+        mock_validar_email.return_value = True
+        mock_parse_direccion.return_value = {"calle": "Calle Falsa", "numero": "123", "localidad": "Springfield"}
 
-        # Recopilación final de datos y creación del ticket
-        owner_user = self.context.get("user_obj")
+        datos_llm = {
+            "categoria": "Alumbrado",
+            "descripcion": "Poste de luz caído",
+            "ubicacion": "Calle Falsa 123, Springfield",
+            "coordenadas": {"lat": -32.8908, "lon": -68.8272},
+            "usuario": "Homero Simpson",
+            "telefono": "91122334455",
+            "email": "homero@example.com",
+            "pin": "555444",
+            "dni": "12345678",
+        }
 
-        # Update viewer_user object if it exists and we have new info
-        if viewer_user:
-            updated = False
-            if nombre_final and not viewer_user.name:
-                viewer_user.name = nombre_final
-                updated = True
-            if telefono_final and not viewer_user.telefono:
-                viewer_user.telefono = telefono_final
-                updated = True
-            if email_final and not viewer_user.email:
-                viewer_user.email = email_final
-                updated = True
-            if dni_final and not getattr(viewer_user, "dni", None):
-                viewer_user.dni = dni_final
-                updated = True
-            if updated:
-                _db.session.add(viewer_user)
-                _db.session.commit()
-                logger.info(f"User profile for {viewer_user.id} updated with new contact info.")
-        pregunta_original = self.context.get("pregunta_actual_usuario", "")
+        mock_viewer_user = MagicMock(spec=User)
+        mock_viewer_user.id = 100
+        mock_viewer_user.telefono = "2615550000"
+        mock_viewer_user.email = "hsimpson@springfield.com"
+        mock_viewer_user.nombre = "Homero J. Simpson"
 
-        resolved = servicio_tickets.resolve_user_id(email=email_final, telefono=telefono_final)
-        if resolved:
-            ticket_user_id = resolved
-            logger.info(f"[Ticket] user_id resuelto por email/tel: {resolved}")
-        else:
-            ticket_user_id = getattr(viewer_user, "id", None)
+        mock_owner_user = MagicMock(spec=User)
+        mock_owner_user.id = 1
+        mock_owner_user.municipio_id = "springfield_municipio"
 
-        contactos = cargar_configuracion_municipio(
-            getattr(owner_user, "municipio_id", "default"),
-            "contactos_especializados.json",
+        context = {
+            "viewer_user_obj": mock_viewer_user,
+            "user_obj": mock_owner_user,
+            "anon_id": "session123",
+            "municipio_config_actual": {"ejemplo_direccion": "Av. Siempreviva 742"},
+            "chat_session_uuid": "sess-abc",
+            "chat_db_context_data": {"processed_idempotency_keys": {}},
+            "ids_archivos_para_asociar": [42, 43],
+        }
+
+        handler = CrearReclamoActionHandler(context)
+        respuesta = handler.execute(datos_llm)
+
+        self.assertTrue(respuesta["success"])
+        mock_asociar_archivos.assert_called_once_with(
+            ticket_id=1,
+            tipo_ticket="municipio",
+            ids_archivos=[42, 43],
+            session_id="sess-abc",
+            user_id=None,
         )
-        categoria_lookup = None
-        if categoria_display:
-            categoria_normalized = re.sub(r"[^\w\s]", "", categoria_display).strip().lower()
-            for key in contactos.keys():
-                key_normalized = re.sub(r"[^\w\s]", "", key).strip().lower()
-                if (
-                    key_normalized == categoria_normalized
-                    or key_normalized in categoria_normalized
-                    or categoria_normalized in key_normalized
-                ):
-                    categoria_lookup = key
-                    break
-        if categoria_lookup:
-            categoria_display = categoria_lookup
-        contacto_especializado = dict(contactos.get(categoria_lookup, contactos.get("default", {})))
 
-        ticket_subject = categoria_display or "Reclamo"
-        ticket_data = {
-            "pregunta": pregunta_original,
-            "asunto": ticket_subject,
-            "categoria": categoria_ticket or "Reclamo General",
-            "detalles": descripcion,
-            "direccion": ubicacion_llm,
-            "distrito": distrito_llm,
-            "nombre_vecino": nombre_final,
-            "telefono_vecino": telefono_final,
-            "email_vecino": email_final,
-            "dni_vecino": dni_final,
-            "direccion_contacto": direccion_contacto,
-            "estado": "nuevo",
-            "user_id": ticket_user_id,
-            "anon_id": self.context.get("anon_id"),
-            "municipio_id": getattr(owner_user, "municipio_id", None),
-            "latitud": coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None,
-            "longitud": coordenadas_llm.get("lon") if isinstance(coordenadas_llm, dict) else None,
-            "origen_reclamo": "LLM_CHATBOT",
-            "foto_url_directa": foto_url_llm,
-            "canal_ingreso": self.context.get("channel"),
-            "consulta_pin": pin_final,
+    @patch('services.actions.municipio_actions.parse_direccion', return_value={"calle": "Calle Falsa", "numero": "123", "localidad": "Junin"})
+    @patch('services.actions.municipio_actions.validar_y_formatear_direccion', return_value={"lat": -32.89, "lng": -68.83, "formatted_address": "Calle Falsa 123"})
+    @patch('services.actions.municipio_actions.validar_email', return_value=True)
+    @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
+    def test_placeholder_email_pide_datos(self, mock_valid_tel, mock_valid_email, mock_valid_dir, mock_parse):
+        datos_llm = {
+            "categoria": "Alumbrado",
+            "descripcion": "Poste", 
+            "ubicacion": "Calle Falsa 123",
+            "telefono": "2611234567",
+            "email": "foo@whatsapp.chatboc.com",
+            "usuario": "Vecino"
         }
 
         ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
