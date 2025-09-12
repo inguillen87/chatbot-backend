@@ -341,11 +341,19 @@ def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
             logger.warning("reverse_geocode failed for %s,%s: %s", lat, lng, e)
             direccion = f"Lat: {lat}, Lon: {lng}"
             distrito = None
+        static_map_url = None
+        gkey = os.getenv("GOOGLE_MAPS_API_KEY")
+        if gkey and lat and lng:
+            static_map_url = (
+                "https://maps.googleapis.com/maps/api/staticmap?center="
+                f"{lat},{lng}&zoom=18&size=800x500&markers=color:red|{lat},{lng}&key={gkey}"
+            )
         return {
             "ubicacion": direccion,
             "coordenadas": {"lat": lat, "lng": lng},
             "distrito": distrito,
             "maps_search_url": f"https://maps.google.com/?q={lat},{lng}",
+            "static_map_url": static_map_url,
         }
     parsed = resolver.resolve(user_input) if resolver else None
     if not parsed:
@@ -371,12 +379,22 @@ def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
                 "options_list": options,
                 "candidates": candidates,
             }
+        lat = parsed.get("lat")
+        lon = parsed.get("lon")
+        static_map_url = None
+        gkey = os.getenv("GOOGLE_MAPS_API_KEY")
+        if gkey and lat and lon:
+            static_map_url = (
+                "https://maps.googleapis.com/maps/api/staticmap?center="
+                f"{lat},{lon}&zoom=18&size=800x500&markers=color:red|{lat},{lon}&key={gkey}"
+            )
         return {
             "ubicacion": parsed.get("formatted") or parsed.get("display_name"),
-            "coordenadas": {"lat": parsed.get("lat"), "lng": parsed.get("lon")},
+            "coordenadas": {"lat": lat, "lng": lon},
             "distrito": parsed.get("localidad"),
             "maps_search_url": parsed.get("maps_search_url")
-            or f"https://maps.google.com/?q={parsed.get('lat')},{parsed.get('lon')}",
+            or f"https://maps.google.com/?q={lat},{lon}",
+            "static_map_url": static_map_url,
         }
     return None
 
@@ -481,9 +499,14 @@ def _merge_contact(base: dict, nuevo: dict) -> dict:
 
 
 def _format_contact_summary(datos: dict) -> str:
+    """Render a short summary of the stored contact details."""
+    email = datos.get("email") or "-"
+    # Avoid showing placeholder emails like "+549...@whatsapp.chatboc.com"
+    if isinstance(email, str) and email.endswith("@whatsapp.chatboc.com"):
+        email = "-"
     return (
         f"Nombre: {datos.get('nombre') or '-'}\n"
-        f"Email: {datos.get('email') or '-'}\n"
+        f"Email: {email}\n"
         f"Teléfono: {datos.get('telefono') or '-'}\n"
         f"DNI: {datos.get('dni') or '-'}\n"
         f"Dirección contacto: {datos.get('direccion_contacto') or '-'}"
@@ -867,6 +890,7 @@ class ReclamoFlowHandler:
     def handle_direccion(self, user_input, payload):
         datos = self.flow_context.setdefault('datos_reclamo', {})
         municipio_cfg = self.context.get("municipio_config_actual", {})
+        prev_desc = datos.get("descripcion")
 
         estado_conv = self.municipal_ctx.get("estado_conversacion")
         if estado_conv == ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name:
@@ -944,7 +968,11 @@ class ReclamoFlowHandler:
                 datos["coordenadas"] = loc["coordenadas"]
             if loc.get("maps_search_url"):
                 datos["maps_search_url"] = loc["maps_search_url"]
+            if loc.get("static_map_url"):
+                datos["static_map_url"] = loc["static_map_url"]
             datos["direccion"] = direccion_display
+            if prev_desc and datos.get("descripcion") == direccion_display:
+                datos["descripcion"] = prev_desc
             self.municipal_ctx["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name
             self.municipal_ctx["address_confirmed"] = False
             opciones = [
@@ -958,11 +986,15 @@ class ReclamoFlowHandler:
             maps_url = datos.get("maps_search_url")
             if maps_url:
                 msg += f"\n🔗 Abrir mapa: {maps_url}"
-            return {
+            response = {
                 "message_body": msg,
                 "options_list": opciones,
                 "message_type": "interactive_buttons",
             }
+            if datos.get("static_map_url"):
+                response["image_url"] = datos["static_map_url"]
+                response["image_alt_text"] = "Mapa de la ubicación"
+            return response
 
         # If no location could be resolved, ask explicitly for the district
         msg = get_message("preguntar_barrio", direccion=user_input)
