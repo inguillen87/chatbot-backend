@@ -163,6 +163,27 @@ def test_handle_direccion_uses_normalizer(monkeypatch, owner_user):
     assert "¿Es acá?" in result.response["message_body"]
 
 
+def test_handle_direccion_without_geocode_does_not_ask_barrio(monkeypatch, owner_user):
+    """If the address can't be geocoded, the flow should still proceed without
+    asking the user for a barrio/distrito."""
+
+    def fake_norm(addr, cfg):
+        return {"formatted": "Don Bosco 55", "lat": None, "lon": None}
+
+    monkeypatch.setattr(
+        "services.address_normalizer.normalize_and_geocode", fake_norm
+    )
+
+    result = run_turn(
+        "Don Bosco 55",
+        state="EN_FLUJO_RECLAMO",
+        flow_state="ESPERANDO_DIRECCION",
+        owner_user=owner_user,
+    )
+
+    assert "barrio" not in result.response["message_body"].lower()
+
+
 def test_pin_moves_to_personal_data(owner_user):
     location = {"latitude": -33.0, "longitude": -68.5, "address": "Calle Falsa 123"}
     result = run_turn("", state="ESPERANDO_DIRECCION_RECLAMO", location=location, owner_user=owner_user)

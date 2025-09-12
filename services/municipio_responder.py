@@ -2626,6 +2626,10 @@ BOTONES_COMANDOS_MUNICIPIO = {
 # Utiliza el orquestador de LLMs que intenta OpenAI y Cohere.
 from services.llm_orchestrator import llamar_llm_con_fallback
 
+# Backwards compatibility for tests or integrations that still patch
+# ``llamar_gemini`` from earlier versions.
+llamar_gemini = llamar_llm_con_fallback
+
 # Imports necesarios para la función accion_crear_reclamo_municipio
 # (Algunos pueden estar ya importados globalmente en el archivo)
 # from models import MunicipioTicket, db as global_db, User, ArchivoAdjunto, AnalisisArchivo # db ya está como global_db
@@ -4529,6 +4533,18 @@ def responder_municipio(
                 return _finalize_response(response)
     # --- END GLOBAL MENU SHORTCUTS ---
 
+    # --- START GREETING SHORTCUT ---
+    if is_greeting(pregunta_str, contexto_municipio_actual.get("estado_conversacion")):
+        logger_actual.info(
+            f"Greeting detected ('{pregunta_str}'). Showing main menu and skipping direct detection."
+        )
+        handler = GreetingHandler(context)
+        response = handler.handle(received_payload)
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response(response)
+    # --- END GREETING SHORTCUT ---
+
     # --- START DIRECT RECLAMO DETECTION FOR TEXT OR AUDIO ---
     estado_conv = contexto_municipio_actual.get("estado_conversacion")
     if estado_conv in (None, ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name):
@@ -4568,10 +4584,8 @@ def responder_municipio(
     # --- END DIRECT RECLAMO DETECTION FOR TEXT OR AUDIO ---
 
     # --- START INTENT CLASSIFICATION ---
-    # FIX: First, check for simple keywords and __INIT__ to be more robust and cost-effective
-    normalized_input_for_greeting = normalizar_texto(pregunta_str or "").strip()
-    if is_greeting(pregunta_str, contexto_municipio_actual.get("estado_conversacion")) or pregunta_str == "__INIT__":
-        logger_actual.info(f"Greeting or __INIT__ detected ('{pregunta_str}'). Bypassing LLM and showing main menu.")
+    if pregunta_str == "__INIT__":
+        logger_actual.info("__INIT__ detected. Bypassing LLM and showing main menu.")
         handler = GreetingHandler(context)
         response = handler.handle(received_payload)
         if chat_db_context:
