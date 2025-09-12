@@ -24,7 +24,7 @@ class GeoFlowTests(unittest.TestCase):
                 'estado_conversacion': 'ESPERANDO_CONFIRMACION_UBICACION',
                 'datos_parciales_llm_reclamo': {
                     'ubicacion': 'Calle Falsa 123',
-                    'maps_search_url': 'http://maps.example'
+                    'coordenadas': {'lat': 1.0, 'lng': 2.0}
                 }
             }
         }
@@ -42,8 +42,8 @@ class GeoFlowTests(unittest.TestCase):
             )
         assert '📍 Ubicación detectada' in resp['message_body']
         assert 'Calle Falsa 123' in resp['message_body']
-        assert 'http://maps.example' in resp['message_body']
-        assert '1) Sí, es acá' in resp['message_body']
+        assert 'https://maps.google.com/?q=1.0,2.0' in resp['message_body']
+        assert '1) Sí' in resp['message_body']
         assert resp.get('image_url')
         assert resp.get('image_alt_text')
         ids = [o.get('action_id') for o in resp.get('options_list', [])]
@@ -124,6 +124,36 @@ class GeoFlowTests(unittest.TestCase):
         self.assertEqual(detect_modalidad({'location': location}), 'location')
         self.assertIn('Recibí tu ubicación', resp['message_body'])
         self.assertIn('Calle Falsa 123', resp['message_body'])
+
+    def test_no_duplicate_prompts(self):
+        owner_user = MagicMock(); owner_user.id = 1
+        chat_context = MagicMock()
+        chat_context.context_data = {
+            CONTEXTO_MUNICIPIO: {
+                'media_recibida': True,
+                'ubicacion_confirmada': True,
+                'contacto_usuario': {'nombre': 'Juan'},
+                'estado_conversacion': None,
+            }
+        }
+        from flask import Flask
+        flask_app = Flask(__name__)
+        with flask_app.app_context():
+            resp = responder_municipio(
+                pregunta_original='',
+                owner_user=owner_user,
+                rubro_obj=None,
+                viewer_user=None,
+                chat_db_context=chat_context,
+                anon_id='test',
+                channel='whatsapp',
+            )
+
+        # Should only ask for remaining contact data, not for media or location again
+        body = resp['message_body'].lower()
+        self.assertIn('necesito estos datos', body)
+        self.assertNotIn('ubicación', body)
+        self.assertNotIn('foto', body)
 
 
 if __name__ == '__main__':

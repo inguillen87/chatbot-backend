@@ -52,6 +52,7 @@ from .common_utils import (
     formatear_telefono_e164,
     construir_respuesta_sugerir_registro,
     extract_multiple_contact_details_regex,
+    formatear_opciones,
 )
 from utils.validators import looks_like_address, validate_name
 from utils.parsers import parse_contact_line
@@ -210,6 +211,29 @@ def detect_modalidad(msg) -> str:
     return "text"
 
 
+def decide_modalidad(msg):
+    """Determina la modalidad del mensaje y la acción derivada.
+
+    Devuelve una tupla ``(modalidad, accion)`` donde ``modalidad`` es una de
+    ``image``, ``location``, ``voice``, ``video`` o ``text``. La ``accion``
+    asociada indica el procesamiento sugerido:
+
+    - ``cv`` para imágenes o videos (analizar con visión por computadora).
+    - ``confirm_location`` cuando se detecta una ubicación.
+    - ``asr`` para mensajes de voz (usar reconocimiento de voz).
+    - ``text`` para texto plano.
+    """
+
+    modalidad = detect_modalidad(msg)
+    action_map = {
+        "image": "cv",
+        "video": "cv",
+        "location": "confirm_location",
+        "voice": "asr",
+    }
+    return modalidad, action_map.get(modalidad, "text")
+
+
 CONSULT_KEYWORDS = (
     "consultar reclamo",
     "consultar estado",
@@ -305,7 +329,7 @@ def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
             "ubicacion": direccion,
             "coordenadas": {"lat": lat, "lng": lng},
             "distrito": distrito,
-            "maps_search_url": f"https://www.google.com/maps/search/?api=1&query={lat},{lng}",
+            "maps_search_url": f"https://maps.google.com/?q={lat},{lng}",
         }
     parsed = resolver.resolve(user_input) if resolver else None
     if parsed:
@@ -327,7 +351,8 @@ def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
             "ubicacion": parsed.get("formatted") or parsed.get("display_name"),
             "coordenadas": {"lat": parsed.get("lat"), "lng": parsed.get("lon")},
             "distrito": parsed.get("localidad"),
-            "maps_search_url": parsed.get("maps_search_url"),
+            "maps_search_url": parsed.get("maps_search_url")
+            or f"https://maps.google.com/?q={parsed.get('lat')},{parsed.get('lon')}",
         }
     return None
 
@@ -439,6 +464,37 @@ def _format_contact_summary(datos: dict) -> str:
         f"DNI: {datos.get('dni') or '-'}\n"
         f"Dirección contacto: {datos.get('direccion_contacto') or '-'}"
     )
+
+
+def calcular_faltantes(ctx: dict) -> list:
+    """Return a list of pending data pieces for the current flow.
+
+    Evaluates three high level requirements in ``ctx``:
+
+    * ``media_recibida``: whether the user already sent a photo or other media.
+    * ``ubicacion_confirmada``: if the location for the claim/suggestion was
+      confirmed by the user.
+    * ``datos_contacto``: basic contact details. This is derived from the
+      ``contacto_usuario`` entry and considers the contact complete only when
+      all required fields are present.
+
+    The returned list contains the keys of the missing items so callers can
+    prompt only for the pending information and avoid duplicate requests.
+    """
+
+    faltantes: list[str] = []
+
+    if not ctx.get("media_recibida") and not ctx.get("foto_url"):
+        faltantes.append("media_recibida")
+
+    if not ctx.get("ubicacion_confirmada"):
+        faltantes.append("ubicacion_confirmada")
+
+    contacto = ctx.get("contacto_usuario") or {}
+    if _need_any_contact(contacto):
+        faltantes.append("datos_contacto")
+
+    return faltantes
 
 
 PUNTO_LIMPIO_LOGO_URL = "https://www.juninmendoza.gov.ar/recursos/punto-limpio-logo.jpg"
@@ -841,16 +897,7 @@ class ReclamoFlowHandler:
 
         if not force_prompt and not faltantes:
             self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
-            msg = self.get_confirmation_message()
-            opciones = msg.get("options_list", [])
-            opciones.extend(
-                [
-                    {"texto": "4. Repetir", "action_id": "reclamo_confirmar_repetir"},
-                    {"texto": "5. Ayuda", "action_id": "reclamo_confirmar_ayuda"},
-                ]
-            )
-            msg["options_list"] = opciones
-            return msg
+            return self.get_confirmation_message()
 
         self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
         return pedir_datos_contacto_compacto(faltantes)
@@ -873,15 +920,15 @@ class ReclamoFlowHandler:
 
         resumen = _format_contact_summary(self.municipal_ctx['contacto_usuario'])
         self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
+        opciones = [
+            {"texto": "Confirmar", "action_id": "reclamo_confirmar_si"},
+            {"texto": "Editar", "action_id": "reclamo_confirmar_no"},
+            {"texto": "Cancelar", "action_id": "cancelar"},
+        ]
+        opciones = formatear_opciones(opciones)
         return {
             "message_body": f"Perfecto, tomé estos datos:\n{resumen}\n\n¿Confirmás?",
-            "options_list": [
-                {"texto": "1. Confirmar", "action_id": "reclamo_confirmar_si"},
-                {"texto": "2. Editar", "action_id": "reclamo_confirmar_no"},
-                {"texto": "3. Cancelar", "action_id": "cancelar"},
-                {"texto": "4. Repetir", "action_id": "reclamo_confirmar_repetir"},
-                {"texto": "5. Ayuda", "action_id": "reclamo_confirmar_ayuda"},
-            ],
+            "options_list": opciones,
             "message_type": "interactive_buttons",
         }
 
@@ -897,10 +944,16 @@ class ReclamoFlowHandler:
         mensaje += f"- Email: {datos.get('email', 'No especificado')}\n"
         mensaje += f"- Teléfono: {datos.get('telefono', 'No especificado')}\n"
         mensaje += f"- Foto adjunta: {'Sí' if datos.get('foto_url') else 'No'}\n"
+        opciones = [
+            {"texto": "Confirmar", "action_id": "reclamo_confirmar_si"},
+            {"texto": "Editar", "action_id": "reclamo_confirmar_no"},
+            {"texto": "Cancelar", "action_id": "cancelar"},
+        ]
+        opciones = formatear_opciones(opciones)
         return {
             "message_body": mensaje,
-            "options_list": [{"texto": "✅ Confirmar", "action_id": "reclamo_confirmar_si"}, {"texto": "✏️ Editar datos", "action_id": "reclamo_confirmar_no"}, {"texto": "❌ Cancelar", "action_id": "reclamo_cancelar"}],
-            "message_type": "interactive_buttons"
+            "options_list": opciones,
+            "message_type": "interactive_buttons",
         }
 
     def handle_confirmacion(self, user_input, payload):
@@ -973,12 +1026,11 @@ class ReclamoFlowHandler:
                 "Si querés ver nuevamente el resumen, tocá '4. Repetir'."
             )
             options = [
-                {"texto": "1. Confirmar", "action_id": "reclamo_confirmar_si"},
-                {"texto": "2. Editar", "action_id": "reclamo_confirmar_no"},
-                {"texto": "3. Cancelar", "action_id": "cancelar"},
-                {"texto": "4. Repetir", "action_id": "reclamo_confirmar_repetir"},
-                {"texto": "5. Ayuda", "action_id": "reclamo_confirmar_ayuda"},
+                {"texto": "Confirmar", "action_id": "reclamo_confirmar_si"},
+                {"texto": "Editar", "action_id": "reclamo_confirmar_no"},
+                {"texto": "Cancelar", "action_id": "cancelar"},
             ]
+            options = formatear_opciones(options)
             return {
                 "message_body": ayuda_msg,
                 "options_list": options,
@@ -1541,7 +1593,7 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
         chat_db_context_data = self.context.get("chat_db_context_data")
-        evt = (self.context.get(CONTEXTO_MUNICIPIO, {}) or {}).get("last_system_event", {})
+        evt = self.context.get("last_event") or {}
         if evt.get("type") == "ticket_created" and time.time() - evt.get("ts", 0) < 60:
             logger.info("[GreetingHandler] Ignorando saludo por ticket recién creado")
             return None
@@ -2385,24 +2437,26 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             contexto_municipio_actual["estado_conversacion"] = (
                 ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name
             )
+            contexto_municipio_actual["address_confirmed"] = False
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             opciones = [
-                {"texto": "1) Sí, es acá", "action_id": "confirmar_ubicacion"},
-                {"texto": "2) No, corregir", "action_id": "editar_ubicacion"},
+                {"texto": "1) Sí", "action_id": "confirmar_ubicacion"},
+                {"texto": "2) No", "action_id": "editar_ubicacion"},
             ]
             msg = (
                 "📍 Ubicación detectada:\n"
                 f"{loc.get('ubicacion')}\n¿Es acá?\n"
-                "1) Sí, es acá\n2) No, corregir"
+                "1) Sí\n2) No"
             )
             image_url = None
             image_alt = None
-            if loc.get("maps_search_url"):
-                msg += f"\n🔗 Abrir mapa: {loc['maps_search_url']}"
-                coords = loc.get("coordenadas") or {}
-                lat = coords.get("lat", 0)
-                lon = coords.get("lon", 0)
+            coords = loc.get("coordenadas") or {}
+            lat = coords.get("lat", 0)
+            lon = coords.get("lon", 0)
+            if lat and lon:
+                maps_url = f"https://maps.google.com/?q={lat},{lon}"
+                msg += f"\n🔗 Abrir mapa: {maps_url}"
                 try:
                     image_url, image_alt = generate_static_map(lat, lon)
                 except Exception:
@@ -3793,12 +3847,9 @@ def responder_municipio(
             datos = contexto_municipio_actual.setdefault(
                 "datos_parciales_llm_reclamo", {}
             )
-            datos["coordenadas"] = {"lat": lat, "lon": lon}
+            datos["coordenadas"] = {"lat": lat, "lng": lon}
             datos["ubicacion"] = address
-            datos["maps_search_url"] = (
-                loc.get("maps_search_url")
-                or f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
-            )
+            datos["maps_search_url"] = f"https://maps.google.com/?q={lat},{lon}"
             if estado == ConversationState.ESPERANDO_DIRECCION_RECLAMO.name:
                 contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_DATOS_PERSONALES"
                 if chat_db_context:
@@ -3816,16 +3867,17 @@ def responder_municipio(
             contexto_municipio_actual[
                 "estado_conversacion"
             ] = ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name
+            contexto_municipio_actual["address_confirmed"] = False
             opciones = [
-                {"texto": "1) Sí, es acá", "action_id": "confirmar_ubicacion"},
-                {"texto": "2) No, corregir", "action_id": "editar_ubicacion"},
+                {"texto": "1) Sí", "action_id": "confirmar_ubicacion"},
+                {"texto": "2) No", "action_id": "editar_ubicacion"},
             ]
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             maps_url = datos.get("maps_search_url")
             msg = (
                 "📍 Ubicación detectada:\n"
-                f"{address}\n¿Es acá?\n1) Sí, es acá\n2) No, corregir"
+                f"{address}\n¿Es acá?\n1) Sí\n2) No"
             )
             if maps_url:
                 msg += f"\n🔗 Abrir mapa: {maps_url}"
@@ -4216,6 +4268,46 @@ def responder_municipio(
     # Obtener el estado actual de la conversación antes de evaluar acciones
     estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
     action = received_payload.get("action")
+
+    # Si no hay estado activo ni acción explícita, revisamos si hay datos
+    # pendientes para continuar con un flujo previo. De esta forma evitamos
+    # repetir preguntas ya respondidas.
+    if not estado_conversacion and not action and not pregunta_str:
+        faltantes = calcular_faltantes(contexto_municipio_actual)
+        if faltantes:
+            if "media_recibida" in faltantes:
+                return _finalize_response({
+                    "message_body": "Por favor, enviá una foto del problema.",
+                })
+            if "ubicacion_confirmada" in faltantes:
+                contexto_municipio_actual[
+                    "estado_conversacion"
+                ] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(
+                    {
+                        "message_body": "Para avanzar necesito la ubicación exacta: calle y número o *en qué esquina*.",
+                        "options_list": [],
+                    }
+                )
+            if "datos_contacto" in faltantes:
+                contexto_municipio_actual[
+                    "estado_conversacion"
+                ] = ConversationState.ESPERANDO_DATOS_CONTACTO.name
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                contacto_prev = contexto_municipio_actual.get(
+                    "contacto_usuario", {}
+                )
+                faltantes_contacto = [
+                    k
+                    for k in ["nombre", "dni", "telefono", "email"]
+                    if not contacto_prev.get(k)
+                ]
+                return _finalize_response(
+                    pedir_datos_contacto_compacto(faltantes_contacto)
+                )
 
     # If the client sends an explicit action (e.g., button press) and there is
     # no active conversation state, handle it immediately via the main menu
@@ -5292,13 +5384,17 @@ def responder_municipio(
             contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
             .get("ubicacion", "")
         )
-        maps_url = (
+        coords = (
             contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
-            .get("maps_search_url")
+            .get("coordenadas", {})
         )
+        lat = coords.get("lat") or coords.get("latitude")
+        lon = coords.get("lng") or coords.get("lon") or coords.get("longitude")
+        maps_url = f"https://maps.google.com/?q={lat},{lon}" if lat and lon else None
         normalized = pregunta_str.strip().lower()
         if normalized in {"1", "confirmar", "si", "sí"}:
             contexto_municipio_actual["ubicacion_confirmada"] = True
+            contexto_municipio_actual["address_confirmed"] = True
             contexto_municipio_actual["estado_conversacion"] = None
             return _finalize_response({
                 "message_body": (
@@ -5309,6 +5405,7 @@ def responder_municipio(
             })
         elif normalized in {"2", "editar", "no"}:
             contexto_municipio_actual["ubicacion_confirmada"] = False
+            contexto_municipio_actual.pop("address_confirmed", None)
             contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
             return _finalize_response({
                 "message_body": "Por favor, decime la nueva ubicación.",
@@ -5318,23 +5415,17 @@ def responder_municipio(
             })
         else:
             opciones = [
-                {"texto": "1) Sí, es acá", "action_id": "confirmar_ubicacion"},
-                {"texto": "2) No, corregir", "action_id": "editar_ubicacion"},
+                {"texto": "1) Sí", "action_id": "confirmar_ubicacion"},
+                {"texto": "2) No", "action_id": "editar_ubicacion"},
             ]
             msg = (
                 "📍 Ubicación detectada:\n"
-                f"*{ubicacion_display}*\n¿Es acá?\n1) Sí, es acá\n2) No, corregir"
+                f"*{ubicacion_display}*\n¿Es acá?\n1) Sí\n2) No"
             )
             image_url = None
             image_alt = None
             if maps_url:
                 msg += f"\n🔗 Abrir mapa: {maps_url}"
-                coords = (
-                    contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
-                    .get("coordenadas", {})
-                )
-                lat = coords.get("lat", 0)
-                lon = coords.get("lon", 0)
                 try:
                     image_url, image_alt = generate_static_map(lat, lon)
                 except Exception:

@@ -508,8 +508,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "pin_ticket": pin_final,
                 "email_vecino": email_final,
                 "dni_vecino": dni_final,
-                "last_system_event": {"type": "ticket_created", "ts": time.time()},
             }
+            self.context["last_event"] = {"type": "ticket_created", "ts": time.time()}
             self.context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
             logger.info(
                 f"Contexto de reclamo limpiado. Nuevo estado: {self.context[CONTEXTO_MUNICIPIO]['estado_conversacion']}"
@@ -698,12 +698,24 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             or (getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None))
         )
         dni_vecino = action_data.get("dni") or contacto_prev.get("dni") or getattr(viewer_user, "dni", None)
-        email_vecino = (
-            action_data.get("email")
-            or action_data.get("email_detectado")
-            or contacto_prev.get("email")
-            or getattr(viewer_user, "email", None)
-        )
+
+        email_llm = action_data.get("email") or action_data.get("email_detectado")
+        email_ctx = contacto_prev.get("email")
+        email_viewer = getattr(viewer_user, "email", None)
+        for key, val in {"ctx": email_ctx, "viewer": email_viewer}.items():
+            if val and val.endswith("@whatsapp.chatboc.com"):
+                if key == "ctx":
+                    email_ctx = None
+                else:
+                    email_viewer = None
+        if email_llm and validar_email(email_llm):
+            email_vecino = email_llm.lower()
+        elif email_ctx and validar_email(email_ctx):
+            email_vecino = email_ctx.lower()
+        elif email_viewer and validar_email(str(email_viewer)):
+            email_vecino = str(email_viewer).lower()
+        else:
+            email_vecino = None
         direccion_contacto = (
             action_data.get("direccion")
             or action_data.get("direccion_contacto")
@@ -780,7 +792,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 ctx_muni['contacto_usuario'] = {k: v for k, v in contacto_usuario.items() if v}
                 from services.municipio_responder import ConversationState
                 ctx_muni['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
-                ctx_muni['last_system_event'] = {"type": "ticket_created", "ts": time.time()}
+                self.context["last_event"] = {"type": "ticket_created", "ts": time.time()}
 
             # Obtener la URL base del chat del contexto para el botón "Ver mi Ticket"
             municipio_config = self.context.get('municipio_config_actual', {})
