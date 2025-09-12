@@ -107,7 +107,7 @@ class TestAccionesMunicipio(unittest.TestCase):
             "ubicacion": "Calle Falsa 123, Springfield",
             "coordenadas": {"lat": -32.8908, "lon": -68.8272},
             "usuario": "Homero Simpson", "telefono": "91122334455", "email": "homero@example.com",
-            "pin": "555444"
+            "pin": "555444", "dni": "12345678"
         }
 
         mock_viewer_user = MagicMock(spec=User)
@@ -144,6 +144,37 @@ class TestAccionesMunicipio(unittest.TestCase):
         mock_enviar_whatsapp.assert_called_once_with(
             "+5491122334455", "Homero Simpson", "12345", "Alumbrado"
         )
+        self.assertIn("Editar", respuesta["message_to_user"])
+        self.assertTrue(any(o.get("action_id") == "editar_reclamo" for o in respuesta.get("options_list", [])))
+
+    @patch('services.actions.municipio_actions.parse_direccion', return_value={"calle": "Calle Falsa", "numero": "123", "localidad": "Junin"})
+    @patch('services.actions.municipio_actions.validar_y_formatear_direccion', return_value={"lat": -32.89, "lng": -68.83, "formatted_address": "Calle Falsa 123"})
+    @patch('services.actions.municipio_actions.validar_email', return_value=True)
+    @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
+    def test_placeholder_email_pide_datos(self, mock_valid_tel, mock_valid_email, mock_valid_dir, mock_parse):
+        datos_llm = {
+            "categoria": "Alumbrado",
+            "descripcion": "Poste", 
+            "ubicacion": "Calle Falsa 123",
+            "telefono": "2611234567",
+            "email": "foo@whatsapp.chatboc.com",
+            "usuario": "Vecino"
+        }
+
+        context = {
+            "viewer_user_obj": None,
+            "user_obj": MagicMock(id=1, municipio_id="default"),
+            "anon_id": "anon123",
+            "municipio_config_actual": {}
+        }
+
+        handler = CrearReclamoActionHandler(context)
+        resp = handler.execute(datos_llm)
+
+        self.assertFalse(resp["success"])
+        self.assertIn("Nombre y apellido", resp["message_to_user"])
+        self.assertIn("DNI", resp["message_to_user"])
+        self.assertIn("Email", resp["message_to_user"])
 
     @patch('services.actions.municipio_actions.formatear_ticket_respuesta')
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')

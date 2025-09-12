@@ -238,6 +238,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if len(nombre_vecino_final) > 60 or len(nombre_vecino_final.split()) > 6:
             nombre_vecino_final = "Vecino/a"
         nombre_vecino_final = sanitize_contact_name(nombre_vecino_final)
+        nombre_placeholder = nombre_vecino_final.lower() in {"vecino", "vecina", "vecino/a", "vecin@"}
 
         telefono_from_llm = (action_data.get("telefono") or datos_parciales.get("telefono") or
                              action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado"))
@@ -254,6 +255,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             or action_data.get("email_detectado")
             or datos_parciales.get("email_detectado")
         )
+        if email_from_llm and email_from_llm.endswith("@whatsapp.chatboc.com"):
+            email_from_llm = None
         email_final = None
         viewer_email = getattr(viewer_user, "email", None) if viewer_user else None
         if viewer_email and viewer_email.endswith("@whatsapp.chatboc.com"):
@@ -265,7 +268,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         dni_from_llm = action_data.get("dni") or datos_parciales.get("dni")
         dni_final = None
-        if dni_from_llm and isinstance(dni_from_llm, str) and dni_from_llm.isdigit():
+        if dni_from_llm and isinstance(dni_from_llm, str) and dni_from_llm.isdigit() and len(dni_from_llm) >= 7:
             dni_final = dni_from_llm
         elif viewer_user and getattr(viewer_user, "dni", None) and str(viewer_user.dni).isdigit():
             dni_final = str(viewer_user.dni)
@@ -284,12 +287,15 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         nombre_final = datos_parciales.get("nombre") or contacto_ctx.get("nombre") or nombre_vecino_final
         nombre_final = sanitize_contact_name(nombre_final)
+        nombre_placeholder = nombre_placeholder or nombre_final.lower() in {"vecino", "vecina", "vecino/a", "vecin@"}
         telefono_final = telefono_final or contacto_ctx.get("telefono")
         contacto_email = contacto_ctx.get("email")
         if contacto_email and contacto_email.endswith("@whatsapp.chatboc.com"):
             contacto_email = None
         email_final = email_final or contacto_email
-        dni_final = dni_final or contacto_ctx.get("dni")
+        dni_ctx = contacto_ctx.get("dni")
+        if dni_ctx and isinstance(dni_ctx, str) and dni_ctx.isdigit() and len(dni_ctx) >= 7:
+            dni_final = dni_final or dni_ctx
 
         logger.info(f"CONTACT_CTX: {contacto_ctx}")
         logger.info(
@@ -301,20 +307,28 @@ class CrearReclamoActionHandler(BaseActionHandler):
         )
 
         # Actualizar el contexto con los datos más recientes para persistencia
+        contexto_reclamo.setdefault("contacto_usuario", {}).update(
+            {
+                "nombre": None if nombre_placeholder else nombre_final,
+                "telefono": telefono_final,
+                "email": email_final,
+                "dni": dni_final,
+                "direccion": direccion_contacto,
+            }
+        )
         for key, value in [
             ("categoria_reclamo", categoria_display),
             ("descripcion_reclamo", descripcion),
             ("direccion_reclamo", ubicacion_llm),
             ("coordenadas_reclamo", coordenadas_llm),
-            ("nombre_vecino", nombre_final),
+            ("nombre_vecino", None if nombre_placeholder else nombre_final),
             ("telefono_vecino", telefono_final),
             ("email_vecino", email_final),
             ("dni_vecino", dni_final),
             ("direccion_contacto", direccion_contacto),
             ("foto_url", foto_url_llm),
         ]:
-            if value:
-                contexto_reclamo[key] = value
+            contexto_reclamo[key] = value
 
         # Validación de datos esenciales para la creación del ticket
         campos_faltantes = []
@@ -323,7 +337,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if not ubicacion_llm and not coordenadas_llm:
             campos_faltantes.append("ubicacion")
         for k, v in {
-            "nombre": nombre_final,
+            "nombre": None if nombre_placeholder else nombre_final,
             "telefono": telefono_final,
             "email": email_final,
             "dni": dni_final,
@@ -560,6 +574,16 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     f"✅ *¡Reclamo recibido!*\nN° de Ticket: M-{nro_ticket_str}"
                 )
                 botones_finales = []
+
+            if "Actualizar datos" in mensaje_respuesta:
+                mensaje_respuesta = mensaje_respuesta.replace(
+                    "Actualizar datos", "Editar o Actualizar datos"
+                )
+            else:
+                mensaje_respuesta += (
+                    "\n🔎 Si tus datos no son correctos, respondé *Editar datos*."
+                )
+            botones_finales.append({"texto": "Editar datos", "action_id": "editar_reclamo"})
 
             # Log para debug
             logger.info(f"Respuesta formateada: '{mensaje_respuesta}', Botones: {botones_finales}")
