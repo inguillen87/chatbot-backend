@@ -338,17 +338,24 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if campos_faltantes:
             campos_faltantes = sorted(list(set(campos_faltantes)))
             self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
-            mensaje = (
-                "\U0001F512 *Necesito estos datos:*\n"
-                "• *Nombre y apellido* — _Ej.: Juan Pérez_\n"
-                "• *Email* — _Ej.: juan@mail.com_\n"
-                "• *Teléfono* — _solo números_\n"
-                "• *DNI* — _Ej.: 30123456_\n"
-                "Mandalo en una sola línea o de a uno."
-            )
+            etiquetas = {
+                "nombre": "• *Nombre y apellido* — _Ej.: Juan Pérez_",
+                "dni": "• *DNI* — _Ej.: 30123456_",
+                "telefono": "• *Teléfono* — _solo números_",
+                "email": "• *Email* — _Ej.: juan@mail.com_",
+            }
+            campos_contacto = [c for c in ["nombre", "dni", "telefono", "email"] if c in campos_faltantes]
+            if campos_contacto:
+                lineas = [etiquetas[c] for c in campos_contacto]
+                cuerpo = (
+                    "\U0001F512 *Necesito estos datos:*\n" + "\n".join(lineas) +
+                    "\nMandalo en una sola línea o de a uno."
+                )
+            else:
+                cuerpo = "Faltan datos para continuar."
             return {
                 "success": False,
-                "message_to_user": mensaje,
+                "message_to_user": cuerpo,
                 "message_type": "text",
                 "next_state_hint": "ESPERANDO_DATOS_CONTACTO",
             }

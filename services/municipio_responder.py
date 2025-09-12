@@ -462,19 +462,23 @@ def handle_ticket_lookup(numero: str, pin: str, contexto: dict, municipio_id: st
     return payload
 
 
-def pedir_datos_contacto_compacto():
-    """Prompt al usuario para que comparta sus datos de contacto en un formato accesible."""
-    return {
-        "message_body": (
-            "\U0001F512 *Necesito estos datos:*\n"
-            "• *Nombre y apellido* — _Ej.: Juan Pérez_\n"
-            "• *DNI* — _Ej.: 30123456_\n"
-            "• *Teléfono* — _solo números_\n"
-            "• *Email* — _tu correo_\n"
-            "Podés mandarlos en una sola línea o de a uno."
-        ),
-        "message_type": "text",
-    }
+CONTACT_PROMPT_LABELS = {
+    "nombre": "• *Nombre y apellido* — _Ej.: Juan Pérez_",
+    "dni": "• *DNI* — _Ej.: 30123456_",
+    "telefono": "• *Teléfono* — _solo números_",
+    "email": "• *Email* — _tu correo_",
+}
+
+
+def pedir_datos_contacto_compacto(faltantes: list[str] | None = None):
+    """Prompt para solicitar únicamente los datos de contacto faltantes."""
+    campos = faltantes or ["nombre", "dni", "telefono", "email"]
+    lineas = [CONTACT_PROMPT_LABELS[c] for c in ["nombre", "dni", "telefono", "email"] if c in campos]
+    cuerpo = (
+        "\U0001F512 *Necesito estos datos:*\n" + "\n".join(lineas) +
+        "\nPodés mandarlos en una sola línea o de a uno."
+    )
+    return {"message_body": cuerpo, "message_type": "text"}
 
 
 def procesar_datos_contacto_compacto(
@@ -755,16 +759,19 @@ class ReclamoFlowHandler:
 
     def ask_for_contact_details(self, force_prompt: bool = False):
         datos = self.flow_context.setdefault('datos_reclamo', {})
+        contacto_prev = self.municipal_ctx.get('contacto_usuario', {})
+        faltantes = [
+            k
+            for k in ["nombre", "dni", "telefono", "email"]
+            if not datos.get(k) and not contacto_prev.get(k)
+        ]
 
-        if not datos.get('email') or not datos.get('nombre'):
-            force_prompt = True
-
-        if not force_prompt and not _need_any_contact(datos):
+        if not force_prompt and not faltantes:
             self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
             return self.get_confirmation_message()
 
         self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
-        return pedir_datos_contacto_compacto()
+        return pedir_datos_contacto_compacto(faltantes)
 
     def handle_datos_contacto(self, user_input):
         datos_reclamo = self.flow_context.setdefault('datos_reclamo', {})
@@ -776,6 +783,12 @@ class ReclamoFlowHandler:
             datos_reclamo['email'] = None
         contacto_prev = self.municipal_ctx.get('contacto_usuario', {})
         self.municipal_ctx['contacto_usuario'] = _merge_contact(contacto_prev, nuevos)
+
+        faltan = [k for k in ["nombre", "dni", "telefono", "email"] if not self.municipal_ctx['contacto_usuario'].get(k)]
+        if faltan:
+            self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
+            return pedir_datos_contacto_compacto(faltan)
+
         resumen = _format_contact_summary(self.municipal_ctx['contacto_usuario'])
         self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
         return {
