@@ -194,10 +194,11 @@ def responder_chatboc(
     if uploaded_file_info and isinstance(uploaded_file_info, dict):
         logger.info(f"DEBUG: Processing uploaded_file_info in responder_chatboc: {uploaded_file_info}")
         if uploaded_file_info.get("id"):
-            archivo_id = uploaded_file_info.get("id")
-            current_app.logger.info(f"[LOGIC] Procesando uploaded_file_info para ArchivoAdjunto ID: {archivo_id}")
-            # El resto de la lógica para archivos subidos desde el frontend va aquí
-        elif uploaded_file_info.get("source") == "whatsapp":
+            archivo_id_para_asociar_al_ticket = uploaded_file_info.get("id")
+            current_app.logger.info(
+                f"[LOGIC] Procesando uploaded_file_info para ArchivoAdjunto ID: {archivo_id_para_asociar_al_ticket}"
+            )
+        if uploaded_file_info.get("source") == "whatsapp":
             from services.document_processing_service import document_processing_service
             from services.interpretacion_imagen_service import interpretar_imagen_para_chat
             import requests
@@ -214,17 +215,25 @@ def responder_chatboc(
                 kwargs["foto_url"] = media_url
 
             try:
-                response = requests.get(media_url, auth=(current_app.config.get("TWILIO_ACCOUNT_SID"), current_app.config.get("TWILIO_AUTH_TOKEN")))
+                response = requests.get(
+                    media_url,
+                    auth=(
+                        current_app.config.get("TWILIO_ACCOUNT_SID"),
+                        current_app.config.get("TWILIO_AUTH_TOKEN"),
+                    ),
+                )
                 response.raise_for_status()
                 file_content = response.content
 
                 if media_content_type.startswith("image/"):
                     datos_interpretados_de_archivo = interpretar_imagen_para_chat(
                         archivo_adjunto=uploaded_file_info,
-                        tipo_interpretacion="reclamo_auto_descripcion_categoria"
+                        tipo_interpretacion="reclamo_auto_descripcion_categoria",
                     )
                 else:
-                    doc_ai_result = document_processing_service.process_document(file_content, media_content_type)
+                    doc_ai_result = document_processing_service.process_document(
+                        file_content, media_content_type
+                    )
                     if doc_ai_result:
                         # Aquí puedes procesar el resultado de Document AI
                         # Por ahora, solo extraemos el texto
