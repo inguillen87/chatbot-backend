@@ -52,51 +52,89 @@ Tu respuesta:
     return prompt
 
 def sugerir_categorias_relevantes(texto_usuario: str) -> list[str]:
+    """Sugiere hasta tres categorías para un reclamo.
+
+    Primero se realiza un score sencillo por keywords. Si el resultado es
+    poco concluyente se recurre a un LLM (OpenAI y fallback a Cohere) para
+    obtener las sugerencias.
     """
-    Usa el LLM para obtener una lista de categorías sugeridas basadas en el texto del usuario.
-    """
-    todas_las_categorias = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values()))) # Still useful for keyword matching
-    # LLM call removed. Category suggestion is now expected from the main LLM call.
-    # This function now performs basic keyword matching as a fallback or primary if called directly.
-    logger.info(f"Sugiriendo categorías (NO-LLM) para: '{texto_usuario[:50]}...'")
-    sugeridas = []
+    sugeridas: list[str] = []
     if not texto_usuario:
         return sugeridas
 
+    from services.categorias_municipio import CATEGORIAS_RECLAMO
+
     _ensure_keyword_cache_actualizado()
     texto_norm = normalizar_texto(texto_usuario)
-    from services.categorias_municipio import CATEGORIAS_RECLAMO
-    # Contar ocurrencias de keywords para cada categoría
-    conteo_categorias = {cat: 0 for cat in CATEGORIAS_RECLAMO} # Use the defined list
+    conteo_categorias = {cat: 0 for cat in CATEGORIAS_RECLAMO}
     palabras_usuario = set(texto_norm.split())
 
     for keyword, category_target in KEYWORD_TO_CATEGORY_MAP.items():
-        # Usar una keyword normalizada para la comparación si es necesario,
-        # aunque KEYWORD_TO_CATEGORY_MAP ya tiene claves en minúscula y sin acentos (asumido).
         if keyword in palabras_usuario:
             conteo_categorias[category_target] = conteo_categorias.get(category_target, 0) + 1
-            if keyword in texto_norm: # Dar más peso si es una frase
-                 conteo_categorias[category_target] = conteo_categorias.get(category_target, 0) + 2
+            if keyword in texto_norm:
+                conteo_categorias[category_target] = conteo_categorias.get(category_target, 0) + 2
 
-
-    # Ordenar por conteo descendente
-    categorias_ordenadas = sorted(conteo_categorias.items(), key=lambda item: item[1], reverse=True)
+    categorias_ordenadas = sorted(
+        conteo_categorias.items(), key=lambda item: item[1], reverse=True
+    )
 
     for cat, count in categorias_ordenadas:
-        if count > 0 and len(sugeridas) < 3:
-            if cat not in sugeridas: # Evitar duplicados si diferentes keywords apuntan a la misma categoría
-                 sugeridas.append(cat)
+        if count > 0 and len(sugeridas) < 3 and cat not in sugeridas:
+            sugeridas.append(cat)
         if len(sugeridas) >= 3:
             break
 
-    if not sugeridas and texto_usuario:
-        # Si después del keyword matching no hay nada, pero había texto, sugerir "Otro Motivo"
-        # Asegurarse que "Otro Motivo" sea una de las CATEGORIAS_RECLAMO válidas.
-        if "Otro Motivo" in CATEGORIAS_RECLAMO: # Check against the defined list
+    max_count = categorias_ordenadas[0][1] if categorias_ordenadas else 0
+    tie = (
+        len(categorias_ordenadas) > 1
+        and categorias_ordenadas[1][1] == max_count
+    )
+
+    if (not sugeridas or max_count == 0 or tie) and texto_usuario:
+        prompt = crear_prompt_sugerir_categorias(texto_usuario, CATEGORIAS_RECLAMO)
+        try:
+            if not openai_client:
+                raise ConnectionError("OpenAI client is not initialized.")
+            response = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                response_format={"type": "json_object"},
+            )
+            contenido = response.choices[0].message.content
+            data = json.loads(contenido)
+            llm_sugs = data.get("sugerencias", [])
+            if llm_sugs:
+                sugeridas = llm_sugs[:3]
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.error("LLM OpenAI suggestion failed: %s", exc)
+            if cohere_client:
+                try:
+                    cohere_resp = cohere_client.generate(
+                        model="command-r-plus",
+                        prompt=prompt + "\nResponde únicamente con un objeto JSON.",
+                        temperature=0,
+                    )
+                    contenido = cohere_resp.generations[0].text.strip()
+                    data = json.loads(contenido)
+                    llm_sugs = data.get("sugerencias", [])
+                    if llm_sugs:
+                        sugeridas = llm_sugs[:3]
+                except Exception as exc2:  # pragma: no cover
+                    logger.error("LLM Cohere suggestion failed: %s", exc2)
+
+    if not sugeridas:
+        if "Otro Motivo" in CATEGORIAS_RECLAMO:
             sugeridas.append("Otro Motivo")
 
-    logger.info(f"Categorías sugeridas (NO-LLM) para '{texto_usuario[:50]}...': {sugeridas}")
-    return sugeridas # Devuelve hasta 3, o menos si no hay suficientes matches.
+    alias = {"arbol caido": "Arbolado", "Arbol Caido": "Arbolado"}
+    sugeridas = [alias.get(cat, alias.get(cat.lower(), cat)) for cat in sugeridas]
+
+    logger.info(
+        f"Categorías sugeridas para '{texto_usuario[:50]}...': {sugeridas}"
+    )
+    return sugeridas
    
 logger = logging.getLogger(__name__)
 Maps_API_KEY = os.environ.get("Maps_API_KEY")

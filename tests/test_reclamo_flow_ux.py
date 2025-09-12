@@ -25,8 +25,8 @@ class TestReclamoFlowUX(unittest.TestCase):
         }
         handler = self._build_handler(flow_context)
         resp = handler.handle_direccion("Calle 123", {})
-        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
-        self.assertIn("foto adjunta", resp["message_body"].lower())
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
+        self.assertIn("necesito estos datos", resp["message_body"].lower())
 
     def test_contact_details_prefilled_goes_to_confirmation(self):
         flow_context = {
@@ -56,8 +56,8 @@ class TestReclamoFlowUX(unittest.TestCase):
         }
         handler = self._build_handler(flow_context)
         resp = handler.handle_descripcion("pozo grande en la calle")
-        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
-        self.assertIn("foto adjunta", resp["message_body"].lower())
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
+        self.assertIn("necesito estos datos", resp["message_body"].lower())
 
     def test_start_flow_uses_context_photo(self):
         context = {
@@ -78,7 +78,7 @@ class TestReclamoFlowUX(unittest.TestCase):
         )
         self.assertEqual(
             handler.flow_context["state"],
-            ReclamoState.ESPERANDO_CONFIRMACION.name,
+            ReclamoState.ESPERANDO_DATOS_CONTACTO.name,
         )
 
     def test_handle_foto_accepts_direct_image(self):
@@ -96,8 +96,8 @@ class TestReclamoFlowUX(unittest.TestCase):
             handler.flow_context["datos_reclamo"].get("foto_url"),
             "http://example.com/foto.jpg",
         )
-        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
-        self.assertIn("foto adjunta", resp["message_body"].lower())
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
+        self.assertIn("necesito estos datos", resp["message_body"].lower())
 
     def test_missing_dni_goes_directly_to_confirmation(self):
         flow_context = {
@@ -112,7 +112,7 @@ class TestReclamoFlowUX(unittest.TestCase):
         }
         handler = self._build_handler(flow_context)
         resp = handler.ask_for_contact_details()
-        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
         self.assertIn("dni", resp["message_body"].lower())
 
     def test_start_flow_prefills_dni_from_viewer_alias(self):
@@ -154,7 +154,7 @@ class TestReclamoFlowUX(unittest.TestCase):
             mock_exec.return_value = {"success": True, "data": {"nro_ticket": "R-1"}}
             resp = handler.handle_confirmacion("si", {})
         self.assertIn("R-1", resp["message_body"])
-        self.assertIn("¿Cómo te puedo ayudar hoy?", resp["message_body"])
+        self.assertIn("Tu reclamo fue creado", resp["message_body"])
         municipal_ctx = context["chat_db_context_data"][CONTEXTO_MUNICIPIO]
         self.assertNotIn("reclamo_flow_v2", municipal_ctx)
         self.assertEqual(
@@ -173,8 +173,29 @@ class TestReclamoFlowUX(unittest.TestCase):
         }
         handler = self._build_handler(flow_context)
         resp = handler.handle_confirmacion("no", {})
-        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
-        self.assertIn("Por favor", resp["message_body"])
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_MENU_EDICION.name)
+        self.assertIn("¿Qué querés editar?", resp["message_body"])
+
+    def test_phrase_auto_selects_arbolado(self):
+        from services.herramientas_municipio import sugerir_categorias_relevantes
+
+        frase = "un árbol caído en mi calle"
+        sugerencias = sugerir_categorias_relevantes(frase)
+        self.assertIn("Arbolado", sugerencias)
+        handler = self._build_handler({})
+        resp = handler.start_flow(
+            datos_iniciales={"descripcion": frase},
+            categoria_inicial=sugerencias[0],
+        )
+        self.assertEqual(
+            handler.flow_context["datos_reclamo"].get("categoria"),
+            "Arbolado",
+        )
+        self.assertEqual(
+            handler.flow_context["state"],
+            ReclamoState.ESPERANDO_DIRECCION.name,
+        )
+        self.assertNotIn("options_list", resp)
 
 
 if __name__ == "__main__":
