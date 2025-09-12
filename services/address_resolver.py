@@ -60,7 +60,7 @@ class AddressResolver:
         return {"streets": [street_a, street_b], "number_hint": number_hint}
 
     # Geocoding using Nominatim with bounding box and Google fallback
-    def _geocode(self, street_query: str) -> Optional[Dict[str, Any]]:
+    def _geocode(self, street_query: str) -> List[Dict[str, Any]]:
         url = "https://nominatim.openstreetmap.org/search"
         params = {
             "street": street_query,
@@ -68,7 +68,8 @@ class AddressResolver:
             "state": self.state,
             "countrycodes": self.country,
             "format": "json",
-            "limit": 1,
+            # Increase result count to surface multiple candidates
+            "limit": 5,
         }
         if self.enforce_bounds and self.bounds:
             params["viewbox"] = f"{self.bounds[0]},{self.bounds[3]},{self.bounds[2]},{self.bounds[1]}"
@@ -78,16 +79,20 @@ class AddressResolver:
             resp = requests.get(url, params=params, headers=headers, timeout=5)
             resp.raise_for_status()
             data = resp.json()
-            if data:
-                item = data[0]
+            results = []
+            for item in data or []:
                 lat = float(item.get("lat"))
                 lon = float(item.get("lon"))
-                return {
-                    "lat": lat,
-                    "lon": lon,
-                    "display_name": item.get("display_name"),
-                    "maps_search_url": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
-                }
+                results.append(
+                    {
+                        "lat": lat,
+                        "lon": lon,
+                        "display_name": item.get("display_name"),
+                        "maps_search_url": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+                    }
+                )
+            if results:
+                return results
         except Exception as e:
             logger.warning("Geocode via Nominatim failed for '%s': %s", street_query, e)
 
@@ -107,16 +112,18 @@ class AddressResolver:
             if alt:
                 lat = alt.get("lat")
                 lon = alt.get("lng")
-                return {
-                    "lat": lat,
-                    "lon": lon,
-                    "display_name": alt.get("display_name"),
-                    "maps_search_url": alt.get("maps_search_url")
-                    or f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
-                }
+                return [
+                    {
+                        "lat": lat,
+                        "lon": lon,
+                        "display_name": alt.get("display_name"),
+                        "maps_search_url": alt.get("maps_search_url")
+                        or f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+                    }
+                ]
         except Exception as e:
             logger.error("Fallback geocode failed for '%s': %s", street_query, e)
-        return None
+        return []
 
     def resolve(self, raw_address: str) -> Optional[Dict[str, Any]]:
         if not raw_address:
@@ -137,12 +144,13 @@ class AddressResolver:
         if inter:
             street_query = f"{inter['streets'][0]} & {inter['streets'][1]}"
             try:
-                geo = self._geocode(street_query)
+                candidates = self._geocode(street_query)
             except Exception as e:
                 logger.error(f"Geocode failed for intersection '{street_query}': {e}")
                 return None
-            if not geo:
+            if not candidates:
                 return None
+            geo = candidates[0]
             lat = float(geo.get("lat"))
             lon = float(geo.get("lon"))
             validez = self._within_bounds(lat, lon)
@@ -162,6 +170,7 @@ class AddressResolver:
                 "validez": validez,
                 "display_name": geo.get("display_name"),
                 "maps_search_url": geo.get("maps_search_url"),
+                "candidates": candidates,
             }
 
         # Single street with optional number (allow numeric street names)
@@ -172,12 +181,13 @@ class AddressResolver:
             return None
         street_query = f"{street} {number}" if number else street
         try:
-            geo = self._geocode(street_query)
+            candidates = self._geocode(street_query)
         except Exception as e:
             logger.error(f"Geocode failed for '{street_query}': {e}")
             return None
-        if not geo:
+        if not candidates:
             return None
+        geo = candidates[0]
         lat = float(geo.get("lat"))
         lon = float(geo.get("lon"))
         validez = self._within_bounds(lat, lon)
@@ -198,6 +208,7 @@ class AddressResolver:
             "validez": validez,
             "display_name": geo.get("display_name"),
             "maps_search_url": geo.get("maps_search_url"),
+            "candidates": candidates,
         }
 
     def _within_bounds(self, lat: float, lon: float) -> bool:

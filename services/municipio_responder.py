@@ -269,6 +269,20 @@ def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
         }
     parsed = resolver.resolve(user_input) if resolver else None
     if parsed:
+        candidates = parsed.get("candidates", [])
+        if len(candidates) > 1:
+            lines = []
+            options = []
+            for idx, cand in enumerate(candidates, start=1):
+                name = cand.get("display_name")
+                lines.append(f"{idx}. {name}")
+                options.append({"texto": str(idx)})
+            body = "Encontré varias coincidencias, indicá el número correcto:\n" + "\n".join(lines)
+            return {
+                "message_body": body,
+                "options_list": options,
+                "candidates": candidates,
+            }
         return {
             "ubicacion": parsed.get("formatted") or parsed.get("display_name"),
             "coordenadas": {"lat": parsed.get("lat"), "lng": parsed.get("lon")},
@@ -664,7 +678,29 @@ class ReclamoFlowHandler:
     def handle_direccion(self, user_input, payload):
         datos = self.flow_context.setdefault('datos_reclamo', {})
         municipio_cfg = self.context.get("municipio_config_actual", {})
-        loc = handle_direccion(user_input, payload, municipio_cfg)
+
+        if user_input.strip().isdigit() and datos.get("address_candidates"):
+            idx = int(user_input.strip()) - 1
+            candidates = datos.pop("address_candidates")
+            if 0 <= idx < len(candidates):
+                chosen = candidates[idx]
+                loc = {
+                    "ubicacion": chosen.get("display_name"),
+                    "coordenadas": {"lat": chosen.get("lat"), "lng": chosen.get("lon")},
+                    "distrito": municipio_cfg.get("ciudad"),
+                    "maps_search_url": chosen.get("maps_search_url"),
+                }
+            else:
+                return {"message_body": "Opción inválida. Por favor, elegí un número de la lista."}
+        else:
+            loc = handle_direccion(user_input, payload, municipio_cfg)
+            if loc and loc.get("candidates"):
+                datos["address_candidates"] = loc["candidates"]
+                return {
+                    "message_body": loc["message_body"],
+                    "options_list": loc.get("options_list"),
+                    "message_type": loc.get("message_type", "text"),
+                }
 
         if loc:
             direccion_display = loc.get("ubicacion")
