@@ -24,13 +24,14 @@ class AddressResolver:
     INTERSECTION_TOKENS = ["esquina", "esq", "y", "e", "&", "/"]
     DISTRICT_KEYWORDS = ["distrito", "departamento", "dpto", "partido"]
 
-    def __init__(self, municipio_config: Dict[str, Any]):
+    def __init__(self, municipio_config: Dict[str, Any], enforce_bounds: bool = True):
         self.city = municipio_config.get("ciudad")
         self.state = municipio_config.get("provincia")
         self.country = municipio_config.get("pais", "AR")
         self.bounds = municipio_config.get("bounds")
         self.region_hint = municipio_config.get("region_hint")
         self.locale = municipio_config.get("locale")
+        self.enforce_bounds = enforce_bounds
         self.conflicting = [
             self._normalize(n)
             for n in municipio_config.get("conflicting_jurisdicciones", [])
@@ -68,9 +69,10 @@ class AddressResolver:
             "countrycodes": self.country,
             "format": "json",
             "limit": 1,
-            "viewbox": f"{self.bounds[0]},{self.bounds[3]},{self.bounds[2]},{self.bounds[1]}",
-            "bounded": 1,
         }
+        if self.enforce_bounds and self.bounds:
+            params["viewbox"] = f"{self.bounds[0]},{self.bounds[3]},{self.bounds[2]},{self.bounds[1]}"
+            params["bounded"] = 1
         headers = {"User-Agent": NOMINATIM_USER_AGENT}
         try:
             resp = requests.get(url, params=params, headers=headers, timeout=5)
@@ -97,7 +99,7 @@ class AddressResolver:
                     "city": self.city,
                     "state": self.state,
                     "country": self.country,
-                    "bounds": self.bounds,
+                    "bounds": self.bounds if self.enforce_bounds else None,
                     "region_hint": self.region_hint,
                     "locale": self.locale,
                 },
@@ -118,6 +120,8 @@ class AddressResolver:
 
     def resolve(self, raw_address: str) -> Optional[Dict[str, Any]]:
         if not raw_address:
+            return None
+        if raw_address.strip().upper() == "N/A":
             return None
         normalized = self._normalize(raw_address)
 
@@ -197,5 +201,7 @@ class AddressResolver:
         }
 
     def _within_bounds(self, lat: float, lon: float) -> bool:
+        if not self.enforce_bounds or not self.bounds:
+            return True
         lon_min, lat_min, lon_max, lat_max = self.bounds
         return lat_min <= lat <= lat_max and lon_min <= lon <= lon_max

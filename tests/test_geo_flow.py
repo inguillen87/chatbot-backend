@@ -22,7 +22,10 @@ class GeoFlowTests(unittest.TestCase):
         chat_context.context_data = {
             CONTEXTO_MUNICIPIO: {
                 'estado_conversacion': 'ESPERANDO_CONFIRMACION_UBICACION',
-                'datos_parciales_llm_reclamo': {'ubicacion': 'Calle Falsa 123'}
+                'datos_parciales_llm_reclamo': {
+                    'ubicacion': 'Calle Falsa 123',
+                    'maps_search_url': 'http://maps.example'
+                }
             }
         }
         from flask import Flask
@@ -37,8 +40,10 @@ class GeoFlowTests(unittest.TestCase):
                 anon_id='test',
                 channel='whatsapp'
             )
-        assert '¿Es esta tu dirección?' in resp['message_body']
+        assert '📍 Ubicación detectada' in resp['message_body']
         assert 'Calle Falsa 123' in resp['message_body']
+        assert 'http://maps.example' in resp['message_body']
+        assert '1) Sí, es acá' in resp['message_body']
         ids = [o.get('action_id') for o in resp.get('options_list', [])]
         assert 'confirmar_ubicacion' in ids and 'editar_ubicacion' in ids
 

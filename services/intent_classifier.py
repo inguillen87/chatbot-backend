@@ -11,16 +11,24 @@ INTENT_THRESHOLD = 0.35
 # Mapeo rápido de palabras clave a categorías de reclamo
 KEYWORDS_CATEGORIA = {
     "arbol": "Arbolado",
-    "ramas": "Arbolado",
     "árbol": "Arbolado",
+    "ramas": "Arbolado",
+    "hoja": "Arbolado",
+    "hojas": "Arbolado",
     "luminaria": "Luminaria",
     "luz": "Luminaria",
     "poste": "Luminaria",
+    "alumbrado": "Luminaria",
     "bache": "Bacheo",
     "pozo": "Bacheo",
     "basura": "Limpieza",
     "residuos": "Limpieza",
+    "perdida": "Agua",
+    "pérdida": "Agua",
+    "fuga": "Agua",
     "agua": "Agua",
+    "perro": "Animales",
+    "animal": "Animales",
 }
 
 

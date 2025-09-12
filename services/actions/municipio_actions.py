@@ -1,6 +1,8 @@
 # services/actions/municipio_actions.py
 import logging
 import re
+import time
+import logging
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
 import random
@@ -41,6 +43,14 @@ def sanitize_contact_name(raw: str) -> str:
     cut = min([lowered.find(t) for t in cut_tokens if lowered.find(t) > 0] or [len(name)])
     cleaned = name[:cut].strip()
     return cleaned or "Vecino"
+
+
+def normalizar_telefono(telefono: str | None, waid: str | None) -> str | None:
+    if waid:
+        digits = waid.lstrip("+")
+        if digits.isdigit():
+            return f"+{digits}"
+    return telefono
 
 
 def normalizar_categoria(cat_llm: str, detalles: str):
@@ -286,6 +296,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
             f"CONTACT_FINAL nombre={nombre_final} tel={telefono_final} email={email_final} dni={dni_final}"
         )
 
+        telefono_final = normalizar_telefono(
+            telefono_final, self.context.get("waid") or self.context.get("anon_id")
+        )
+
         # Actualizar el contexto con los datos más recientes para persistencia
         for key, value in [
             ("categoria_reclamo", categoria_display),
@@ -325,9 +339,12 @@ class CrearReclamoActionHandler(BaseActionHandler):
             campos_faltantes = sorted(list(set(campos_faltantes)))
             self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
             mensaje = (
-                "Para cerrar el reclamo, necesitás completar tus datos en *una sola línea* "
-                "(Nombre completo, Email, Teléfono, DNI). "
-                "Ejemplo: Juan Perez, juan@mail.com, 2615551234, 30123456"
+                "\U0001F512 *Necesito estos datos:*\n"
+                "• *Nombre y apellido* — _Ej.: Juan Pérez_\n"
+                "• *Email* — _Ej.: juan@mail.com_\n"
+                "• *Teléfono* — _solo números_\n"
+                "• *DNI* — _Ej.: 30123456_\n"
+                "Mandalo en una sola línea o de a uno."
             )
             return {
                 "success": False,
@@ -484,6 +501,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "pin_ticket": pin_final,
                 "email_vecino": email_final,
                 "dni_vecino": dni_final,
+                "last_system_event": {"type": "ticket_created", "ts": time.time()},
             }
             self.context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
             logger.info(
@@ -690,6 +708,9 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             or contacto_prev.get("telefono")
             or getattr(viewer_user, "telefono", None)
         )
+        telefono_vecino = normalizar_telefono(
+            telefono_vecino, self.context.get("waid") or self.context.get("anon_id")
+        )
         if not all([nombre_vecino, dni_vecino, email_vecino, direccion_contacto]):
             return {
                 "success": False,
@@ -752,6 +773,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 ctx_muni['contacto_usuario'] = {k: v for k, v in contacto_usuario.items() if v}
                 from services.municipio_responder import ConversationState
                 ctx_muni['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+                ctx_muni['last_system_event'] = {"type": "ticket_created", "ts": time.time()}
 
             # Obtener la URL base del chat del contexto para el botón "Ver mi Ticket"
             municipio_config = self.context.get('municipio_config_actual', {})
