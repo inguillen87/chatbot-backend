@@ -192,8 +192,8 @@ def responder_chatboc(
 
     ids_archivos_para_asociar = []
     if chat_db_context and chat_db_context.context_data is not None:
-        ids_archivos_para_asociar = chat_db_context.context_data.get(
-            "ids_archivos_para_asociar", []
+        ids_archivos_para_asociar = list(
+            chat_db_context.context_data.get("ids_archivos_para_asociar", [])
         )
 
     if uploaded_file_info and isinstance(uploaded_file_info, dict):
@@ -273,9 +273,7 @@ def responder_chatboc(
     # Actualizar kwargs para pasar la información a los handlers específicos
     kwargs["datos_interpretados_archivo"] = datos_interpretados_de_archivo
     kwargs["archivo_id_para_asociar"] = archivo_id_para_asociar_al_ticket
-    kwargs["ids_archivos_para_asociar"] = (
-        ids_archivos_para_asociar if ids_archivos_para_asociar else None
-    )
+    kwargs["ids_archivos_para_asociar"] = ids_archivos_para_asociar
     kwargs["procesamiento_archivo_en_curso"] = procesamiento_archivo_en_curso
 
     if "uploaded_file_info" in kwargs:  # Limpiar para no pasarlo si ya se usó.

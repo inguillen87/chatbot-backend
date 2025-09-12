@@ -55,7 +55,7 @@ def normalizar_telefono(telefono: str | None, waid: str | None) -> str | None:
 def _asociar_archivos_si_corresponde(ticket_id: int, ctx: dict) -> None:
     """Vincula archivos cargados previamente al ticket recién creado."""
     try:
-        archivo_ids = ctx.get("ids_archivos_para_asociar")
+        archivo_ids = ctx.get("ids_archivos_para_asociar") or []
         if not archivo_ids:
             archivo_id = ctx.get("archivo_id_para_asociar")
             archivo_ids = [archivo_id] if archivo_id else []
@@ -74,10 +74,8 @@ def _asociar_archivos_si_corresponde(ticket_id: int, ctx: dict) -> None:
             f"Error asociando archivos al ticket {ticket_id}: {e}", exc_info=True
         )
     finally:
-        if ctx.get("archivo_id_para_asociar"):
-            ctx.pop("archivo_id_para_asociar", None)
-        if ctx.get("ids_archivos_para_asociar"):
-            ctx.pop("ids_archivos_para_asociar", None)
+        ctx.pop("archivo_id_para_asociar", None)
+        ctx.pop("ids_archivos_para_asociar", None)
         chat_ctx = ctx.get("chat_db_context_data")
         if isinstance(chat_ctx, dict):
             chat_ctx.pop("archivo_id_para_asociar", None)
