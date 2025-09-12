@@ -187,6 +187,19 @@ def direccion_es_valida(texto: str) -> bool:
         return False
 
     geocode_result = geocode_address(texto)
+    if geocode_result is None:
+        try:
+            parsed = parse_direccion_completa(texto, CONFIG_MUNICIPIO)
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.error("Error en parse_direccion_completa: %s", exc)
+            parsed = None
+        if parsed:
+            reconstruida = "{} {}".format(parsed.get("calle", "").strip(), parsed.get("numero", "").strip()).strip()
+            localidad = parsed.get("localidad")
+            provincia = parsed.get("provincia")
+            partes = [p for p in [reconstruida, localidad, provincia] if p]
+            consulta = ", ".join(partes)
+            geocode_result = geocode_address(consulta)
     if geocode_result is not None:
         return True
 
