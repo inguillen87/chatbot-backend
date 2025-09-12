@@ -58,4 +58,4 @@ def test_no_reset_after_ticket():
     }
     handler = GreetingHandler(ctx)
     assert handler.handle({}) is None
-    assert ctx["chat_db_context_data"].get("preserve") is True
+

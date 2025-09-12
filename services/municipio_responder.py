@@ -15,6 +15,7 @@ from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
 from models import MunicipioTicket, TicketComentario, db, SitioWebInfo, Conversacion
 from services.ticket_service import servicio_tickets
+from services.promo_service import send_post_ticket_promo
 from utils.db_utils import safe_flag_modified
 # Compatibilidad hacia atrás para pruebas que parchean `flag_modified`
 flag_modified = safe_flag_modified
@@ -497,8 +498,6 @@ def calcular_faltantes(ctx: dict) -> list:
 
 
 PUNTO_LIMPIO_LOGO_URL = "https://www.juninmendoza.gov.ar/recursos/punto-limpio-logo.jpg"
-PUNTO_LIMPIO_URL = "https://www.juninmendoza.gov.ar/punto-limpio"
-OBRAS_URL = "https://www.juninmendoza.gov.ar/obras"
 SITE_URL = "https://www.juninmendoza.gov.ar/"
 
 
@@ -513,8 +512,6 @@ def build_ticket_summary(ticket, pin, ctx_muni: dict) -> str:
         f"- *PIN:* {pin}\n"
         "📞 *Contacto para seguimiento:* Atención al Vecino - Mesa de Ayuda General - +5492613168608\n"
         "🕒 *Horario de atención:* Lunes a Viernes de 8:00 a 18:00 hs.\n"
-        f"♻️ Junín Punto Limpio: {PUNTO_LIMPIO_URL}\n"
-        f"📰 Obras y novedades: {OBRAS_URL}\n"
         f"🌐 Más información municipal: {SITE_URL}\n"
         f"💬 Ver mi Ticket: https://www.chatboc.ar/chat/{ticket.numero}?pin={pin}\n"
         "Te mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!\n\n"
@@ -2348,11 +2345,16 @@ from services.llm_orchestrator import llamar_llm_con_fallback
 
 
 
+
 def accion_crear_reclamo_municipio(datos_reclamo, context):
-    """Wrapper que delega la creación de reclamos al ActionHandler dedicado."""
+    """Wrapper that delegates ticket creation and triggers a post-ticket promo."""
     handler = CrearReclamoActionHandler(context=context)
     contexto = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-    return _execute_crear_reclamo(handler, datos_reclamo, contexto)
+    result = _execute_crear_reclamo(handler, datos_reclamo, contexto)
+    promo_payload = send_post_ticket_promo(context)
+    if promo_payload:
+        result.setdefault("followup_messages", []).append(promo_payload)
+    return result
 def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm):
     """
     Prepares the confirmation message for the user before creating a ticket.

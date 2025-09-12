@@ -62,7 +62,7 @@ def test_consulta_flow_direct_number(owner_user):
     assert "PIN de 6 dígitos" in result.response["message_body"]
 
 
-def test_ticket_summary_has_links(monkeypatch, owner_user):
+def test_ticket_summary_has_basic_links(monkeypatch, owner_user):
     class Ticket:
         numero = "397871"
         categoria = "Arbol Caido"
@@ -76,7 +76,8 @@ def test_ticket_summary_has_links(monkeypatch, owner_user):
     monkeypatch.setattr("services.municipio_responder.api_ticket_get", fake_get)
     result = run_turn("734774", state="ESPERANDO_PIN_TICKET", numero="397871", owner_user=owner_user)
     body = result.response["message_body"]
-    assert "Junín Punto Limpio" in body
+    assert "Junín Punto Limpio" not in body
+    assert "Obras y novedades" not in body
     assert "Ver mi Ticket" in body
 
 
