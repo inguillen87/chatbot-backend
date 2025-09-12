@@ -38,6 +38,9 @@ class AddressResolver:
         ]
         if not all([self.city, self.state, self.country, self.bounds]):
             raise ValueError("Municipio config must include ciudad, provincia, pais and bounds")
+        # Pre-normalize city/state for later token stripping in resolve()
+        self._city_norm = self._normalize(self.city)
+        self._state_norm = self._normalize(self.state)
 
     # Normalization
     def _normalize(self, text: str) -> str:
@@ -88,7 +91,7 @@ class AddressResolver:
                         "lat": lat,
                         "lon": lon,
                         "display_name": item.get("display_name"),
-                        "maps_search_url": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+                        "maps_search_url": f"https://maps.google.com/?q={lat},{lon}",
                     }
                 )
             if results:
@@ -118,7 +121,7 @@ class AddressResolver:
                         "lon": lon,
                         "display_name": alt.get("display_name"),
                         "maps_search_url": alt.get("maps_search_url")
-                        or f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+                        or f"https://maps.google.com/?q={lat},{lon}",
                     }
                 ]
         except Exception as e:
@@ -131,6 +134,12 @@ class AddressResolver:
         if raw_address.strip().upper() == "N/A":
             return None
         normalized = self._normalize(raw_address)
+        # Remove occurrences of the municipality city/province to allow
+        # inputs like "Don Bosco 55 Junin" or "Sarmiento y San Martin Junin"
+        for token in (self._city_norm, self._state_norm):
+            if token:
+                normalized = re.sub(rf"\b{re.escape(token)}\b", "", normalized)
+        normalized = re.sub(r"\s+", " ", normalized).strip().strip(",")
 
         # Detect external jurisdictions mentioned explicitly
         for j in self.conflicting:
@@ -173,10 +182,15 @@ class AddressResolver:
                 "candidates": candidates,
             }
 
-        # Single street with optional number (allow numeric street names)
-        match = re.match(r"(.*?)(?:\s+(\d+))?$", normalized)
-        street = match.group(1).strip() if match else ""
-        number = match.group(2) if match else None
+        # Single street with optional number anywhere in the text (allow numeric street names)
+        matches = list(re.finditer(r"\b(\d+)\b", normalized))
+        if matches:
+            num_match = matches[-1]
+            street = normalized[: num_match.start()].strip()
+            number = num_match.group(1)
+        else:
+            street = normalized.strip()
+            number = None
         if not street or street.isdigit():
             return None
         street_query = f"{street} {number}" if number else street

@@ -37,8 +37,8 @@ def test_greeting_handler(client):
 
 
 def test_reclamo_handler_inicio(client):
-    with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
-        mock_llamar_gemini.return_value = (
+    with patch('services.municipio_responder.llamar_openai') as mock_llamar_openai:
+        mock_llamar_openai.return_value = (
             {
                 "message_body": "Entendido, iniciando reclamo. ¿Sobre qué es?",
                 "accion_backend": "crear_reclamo",
@@ -57,12 +57,12 @@ def test_reclamo_handler_inicio(client):
             rubro_obj=MagicMock(nombre='municipio')
         )
 
-        mock_llamar_gemini.assert_called_once()
+        mock_llamar_openai.assert_called_once()
         assert response["message_body"] == "Entendido, iniciando reclamo. ¿Sobre qué es?"
 
-@patch('services.municipio_responder.llamar_gemini')
-def test_responder_municipio_imagen(mock_llamar_gemini, client):
-    mock_llamar_gemini.return_value = (
+@patch('services.municipio_responder.llamar_openai')
+def test_responder_municipio_imagen(mock_llamar_openai, client):
+    mock_llamar_openai.return_value = (
         {
             "message_body": "Gracias por la imagen. Parece un reclamo sobre Bacheo. ¿Es correcto?",
             "accion_backend": "confirmar_reclamo_auto",
@@ -124,8 +124,8 @@ def test_button_click_sets_category_and_advances_flow(client):
     Tests that clicking a sub-category button correctly sets the category
     in the context and advances the conversation to the next step.
     """
-    with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
-        mock_llamar_gemini.return_value = (
+    with patch('services.municipio_responder.llamar_openai') as mock_llamar_openai:
+        mock_llamar_openai.return_value = (
             {
                 "message_body": "Entendido. Para el reclamo de Luminaria, por favor decime la descripción del problema y la dirección.",
                 "accion_backend": "crear_reclamo",
