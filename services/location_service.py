@@ -4,6 +4,7 @@ from typing import Optional
 
 import re
 import requests
+import time
 from urllib.parse import urlparse, parse_qs, unquote
 from urllib.parse import urlparse, parse_qs, unquote
 
@@ -32,13 +33,27 @@ def _normalize_corner(addr: str) -> str:
     return re.sub(r"\s+", " ", addr).strip()
 
 
-def _extract_from_maps_url(url: str) -> dict:
-    """Extract coordinates or query text from a Google Maps URL."""
+_RESOLVED_URL_CACHE: dict[str, tuple[float, str]] = {}
+_RESOLVED_URL_TTL = 300  # seconds
+
+
+def _resolve_url_with_cache(url: str) -> str:
+    now = time.time()
+    cached = _RESOLVED_URL_CACHE.get(url)
+    if cached and now - cached[0] < _RESOLVED_URL_TTL:
+        return cached[1]
     try:
-        resp = requests.get(url, allow_redirects=True, timeout=5)
+        resp = requests.head(url, allow_redirects=True, timeout=5)
         final = resp.url
     except requests.RequestException:
         final = url
+    _RESOLVED_URL_CACHE[url] = (now, final)
+    return final
+
+
+def _extract_from_maps_url(url: str) -> dict:
+    """Extract coordinates or query text from a Google Maps URL."""
+    final = _resolve_url_with_cache(url)
     parsed = urlparse(final)
     qs = parse_qs(parsed.query)
     if "q" in qs:
