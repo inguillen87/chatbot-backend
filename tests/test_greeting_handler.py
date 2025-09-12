@@ -51,12 +51,11 @@ def test_saludo_ignorado_en_flujo_activo(mock_handler, mock_llm):
     assert response is None
 
 
-def test_greeting_skips_after_recent_ticket():
+def test_no_reset_after_ticket():
     ctx = {
-        CONTEXTO_MUNICIPIO: {
-            "last_system_event": {"type": "ticket_created", "ts": time.time()}
-        },
-        "chat_db_context_data": {},
+        "last_event": {"type": "ticket_created", "ts": time.time()},
+        "chat_db_context_data": {"preserve": True},
     }
     handler = GreetingHandler(ctx)
     assert handler.handle({}) is None
+    assert ctx["chat_db_context_data"].get("preserve") is True
