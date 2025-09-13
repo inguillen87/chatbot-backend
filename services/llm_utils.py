@@ -40,51 +40,27 @@ except ImportError:
 
 
 try:
-    from services.cohere_ai import robust_chat
-except ImportError:
-    # This is a fallback for environments where robust_chat might not be available initially
-    # or for simpler testing. Replace with a proper mock if robust_chat is critical.
+    from services.llm_bridge import llamar_llm_para_generacion_texto
+
+    def robust_chat(message: str, **kwargs) -> str:
+        """Fallback helper that leverages llamar_llm_para_generacion_texto.
+
+        This provides a minimal replacement for the legacy `robust_chat` function
+        used throughout this module. It delegates the prompt to the generic LLM
+        bridge so real model calls are performed instead of returning mocked data.
+        """
+
+        temperature = kwargs.get("temperature", 0)
+        return llamar_llm_para_generacion_texto(
+            system_prompt_especifico="",
+            user_prompt=message,
+            temperature=temperature,
+            json_output=True,
+        )
+except Exception:  # pragma: no cover - if llm_bridge is unavailable
     def robust_chat(message: str, **kwargs) -> str:
         logger.warning("Using mock robust_chat. LLM calls will not be real.")
-        if "Extract contact details" in message:
-            # Simulate LLM response for contact extraction
-            if "John Doe" in message and "123 Main St" in message:
-                return json.dumps({
-                    "nombre_cliente": "John Doe",
-                    "direccion_cliente": "123 Main St, Anytown",
-                    "telefono_cliente": "555-1234",
-                    "email_cliente": "john.doe@example.com"
-                })
-            elif "Jane Smith" in message:
-                 return json.dumps({"nombre_cliente": "Jane Smith"})
-            return json.dumps({})
-        elif "Extract complaint details" in message:
-            # Simulate LLM response for complaint extraction
-            if "broken streetlight" in message and "Elm Street" in message:
-                return json.dumps({
-                    "tipo_problema": "Alumbrado público",
-                    "ubicacion_problema": "Calle Elm, cerca del poste 123",
-                    "descripcion_problema": "La farola en la esquina de Elm Street y Oak Avenue está rota y no enciende desde hace 3 días."
-                })
-            return json.dumps({"descripcion_problema": "El usuario reportó un problema."})
-        elif "Update summary" in message:
-            # Simulate LLM response for summary update
-            # This is a very basic mock, real implementation would be more complex
-            summary_match = re.search(r"Current summary: '''(.*?)'''", message, re.DOTALL)
-            data_match = re.search(r"New data: '''(.*?)'''", message, re.DOTALL)
-            if summary_match and data_match:
-                current_summary = summary_match.group(1)
-                new_data_str = data_match.group(1)
-                try:
-                    new_data = json.loads(new_data_str)
-                    updated_summary = current_summary
-                    for key, value in new_data.items():
-                        updated_summary += f"\n- {key.replace('_', ' ').capitalize()}: {value}"
-                    return updated_summary
-                except json.JSONDecodeError:
-                    return current_summary + "\nError processing new data."
-            return "Mocked summary update."
-        return "Mocked LLM response."
+        return "{}"
 
 logger = logging.getLogger(__name__)
 
