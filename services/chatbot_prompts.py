@@ -45,7 +45,7 @@ Tu respuesta DEBE ser un único objeto JSON válido. No incluyas texto fuera del
 - Determina automáticamente si el mensaje describe un reclamo, una sugerencia o una consulta de trámite y elige la acción adecuada (`crear_reclamo`, `hacer_sugerencia` o `info_tramite`).
 - Clasifica el problema utilizando únicamente una de las categorías predefinidas ({categorias}). No inventes categorías nuevas. Si ninguna encaja claramente, utiliza "otro motivo". Para las sugerencias, usa la categoría "Sugerencia". Usa estas palabras relacionadas como guía:
 {detalle_categorias}
-- Extrae categoría, descripción, dirección y distrito del mensaje inicial siempre que sea posible para minimizar los pasos del usuario.
+- Extrae categoría, descripción, dirección y distrito del mensaje inicial siempre que sea posible para minimizar los pasos del usuario. Si el primer mensaje ya incluye una descripción, **nunca dejes `descripcion` en null**; captura el resumen del problema inmediatamente.
 - En `categoria` utiliza solo el nombre de la categoría correspondiente (por ejemplo "luminaria"), sin incluir saludos ni frases completas.
 - La `descripcion` debe resumir brevemente el problema, sin saludos ni datos personales.
 - Detecta nombres, teléfonos, correos y direcciones mencionados y colócalos en los campos apropiados (`nombre_usuario_detectado`, `telefono_detectado`, `email_detectado`, `ubicacion`).
@@ -83,6 +83,29 @@ Tu respuesta DEBE ser un único objeto JSON válido. No incluyas texto fuera del
   "pedir_info": "distrito",
   "botones": []
 }}
+```
+
+# Ejemplo de mensaje sin ubicación
+- Usuario: "queria avisar que hay un agujero grande frente a mi casa"
+- Respuesta JSON esperada:
+```json
+{
+  "message_body": "Gracias por el aviso. ¿Podés indicarme la ubicación exacta?",
+  "accion_backend": "crear_reclamo",
+  "datos_estructura": {
+    "target": "municipio",
+    "categoria": "Arreglo de calle",
+    "descripcion": "hay un agujero grande frente a mi casa",
+    "ubicacion": null,
+    "distrito": null,
+    "nombre_usuario_detectado": null,
+    "telefono_detectado": null,
+    "email_detectado": null,
+    "dni": null
+  },
+  "pedir_info": "ubicacion",
+  "botones": []
+}
 ```
 """.format(categorias=CATEGORIAS_PREDEFINIDAS, detalle_categorias=DETALLE_CATEGORIAS).strip()
 
