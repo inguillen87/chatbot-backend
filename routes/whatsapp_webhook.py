@@ -31,9 +31,7 @@ from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.geo_service import reverse_geocode
 from services.openai_maps_service import geocodificar_inversa_llm
 from services.municipio_responder import CONTEXTO_MUNICIPIO
-from services.audio_transcription_service import (
-    transcribe_audio_from_url as stt_transcribe_audio_from_url,
-)
+from services import audio_transcription_service
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -219,25 +217,6 @@ def whatsapp_webhook():
         post_vars["ubicacion_usuario"] = {"lat": coords["lat"], "lon": coords["lng"]}
         post_vars["location"] = coords
 
-    # Transcribir notas de voz o audios adjuntos (ignorar imágenes u otros medios)
-    message_type = request.form.get("MessageType", "")
-    media_content_type = request.form.get("MediaContentType0", "")
-    if (
-        stt_transcribe_audio_from_url
-        and (
-            message_type in ("voice", "audio")
-            or media_content_type.startswith("audio/")
-        )
-    ):
-        media_url = post_vars.get("MediaUrl0")
-        if media_url and TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
-            transcript = stt_transcribe_audio_from_url(
-                media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-            )
-            if transcript:
-                body = post_vars.get("Body", "")
-                post_vars["Body"] = f"{body} {transcript}".strip()
-
     to_number_raw = post_vars.get("To", "")
     from_number_raw = post_vars.get("From", "")
     to_number_cleaned = to_number_raw.replace("whatsapp:", "")
@@ -343,8 +322,9 @@ def whatsapp_webhook():
         db.session.commit()
 
     # --- Message and Media Handling SECOND ---
-    num_media = int(post_vars.get("NumMedia", "0") or 0)
     media_url = post_vars.get("MediaUrl0")  # TODO: soportar múltiples adjuntos
+    # Some unit tests omit `NumMedia`; treat presence of MediaUrl0 as an indicator of media.
+    num_media = int(post_vars.get("NumMedia") or (1 if media_url else 0))
     media_content_type = post_vars.get("MediaContentType0")
     uploaded_file_info = None
     message_body = incoming_text
@@ -380,14 +360,17 @@ def whatsapp_webhook():
             )
 
             if adjunto:
-                # Prepare the info for the chatbot logic, which will be used for all media types
+                # Prepare the info for the chatbot logic, ensuring serializable fields
+                public_url = getattr(adjunto, "public_url", None)
+                if public_url and not isinstance(public_url, str):
+                    public_url = str(public_url)
                 uploaded_file_info = {
                     "id": adjunto.id,
                     "url": adjunto.url,
-                    "public_url": getattr(adjunto, "public_url", None),
+                    "public_url": public_url,
                     "mime_type": adjunto.mime,
                     "name": adjunto.nombre_original,
-                    "source": "whatsapp"
+                    "source": "whatsapp",
                 }
                 current_app.logger.info(f"WhatsApp media processed and saved as ArchivoAdjunto ID: {adjunto.id}")
             else:
@@ -396,7 +379,7 @@ def whatsapp_webhook():
             if media_content_type and media_content_type.startswith("audio/"):
                 session_context_db_entry.context_data['source_is_audio'] = True
                 # We pass the direct URL to the transcription service
-                transcribed_text = stt_transcribe_audio_from_url(
+                transcribed_text = audio_transcription_service.transcribe_audio_from_url(
                     media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
                 )
                 if transcribed_text:
@@ -420,7 +403,14 @@ def whatsapp_webhook():
             if media_content_type and media_content_type.startswith("image/"):
                 ctx = session_context_db_entry.context_data
                 ctx["es_foto"] = True
-                ctx["foto_url"] = (uploaded_file_info or {}).get("public_url") or (uploaded_file_info or {}).get("url") or media_url
+                foto_url = (
+                    (uploaded_file_info or {}).get("public_url")
+                    or (uploaded_file_info or {}).get("url")
+                    or media_url
+                )
+                if foto_url and not isinstance(foto_url, str):
+                    foto_url = str(foto_url)
+                ctx["foto_url"] = foto_url
                 safe_flag_modified(session_context_db_entry, "context_data")
                 db.session.add(session_context_db_entry)
                 db.session.commit()
