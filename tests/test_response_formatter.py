@@ -11,7 +11,19 @@ import json
 import services.response_formatter as rf
 from services.response_formatter import build_interactive_response, render_audio_text
 
+
 class TestResponseFormatter(unittest.TestCase):
+
+    def test_prompt_includes_generic_location_question(self):
+        from services.chatbot_prompts import JULES_SYSTEM_PROMPT
+        self.assertIn(
+            "¿En qué barrio o distrito ocurre el problema?",
+            JULES_SYSTEM_PROMPT,
+        )
+        self.assertIn(
+            "evita citar la descripción completa del problema",
+            JULES_SYSTEM_PROMPT,
+        )
 
     def test_whatsapp_interactive_buttons_1_option(self):
         response = build_interactive_response(
