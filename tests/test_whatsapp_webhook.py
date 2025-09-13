@@ -833,8 +833,8 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             mock_bot.assert_called_once()
             kwargs = mock_bot.call_args.kwargs
             self.assertEqual(kwargs["pregunta"], "hola que tal")
-            self.assertIn("uploaded_file_info", kwargs)
-            self.assertEqual(kwargs["uploaded_file_info"]["transcribed_text"], "hola que tal")
+            self.assertIn("datos_interpretados_archivo", kwargs)
+            self.assertEqual(kwargs["datos_interpretados_archivo"]["raw_text"], "hola que tal")
             mock_classifier.assert_not_called()
             mock_transcribe.assert_called_once()
 

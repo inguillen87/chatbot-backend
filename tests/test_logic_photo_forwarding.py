@@ -16,7 +16,11 @@ class LogicPhotoForwardingTest(unittest.TestCase):
         app.config['TWILIO_AUTH_TOKEN'] = 'token'
 
         mock_get.return_value = MagicMock(content=b'', raise_for_status=lambda: None)
-        mock_interpretar.return_value = {"es_reclamo": True, "categoria_sugerida": "Arreglo de calle", "descripcion_sugerida": "Bache"}
+        mock_interpretar.return_value = {
+            "kind": "image",
+            "categoria_sugerida": "Arreglo de calle",
+            "descripcion_sugerida": "Bache"
+        }
         mock_responder.return_value = {"message_body": "ok"}
 
         owner_user = User(id=1, nombre_empresa="Municipio Test", tipo_chat="municipio")
@@ -44,7 +48,11 @@ class LogicPhotoForwardingTest(unittest.TestCase):
         app.config['TWILIO_ACCOUNT_SID'] = 'sid'
         app.config['TWILIO_AUTH_TOKEN'] = 'token'
 
-        mock_interpretar.return_value = {"es_reclamo": True, "categoria_sugerida": "Arreglo de calle", "descripcion_sugerida": "Bache"}
+        mock_interpretar.return_value = {
+            "kind": "image",
+            "categoria_sugerida": "Arreglo de calle",
+            "descripcion_sugerida": "Bache"
+        }
         mock_responder.return_value = {"message_body": "ok"}
 
         owner_user = User(id=1, nombre_empresa="Municipio Test", tipo_chat="municipio")
@@ -71,7 +79,11 @@ class LogicPhotoForwardingTest(unittest.TestCase):
         app.config['TWILIO_AUTH_TOKEN'] = 'token'
         app.config['APP_PUBLIC_BASE_URL'] = 'https://cdn.example.com'
 
-        mock_interpretar.return_value = {"es_reclamo": True, "categoria_sugerida": "Arreglo de calle", "descripcion_sugerida": "Bache"}
+        mock_interpretar.return_value = {
+            "kind": "image",
+            "categoria_sugerida": "Arreglo de calle",
+            "descripcion_sugerida": "Bache"
+        }
         mock_responder.return_value = {"message_body": "ok"}
 
         owner_user = User(id=1, nombre_empresa="Municipio Test", tipo_chat="municipio")
@@ -102,7 +114,11 @@ class LogicPhotoForwardingTest(unittest.TestCase):
         app.config['APP_PUBLIC_BASE_URL'] = 'https://cdn.example.com'
 
         mock_get.return_value = MagicMock(content=b'', raise_for_status=lambda: None)
-        mock_interpretar.return_value = {"es_reclamo": True, "categoria_sugerida": "Arreglo de calle", "descripcion_sugerida": "Bache"}
+        mock_interpretar.return_value = {
+            "kind": "image",
+            "categoria_sugerida": "Arreglo de calle",
+            "descripcion_sugerida": "Bache"
+        }
         mock_responder.return_value = {"message_body": "ok"}
 
         owner_user = User(id=1, nombre_empresa="Municipio Test", tipo_chat="municipio")

@@ -5,20 +5,19 @@ from services.google_vision_service import analyze_image_from_content
 from services.analisis_archivo_service import AnalisisArchivoService
 import os
 
+from .evidence_bundle import EvidenceBundle
+
 logger = logging.getLogger(__name__)
 
 class DocumentProcessingService:
     def process_document(self, file_content: bytes, mime_type: str) -> Dict[str, Any]:
-        """
-        Processes a document given its content and MIME type.
-        This is a placeholder implementation.
-        """
+        """Process an arbitrary document and return an ``EvidenceBundle``."""
         logger.info(f"Processing document with mime type: {mime_type}")
         if not file_content or not mime_type:
-            return {"success": False, "error": "Contenido o tipo de archivo no proporcionado."}
+            return EvidenceBundle(kind="document", error="Contenido o tipo de archivo no proporcionado.").to_dict()
 
-        # Simulating a basic response, as the original method was missing.
-        return {"success": True, "text": "Contenido del documento procesado (simulado)."}
+        # Simulated generic text extraction
+        return EvidenceBundle(kind="document", raw_text="Contenido del documento procesado (simulado).",).to_dict()
 
     def process_document_by_id(self, archivo_id: int) -> Dict[str, Any]:
         """
@@ -29,7 +28,7 @@ class DocumentProcessingService:
 
         if not archivo:
             logger.error(f"ArchivoAdjunto with ID {archivo_id} not found.")
-            return {"success": False, "error": "Archivo no encontrado."}
+            return EvidenceBundle(kind="document", error="Archivo no encontrado.").to_dict()
 
         # Delegate to a more specific method based on MIME type
         if archivo.mime.startswith("image/"):
@@ -40,7 +39,7 @@ class DocumentProcessingService:
             return self._process_spreadsheet(archivo)
         else:
             logger.warning(f"Unsupported MIME type for automatic processing: {archivo.mime}")
-            return {"success": False, "error": f"Tipo de archivo no soportado: {archivo.mime}"}
+            return EvidenceBundle(kind="document", error=f"Tipo de archivo no soportado: {archivo.mime}").to_dict()
 
     def _process_image(self, archivo: ArchivoAdjunto) -> Dict[str, Any]:
         logger.info(f"Processing image: {archivo.nombre_original} (ID: {archivo.id})")
@@ -68,12 +67,17 @@ class DocumentProcessingService:
                 texto_extraido=texto_extraido
             )
 
-            return {"success": True, "extracted_data": {"texto_ocr": texto_extraido, **datos_estructurados}}
+            return EvidenceBundle(
+                kind="image",
+                raw_text=texto_extraido,
+                extra=datos_estructurados,
+                adjunto_id=archivo.id,
+            ).to_dict()
 
         except Exception as e:
             logger.error(f"Error processing image ID {archivo.id} with Vision API: {e}", exc_info=True)
             analisis_service.actualizar_analisis_con_error(analisis.id, str(e))
-            return {"success": False, "error": "Error durante el análisis de la imagen."}
+            return EvidenceBundle(kind="image", error="Error durante el análisis de la imagen.", adjunto_id=archivo.id).to_dict()
 
     def _process_pdf(self, archivo: ArchivoAdjunto) -> Dict[str, Any]:
         logger.info(f"Processing PDF: {archivo.nombre_original} (ID: {archivo.id})")
@@ -84,7 +88,7 @@ class DocumentProcessingService:
         # Simulate reading some text from the PDF
         simulated_text = "Contenido extraído del PDF: Producto A - 10 unidades, Producto B - 5 cajas."
 
-        return {"success": True, "extracted_data": {"texto_extraido": simulated_text}}
+        return EvidenceBundle(kind="pdf", raw_text=simulated_text, adjunto_id=archivo.id).to_dict()
 
     def _process_spreadsheet(self, archivo: ArchivoAdjunto) -> Dict[str, Any]:
         logger.info(f"Processing spreadsheet: {archivo.nombre_original} (ID: {archivo.id})")
@@ -95,7 +99,7 @@ class DocumentProcessingService:
         # Simulate reading some data from the spreadsheet
         simulated_text = "Contenido extraído de la planilla: SKU,Producto,Precio\n123,Producto A,100\n456,Producto B,200"
 
-        return {"success": True, "extracted_data": {"texto_extraido": simulated_text}}
+        return EvidenceBundle(kind="spreadsheet", raw_text=simulated_text, adjunto_id=archivo.id).to_dict()
 
 # Singleton instance for the service
 document_processing_service = DocumentProcessingService()

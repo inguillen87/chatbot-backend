@@ -272,18 +272,13 @@ def responder_chatboc(
                         archivo_adjunto=uploaded_file_info,
                         tipo_interpretacion="reclamo_auto_descripcion_categoria",
                     )
+                elif media_content_type and media_content_type.startswith("audio/"):
+                    # Audio already transcribed upstream; nothing else to do
+                    pass
                 else:
-                    doc_ai_result = document_processing_service.process_document(
+                    datos_interpretados_de_archivo = document_processing_service.process_document(
                         file_content, media_content_type
                     )
-                    if doc_ai_result.get("success"):
-                        datos_interpretados_de_archivo = {
-                            "texto_extraido": doc_ai_result.get("text", "")
-                        }
-                    else:
-                        datos_interpretados_de_archivo = {
-                            "error": "No se pudo procesar el documento."
-                        }
             except (requests.exceptions.RequestException, OSError, ValueError) as e:
                 current_app.logger.error(
                     f"Error descargando archivo de WhatsApp: {e}"

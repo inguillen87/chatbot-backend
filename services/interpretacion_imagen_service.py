@@ -5,6 +5,8 @@ import requests
 import random # Para el mock de AnalisisArchivo en las pruebas
 from typing import Dict, Any, List, Optional
 
+from .evidence_bundle import EvidenceBundle
+
 from models import ArchivoAdjunto, AnalisisArchivo, User, CatalogoItem, db
 from services.vision_fallback_service import analyze_image_smart
 from services.llm_utils import extract_complaint_details_llm
@@ -102,25 +104,28 @@ def interpretar_imagen_para_chat(
     input_url = None
     input_mime_type = None
     input_source_id_info = "" # For logging
+    adjunto_id = None
 
     if is_db_object:
         input_url = archivo_adjunto.url
         input_mime_type = archivo_adjunto.mime
         input_source_id_info = f"ArchivoAdjunto ID {archivo_adjunto.id}"
+        adjunto_id = archivo_adjunto.id
     elif isinstance(archivo_adjunto, dict):
         input_url = archivo_adjunto.get("url")
         input_mime_type = archivo_adjunto.get("mime_type") # Asumimos que el dict tiene 'mime_type'
         input_source_id_info = f"Diccionario (URL: {input_url})"
+        adjunto_id = archivo_adjunto.get("id")
     else: # tipo inesperado
         logger.error(f"❌ Tipo de archivo_adjunto no esperado: {type(archivo_adjunto)}")
-        return {'error': 'Tipo de archivo_adjunto no válido.', 'analisis_id': None}
+        return EvidenceBundle(kind="image", error='Tipo de archivo_adjunto no válido.', adjunto_id=None).to_dict()
 
     if not input_url:
-        return {'error': 'URL del archivo no válida.', 'analisis_id': None}
+        return EvidenceBundle(kind="image", error='URL del archivo no válida.', adjunto_id=adjunto_id).to_dict()
 
     if tipo_interpretacion == "pedido_pyme" and not pyme_user:
         logger.error("❌ Se requiere pyme_user para interpretar un pedido PYME.")
-        return {'error': 'Usuario PYME no especificado para interpretación de pedido.', 'analisis_id': None}
+        return EvidenceBundle(kind="image", error='Usuario PYME no especificado para interpretación de pedido.', adjunto_id=adjunto_id).to_dict()
 
     analisis_db_record = None # Será None si es un dict de WhatsApp, o el objeto AnalisisArchivo si es de DB
 
@@ -139,9 +144,9 @@ def interpretar_imagen_para_chat(
             analisis_db_record.estado_analisis = "error"
             analisis_db_record.error_analisis = error_message
             db.session.commit()
-            return {'error': error_message, 'analisis_id': analisis_db_record.id}
+            return EvidenceBundle(kind="image", error=error_message, adjunto_id=adjunto_id).to_dict()
         else: # WhatsApp dict, no hay analisis_db_record
-            return {'error': error_message, 'analisis_id': None, 'raw_analysis': None}
+            return EvidenceBundle(kind="image", error=error_message, adjunto_id=adjunto_id).to_dict()
 
     if "image" in input_mime_type:
         logger.info(f"🖼️  Enviando imagen (tamaño: {len(file_content)} bytes, mime: {input_mime_type}) a servicios de visión...")
@@ -173,9 +178,9 @@ def interpretar_imagen_para_chat(
             analisis_db_record.estado_analisis = "error"
             analisis_db_record.error_analisis = error_message_vision
             db.session.commit()
-            return {'error': error_message_vision, 'analisis_id': analisis_db_record.id}
+            return EvidenceBundle(kind="image", error=error_message_vision, adjunto_id=adjunto_id).to_dict()
         else: # WhatsApp dict
-            return {'error': error_message_vision, 'analisis_id': None, 'raw_analysis': {'vision_api_raw': vision_results}}
+            return EvidenceBundle(kind="image", error=error_message_vision, adjunto_id=adjunto_id, extra={'vision_api_raw': vision_results}).to_dict()
 
     extracted_ocr_text = ""
     if vision_results.get("full_text_annotation"):
@@ -205,8 +210,9 @@ def interpretar_imagen_para_chat(
             logger.error(f"❌ {error_msg_pyme}")
             if is_db_object and analisis_db_record:
                 analisis_db_record.estado_analisis = "error"; analisis_db_record.error_analisis = error_msg_pyme; db.session.commit()
-                return {'error': error_msg_pyme, 'analisis_id': analisis_db_record.id}
-            else: return {'error': error_msg_pyme, 'analisis_id': None, 'raw_analysis': {'vision_api_raw': vision_results}} # Propagar error y raw vision
+                return EvidenceBundle(kind="image", error=error_msg_pyme, adjunto_id=adjunto_id).to_dict()
+            else:
+                return EvidenceBundle(kind="image", error=error_msg_pyme, adjunto_id=adjunto_id, extra={'vision_api_raw': vision_results}).to_dict()
         resultado_procesamiento = _procesar_interpretacion_pedido_pyme(analisis_db_record, vision_results, extracted_ocr_text, pyme_user)
     elif tipo_interpretacion == "orden_de_compra":
         resultado_procesamiento = _procesar_interpretacion_orden_de_compra(analisis_db_record, vision_results, extracted_ocr_text)
@@ -215,8 +221,9 @@ def interpretar_imagen_para_chat(
         logger.error(f"❌ {error_msg_tipo}")
         if is_db_object and analisis_db_record:
             analisis_db_record.estado_analisis = "error"; analisis_db_record.error_analisis = error_msg_tipo; db.session.commit()
-            return {'error': error_msg_tipo, 'analisis_id': analisis_db_record.id}
-        else: return {'error': error_msg_tipo, 'analisis_id': None, 'raw_analysis': {'vision_api_raw': vision_results}}
+            return EvidenceBundle(kind="image", error=error_msg_tipo, adjunto_id=adjunto_id).to_dict()
+        else:
+            return EvidenceBundle(kind="image", error=error_msg_tipo, adjunto_id=adjunto_id, extra={'vision_api_raw': vision_results}).to_dict()
 
 
     # Si no es un objeto de DB (es un dict de WhatsApp), necesitamos enriquecer el resultado
@@ -245,14 +252,29 @@ def interpretar_imagen_para_chat(
             # Esto no debería pasar si las funciones _procesar_ siempre devuelven un dict.
             # Pero por si acaso:
             logger.error("❌ Error inesperado: resultado_procesamiento es None para input tipo dict.")
-            return {
-                'error': 'Error interno en procesamiento específico de la imagen.',
-                'analisis_id': None,
-                'raw_analysis': {'vision_api_raw': vision_results, 'extracted_ocr_text': extracted_ocr_text},
-                'mime_type': input_mime_type
-            }
+            return EvidenceBundle(
+                kind="image",
+                error='Error interno en procesamiento específico de la imagen.',
+                adjunto_id=adjunto_id,
+                extra={'vision_api_raw': vision_results, 'extracted_ocr_text': extracted_ocr_text, 'mime_type': input_mime_type},
+            ).to_dict()
 
-    return resultado_procesamiento
+    # Convertir el resultado final al EvidenceBundle estándar
+    bundle = EvidenceBundle(
+        kind="image",
+        raw_text=resultado_procesamiento.get('texto_ocr') or extracted_ocr_text,
+        summary=resultado_procesamiento.get('descripcion_sugerida'),
+        categoria_sugerida=resultado_procesamiento.get('categoria_sugerida'),
+        descripcion_sugerida=resultado_procesamiento.get('descripcion_sugerida'),
+        personales_detectados=resultado_procesamiento.get('personales_detectados'),
+        ubicacion_detectada=resultado_procesamiento.get('ubicacion_detectada'),
+        adjunto_id=adjunto_id,
+        error=resultado_procesamiento.get('error'),
+        extra={k: v for k, v in resultado_procesamiento.items() if k not in {
+            'texto_ocr', 'descripcion_sugerida', 'categoria_sugerida', 'personales_detectados', 'ubicacion_detectada', 'error'
+        }},
+    )
+    return bundle.to_dict()
 
 # Define mapping from common Vision API labels (in lowercase normalized form) to our claim categories
 # This list now includes Spanish synonyms and uses lowercase categories to match

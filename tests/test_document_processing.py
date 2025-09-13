@@ -28,7 +28,17 @@ class TestDocumentProcessingService(unittest.TestCase):
         result = service.process_document(b'some file content', 'application/pdf')
 
         # Assert the expected placeholder response
-        expected_response = {"success": True, "text": "Contenido del documento procesado (simulado)."}
+        expected_response = {
+            "kind": "document",
+            "raw_text": "Contenido del documento procesado (simulado).",
+            "summary": None,
+            "categoria_sugerida": None,
+            "descripcion_sugerida": None,
+            "personales_detectados": None,
+            "ubicacion_detectada": None,
+            "adjunto_id": None,
+            "error": None,
+        }
         self.assertEqual(result, expected_response)
 
     def test_process_document_with_no_content(self):
@@ -37,7 +47,17 @@ class TestDocumentProcessingService(unittest.TestCase):
         """
         service = DocumentProcessingService()
         result = service.process_document(None, 'application/pdf')
-        expected_response = {"success": False, "error": "Contenido o tipo de archivo no proporcionado."}
+        expected_response = {
+            "kind": "document",
+            "raw_text": None,
+            "summary": None,
+            "categoria_sugerida": None,
+            "descripcion_sugerida": None,
+            "personales_detectados": None,
+            "ubicacion_detectada": None,
+            "adjunto_id": None,
+            "error": "Contenido o tipo de archivo no proporcionado."
+        }
         self.assertEqual(result, expected_response)
 
 if __name__ == '__main__':
