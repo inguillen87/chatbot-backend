@@ -149,8 +149,12 @@ def interpretar_imagen_para_chat(
     elif "pdf" in input_mime_type or "spreadsheet" in input_mime_type or "excel" in input_mime_type:
         from services.document_processing_service import document_processing_service
         doc_ai_result = document_processing_service.process_document(file_content, input_mime_type)
-        if doc_ai_result:
-            vision_results = {"full_text_annotation": {"description": doc_ai_result.text}}
+        if doc_ai_result.get("success"):
+            vision_results = {
+                "full_text_annotation": {
+                    "description": doc_ai_result.get("text", "")
+                }
+            }
         else:
             vision_results = {"error": "No se pudo procesar el documento."}
     else:

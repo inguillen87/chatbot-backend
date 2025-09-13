@@ -22,6 +22,9 @@ venv/
 test_venv/
 sandbox_venv/
 
+# Flask session files
+flask_session/
+
 # Pero permite que la estructura instance/ exista
 node_modules
 !data/estacionamiento/camaras.json

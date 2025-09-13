@@ -276,9 +276,9 @@ def responder_chatboc(
                     doc_ai_result = document_processing_service.process_document(
                         file_content, media_content_type
                     )
-                    if doc_ai_result:
+                    if doc_ai_result.get("success"):
                         datos_interpretados_de_archivo = {
-                            "texto_extraido": doc_ai_result.text
+                            "texto_extraido": doc_ai_result.get("text", "")
                         }
                     else:
                         datos_interpretados_de_archivo = {
