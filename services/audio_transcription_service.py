@@ -7,6 +7,8 @@ import requests
 import httpx
 from openai import OpenAI
 
+from .evidence_bundle import EvidenceBundle
+
 # Initialize a shared OpenAI client once at import time so it can be mocked in tests.
 # If no API key is configured, fall back to a dummy key so unit tests can run without
 # external credentials. Use a custom HTTP client that ignores proxy env vars (common
@@ -14,7 +16,7 @@ from openai import OpenAI
 http_client = httpx.Client(proxy=None, trust_env=False)
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", "test"), http_client=http_client)
 
-def transcribe_audio_from_url(url: str, account_sid: str, auth_token: str) -> str | None:
+def transcribe_audio_from_url(url: str, account_sid: str, auth_token: str) -> dict:
     """Download an audio file and transcribe it using OpenAI Whisper.
 
     Parameters
@@ -25,8 +27,8 @@ def transcribe_audio_from_url(url: str, account_sid: str, auth_token: str) -> st
 
     Returns
     -------
-    str | None
-        The transcribed text if successful, otherwise ``None``.
+    dict
+        ``EvidenceBundle`` dictionary with the transcription or error details.
     """
 
     try:
@@ -45,11 +47,12 @@ def transcribe_audio_from_url(url: str, account_sid: str, auth_token: str) -> st
             )
 
         text = getattr(transcription, "text", None)
-        return text or None
+        bundle = EvidenceBundle(kind="audio", raw_text=text or None)
+        return bundle.to_dict()
 
     except requests.exceptions.RequestException as e:
         print(f"Error downloading audio file: {e}")
-        return None
+        return EvidenceBundle(kind="audio", error=str(e)).to_dict()
     except Exception as e:
         print(f"Error during audio transcription: {e}")
-        return None
+        return EvidenceBundle(kind="audio", error=str(e)).to_dict()

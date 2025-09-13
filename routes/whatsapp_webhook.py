@@ -399,15 +399,12 @@ def whatsapp_webhook():
 
             if media_content_type and media_content_type.startswith("audio/"):
                 session_context_db_entry.context_data['source_is_audio'] = True
-                # We pass the direct URL to the transcription service
-                transcribed_text = audio_transcription_service.transcribe_audio_from_url(
+                transcription_bundle = audio_transcription_service.transcribe_audio_from_url(
                     media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
                 )
-                if transcribed_text:
-                    message_body = transcribed_text
-                    if uploaded_file_info is None:
-                        uploaded_file_info = {}
-                    uploaded_file_info['transcribed_text'] = transcribed_text
+                if transcription_bundle and not transcription_bundle.get("error"):
+                    message_body = transcription_bundle.get("raw_text", "")
+                    interpretacion_media_data = transcription_bundle
                 else:
                     current_app.logger.warning("Audio transcription failed or returned empty.")
             else:

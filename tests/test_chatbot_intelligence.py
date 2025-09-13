@@ -75,7 +75,7 @@ def test_responder_chatboc_municipio_flow(mock_responder_municipio, mock_db_sess
 @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat')
 def test_image_analysis_reclamo_municipio(mock_interpretar_imagen, mock_llamar_openai, client, mock_db_session):
     mock_interpretar_imagen.return_value = {
-        "es_reclamo": True,
+        "kind": "image",
         "categoria_sugerida": "Arreglo de calle",
         "descripcion_sugerida": "Bache en la calle"
     }

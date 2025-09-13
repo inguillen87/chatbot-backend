@@ -372,11 +372,10 @@ class ProcesarAdjuntoPedidoAction(BaseActionHandler):
         from services.document_processing_service import document_processing_service
         processing_result = document_processing_service.process_document_by_id(archivo_id)
 
-        if not processing_result.get("success"):
+        if processing_result.get("error"):
             return {"success": False, "message_to_user": f"Hubo un error al procesar el archivo: {processing_result.get('error')}"}
 
-        extracted_data = processing_result.get("extracted_data", {})
-        texto_extraido = extracted_data.get("texto_ocr") or extracted_data.get("texto_extraido")
+        texto_extraido = processing_result.get("raw_text")
 
         if not texto_extraido:
             return {"success": False, "message_to_user": "No se pudo extraer texto del archivo para procesar el pedido."}

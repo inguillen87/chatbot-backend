@@ -72,10 +72,10 @@ def test_responder_municipio_imagen(mock_llamar_openai, client):
     )
 
     datos_interpretados = {
-        "es_reclamo": True,
+        "kind": "image",
         "categoria_sugerida": "Bacheo",
         "descripcion_sugerida": "Parece ser un bache.",
-        "ubicacion_sugerida": "Calle Falsa 123"
+        "ubicacion_detectada": "Calle Falsa 123"
     }
 
     # Mock the owner_user to have a valid municipio_id for the action handler
@@ -101,7 +101,7 @@ def test_responder_municipio_imagen(mock_llamar_openai, client):
 
 
     datos_interpretados = {
-        "es_reclamo": True,
+        "kind": "image",
         "categoria_sugerida": "Bacheo",
         "descripcion_sugerida": "Parece ser un bache."
     }
