@@ -309,31 +309,13 @@ def responder_chatboc(
                         archivo_adjunto=uploaded_file_info,
                         tipo_interpretacion="reclamo_auto_descripcion_categoria",
                     )
-                elif (
-                    (media_content_type in document_mime_types)
-                    or filename.endswith((".pdf", ".doc", ".docx", ".txt", ".rtf"))
-                ):
-                    doc_ai_result = document_processing_service.process_document(
+                elif media_content_type and media_content_type.startswith("audio/"):
+                    # Audio already transcribed upstream; nothing else to do
+                    pass
+                else:
+                    datos_interpretados_de_archivo = document_processing_service.process_document(
                         file_content, media_content_type
                     )
-                    if doc_ai_result.get("success"):
-                        # `doc_ai_result` may be an object or a dict. It should expose the
-                        # extracted text via a `text` attribute or `text`/`raw_text` keys.
-                        texto_extraido = (
-                            getattr(doc_ai_result, "text", None)
-                            or doc_ai_result.get("text")
-                            or doc_ai_result.get("raw_text")
-                            or ""
-                        )
-                        datos_interpretados_de_archivo = {"texto_extraido": texto_extraido}
-                    else:
-                        datos_interpretados_de_archivo = {
-                            "error": "No se pudo procesar el documento."
-                        }
-                else:
-                    datos_interpretados_de_archivo = {
-                        "error": "Tipo de archivo no soportado."
-                    }
             except (requests.exceptions.RequestException, OSError, ValueError) as e:
                 current_app.logger.error(
                     f"Error descargando archivo de WhatsApp: {e}"
