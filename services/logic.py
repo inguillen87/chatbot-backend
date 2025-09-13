@@ -228,7 +228,6 @@ def responder_chatboc(
             from services.document_processing_service import document_processing_service
             from services.interpretacion_imagen_service import interpretar_imagen_para_chat
             import requests
-            import os
 
             media_url = uploaded_file_info.get("public_url") or uploaded_file_info.get("url")
             media_content_type = uploaded_file_info.get("mime_type")
