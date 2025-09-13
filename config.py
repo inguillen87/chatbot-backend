@@ -158,6 +158,13 @@ class Config:
     MAIL_FROM_ADDRESS_CAMPAIGN = os.getenv("MAIL_FROM_ADDRESS_CAMPAIGN", MAIL_FROM_ADDRESS)
     MAIL_FROM_NAME_CAMPAIGN = os.getenv("MAIL_FROM_NAME_CAMPAIGN", MAIL_FROM_NAME)
 
+    # LLM provider configuration
+    AI_PRIMARY = os.getenv("AI_PRIMARY", "openai")
+    AI_FALLBACK = os.getenv("AI_FALLBACK", "cohere")
+    MAX_RETRIES_OPENAI = int(os.getenv("MAX_RETRIES_OPENAI", "2"))
+    BACKOFF_MS = int(os.getenv("BACKOFF_MS", "500"))
+    CIRCUIT_BREAKER_SEC = int(os.getenv("CIRCUIT_BREAKER_SEC", str(5 * 60)))
+
     TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
     TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
     TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
