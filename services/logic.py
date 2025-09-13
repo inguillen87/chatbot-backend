@@ -218,21 +218,13 @@ def responder_chatboc(
             import requests
             import os
 
-            media_url = (
-                uploaded_file_info.get("public_url")
-                or uploaded_file_info.get("url")
-            )
+            media_url = uploaded_file_info.get("public_url") or uploaded_file_info.get("url")
             media_content_type = uploaded_file_info.get("mime_type")
 
-            # Expose basic photo metadata downstream so municipal handlers know a
-            # picture was already provided. This allows the claim flow to reuse the
-            # initial image instead of prompting for another one after location is
-            # sent.
-            if media_content_type and media_content_type.startswith("image/"):
-                kwargs["es_foto"] = True
-                kwargs["foto_url"] = media_url
-
             try:
+                file_content = None
+                final_url = media_url
+
                 if media_url and media_url.startswith(("http://", "https://")):
                     response = requests.get(
                         media_url,
@@ -250,12 +242,16 @@ def responder_chatboc(
                     if os.path.exists(local_path):
                         with open(local_path, "rb") as f:
                             file_content = f.read()
+                        base = current_app.config.get("APP_PUBLIC_BASE_URL")
+                        if base and base.startswith(("http://", "https://")):
+                            final_url = base.rstrip("/") + media_url
+                            uploaded_file_info.setdefault("public_url", final_url)
                     else:
                         base = current_app.config.get("APP_PUBLIC_BASE_URL")
-                        if base:
-                            absolute_url = base.rstrip("/") + media_url
+                        if base and base.startswith(("http://", "https://")):
+                            final_url = base.rstrip("/") + media_url
                             response = requests.get(
-                                absolute_url,
+                                final_url,
                                 auth=(
                                     current_app.config.get("TWILIO_ACCOUNT_SID"),
                                     current_app.config.get("TWILIO_AUTH_TOKEN"),
@@ -263,14 +259,15 @@ def responder_chatboc(
                             )
                             response.raise_for_status()
                             file_content = response.content
-                            uploaded_file_info["public_url"] = absolute_url
-                            media_url = absolute_url
+                            uploaded_file_info["public_url"] = final_url
                         else:
                             raise FileNotFoundError(local_path)
                 else:
                     raise ValueError("Media URL no válida")
 
-                if media_content_type.startswith("image/"):
+                if media_content_type and media_content_type.startswith("image/"):
+                    kwargs["es_foto"] = True
+                    kwargs["foto_url"] = final_url
                     datos_interpretados_de_archivo = interpretar_imagen_para_chat(
                         archivo_adjunto=uploaded_file_info,
                         tipo_interpretacion="reclamo_auto_descripcion_categoria",
@@ -280,8 +277,6 @@ def responder_chatboc(
                         file_content, media_content_type
                     )
                     if doc_ai_result:
-                        # Aquí puedes procesar el resultado de Document AI
-                        # Por ahora, solo extraemos el texto
                         datos_interpretados_de_archivo = {
                             "texto_extraido": doc_ai_result.text
                         }
