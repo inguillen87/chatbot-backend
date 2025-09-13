@@ -762,6 +762,47 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertIn(fake_audio, audio_kwargs.get("media_url", [])[0])
         mock_tts.assert_called_once()
 
+    @patch('routes.whatsapp_webhook.generar_audio_con_fallback')
+    @patch('routes.whatsapp_webhook.reverse_geocode')
+    def test_location_during_reclamo_skips_intent_prompt(self, mock_geo, mock_tts):
+        """Location while a claim awaits address should ask for confirmation instead of intent."""
+        self._create_confirmed_session()
+        session = ChatSessionContext.query.first()
+        session.context_data[CONTEXTO_MUNICIPIO] = {
+            "estado_conversacion": "EN_FLUJO_RECLAMO",
+            "reclamo_flow_v2": {
+                "state": "ESPERANDO_DIRECCION",
+                "datos_reclamo": {"categoria": "Bache", "descripcion": "desc"},
+            },
+        }
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(session, "context_data")
+        db.session.commit()
+        mock_geo.return_value = {"display": "Fake Street 123"}
+        mock_tts.return_value = "/static/audio/loc.mp3"
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "MessageType": "location",
+            "Latitude": "-33.0",
+            "Longitude": "-68.0",
+            "SmsSid": "SMloc2",
+            "SmsMessageSid": "SMloc2",
+            "SmsStatus": "received",
+            "NumMedia": "0",
+            "Body": "",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.mock_twilio_create.call_count, 2)
+        text_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertIn("¿Es acá?", text_kwargs["body"])
+        saved = ChatSessionContext.query.first().context_data["last_options_sent"]
+        ids = [o.get("action_id") for o in saved]
+        self.assertIn("confirmar_ubicacion", ids)
+        self.assertIn("editar_ubicacion", ids)
+
     def test_location_message_retries_on_failure(self):
         """If sending the confirmation fails, the webhook should retry."""
         self._create_confirmed_session()
