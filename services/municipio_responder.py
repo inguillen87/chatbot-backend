@@ -3123,7 +3123,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             if contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw"):
                 analisis_previo = contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw")
                 if isinstance(analisis_previo, dict):
-                    resumen_analisis = {k: analisis_previo.get(k) for k in ["categoria_sugerida", "descripcion_sugerida", "texto_ocr"] if analisis_previo.get(k)}
+                    resumen_analisis = {k: analisis_previo.get(k) for k in ["categoria_sugerida", "descripcion_sugerida", "raw_text"] if analisis_previo.get(k)}
                     if resumen_analisis:
                         mensaje_completo_para_llm["analisis_previo_imagen"] = resumen_analisis
 
@@ -4234,7 +4234,7 @@ def responder_municipio(
     if (
         datos_interpretados_archivo
         and isinstance(datos_interpretados_archivo, dict)
-        and datos_interpretados_archivo.get("es_reclamo")
+        and datos_interpretados_archivo.get("categoria_sugerida")
     ):
         handler = ReclamoFlowHandler(context, chat_db_context)
         if flujo_activo:
@@ -5313,7 +5313,7 @@ def responder_municipio(
 
         if datos_interpretados and isinstance(datos_interpretados, dict):
             # Si el análisis automático ya determinó que es un reclamo, iniciar el flujo directamente
-            if datos_interpretados.get("es_reclamo"):
+            if datos_interpretados.get("categoria_sugerida"):
                 logger_actual.info("Iniciando flujo de reclamo desde imagen interpretada")
                 handler = ReclamoFlowHandler(context, chat_db_context)
                 datos_iniciales = {
@@ -6105,7 +6105,7 @@ def responder_municipio(
             contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
 
             # >>> INICIO FIX: Si la pregunta está vacía pero la imagen se interpretó como reclamo, crear una pregunta para el LLM
-            if not pregunta_str.strip() and datos_interpretados.get("es_reclamo"):
+            if not pregunta_str.strip() and datos_interpretados.get("categoria_sugerida"):
                 categoria = datos_interpretados.get("categoria_sugerida", "No especificada")
                 descripcion = datos_interpretados.get("descripcion_sugerida", "No especificada")
 

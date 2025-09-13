@@ -43,7 +43,7 @@ class TestImageAnalysis(unittest.TestCase):
 
         resultado = interpretar_imagen_para_chat(archivo_adjunto, "reclamo_auto_descripcion_categoria")
 
-        self.assertTrue(resultado['es_reclamo'])
+        self.assertEqual(resultado['kind'], 'image')
         self.assertEqual(resultado['categoria_sugerida'], "rotura de semaforo")
         self.assertIn("Semáforo roto", resultado['descripcion_sugerida'])
 
@@ -66,7 +66,7 @@ class TestImageAnalysis(unittest.TestCase):
 
         resultado = interpretar_imagen_para_chat(archivo_adjunto, "reclamo_auto_descripcion_categoria")
 
-        self.assertTrue(resultado['es_reclamo'])
+        self.assertEqual(resultado['kind'], 'image')
         self.assertEqual(resultado['categoria_sugerida'], "arreglo de calle")
 
     @patch('services.interpretacion_imagen_service._descargar_imagen')
@@ -89,7 +89,7 @@ class TestImageAnalysis(unittest.TestCase):
 
         resultado = interpretar_imagen_para_chat(archivo_adjunto, "reclamo_auto_descripcion_categoria")
 
-        self.assertTrue(resultado['es_reclamo'])
+        self.assertIsNotNone(resultado['categoria_sugerida'])
         self.assertEqual(resultado['categoria_sugerida'], "arreglo de calle")
 
     @patch('services.interpretacion_imagen_service._descargar_imagen')
@@ -111,7 +111,7 @@ class TestImageAnalysis(unittest.TestCase):
 
         resultado = interpretar_imagen_para_chat(archivo_adjunto, "reclamo_auto_descripcion_categoria")
 
-        self.assertTrue(resultado['es_reclamo'])
+        self.assertIsNotNone(resultado['categoria_sugerida'])
         self.assertEqual(resultado['categoria_sugerida'], "luminaria")
 
     @patch('services.interpretacion_imagen_service._descargar_imagen')
@@ -133,7 +133,7 @@ class TestImageAnalysis(unittest.TestCase):
 
         resultado = interpretar_imagen_para_chat(archivo_adjunto, "reclamo_auto_descripcion_categoria")
 
-        self.assertTrue(resultado['es_reclamo'])
+        self.assertIsNotNone(resultado['categoria_sugerida'])
         self.assertEqual(resultado['categoria_sugerida'], "arreglo de calle")
 
 if __name__ == '__main__':

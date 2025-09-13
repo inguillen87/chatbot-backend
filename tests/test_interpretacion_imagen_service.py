@@ -99,7 +99,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
         resultado = interpretar_imagen_para_chat(archivo_adjunto, tipo_interpretacion="reclamo_municipal", pyme_user=None) # pyme_user is None for municipal claims
 
         # --- Verificaciones ---
-        self.assertTrue(resultado.get("es_reclamo"))
+        self.assertEqual(resultado.get("kind"), "image")
         self.assertEqual(resultado.get("categoria_sugerida"), "rotura de semaforo")
         self.assertIn("semáforo parece estar caído", resultado.get("descripcion_sugerida"))
         self.assertIsNotNone(resultado.get("analisis_id"))
@@ -139,7 +139,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
 
         resultado = interpretar_imagen_para_chat(archivo_adjunto, tipo_interpretacion="reclamo_municipal", pyme_user=None)
 
-        self.assertFalse(resultado.get("es_reclamo"))
+        self.assertIsNone(resultado.get("categoria_sugerida"))
         self.assertIn("El análisis por IA no pudo confirmar un reclamo específico", resultado.get("motivo", ""))
         analisis_guardado = db.session.get(AnalisisArchivo, resultado["analisis_id"])
         self.assertEqual(analisis_guardado.estado_analisis, "completado")
@@ -155,7 +155,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
 
         resultado = interpretar_imagen_para_chat(archivo_adjunto, tipo_interpretacion="reclamo_municipal", pyme_user=None)
 
-        self.assertFalse(resultado.get("es_reclamo"))
+        self.assertIsNone(resultado.get("categoria_sugerida"))
         self.assertEqual(resultado.get("error"), "Fallo al descargar la imagen.")
         analisis_guardado = db.session.get(AnalisisArchivo, resultado["analisis_id"])
         self.assertEqual(analisis_guardado.estado_analisis, "error")
@@ -172,7 +172,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
 
         resultado = interpretar_imagen_para_chat(archivo_adjunto, tipo_interpretacion="reclamo_municipal", pyme_user=None)
 
-        self.assertFalse(resultado.get("es_reclamo"))
+        self.assertIsNone(resultado.get("categoria_sugerida"))
         self.assertIn("Error de Vision API: Error de Vision simulado", resultado.get("error", ""))
         analisis_guardado = db.session.get(AnalisisArchivo, resultado["analisis_id"])
         self.assertEqual(analisis_guardado.estado_analisis, "error")
@@ -198,7 +198,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
 
         resultado = interpretar_imagen_para_chat(archivo_adjunto, tipo_interpretacion="reclamo_municipal", pyme_user=None)
 
-        self.assertTrue(resultado.get("es_reclamo"))
+        self.assertIsNotNone(resultado.get("categoria_sugerida"))
         self.assertEqual(resultado.get("categoria_sugerida"), "arreglo de calle")
         analisis_guardado = db.session.get(AnalisisArchivo, resultado["analisis_id"])
         self.assertEqual(analisis_guardado.estado_analisis, "completado")
@@ -208,7 +208,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
     def test_interpretar_imagen_reclamo_archivo_no_valido(self, mock_descargar):
         # Caso 1: archivo_adjunto es None
         resultado_none = interpretar_imagen_para_chat(None, tipo_interpretacion="reclamo_municipal", pyme_user=None)
-        self.assertFalse(resultado_none.get("es_reclamo")) # es_reclamo might not be present if error is early
+        self.assertIsNone(resultado_none.get("categoria_sugerida"))
         self.assertEqual(resultado_none.get("error"), "Tipo de archivo_adjunto no válido.") # Updated error message
 
         # Caso 2: archivo_adjunto no tiene URL
@@ -217,7 +217,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
         db.session.commit()
         mock_descargar.return_value = None
         resultado_sin_url = interpretar_imagen_para_chat(archivo_sin_url, tipo_interpretacion="reclamo_municipal", pyme_user=None)
-        self.assertFalse(resultado_sin_url.get("es_reclamo")) # es_reclamo might not be present
+        self.assertIsNone(resultado_sin_url.get("categoria_sugerida"))
         self.assertEqual(resultado_sin_url.get("error"), "Fallo al descargar la imagen.") # Updated error message
         # Verificar que no se creó un AnalisisArchivo innecesariamente
         analisis_para_sin_url = AnalisisArchivo.query.filter_by(archivo_adjunto_id=6).first()
@@ -263,7 +263,7 @@ class TestInterpretacionImagenService(unittest.TestCase):
         resultado = interpretar_imagen_para_chat(archivo_adjunto, tipo_interpretacion="reclamo_municipal", pyme_user=None)
 
         # --- Verificaciones ---
-        self.assertTrue(resultado.get("es_reclamo"))
+        self.assertIsNotNone(resultado.get("categoria_sugerida"))
         self.assertEqual(resultado.get("categoria_sugerida"), "arreglo de calle")
         self.assertEqual(resultado.get("analisis_id"), id_analisis_previo)
 

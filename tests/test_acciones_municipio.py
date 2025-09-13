@@ -1256,7 +1256,7 @@ class ProcesarAdjuntoReclamoActionHandler(BaseActionHandler):
         # and its analysis (e.g., from Vision API) is available in action_data.
 
         archivo_url = action_data.get("archivo_url")
-        analisis_imagen = action_data.get("analisis_imagen") # e.g., {'es_reclamo': True, 'categoria_sugerida': 'bache', ...}
+        analisis_imagen = action_data.get("analisis_imagen") # e.g., {'kind': 'image', 'categoria_sugerida': 'bache', ...}
 
         if not archivo_url:
             return {"success": False, "message_to_user": "No se detectó ningún archivo adjunto."}

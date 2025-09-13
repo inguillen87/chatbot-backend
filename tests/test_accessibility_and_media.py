@@ -339,7 +339,10 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         mock_response.content = b'fake_image_bytes'
         mock_requests_get.return_value = mock_response
 
-        mock_interpretar_imagen.return_value = {'texto_extraido': 'Imagen de un bache'}
+        mock_interpretar_imagen.return_value = {
+            'kind': 'image',
+            'raw_text': 'Imagen de un bache'
+        }
 
         location_data = {"latitude": "-33.123", "longitude": "-68.456"}
         image_data = {"url": "http://example.com/bache.jpg", "mime_type": "image/jpeg", "source": "whatsapp"}
@@ -363,7 +366,7 @@ class TestAccessibilityAndMedia(unittest.TestCase):
             mock_responder_pyme.assert_called_once()
             _, called_kwargs = mock_responder_pyme.call_args
             self.assertIn('datos_interpretados_archivo', called_kwargs)
-            self.assertEqual(called_kwargs['datos_interpretados_archivo'], {'texto_extraido': 'Imagen de un bache'})
+            self.assertEqual(called_kwargs['datos_interpretados_archivo'], {'kind': 'image', 'raw_text': 'Imagen de un bache'})
 
 if __name__ == '__main__':
     unittest.main()
