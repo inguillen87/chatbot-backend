@@ -91,7 +91,7 @@ class TestResponseFormatter(unittest.TestCase):
         expected_body = (
             "Demasiadas opciones de lista:\n\n" +
             "\n".join([f"*{i+1}*. Lista Item {i}" for i in range(15)]) +
-            "\n*16*. Menú\n*17*. Cancelar\n\nResponde con el número de la opción que necesites."
+            "\n*16*. Menú\n*17*. Cancelar"
         )
         self.assertEqual(response["text"]["body"], expected_body)
 
@@ -99,14 +99,14 @@ class TestResponseFormatter(unittest.TestCase):
         text = render_audio_text("Menú", options=[{"texto": "Uno"}, {"texto": "Dos"}])
         self.assertIn("1. Uno", text)
         self.assertIn("2. Dos", text)
-        self.assertTrue(text.strip().endswith("opción que necesites."))
+        self.assertFalse(text.strip().endswith("opción que necesites."))
 
     def test_whatsapp_text_message(self):
         response = build_interactive_response(
             options=[], body_text="Hola mundo", channel="whatsapp", message_type='text'
         )
         self.assertEqual(response["type"], "text")
-        expected_body = "Hola mundo\n\n*1*. Menú\n*2*. Cancelar\n\nResponde con el número de la opción que necesites."
+        expected_body = "Hola mundo\n\n*1*. Menú\n*2*. Cancelar"
         self.assertEqual(response["text"]["body"], expected_body)
 
     def test_whatsapp_text_message_with_image(self):
@@ -124,7 +124,7 @@ class TestResponseFormatter(unittest.TestCase):
             options=[], body_text="Sin opciones", channel="whatsapp", message_type='interactive_buttons'
         )
         self.assertEqual(response["type"], "text")
-        expected_body = "Sin opciones\n\n*1*. Menú\n*2*. Cancelar\n\nResponde con el número de la opción que necesites."
+        expected_body = "Sin opciones\n\n*1*. Menú\n*2*. Cancelar"
         self.assertEqual(response["text"]["body"], expected_body)
 
     def test_whatsapp_list_section_and_button_text_from_original_response(self):
@@ -189,7 +189,7 @@ class TestResponseFormatter(unittest.TestCase):
         )
 
         expected_body = (
-            "Pagá\n\nIr a ePagos: https://example.com\n\n*1*. Menú\n*2*. Cancelar\n\nResponde con el número de la opción que necesites."
+            "Pagá\n\nIr a ePagos: https://example.com\n\n*1*. Menú\n*2*. Cancelar"
         )
 
         self.assertEqual(response["type"], "text")
@@ -280,7 +280,7 @@ class TestResponseFormatter(unittest.TestCase):
             channel="whatsapp",
             audio_url=audio_url
         )
-        expected_body = "This is a caption.\n\n*1*. Menú\n*2*. Cancelar\n\nResponde con el número de la opción que necesites."
+        expected_body = "This is a caption.\n\n*1*. Menú\n*2*. Cancelar"
         expected_payload = {
             "type": "text",
             "text": {"body": expected_body},
@@ -302,7 +302,7 @@ class TestResponseFormatter(unittest.TestCase):
             channel="whatsapp",
             audio_url=None # Explicitly None
         )
-        expected_body = "This is a standard text message.\n\n*1*. Menú\n*2*. Cancelar\n\nResponde con el número de la opción que necesites."
+        expected_body = "This is a standard text message.\n\n*1*. Menú\n*2*. Cancelar"
         expected_payload = {
             "type": "text",
             "text": {"body": expected_body},
