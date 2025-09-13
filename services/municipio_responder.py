@@ -741,6 +741,18 @@ class ReclamoFlowHandler:
         )
         self.municipal_ctx = municipal_ctx
         self.flow_context = municipal_ctx.setdefault("reclamo_flow_v2", {})
+
+        # If a claim is active and a photo was previously stored in the session
+        # (either in the current payload or persisted context), make sure the
+        # claim data immediately reflects it so later steps do not lose the
+        # attachment.
+        foto_ctx = context.get("foto_url") or context.get("chat_db_context_data", {}).get("foto_url")
+        if (
+            self.flow_context.get("state")
+            and foto_ctx
+            and not self.flow_context.setdefault("datos_reclamo", {}).get("foto_url")
+        ):
+            self.flow_context["datos_reclamo"]["foto_url"] = foto_ctx
         self.greeting_handler = GreetingHandler(context)
 
 
@@ -807,11 +819,9 @@ class ReclamoFlowHandler:
         # Si la conversación comenzó con una foto (context['foto_url']) pero
         # aún no se reflejó en los datos del reclamo, la agregamos para evitar
         # que se le vuelva a solicitar al usuario.
-        if (
-            self.context.get("foto_url")
-            and not self.flow_context['datos_reclamo'].get('foto_url')
-        ):
-            self.flow_context['datos_reclamo']['foto_url'] = self.context.get("foto_url")
+        foto_ctx = self.context.get("foto_url") or self.context.get("chat_db_context_data", {}).get("foto_url")
+        if foto_ctx and not self.flow_context['datos_reclamo'].get('foto_url'):
+            self.flow_context['datos_reclamo']['foto_url'] = foto_ctx
 
         # Pre-fill contact details from the viewer if available so we do not
         # ask the user for information we already have. At the same time, make
