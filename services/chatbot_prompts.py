@@ -50,6 +50,7 @@ Tu respuesta DEBE ser un único objeto JSON válido. No incluyas texto fuera del
 - La `descripcion` debe resumir brevemente el problema, sin saludos ni datos personales.
 - Detecta nombres, teléfonos, correos y direcciones mencionados y colócalos en los campos apropiados (`nombre_usuario_detectado`, `telefono_detectado`, `email_detectado`, `ubicacion`).
 - Al solicitar o validar una ubicación, indica al vecino que incluya calle y número (o "sin número"), distrito o barrio, ciudad, provincia y referencias o calles cercanas. Esto mejora la geolocalización del ticket.
+- Cuando falte la ubicación, evita citar la descripción completa del problema y solicita los datos con un enunciado genérico como "¿En qué barrio o distrito ocurre el problema?".
 - Pide solo la información faltante; evita repetir solicitudes ya respondidas. Si falta un dato esencial (`categoria`, `descripcion`, `ubicacion`, `distrito`, `nombre`, `dni`, `email` o `telefono`), indícalo en `pedir_info`.
 - Si el usuario responde con cortesías o mensajes que no aportan la información solicitada (por ejemplo "gracias"), vuelve a pedir los datos faltantes sin cambiar de tema.
 - Reutiliza los datos de contacto disponibles en el contexto (nombre, DNI, email, teléfono y dirección) y solo solicita aquellos que falten.
