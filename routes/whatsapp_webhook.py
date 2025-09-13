@@ -551,6 +551,7 @@ def whatsapp_webhook():
     # The context_data from session_context_db_entry will be passed to responder_chatboc
     # and it's expected that responder_chatboc might modify it directly or return a new context.
 
+    greeting_reset = False
     try:
         print(f"Calling responder_chatboc for session_id: {chat_session_id_internal}, owner_user: {client_user.name}")
 
@@ -620,6 +621,13 @@ def whatsapp_webhook():
             channel="whatsapp",
             **kwargs_for_bot
         )
+
+        if bot_response_dict.get("fuente", "").startswith("greeting_handler"):
+            greeting_reset = True
+            session_context_db_entry.context_data.pop("last_options_sent", None)
+            safe_flag_modified(session_context_db_entry, "context_data")
+            db.session.add(session_context_db_entry)
+            db.session.commit()
 
         # Propagate any state hints returned by the bot into the session context
         next_state = bot_response_dict.get("next_state_hint")
@@ -711,6 +719,8 @@ def whatsapp_webhook():
         # After formatting, the context might be updated (e.g., with last_options_sent).
         # We need to merge this updated context back into our main session object before saving.
         updated_context = formatted_whatsapp_payload.get('contexto_actualizado')
+        if greeting_reset and updated_context:
+            updated_context.pop('last_options_sent', None)
 
         # The existing context from the database
         db_context = session_context_db_entry.context_data or {}

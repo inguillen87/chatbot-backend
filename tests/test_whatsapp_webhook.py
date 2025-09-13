@@ -220,6 +220,37 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             kwargs = mock_bot.call_args.kwargs
             self.assertEqual(kwargs["pregunta"], "2")
 
+    def test_cancel_clears_last_options_sent(self):
+        self._create_confirmed_session()
+        session_id = f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
+        ctx.context_data["last_options_sent"] = [{"id": "foo", "texto": "Foo"}]
+        ctx.context_data[CONTEXTO_MUNICIPIO] = {"estado_conversacion": "EN_FLUJO_RECLAMO"}
+        db.session.add(ctx)
+        db.session.commit()
+
+        self.mock_validator.validate.return_value = True
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "cancelar",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        menu_response = {
+            "message_body": "Menú principal",
+            "options_list": [{"texto": "Opción", "action_id": "opcion"}],
+            "message_type": "interactive_list",
+            "fuente": "greeting_handler_structured_menu_v2",
+        }
+
+        with patch('routes.whatsapp_webhook.responder_chatboc', return_value=menu_response):
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+            self.assertEqual(response.status_code, 200)
+
+        session = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
+        self.assertNotIn("last_options_sent", session.context_data)
+
     def test_whatsapp_webhook_number_not_found_in_db(self):
         # Arrange
         self.mock_validator.validate.return_value = True
