@@ -247,8 +247,26 @@ def responder_chatboc(
                     local_path = os.path.join(
                         current_app.root_path, media_url.lstrip("/")
                     )
-                    with open(local_path, "rb") as f:
-                        file_content = f.read()
+                    if os.path.exists(local_path):
+                        with open(local_path, "rb") as f:
+                            file_content = f.read()
+                    else:
+                        base = current_app.config.get("APP_PUBLIC_BASE_URL")
+                        if base:
+                            absolute_url = base.rstrip("/") + media_url
+                            response = requests.get(
+                                absolute_url,
+                                auth=(
+                                    current_app.config.get("TWILIO_ACCOUNT_SID"),
+                                    current_app.config.get("TWILIO_AUTH_TOKEN"),
+                                ),
+                            )
+                            response.raise_for_status()
+                            file_content = response.content
+                            uploaded_file_info["public_url"] = absolute_url
+                            media_url = absolute_url
+                        else:
+                            raise FileNotFoundError(local_path)
                 else:
                     raise ValueError("Media URL no válida")
 
