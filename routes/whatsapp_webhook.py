@@ -84,6 +84,25 @@ def _should_send_media(ctx: dict, url: str, ttl: int = 300) -> bool:
     return True
 
 
+def _send_with_retry(from_: str, to: str, body: str, max_retries: int = 3):
+    """Send a WhatsApp message with retries and log the Twilio SID."""
+    if not twilio_client:
+        return None
+    for attempt in range(1, max_retries + 1):
+        try:
+            msg = twilio_client.messages.create(from_=from_, to=to, body=body)
+            current_app.logger.info(f"Twilio message SID: {msg.sid}")
+            return msg
+        except Exception as e:
+            current_app.logger.error(
+                f"Error sending WhatsApp message (attempt {attempt}): {e}"
+            )
+            if attempt == max_retries:
+                break
+            time.sleep(1)
+    return None
+
+
 def deep_merge_dict(target: dict, source: dict) -> dict:
     """Recursively merge `source` into `target` and return the merged dict."""
     for k, v in source.items():
@@ -472,7 +491,7 @@ def whatsapp_webhook():
                     f"🔗 Abrir mapa: {maps_url}"
                 )
                 for chunk in _split_message(confirm_text):
-                    twilio_client.messages.create(
+                    _send_with_retry(
                         from_=to_number_raw,
                         to=from_number_raw,
                         body=chunk,
@@ -498,7 +517,7 @@ def whatsapp_webhook():
                     "4) Menú"
                 )
                 for chunk in _split_message(intro_text):
-                    twilio_client.messages.create(
+                    _send_with_retry(
                         from_=to_number_raw,
                         to=from_number_raw,
                         body=chunk,
