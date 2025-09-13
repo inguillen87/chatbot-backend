@@ -265,14 +265,42 @@ def responder_chatboc(
                 else:
                     raise ValueError("Media URL no válida")
 
-                if media_content_type and media_content_type.startswith("image/"):
+                filename = uploaded_file_info.get("filename", "").lower()
+                document_mime_types = {
+                    "application/pdf",
+                    "application/msword",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "text/plain",
+                }
+
+                if media_content_type and media_content_type.startswith("audio/"):
+                    transcribed_text = uploaded_file_info.get("transcribed_text")
+                    if not transcribed_text and final_url:
+                        from services.audio_transcription_service import (
+                            transcribe_audio_from_url,
+                        )
+
+                        transcribed_text = transcribe_audio_from_url(
+                            final_url,
+                            current_app.config.get("TWILIO_ACCOUNT_SID"),
+                            current_app.config.get("TWILIO_AUTH_TOKEN"),
+                        )
+                        if transcribed_text:
+                            uploaded_file_info["transcribed_text"] = transcribed_text
+                    datos_interpretados_de_archivo = {
+                        "transcribed_text": transcribed_text or ""
+                    }
+                elif media_content_type and media_content_type.startswith("image/"):
                     kwargs["es_foto"] = True
                     kwargs["foto_url"] = final_url
                     datos_interpretados_de_archivo = interpretar_imagen_para_chat(
                         archivo_adjunto=uploaded_file_info,
                         tipo_interpretacion="reclamo_auto_descripcion_categoria",
                     )
-                else:
+                elif (
+                    (media_content_type in document_mime_types)
+                    or filename.endswith((".pdf", ".doc", ".docx", ".txt", ".rtf"))
+                ):
                     doc_ai_result = document_processing_service.process_document(
                         file_content, media_content_type
                     )
@@ -290,6 +318,10 @@ def responder_chatboc(
                         datos_interpretados_de_archivo = {
                             "error": "No se pudo procesar el documento."
                         }
+                else:
+                    datos_interpretados_de_archivo = {
+                        "error": "Tipo de archivo no soportado."
+                    }
             except (requests.exceptions.RequestException, OSError, ValueError) as e:
                 current_app.logger.error(
                     f"Error descargando archivo de WhatsApp: {e}"
