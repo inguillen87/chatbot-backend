@@ -26,12 +26,14 @@ class GeoFlowTests(unittest.TestCase):
     def test_confirmacion_ubicacion_prompt(self):
         owner_user = MagicMock(); owner_user.id = 1
         chat_context = MagicMock()
+        os.environ['GOOGLE_MAPS_API_KEY'] = 'TEST'
         chat_context.context_data = {
             CONTEXTO_MUNICIPIO: {
                 'estado_conversacion': 'ESPERANDO_CONFIRMACION_UBICACION',
                 'datos_parciales_llm_reclamo': {
                     'ubicacion': 'Calle Falsa 123',
-                    'coordenadas': {'lat': 1.0, 'lng': 2.0}
+                    'coordenadas': {'lat': 1.0, 'lng': 2.0},
+                    'label_ubicacion': 'Casa'
                 }
             }
         }
@@ -52,6 +54,7 @@ class GeoFlowTests(unittest.TestCase):
         assert 'https://maps.google.com/?q=1.0,2.0' in resp['message_body']
         assert '1) Sí' in resp['message_body']
         assert resp.get('image_url')
+        assert 'Casa' in resp['message_body']
         assert resp.get('image_alt_text')
         ids = [o.get('action_id') for o in resp.get('options_list', [])]
         assert 'confirmar_ubicacion' in ids and 'editar_ubicacion' in ids
@@ -113,6 +116,7 @@ class GeoFlowTests(unittest.TestCase):
         chat_context.context_data = {}
 
         location = {'latitude': -32.9, 'longitude': -68.8, 'address': 'Calle Falsa 123'}
+        os.environ['GOOGLE_MAPS_API_KEY'] = 'TEST'
 
         from flask import Flask
         flask_app = Flask(__name__)
@@ -131,6 +135,7 @@ class GeoFlowTests(unittest.TestCase):
         self.assertEqual(detect_modalidad({'location': location}), 'location')
         self.assertIn('Recibí tu ubicación', resp['message_body'])
         self.assertIn('Calle Falsa 123', resp['message_body'])
+        assert resp.get('image_url')
 
     def test_handle_direccion_confirms_and_links(self):
         chat_context = MagicMock()
