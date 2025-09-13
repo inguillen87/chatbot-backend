@@ -106,57 +106,6 @@ def _esperando_info_libre(municipio_ctx: dict) -> bool:
         or municipio_ctx.get("esperando_info_llm_reclamo")
     )
 
-def _send_multistep_welcome(twilio_client, to_number_raw, from_number_raw, client_user, end_user, session_context_db_entry, chat_session_id_internal, from_number_cleaned):
-    """Sends a multi-step welcome message to new users."""
-    if twilio_client:
-        try:
-            # 1. Send Sticker with Greeting as caption
-            sticker_url = current_app.config.get("WELCOME_STICKER_URL")
-            user_name = getattr(end_user, "name", "") or ""
-            greeting_template = current_app.config.get("WELCOME_GREETING_TEMPLATE", "¡Hola, {name}! Soy Juni.")
-            greeting = greeting_template.format(name=user_name)
-
-            if sticker_url:
-                twilio_client.messages.create(
-                    from_=to_number_raw,
-                    to=from_number_raw,
-                    body=greeting,
-                    media_url=[sticker_url]
-                )
-            else:
-                twilio_client.messages.create(
-                    from_=to_number_raw,
-                    to=from_number_raw,
-                    body=greeting
-                )
-
-            # 2. Generate and schedule the main welcome message
-            welcome_response_payload = responder_chatboc(
-                pregunta="hola",
-                owner_user=client_user,
-                current_user=end_user,
-                rubro_obj=client_user.rubro,
-                chat_db_context=session_context_db_entry,
-                rubro_nombre_frontend=None,
-                tipo_chat=client_user.tipo_chat,
-                anon_id=from_number_cleaned,
-                chat_session_uuid=chat_session_id_internal,
-                channel="whatsapp"
-            )
-
-            delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
-            _send_delayed_payload(
-                client=twilio_client,
-                to_number=to_number_raw,
-                from_number=from_number_raw,
-                payload=welcome_response_payload,
-                delay=delay,
-                app=current_app._get_current_object()
-            )
-
-        except Exception as e:
-            current_app.logger.error(f"Error sending multi-step welcome message: {e}")
-
 # Load environment variables for Twilio credentials
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -225,17 +174,61 @@ def whatsapp_webhook():
             anon_id=from_number_cleaned, context_data=initial_session_data
         )
         db.session.add(session_context_db_entry)
+        db.session.commit()
         print(f"New session DB entry prepared for {chat_session_id_internal}.")
-        _send_multistep_welcome(
-            twilio_client,
-            to_number_raw,
-            from_number_raw,
-            client_user,
-            end_user,
-            session_context_db_entry,
-            chat_session_id_internal,
-            from_number_cleaned
-        )
+
+        if twilio_client:
+            try:
+                # 1. Send Twilio Template Message (Sticker + Short Greeting)
+                template_sid = current_app.config.get("WELCOME_TEMPLATE_SID")
+                user_name = getattr(end_user, "name", "") or "vecino/a"
+
+                if template_sid:
+                    twilio_client.messages.create(
+                        from_=to_number_raw,
+                        to=from_number_raw,
+                        content_sid=template_sid,
+                        content_variables=json.dumps({"1": user_name}),
+                    )
+                else:
+                    # Fallback to simple text if template is not configured
+                    greeting_template = "¡Hola, {name}! Soy Juni."
+                    greeting = greeting_template.format(name=user_name)
+                    twilio_client.messages.create(
+                        from_=to_number_raw,
+                        to=from_number_raw,
+                        body=greeting
+                    )
+
+                # 2. Generate and schedule the main welcome message
+                welcome_response_payload = responder_chatboc(
+                    pregunta="hola",
+                    owner_user=client_user,
+                    current_user=end_user,
+                    rubro_obj=client_user.rubro,
+                    chat_db_context=session_context_db_entry,
+                    rubro_nombre_frontend=None,
+                    tipo_chat=client_user.tipo_chat,
+                    anon_id=from_number_cleaned,
+                    chat_session_uuid=chat_session_id_internal,
+                    channel="whatsapp"
+                )
+
+                delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
+                _send_delayed_payload(
+                    client=twilio_client,
+                    to_number=to_number_raw,
+                    from_number=from_number_raw,
+                    payload=welcome_response_payload,
+                    delay=delay,
+                    app=current_app._get_current_object()
+                )
+
+            except Exception as e:
+                current_app.logger.error(f"Error sending multi-step welcome message: {e}")
+
+        # Stop processing here to avoid sending a duplicate message
+        return "OK", 200
 
     # Ensure context_data is a dict
     if not isinstance(session_context_db_entry.context_data, dict):

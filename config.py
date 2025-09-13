@@ -175,8 +175,7 @@ class Config:
     PUSHER_CLUSTER = os.getenv("PUSHER_CLUSTER")
 
     # WhatsApp Welcome Message Configuration
-    WELCOME_STICKER_URL = os.getenv("WELCOME_STICKER_URL", "https://chatboc-demo-widget-oigs.vercel.app/stickerJuni2.webp")
-    WELCOME_GREETING_TEMPLATE = os.getenv("WELCOME_GREETING_TEMPLATE", "¡Hola, {name}! Soy Juni.")
+    WELCOME_TEMPLATE_SID = os.getenv("WELCOME_TEMPLATE_SID", "HXaf135ced6edd005551a456bbb2258d4a")
     WELCOME_MESSAGE_DELAY_SECONDS = int(os.getenv("WELCOME_MESSAGE_DELAY_SECONDS", "5"))
 
 class TestConfig(Config):
