@@ -594,11 +594,7 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
     if welcome_message_override:
         welcome_message = welcome_message_override
     elif user_name:
-        welcome_message = (
-            f"¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
-            "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más.\n\n"
-            "¿Cómo te puedo ayudar hoy?"
-        )
+        welcome_message = f"¡Hola, {user_name}!"
     else:
         # User's name is not known, ask for it.
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
@@ -608,6 +604,13 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
             "message_type": "text",
             "fuente": "pedir_nombre_inicial"
         }
+
+    main_text_body = (
+        "Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
+        "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más.\n\n"
+        "¿Cómo te puedo ayudar hoy?"
+    )
+
     channel = context.get("channel", "web")
     if channel == "whatsapp":
         # Simplified menu for WhatsApp: only top-level categories
@@ -659,7 +662,7 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
                 flat_buttons.append(new_boton)
 
     response = {
-        "message_body": welcome_message,
+        "message_body": f"{welcome_message}\n\n{main_text_body}",
         "options_list": flat_buttons,
         "message_type": "interactive_list",
         "accion_backend": "responder_directamente",
