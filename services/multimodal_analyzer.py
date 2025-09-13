@@ -16,6 +16,19 @@ def encode_image_to_base64(image_path_or_url: str) -> str | None:
             response.raise_for_status()
             return base64.b64encode(response.content).decode('utf-8')
         else:
+            if image_path_or_url.startswith("/"):
+                from app import app
+                local_path = os.path.join(app.root_path, image_path_or_url.lstrip("/"))
+                if os.path.exists(local_path):
+                    image_path_or_url = local_path
+                else:
+                    base = app.config.get("APP_PUBLIC_BASE_URL")
+                    if base:
+                        response = requests.get(base.rstrip("/") + image_path_or_url)
+                        response.raise_for_status()
+                        return base64.b64encode(response.content).decode('utf-8')
+                    else:
+                        raise FileNotFoundError(local_path)
             with open(image_path_or_url, "rb") as image_file:
                 return base64.b64encode(image_file.read()).decode('utf-8')
     except Exception as e:

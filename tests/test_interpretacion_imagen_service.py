@@ -53,6 +53,17 @@ class TestInterpretacionImagenService(unittest.TestCase):
         db.drop_all()
         self.app_context.pop() # Desactiva el contexto de la aplicación
 
+    @patch('services.interpretacion_imagen_service.requests.get')
+    @patch('os.path.exists', return_value=False)
+    def test_descargar_imagen_fallback_public_base(self, mock_exists, mock_get):
+        self.app.config['APP_PUBLIC_BASE_URL'] = 'https://cdn.example.com'
+        self.app.config['TWILIO_ACCOUNT_SID'] = 'sid'
+        self.app.config['TWILIO_AUTH_TOKEN'] = 'token'
+        mock_get.return_value = MagicMock(content=b'data', raise_for_status=lambda: None)
+        content = _descargar_imagen('/static/uploads/img.jpg')
+        mock_get.assert_called_with('https://cdn.example.com/static/uploads/img.jpg', auth=('sid','token'), timeout=10)
+        self.assertEqual(content, b'data')
+
     @patch('services.interpretacion_imagen_service._descargar_imagen')
     @patch('services.interpretacion_imagen_service.analyze_image_smart')
     @patch('services.interpretacion_imagen_service.extract_complaint_details_llm')

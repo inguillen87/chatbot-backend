@@ -15,6 +15,9 @@ ENV = os.getenv("ENV", "dev")  # "dev" o "prod"
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 BACKEND_URL = os.getenv("BACKEND_URL", RENDER_EXTERNAL_URL or "http://localhost:5000")
 
+# Base URL used to generate absolute links for public assets
+APP_PUBLIC_BASE_URL = os.getenv("APP_PUBLIC_BASE_URL", BACKEND_URL)
+
 PANEL_URL = os.getenv("PANEL_URL", "http://localhost:8080")
 WIDGET_URL = os.getenv("WIDGET_URL", "http://localhost:8080")
 
@@ -87,6 +90,9 @@ class Config:
 
     # Directory for persistent data such as uploaded media.
     DATA_DIR = os.getenv("DATA_DIR", "/data")
+
+    # Absolute base URL for serving public assets
+    APP_PUBLIC_BASE_URL = APP_PUBLIC_BASE_URL
 
     if SQLALCHEMY_DATABASE_URI.startswith("sqlite"):
         SQLALCHEMY_ENGINE_OPTIONS = {'connect_args': {'timeout': 5}}
