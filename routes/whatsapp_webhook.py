@@ -32,6 +32,8 @@ from services.geo_service import reverse_geocode
 from services.openai_maps_service import geocodificar_inversa_llm
 from services.municipio_responder import CONTEXTO_MUNICIPIO
 from services import audio_transcription_service
+from services.response_formatter import render_audio_text
+from services.tts_orchestrator import generar_audio_con_fallback
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -477,6 +479,25 @@ def whatsapp_webhook():
                         to=from_number_raw,
                         body=chunk,
                     )
+                audio_text = render_audio_text(
+                    confirm_text, options=ctx.get("last_options_sent")
+                )
+                audio_url = generar_audio_con_fallback(
+                    audio_text, channel="whatsapp", allow_if_policy_off=True
+                )
+                if audio_url:
+                    if audio_url.startswith("/"):
+                        base_url = current_app.config.get("BASE_URL")
+                        absolute_audio_url = (
+                            f"{base_url}{audio_url}" if base_url else audio_url
+                        )
+                    else:
+                        absolute_audio_url = audio_url
+                    twilio_client.messages.create(
+                        from_=to_number_raw,
+                        to=from_number_raw,
+                        media_url=[absolute_audio_url],
+                    )
             return "OK", 200
         else:
             ctxm["estado_conversacion"] = "ESPERANDO_INTENCION_UBICACION"
@@ -502,6 +523,25 @@ def whatsapp_webhook():
                         from_=to_number_raw,
                         to=from_number_raw,
                         body=chunk,
+                    )
+                audio_text = render_audio_text(
+                    intro_text, options=ctx.get("last_options_sent")
+                )
+                audio_url = generar_audio_con_fallback(
+                    audio_text, channel="whatsapp", allow_if_policy_off=True
+                )
+                if audio_url:
+                    if audio_url.startswith("/"):
+                        base_url = current_app.config.get("BASE_URL")
+                        absolute_audio_url = (
+                            f"{base_url}{audio_url}" if base_url else audio_url
+                        )
+                    else:
+                        absolute_audio_url = audio_url
+                    twilio_client.messages.create(
+                        from_=to_number_raw,
+                        to=from_number_raw,
+                        media_url=[absolute_audio_url],
                     )
             return "OK", 200
 
