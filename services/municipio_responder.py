@@ -49,6 +49,7 @@ from .common_utils import (
     formatear_telefono_e164,
     construir_respuesta_sugerir_registro,
     extract_multiple_contact_details_regex,
+    _get_main_menu_payload,
 )
 from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
@@ -57,6 +58,7 @@ from services.intent_classifier import IntentClassifier
 from services.multimodal_analyzer import analizar_imagen_con_fallback
 import json
 from services.ticket_utils import formatear_ticket_respuesta
+from .constants import ConversationState, CONTEXTO_MUNICIPIO
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
@@ -353,15 +355,39 @@ class ReclamoFlowHandler:
                     continue
                 missing.append(field_labels[field])
 
-        message = "Ya casi terminamos."
+        message_lines = ["¡Ya casi terminamos! ✍️\n"]
         if known_parts:
-            message += " Ya tengo estos datos:\n" + "\n".join(f"- {part}" for part in known_parts)
+            message_lines.append("*Datos que ya tenemos:*")
+            for part in known_parts:
+                # Adding emojis for better UX
+                if "nombre" in part.lower():
+                    message_lines.append(f"👤 {part}")
+                elif "dni" in part.lower():
+                    message_lines.append(f"🆔 {part}")
+                elif "email" in part.lower():
+                    message_lines.append(f"📧 {part}")
+                elif "teléfono" in part.lower():
+                    message_lines.append(f"📞 {part}")
+                else:
+                    message_lines.append(part)
+            message_lines.append("")
+
         if missing:
-            message += "\n\nPara finalizar, por favor indicame los datos que faltan: " + ", ".join(missing) + "."
+            message_lines.append("*Para finalizar, por favor, completá tus datos:*")
+            for part in missing:
+                if "nombre" in part.lower():
+                    message_lines.append(f"👤 {part}")
+                elif "dni" in part.lower():
+                    message_lines.append(f"🆔 {part}")
+                elif "email" in part.lower():
+                    message_lines.append(f"📧 {part}")
+                else:
+                    message_lines.append(part)
+            message_lines.append("\nPodés escribir todos los datos juntos en un solo mensaje.")
         else:
-            # This case happens if force_prompt was true but all data is present.
-            # It means we came from the "Edit" flow.
-            message = "Por favor, enviame los datos que querés corregir."
+            message_lines.append("Por favor, enviame los datos que querés corregir.")
+
+        message = "\n".join(message_lines)
 
 
         return {"message_body": message}
@@ -522,8 +548,6 @@ def obtener_municipios_cercanos(latitud, longitud, radio_km=5):
         return jsonify({"error": f"Error inesperado: {e}"}), 500
 
 logger = logging.getLogger(__name__)
-
-CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
 
 # Keywords for confirming actions, especially in the reclamo (complaint) flow
 PALABRAS_CLAVE_CONFIRMACION = {
@@ -745,47 +769,6 @@ DEFAULT_TRAMITES_WEB_URL = CONFIG_MUNICIPIO.get(
 MUNICIPIO_DIRECCION = CONFIG_MUNICIPIO.get("direccion", "Dirección del municipio")
 EJEMPLO_DIRECCION = CONFIG_MUNICIPIO.get("ejemplo_direccion", "Avenida Siempreviva 123")
 
-class ConversationState(Enum):
-    ESPERANDO_CONFIRMACION_CIERRE = auto()
-    ESPERANDO_CALIFICACION = auto()
-    ESPERANDO_NUMERO_TICKET = auto()
-    ESPERANDO_PARAM_RECOLECCION = auto()
-    ESPERANDO_CATEGORIA_RECLAMO = auto()
-    ESPERANDO_DIRECCION_RECLAMO = auto()
-    ESPERANDO_NOMBRE_VECINO = auto()
-    ESPERANDO_TELEFONO_VECINO = auto()
-    ESPERANDO_EMAIL_VECINO = auto()
-    ESPERANDO_DESCRIPCION_RECLAMO = auto()
-    ESPERANDO_ADJUNTOS_RECLAMO = auto()
-    ESPERANDO_CONFIRMACION_RECLAMO = auto()
-    ESPERANDO_SELECCION_TRAMITE = auto()
-    ESPERANDO_PREGUNTA_CURSO_LICENCIA = auto()
-    ESPERANDO_TEXTO_SUGERENCIA = auto()
-    ESPERANDO_DATOS_CONTACTO_SUGERENCIA = auto()
-    ESPERANDO_CONFIRMACION_SUGERENCIA = auto()
-    ESPERANDO_PRODUCTO_PARA_CONSULTA = auto()
-    MOSTRANDO_PRODUCTOS = auto()
-    ESPERANDO_CONFIRMACION_AGREGAR_CARRITO = auto()
-    ESPERANDO_OPCION_CARRITO = auto()
-    ESPERANDO_DETALLES_CHECKOUT = auto()
-    ESPERANDO_CONFIRMACION_PEDIDO = auto()
-    ESPERANDO_UBICACION_PANICO = auto()
-    ESPERANDO_INFO_RECLAMO_LLM = auto() # Nuevo estado para cuando el LLM está recopilando info para un reclamo
-    CONVERSACION_GENERAL_LLM = auto() # Nuevo estado para cuando el LLM está en una conversación general
-    ESPERANDO_CONFIRMACION_INICIAR_RECLAMO = auto()
-    ESPERANDO_CREACION_TICKET = auto()
-    ESPERANDO_CONFIRMACION_UBICACION = auto()
-    ESPERANDO_CONSULTA_GENERAL = auto()
-    ESPERANDO_SELECCION_MENU_PRINCIPAL = auto()
-    ESPERANDO_SELECCION_MENU_RECLAMOS = auto()
-    ESPERANDO_SELECCION_DE_LISTA = auto()
-    ESPERANDO_UBICACION_GENERAL = auto()
-    ESPERANDO_NUEVO_DATO_USUARIO = auto()
-    ESPERANDO_CONFIRMACION_DATOS_RECLAMO = auto()
-    ESPERANDO_CORRECCION_DATOS_RECLAMO = auto()
-    ESPERANDO_SELECCION_CONTACTO_CATEGORIA = auto()
-    ESPERANDO_INTENCION_UBICACION = auto()
-
 # Palabras clave sencillas para detectar consultas generales de servicios
 GENERAL_QUERY_KEYWORDS = [
     "farmacia", "supermercado", "negocio", "servicio", "buscar",
@@ -879,108 +862,6 @@ class BaseMunicipioHandler:
         raise NotImplementedError
 
 from services.google_search import google_search
-
-def _get_main_menu_payload(context: dict, welcome_message_override: str = None) -> dict:
-    """
-    Generates the main menu payload with the new, structured layout.
-    """
-    viewer_user = context.get("viewer_user_obj")
-    profile_name = context.get("profile_name")
-    owner_user = context.get("user_obj")
-
-    user_name = None
-    if isinstance(profile_name, str) and profile_name.strip():
-        owner_name = None
-        if owner_user:
-            owner_name = getattr(owner_user, "nombre", None) or getattr(owner_user, "name", None)
-        # Avoid greeting with the admin/owner name when the session is anonymous
-        if not owner_name or profile_name.strip().lower() != str(owner_name).strip().lower():
-            user_name = profile_name.strip()
-    if not user_name and viewer_user:
-        user_name = getattr(viewer_user, "nombre", None) or getattr(viewer_user, "name", None)
-
-    if welcome_message_override:
-        welcome_message = welcome_message_override
-    elif user_name:
-        welcome_message = (
-            f"¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
-            "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más.\n\n"
-            "¿Cómo te puedo ayudar hoy?"
-        )
-    else:
-        # User's name is not known, ask for it.
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NOMBRE_INICIAL.name
-        return {
-            "message_body": "¡Hola! Soy JUNI, tu Asistente Virtual. Para una atención más personalizada, ¿podrías decirme tu nombre?",
-            "message_type": "text",
-            "fuente": "pedir_nombre_inicial"
-        }
-    channel = context.get("channel", "web")
-    if channel == "whatsapp":
-        # Simplified menu for WhatsApp: only top-level categories
-        categorias = [{
-            "titulo": "Categorías",
-            "botones": [
-                {"texto": "🗣️ Reclamos y Consultas", "action_id": "mostrar_menu_reclamos"},
-                {"texto": "🚗 Trámites y Turnos", "action_id": "mostrar_menu_tramites"},
-                {"texto": "📰 Información del Municipio", "action_id": "mostrar_menu_informacion"},
-                {"texto": "🅿️ Estacionamiento", "action_id": "mostrar_menu_estacionamiento"},
-            ]
-        }]
-
-        flat_buttons = []
-        for boton in categorias[0].get('botones', []):
-            new_boton = boton.copy()
-            new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
-            flat_buttons.append(new_boton)
-    else:
-        # Full accordion-style menu for web/widget channels
-        categorias = [
-            {"titulo": "🗣️ Reclamos y Consultas", "botones": [
-                {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
-                {"texto": "💡 Enviar una Sugerencia", "action_id": "enviar_sugerencia"},
-                {"texto": "🤔 Consultar Estado de Reclamo", "action_id": "consultar_estado_reclamo"},
-                {"texto": "📞 Contactos Útiles", "action_id": "contactos_utiles"},
-            ]},
-            {"titulo": "🚗 Trámites y Turnos", "botones": [
-                {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
-                {"texto": "🗓️ Solicitar Otros Turnos", "action_id": "solicitar_turnos"},
-                {"texto": "💵 Pagar Tasas Municipales", "action_id": "pago_de_tasas_vigentes"},
-            ]},
-            {"titulo": "📰 Información del Municipio", "botones": [
-                {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
-                {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
-                {"texto": "🏗️ Obras", "action_id": "obras"},
-                {"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"},
-            ]},
-            {"titulo": "🅿️ Estacionamiento", "botones": [
-                {"texto": "🅿️ Buscar Estacionamiento Libre", "action_id": "buscar_estacionamiento"},
-            ]}
-        ]
-
-        flat_buttons = []
-        for categoria in categorias:
-            for boton in categoria.get('botones', []):
-                new_boton = boton.copy()
-                new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
-                flat_buttons.append(new_boton)
-
-    response = {
-        "message_body": welcome_message,
-        "options_list": flat_buttons,
-        "message_type": "interactive_list",
-        "accion_backend": "responder_directamente",
-        "fuente": "greeting_handler_structured_menu_v2",
-        "categorias": categorias,
-        "generar_audio": True
-    }
-    config = context.get("municipio_config_actual", {})
-    image_url = config.get("welcome_image_url")
-    if image_url:
-        response["image_url"] = image_url
-    return response
-
 
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:

@@ -88,24 +88,25 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
 - *Descripción:* {descripcion}
 """
     if dni:
-        respuesta += f"\n- *DNI:* {dni}"
+        respuesta += f"- *DNI:* `{dni}`\n"
     if consulta_pin:
-        respuesta += f"\n- *PIN:* {consulta_pin}"
+        respuesta += f"- *PIN de seguimiento:* `{consulta_pin}`\n"
 
     if nombre_asesor:
-        partes_contacto = [nombre_asesor]
+        respuesta += "\n📞 *Contacto para seguimiento:*\n"
+        respuesta += f"- *Nombre:* {nombre_asesor}\n"
         if titulo_asesor:
-            partes_contacto.append(titulo_asesor)
+            respuesta += f"- *Cargo:* {titulo_asesor}\n"
         if telefono_asesor:
-            partes_contacto.append(str(telefono_asesor))
-        respuesta += "\n📞 *Contacto para seguimiento:* " + " - ".join(partes_contacto)
+            respuesta += f"- *Teléfono:* {telefono_asesor}\n"
         if horario_asesor:
-            respuesta += f"\n🕒 *Horario de atención:* {horario_asesor}"
-        if link_informacion:
-            respuesta += f"\n🔗 {link_informacion}"
+            respuesta += f"- *Horario:* {horario_asesor}\n"
+
+    if link_informacion:
+        respuesta += f"🔗 *Más información:* {link_informacion}\n"
+
 
     respuesta += """
-
 Te mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!"""
 
     # Limpiar URLs redundantes del cuerpo del mensaje

@@ -2,6 +2,7 @@
 import re
 import pandas as pd
 from typing import Dict, Any, Tuple, Optional, List
+from .constants import ConversationState, CONTEXTO_MUNICIPIO
 
 # --- PLACEHOLDER DEFINITIONS ---
 # The original definitions for these functions were not found in the codebase.
@@ -570,6 +571,107 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     logger.info("Common utils placeholder script executed.")
+
+def _get_main_menu_payload(context: dict, welcome_message_override: str = None) -> dict:
+    """
+    Generates the main menu payload with the new, structured layout.
+    """
+    viewer_user = context.get("viewer_user_obj")
+    profile_name = context.get("profile_name")
+    owner_user = context.get("user_obj")
+
+    user_name = None
+    if isinstance(profile_name, str) and profile_name.strip():
+        owner_name = None
+        if owner_user:
+            owner_name = getattr(owner_user, "nombre", None) or getattr(owner_user, "name", None)
+        # Avoid greeting with the admin/owner name when the session is anonymous
+        if not owner_name or profile_name.strip().lower() != str(owner_name).strip().lower():
+            user_name = profile_name.strip()
+    if not user_name and viewer_user:
+        user_name = getattr(viewer_user, "nombre", None) or getattr(viewer_user, "name", None)
+
+    if welcome_message_override:
+        welcome_message = welcome_message_override
+    elif user_name:
+        welcome_message = (
+            f"¡Hola, {user_name}! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
+            "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más.\n\n"
+            "¿Cómo te puedo ayudar hoy?"
+        )
+    else:
+        # User's name is not known, ask for it.
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NOMBRE_INICIAL.name
+        return {
+            "message_body": "¡Hola! Soy JUNI, tu Asistente Virtual. Para una atención más personalizada, ¿podrías decirme tu nombre?",
+            "message_type": "text",
+            "fuente": "pedir_nombre_inicial"
+        }
+    channel = context.get("channel", "web")
+    if channel == "whatsapp":
+        # Simplified menu for WhatsApp: only top-level categories
+        categorias = [{
+            "titulo": "Categorías",
+            "botones": [
+                {"texto": "🗣️ Reclamos y Consultas", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "🚗 Trámites y Turnos", "action_id": "mostrar_menu_tramites"},
+                {"texto": "📰 Información del Municipio", "action_id": "mostrar_menu_informacion"},
+                {"texto": "🅿️ Estacionamiento", "action_id": "mostrar_menu_estacionamiento"},
+            ]
+        }]
+
+        flat_buttons = []
+        for boton in categorias[0].get('botones', []):
+            new_boton = boton.copy()
+            new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
+            flat_buttons.append(new_boton)
+    else:
+        # Full accordion-style menu for web/widget channels
+        categorias = [
+            {"titulo": "🗣️ Reclamos y Consultas", "botones": [
+                {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "💡 Enviar una Sugerencia", "action_id": "enviar_sugerencia"},
+                {"texto": "🤔 Consultar Estado de Reclamo", "action_id": "consultar_estado_reclamo"},
+                {"texto": "📞 Contactos Útiles", "action_id": "contactos_utiles"},
+            ]},
+            {"titulo": "🚗 Trámites y Turnos", "botones": [
+                {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
+                {"texto": "🗓️ Solicitar Otros Turnos", "action_id": "solicitar_turnos"},
+                {"texto": "💵 Pagar Tasas Municipales", "action_id": "pago_de_tasas_vigentes"},
+            ]},
+            {"titulo": "📰 Información del Municipio", "botones": [
+                {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
+                {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
+                {"texto": "🏗️ Obras", "action_id": "obras"},
+                {"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"},
+            ]},
+            {"titulo": "🅿️ Estacionamiento", "botones": [
+                {"texto": "🅿️ Buscar Estacionamiento Libre", "action_id": "buscar_estacionamiento"},
+            ]}
+        ]
+
+        flat_buttons = []
+        for categoria in categorias:
+            for boton in categoria.get('botones', []):
+                new_boton = boton.copy()
+                new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
+                flat_buttons.append(new_boton)
+
+    response = {
+        "message_body": welcome_message,
+        "options_list": flat_buttons,
+        "message_type": "interactive_list",
+        "accion_backend": "responder_directamente",
+        "fuente": "greeting_handler_structured_menu_v2",
+        "categorias": categorias,
+        "generar_audio": True
+    }
+    config = context.get("municipio_config_actual", {})
+    image_url = config.get("welcome_image_url")
+    if image_url:
+        response["image_url"] = image_url
+    return response
 
 def clean_text_for_tts(text: str) -> str:
     """

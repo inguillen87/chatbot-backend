@@ -10,10 +10,11 @@ sys.path.insert(0, project_root)
 from services.municipio_responder import responder_municipio
 
 def test_reclamo_handler_categoria_buttons(client):
-    with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
-        mock_llamar_gemini.return_value = (
-            {
-                "message_body": "Por favor, elegí una de las siguientes categorías:",
+    with patch('services.municipio_responder.find_global_menu_action', return_value=None):
+        with patch('services.municipio_responder.llamar_llm_con_fallback') as mock_llamar_llm:
+            mock_llamar_llm.return_value = (
+                {
+                    "message_body": "Por favor, elegí una de las siguientes categorías:",
                 "accion_backend": "iniciar_reclamo",
                 "datos_estructura": {},
                 "pedir_info": "categoria",
@@ -49,14 +50,15 @@ def test_reclamo_handler_categoria_buttons(client):
             message_type='text',
             original_bot_response=response
         )
-        assert formatted_response["text"]["body"] == "Por favor, elegí una de las siguientes categorías:\n\n*1*. Alumbrado Público\n*2*. Bacheo\n*3*. Recolección de Residuos\n\nResponde con el número de la opción que necesites."
+        assert formatted_response["text"]["body"] == "Por favor, elegí una de las siguientes categorías:\n\n*1*. Alumbrado Público\n*2*. Bacheo\n*3*. Recolección de Residuos"
 
 
 def test_reclamo_handler_share_location_button(client):
-    with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
-        mock_llamar_gemini.return_value = (
-            {
-                "message_body": "Por favor, compartí tu ubicación para que podamos registrar el reclamo.",
+    with patch('services.municipio_responder.find_global_menu_action', return_value=None):
+        with patch('services.municipio_responder.llamar_llm_con_fallback') as mock_llamar_llm:
+            mock_llamar_llm.return_value = (
+                {
+                    "message_body": "Por favor, compartí tu ubicación para que podamos registrar el reclamo.",
                 "accion_backend": "iniciar_reclamo",
                 "datos_estructura": {},
                 "pedir_info": "ubicacion",
@@ -90,14 +92,15 @@ def test_reclamo_handler_share_location_button(client):
             message_type='text',
             original_bot_response=response
         )
-        assert formatted_response["text"]["body"] == "Por favor, compartí tu ubicación para que podamos registrar el reclamo.\n\n*1*. Compartir ubicación\n\nResponde con el número de la opción que necesites."
+        assert formatted_response["text"]["body"] == "Por favor, compartí tu ubicación para que podamos registrar el reclamo.\n\n*1*. Compartir ubicación"
 
 
 def test_ticket_status_handler_ticket_number_shortcut(client):
-    with patch('services.municipio_responder.llamar_gemini') as mock_llamar_gemini:
-        mock_llamar_gemini.return_value = (
-            {
-                "message_body": "El ticket **M-12345** sobre 'Test' se encuentra en estado: **En Proceso**.",
+    with patch('services.municipio_responder.find_global_menu_action', return_value=None):
+        with patch('services.municipio_responder.llamar_llm_con_fallback') as mock_llamar_llm:
+            mock_llamar_llm.return_value = (
+                {
+                    "message_body": "El ticket **M-12345** sobre 'Test' se encuentra en estado: **En Proceso**.",
                 "accion_backend": "consultar_estado_ticket",
                 "datos_estructura": {
                     "id_ticket_mencionado": "12345"

@@ -44,9 +44,6 @@ def render_audio_text(message: str, options: list | None = None, categorias: lis
             lines.append(f"{counter}. {opt.get('texto', '')}")
             counter += 1
 
-    if counter > 1:
-        lines.append("Responde con el número de la opción que necesites.")
-
     return "\n".join(lines)
 
 def build_interactive_response(options: list,
@@ -198,7 +195,6 @@ def build_interactive_response(options: list,
                     options_text = "\n\n" + "\n".join(
                         [f"*{i+1}*. {o.get('texto', '')}" for i, o in enumerate(actionable_options)]
                     )
-                options_text += "\n\nResponde con el número de la opción que necesites."
                 final_body += options_text
 
                 # Update context with only the actionable options so numeric

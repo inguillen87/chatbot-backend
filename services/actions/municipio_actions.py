@@ -11,6 +11,7 @@ from services.ticket_utils import formatear_ticket_respuesta
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.config_loader import cargar_configuracion_municipio
 from models import MunicipioTicket
+from services.common_utils import _get_main_menu_payload
 
 logger = logging.getLogger(__name__)
 
@@ -352,24 +353,24 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
 
             # Notificaciones
-            if ticket_data_cleaned.get("telefono_vecino"):
-                try:
-                    enviar_notificacion_whatsapp_con_plantilla(
-                        ticket_data_cleaned["telefono_vecino"],
-                        ticket_data_cleaned.get("nombre_vecino", "Vecino"),
-                        str(ticket_nro),
-                        ticket_data_cleaned.get("categoria", "Varios")
-                    )
-                except Exception as e_whatsapp:
-                    logger.error(f"Error enviando notificación de WhatsApp para {nro_ticket_str}: {e_whatsapp}")
+            # if ticket_data_cleaned.get("telefono_vecino"):
+            #     try:
+            #         enviar_notificacion_whatsapp_con_plantilla(
+            #             ticket_data_cleaned["telefono_vecino"],
+            #             ticket_data_cleaned.get("nombre_vecino", "Vecino"),
+            #             str(ticket_nro),
+            #             ticket_data_cleaned.get("categoria", "Varios")
+            #         )
+            #     except Exception as e_whatsapp:
+            #         logger.error(f"Error enviando notificación de WhatsApp para {nro_ticket_str}: {e_whatsapp}")
 
-                try:
-                    enviar_notificacion_sms(
-                        ticket_data_cleaned["telefono_vecino"],
-                        f"Hola {ticket_data_cleaned.get('nombre_vecino', 'Vecino')}! Tu reclamo M-{ticket_nro} ({ticket_data_cleaned.get('categoria', 'Varios')}) fue generado."
-                    )
-                except Exception as e_sms:
-                    logger.error(f"Error enviando notificación por SMS para {nro_ticket_str}: {e_sms}")
+            #     try:
+            #         enviar_notificacion_sms(
+            #             ticket_data_cleaned["telefono_vecino"],
+            #             f"Hola {ticket_data_cleaned.get('nombre_vecino', 'Vecino')}! Tu reclamo M-{ticket_nro} ({ticket_data_cleaned.get('categoria', 'Varios')}) fue generado."
+            #         )
+            #     except Exception as e_sms:
+            #         logger.error(f"Error enviando notificación por SMS para {nro_ticket_str}: {e_sms}")
 
             # Formatear respuesta y obtener el botón de contacto
             municipio_config = self.context.get('municipio_config_actual', {})
@@ -391,12 +392,25 @@ class CrearReclamoActionHandler(BaseActionHandler):
             # Log para debug
             logger.info(f"Respuesta formateada: '{mensaje_respuesta}', Botones: {botones_finales}")
 
+            # Add "Punto Limpio" promotion
+            mensaje_respuesta += (
+                "\n\n*¿Sabías que estamos trabajando para una Junín más limpia?* ♻️\n"
+                "Conocé nuestra planta de recolección, reciclaje y elaboración de productos sustentables.\n"
+                "Ladrillos, tejas, postes, mangueras, impresión 3D, luminarias LED y paneles solares.\n"
+                "Más info: https://www.juninmendoza.gov.ar/punto-limpio/"
+            )
+
+            # Delayed menu
+            menu_payload = _get_main_menu_payload(self.context)
+
             return {
                 "success": True,
                 "message_to_user": mensaje_respuesta,
                 "options_list": botones_finales,
                 "message_type": "interactive_buttons" if botones_finales else "text",
                 "image_url": promo_image_url,
+                "delayed_payload": menu_payload,
+                "delay_seconds": 20,
                 "data": {
                     "ticket_id": ticket_creado.get('id'),
                     "nro_ticket": nro_ticket_str,
