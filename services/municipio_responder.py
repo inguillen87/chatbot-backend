@@ -346,7 +346,7 @@ def handle_direccion(user_input: str, incoming: dict, municipio_cfg: dict):
         try:
             rev = reverse_geocode(lat, lng)
             direccion = rev.get("display")
-            distrito = rev.get("localidad")
+            distrito = rev.get("barrio") or rev.get("localidad")
         except Exception as e:  # pragma: no cover - network failures
             logger.warning("reverse_geocode failed for %s,%s: %s", lat, lng, e)
             direccion = f"Lat: {lat}, Lon: {lng}"
@@ -2673,11 +2673,16 @@ def handle_location_update(data):
         if direccion_info
         else f"Lat: {lat}, Lon: {lon}"
     )
+    distrito = None
+    if direccion_info:
+        distrito = direccion_info.get("barrio") or direccion_info.get("localidad")
 
     ctx = session.setdefault("context_data", {})
     ctx_muni = ctx.setdefault(CONTEXTO_MUNICIPIO, {})
     datos = ctx_muni.setdefault("datos_parciales_llm_reclamo", {})
     datos.update({"ubicacion": display, "coordenadas": {"lat": lat, "lon": lon}})
+    if distrito:
+        datos["distrito"] = distrito
 
     estado_prev = ctx_muni.get("estado_conversacion")
     if estado_prev in (None, ConversationState.ESPERANDO_DIRECCION_RECLAMO.name):
