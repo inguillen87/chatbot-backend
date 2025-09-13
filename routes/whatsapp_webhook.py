@@ -54,11 +54,11 @@ def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
     return parts
 
 
-def _send_delayed_payload(client, to_number: str, from_number: str, payload: dict, delay: int):
+def _send_delayed_payload(client, to_number: str, from_number: str, payload: dict, delay: int, app):
     """Send a payload via WhatsApp after a delay using a background thread."""
 
     def _send():
-        with current_app.app_context():
+        with app.app_context():
             from services.response_formatter import build_interactive_response
 
             formatted = build_interactive_response(
@@ -84,7 +84,7 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
             try:
                 client.messages.create(**params)
             except Exception as e:
-                current_app.logger.error(f"Error sending delayed message: {e}")
+                app.logger.error(f"Error sending delayed message: {e}")
 
     if client:
         timer = threading.Timer(delay, _send)
@@ -390,6 +390,9 @@ def whatsapp_webhook():
         kwargs_for_bot = {"source_channel": "whatsapp"}
         if uploaded_file_info:
             kwargs_for_bot["uploaded_file_info"] = uploaded_file_info
+            # Also add the specific keys the old flow handler expects
+            kwargs_for_bot["es_foto"] = True
+            kwargs_for_bot["foto_url"] = uploaded_file_info.get("url")
         if location_info:
             # Pass location_info and mark it explicitly as a location payload
             kwargs_for_bot["location"] = location_info
@@ -641,6 +644,7 @@ def whatsapp_webhook():
             from_number_raw,
             bot_response_dict["delayed_payload"],
             bot_response_dict["delay_seconds"],
+            current_app._get_current_object()
         )
 
     return "OK", 200
