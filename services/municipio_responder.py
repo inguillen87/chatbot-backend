@@ -78,7 +78,6 @@ from services.address_resolver import AddressResolver
 from services.geo_service import reverse_geocode
 from types import SimpleNamespace
 from services.integrations.twilio_client import send_whatsapp
-from services.ticket_draft import get_ticket_draft, merge_ticket_fields
 from .map_preview import generate_static_map
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
@@ -4326,7 +4325,6 @@ def responder_municipio(
     # --- INICIO: Manejo Proactivo de Ubicación ---
     if received_payload.get("es_ubicacion") and not pregunta_str.strip():
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        get_ticket_draft(contexto_municipio_actual)
 
         if contexto_municipio_actual.get("reclamo_flow_v2", {}).get("state") == ReclamoState.ESPERANDO_DIRECCION.name:
             handler = ReclamoFlowHandler(context, chat_db_context)
@@ -4353,11 +4351,6 @@ def responder_municipio(
             datos["coordenadas"] = {"lat": lat, "lng": lon}
             datos["ubicacion"] = address
             datos["maps_search_url"] = f"https://maps.google.com/?q={lat},{lon}"
-            merge_ticket_fields(
-                contexto_municipio_actual, {"lat": lat, "lng": lon, "direccion": address}
-            )
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
             if estado == ConversationState.ESPERANDO_DIRECCION_RECLAMO.name:
                 contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_DATOS_PERSONALES"
                 if chat_db_context:
@@ -4431,15 +4424,6 @@ def responder_municipio(
                 {"texto": "Cancelar", "action_id": "cancelar"},
             ]
             contexto_municipio_actual['ubicacion_contextual'] = received_payload.get("ubicacion_usuario")
-            loc_info = contexto_municipio_actual['ubicacion_contextual'] or {}
-            merge_ticket_fields(
-                contexto_municipio_actual,
-                {
-                    "lat": loc_info.get("latitude") or loc_info.get("lat"),
-                    "lng": loc_info.get("longitude") or loc_info.get("lon"),
-                    "direccion": loc_info.get("address"),
-                },
-            )
             contexto_municipio_actual['menu_opciones'] = opciones_proactivas
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
@@ -4483,8 +4467,7 @@ def responder_municipio(
     if chat_db_context and chat_db_context.context_data is not None:
         chat_db_context_live_data = chat_db_context.context_data
 
-        contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
-        get_ticket_draft(contexto_municipio_actual)
+    contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
 
     # If a claim flow is already in progress, ensure the global state
     # reflects it so other handlers (like ticket/PIN) are skipped.
@@ -5378,8 +5361,7 @@ def responder_municipio(
 
     # Directly use the dictionary from the live context data.
     # This ensures that modifications are made to the original object.
-      contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
-      get_ticket_draft(contexto_municipio_actual)
+    contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
     context[CONTEXTO_MUNICIPIO] = contexto_municipio_actual # Ensure main context points to this sub-context
 
     # --- INICIO: Manejo de selección de menú principal por número, letra o keyword ---
