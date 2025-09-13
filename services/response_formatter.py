@@ -154,6 +154,7 @@ def build_interactive_response(options: list,
 
             nav_buttons = [
                 {"texto": "Menú", "action_id": "menu_principal"},
+                {"texto": "Volver", "action_id": "volver"},
                 {"texto": "Cancelar", "action_id": "cancelar"},
             ]
             existing_ids = {
