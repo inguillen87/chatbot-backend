@@ -71,15 +71,15 @@ def test_responder_chatboc_municipio_flow(mock_responder_municipio, mock_db_sess
     assert "municipio_crear_reclamo_v2" in response.get("fuente", "")
     assert "¿Cuál es la dirección del problema?" in response.get("message_body", "")
 
-@patch('services.municipio_responder.llamar_openai')
+@patch('services.municipio_responder.llamar_gemini')
 @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat')
-def test_image_analysis_reclamo_municipio(mock_interpretar_imagen, mock_llamar_openai, client, mock_db_session):
+def test_image_analysis_reclamo_municipio(mock_interpretar_imagen, mock_llamar_gemini, client, mock_db_session):
     mock_interpretar_imagen.return_value = {
-        "kind": "image",
+        "es_reclamo": True,
         "categoria_sugerida": "Arreglo de calle",
         "descripcion_sugerida": "Bache en la calle"
     }
-    mock_llamar_openai.return_value = (
+    mock_llamar_gemini.return_value = (
         {
             "message_body": "Gracias por la imagen. Parece un reclamo sobre 'Arreglo de calle'. Para continuar, por favor decime la dirección.",
             "accion_backend": "crear_reclamo",
@@ -114,10 +114,10 @@ def test_image_analysis_reclamo_municipio(mock_interpretar_imagen, mock_llamar_o
 def test_document_processing_pedido_pyme(mock_db_session):
     pass
 
-@patch('services.municipio_responder.llamar_openai')
-def test_information_gathering_reclamo_municipio(mock_llamar_openai, client, mock_db_session):
+@patch('services.municipio_responder.llamar_gemini')
+def test_information_gathering_reclamo_municipio(mock_llamar_gemini, client, mock_db_session):
     # 1. Initial request to create a reclamo
-    mock_llamar_openai.return_value = (
+    mock_llamar_gemini.return_value = (
         {
             "message_body": "Entendido, iniciando un reclamo. ¿Cuál es la dirección del problema?",
             "accion_backend": "crear_reclamo",
@@ -147,7 +147,7 @@ def test_information_gathering_reclamo_municipio(mock_llamar_openai, client, moc
     assert chat_context.context_data['contexto_municipio_v2']['estado_conversacion'] == 'ESPERANDO_INFO_RECLAMO_LLM'
 
     # 2. User provides the location
-    mock_llamar_openai.return_value = (
+    mock_llamar_gemini.return_value = (
         {
             "message_body": "Gracias. Ahora necesito tu nombre completo.",
             "accion_backend": "crear_reclamo",

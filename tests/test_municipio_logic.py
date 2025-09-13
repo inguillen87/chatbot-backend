@@ -138,7 +138,7 @@ class MunicipioLogicTests(unittest.TestCase):
         db.session.commit()
 
         datos_interpretados = {
-            "kind": "image",
+            "es_reclamo": True,
             "categoria_sugerida": "luminaria",
             "descripcion_sugerida": "farola rota",
         }
@@ -232,7 +232,7 @@ class MunicipioLogicTests(unittest.TestCase):
         db.session.commit()
 
         datos_interpretados = {
-            "kind": "image",
+            "es_reclamo": True,
             "categoria_sugerida": "Luminaria",
             "descripcion_sugerida": "poste caido",
         }

@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from services.ticket_service import servicio_tickets
-from models import User, MunicipioTicket, PymeTicket, db
+from models import User
 
 
 estadisticas_bp = Blueprint("estadisticas", __name__, url_prefix="/estadisticas")
@@ -22,15 +22,8 @@ def mapa_calor_datos(current_user):
         categoria=args.get("categoria"),
         estado=args.get("estado"),
         satisfactorio=args.get("satisfactorio", type=lambda v: str(v).lower() == "true"),
-        agrupar=args.get("agrupar", default="true").lower() != "false",
     )
     return jsonify(puntos)
-
-
-@estadisticas_bp.route("/mapa_calor/datos", methods=["OPTIONS"])
-def mapa_calor_datos_options():
-    """Preflight CORS for heatmap data."""
-    return "", 200
 
 
 @estadisticas_bp.route("/usuarios/ubicaciones", methods=["GET"])
@@ -76,7 +69,6 @@ def estadisticas_tickets(current_user):
     if tipo == "pyme" and rubro_id is None:
         rubro_id = getattr(current_user, "rubro_id", None)
 
-    agrupar = args.get("agrupar", default="true").lower() != "false"
     puntos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
         tipo_ticket=tipo,
         municipio_id=municipio_id,
@@ -88,33 +80,6 @@ def estadisticas_tickets(current_user):
         satisfactorio=args.get(
             "satisfactorio", type=lambda v: str(v).lower() == "true"
         ),
-        agrupar=agrupar,
     )
-    key = "heatmap" if agrupar else "puntos"
-    return jsonify({key: puntos})
 
-
-@estadisticas_bp.route("/categorias", methods=["GET"])
-@token_requerido
-@admin_o_empleado_requerido
-def estadisticas_categorias(current_user):
-    """Lista las categorías existentes en los tickets."""
-    tipo = request.args.get("tipo", "municipio")
-    municipio_id = request.args.get("municipio_id", type=int)
-    rubro_id = request.args.get("rubro_id", type=int)
-
-    if tipo == "municipio":
-        query = db.session.query(MunicipioTicket.categoria).filter(MunicipioTicket.categoria.isnot(None))
-        if municipio_id is None:
-            municipio_id = getattr(current_user, "municipio_id", None)
-        if municipio_id is not None:
-            query = query.filter(MunicipioTicket.municipio_id == municipio_id)
-    else:
-        query = db.session.query(PymeTicket.categoria).filter(PymeTicket.categoria.isnot(None))
-        if rubro_id is None:
-            rubro_id = getattr(current_user, "rubro_id", None)
-        if rubro_id is not None:
-            query = query.filter(PymeTicket.rubro_id == rubro_id)
-
-    categorias = sorted({c[0] for c in query.distinct()})
-    return jsonify(categorias)
+    return jsonify({"heatmap": puntos})

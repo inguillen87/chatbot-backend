@@ -28,13 +28,13 @@ def test_stt_low_confidence(init_database, owner_user):
     assert len(response['options_list']) == 2
     assert response['options_list'][0]['action_id'] == 'confirmar_stt_si'
 
-@patch('services.municipio_responder.llamar_openai')
+@patch('services.municipio_responder.llamar_gemini')
 @patch('services.google_text_to_speech.TextToSpeechService.synthesize_speech')
-def test_tts_caching(mock_synthesize, mock_llamar_openai, init_database, owner_user, viewer_user):
+def test_tts_caching(mock_synthesize, mock_llamar_gemini, init_database, owner_user, viewer_user):
     viewer_user.prefers_audio = True
     db.session.commit()
 
-    mock_llamar_openai.return_value = (
+    mock_llamar_gemini.return_value = (
         {
             "message_body": "Esta es una respuesta de prueba.",
             "accion_backend": "responder_directamente",
@@ -51,9 +51,9 @@ def test_tts_caching(mock_synthesize, mock_llamar_openai, init_database, owner_u
     response = responder_municipio("Quiero hacer una consulta", owner_user, owner_user.rubro, viewer_user=viewer_user, chat_db_context=chat_context)
     assert response.get("generar_audio") is True
 
-@patch('services.municipio_responder.llamar_openai')
+@patch('services.municipio_responder.llamar_gemini')
 @patch('services.google_text_to_speech.TextToSpeechService.synthesize_speech')
-def test_prefers_audio_flag(mock_synthesize, mock_llamar_openai, init_database, owner_user):
+def test_prefers_audio_flag(mock_synthesize, mock_llamar_gemini, init_database, owner_user):
     viewer_user = User(name="Audio Lover", email="audio@lover.com", prefers_audio=True)
     viewer_user.set_password("testpassword")
     db.session.add(viewer_user)
@@ -62,7 +62,7 @@ def test_prefers_audio_flag(mock_synthesize, mock_llamar_openai, init_database, 
     db.session.add(chat_context)
     db.session.commit()
 
-    mock_llamar_openai.return_value = (
+    mock_llamar_gemini.return_value = (
         {
             "message_body": "Esta es una respuesta de prueba.",
             "accion_backend": "responder_directamente",
@@ -75,13 +75,13 @@ def test_prefers_audio_flag(mock_synthesize, mock_llamar_openai, init_database, 
 
 @patch('services.audio_transcription_service.transcribe_audio_from_url')
 @pytest.mark.skip(reason="WIP: This test is flaky and needs to be refactored.")
-@patch('services.municipio_responder.llamar_openai')
-def test_auto_learn_prefers_audio(mock_llamar_openai, mock_transcribe, init_database, owner_user, viewer_user, client, app):
+@patch('services.municipio_responder.llamar_gemini')
+def test_auto_learn_prefers_audio(mock_llamar_gemini, mock_transcribe, init_database, owner_user, viewer_user, client, app):
     import json
     import jwt
     from datetime import datetime, timedelta
 
-    mock_llamar_openai.return_value = {'message_body': 'Hola, he procesado tu audio.', 'accion_backend': 'responder_directamente'}
+    mock_llamar_gemini.return_value = {'message_body': 'Hola, he procesado tu audio.', 'accion_backend': 'responder_directamente'}
     mock_transcribe.return_value = {"transcript": "hola", "confidence": 0.9}
 
     viewer_user.prefers_audio = False

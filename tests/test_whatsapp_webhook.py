@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch, MagicMock, ANY
+from unittest.mock import patch, MagicMock
 import os
 import sys
 
@@ -168,7 +168,6 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
         ctx.context_data["last_options_sent"] = [
             {"id": "menu_principal", "texto": "Menú"},
-            {"id": "volver", "texto": "Volver"},
             {"id": "cancelar", "texto": "Cancelar"},
         ]
         ctx.context_data[CONTEXTO_MUNICIPIO] = {"esperando_info_llm": "ubicacion"}
@@ -198,7 +197,6 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
         ctx.context_data["last_options_sent"] = [
             {"id": "menu_principal", "texto": "Menú"},
-            {"id": "volver", "texto": "Volver"},
             {"id": "cancelar", "texto": "Cancelar"},
         ]
         ctx.context_data[CONTEXTO_MUNICIPIO] = {"esperando_info_llm_reclamo": "descripcion"}
@@ -219,37 +217,6 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             kwargs = mock_bot.call_args.kwargs
             self.assertEqual(kwargs["pregunta"], "2")
-
-    def test_cancel_clears_last_options_sent(self):
-        self._create_confirmed_session()
-        session_id = f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
-        ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
-        ctx.context_data["last_options_sent"] = [{"id": "foo", "texto": "Foo"}]
-        ctx.context_data[CONTEXTO_MUNICIPIO] = {"estado_conversacion": "EN_FLUJO_RECLAMO"}
-        db.session.add(ctx)
-        db.session.commit()
-
-        self.mock_validator.validate.return_value = True
-        payload = {
-            "To": f"whatsapp:{self.test_whatsapp_number_str}",
-            "From": f"whatsapp:{self.test_user_number_str}",
-            "Body": "cancelar",
-        }
-        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
-
-        menu_response = {
-            "message_body": "Menú principal",
-            "options_list": [{"texto": "Opción", "action_id": "opcion"}],
-            "message_type": "interactive_list",
-            "fuente": "greeting_handler_structured_menu_v2",
-        }
-
-        with patch('routes.whatsapp_webhook.responder_chatboc', return_value=menu_response):
-            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
-            self.assertEqual(response.status_code, 200)
-
-        session = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
-        self.assertNotIn("last_options_sent", session.context_data)
 
     def test_whatsapp_webhook_number_not_found_in_db(self):
         # Arrange
@@ -316,7 +283,6 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
              patch('routes.whatsapp_webhook.create_attachment_with_thumbnail') as mock_create_attachment, \
-             patch('services.audio_transcription_service.transcribe_audio_from_url') as mock_transcribe, \
              patch('routes.whatsapp_webhook.clasificar_adjunto_whatsapp') as mock_classifier:
             mock_bot.return_value = {"message_body": "Ok"}
             mock_adjunto = MagicMock()
@@ -382,11 +348,10 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.mock_twilio_create.call_count, 1)
-        first_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
-        self.assertIn('body', first_kwargs)
-        self.assertIn('media_url', first_kwargs)
-        self.assertEqual(first_kwargs['media_url'][0], 'http://example.com/promo.jpg')
+        self.mock_twilio_create.assert_called()
+        _, kwargs_twilio = self.mock_twilio_create.call_args
+        self.assertIn('media_url', kwargs_twilio)
+        self.assertEqual(kwargs_twilio['media_url'][0], 'http://example.com/promo.jpg')
 
     @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_docx_attachment(self, mock_requests_get):
@@ -406,7 +371,6 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
              patch('routes.whatsapp_webhook.create_attachment_with_thumbnail') as mock_create_attachment, \
-             patch('services.audio_transcription_service.transcribe_audio_from_url') as mock_transcribe, \
              patch('routes.whatsapp_webhook.clasificar_adjunto_whatsapp') as mock_classifier:
             mock_bot.return_value = {"message_body": "Ok"}
             mock_adjunto = MagicMock()
@@ -468,7 +432,6 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
              patch('routes.whatsapp_webhook.create_attachment_with_thumbnail') as mock_create_attachment, \
-             patch('services.audio_transcription_service.transcribe_audio_from_url') as mock_transcribe, \
              patch('routes.whatsapp_webhook.clasificar_adjunto_whatsapp') as mock_classifier:
             mock_bot.return_value = {"message_body": "Ok"}
             mock_adjunto = MagicMock()
@@ -494,7 +457,13 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             self.assertEqual(response.data.decode(), "OK")
 
             mock_bot.assert_called_once()
-            mock_transcribe.assert_not_called()
+            _, kwargs = mock_bot.call_args
+            self.assertIn("uploaded_file_info", kwargs)
+            self.assertEqual(kwargs["uploaded_file_info"]["mime_type"], "image/jpeg")
+            self.assertIn("datos_interpretados_archivo", kwargs)
+            self.assertEqual(
+                kwargs["datos_interpretados_archivo"], {"categoria_sugerida": "reclamo"}
+            )
 
             self.mock_twilio_create.assert_called_once()
             _, kwargs_twilio = self.mock_twilio_create.call_args
@@ -594,285 +563,6 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             self.mock_welcome.assert_not_called()
 
     @patch('routes.whatsapp_webhook.requests.get')
-    def test_whatsapp_webhook_video_attachment(self, mock_requests_get):
-        mock_response = MagicMock()
-        mock_response.raise_for_status.return_value = None
-        mock_response.content = b'fake-video-content'
-        mock_requests_get.return_value = mock_response
-
-        self.mock_validator.validate.return_value = True
-        mock_twilio_message = MagicMock()
-        mock_twilio_message.sid = "SM_video_test"
-        self.mock_twilio_create.return_value = mock_twilio_message
-
-        self._create_confirmed_session()
-
-        with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
-             patch('routes.whatsapp_webhook.create_attachment_with_thumbnail') as mock_create_attachment, \
-             patch('services.audio_transcription_service.transcribe_audio_from_url') as mock_transcribe, \
-             patch('routes.whatsapp_webhook.analyze_video_from_url') as mock_video_analyze:
-            mock_bot.return_value = {"message_body": "Ok"}
-            mock_adjunto = MagicMock()
-            mock_adjunto.id = 4
-            mock_adjunto.url = 'http://fake.storage/test.mp4'
-            mock_adjunto.mime = 'video/mp4'
-            mock_adjunto.nombre_original = 'test.mp4'
-            mock_create_attachment.return_value = mock_adjunto
-            mock_video_analyze.return_value = {
-                "category": "Arbolado",
-                "description": "rama",
-                "evidence": "video",
-            }
-
-            payload = {
-                "To": f"whatsapp:{self.test_whatsapp_number_str}",
-                "From": f"whatsapp:{self.test_user_number_str}",
-                "Body": "Video", 
-                "MediaUrl0": "http://example.com/test.mp4",
-                "MediaContentType0": "video/mp4",
-            }
-            headers = {"X-Twilio-Signature": "dummy_signature_valid"}
-
-            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
-
-            self.assertEqual(response.status_code, 200)
-            mock_bot.assert_called_once()
-            mock_transcribe.assert_not_called()
-            mock_video_analyze.assert_called_once_with(
-                "http://example.com/test.mp4", ANY, ANY
-            )
-            _, kwargs_bot = mock_bot.call_args
-            self.assertEqual(
-                kwargs_bot.get("datos_interpretados_archivo"),
-                {"category": "Arbolado", "description": "rama", "evidence": "video"},
-            )
-
-    @patch('routes.whatsapp_webhook.responder_chatboc')
-    def test_state_hint_persists_in_session(self, mock_bot):
-        """Ensure next_state_hint from bot updates the stored conversation state."""
-        self._create_confirmed_session()
-        session = ChatSessionContext.query.first()
-        session.context_data[CONTEXTO_MUNICIPIO] = {"estado_conversacion": "ESPERANDO_DIRECCION_RECLAMO"}
-        db.session.commit()
-
-        mock_bot.return_value = {"message_body": "Ok", "next_state_hint": "ESPERANDO_DATOS_CONTACTO"}
-
-        payload = {
-            "To": f"whatsapp:{self.test_whatsapp_number_str}",
-            "From": f"whatsapp:{self.test_user_number_str}",
-            "Body": "hola",
-        }
-        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
-
-        self.client.post("/webhook/whatsapp", data=payload, headers=headers)
-
-        updated = ChatSessionContext.query.first().context_data[CONTEXTO_MUNICIPIO]["estado_conversacion"]
-        self.assertEqual(updated, "ESPERANDO_DATOS_CONTACTO")
-
-    @patch('routes.whatsapp_webhook.responder_chatboc')
-    def test_state_hint_survives_context_merge(self, mock_bot):
-        """State hint should persist even when contexto_municipio_v2 is updated."""
-        self._create_confirmed_session()
-        session = ChatSessionContext.query.first()
-        session.context_data[CONTEXTO_MUNICIPIO] = {"estado_conversacion": "ESPERANDO_DIRECCION_RECLAMO"}
-        db.session.commit()
-
-        mock_bot.return_value = {
-            "message_body": "Ok",
-            "next_state_hint": "ESPERANDO_DATOS_CONTACTO",
-            "contexto_actualizado": {CONTEXTO_MUNICIPIO: {"ultimo_menu": "principal"}},
-        }
-
-        payload = {
-            "To": f"whatsapp:{self.test_whatsapp_number_str}",
-            "From": f"whatsapp:{self.test_user_number_str}",
-            "Body": "hola",
-        }
-        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
-
-        self.client.post("/webhook/whatsapp", data=payload, headers=headers)
-
-        stored_ctx = ChatSessionContext.query.first().context_data[CONTEXTO_MUNICIPIO]
-        self.assertEqual(stored_ctx["estado_conversacion"], "ESPERANDO_DATOS_CONTACTO")
-        self.assertEqual(stored_ctx["ultimo_menu"], "principal")
-
-    @patch('routes.whatsapp_webhook.responder_chatboc')
-    def test_interactive_sends_plain_text_first(self, mock_bot):
-        """Interactive payloads should always send a text message fallback before the interactive one."""
-        self._create_confirmed_session()
-        mock_bot.return_value = {
-            "message_body": "Hola",
-            "options_list": [{"texto": "Opción 1", "id": "opt1"}],
-            "message_type": "interactive_buttons",
-            "image_url": "http://example.com/promo.jpg",
-        }
-
-        payload = {
-            "To": f"whatsapp:{self.test_whatsapp_number_str}",
-            "From": f"whatsapp:{self.test_user_number_str}",
-            "Body": "hola",
-        }
-        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
-
-        with patch.dict(os.environ, {"WHATSAPP_ALLOW_INTERACTIVE": "true"}), \
-             patch('services.response_formatter.WHATSAPP_ALLOW_INTERACTIVE', True):
-            self.client.post("/webhook/whatsapp", data=payload, headers=headers)
-
-        # Expect two sends: plain text with optional image, then the interactive payload
-        self.assertEqual(self.mock_twilio_create.call_count, 2)
-        first_call = self.mock_twilio_create.call_args_list[0].kwargs
-        second_call = self.mock_twilio_create.call_args_list[1].kwargs
-
-        self.assertIn('body', first_call)
-        self.assertIn('media_url', first_call)
-
-        self.assertIn('body', second_call)
-        self.assertNotIn('media_url', second_call)
-        self.assertIn('persistent_action', second_call)
-
-    @patch('routes.whatsapp_webhook.generar_audio_con_fallback')
-    @patch('routes.whatsapp_webhook.reverse_geocode')
-    def test_location_message_sends_confirmation(self, mock_geo, mock_tts):
-        """Location messages should trigger text and audio confirmations."""
-        self._create_confirmed_session()
-        mock_geo.return_value = {"display": "Fake Street 123"}
-        fake_audio = "/static/audio/loc.mp3"
-        mock_tts.return_value = fake_audio
-
-        payload = {
-            "To": f"whatsapp:{self.test_whatsapp_number_str}",
-            "From": f"whatsapp:{self.test_user_number_str}",
-            "MessageType": "location",
-            "Latitude": "-33.0",
-            "Longitude": "-68.0",
-            "SmsSid": "SMloc",
-            "SmsMessageSid": "SMloc",
-            "SmsStatus": "received",
-            "NumMedia": "0",
-            "Body": "",
-        }
-        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
-
-        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.mock_twilio_create.call_count, 2)
-        text_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
-        self.assertIn("Recibí tu ubicación", text_kwargs["body"])
-        audio_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
-        self.assertIn(fake_audio, audio_kwargs.get("media_url", [])[0])
-        mock_tts.assert_called_once()
-
-    @patch('routes.whatsapp_webhook.generar_audio_con_fallback')
-    @patch('routes.whatsapp_webhook.reverse_geocode')
-    def test_location_during_reclamo_skips_intent_prompt(self, mock_geo, mock_tts):
-        """Location while a claim awaits address should ask for confirmation instead of intent."""
-        self._create_confirmed_session()
-        session = ChatSessionContext.query.first()
-        session.context_data[CONTEXTO_MUNICIPIO] = {
-            "estado_conversacion": "EN_FLUJO_RECLAMO",
-            "reclamo_flow_v2": {
-                "state": "ESPERANDO_DIRECCION",
-                "datos_reclamo": {"categoria": "Bache", "descripcion": "desc"},
-            },
-        }
-        from sqlalchemy.orm.attributes import flag_modified
-        flag_modified(session, "context_data")
-        db.session.commit()
-        mock_geo.return_value = {"display": "Fake Street 123"}
-        mock_tts.return_value = "/static/audio/loc.mp3"
-        payload = {
-            "To": f"whatsapp:{self.test_whatsapp_number_str}",
-            "From": f"whatsapp:{self.test_user_number_str}",
-            "MessageType": "location",
-            "Latitude": "-33.0",
-            "Longitude": "-68.0",
-            "SmsSid": "SMloc2",
-            "SmsMessageSid": "SMloc2",
-            "SmsStatus": "received",
-            "NumMedia": "0",
-            "Body": "",
-        }
-        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
-        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.mock_twilio_create.call_count, 2)
-        text_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
-        self.assertIn("¿Es acá?", text_kwargs["body"])
-        saved = ChatSessionContext.query.first().context_data["last_options_sent"]
-        ids = [o.get("action_id") for o in saved]
-        self.assertIn("confirmar_ubicacion", ids)
-        self.assertIn("editar_ubicacion", ids)
-
-    @patch('routes.whatsapp_webhook.generar_audio_con_fallback')
-    @patch('routes.whatsapp_webhook.reverse_geocode')
-    def test_location_in_legacy_direccion_state_updates_context(self, mock_geo, mock_tts):
-        """Sending a location while waiting for address should move to confirmation without restarting."""
-        self._create_confirmed_session()
-        session = ChatSessionContext.query.first()
-        session.context_data[CONTEXTO_MUNICIPIO] = {
-            "estado_conversacion": "ESPERANDO_DIRECCION_RECLAMO",
-            "datos_parciales_llm_reclamo": {},
-        }
-        from sqlalchemy.orm.attributes import flag_modified
-        flag_modified(session, "context_data")
-        db.session.commit()
-
-        mock_geo.return_value = {"display": "Fake Street 123", "barrio": "Centro"}
-        mock_tts.return_value = "/static/audio/loc.mp3"
-
-        payload = {
-            "To": f"whatsapp:{self.test_whatsapp_number_str}",
-            "From": f"whatsapp:{self.test_user_number_str}",
-            "MessageType": "location",
-            "Latitude": "-33.0",
-            "Longitude": "-68.0",
-            "SmsSid": "SMloc3",
-            "SmsMessageSid": "SMloc3",
-            "SmsStatus": "received",
-            "NumMedia": "0",
-            "Body": "",
-        }
-        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
-        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
-        self.assertEqual(response.status_code, 200)
-
-        ctx = ChatSessionContext.query.first().context_data
-        ctxm = ctx[CONTEXTO_MUNICIPIO]
-        self.assertEqual(ctxm.get("estado_conversacion"), "ESPERANDO_CONFIRMACION_UBICACION")
-        self.assertEqual(ctxm.get("datos_parciales_llm_reclamo", {}).get("distrito"), "Centro")
-        ids = [o.get("action_id") for o in ctx.get("last_options_sent", [])]
-        self.assertIn("confirmar_ubicacion", ids)
-        self.assertIn("editar_ubicacion", ids)
-
-    def test_location_message_retries_on_failure(self):
-        """If sending the confirmation fails, the webhook should retry."""
-        self._create_confirmed_session()
-        with patch('routes.whatsapp_webhook.reverse_geocode') as mock_geo, \
-             patch('routes.whatsapp_webhook.time.sleep', return_value=None):
-            mock_geo.return_value = {"display": "Fake Street 123"}
-            success_msg = MagicMock()
-            success_msg.sid = "SMretry"
-            self.mock_twilio_create.side_effect = [Exception("fail"), success_msg]
-
-            payload = {
-                "To": f"whatsapp:{self.test_whatsapp_number_str}",
-                "From": f"whatsapp:{self.test_user_number_str}",
-                "MessageType": "location",
-                "Latitude": "-33.0",
-                "Longitude": "-68.0",
-                "SmsSid": "SMloc",
-                "SmsMessageSid": "SMloc",
-                "SmsStatus": "received",
-                "NumMedia": "0",
-                "Body": "",
-            }
-            headers = {"X-Twilio-Signature": "dummy_signature_valid"}
-
-            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(self.mock_twilio_create.call_count, 2)
-
-    @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_audio_attachment_transcribes_text(self, mock_requests_get):
         mock_response = MagicMock()
         mock_response.raise_for_status.return_value = None
@@ -915,8 +605,8 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             mock_bot.assert_called_once()
             kwargs = mock_bot.call_args.kwargs
             self.assertEqual(kwargs["pregunta"], "hola que tal")
-            self.assertIn("datos_interpretados_archivo", kwargs)
-            self.assertEqual(kwargs["datos_interpretados_archivo"]["raw_text"], "hola que tal")
+            self.assertIn("uploaded_file_info", kwargs)
+            self.assertEqual(kwargs["uploaded_file_info"]["transcribed_text"], "hola que tal")
             mock_classifier.assert_not_called()
             mock_transcribe.assert_called_once()
 
@@ -929,15 +619,3 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-def test_deep_merge_preserves_nested_fields():
-    from routes.whatsapp_webhook import deep_merge_dict
-
-    original = {"contexto_municipio_v2": {"estado_conversacion": "A"}, "other": 1}
-    update = {"contexto_municipio_v2": {"last_options_sent": [1]}, "other": 2}
-
-    merged = deep_merge_dict(original, update)
-
-    assert merged["contexto_municipio_v2"]["estado_conversacion"] == "A"
-    assert merged["contexto_municipio_v2"]["last_options_sent"] == [1]
-    assert merged["other"] == 2

@@ -4,87 +4,12 @@ import unicodedata
 import logging
 from fuzzywuzzy import process, fuzz
 
-from .herramientas_municipio import categorizar_reclamo_por_palabra_clave
-
-
-# Umbral reducido para permitir lenguaje natural más libre
-INTENT_THRESHOLD = 0.35
-
-# Palabras clave que disparan el flujo de reclamo
-KW_RECLAMO = [
-    "árbol",
-    "arbol",
-    "rama",
-    "luminaria",
-    "poste",
-    "bache",
-    "pozo",
-    "agujero",
-    "hueco",
-    "vereda",
-    "basura",
-    "residuos",
-]
-
-# Mapeo rápido de palabras clave a categorías de reclamo
-KEYWORDS_CATEGORIA = {
-    "arbol": "Arbolado",
-    "árbol": "Arbolado",
-    "ramas": "Arbolado",
-    "hoja": "Arbolado",
-    "hojas": "Arbolado",
-    "luminaria": "Luminaria",
-    "luz": "Luminaria",
-    "poste": "Luminaria",
-    "alumbrado": "Luminaria",
-    # Daño en la vía pública
-    "bache": "Arreglo de calle",
-    "pozo": "Arreglo de calle",
-    "agujero": "Arreglo de calle",
-    "agujeros": "Arreglo de calle",
-    "hueco": "Arreglo de calle",
-    "huecos": "Arreglo de calle",
-    "vereda": "Arreglo de calle",
-    "vereda rota": "Arreglo de calle",
-    "calle": "Arreglo de calle",
-    "calzada": "Arreglo de calle",
-    "pavimento": "Arreglo de calle",
-    "basura": "Limpieza",
-    "residuos": "Limpieza",
-    "perdida": "Agua",
-    "pérdida": "Agua",
-    "fuga": "Agua",
-    "agua": "Agua",
-    "perro": "Animales",
-    "animal": "Animales",
-}
-
-
-def clasificar_por_kw_y_cv(texto: str) -> str:
-    return categorizar_reclamo_por_palabra_clave(texto)
-
-
-def enrutar_a_reclamo(categoria: str) -> dict:
-    return {"intent": "reclamo", "categoria": categoria}
-
-
-def fast_reclamo_detect(text: str):
-    """Detecta rápidamente si el texto contiene palabras clave de reclamo."""
-    t = text.lower()
-    if any(k in t for k in KW_RECLAMO):
-        categoria = clasificar_por_kw_y_cv(text)
-        return enrutar_a_reclamo(categoria)
-    for k, cat in KEYWORDS_CATEGORIA.items():
-        if k in t:
-            return {"intent": "reclamo", "categoria": cat}
-    return None
-
 logger = logging.getLogger(__name__)
 
 class IntentClassifier:
-    def __init__(self, intents_file_path, min_confidence: float = INTENT_THRESHOLD * 100):
+    def __init__(self, intents_file_path, min_confidence=85):
         self.intents_file_path = intents_file_path
-        self.min_confidence = int(min_confidence)
+        self.min_confidence = min_confidence
         self.intents_by_rubro = self._load_intents()
 
     def _load_intents(self):

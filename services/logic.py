@@ -8,7 +8,7 @@ if project_root_logic not in sys.path:
     sys.path.insert(0, project_root_logic)
 
 from flask import current_app
-from extensions import db
+from models import db
 from services.interpretacion_service import interpretacion_service
 from services.archivo_service import archivo_service
 # servicio_tickets se importa/usa en los handlers específicos (municipios.py, pymes.py)
@@ -53,8 +53,6 @@ from services.llm_utils import clasificar_entidad_con_llm
 from services.municipio_responder import responder_municipio
 from services.pymes import responder_pyme
 from services.response_formatter import render_audio_text
-from services import preferences
-from services.ticket_draft import get_ticket_draft, merge_ticket_fields
 
 # PROMPT_CLASIFICACION_INTENCION y _clasificar_intencion_con_llm han sido eliminados.
 # La clasificación de intención ahora es responsabilidad de llamar_llm_con_fallback con JULES_SYSTEM_PROMPT.
@@ -110,11 +108,6 @@ def responder_chatboc(
             chat_db_context.context_data.pop('stt_pending_confirmation', None)
             safe_flag_modified(chat_db_context, "context_data")
         return {"message_body": "Entendido. Por favor, envía tu mensaje de nuevo."}
-
-    # Ensure ticket draft structure exists in session context
-    if chat_db_context and chat_db_context.context_data is not None:
-        municipio_ctx = chat_db_context.context_data.setdefault("contexto_municipio_v2", {})
-        get_ticket_draft(municipio_ctx)
 
     # 1. Determinar el 'effective_owner_user' (la entidad o bot dueño)
     effective_owner_user = owner_user
@@ -194,168 +187,59 @@ def responder_chatboc(
     # --- Inicio: Lógica de manejo de archivo adjunto y su análisis ---
     uploaded_file_info = kwargs.get("uploaded_file_info")
     datos_interpretados_de_archivo = kwargs.get("datos_interpretados_archivo")
-    procesamiento_archivo_en_curso = False  # Nueva bandera
-
-    ids_archivos_para_asociar = []
-    if chat_db_context and chat_db_context.context_data is not None:
-        ids_archivos_para_asociar = list(
-            chat_db_context.context_data.get("ids_archivos_para_asociar", [])
-        )
+    archivo_id_para_asociar_al_ticket = None
+    procesamiento_archivo_en_curso = False # Nueva bandera
 
     if uploaded_file_info and isinstance(uploaded_file_info, dict):
-        logger.info(
-            f"DEBUG: Processing uploaded_file_info in responder_chatboc: {uploaded_file_info}"
-        )
-        archivo_id = uploaded_file_info.get("id")
-        if archivo_id:
-            if archivo_id not in ids_archivos_para_asociar:
-                ids_archivos_para_asociar.append(archivo_id)
-                if chat_db_context and chat_db_context.context_data is not None:
-                    chat_db_context.context_data["ids_archivos_para_asociar"] = (
-                        ids_archivos_para_asociar
-                    )
-                    municipio_ctx = chat_db_context.context_data.setdefault(
-                        "contexto_municipio_v2", {}
-                    )
-                    merge_ticket_fields(
-                        municipio_ctx, {"adjuntos": ids_archivos_para_asociar}
-                    )
-                    safe_flag_modified(chat_db_context, "context_data")
-            current_app.logger.info(
-                f"[LOGIC] Procesando uploaded_file_info para ArchivoAdjunto ID: {archivo_id}"
-            )
-        if uploaded_file_info.get("source") == "whatsapp":
+        logger.info(f"DEBUG: Processing uploaded_file_info in responder_chatboc: {uploaded_file_info}")
+        if uploaded_file_info.get("id"):
+            archivo_id = uploaded_file_info.get("id")
+            current_app.logger.info(f"[LOGIC] Procesando uploaded_file_info para ArchivoAdjunto ID: {archivo_id}")
+            # El resto de la lógica para archivos subidos desde el frontend va aquí
+        elif uploaded_file_info.get("source") == "whatsapp":
             from services.document_processing_service import document_processing_service
             from services.interpretacion_imagen_service import interpretar_imagen_para_chat
             import requests
 
-            media_url = uploaded_file_info.get("public_url") or uploaded_file_info.get("url")
+            media_url = uploaded_file_info.get("url")
             media_content_type = uploaded_file_info.get("mime_type")
 
+            # Expose basic photo metadata downstream so municipal handlers know a
+            # picture was already provided. This allows the claim flow to reuse the
+            # initial image instead of prompting for another one after location is
+            # sent.
+            if media_content_type and media_content_type.startswith("image/"):
+                kwargs["es_foto"] = True
+                kwargs["foto_url"] = media_url
+
             try:
-                file_content = None
-                final_url = media_url
+                response = requests.get(media_url, auth=(current_app.config.get("TWILIO_ACCOUNT_SID"), current_app.config.get("TWILIO_AUTH_TOKEN")))
+                response.raise_for_status()
+                file_content = response.content
 
-                if media_url and media_url.startswith(("http://", "https://")):
-                    response = requests.get(
-                        media_url,
-                        auth=(
-                            current_app.config.get("TWILIO_ACCOUNT_SID"),
-                            current_app.config.get("TWILIO_AUTH_TOKEN"),
-                        ),
-                    )
-                    response.raise_for_status()
-                    file_content = response.content
-                elif media_url:
-                    local_path = os.path.join(
-                        current_app.root_path, media_url.lstrip("/")
-                    )
-                    if os.path.exists(local_path):
-                        with open(local_path, "rb") as f:
-                            file_content = f.read()
-                        base = current_app.config.get("APP_PUBLIC_BASE_URL")
-                        if base and base.startswith(("http://", "https://")):
-                            final_url = base.rstrip("/") + media_url
-                            uploaded_file_info.setdefault("public_url", final_url)
-                    else:
-                        base = current_app.config.get("APP_PUBLIC_BASE_URL")
-                        if base and base.startswith(("http://", "https://")):
-                            final_url = base.rstrip("/") + media_url
-                            response = requests.get(
-                                final_url,
-                                auth=(
-                                    current_app.config.get("TWILIO_ACCOUNT_SID"),
-                                    current_app.config.get("TWILIO_AUTH_TOKEN"),
-                                ),
-                            )
-                            response.raise_for_status()
-                            file_content = response.content
-                            uploaded_file_info["public_url"] = final_url
-                        else:
-                            raise FileNotFoundError(local_path)
-                else:
-                    raise ValueError("Media URL no válida")
-
-                filename = uploaded_file_info.get("filename", "").lower()
-                document_mime_types = {
-                    "application/pdf",
-                    "application/msword",
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    "text/plain",
-                }
-
-                if media_content_type and media_content_type.startswith("audio/"):
-                    transcribed_text = uploaded_file_info.get("transcribed_text")
-                    if not transcribed_text and final_url:
-                        from services.audio_transcription_service import (
-                            transcribe_audio_from_url,
-                        )
-
-                        transcribed_text = transcribe_audio_from_url(
-                            final_url,
-                            current_app.config.get("TWILIO_ACCOUNT_SID"),
-                            current_app.config.get("TWILIO_AUTH_TOKEN"),
-                        )
-                        if transcribed_text:
-                            uploaded_file_info["transcribed_text"] = transcribed_text
-                    datos_interpretados_de_archivo = {
-                        "transcribed_text": transcribed_text or ""
-                    }
-                elif media_content_type and media_content_type.startswith("image/"):
-                    kwargs["es_foto"] = True
-                    kwargs["foto_url"] = final_url
+                if media_content_type.startswith("image/"):
                     datos_interpretados_de_archivo = interpretar_imagen_para_chat(
                         archivo_adjunto=uploaded_file_info,
-                        tipo_interpretacion="reclamo_auto_descripcion_categoria",
+                        tipo_interpretacion="reclamo_auto_descripcion_categoria"
                     )
-                elif media_content_type and media_content_type.startswith("audio/"):
-                    # Audio already transcribed upstream; nothing else to do
-                    pass
                 else:
-                    datos_interpretados_de_archivo = document_processing_service.process_document(
-                        file_content, media_content_type
-                    )
-            except (requests.exceptions.RequestException, OSError, ValueError) as e:
-                current_app.logger.error(
-                    f"Error descargando archivo de WhatsApp: {e}"
-                )
-                datos_interpretados_de_archivo = {
-                    "error": "No se pudo descargar el archivo."
-                }
-
-    archivo_id_para_asociar_al_ticket = (
-        ids_archivos_para_asociar[-1] if ids_archivos_para_asociar else None
-    )
+                    doc_ai_result = document_processing_service.process_document(file_content, media_content_type)
+                    if doc_ai_result:
+                        # Aquí puedes procesar el resultado de Document AI
+                        # Por ahora, solo extraemos el texto
+                        datos_interpretados_de_archivo = {"texto_extraido": doc_ai_result.text}
+                    else:
+                        datos_interpretados_de_archivo = {"error": "No se pudo procesar el documento."}
+            except requests.exceptions.RequestException as e:
+                current_app.logger.error(f"Error descargando archivo de WhatsApp: {e}")
+                datos_interpretados_de_archivo = {"error": "No se pudo descargar el archivo."}
 
     # Actualizar kwargs para pasar la información a los handlers específicos
     kwargs["datos_interpretados_archivo"] = datos_interpretados_de_archivo
     kwargs["archivo_id_para_asociar"] = archivo_id_para_asociar_al_ticket
-    kwargs["ids_archivos_para_asociar"] = ids_archivos_para_asociar
     kwargs["procesamiento_archivo_en_curso"] = procesamiento_archivo_en_curso
 
-    if (
-        chat_db_context
-        and chat_db_context.context_data is not None
-        and datos_interpretados_de_archivo
-    ):
-        municipio_ctx = chat_db_context.context_data.setdefault(
-            "contexto_municipio_v2", {}
-        )
-        extracted = {}
-        if datos_interpretados_de_archivo.get("categoria_sugerida"):
-            extracted["categoria"] = datos_interpretados_de_archivo["categoria_sugerida"]
-        if datos_interpretados_de_archivo.get("descripcion_sugerida"):
-            extracted["descripcion"] = datos_interpretados_de_archivo["descripcion_sugerida"]
-        if datos_interpretados_de_archivo.get("direccion_sugerida"):
-            extracted["direccion"] = datos_interpretados_de_archivo["direccion_sugerida"]
-        if datos_interpretados_de_archivo.get("coordenadas"):
-            coords = datos_interpretados_de_archivo["coordenadas"]
-            extracted["lat"] = coords.get("lat")
-            extracted["lng"] = coords.get("lng")
-        if merge_ticket_fields(municipio_ctx, extracted):
-            safe_flag_modified(chat_db_context, "context_data")
-
-    if "uploaded_file_info" in kwargs:  # Limpiar para no pasarlo si ya se usó.
+    if "uploaded_file_info" in kwargs: # Limpiar para no pasarlo si ya se usó.
         del kwargs["uploaded_file_info"]
     # --- Fin: Lógica de manejo de archivo adjunto ---
 
@@ -418,85 +302,10 @@ def responder_chatboc(
     if not isinstance(response_data, dict):
         response_data = {}
 
+    # Always enable audio responses for accessibility
     context_data = chat_db_context.context_data if chat_db_context else {}
-    audio_requested = False
-    if channel == "whatsapp":
-        normalized_q = normalizar_texto(str(pregunta))
-        if normalized_q == "audio on":
-            if chat_db_context:
-                preferences.set_audio_enabled(context_data, True)
-                safe_flag_modified(chat_db_context, "context_data")
-            if current_user is not None:
-                current_user.prefers_audio = True
-                db.session.add(current_user)
-                db.session.commit()
-            return {"message_body": "🔊 Activé los audios.", "message_type": "text"}
-        if normalized_q == "audio off":
-            if chat_db_context:
-                preferences.set_audio_enabled(context_data, False)
-                safe_flag_modified(chat_db_context, "context_data")
-            if current_user is not None:
-                current_user.prefers_audio = False
-                db.session.add(current_user)
-                db.session.commit()
-            return {"message_body": "📝 Desactivé los audios.", "message_type": "text"}
-        if any(
-            phrase in normalized_q
-            for phrase in ["mandamelo en audio", "manda en audio", "no puedo leer"]
-        ):
-            audio_requested = True
-            if chat_db_context:
-                preferences.set_audio_enabled(context_data, True)
-                safe_flag_modified(chat_db_context, "context_data")
-        elif "audio" in normalized_q or "escuchar" in normalized_q:
-            audio_requested = True
-    tts_forced = context_data.get("tts_forced")
-    policy = os.getenv("WHATSAPP_TTS_POLICY", "auto").lower()
-    generar_audio = False
-    reason = None
-    if isinstance(response_data, dict):
-        long_msg = len(
-            (response_data.get('message_body') or '')
-            + (response_data.get('message_to_user') or '')
-        ) > 150
-        is_menu = response_data.get('message_type') in {'interactive_buttons', 'options_list'}
-        pref_audio = preferences.is_audio_enabled(context_data, user=current_user)
-        if policy == 'always':
-            generar_audio = True
-            reason = 'policy'
-        elif policy == 'off':
-            if audio_requested or tts_forced:
-                generar_audio = True
-                reason = 'pedido_usuario' if audio_requested else 'forzado'
-        else:  # auto
-            if channel == 'whatsapp':
-                if audio_requested or tts_forced:
-                    generar_audio = True
-                    reason = 'pedido_usuario' if audio_requested else 'forzado'
-            else:
-                if tts_forced:
-                    generar_audio = True
-                    reason = 'forzado'
-                elif audio_requested:
-                    generar_audio = True
-                    reason = 'pedido_usuario'
-                elif pref_audio:
-                    generar_audio = True
-                    reason = 'preferencia'
-                elif long_msg and not is_menu:
-                    generar_audio = True
-                    reason = 'largo'
-                elif response_data.get('es_confirmacion_final'):
-                    generar_audio = True
-                    reason = 'confirmacion'
-        if is_menu and not pref_audio and reason not in {'pedido_usuario', 'forzado'}:
-            generar_audio = False
-            reason = None
-        response_data['generar_audio'] = generar_audio
-        if generar_audio:
-            logger.info(f"tts_sent=true reason={reason}")
-        else:
-            logger.info("tts_sent=false")
+    if isinstance(response_data, dict) and not response_data.get('generar_audio'):
+        response_data['generar_audio'] = True
 
     # --- Audio Response Generation ---
     if isinstance(response_data, dict) and response_data.get('generar_audio'):
@@ -514,11 +323,7 @@ def responder_chatboc(
             text_to_speak = f"{base_text}\n{text_to_speak}"
         if text_to_speak:
             from services.tts_orchestrator import generar_audio_con_fallback
-            audio_url = generar_audio_con_fallback(
-                text_to_speak,
-                channel=channel,
-                allow_if_policy_off=policy == 'off',
-            )
+            audio_url = generar_audio_con_fallback(text_to_speak)
             if audio_url:
                 response_data['audio_url'] = audio_url
                 logger.info(f"Generated audio response at {audio_url}")

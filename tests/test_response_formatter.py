@@ -1,9 +1,9 @@
 import os
 
-# Enable interactive responses for these tests even though production defaults
-# to plain text. Set the env var before importing the module so the flag is
-# read correctly.
-os.environ["WHATSAPP_ALLOW_INTERACTIVE"] = "true"
+# Enable interactive responses for these tests even though the production
+# default now falls back to plain text menus. Set the env var before importing
+# the module so the flag is read correctly.
+os.environ["WHATSAPP_FORCE_TEXT"] = "false"
 
 import unittest
 from unittest import mock
@@ -11,19 +11,7 @@ import json
 import services.response_formatter as rf
 from services.response_formatter import build_interactive_response, render_audio_text
 
-
 class TestResponseFormatter(unittest.TestCase):
-
-    def test_prompt_includes_generic_location_question(self):
-        from services.chatbot_prompts import JULES_SYSTEM_PROMPT
-        self.assertIn(
-            "¿En qué barrio o distrito ocurre el problema?",
-            JULES_SYSTEM_PROMPT,
-        )
-        self.assertIn(
-            "evita citar la descripción completa del problema",
-            JULES_SYSTEM_PROMPT,
-        )
 
     def test_whatsapp_interactive_buttons_1_option(self):
         response = build_interactive_response(
@@ -103,7 +91,7 @@ class TestResponseFormatter(unittest.TestCase):
         expected_body = (
             "Demasiadas opciones de lista:\n\n" +
             "\n".join([f"*{i+1}*. Lista Item {i}" for i in range(15)]) +
-            "\n*16*. Menú\n*17*. Volver\n*18*. Cancelar\n\nResponde con el número de la opción que necesites."
+            "\n*16*. Menú\n*17*. Cancelar\n\nResponde con el número de la opción que necesites."
         )
         self.assertEqual(response["text"]["body"], expected_body)
 
@@ -118,7 +106,7 @@ class TestResponseFormatter(unittest.TestCase):
             options=[], body_text="Hola mundo", channel="whatsapp", message_type='text'
         )
         self.assertEqual(response["type"], "text")
-        expected_body = "Hola mundo\n\n*1*. Menú\n*2*. Volver\n*3*. Cancelar\n\nResponde con el número de la opción que necesites."
+        expected_body = "Hola mundo\n\n*1*. Menú\n*2*. Cancelar\n\nResponde con el número de la opción que necesites."
         self.assertEqual(response["text"]["body"], expected_body)
 
     def test_whatsapp_text_message_with_image(self):
@@ -136,7 +124,7 @@ class TestResponseFormatter(unittest.TestCase):
             options=[], body_text="Sin opciones", channel="whatsapp", message_type='interactive_buttons'
         )
         self.assertEqual(response["type"], "text")
-        expected_body = "Sin opciones\n\n*1*. Menú\n*2*. Volver\n*3*. Cancelar\n\nResponde con el número de la opción que necesites."
+        expected_body = "Sin opciones\n\n*1*. Menú\n*2*. Cancelar\n\nResponde con el número de la opción que necesites."
         self.assertEqual(response["text"]["body"], expected_body)
 
     def test_whatsapp_list_section_and_button_text_from_original_response(self):
@@ -169,9 +157,9 @@ class TestResponseFormatter(unittest.TestCase):
         self.assertEqual(response["type"], "interactive")
         self.assertEqual(response["interactive"]["type"], "button")
 
-    @unittest.mock.patch.dict(os.environ, {"WHATSAPP_ALLOW_INTERACTIVE": "false"})
+    @unittest.mock.patch.dict(os.environ, {"WHATSAPP_FORCE_TEXT": "true"})
     def test_force_text_via_env_var(self):
-        """If WHATSAPP_ALLOW_INTERACTIVE=false even interactive calls return text."""
+        """If WHATSAPP_FORCE_TEXT=true even interactive calls return text."""
         import importlib
         importlib.reload(rf)
 
@@ -184,10 +172,10 @@ class TestResponseFormatter(unittest.TestCase):
         self.assertEqual(response["type"], "text")
 
         # Restore default for remaining tests
-        os.environ["WHATSAPP_ALLOW_INTERACTIVE"] = "true"
+        os.environ["WHATSAPP_FORCE_TEXT"] = "false"
         importlib.reload(rf)
 
-    @unittest.mock.patch.dict(os.environ, {"WHATSAPP_ALLOW_INTERACTIVE": "false"})
+    @unittest.mock.patch.dict(os.environ, {"WHATSAPP_FORCE_TEXT": "true"})
     def test_text_menu_includes_url_and_actionable_numbers(self):
         """URL-only options should be rendered inline while action buttons keep numbering."""
         import importlib
@@ -201,19 +189,18 @@ class TestResponseFormatter(unittest.TestCase):
         )
 
         expected_body = (
-            "Pagá\n\nIr a ePagos: https://example.com\n\n*1*. Menú\n*2*. Volver\n*3*. Cancelar\n\nResponde con el número de la opción que necesites."
+            "Pagá\n\nIr a ePagos: https://example.com\n\n*1*. Menú\n*2*. Cancelar\n\nResponde con el número de la opción que necesites."
         )
 
         self.assertEqual(response["type"], "text")
         self.assertEqual(response["text"]["body"], expected_body)
 
         last_options = response.get("contexto_actualizado", {}).get("last_options_sent", [])
-        self.assertEqual(len(last_options), 3)
+        self.assertEqual(len(last_options), 2)
         self.assertEqual(last_options[0]["action_id"], "menu_principal")
-        self.assertEqual(last_options[1]["action_id"], "volver")
 
         # Restore module with default env var
-        os.environ["WHATSAPP_ALLOW_INTERACTIVE"] = "true"
+        os.environ["WHATSAPP_FORCE_TEXT"] = "false"
         importlib.reload(rf)
 
 
@@ -293,14 +280,13 @@ class TestResponseFormatter(unittest.TestCase):
             channel="whatsapp",
             audio_url=audio_url
         )
-        expected_body = "This is a caption.\n\n*1*. Menú\n*2*. Volver\n*3*. Cancelar\n\nResponde con el número de la opción que necesites."
+        expected_body = "This is a caption.\n\n*1*. Menú\n*2*. Cancelar\n\nResponde con el número de la opción que necesites."
         expected_payload = {
             "type": "text",
             "text": {"body": expected_body},
             "audio": {"link": audio_url},
             "contexto_actualizado": {"last_options_sent": [
                 {"texto": "Menú", "action_id": "menu_principal"},
-                {"texto": "Volver", "action_id": "volver"},
                 {"texto": "Cancelar", "action_id": "cancelar"},
             ]},
         }
@@ -316,13 +302,12 @@ class TestResponseFormatter(unittest.TestCase):
             channel="whatsapp",
             audio_url=None # Explicitly None
         )
-        expected_body = "This is a standard text message.\n\n*1*. Menú\n*2*. Volver\n*3*. Cancelar\n\nResponde con el número de la opción que necesites."
+        expected_body = "This is a standard text message.\n\n*1*. Menú\n*2*. Cancelar\n\nResponde con el número de la opción que necesites."
         expected_payload = {
             "type": "text",
             "text": {"body": expected_body},
             "contexto_actualizado": {"last_options_sent": [
                 {"texto": "Menú", "action_id": "menu_principal"},
-                {"texto": "Volver", "action_id": "volver"},
                 {"texto": "Cancelar", "action_id": "cancelar"},
             ]},
         }

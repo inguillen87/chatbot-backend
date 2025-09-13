@@ -16,10 +16,8 @@ class MunicipalTicketsMapDataRouteTest(unittest.TestCase):
     def setUp(self):
         self.token_patcher = patch('utils.auth_helpers.token_requerido', lambda f: f)
         self.admin_patcher = patch('utils.auth_helpers.admin_o_empleado_requerido', lambda f: f)
-        self.session_patcher = patch('flask_session.Session', lambda *a, **k: SimpleNamespace(init_app=lambda app: None))
         self.token_patcher.start()
         self.admin_patcher.start()
-        self.session_patcher.start()
 
         import routes.municipal_legacy as muni
         importlib.reload(muni)
@@ -34,7 +32,6 @@ class MunicipalTicketsMapDataRouteTest(unittest.TestCase):
         self.app_context.pop()
         self.token_patcher.stop()
         self.admin_patcher.stop()
-        self.session_patcher.stop()
 
     @patch('services.ticket_service.servicio_tickets')
     def test_estado_param_optional(self, mock_servicio):
@@ -44,7 +41,7 @@ class MunicipalTicketsMapDataRouteTest(unittest.TestCase):
             resp = self.muni.municipal_tickets_map_data(user)
         self.assertEqual(resp.status_code, 200)
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
-            tipo_ticket='municipio', municipio_id=1, estado=None, agrupar=False
+            tipo_ticket='municipio', municipio_id=1, estado=None
         )
 
     @patch('services.ticket_service.servicio_tickets')
@@ -55,7 +52,7 @@ class MunicipalTicketsMapDataRouteTest(unittest.TestCase):
             resp = self.muni.municipal_tickets_map_data(user)
         self.assertEqual(resp.status_code, 200)
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
-            tipo_ticket='municipio', municipio_id=1, estado='cerrado', agrupar=False
+            tipo_ticket='municipio', municipio_id=1, estado='cerrado'
         )
 
 

@@ -1,7 +1,6 @@
 # services/actions/municipio_actions.py
 import logging
 import re
-import time
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
 import random
@@ -12,6 +11,7 @@ from services.notifications import (
 )
 from services.herramientas_municipio import (
     parse_direccion_completa as parse_direccion,
+    direccion_es_valida,
     validar_y_formatear_direccion,
 )
 from services.ticket_utils import formatear_ticket_respuesta
@@ -21,88 +21,12 @@ from services.common_utils import (
     validar_email,
 )
 from services.config_loader import cargar_configuracion_municipio
-from services.archivo_service import archivo_service
 from models import MunicipioTicket, User
 from extensions import db as _db
-from services.message_templates import get_message
 
 logger = logging.getLogger(__name__)
 
 CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
-
-
-def sanitize_contact_name(raw: str) -> str:
-    """Remove emails, long numbers and trailing address fragments from names."""
-    if not raw:
-        return "Vecino"
-    name = re.sub(r"\S+@\S+", "", raw)
-    name = re.sub(r"\b\+?\d{6,}\b", "", name)
-    name = re.sub(r"\s{2,}", " ", name).strip()
-    lowered = name.lower()
-    cut_tokens = [" sarmiento", " junin", " mendoza", " calle ", " av "]
-    cut = min([lowered.find(t) for t in cut_tokens if lowered.find(t) > 0] or [len(name)])
-    cleaned = name[:cut].strip()
-    return cleaned or "Vecino"
-
-
-def normalizar_telefono(telefono: str | None, waid: str | None) -> str | None:
-    if waid:
-        digits = waid.lstrip("+")
-        if digits.isdigit():
-            return f"+{digits}"
-    return telefono
-
-
-def _asociar_archivos_si_corresponde(ticket_id: int, ctx: dict) -> None:
-    """Vincula archivos cargados previamente al ticket recién creado."""
-    try:
-        archivo_ids = ctx.get("ids_archivos_para_asociar") or []
-        if not archivo_ids:
-            archivo_id = ctx.get("archivo_id_para_asociar")
-            archivo_ids = [archivo_id] if archivo_id else []
-        session_id = ctx.get("chat_session_uuid") or ctx.get("session_id")
-        user_id = ctx.get("cliente_id")
-        if archivo_ids:
-            archivo_service.asociar_archivos_a_ticket(
-                ticket_id=ticket_id,
-                tipo_ticket="municipio",
-                ids_archivos=archivo_ids,
-                session_id=session_id,
-                user_id=user_id,
-            )
-    except Exception as e:
-        logger.error(
-            f"Error asociando archivos al ticket {ticket_id}: {e}", exc_info=True
-        )
-    finally:
-        ctx.pop("archivo_id_para_asociar", None)
-        ctx.pop("ids_archivos_para_asociar", None)
-        chat_ctx = ctx.get("chat_db_context_data")
-        if isinstance(chat_ctx, dict):
-            chat_ctx.pop("archivo_id_para_asociar", None)
-            chat_ctx.pop("ids_archivos_para_asociar", None)
-
-
-def normalizar_categoria(cat_llm: str, detalles: str):
-    """Return normalized category and optional subtype."""
-    c = (cat_llm or "").strip().lower()
-    if "arbol" in c or "arbolado" in c:
-        subtipo = None
-        d = (detalles or "").lower()
-        if any(k in d for k in ["rama", "medianera", "hoja", "poda", "interferencia"]):
-            subtipo = "poda_intrusion"
-        return "Arbolado", subtipo
-    return cat_llm or "General", None
-
-
-def resolver_distrito_por_coords(coords, municipio_actual):
-    if not coords:
-        return None
-    try:
-        from services import distrito_service
-        return distrito_service.from_coords(coords, municipio=municipio_actual)
-    except Exception:
-        return None
 
 class BuscarEstacionamientoActionHandler(BaseActionHandler):
     action_name = "buscar_estacionamiento"
@@ -147,7 +71,6 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
         viewer_user = self.context.get("viewer_user_obj")
-        municipio_config = self.context.get("municipio_config_actual")
         if viewer_user and getattr(viewer_user, "id", None):
             viewer_user = _db.session.get(User, viewer_user.id)
             self.context["viewer_user_obj"] = viewer_user
@@ -158,99 +81,32 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if categoria:
             categoria = re.sub(r'^[^\w]+', '', categoria).strip()
         descripcion = action_data.get("descripcion") or datos_parciales.get("descripcion")
-        categoria_norm, subtipo_cat = normalizar_categoria(categoria, descripcion)
-        categoria_display = categoria_norm
-        categoria_ticket = f"{categoria_norm}::{subtipo_cat}" if subtipo_cat else categoria_norm
-
-        nueva_ubicacion = action_data.get("ubicacion")
-        if nueva_ubicacion is not None:
-            ubicacion_llm = nueva_ubicacion
-            coordenadas_llm = action_data.get("coordenadas")
-        else:
-            ubicacion_llm = datos_parciales.get("ubicacion")
-            coordenadas_llm = datos_parciales.get("coordenadas")
-
+        ubicacion_llm = action_data.get("ubicacion") or datos_parciales.get("ubicacion")
         distrito_llm = action_data.get("distrito") or datos_parciales.get("distrito")
-
-        if ubicacion_llm:
-            ubicacion_llm = re.sub(r"[,\.;\s]+$", "", (ubicacion_llm or "").strip()).replace("  ", " ")
-            # Reunify address and district if the split is not clearly marked by comma/keyword
-            from utils.address_parse import split_ubicacion_y_distrito
-
-            combinado = f"{ubicacion_llm} {distrito_llm}".strip() if distrito_llm else ubicacion_llm
-            ubicacion_llm, distrito_detectado = split_ubicacion_y_distrito(combinado)
-            if distrito_llm:
-                if not distrito_detectado:
-                    # The original 'distrito' was actually part of the address
-                    distrito_llm = None
-                    ubicacion_llm = combinado
-            else:
-                distrito_llm = distrito_detectado
 
         if ubicacion_llm and not distrito_llm:
             logger.info(f"Attempting to parse district from address: {ubicacion_llm}")
-            parsed_address = parse_direccion(ubicacion_llm, municipio_config)
+            parsed_address = parse_direccion(ubicacion_llm)
             if parsed_address and parsed_address.get('localidad'):
                 distrito_llm = parsed_address.get('localidad')
                 logger.info(f"Parsed district: {distrito_llm}")
 
-        # Geocoding: validate and enrich address with coordinates and formatted text
-        maps_link = None
-        static_map_url = None
-        if ubicacion_llm and not coordenadas_llm:
-            geo_info = validar_y_formatear_direccion(ubicacion_llm, municipio_config)
-            if (
-                not geo_info
-                or not geo_info.get("lat")
-                or not geo_info.get("lng")
-                or (not geo_info.get("barrio") and not distrito_llm)
-            ):
-                contexto_reclamo.pop("direccion_reclamo", None)
-                contexto_reclamo.pop("coordenadas_reclamo", None)
-                for key, value in [
-                    ("categoria_reclamo", categoria),
-                    ("descripcion_reclamo", descripcion),
-                ]:
-                    if value:
-                        contexto_reclamo[key] = value
-                contexto_reclamo.setdefault("datos_parciales_llm_reclamo", {})
-                contexto_reclamo["datos_parciales_llm_reclamo"].update(
-                    {
-                        "categoria": categoria,
-                        "descripcion": descripcion,
-                        "ubicacion": ubicacion_llm,
-                        "distrito": distrito_llm,
-                    }
-                )
-                contexto_reclamo["estado_conversacion"] = "ESPERANDO_BARRIO_RECLAMO"
-                self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
-                mensaje = get_message("preguntar_barrio", direccion=ubicacion_llm)
-                return {
-                    "success": False,
-                    "message_to_user": mensaje,
-                    "message_type": "text",
-                    "next_state_hint": "ESPERANDO_BARRIO_RECLAMO",
-                }
+        coordenadas_llm = action_data.get("coordenadas") or datos_parciales.get("coordenadas")
 
-            if not geo_info.get("barrio") and distrito_llm:
-                geo_info["barrio"] = distrito_llm
-            ubicacion_llm = geo_info.get("formatted_address", ubicacion_llm)
-            coordenadas_llm = {
-                "lat": geo_info.get("lat"),
-                "lon": geo_info.get("lng"),
-            }
-            maps_link = geo_info.get("maps_link")
-            static_map_url = geo_info.get("static_map_url")
-            if not distrito_llm:
-                parsed_geo = parse_direccion(ubicacion_llm)
-                if parsed_geo and parsed_geo.get("localidad"):
-                    distrito_llm = parsed_geo["localidad"]
-                    logger.info(f"Parsed district from geocoded address: {distrito_llm}")
-        elif coordenadas_llm and isinstance(coordenadas_llm, dict):
-            lat = coordenadas_llm.get("lat")
-            lon = coordenadas_llm.get("lon")
-            if lat and lon:
-                maps_link = f"https://www.google.com/maps?q={lat},{lon}"
+        # Geocoding: validate and enrich address with coordinates and formatted text
+        if ubicacion_llm and not coordenadas_llm:
+            geo_info = validar_y_formatear_direccion(ubicacion_llm)
+            if geo_info:
+                ubicacion_llm = geo_info.get("formatted_address", ubicacion_llm)
+                coordenadas_llm = {
+                    "lat": geo_info.get("lat"),
+                    "lon": geo_info.get("lng"),
+                }
+                if not distrito_llm:
+                    parsed_geo = parse_direccion(ubicacion_llm)
+                    if parsed_geo and parsed_geo.get("localidad"):
+                        distrito_llm = parsed_geo["localidad"]
+                        logger.info(f"Parsed district from geocoded address: {distrito_llm}")
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
         # Lógica de fusión de datos de contacto mejorada
@@ -261,28 +117,17 @@ class CrearReclamoActionHandler(BaseActionHandler):
             or action_data.get("nombre_usuario_detectado")
             or datos_parciales.get("nombre_usuario_detectado")
         )
-        ctx_contact = (
-            self.context.get("contexto_municipio_v2", {})
-            .get("contacto_usuario", {})
-            .get("nombre")
-        )
         profile_name_from_user_obj = getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None)
-        profile_name_from_context = self.context.get("profile_name") or self.context.get("contexto_municipio_v2", {}).get("nombre_vecino")
+        profile_name_from_context = self.context.get("profile_name")
 
-        # Prioritize LLM name, then context contact, then stored profile names.
-        nombre_vecino_final = next(
-            (
-                n
-                for n in [llm_name, ctx_contact, profile_name_from_user_obj, profile_name_from_context]
-                if isinstance(n, str) and n.strip()
-            ),
-            "Vecino/a",
-        )
-
-        if len(nombre_vecino_final) > 60 or len(nombre_vecino_final.split()) > 6:
-            nombre_vecino_final = "Vecino/a"
-        nombre_vecino_final = sanitize_contact_name(nombre_vecino_final)
-        nombre_placeholder = nombre_vecino_final.lower() in {"vecino", "vecina", "vecino/a", "vecin@"}
+        # Prioritize LLM name, then profile from user object, then profile from context.
+        nombre_vecino_final = "Vecino/a"  # Default
+        if isinstance(llm_name, str) and llm_name.strip():
+            nombre_vecino_final = llm_name
+        elif isinstance(profile_name_from_user_obj, str) and profile_name_from_user_obj.strip():
+            nombre_vecino_final = profile_name_from_user_obj
+        elif isinstance(profile_name_from_context, str) and profile_name_from_context.strip():
+            nombre_vecino_final = profile_name_from_context
 
         telefono_from_llm = (action_data.get("telefono") or datos_parciales.get("telefono") or
                              action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado"))
@@ -293,26 +138,17 @@ class CrearReclamoActionHandler(BaseActionHandler):
              telefono_final = formatear_telefono_e164(str(viewer_user.telefono))
 
 
-        email_from_llm = (
-            action_data.get("email")
-            or datos_parciales.get("email")
-            or action_data.get("email_detectado")
-            or datos_parciales.get("email_detectado")
-        )
-        if email_from_llm and email_from_llm.endswith("@whatsapp.chatboc.com"):
-            email_from_llm = None
+        email_from_llm = (action_data.get("email") or datos_parciales.get("email") or
+                          action_data.get("email_detectado") or datos_parciales.get("email_detectado"))
         email_final = None
-        viewer_email = getattr(viewer_user, "email", None) if viewer_user else None
-        if viewer_email and viewer_email.endswith("@whatsapp.chatboc.com"):
-            viewer_email = None
         if email_from_llm and validar_email(email_from_llm):
             email_final = email_from_llm.lower()
-        elif viewer_email and validar_email(str(viewer_email)):
-            email_final = str(viewer_email).lower()
+        elif viewer_user and getattr(viewer_user, "email", None) and validar_email(str(viewer_user.email)):
+            email_final = str(viewer_user.email).lower()
 
         dni_from_llm = action_data.get("dni") or datos_parciales.get("dni")
         dni_final = None
-        if dni_from_llm and isinstance(dni_from_llm, str) and dni_from_llm.isdigit() and len(dni_from_llm) >= 7:
+        if dni_from_llm and isinstance(dni_from_llm, str) and dni_from_llm.isdigit():
             dni_final = dni_from_llm
         elif viewer_user and getattr(viewer_user, "dni", None) and str(viewer_user.dni).isdigit():
             dni_final = str(viewer_user.dni)
@@ -326,55 +162,22 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if not direccion_contacto and viewer_user:
             direccion_contacto = getattr(viewer_user, "direccion", None)
 
-        cmv2 = self.context.get(CONTEXTO_MUNICIPIO, {}) or {}
-        contacto_ctx = cmv2.get("contacto_usuario") or {}
-
-        nombre_final = datos_parciales.get("nombre") or contacto_ctx.get("nombre") or nombre_vecino_final
-        nombre_final = sanitize_contact_name(nombre_final)
-        nombre_placeholder = nombre_placeholder or nombre_final.lower() in {"vecino", "vecina", "vecino/a", "vecin@"}
-        telefono_final = telefono_final or contacto_ctx.get("telefono")
-        contacto_email = contacto_ctx.get("email")
-        if contacto_email and contacto_email.endswith("@whatsapp.chatboc.com"):
-            contacto_email = None
-        email_final = email_final or contacto_email
-        dni_ctx = contacto_ctx.get("dni")
-        if dni_ctx and isinstance(dni_ctx, str) and dni_ctx.isdigit() and len(dni_ctx) >= 7:
-            dni_final = dni_final or dni_ctx
-
-        logger.info(f"CONTACT_CTX: {contacto_ctx}")
-        logger.info(
-            f"CONTACT_FINAL nombre={nombre_final} tel={telefono_final} email={email_final} dni={dni_final}"
-        )
-
-        telefono_final = normalizar_telefono(
-            telefono_final, self.context.get("waid") or self.context.get("anon_id")
-        )
 
         # Actualizar el contexto con los datos más recientes para persistencia
-        contexto_reclamo.setdefault("contacto_usuario", {}).update(
-            {
-                "nombre": None if nombre_placeholder else nombre_final,
-                "telefono": telefono_final,
-                "email": email_final,
-                "dni": dni_final,
-                "direccion": direccion_contacto,
-            }
-        )
         for key, value in [
-            ("categoria_reclamo", categoria_display),
+            ("categoria_reclamo", categoria),
             ("descripcion_reclamo", descripcion),
             ("direccion_reclamo", ubicacion_llm),
             ("coordenadas_reclamo", coordenadas_llm),
-            ("nombre_vecino", None if nombre_placeholder else nombre_final),
+            ("nombre_vecino", nombre_vecino_final),
             ("telefono_vecino", telefono_final),
             ("email_vecino", email_final),
             ("dni_vecino", dni_final),
             ("direccion_contacto", direccion_contacto),
             ("foto_url", foto_url_llm),
-            ("maps_link", maps_link),
-            ("static_map_url", static_map_url),
         ]:
-            contexto_reclamo[key] = value
+            if value:
+                contexto_reclamo[key] = value
 
         # Validación de datos esenciales para la creación del ticket
         campos_faltantes = []
@@ -382,15 +185,19 @@ class CrearReclamoActionHandler(BaseActionHandler):
             campos_faltantes.append("descripcion")
         if not ubicacion_llm and not coordenadas_llm:
             campos_faltantes.append("ubicacion")
-        for k, v in {
-            "nombre": None if nombre_placeholder else nombre_final,
-            "telefono": telefono_final,
-            "email": email_final,
-            "dni": dni_final,
-        }.items():
-            if not v:
-                campos_faltantes.append(k)
-        logger.info(f"FALTANTES: {campos_faltantes}")
+        logger.info(f"DEBUG: viewer_user: {viewer_user}")
+        logger.info(f"DEBUG: nombre_vecino_final: {nombre_vecino_final}")
+        logger.info(f"DEBUG: telefono_final: {telefono_final}")
+        logger.info(f"DEBUG: email_final: {email_final}")
+        if not nombre_vecino_final or nombre_vecino_final == "Vecino/a":
+            campos_faltantes.append("nombre")
+        if not telefono_final:
+            campos_faltantes.append("telefono")
+        if not email_final:
+            campos_faltantes.append("email")
+        if not dni_final:
+            campos_faltantes.append("dni")
+        logger.info(f"DEBUG: campos_faltantes after: {campos_faltantes}")
 
         # La lógica de confirmación ahora se maneja en 'municipio_responder.py'
         # Este handler ahora solo valida y crea.
@@ -398,24 +205,14 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if campos_faltantes:
             campos_faltantes = sorted(list(set(campos_faltantes)))
             self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
-            etiquetas = {
-                "nombre": "• *Nombre y apellido* — _Ej.: Juan Pérez_",
-                "dni": "• *DNI* — _Ej.: 30123456_",
-                "telefono": "• *Teléfono* — _solo números_",
-                "email": "• *Email* — _Ej.: juan@mail.com_",
-            }
-            campos_contacto = [c for c in ["nombre", "dni", "telefono", "email"] if c in campos_faltantes]
-            if campos_contacto:
-                lineas = [etiquetas[c] for c in campos_contacto]
-                cuerpo = (
-                    "\U0001F512 *Necesito estos datos:*\n" + "\n".join(lineas) +
-                    "\nMandalo en una sola línea o de a uno."
-                )
-            else:
-                cuerpo = "Faltan datos para continuar."
+            mensaje = (
+                "Para cerrar el reclamo, necesitás completar tus datos en *una sola línea* "
+                "(Nombre completo, Email, Teléfono, DNI, Dirección de contacto). "
+                "Ejemplo: Juan Perez, juan@mail.com, 2615551234, 30123456, Don Bosco 55 Junín"
+            )
             return {
                 "success": False,
-                "message_to_user": cuerpo,
+                "message_to_user": mensaje,
                 "message_type": "text",
                 "next_state_hint": "ESPERANDO_DATOS_CONTACTO",
             }
@@ -440,8 +237,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
         # Update viewer_user object if it exists and we have new info
         if viewer_user:
             updated = False
-            if nombre_final and not viewer_user.name:
-                viewer_user.name = nombre_final
+            if nombre_vecino_final and not viewer_user.name:
+                viewer_user.name = nombre_vecino_final
                 updated = True
             if telefono_final and not viewer_user.telefono:
                 viewer_user.telefono = telefono_final
@@ -458,20 +255,13 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 logger.info(f"User profile for {viewer_user.id} updated with new contact info.")
         pregunta_original = self.context.get("pregunta_actual_usuario", "")
 
-        resolved = servicio_tickets.resolve_user_id(email=email_final, telefono=telefono_final)
-        if resolved:
-            ticket_user_id = resolved
-            logger.info(f"[Ticket] user_id resuelto por email/tel: {resolved}")
-        else:
-            ticket_user_id = getattr(viewer_user, "id", None)
-
         contactos = cargar_configuracion_municipio(
             getattr(owner_user, "municipio_id", "default"),
             "contactos_especializados.json",
         )
         categoria_lookup = None
-        if categoria_display:
-            categoria_normalized = re.sub(r"[^\w\s]", "", categoria_display).strip().lower()
+        if categoria:
+            categoria_normalized = re.sub(r"[^\w\s]", "", categoria).strip().lower()
             for key in contactos.keys():
                 key_normalized = re.sub(r"[^\w\s]", "", key).strip().lower()
                 if (
@@ -482,26 +272,25 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     categoria_lookup = key
                     break
         if categoria_lookup:
-            categoria_display = categoria_lookup
+            categoria = categoria_lookup
         contacto_especializado = dict(contactos.get(categoria_lookup, contactos.get("default", {})))
 
-        ticket_subject = categoria_display or "Reclamo"
         ticket_data = {
             "pregunta": pregunta_original,
-            "asunto": ticket_subject,
-            "categoria": categoria_ticket or "Reclamo General",
+            "asunto": f"Reclamo (LLM): {categoria or 'General'}",
+            "categoria": categoria or "Reclamo General",
             "detalles": descripcion,
             "direccion": ubicacion_llm,
             "distrito": distrito_llm,
-            "nombre_vecino": nombre_final,
+            "nombre_vecino": nombre_vecino_final,
             "telefono_vecino": telefono_final,
             "email_vecino": email_final,
             "dni_vecino": dni_final,
             "direccion_contacto": direccion_contacto,
             "estado": "nuevo",
-            "user_id": ticket_user_id,
+            "user_id": getattr(viewer_user, "id", None),
             "anon_id": self.context.get("anon_id"),
-            "municipio_id": getattr(owner_user, "municipio_id", None),
+            "municipio_id": getattr(owner_user, "municipio_id", None),  # Asegurar que el municipio_id se pasa aquí
             "latitud": coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None,
             "longitud": coordenadas_llm.get("lon") if isinstance(coordenadas_llm, dict) else None,
             "origen_reclamo": "LLM_CHATBOT",
@@ -529,8 +318,6 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 raise ValueError("El ticket creado no tiene un 'nro_ticket'.")
             nro_ticket_str = f"M-{ticket_nro}"
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
-
-            _asociar_archivos_si_corresponde(ticket_creado.get('id'), self.context)
 
             # Completar datos desde tramites.json si existen
             tramites_cfg = cargar_configuracion_municipio(
@@ -564,18 +351,29 @@ class CrearReclamoActionHandler(BaseActionHandler):
             if getattr(owner_user, "horario", None):
                 contacto_especializado.setdefault("horario", owner_user.horario)
 
-            # Limpiar contexto y dejar datos mínimos
-            from services.municipio_responder import ConversationState
-            self.context[CONTEXTO_MUNICIPIO] = {
-                "pin_ticket": pin_final,
-                "email_vecino": email_final,
-                "dni_vecino": dni_final,
+            # Limpiar contexto de reclamo después de la creación exitosa
+            # Guardamos la info del usuario y de contacto para no perderla.
+            user_info = contexto_reclamo.get('user', {})
+            contacto_usuario = {
+                "nombre": nombre_vecino_final,
+                "dni": dni_final,
+                "email": email_final,
+                "telefono": telefono_final,
+                "direccion": direccion_contacto,
             }
-            self.context["last_event"] = {"type": "ticket_created", "ts": time.time()}
-            self.context[CONTEXTO_MUNICIPIO]["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
-            logger.info(
-                f"Contexto de reclamo limpiado. Nuevo estado: {self.context[CONTEXTO_MUNICIPIO]['estado_conversacion']}"
-            )
+            # Limpiamos TODO el contexto del municipio para evitar "context bleed".
+            if CONTEXTO_MUNICIPIO in self.context:
+                self.context[CONTEXTO_MUNICIPIO].clear()
+                if user_info:
+                    self.context[CONTEXTO_MUNICIPIO]['user'] = user_info
+                self.context[CONTEXTO_MUNICIPIO]['contacto_usuario'] = {
+                    k: v for k, v in contacto_usuario.items() if v
+                }
+                from services.municipio_responder import ConversationState
+                self.context[CONTEXTO_MUNICIPIO]['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+                logger.info(
+                    f"Contexto de reclamo limpiado. Nuevo estado: {self.context[CONTEXTO_MUNICIPIO]['estado_conversacion']}"
+                )
 
 
             # Notificaciones
@@ -602,6 +400,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/tickets/municipio')
             promo_image_url = municipio_config.get('promo_image_url')
+            categoria_display = categoria
             try:
                 mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
                     "reclamo",
@@ -622,16 +421,6 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     f"✅ *¡Reclamo recibido!*\nN° de Ticket: M-{nro_ticket_str}"
                 )
                 botones_finales = []
-
-            if "Actualizar datos" in mensaje_respuesta:
-                mensaje_respuesta = mensaje_respuesta.replace(
-                    "Actualizar datos", "Editar o Actualizar datos"
-                )
-            else:
-                mensaje_respuesta += (
-                    "\n🔎 Si tus datos no son correctos, respondé *Editar datos*."
-                )
-            botones_finales.append({"texto": "Editar datos", "action_id": "editar_reclamo"})
 
             # Log para debug
             logger.info(f"Respuesta formateada: '{mensaje_respuesta}', Botones: {botones_finales}")
@@ -770,24 +559,12 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             or (getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None))
         )
         dni_vecino = action_data.get("dni") or contacto_prev.get("dni") or getattr(viewer_user, "dni", None)
-
-        email_llm = action_data.get("email") or action_data.get("email_detectado")
-        email_ctx = contacto_prev.get("email")
-        email_viewer = getattr(viewer_user, "email", None)
-        for key, val in {"ctx": email_ctx, "viewer": email_viewer}.items():
-            if val and val.endswith("@whatsapp.chatboc.com"):
-                if key == "ctx":
-                    email_ctx = None
-                else:
-                    email_viewer = None
-        if email_llm and validar_email(email_llm):
-            email_vecino = email_llm.lower()
-        elif email_ctx and validar_email(email_ctx):
-            email_vecino = email_ctx.lower()
-        elif email_viewer and validar_email(str(email_viewer)):
-            email_vecino = str(email_viewer).lower()
-        else:
-            email_vecino = None
+        email_vecino = (
+            action_data.get("email")
+            or action_data.get("email_detectado")
+            or contacto_prev.get("email")
+            or getattr(viewer_user, "email", None)
+        )
         direccion_contacto = (
             action_data.get("direccion")
             or action_data.get("direccion_contacto")
@@ -798,9 +575,6 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             action_data.get("telefono")
             or contacto_prev.get("telefono")
             or getattr(viewer_user, "telefono", None)
-        )
-        telefono_vecino = normalizar_telefono(
-            telefono_vecino, self.context.get("waid") or self.context.get("anon_id")
         )
         if not all([nombre_vecino, dni_vecino, email_vecino, direccion_contacto]):
             return {
@@ -846,7 +620,6 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
 
             nro_ticket_str = f"S-{ticket_creado.get('nro_ticket')}"
             logger.info(f"Ticket de sugerencia {nro_ticket_str} creado exitosamente.")
-            _asociar_archivos_si_corresponde(ticket_creado.get('id'), self.context)
 
             # Limpiar el contexto para evitar estados pegajosos
             user_info = self.context.get(CONTEXTO_MUNICIPIO, {}).get('user', {})
@@ -865,7 +638,6 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 ctx_muni['contacto_usuario'] = {k: v for k, v in contacto_usuario.items() if v}
                 from services.municipio_responder import ConversationState
                 ctx_muni['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
-                self.context["last_event"] = {"type": "ticket_created", "ts": time.time()}
 
             # Obtener la URL base del chat del contexto para el botón "Ver mi Ticket"
             municipio_config = self.context.get('municipio_config_actual', {})
@@ -989,8 +761,6 @@ class DerivarHumanoActionHandler(BaseActionHandler):
             sala_dict = servicio_tickets.crear_nuevo_ticket(tipo_ticket=ticket_type, ticket_data=ticket_data_cleaned)
             if not sala_dict:
                 raise Exception("crear_nuevo_ticket devolvió None")
-
-            _asociar_archivos_si_corresponde(sala_dict.get('id'), self.context)
 
             # Since downstream functions need the object, fetch it from the DB
             from models import MunicipioTicket

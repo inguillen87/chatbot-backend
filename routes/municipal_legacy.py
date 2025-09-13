@@ -4,6 +4,7 @@ from datetime import timedelta
 from utils.time_utils import get_local_now
 from utils.permissions import require_role
 from routes.crm import _obtener_clientes
+from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
 from routes.tramites import listar_tramites, obtener_tramite
 from models import MunicipioTicket, db
 from sqlalchemy import text
@@ -38,15 +39,7 @@ def municipal_usuarios(current_user):
 @token_requerido
 @require_role('admin', 'empleado')
 def municipal_categorias(current_user):
-    rows = db.session.execute(
-        text(
-            "SELECT DISTINCT categoria FROM municipio_ticket "
-            "WHERE municipio_id = :mid AND categoria IS NOT NULL"
-        ),
-        {"mid": current_user.municipio_id},
-    ).fetchall()
-    categorias = sorted(r[0] for r in rows)
-    return jsonify(categorias)
+    return jsonify(TODAS_LAS_CATEGORIAS_UNICAS)
 
 @municipal_bp.route('/stats', methods=['GET'])
 @token_requerido
@@ -114,19 +107,6 @@ def municipal_stats(current_user):
     ).fetchall()
     por_mes = [{"mes": r.mes, "total": r.total} for r in rows_mes]
 
-    rows_satisf = db.session.execute(
-        text(
-            "SELECT ts.puntuacion, COUNT(*) as total "
-            "FROM ticket_satisfaccion ts JOIN municipio_ticket mt "
-            "ON ts.ticket_id = mt.id "
-            "WHERE mt.municipio_id = :mid GROUP BY ts.puntuacion"
-        ),
-        {"mid": mid},
-    ).fetchall()
-    satisfaccion = [
-        {"puntuacion": r.puntuacion, "total": r.total} for r in rows_satisf
-    ]
-
     tiempo_respuesta = db.session.execute(
         text(
             "SELECT AVG(julianday(tc.fecha) - julianday(mt.fecha)) * 86400 "
@@ -142,7 +122,6 @@ def municipal_stats(current_user):
         "por_categoria": por_categoria,
         "por_distrito": por_distrito,
         "por_mes": por_mes,
-        "satisfaccion": satisfaccion,
         "tiempo_respuesta_promedio_segundos": round(tiempo_respuesta or 0, 2),
     }
 
@@ -152,14 +131,7 @@ def municipal_stats(current_user):
 @token_requerido
 @admin_o_empleado_requerido
 def municipal_stats_filters(current_user):
-    rows = db.session.execute(
-        text(
-            "SELECT DISTINCT categoria FROM municipio_ticket "
-            "WHERE municipio_id = :mid AND categoria IS NOT NULL"
-        ),
-        {"mid": current_user.municipio_id},
-    ).fetchall()
-    return jsonify({'categorias': sorted(r[0] for r in rows)})
+    return jsonify({'categorias': TODAS_LAS_CATEGORIAS_UNICAS})
 
 @municipal_bp.route('/tramites', methods=['GET'])
 def municipal_tramites():
@@ -186,12 +158,10 @@ def municipal_tickets_map_data(current_user):
         return jsonify({"error": "Usuario no asociado a un municipio"}), 400
 
     estado = request.args.get("estado")
-    distrito = request.args.get("distrito")
     tickets_con_ubicacion = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
         tipo_ticket="municipio",
         municipio_id=municipio_id_del_admin,
         estado=estado,
-        agrupar=False,
     )
     return jsonify(tickets_con_ubicacion)
 

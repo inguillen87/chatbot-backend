@@ -364,18 +364,16 @@ class ProcesarAdjuntoPedidoAction(BaseActionHandler):
 
         archivo_id = self.context.get("archivo_id_para_asociar")
         if not archivo_id:
-            ids = self.context.get("ids_archivos_para_asociar") or []
-            archivo_id = ids[-1] if ids else None
-        if not archivo_id:
             return {"success": False, "message_to_user": "No se encontró un archivo para procesar."}
 
         from services.document_processing_service import document_processing_service
         processing_result = document_processing_service.process_document_by_id(archivo_id)
 
-        if processing_result.get("error"):
+        if not processing_result.get("success"):
             return {"success": False, "message_to_user": f"Hubo un error al procesar el archivo: {processing_result.get('error')}"}
 
-        texto_extraido = processing_result.get("raw_text")
+        extracted_data = processing_result.get("extracted_data", {})
+        texto_extraido = extracted_data.get("texto_ocr") or extracted_data.get("texto_extraido")
 
         if not texto_extraido:
             return {"success": False, "message_to_user": "No se pudo extraer texto del archivo para procesar el pedido."}

@@ -1,7 +1,7 @@
 # services/ticket_service.py
 import random
 from datetime import datetime, timedelta
-from typing import Dict, Any, Literal, Union, Optional
+from typing import Dict, Any, Literal, Union
 import logging
 
 from models import (
@@ -96,22 +96,6 @@ class ServicioTickets:
             "municipio": MunicipioTicketCreator(),
             "pyme": PymeTicketCreator()
         }
-
-    def resolve_user_id(self, email: Optional[str] = None, telefono: Optional[str] = None) -> Optional[int]:
-        """Find existing user ID by email or phone."""
-        from models import User
-
-        if email:
-            user = User.query.filter(db.func.lower(User.email) == db.func.lower(email)).first()
-            if user:
-                return user.id
-
-        if telefono:
-            user = User.query.filter(User.telefono == telefono).first()
-            if user:
-                return user.id
-
-        return None
 
     def crear_nuevo_ticket(self, tipo_ticket: Literal["municipio", "pyme"], ticket_data: Dict[str, Any]) -> Union[PymeTicket, MunicipioTicket, None, dict]:
         from models import User  # Import User model here to avoid circular import at module level
@@ -366,23 +350,18 @@ class ServicioTickets:
         fecha_inicio: str | None = None,
         fecha_fin: str | None = None,
         categoria: str | None = None,
-        estado: str | None = None,  # Nuevo parámetro de estado
-        distrito: str | None = None,
+        estado: str | None = None, # Nuevo parámetro de estado
         satisfactorio: bool | None = None,
-        agrupar: bool = True,
-        **kwargs,
     ) -> list[dict]:
         """
-        Devuelve los tickets con ubicación, opcionalmente filtrados por estado.
-        Si ``agrupar`` es True (por defecto), agrupa por ubicación y devuelve un
-        ``weight`` con la cantidad de tickets en esa coordenada. Si es False,
-        se devuelve cada ticket individual con sus metadatos básicos para que el
-        frontend pueda renderizarlos uno a uno.
+        Devuelve los tickets con ubicación, opcionalmente filtrados por estado,
+        agrupados por ubicación y con un peso (cantidad de tickets).
+        Permite filtrar por municipio/rubro, rango de fechas y categoría.
         """
         Model = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
         try:
             logger.info(
-                "[TICKET_SERVICE_MAPA] tipo=%s municipio_id=%s rubro_id=%s fecha_inicio=%s fecha_fin=%s categoria=%s estado=%s distrito=%s",
+                "[TICKET_SERVICE_MAPA] tipo=%s municipio_id=%s rubro_id=%s fecha_inicio=%s fecha_fin=%s categoria=%s estado=%s",
                 tipo_ticket,
                 municipio_id,
                 rubro_id,
@@ -390,13 +369,9 @@ class ServicioTickets:
                 fecha_fin,
                 categoria,
                 estado,
-                distrito or kwargs.get("distrito"),
             )
 
             query = Model.query.filter(Model.latitud.isnot(None), Model.longitud.isnot(None))
-            distrito = distrito or kwargs.get("distrito")
-            if distrito and hasattr(Model, "distrito"):
-                query = query.filter(Model.distrito == distrito)
 
             # Filtrar por estado si se proporciona. Si el estado solicitado es
             # "resuelto", también incluimos aquellos marcados como "cerrado" para
@@ -445,48 +420,41 @@ class ServicioTickets:
                 len(tickets),
             )
 
-            if not agrupar:
-                resultado = [
-                    {
-                        "id": t.id,
-                        "location": {"lat": t.latitud, "lng": t.longitud},
-                        "estado": t.estado,
-                        "asunto": getattr(t, "asunto", None),
-                        "nro_ticket": getattr(t, "nro_ticket", None),
-                        "categoria": getattr(t, "categoria", None),
-                    }
-                    for t in tickets
-                ]
-                logger.info(
-                    "[TICKET_SERVICE_MAPA] puntos_individuales=%s",
-                    len(resultado),
-                )
-                return resultado
+            # El agrupamiento por ubicación y el cálculo de 'weight' permanecen igual.
+            # Si se desea devolver todos los puntos individualmente para que el frontend agrupe/clusterice:
+            # return [
+            #     {
+            #         "id": t.id, "lat": t.latitud, "lng": t.longitud, "estado": t.estado,
+            #         "asunto": t.asunto, "nro_ticket": t.nro_ticket, "categoria": t.categoria
+            #     } for t in tickets
+            # ]
+            # Por ahora, mantendremos la agrupación existente que devuelve 'weight'.
 
-            ubicaciones_agrupadas = {}  # (lat, lng, categoria, direccion, distrito) -> count
+            ubicaciones_agrupadas = {}  # (lat, lng, categoria) -> count
 
             for t in tickets:
                 # Redondear lat/lng a un número de decimales para agrupar puntos cercanos.
+                # Ajustar el número de decimales según la precisión deseada.
+                # 5 decimales dan una precisión de ~1.1 metros.
+                # 4 decimales dan una precisión de ~11 metros.
+                # 3 decimales dan una precisión de ~110 metros.
+                # Consideremos 4 decimales para agrupar problemáticas en una misma "zona pequeña".
                 lat_lng_key = (
                     round(t.latitud, 4),
                     round(t.longitud, 4),
                     getattr(t, "categoria", None),
-                    getattr(t, "direccion", None),
-                    getattr(t, "distrito", None),
                 )
                 if lat_lng_key not in ubicaciones_agrupadas:
                     ubicaciones_agrupadas[lat_lng_key] = 0
                 ubicaciones_agrupadas[lat_lng_key] += 1
 
             resultado_heatmap = []
-            for (lat, lng, cat, dirc, dist), weight in ubicaciones_agrupadas.items():
+            for (lat, lng, cat), weight in ubicaciones_agrupadas.items():
                 resultado_heatmap.append(
                     {
                         "location": {"lat": lat, "lng": lng},
                         "weight": weight,
                         "categoria": cat,
-                        "direccion": dirc,
-                        "distrito": dist,
                     }
                 )
             logger.info(

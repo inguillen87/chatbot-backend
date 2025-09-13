@@ -15,9 +15,6 @@ ENV = os.getenv("ENV", "dev")  # "dev" o "prod"
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 BACKEND_URL = os.getenv("BACKEND_URL", RENDER_EXTERNAL_URL or "http://localhost:5000")
 
-# Base URL used to generate absolute links for public assets
-APP_PUBLIC_BASE_URL = os.getenv("APP_PUBLIC_BASE_URL", BACKEND_URL)
-
 PANEL_URL = os.getenv("PANEL_URL", "http://localhost:8080")
 WIDGET_URL = os.getenv("WIDGET_URL", "http://localhost:8080")
 
@@ -91,9 +88,6 @@ class Config:
     # Directory for persistent data such as uploaded media.
     DATA_DIR = os.getenv("DATA_DIR", "/data")
 
-    # Absolute base URL for serving public assets
-    APP_PUBLIC_BASE_URL = APP_PUBLIC_BASE_URL
-
     if SQLALCHEMY_DATABASE_URI.startswith("sqlite"):
         SQLALCHEMY_ENGINE_OPTIONS = {'connect_args': {'timeout': 5}}
     else:
@@ -163,13 +157,6 @@ class Config:
     SMTP_USE_SSL_CAMPAIGN = os.getenv("SMTP_USE_SSL_CAMPAIGN", str(SMTP_USE_SSL)).lower() in ('true', '1', 't')
     MAIL_FROM_ADDRESS_CAMPAIGN = os.getenv("MAIL_FROM_ADDRESS_CAMPAIGN", MAIL_FROM_ADDRESS)
     MAIL_FROM_NAME_CAMPAIGN = os.getenv("MAIL_FROM_NAME_CAMPAIGN", MAIL_FROM_NAME)
-
-    # LLM provider configuration
-    AI_PRIMARY = os.getenv("AI_PRIMARY", "openai")
-    AI_FALLBACK = os.getenv("AI_FALLBACK", "cohere")
-    MAX_RETRIES_OPENAI = int(os.getenv("MAX_RETRIES_OPENAI", "2"))
-    BACKOFF_MS = int(os.getenv("BACKOFF_MS", "500"))
-    CIRCUIT_BREAKER_SEC = int(os.getenv("CIRCUIT_BREAKER_SEC", str(5 * 60)))
 
     TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
     TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")

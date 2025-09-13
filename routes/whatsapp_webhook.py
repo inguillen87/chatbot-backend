@@ -6,8 +6,6 @@ import requests
 import io
 import json
 import threading
-import hashlib
-import time
 from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
 from extensions import db  # Import db instance for database operations
@@ -18,22 +16,13 @@ from utils.db_utils import safe_flag_modified
 from services.notifications import enviar_bienvenida_whatsapp
 from services.gcs_service import upload_to_gcs
 from services.attachment_service import create_attachment_with_thumbnail
-from services.llm_utils import (
-    extract_multiple_contact_details_llm,
-)
+from services.llm_utils import extract_multiple_contact_details_llm
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
-from services.media_analysis import (
-    analyze_image_from_url,
-    analyze_video_from_url,
-)
 from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.geo_service import reverse_geocode
 from services.openai_maps_service import geocodificar_inversa_llm
 from services.municipio_responder import CONTEXTO_MUNICIPIO
-from services import audio_transcription_service
-from services.response_formatter import render_audio_text
-from services.tts_orchestrator import generar_audio_con_fallback
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -45,8 +34,6 @@ webhook_bp = Blueprint('whatsapp_webhook', __name__)
 # chunks that comply with Twilio's limits and send them sequentially.
 
 MAX_TWILIO_BODY_LENGTH = 1600
-
-WHATSAPP_LLM_ENABLED = os.getenv("WHATSAPP_LLM_ENABLED", "false").lower() == "true"
 
 
 def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
@@ -68,105 +55,12 @@ def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
     return parts
 
 
-def _media_sig(url: str) -> str:
-    return hashlib.md5(url.encode("utf-8")).hexdigest()
-
-
-def _should_send_media(ctx: dict, url: str, ttl: int = 300) -> bool:
-    if not url:
-        return False
-    sig = _media_sig(url)
-    last_sig = ctx.get("last_media_sig")
-    last_ts = ctx.get("last_media_ts", 0)
-    now = time.time()
-    if last_sig == sig and now - last_ts < ttl:
-        return False
-    ctx["last_media_sig"] = sig
-    ctx["last_media_ts"] = now
-    return True
-
-
-def _send_with_retry(
-    from_: str, to: str, body: str, media_url: str | None = None, max_retries: int = 3
-):
-    """Send a WhatsApp message with retries and log the Twilio SID."""
-    if not twilio_client:
-        return None
-    params = {"from_": from_, "to": to, "body": body}
-    if media_url:
-        params["media_url"] = [media_url]
-    for attempt in range(1, max_retries + 1):
-        try:
-            msg = twilio_client.messages.create(**params)
-            current_app.logger.info(f"Twilio message SID: {msg.sid}")
-            return msg
-        except Exception as e:
-            current_app.logger.error(
-                f"Error sending WhatsApp message (attempt {attempt}): {e}"
-            )
-            if attempt == max_retries:
-                break
-            time.sleep(1)
-    return None
-
-
-def _ensure_absolute_url(url: str) -> str:
-    """Return an absolute URL using BASE_URL if needed."""
-    if not url or url.startswith(("http://", "https://")):
-        return url
-    base_url = current_app.config.get("BASE_URL")
-    if base_url:
-        if not url.startswith("/"):
-            url = "/" + url
-        return f"{base_url}{url}"
-    return url
-
-
-def deep_merge_dict(target: dict, source: dict) -> dict:
-    """Recursively merge `source` into `target` and return the merged dict."""
-    for k, v in source.items():
-        if isinstance(v, dict) and isinstance(target.get(k), dict):
-            deep_merge_dict(target[k], v)
-        else:
-            target[k] = v
-    return target
-
-
-def _send_delayed_payload(client, to_number: str, from_number: str, payload: dict, delay: int,
-                          session_id: str | None = None, token: str | None = None):
-    """Send a payload via WhatsApp after a delay using a background thread.
-
-    Parameters
-    ----------
-    client: Twilio client used to send the message.
-    to_number/from_number: WhatsApp numbers.
-    payload: Bot response payload to format and send.
-    delay: Seconds to wait before sending.
-    session_id: Optional chat session identifier used to validate whether the
-        delayed payload is still relevant.
-    token: Optional token stored in the chat context.  If the token saved in the
-        database no longer matches when the delayed task executes, the message
-        is skipped (e.g. user already interacted again).
-    """
-
-    # Capture the real application object so the background thread can safely
-    # create its own context without relying on the ambient ``current_app``.
-    app = current_app._get_current_object()
+def _send_delayed_payload(client, to_number: str, from_number: str, payload: dict, delay: int):
+    """Send a payload via WhatsApp after a delay using a background thread."""
 
     def _send():
-        with app.app_context():
+        with current_app.app_context():
             from services.response_formatter import build_interactive_response
-
-            # If a session id and token were provided, verify the token still
-            # matches what's stored in the DB. Otherwise skip sending.
-            ctx_entry = None
-            if session_id and token:
-                ctx_entry = ChatSessionContext.query.filter_by(
-                    chat_session_id=session_id
-                ).first()
-                ctx_data = ctx_entry.context_data if ctx_entry else {}
-                if ctx_data.get("pending_delayed_token") != token:
-                    return
 
             formatted = build_interactive_response(
                 options=payload.get("options_list", []),
@@ -190,14 +84,8 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
 
             try:
                 client.messages.create(**params)
-                # Remove the token so additional delayed payloads are not sent
-                if ctx_entry and token:
-                    ctx_entry.context_data.pop("pending_delayed_token", None)
-                    safe_flag_modified(ctx_entry, "context_data")
-                    db.session.add(ctx_entry)
-                    db.session.commit()
             except Exception as e:
-                app.logger.error(f"Error sending delayed message: {e}")
+                current_app.logger.error(f"Error sending delayed message: {e}")
 
     if client:
         timer = threading.Timer(delay, _send)
@@ -242,18 +130,10 @@ def whatsapp_webhook():
 
     signature = request.headers.get("X-Twilio-Signature", "")
     url = request.url
-    post_vars = request.form.to_dict(flat=True)
+    post_vars = request.form.to_dict()
 
     if not validator.validate(url, post_vars, signature):
         abort(403, "Invalid Twilio signature")
-
-    # Extraer pin de ubicación si viene incluido
-    lat = request.form.get("Latitude")
-    lon = request.form.get("Longitude")
-    if lat and lon:
-        coords = {"lat": float(lat), "lng": float(lon)}
-        post_vars["ubicacion_usuario"] = {"lat": coords["lat"], "lon": coords["lng"]}
-        post_vars["location"] = coords
 
     to_number_raw = post_vars.get("To", "")
     from_number_raw = post_vars.get("From", "")
@@ -306,12 +186,52 @@ def whatsapp_webhook():
     if not isinstance(session_context_db_entry.context_data, dict):
         session_context_db_entry.context_data = {}
 
-    # Cancel any pending delayed payload when a new user message arrives.
-    ctx_root = session_context_db_entry.context_data
-    if ctx_root.pop("pending_delayed_token", None) is not None:
+    # --- Handle location messages and persist coordinates ---
+    msg_type = post_vars.get("MessageType")
+    if msg_type == "location":
+        lat = post_vars.get("Latitude")
+        lon = post_vars.get("Longitude")
+        ctx = session_context_db_entry.context_data
+        ctx.setdefault("contexto_municipio_v2", {})
+        ctxm = ctx["contexto_municipio_v2"]
+        datos = ctxm.get("datos_parciales_llm_reclamo", {})
+        datos.update({
+            "coordenadas": {"lat": lat, "lon": lon},
+        })
+        try:
+            geo = reverse_geocode(float(lat), float(lon))
+            display = geo.get("display", f"Lat: {lat}, Lon: {lon}")
+        except Exception:
+            display = f"Lat: {lat}, Lon: {lon}"
+        datos["ubicacion"] = display
+        ctxm["datos_parciales_llm_reclamo"] = datos
+        ctxm["estado_conversacion"] = "ESPERANDO_CONFIRMACION_UBICACION"
+        ctx["last_options_sent"] = [
+            {"texto": "Confirmar", "action_id": "confirmar_ubicacion"},
+            {"texto": "Editar", "action_id": "editar_ubicacion"},
+        ]
         safe_flag_modified(session_context_db_entry, "context_data")
         db.session.add(session_context_db_entry)
         db.session.commit()
+
+        if twilio_client:
+            confirm_payload = {
+                "type": "button",
+                "body": {"text": f"¿Es esta tu dirección?\n{display}"},
+                "action": {
+                    "buttons": [
+                        {"type": "reply", "reply": {"id": "confirmar_ubicacion", "title": "Confirmar"}},
+                        {"type": "reply", "reply": {"id": "editar_ubicacion", "title": "Editar"}},
+                    ]
+                },
+            }
+            twilio_client.messages.create(
+                from_=to_number_raw,
+                to=from_number_raw,
+                body="Seleccioná una opción",
+                persistent_action=[f"whatsapp:{json.dumps(confirm_payload)}"],
+            )
+        return "OK", 200
 
     # Determine incoming text before any special handling
     button_payload = post_vars.get("ButtonPayload")
@@ -360,21 +280,12 @@ def whatsapp_webhook():
         db.session.commit()
 
     # --- Message and Media Handling SECOND ---
-    media_url = post_vars.get("MediaUrl0")  # TODO: soportar múltiples adjuntos
-    # Some unit tests omit `NumMedia`; treat presence of MediaUrl0 as an indicator of media.
-    num_media = int(post_vars.get("NumMedia") or (1 if media_url else 0))
+    media_url = post_vars.get("MediaUrl0")
     media_content_type = post_vars.get("MediaContentType0")
     uploaded_file_info = None
-    interpretacion_media_data = None
     message_body = incoming_text
 
-    if num_media > 0 and media_url:
-        if not media_content_type:
-            lower_url = media_url.lower()
-            if lower_url.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
-                media_content_type = "image/*"
-            elif lower_url.endswith((".mp4", ".mov", ".avi", ".mkv", ".webm")):
-                media_content_type = "video/*"
+    if media_url and media_content_type:
         try:
             # Download the file from Twilio's URL first
             auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
@@ -399,36 +310,26 @@ def whatsapp_webhook():
             )
 
             if adjunto:
-                # Prepare the info for the chatbot logic, ensuring serializable fields
-                public_url = getattr(adjunto, "public_url", None)
-                if public_url and not isinstance(public_url, str):
-                    public_url = str(public_url)
+                # Prepare the info for the chatbot logic, which will be used for all media types
                 uploaded_file_info = {
                     "id": adjunto.id,
                     "url": adjunto.url,
-                    "public_url": public_url,
                     "mime_type": adjunto.mime,
                     "name": adjunto.nombre_original,
-                    "source": "whatsapp",
+                    "source": "whatsapp"
                 }
                 current_app.logger.info(f"WhatsApp media processed and saved as ArchivoAdjunto ID: {adjunto.id}")
             else:
                 current_app.logger.error("create_attachment_with_thumbnail failed to process the WhatsApp media")
 
-            if media_content_type and media_content_type.startswith("audio/"):
+            if media_content_type.startswith("audio/"):
                 session_context_db_entry.context_data['source_is_audio'] = True
-                transcription_bundle = audio_transcription_service.transcribe_audio_from_url(
-                    media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-                )
-                if isinstance(transcription_bundle, dict):
-                    if not transcription_bundle.get("error"):
-                        message_body = transcription_bundle.get("raw_text", "")
-                        interpretacion_media_data = transcription_bundle
-                    else:
-                        current_app.logger.warning("Audio transcription failed or returned empty.")
-                elif transcription_bundle:
-                    message_body = transcription_bundle
-                    interpretacion_media_data = {"raw_text": transcription_bundle}
+                from services.audio_transcription_service import transcribe_audio_from_url
+                # We pass the direct URL to the transcription service
+                transcribed_text = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+                if transcribed_text:
+                    message_body = transcribed_text
+                    uploaded_file_info['transcribed_text'] = transcribed_text
                 else:
                     current_app.logger.warning("Audio transcription failed or returned empty.")
             else:
@@ -441,30 +342,6 @@ def whatsapp_webhook():
             current_app.logger.error(f"Error processing WhatsApp media file: {e}", exc_info=True)
             # Reset uploaded_file_info if processing fails
             uploaded_file_info = None
-        finally:
-            if media_content_type and media_content_type.startswith("image/"):
-                ctx = session_context_db_entry.context_data
-                ctx["es_foto"] = True
-                foto_url = (
-                    (uploaded_file_info or {}).get("public_url")
-                    or (uploaded_file_info or {}).get("url")
-                    or media_url
-                )
-                if foto_url and not isinstance(foto_url, str):
-                    foto_url = str(foto_url)
-                ctx["foto_url"] = foto_url
-                # If a claim flow is already active, mirror the photo there so
-                # it is not lost when the user continues with additional
-                # information (e.g. location or description).
-                ctx.setdefault(CONTEXTO_MUNICIPIO, {})
-                ctxm = ctx[CONTEXTO_MUNICIPIO]
-                reclamo_flow = ctxm.get("reclamo_flow_v2")
-                if reclamo_flow:
-                    reclamo_flow.setdefault("datos_reclamo", {})["foto_url"] = foto_url
-
-                safe_flag_modified(session_context_db_entry, "context_data")
-                db.session.add(session_context_db_entry)
-                db.session.commit()
     else:
         # If no media, ensure the flag is not present
         session_context_db_entry.context_data.pop('source_is_audio', None)
@@ -480,52 +357,26 @@ def whatsapp_webhook():
         ctxm = ctx[CONTEXTO_MUNICIPIO]
         datos = ctxm.get("datos_parciales_llm_reclamo", {})
         estado_prev = ctxm.get("estado_conversacion")
-        reclamo_state = ctxm.get("reclamo_flow_v2", {}).get("state")
-        estado_reclamo_ctx = (
-            isinstance(estado_prev, str)
-            and (
-                estado_prev.endswith("_RECLAMO")
-                or estado_prev
-                in {
-                    "EN_FLUJO_RECLAMO",
-                    "ESPERANDO_DATOS_CONTACTO",
-                    "ESPERANDO_DATOS_PERSONALES",
-                }
-            )
-        )
-        hay_reclamo_en_curso = bool(datos) or estado_reclamo_ctx or reclamo_state in (
-            "ESPERANDO_DIRECCION",
-            "ESPERANDO_DESCRIPCION",
-            "ESPERANDO_FOTO",
-            "ESPERANDO_CONFIRMACION",
+        hay_reclamo_en_curso = bool(datos) or estado_prev in (
+            "ESPERANDO_DIRECCION_RECLAMO",
+            "ESPERANDO_DESCRIPCION_RECLAMO",
+            "ESPERANDO_FOTO_RECLAMO",
+            "ESPERANDO_CONFIRMACION_RECLAMO",
             "ESPERANDO_MENU_EDICION",
         )
         try:
             geo = reverse_geocode(float(latitud), float(longitud))
             display = geo.get("display", f"Lat: {latitud}, Lon: {longitud}")
-            distrito = geo.get("barrio") or geo.get("localidad")
         except Exception:
             display = f"Lat: {latitud}, Lon: {longitud}"
-            distrito = None
 
-        maps_url = f"https://www.google.com/maps/search/?q={latitud},{longitud}"
-        gkey = os.getenv("GOOGLE_MAPS_API_KEY")
-        static_map_url = (
-            "https://maps.googleapis.com/maps/api/staticmap?center="
-            f"{latitud},{longitud}&zoom=18&size=800x500&markers=color:red|{latitud},{longitud}&key={gkey}"
-            if gkey
-            else None
-        )
         datos.update(
             {
                 "coordenadas": {"lat": latitud, "lon": longitud},
                 "ubicacion": display,
                 "label_ubicacion": post_vars.get("Label"),
-                "maps_search_url": maps_url,
             }
         )
-        if distrito:
-            datos["distrito"] = distrito
         ctxm["datos_parciales_llm_reclamo"] = datos
 
         if hay_reclamo_en_curso:
@@ -534,91 +385,63 @@ def whatsapp_webhook():
                 if estado_prev in (None, "ESPERANDO_DIRECCION_RECLAMO")
                 else estado_prev
             )
-            ctx["last_options_sent"] = [
-                {"texto": "1) Sí, es acá", "action_id": "confirmar_ubicacion"},
-                {"texto": "2) No, corregir", "action_id": "editar_ubicacion"},
-            ]
             safe_flag_modified(session_context_db_entry, "context_data")
             db.session.add(session_context_db_entry)
             db.session.commit()
             if twilio_client:
-                label = post_vars.get("Label")
-                label_line = f"\nEtiqueta: {label}" if label else ""
-                confirm_text = (
-                    "📍 Ubicación detectada:\n"
-                    f"{display}{label_line}\n¿Es acá?\n1) Sí, es acá\n2) No, corregir\n"
-                    f"🔗 Abrir mapa: {maps_url}"
-                )
-                _send_with_retry(
+                confirm_payload = {
+                    "type": "button",
+                    "body": {"text": f"¿Es esta tu dirección?\n{display}"},
+                    "action": {
+                        "buttons": [
+                            {"type": "reply", "reply": {"id": "confirmar_ubicacion", "title": "Confirmar"}},
+                            {"type": "reply", "reply": {"id": "editar_ubicacion", "title": "Editar"}},
+                        ]
+                    },
+                }
+                twilio_client.messages.create(
                     from_=to_number_raw,
                     to=from_number_raw,
-                    body=confirm_text,
-                    media_url=static_map_url,
+                    body="Seleccioná una opción",
+                    persistent_action=[f"whatsapp:{json.dumps(confirm_payload)}"],
                 )
-                audio_text = render_audio_text(
-                    confirm_text, options=ctx.get("last_options_sent")
-                )
-                audio_url = generar_audio_con_fallback(
-                    audio_text, channel="whatsapp", allow_if_policy_off=True
-                )
-                if audio_url:
-                    absolute_audio_url = _ensure_absolute_url(audio_url)
-                    try:
-                        twilio_client.messages.create(
-                            from_=to_number_raw,
-                            to=from_number_raw,
-                            media_url=[absolute_audio_url],
-                        )
-                    except Exception as e:
-                        current_app.logger.error(
-                            f"Error sending audio message: {e}"
-                        )
             return "OK", 200
         else:
             ctxm["estado_conversacion"] = "ESPERANDO_INTENCION_UBICACION"
-            ctx["last_options_sent"] = [
-                {"texto": "1) Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
-                {"texto": "2) Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
-                {"texto": "3) Cancelar", "action_id": "cancelar"},
-                {"texto": "4) Menú", "action_id": "menu_principal"},
-            ]
             safe_flag_modified(session_context_db_entry, "context_data")
             db.session.add(session_context_db_entry)
             db.session.commit()
             if twilio_client:
-                label = post_vars.get("Label")
-                label_part = f" ({label})" if label else ""
-                intro_text = (
-                    f"Recibí tu ubicación en {display}{label_part}. ¿Qué te gustaría hacer?\n"
-                    "1) Iniciar un Reclamo\n"
-                    "2) Enviar una Sugerencia\n"
-                    "3) Cancelar\n"
-                    "4) Menú"
-                )
-                _send_with_retry(
+                menu_payload = {
+                    "type": "button",
+                    "body": {"text": f"Recibí tu ubicación en {display}. ¿Qué te gustaría hacer?"},
+                    "action": {
+                        "buttons": [
+                            {
+                                "type": "reply",
+                                "reply": {
+                                    "id": "iniciar_reclamo_con_ubicacion",
+                                    "title": "Iniciar un Reclamo",
+                                },
+                            },
+                            {
+                                "type": "reply",
+                                "reply": {
+                                    "id": "enviar_sugerencia_con_ubicacion",
+                                    "title": "Enviar una Sugerencia",
+                                },
+                            },
+                            {"type": "reply", "reply": {"id": "cancelar", "title": "Cancelar"}},
+                            {"type": "reply", "reply": {"id": "menu_principal", "title": "Menú"}},
+                        ]
+                    },
+                }
+                twilio_client.messages.create(
                     from_=to_number_raw,
                     to=from_number_raw,
-                    body=intro_text,
-                    media_url=static_map_url,
+                    body="Seleccioná una opción",
+                    persistent_action=[f"whatsapp:{json.dumps(menu_payload)}"],
                 )
-                audio_text = render_audio_text(
-                    intro_text, options=ctx.get("last_options_sent")
-                )
-                audio_url = generar_audio_con_fallback(
-                    audio_text, channel="whatsapp", allow_if_policy_off=True
-                )
-                if audio_url:
-                    absolute_audio_url = _ensure_absolute_url(audio_url)
-                    try:
-                        twilio_client.messages.create(
-                            from_=to_number_raw,
-                            to=from_number_raw,
-                            media_url=[absolute_audio_url],
-                        )
-                    except Exception as e:
-                        current_app.logger.error(
-                            f"Error sending audio message: {e}"
-                        )
             return "OK", 200
 
     # --- Human Chat Check ---
@@ -638,20 +461,15 @@ def whatsapp_webhook():
     esperando_info = _esperando_info_libre(municipio_ctx)
 
     # Solo traducir números a acciones cuando no estamos esperando información libre.
-    mapped_action_id = None
     if message_body.isdigit() and last_options and not esperando_info:
         idx = int(message_body) - 1
         if 0 <= idx < len(last_options):
             selected = last_options[idx]
             message_body = (
-                selected.get("category_name")
-                or selected.get("texto")
-                or message_body
-            )
-            mapped_action_id = (
                 selected.get("id")
                 or selected.get("action_id")
                 or selected.get("texto")
+                or message_body
             )
 
     # --- Call Real Chatbot Logic: responder_chatboc ---
@@ -667,38 +485,20 @@ def whatsapp_webhook():
     # The context_data from session_context_db_entry will be passed to responder_chatboc
     # and it's expected that responder_chatboc might modify it directly or return a new context.
 
-    greeting_reset = False
     try:
         print(f"Calling responder_chatboc for session_id: {chat_session_id_internal}, owner_user: {client_user.name}")
 
+        interpretacion_media_data = None
         if uploaded_file_info:
             mime_type = uploaded_file_info.get("mime_type", "")
-            if mime_type.startswith("video/") and media_url:
-                interpretacion_media_data = analyze_video_from_url(
-                    media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-                )
-            elif not mime_type.startswith("audio/"):
-                interpretacion_media_data = clasificar_adjunto_whatsapp(
-                    uploaded_file_info, client_user
-                )
-        elif media_url and media_content_type:
-            if media_content_type.startswith("video/"):
-                interpretacion_media_data = analyze_video_from_url(
-                    media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-                )
-            elif media_content_type.startswith("image/"):
-                interpretacion_media_data = analyze_image_from_url(
-                    media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-                )
+            if not mime_type.startswith("audio/"):
+                interpretacion_media_data = clasificar_adjunto_whatsapp(uploaded_file_info, client_user)
         # Location info should not be treated as interpreted media.
         # It should be passed directly as location data.
 
         kwargs_for_bot = {"source_channel": "whatsapp"}
         if uploaded_file_info:
             kwargs_for_bot["uploaded_file_info"] = uploaded_file_info
-        if num_media > 0 and media_url and media_content_type and media_content_type.startswith("image/"):
-            kwargs_for_bot["es_foto"] = True
-            kwargs_for_bot["foto_url"] = (uploaded_file_info or {}).get("public_url") or (uploaded_file_info or {}).get("url") or media_url
         if location_info:
             # Pass location_info and mark it explicitly as a location payload
             kwargs_for_bot["location"] = location_info
@@ -707,16 +507,6 @@ def whatsapp_webhook():
         if interpretacion_media_data and not interpretacion_media_data.get("error"):
             # This will now only contain data from actual images/files, not locations.
             kwargs_for_bot["datos_interpretados_archivo"] = interpretacion_media_data
-
-        payload_data = None
-        if button_payload:
-            payload_data = {"action_id": button_payload}
-        elif list_id:
-            payload_data = {"action_id": list_id}
-        elif mapped_action_id:
-            payload_data = {"action_id": mapped_action_id}
-        if payload_data:
-            kwargs_for_bot["payload"] = payload_data
 
         profile_name = post_vars.get("ProfileName")
         if profile_name:
@@ -737,19 +527,6 @@ def whatsapp_webhook():
             **kwargs_for_bot
         )
 
-        if bot_response_dict.get("fuente", "").startswith("greeting_handler"):
-            greeting_reset = True
-            session_context_db_entry.context_data.pop("last_options_sent", None)
-            safe_flag_modified(session_context_db_entry, "context_data")
-            db.session.add(session_context_db_entry)
-            db.session.commit()
-
-        # Propagate any state hints returned by the bot into the session context
-        next_state = bot_response_dict.get("next_state_hint")
-        if next_state:
-            muni_ctx = session_context_db_entry.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
-            muni_ctx["estado_conversacion"] = next_state
-
         # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
         if not end_user and bot_response_dict.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"]:
             contexto_actual = session_context_db_entry.context_data.get("contexto_municipio", {})
@@ -758,9 +535,7 @@ def whatsapp_webhook():
             # Extraer info del mensaje actual del usuario
             potential_fields = ["nombre_cliente", "telefono_cliente", "email_cliente"]
             current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracting {potential_fields} from: {message_body}")
-            extracted_data = extract_multiple_contact_details_llm(
-                message_body, potential_fields, use_llm=WHATSAPP_LLM_ENABLED
-            )
+            extracted_data = extract_multiple_contact_details_llm(message_body, potential_fields)
             current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracted: {extracted_data}")
 
             # Actualizar datos del reclamo con la info extraída
@@ -834,8 +609,6 @@ def whatsapp_webhook():
         # After formatting, the context might be updated (e.g., with last_options_sent).
         # We need to merge this updated context back into our main session object before saving.
         updated_context = formatted_whatsapp_payload.get('contexto_actualizado')
-        if greeting_reset and updated_context:
-            updated_context.pop('last_options_sent', None)
 
         # The existing context from the database
         db_context = session_context_db_entry.context_data or {}
@@ -843,9 +616,9 @@ def whatsapp_webhook():
         current_app.logger.info(f"[CONTEXT_WHATSAPP] Contexto actualizado del turno actual: {updated_context}")
 
 
-        # Merge contexts deeply so nested keys like contexto_municipio_v2/estado_conversacion persist
+        # Merge the contexts
         if updated_context:
-            merged_context = deep_merge_dict(db_context.copy(), updated_context)
+            merged_context = {**db_context, **updated_context}
         else:
             merged_context = db_context
 
@@ -875,51 +648,23 @@ def whatsapp_webhook():
                 'to': from_number_raw,
             }
 
-            image_url_to_send = None
-
             if formatted_whatsapp_payload.get("type") == "interactive":
-                interactive_payload = formatted_whatsapp_payload.get("interactive") or {
-                    k: v for k, v in formatted_whatsapp_payload.items() if k not in {"type", "contexto_actualizado"}
-                }
-                fallback_body = interactive_payload.get("body", {}).get("text", "Por favor, mirá las opciones.")
-
-                # Always send a plain-text version first (with optional image)
-                # so the user sees the content even if Twilio rejects the
-                # interactive payload.
-                text_message_params = {
-                    'from_': to_number_raw,
-                    'to': from_number_raw,
-                    'body': fallback_body,
-                }
-
-                image_url = formatted_whatsapp_payload.get("image_url")
-                if not image_url:
-                    header = interactive_payload.get("header") if interactive_payload else None
-                    if header and header.get("type") == "image":
-                        image_url = header.get("image", {}).get("link")
-                if image_url:
-                    if image_url.startswith('/'):
-                        base_url = request.url_root.rstrip('/')
-                        image_url = f"{base_url}{image_url}"
-                    if _should_send_media(session_context_db_entry.context_data, image_url):
-                        text_message_params['media_url'] = [image_url]
-
-                twilio_client.messages.create(**text_message_params)
-
-                # Prepare the interactive message (without media)
-                message_params['body'] = fallback_body
+                interactive_payload = formatted_whatsapp_payload.get("interactive")
+                # The body is required, it's the fallback for notifications and older clients
+                message_params['body'] = interactive_payload.get("body", {}).get("text", "Por favor, mirá las opciones.")
+                # The PersistentAction is what actually sends the interactive message
+                # It needs to be a list of strings, with the format "channel:payload"
+                # For WhatsApp, the payload is a JSON string of the interactive object.
                 message_params['persistent_action'] = [f"whatsapp:{json.dumps(interactive_payload)}"]
-            else:  # Text message
+            else: # Text message
                 message_params['body'] = formatted_whatsapp_payload.get("text", {}).get("body", "No se pudo generar una respuesta.")
 
-                image_url_to_send = formatted_whatsapp_payload.get("image_url")
-                if image_url_to_send and image_url_to_send.startswith('/'):
+            image_url = formatted_whatsapp_payload.get("image_url")
+            if image_url and 'persistent_action' not in message_params:
+                if image_url.startswith('/'):
                     base_url = request.url_root.rstrip('/')
-                    image_url_to_send = f"{base_url}{image_url_to_send}"
-                if image_url_to_send and _should_send_media(session_context_db_entry.context_data, image_url_to_send):
-                    message_params['media_url'] = [image_url_to_send]
-                else:
-                    image_url_to_send = None
+                    image_url = f"{base_url}{image_url}"
+                message_params['media_url'] = [image_url]
 
             current_app.logger.debug(f"Sending WhatsApp message params: {message_params}")
 
@@ -939,8 +684,6 @@ def whatsapp_webhook():
                     'to': from_number_raw,
                     'body': chunks[0],
                 }
-                if 'media_url' in message_params:
-                    first_chunk_params['media_url'] = message_params['media_url']
                 main_message = twilio_client.messages.create(**first_chunk_params)
                 print(f"Mensaje parte 1/{len(chunks)} enviado a {from_number_raw}, SID: {main_message.sid}")
 
@@ -961,7 +704,6 @@ def whatsapp_webhook():
                         body="Seleccioná una opción",
                         persistent_action=[f"whatsapp:{json.dumps(more_payload)}"],
                     )
-
             else:
                 session_context_db_entry.context_data.pop('pending_chunks', None)
                 safe_flag_modified(session_context_db_entry, 'context_data')
@@ -973,26 +715,21 @@ def whatsapp_webhook():
             # Second, if there is an audio URL, send it as a separate media message.
             audio_url = bot_response_dict.get('audio_url')
             if audio_url:
-                absolute_audio_url = _ensure_absolute_url(audio_url)
+                # Ensure the URL is absolute
+                if audio_url.startswith('/'):
+                    base_url = request.url_root.rstrip('/')
+                    absolute_audio_url = f"{base_url}{audio_url}"
+                else:
+                    absolute_audio_url = audio_url
+
                 audio_message_params = {
                     'from_': to_number_raw,
                     'to': from_number_raw,
                     'media_url': [absolute_audio_url]
                 }
-                current_app.logger.debug(
-                    f"Sending WhatsApp audio params: {audio_message_params}"
-                )
-                try:
-                    audio_message = twilio_client.messages.create(
-                        **audio_message_params
-                    )
-                    print(
-                        f"Mensaje de audio enviado a {from_number_raw}, SID: {audio_message.sid}"
-                    )
-                except Exception as e:
-                    current_app.logger.error(
-                        f"Error sending audio message: {e}"
-                    )
+                current_app.logger.debug(f"Sending WhatsApp audio params: {audio_message_params}")
+                audio_message = twilio_client.messages.create(**audio_message_params)
+                print(f"Mensaje de audio enviado a {from_number_raw}, SID: {audio_message.sid}")
 
         except Exception as e:
             print(f"Error al enviar mensaje de Twilio: {e}")
@@ -1007,19 +744,12 @@ def whatsapp_webhook():
         and bot_response_dict.get("delayed_payload")
         and bot_response_dict.get("delay_seconds")
     ):
-        delayed_token = str(uuid.uuid4())
-        session_context_db_entry.context_data["pending_delayed_token"] = delayed_token
-        safe_flag_modified(session_context_db_entry, "context_data")
-        db.session.add(session_context_db_entry)
-        db.session.commit()
         _send_delayed_payload(
             twilio_client,
             to_number_raw,
             from_number_raw,
             bot_response_dict["delayed_payload"],
             bot_response_dict["delay_seconds"],
-            chat_session_id_internal,
-            delayed_token,
         )
 
     return "OK", 200

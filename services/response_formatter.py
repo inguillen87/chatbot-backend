@@ -4,13 +4,11 @@ import os
 
 logger = logging.getLogger(__name__)
 
-# Twilio frequently rejects interactive WhatsApp payloads unless the
-# corresponding template has been pre‑approved. To guarantee that users at
-# municipalities still receive the full confirmation text with links, the
-# backend now **defaults** to sending plain text menus.  Interactive buttons
-# can be re‑enabled explicitly by setting ``WHATSAPP_ALLOW_INTERACTIVE=true``
-# in the environment.
-WHATSAPP_ALLOW_INTERACTIVE = os.getenv("WHATSAPP_ALLOW_INTERACTIVE", "false").lower() == "true"
+# When Twilio hasn't approved interactive templates yet we fall back to
+# rendering every WhatsApp menu as plain text.  The environment variable
+# allows re‑enabling interactive components without touching the code.
+# MODIFIED: Default to TRUE to satisfy user request for text-based menus.
+WHATSAPP_FORCE_TEXT = os.getenv("WHATSAPP_FORCE_TEXT", "true").lower() != "false"
 
 def render_audio_text(message: str, options: list | None = None, categorias: list | None = None) -> str:
     """Builds a plain text version of a menu suitable for TTS.
@@ -114,9 +112,9 @@ def build_interactive_response(options: list,
         original_type = message_type
         num_options = len(options)
 
-        # Unless explicitly enabled, always fall back to text so users get a
-        # readable confirmation even without interactive templates.
-        if not WHATSAPP_ALLOW_INTERACTIVE:
+        # If interactive templates aren't yet approved we force plain text
+        # responses so the user still sees every option in the menu.
+        if WHATSAPP_FORCE_TEXT:
             message_type = 'text'
         else:
             # Decide message type based on options, unless it's forced to 'text'
@@ -154,7 +152,6 @@ def build_interactive_response(options: list,
 
             nav_buttons = [
                 {"texto": "Menú", "action_id": "menu_principal"},
-                {"texto": "Volver", "action_id": "volver"},
                 {"texto": "Cancelar", "action_id": "cancelar"},
             ]
             existing_ids = {

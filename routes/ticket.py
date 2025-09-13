@@ -1594,17 +1594,15 @@ def mapa_de_tickets(current_user: User, tipo: str):
     fecha_fin = request.args.get("fecha_fin")
     categoria = request.args.get("categoria")
     estado = request.args.get("estado") # Nuevo filtro de estado
-    distrito = request.args.get("distrito")
 
     logger.info(
-        "[MAPA_TICKETS] tipo=%s user_id=%s filtros: fecha_inicio=%s fecha_fin=%s categoria=%s estado=%s distrito=%s",
+        "[MAPA_TICKETS] tipo=%s user_id=%s filtros: fecha_inicio=%s fecha_fin=%s categoria=%s estado=%s",
         tipo,
         getattr(current_user, "id", None),
         fecha_inicio,
         fecha_fin,
         categoria,
         estado,
-        distrito,
     )
 
     if tipo == "municipio":
@@ -1618,8 +1616,7 @@ def mapa_de_tickets(current_user: User, tipo: str):
             fecha_inicio=fecha_inicio,
             fecha_fin=fecha_fin,
             categoria=categoria,
-            estado=estado, # Pasar el nuevo filtro
-            distrito=distrito,
+            estado=estado # Pasar el nuevo filtro
         )
     elif tipo == "pyme":
         if not current_user.rubro_id: # Asumimos que si es pyme, debe tener rubro_id
@@ -1631,8 +1628,7 @@ def mapa_de_tickets(current_user: User, tipo: str):
             fecha_inicio=fecha_inicio,
             fecha_fin=fecha_fin,
             categoria=categoria,
-            estado=estado, # Pasar el nuevo filtro
-            distrito=distrito,
+            estado=estado # Pasar el nuevo filtro
         )
     else:
         return jsonify({"error": "Tipo de mapa no válido."}), 400

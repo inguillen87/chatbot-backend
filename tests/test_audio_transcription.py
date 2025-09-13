@@ -26,8 +26,7 @@ class TestAudioTranscriptionService(unittest.TestCase):
         result = transcribe_audio_from_url('http://example.com/audio.ogg', 'fake_sid', 'fake_token')
 
         # Assertions
-        self.assertEqual(result['raw_text'], 'hello world')
-        self.assertEqual(result['kind'], 'audio')
+        self.assertEqual(result, 'hello world')
         mock_requests_get.assert_called_once_with('http://example.com/audio.ogg', auth=('fake_sid', 'fake_token'))
         mock_create.assert_called_once()
 
@@ -40,7 +39,7 @@ class TestAudioTranscriptionService(unittest.TestCase):
         result = transcribe_audio_from_url('http://example.com/audio.ogg', 'fake_sid', 'fake_token')
 
         # Assertions
-        self.assertIsNotNone(result['error'])
+        self.assertIsNone(result)
 
     @patch('services.audio_transcription_service.requests.get')
     @patch('services.audio_transcription_service.openai_client')
@@ -59,7 +58,7 @@ class TestAudioTranscriptionService(unittest.TestCase):
         result = transcribe_audio_from_url('http://example.com/audio.ogg', 'fake_sid', 'fake_token')
 
         # Assertions
-        self.assertIsNotNone(result['error'])
+        self.assertIsNone(result)
 
 if __name__ == '__main__':
     unittest.main()

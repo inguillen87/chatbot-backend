@@ -1,12 +1,6 @@
 import pytest
 from unittest.mock import patch
-from services.municipio_responder import (
-    GreetingHandler,
-    CONTEXTO_MUNICIPIO,
-    handle_llm_interaction,
-    ConversationState,
-)
-import time
+from services.municipio_responder import GreetingHandler, CONTEXTO_MUNICIPIO
 
 def test_greeting_handler_whatsapp_menu():
     # Create a mock context for WhatsApp
@@ -35,47 +29,3 @@ def test_greeting_handler_preserves_profile_name():
     response = handler.handle({})
     assert "Mauricio" in response.get("message_body", "")
     assert ctx_data.get("profile_name") == "Mauricio"
-
-
-@patch("services.municipio_responder.llamar_llm_con_fallback")
-@patch("services.municipio_responder.GreetingHandler")
-def test_saludo_ignorado_en_flujo_activo(mock_handler, mock_llm):
-    mock_llm.return_value = ({"message_body": "Hola", "accion_backend": "saludar"}, {})
-    contexto = {"estado_conversacion": ConversationState.ESPERANDO_DIRECCION_RECLAMO.name}
-    response, updated = handle_llm_interaction(
-        None, "hola", {}, None, None, None, contexto
-    )
-    mock_handler.assert_not_called()
-    assert updated["estado_conversacion"] == ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
-    # response should be None to trigger fallback or re-prompt
-    assert response is None
-
-
-def test_no_reset_after_ticket():
-    ctx = {
-        "last_event": {"type": "ticket_created", "ts": time.time()},
-        "chat_db_context_data": {"preserve": True},
-    }
-    handler = GreetingHandler(ctx)
-    assert handler.handle({}) is None
-
-
-def test_ignore_greeting_during_active_flow():
-    ctx = {
-        "chat_db_context_data": {
-            CONTEXTO_MUNICIPIO: {"estado_conversacion": "EN_FLUJO_RECLAMO"}
-        }
-    }
-    handler = GreetingHandler(ctx)
-    assert handler.handle({}) is None
-
-
-def test_ignore_greeting_when_flow_state_present():
-    ctx = {
-        "chat_db_context_data": {
-            CONTEXTO_MUNICIPIO: {"reclamo_flow_v2": {"state": "ESPERANDO_CATEGORIA"}}
-        }
-    }
-    handler = GreetingHandler(ctx)
-    assert handler.handle({}) is None
-

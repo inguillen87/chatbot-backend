@@ -34,16 +34,16 @@ class TestClaimCorrectionLogic(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    @patch('services.municipio_responder.llamar_openai')
+    @patch('services.municipio_responder.llamar_gemini')
     @patch('services.municipio_responder.extract_multiple_contact_details_llm')
-    def test_correction_in_confirmation_state_merges_data(self, mock_extract_details, mock_llamar_openai):
+    def test_correction_in_confirmation_state_merges_data(self, mock_extract_details, mock_llamar_gemini):
         """
         Tests that when a user provides free-text correction in the confirmation state,
         the new data is correctly merged with the existing data.
         """
         # Prevent the main LLM call from executing and interfering.
         # It needs a non-empty body to avoid the None check.
-        mock_llamar_openai.return_value = ({"message_body": "mock"}, {})
+        mock_llamar_gemini.return_value = ({"message_body": "mock"}, {})
 
         # 1. Setup the initial context
         initial_claim_data = {
@@ -83,14 +83,14 @@ class TestClaimCorrectionLogic(unittest.TestCase):
         self.assertEqual(final_data.get('nombre_usuario_detectado'), 'Marcelo Guillen')
         self.assertEqual(final_data.get('email_detectado'), 'guillen.marce@gmail.com')
 
-    @patch('services.municipio_responder.llamar_openai')
+    @patch('services.municipio_responder.llamar_gemini')
     @patch('services.municipio_responder._handle_ticket_creation')
     @patch('services.municipio_responder.extract_description_and_check_confirmation')
-    def test_simple_confirmation_proceeds_to_creation(self, mock_check_confirmation, mock_handle_creation, mock_llamar_openai):
+    def test_simple_confirmation_proceeds_to_creation(self, mock_check_confirmation, mock_handle_creation, mock_llamar_gemini):
         """
         Tests that a simple 'si' in the confirmation state proceeds to ticket creation.
         """
-        mock_llamar_openai.return_value = ({"message_body": "mock"}, {}) # Prevent None error
+        mock_llamar_gemini.return_value = ({"message_body": "mock"}, {}) # Prevent None error
         mock_check_confirmation.return_value = (None, True) # Simulate a "yes"
         mock_handle_creation.return_value = ({"message_body": "Ticket creado"}, {})
 

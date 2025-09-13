@@ -21,16 +21,12 @@ class TestReclamoFlowUX(unittest.TestCase):
                 "categoria": "Bache",
                 "descripcion": "pozo en la calle",
                 "foto_url": "http://example.com/foto.jpg",
-                "nombre": "Juan",
-                "dni": "12345678",
-                "email": "juan@example.com",
-                "telefono": "+5400000000",
             },
         }
         handler = self._build_handler(flow_context)
         resp = handler.handle_direccion("Calle 123", {})
-        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
-        self.assertNotIn("foto", resp["message_body"].lower())
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
+        self.assertIn("foto adjunta", resp["message_body"].lower())
 
     def test_contact_details_prefilled_goes_to_confirmation(self):
         flow_context = {
@@ -56,27 +52,17 @@ class TestReclamoFlowUX(unittest.TestCase):
                 "categoria": "Bache",
                 "direccion": "Calle 123",
                 "foto_url": "http://example.com/foto.jpg",
-                "nombre": "Juan",
-                "dni": "12345678",
-                "email": "juan@example.com",
-                "telefono": "+5400000000",
             },
         }
         handler = self._build_handler(flow_context)
         resp = handler.handle_descripcion("pozo grande en la calle")
-        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
-        self.assertIn("necesito estos datos", resp["message_body"].lower())
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
+        self.assertIn("foto adjunta", resp["message_body"].lower())
 
     def test_start_flow_uses_context_photo(self):
         context = {
             "chat_db_context_data": {},
             "foto_url": "http://example.com/foto.jpg",
-            "viewer_user_obj": type("V", (), {
-                "name": "Juan",
-                "email": "juan@example.com",
-                "telefono": "+5400000000",
-                "dni": "12345678",
-            })(),
         }
         handler = ReclamoFlowHandler(context, MagicMock())
         handler.start_flow(
@@ -92,7 +78,7 @@ class TestReclamoFlowUX(unittest.TestCase):
         )
         self.assertEqual(
             handler.flow_context["state"],
-            ReclamoState.ESPERANDO_DATOS_CONTACTO.name,
+            ReclamoState.ESPERANDO_CONFIRMACION.name,
         )
 
     def test_handle_foto_accepts_direct_image(self):
@@ -102,10 +88,6 @@ class TestReclamoFlowUX(unittest.TestCase):
                 "categoria": "Bache",
                 "direccion": "Calle 123",
                 "descripcion": "pozo grande",
-                "nombre": "Juan",
-                "dni": "12345678",
-                "email": "juan@example.com",
-                "telefono": "+5400000000",
             },
         }
         handler = self._build_handler(flow_context)
@@ -114,8 +96,8 @@ class TestReclamoFlowUX(unittest.TestCase):
             handler.flow_context["datos_reclamo"].get("foto_url"),
             "http://example.com/foto.jpg",
         )
-        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
-        self.assertIn("necesito estos datos", resp["message_body"].lower())
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
+        self.assertIn("foto adjunta", resp["message_body"].lower())
 
     def test_missing_dni_goes_directly_to_confirmation(self):
         flow_context = {
@@ -130,7 +112,7 @@ class TestReclamoFlowUX(unittest.TestCase):
         }
         handler = self._build_handler(flow_context)
         resp = handler.ask_for_contact_details()
-        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
         self.assertIn("dni", resp["message_body"].lower())
 
     def test_start_flow_prefills_dni_from_viewer_alias(self):
@@ -172,6 +154,7 @@ class TestReclamoFlowUX(unittest.TestCase):
             mock_exec.return_value = {"success": True, "data": {"nro_ticket": "R-1"}}
             resp = handler.handle_confirmacion("si", {})
         self.assertIn("R-1", resp["message_body"])
+        self.assertIn("¿Cómo te puedo ayudar hoy?", resp["message_body"])
         municipal_ctx = context["chat_db_context_data"][CONTEXTO_MUNICIPIO]
         self.assertNotIn("reclamo_flow_v2", municipal_ctx)
         self.assertEqual(
@@ -190,48 +173,8 @@ class TestReclamoFlowUX(unittest.TestCase):
         }
         handler = self._build_handler(flow_context)
         resp = handler.handle_confirmacion("no", {})
-        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_MENU_EDICION.name)
-        self.assertIn("editar", resp["message_body"].lower())
-
-    def test_edit_contact_allows_reentry_and_updates_confirmation(self):
-        flow_context = {
-            "state": ReclamoState.ESPERANDO_CONFIRMACION.name,
-            "datos_reclamo": {
-                "categoria": "Bache",
-                "descripcion": "pozo",
-                "direccion": "Calle 123",
-                "nombre": "Juan",
-                "email": "juan@old.com",
-                "telefono": "+5400000000",
-                "dni": "12345678",
-            },
-        }
-        contexto = {
-            CONTEXTO_MUNICIPIO: {
-                "reclamo_flow_v2": flow_context,
-                "contacto_usuario": {"nombre": "Juan", "email": "juan@old.com"},
-            }
-        }
-        handler = ReclamoFlowHandler({"chat_db_context_data": contexto}, MagicMock())
-
-        handler.handle_confirmacion("no", {})
-        handler.handle_menu_edicion("contacto", {})
         self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
-        self.assertNotIn("contacto_usuario", contexto[CONTEXTO_MUNICIPIO])
-        self.assertNotIn("nombre", handler.flow_context["datos_reclamo"])
-
-        resp = handler.handle_datos_contacto(
-            "Maria Lopez, maria@new.com, 2615550000, 30123456"
-        )
-        self.assertIn("Maria Lopez", resp["message_body"])
-        self.assertIn("maria@new.com", resp["message_body"])
-
-        with patch('services.municipio_responder.CrearReclamoActionHandler.execute') as mock_exec:
-            mock_exec.return_value = {"success": True, "data": {"nro_ticket": "R-1"}}
-            handler.handle_confirmacion("si", {})
-        action_data = mock_exec.call_args[0][0]
-        self.assertEqual(action_data.get("usuario"), "Maria Lopez")
-        self.assertEqual(action_data.get("email"), "maria@new.com")
+        self.assertIn("Por favor", resp["message_body"])
 
 
 if __name__ == "__main__":

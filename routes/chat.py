@@ -493,13 +493,6 @@ def _procesar_chat(
             } if actor_principal else None
         )
 
-        # Store any state hint returned by the bot so the next turn resumes correctly
-        next_state = resultado.get("next_state_hint")
-        if next_state and chat_context_obj:
-            from services.municipio_responder import CONTEXTO_MUNICIPIO
-            muni_ctx = chat_context_obj.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
-            muni_ctx["estado_conversacion"] = next_state
-
         # Después de que responder_chatboc y sus sub-funciones hayan modificado chat_context_obj.context_data,
         # lo persistimos.
         

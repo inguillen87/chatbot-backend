@@ -25,7 +25,6 @@ except ImportError:  # pragma: no cover
     def es_consulta_general(*args, **kwargs):
         return False
 from services.llm_utils import extract_multiple_contact_details_llm
-from services.ticket_draft import get_ticket_draft, merge_ticket_fields
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +60,6 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
     logger_actual = app.logger if app else (current_app.logger if has_app_context() else logging.getLogger(__name__))
     datos_actuales = {}
 
-    # Ensure ticket draft exists
-    get_ticket_draft(contexto_municipio_actual)
-
     logger_actual.info(
         f"[HANDLE_LLM_START] pregunta='{pregunta_str}' estado_previo='{contexto_municipio_actual.get('estado_conversacion')}'"
     )
@@ -98,16 +94,6 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             datos_reclamo["ubicacion"] = detalles_rapidos["direccion_sugerida"]
         if detalles_rapidos.get("distrito_sugerido") and not datos_reclamo.get("distrito"):
             datos_reclamo["distrito"] = detalles_rapidos["distrito_sugerido"]
-
-        extracted = {}
-        if detalles_rapidos.get("categoria_sugerida"):
-            extracted["categoria"] = detalles_rapidos["categoria_sugerida"]
-        if detalles_rapidos.get("descripcion_sugerida"):
-            extracted["descripcion"] = detalles_rapidos["descripcion_sugerida"]
-        if detalles_rapidos.get("direccion_sugerida"):
-            extracted["direccion"] = detalles_rapidos["direccion_sugerida"]
-        if merge_ticket_fields(contexto_municipio_actual, extracted) and chat_db_context:
-            flag_modified(chat_db_context, "context_data")
 
         tiene_categoria = bool(datos_reclamo.get("categoria"))
         tiene_ubicacion = bool(datos_reclamo.get("ubicacion"))
@@ -210,29 +196,6 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
              return None, contexto_municipio_actual
 
         nuevo_turno_historial = {"pregunta_usuario": pregunta_str, "respuesta_ia": respuesta_usuario_llm}
-
-        if datos_estructura_llm:
-            extracted = {}
-            if datos_estructura_llm.get("categoria"):
-                extracted["categoria"] = datos_estructura_llm.get("categoria")
-            if datos_estructura_llm.get("descripcion"):
-                extracted["descripcion"] = datos_estructura_llm.get("descripcion")
-            if datos_estructura_llm.get("coordenadas"):
-                coords = datos_estructura_llm.get("coordenadas", {})
-                extracted["lat"] = coords.get("lat") or coords.get("latitude")
-                extracted["lng"] = coords.get("lng") or coords.get("lon") or coords.get("longitude")
-            if datos_estructura_llm.get("ubicacion"):
-                extracted["direccion"] = datos_estructura_llm.get("ubicacion")
-            if datos_estructura_llm.get("usuario"):
-                extracted["nombre"] = datos_estructura_llm.get("usuario")
-            if datos_estructura_llm.get("telefono"):
-                extracted["telefono"] = datos_estructura_llm.get("telefono")
-            if datos_estructura_llm.get("email"):
-                extracted["email"] = datos_estructura_llm.get("email")
-            if datos_estructura_llm.get("adjuntos"):
-                extracted["adjuntos"] = datos_estructura_llm.get("adjuntos")
-            if merge_ticket_fields(contexto_municipio_actual, extracted) and chat_db_context:
-                flag_modified(chat_db_context, "context_data")
 
         if accion_backend_llm == "saludar":
             handler = GreetingHandler(context)

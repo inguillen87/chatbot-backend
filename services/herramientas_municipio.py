@@ -1,15 +1,12 @@
 import json
 import logging
-import os
-import re
-import unicodedata
-
 import requests
+import os
+import unicodedata # <--- ¡Importante agregar esta línea!
+import re
 from services.config_loader import cargar_configuracion_municipio
-from services.address_resolver import AddressResolver
-from services.location_service import geocode_address  # required for legacy helpers
+from services.location_service import geocode_address
 from services.tts_orchestrator import generar_audio_con_fallback
-from services.geo_service import reverse_geocode
 from models import MunicipioTicket
 from database import db
 from services.openai_bridge import client as openai_client
@@ -52,104 +49,56 @@ Tu respuesta:
     return prompt
 
 def sugerir_categorias_relevantes(texto_usuario: str) -> list[str]:
-    """Sugiere hasta tres categorías para un reclamo.
-
-    Primero se realiza un score sencillo por keywords. Si el resultado es
-    poco concluyente se recurre a un LLM (OpenAI y fallback a Cohere) para
-    obtener las sugerencias.
     """
-    sugeridas: list[str] = []
+    Usa el LLM para obtener una lista de categorías sugeridas basadas en el texto del usuario.
+    """
+    todas_las_categorias = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values()))) # Still useful for keyword matching
+    # LLM call removed. Category suggestion is now expected from the main LLM call.
+    # This function now performs basic keyword matching as a fallback or primary if called directly.
+    logger.info(f"Sugiriendo categorías (NO-LLM) para: '{texto_usuario[:50]}...'")
+    sugeridas = []
     if not texto_usuario:
         return sugeridas
 
-    from services.categorias_municipio import CATEGORIAS_RECLAMO
-
     _ensure_keyword_cache_actualizado()
     texto_norm = normalizar_texto(texto_usuario)
-    conteo_categorias = {cat: 0 for cat in CATEGORIAS_RECLAMO}
+    from services.categorias_municipio import CATEGORIAS_RECLAMO
+    # Contar ocurrencias de keywords para cada categoría
+    conteo_categorias = {cat: 0 for cat in CATEGORIAS_RECLAMO} # Use the defined list
     palabras_usuario = set(texto_norm.split())
 
     for keyword, category_target in KEYWORD_TO_CATEGORY_MAP.items():
+        # Usar una keyword normalizada para la comparación si es necesario,
+        # aunque KEYWORD_TO_CATEGORY_MAP ya tiene claves en minúscula y sin acentos (asumido).
         if keyword in palabras_usuario:
             conteo_categorias[category_target] = conteo_categorias.get(category_target, 0) + 1
-            if keyword in texto_norm:
-                conteo_categorias[category_target] = conteo_categorias.get(category_target, 0) + 2
+            if keyword in texto_norm: # Dar más peso si es una frase
+                 conteo_categorias[category_target] = conteo_categorias.get(category_target, 0) + 2
 
-    categorias_ordenadas = sorted(
-        conteo_categorias.items(), key=lambda item: item[1], reverse=True
-    )
+
+    # Ordenar por conteo descendente
+    categorias_ordenadas = sorted(conteo_categorias.items(), key=lambda item: item[1], reverse=True)
 
     for cat, count in categorias_ordenadas:
-        if count > 0 and len(sugeridas) < 3 and cat not in sugeridas:
-            sugeridas.append(cat)
+        if count > 0 and len(sugeridas) < 3:
+            if cat not in sugeridas: # Evitar duplicados si diferentes keywords apuntan a la misma categoría
+                 sugeridas.append(cat)
         if len(sugeridas) >= 3:
             break
 
-    max_count = categorias_ordenadas[0][1] if categorias_ordenadas else 0
-    tie = (
-        len(categorias_ordenadas) > 1
-        and categorias_ordenadas[1][1] == max_count
-    )
-
-    if (not sugeridas or max_count == 0 or tie) and texto_usuario:
-        prompt = crear_prompt_sugerir_categorias(texto_usuario, CATEGORIAS_RECLAMO)
-        try:
-            if not openai_client:
-                raise ConnectionError("OpenAI client is not initialized.")
-            response = openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                response_format={"type": "json_object"},
-            )
-            contenido = response.choices[0].message.content
-            data = json.loads(contenido)
-            llm_sugs = data.get("sugerencias", [])
-            if llm_sugs:
-                sugeridas = llm_sugs[:3]
-        except Exception as exc:  # pragma: no cover - best effort
-            logger.error("LLM OpenAI suggestion failed: %s", exc)
-            if cohere_client:
-                try:
-                    cohere_resp = cohere_client.generate(
-                        model="command-r-plus",
-                        prompt=prompt + "\nResponde únicamente con un objeto JSON.",
-                        temperature=0,
-                    )
-                    contenido = cohere_resp.generations[0].text.strip()
-                    data = json.loads(contenido)
-                    llm_sugs = data.get("sugerencias", [])
-                    if llm_sugs:
-                        sugeridas = llm_sugs[:3]
-                except Exception as exc2:  # pragma: no cover
-                    logger.error("LLM Cohere suggestion failed: %s", exc2)
-
-    if not sugeridas:
-        if "Otro Motivo" in CATEGORIAS_RECLAMO:
+    if not sugeridas and texto_usuario:
+        # Si después del keyword matching no hay nada, pero había texto, sugerir "Otro Motivo"
+        # Asegurarse que "Otro Motivo" sea una de las CATEGORIAS_RECLAMO válidas.
+        if "Otro Motivo" in CATEGORIAS_RECLAMO: # Check against the defined list
             sugeridas.append("Otro Motivo")
 
-    alias = {"arbol caido": "Arbolado", "Arbol Caido": "Arbolado"}
-    sugeridas = [alias.get(cat, alias.get(cat.lower(), cat)) for cat in sugeridas]
-
-    logger.info(
-        f"Categorías sugeridas para '{texto_usuario[:50]}...': {sugeridas}"
-    )
-    return sugeridas
+    logger.info(f"Categorías sugeridas (NO-LLM) para '{texto_usuario[:50]}...': {sugeridas}")
+    return sugeridas # Devuelve hasta 3, o menos si no hay suficientes matches.
    
 logger = logging.getLogger(__name__)
 Maps_API_KEY = os.environ.get("Maps_API_KEY")
 MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
 CONFIG_MUNICIPIO = cargar_configuracion_municipio(MUNICIPIO_ID, "config.json")
-
-# Default geocoding config; can be overridden by municipio-specific values
-_DEFAULT_GEO_CONFIG = {
-    "ciudad": "Junín",
-    "provincia": "Mendoza",
-    "pais": "AR",
-    "bounds": (-68.6, -33.1, -68.4, -32.9),
-    "conflicting_jurisdicciones": ["san martin"],
-}
-CONFIG_MUNICIPIO = {**_DEFAULT_GEO_CONFIG, **CONFIG_MUNICIPIO}
 
 
 # --- NUEVA FUNCIÓN DE NORMALIZACIÓN ---
@@ -187,19 +136,6 @@ def direccion_es_valida(texto: str) -> bool:
         return False
 
     geocode_result = geocode_address(texto)
-    if geocode_result is None:
-        try:
-            parsed = parse_direccion_completa(texto, CONFIG_MUNICIPIO)
-        except Exception as exc:  # pragma: no cover - best effort
-            logger.error("Error en parse_direccion_completa: %s", exc)
-            parsed = None
-        if parsed:
-            reconstruida = "{} {}".format(parsed.get("calle", "").strip(), parsed.get("numero", "").strip()).strip()
-            localidad = parsed.get("localidad")
-            provincia = parsed.get("provincia")
-            partes = [p for p in [reconstruida, localidad, provincia] if p]
-            consulta = ", ".join(partes)
-            geocode_result = geocode_address(consulta)
     if geocode_result is not None:
         return True
 
@@ -308,9 +244,17 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
 
 # --- HERRAMIENTA 1: CONSULTA DE RECOLECCIÓN ---
 def consultar_recoleccion_por_direccion(direccion: str) -> str:
-    """Determina el horario de recolección usando coordenadas de Nominatim."""
-
+    """
+    Herramienta profesional que usa la API de Google Maps para geocodificar una dirección
+    y luego determina el horario de recolección.
+    """
+    # ... (El código de esta función está perfecto, no necesita cambios)
     logger.info(f"[HERRAMIENTA GEO] Buscando horario para: '{direccion}'")
+
+    if not Maps_API_KEY:
+        logger.error("[HERRAMIENTA GEO] Clave de API de Google Maps (Maps_API_KEY) no configurada en el entorno.")
+        # Return a message that allows the flow to continue if this function is called unexpectedly during a reclamo.
+        return "Error de configuración: El servicio de mapas no está disponible en este momento. No se pudo validar la dirección geográficamente, pero puedes continuar con el reclamo si la dirección es correcta."
 
     ciudad = CONFIG_MUNICIPIO.get("ciudad", "")
     if ciudad and ciudad.lower() not in direccion.lower():
@@ -318,34 +262,30 @@ def consultar_recoleccion_por_direccion(direccion: str) -> str:
     else:
         direccion_completa = direccion
 
-    geocode_result = geocode_address(direccion_completa)
-    if not geocode_result:
-        logger.warning(
-            f"[HERRAMIENTA GEO] No pude geocodificar la dirección: {direccion}"
-        )
-        return "No pude verificar esa dirección. ¿Puedes ser un poco más específico, incluyendo la ciudad?"
+    geocode_url = f"https://maps.googleapis.com/maps/api/geocode/json?address={requests.utils.quote(direccion_completa)}&key={Maps_API_KEY}"
 
-    lat = geocode_result["lat"]
-    lng = geocode_result["lng"]
-    logger.info(
-        f"[HERRAMIENTA GEO] Coordenadas para '{direccion}': Lat={lat}, Lng={lng}"
-    )
+    try:
+        response = requests.get(geocode_url)
+        response.raise_for_status()
+        data = response.json()
 
-    if -34.595 <= lat <= -34.580 and -60.955 <= lng <= -60.935:
-        return (
-            f"Detecté que la dirección '{direccion}' está en la **zona céntrica**. "
-            "Allí, la recolección es de **Lunes a Sábado por la noche (a partir de las 22:00 hs)**."
-        )
-    if -34.580 <= lat <= -34.570 and -60.935 <= lng <= -60.920:
-        return (
-            "Para la zona de **Villa Belgrano**, la recolección es los días **Martes, "
-            "Jueves y Sábado por la mañana (a partir de las 08:00 hs)**."
-        )
-    return (
-        "Según la ubicación, te corresponde el servicio de recolección zonal. "
-        "Los días son **Lunes, Miércoles y Viernes por la noche (a partir de las 21:00 hs)**. "
-        "Te recomiendo confirmarlo en la web del municipio."
-    )
+        if not data or data['status'] != 'OK' or not data.get('results'):
+            logger.warning(f"[HERRAMIENTA GEO] La API de Google no pudo geocodificar la dirección: {direccion}")
+            return "No pude verificar esa dirección. ¿Puedes ser un poco más específico, incluyendo la ciudad?"
+
+        location = data['results'][0]['geometry']['location']
+        lat, lng = location['lat'], location['lng']
+        logger.info(f"[HERRAMIENTA GEO] Coordenadas para '{direccion}': Lat={lat}, Lng={lng}")
+
+        if -34.595 <= lat <= -34.580 and -60.955 <= lng <= -60.935:
+            return f"Detecté que la dirección '{direccion}' está en la **zona céntrica**. Allí, la recolección es de **Lunes a Sábado por la noche (a partir de las 22:00 hs)**."
+        elif -34.580 <= lat <= -34.570 and -60.935 <= lng <= -60.920:
+            return f"Para la zona de **Villa Belgrano**, la recolección es los días **Martes, Jueves y Sábado por la mañana (a partir de las 08:00 hs)**."
+        else:
+            return "Según la ubicación, te corresponde el servicio de recolección zonal. Los días son **Lunes, Miércoles y Viernes por la noche (a partir de las 21:00 hs)**. Te recomiendo confirmarlo en la web del municipio."
+    except requests.exceptions.RequestException as e:
+        logger.error(f"[HERRAMIENTA GEO] Error de conexión con la API de Google: {e}")
+        return "Tuve un problema de comunicación con el servicio de mapas. Por favor, intenta de nuevo en unos momentos."
 
 
 # --- HERRAMIENTA 2: CATEGORIZACIÓN DE RECLAMOS ---
@@ -360,11 +300,7 @@ KEYWORD_TO_CATEGORY_MAP = {
     # Limpieza
     "limpieza": "Limpieza", "basura": "Limpieza", "mugre": "Limpieza", "escombros": "Limpieza", "pasto": "Limpieza", "yuyos": "Limpieza", "maleza": "Limpieza", "desmalezado": "Limpieza", "baldio": "Limpieza", "pasto alto": "Limpieza", "basural": "Limpieza",
     # Arreglo de calle
-    "bache": "Arreglo de calle", "calle": "Arreglo de calle", "asfalto": "Arreglo de calle",
-    "vereda": "Arreglo de calle", "pozo": "Arreglo de calle", "pavimento": "Arreglo de calle",
-    "calzada": "Arreglo de calle", "hueco": "Arreglo de calle", "agujero": "Arreglo de calle",
-    "agujeros": "Arreglo de calle", "vereda rota": "Arreglo de calle",
-    "vereda levantada": "Arreglo de calle", "calle en mal estado": "Arreglo de calle",
+    "bache": "Arreglo de calle", "calle": "Arreglo de calle", "asfalto": "Arreglo de calle", "vereda": "Arreglo de calle", "pozo": "Arreglo de calle", "pavimento": "Arreglo de calle", "calzada": "Arreglo de calle", "hueco": "Arreglo de calle", "vereda rota": "Arreglo de calle", "vereda levantada": "Arreglo de calle", "calle en mal estado": "Arreglo de calle",
     # Falta de agua, rotura de caño
     "agua": "Falta de agua, rotura de caño", "caño": "Falta de agua, rotura de caño", "cano": "Falta de agua, rotura de caño", "perdida": "Falta de agua, rotura de caño", "fuga": "Falta de agua, rotura de caño", "rotura": "Falta de agua, rotura de caño", "tuberia": "Falta de agua, rotura de caño", "canilla": "Falta de agua, rotura de caño", "canilla rota": "Falta de agua, rotura de caño", "sin servicio de agua": "Falta de agua, rotura de caño",
     # Rotura de semaforo
@@ -689,172 +625,59 @@ def buscar_puntos_de_interes(
 def log_uso_herramienta(nombre, usuario, parametros, resultado):
     logger.info(f"[USO_HERRAMIENTA] {nombre} | Usuario: {usuario} | Parámetros: {parametros} | Resultado: {resultado[:100]}")
 
-
-def _extract_coords_from_maps(url: str) -> tuple[float, float] | None:
-    """Extrae coordenadas de un enlace de Google Maps.
-
-    Soporta patrones comunes como ``@lat,lon`` o ``q=lat,lon``. Si el enlace
-    proviene de ``maps.app.goo.gl`` se sigue la redirección para obtener la URL
-    final.
+def validar_y_formatear_direccion(direccion: str) -> dict | None:
     """
-
-    if not url or "maps" not in url:
+    Valida y formatea una dirección utilizando la API de Google Maps,
+    con bias hacia Argentina.
+    """
+    if not Maps_API_KEY:
+        logger.error("[GEO] Maps_API_KEY no configurada.")
         return None
 
+    # Componentes para sesgar la búsqueda a Argentina
+    params = {
+        'address': direccion,
+        'key': Maps_API_KEY,
+        'language': 'es',
+        'components': 'country:AR'
+    }
+
+    geocode_url = "https://maps.googleapis.com/maps/api/geocode/json"
+
     try:
-        if "maps.app.goo.gl" in url:
-            # Expand short links
-            resp = requests.get(url, allow_redirects=True, timeout=5)
-            url = resp.url
-        patterns = [
-            r"@(-?\d+\.\d+),(-?\d+\.\d+)",
-            r"[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)",
-            r"[?&](?:ll|saddr|daddr|destination)=(-?\d+\.\d+),(-?\d+\.\d+)",
-            r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)",
-        ]
-        for pat in patterns:
-            m = re.search(pat, url)
-            if m:
-                return float(m.group(1)), float(m.group(2))
-    except Exception as e:
-        logger.error(f"[GEO] Error al parsear enlace de Google Maps '{url}': {e}")
-    return None
+        response = requests.get(geocode_url, params=params)
+        response.raise_for_status()
+        data = response.json()
 
+        if data and data.get('status') == 'OK' and data.get('results'):
+            best_result = data['results'][0]
 
-def _resolve_municipio_config(cfg: dict | str | None) -> dict:
-    """Return a full municipio config, loading from ID if needed."""
-    if isinstance(cfg, dict) and cfg:
-        return {**_DEFAULT_GEO_CONFIG, **cfg}
-    if isinstance(cfg, str) and cfg:
-        loaded = cargar_configuracion_municipio(cfg, "config.json")
-        if loaded:
-            return {**_DEFAULT_GEO_CONFIG, **loaded}
-    return CONFIG_MUNICIPIO
+            # Additional check: Does the result actually fall within a reasonable area?
+            # This can prevent overly broad matches. For now, we trust Google's first result if status is OK.
 
+            formatted_address = best_result.get('formatted_address')
+            location = best_result['geometry']['location']
+            lat, lng = location['lat'], location['lng']
 
-def validar_y_formatear_direccion(
-    direccion: str, municipio_config: dict | str | None = None
-) -> dict | None:
-    """Valida y formatea una dirección utilizando ``AddressResolver``.
+            logger.info(f"[GEO] Dirección '{direccion}' geocodificada exitosamente a '{formatted_address}' ({lat}, {lng}).")
 
-    La resolución se restringe al ámbito provisto en ``municipio_config`` para
-    devolver campos canónicos como ``calle``, ``numero``, ``entre_calles`` y
-    coordenadas, además del ``formatted_address`` para compatibilidad.
-    """
-
-    cfg = _resolve_municipio_config(municipio_config)
-    try:
-        resolver = AddressResolver(cfg)
-    except Exception as e:
-        logger.error(f"[GEO] Error al inicializar AddressResolver: {e}")
-        return None
-
-    coords = None
-    if direccion.startswith("http"):
-        coords = _extract_coords_from_maps(direccion)
-        if coords:
-            try:
-                addr = reverse_geocode(coords[0], coords[1])
-            except Exception as e:
-                logger.error(f"[GEO] Error en reverse_geocode: {e}")
-                return None
-            lat, lon = coords
-            validez = resolver._within_bounds(lat, lon) if hasattr(resolver, "_within_bounds") else True
-            formatted = addr.get("display")
-            resolved = {
-                "calle": addr.get("calle"),
-                "numero": addr.get("numero"),
-                "entre_calles": [],
-                "barrio": addr.get("barrio"),
-                "localidad": addr.get("localidad") or resolver.city,
-                "provincia": addr.get("provincia") or resolver.state,
-                "pais": resolver.country,
+            return {
+                "formatted_address": formatted_address,
                 "lat": lat,
-                "lon": lon,
-                "precision": "point",
-                "formatted": formatted or f"{lat},{lon}",
-                "validez": validez,
+                "lng": lng
             }
         else:
-            resolved = None
-    else:
-        try:
-            resolved = resolver.resolve(direccion)
-        except Exception as e:
-            logger.error(f"[GEO] Error al geocodificar '{direccion}': {e}")
+            # Log the failure reason from Google
+            status = data.get('status', 'N/A')
+            error_message = data.get('error_message', 'No error message provided.')
+            logger.warning(f"[GEO] Falla al geocodificar '{direccion}'. Status: {status}. Error: {error_message}")
             return None
-
-    if not resolved or not resolved.get("validez", True):
-        logger.warning(
-            f"[GEO] No se pudo geocodificar '{direccion}' dentro de los límites municipales."
-        )
-        resolved = None
-        # Intento de fallback usando LLM para parsear y reintentar geocodificación
-        try:
-            parsed = parse_direccion_completa(direccion, cfg)
-        except Exception as exc:  # pragma: no cover - best effort
-            logger.error("[GEO] Fallback LLM parse failed: %s", exc)
-            parsed = None
-        if parsed:
-            base = "{} {}".format(parsed.get("calle", "").strip(), parsed.get("numero", "").strip()).strip()
-            loc = parsed.get("localidad") or cfg.get("ciudad")
-            prov = parsed.get("provincia") or cfg.get("provincia")
-            parts = [p for p in [base, loc, prov] if p]
-            query = ", ".join(parts)
-            geo = geocode_address(query)
-            if geo:
-                lat = geo.get("lat")
-                lon = geo.get("lng")
-                validez = (
-                    resolver._within_bounds(lat, lon)
-                    if hasattr(resolver, "_within_bounds")
-                    else True
-                )
-                if validez:
-                    resolved = {
-                        "calle": parsed.get("calle"),
-                        "numero": parsed.get("numero"),
-                        "entre_calles": parsed.get("entre_calles", []),
-                        "barrio": parsed.get("barrio"),
-                        "localidad": loc,
-                        "provincia": prov,
-                        "pais": cfg.get("pais"),
-                        "lat": lat,
-                        "lon": lon,
-                        "precision": parsed.get("precision", "approx"),
-                        "formatted": geo.get("display_name"),
-                        "validez": True,
-                    }
-        if not resolved:
-            return None
-
-    lat = resolved.get("lat")
-    lon = resolved.get("lon")
-    maps_link = f"https://www.google.com/maps?q={lat},{lon}" if lat and lon else None
-    static_map_url = None
-    gkey = os.getenv("GOOGLE_MAPS_API_KEY")
-    if gkey and lat and lon:
-        static_map_url = (
-            "https://maps.googleapis.com/maps/api/staticmap?center="
-            f"{lat},{lon}&zoom=18&size=800x500&markers=color:red|{lat},{lon}&key={gkey}"
-        )
-
-    return {
-        "formatted_address": resolved.get("formatted"),
-        "lat": lat,
-        "lng": lon,
-        "calle": resolved.get("calle"),
-        "numero": resolved.get("numero"),
-        "entre_calles": resolved.get("entre_calles"),
-        "barrio": resolved.get("barrio"),
-        "localidad": resolved.get("localidad"),
-        "provincia": resolved.get("provincia"),
-        "pais": resolved.get("pais"),
-        "precision": resolved.get("precision"),
-        "validez": resolved.get("validez"),
-        "maps_link": maps_link,
-        "static_map_url": static_map_url,
-    }
+    except requests.exceptions.RequestException as e:
+        logger.error(f"[GEO] Error de conexión con Google API para geocoding ({direccion}): {e}")
+        return None
+    except Exception as e:
+        logger.error(f"[GEO] Error inesperado en geocoding para {direccion}: {e}", exc_info=True)
+        return None
 
 def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
     """Obtiene una dirección formateada y sus componentes a partir de coordenadas.
@@ -903,9 +726,85 @@ def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
     else:
         logger.error("Cohere client is not initialized.")
 
-    # Eliminado Google geocoding
-    return None
+    # --- Último recurso: Google Geocoding ---
+    if not Maps_API_KEY:
+        logger.error("[HERRAMIENTA GEO] Clave de API de Google Maps (Maps_API_KEY) no configurada en el entorno.")
+        return None
 
+    reverse_geocode_url = (
+        f"https://maps.googleapis.com/maps/api/geocode/json?latlng={lat},{lon}&key={Maps_API_KEY}&language=es"
+    )
+
+    try:
+        response = requests.get(reverse_geocode_url)
+        response.raise_for_status()
+        data = response.json()
+
+        if data and data.get("status") == "OK" and data.get("results"):
+            best_result = data["results"][0]
+            formatted_address = best_result.get("formatted_address")
+
+            calle = numero = localidad = provincia = cp = barrio = ""
+            for component in best_result.get("address_components", []):
+                types = component.get("types", [])
+                if "street_number" in types:
+                    numero = component["long_name"]
+                if "route" in types:
+                    calle = component["long_name"]
+                if "locality" in types or "postal_town" in types:
+                    localidad = component["long_name"]
+                if "administrative_area_level_1" in types:
+                    provincia = component["long_name"]
+                if "postal_code" in types:
+                    cp = component["long_name"]
+                if "neighborhood" in types:
+                    barrio = component["long_name"]
+
+            if formatted_address:
+                return {
+                    "formatted_address": formatted_address,
+                    "calle": calle or None,
+                    "numero": numero or None,
+                    "localidad": localidad or None,
+                    "provincia": provincia or None,
+                    "codigo_postal": cp or None,
+                    "barrio": barrio or None,
+                }
+            elif calle and localidad:
+                parts = [calle, numero, localidad]
+                if provincia and localidad != provincia:
+                    parts.append(provincia)
+                return {
+                    "formatted_address": ", ".join(filter(None, parts)),
+                    "calle": calle,
+                    "numero": numero,
+                    "localidad": localidad,
+                    "provincia": provincia,
+                    "codigo_postal": cp,
+                    "barrio": barrio,
+                }
+            else:
+                logger.warning(
+                    f"Google API no devolvió dirección formateada ni componentes suficientes para {lat},{lon}."
+                )
+                return None
+        else:
+            logger.warning(
+                f"Google API no pudo obtener dirección para {lat},{lon}. Status: {data.get('status')}, Error: {data.get('error_message', 'N/A')}"
+            )
+            return None
+
+    except requests.exceptions.RequestException as e:
+        logger.error(
+            f"Error de conexión con Google API para reverse geocoding ({lat},{lon}): {e}"
+        )
+        return None
+    except Exception as e:
+        logger.error(
+            f"Error inesperado en reverse geocoding para {lat},{lon}: {e}",
+            exc_info=True,
+        )
+        return None
 # --- ACTUALIZA TU TOOL_REGISTRY ASÍ ---
 
 TOOL_REGISTRY = {

@@ -207,42 +207,6 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         _, kwargs = mock_build_interactive_response.call_args
         self.assertEqual(kwargs.get('body_text'), 'Resumen del reclamo.')
 
-    @patch('routes.whatsapp_webhook.threading.Timer')
-    @patch('services.response_formatter.build_interactive_response')
-    def test_delayed_payload_skipped_if_token_mismatch(self, mock_build_interactive_response, mock_timer):
-        """Delayed payload should not send if session token differs."""
-
-        def immediate_timer(delay, func):
-            return SimpleNamespace(start=lambda: func())
-
-        mock_timer.side_effect = immediate_timer
-        mock_build_interactive_response.return_value = {'type': 'text', 'text': {'body': 'hola'}}
-
-        client = SimpleNamespace(messages=SimpleNamespace(create=MagicMock()))
-
-        session_id = 'session_token_test'
-        ctx = ChatSessionContext(
-            chat_session_id=session_id,
-            user_id=self.owner_user.id,
-            context_data={'pending_delayed_token': 'old'}
-        )
-        db.session.add(ctx)
-        db.session.commit()
-
-        from routes.whatsapp_webhook import _send_delayed_payload
-
-        _send_delayed_payload(
-            client,
-            'to',
-            'from',
-            {'message_body': 'hola'},
-            delay=0,
-            session_id=session_id,
-            token='new'
-        )
-
-        client.messages.create.assert_not_called()
-
     def test_button_fallback_formats_options_as_text_list(self):
         """
         Tests that the response formatter creates a text list when the 'botones' key is present.
@@ -275,13 +239,13 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         )
         self.assertEqual(formatted_payload['text']['body'], expected_body)
 
-    @patch('services.municipio_responder.llamar_openai')
-    def test_finalizar_tramite_action_resets_context(self, mock_llamar_openai):
+    @patch('services.municipio_responder.llamar_gemini')
+    def test_finalizar_tramite_action_resets_context(self, mock_llamar_gemini):
         """
         Tests if the 'finalizar_tramite' action correctly resets the conversation context.
         """
         # --- Setup ---
-        mock_llamar_openai.return_value = (
+        mock_llamar_gemini.return_value = (
             {
                 "message_body": "De nada. ¡Hasta luego!",
                 "accion_backend": "finalizar_tramite",
@@ -325,24 +289,21 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         self.assertEqual(final_context.get('estado_conversacion'), ConversationState.CONVERSACION_GENERAL_LLM.name)
 
     @unittest.skip("Test is flawed and needs to be rewritten. Mocks wrong handler.")
-    @patch('services.pymes.llamar_openai')
+    @patch('services.pymes.llamar_gemini')
     @patch('requests.get')
     @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat')
-    def test_media_and_location_data_is_passed_to_handler(self, mock_interpretar_imagen, mock_requests_get, mock_llamar_openai):
+    def test_media_and_location_data_is_passed_to_handler(self, mock_interpretar_imagen, mock_requests_get, mock_llamar_gemini):
         """
         Tests that location and interpreted image data are correctly passed to the final handler.
         """
         # --- Setup ---
-        mock_llamar_openai.return_value = {"accion_backend": "responder_directamente", "message_body": "OK"}
+        mock_llamar_gemini.return_value = {"accion_backend": "responder_directamente", "message_body": "OK"}
         mock_response = MagicMock()
         mock_response.raise_for_status.return_value = None
         mock_response.content = b'fake_image_bytes'
         mock_requests_get.return_value = mock_response
 
-        mock_interpretar_imagen.return_value = {
-            'kind': 'image',
-            'raw_text': 'Imagen de un bache'
-        }
+        mock_interpretar_imagen.return_value = {'texto_extraido': 'Imagen de un bache'}
 
         location_data = {"latitude": "-33.123", "longitude": "-68.456"}
         image_data = {"url": "http://example.com/bache.jpg", "mime_type": "image/jpeg", "source": "whatsapp"}
@@ -366,7 +327,7 @@ class TestAccessibilityAndMedia(unittest.TestCase):
             mock_responder_pyme.assert_called_once()
             _, called_kwargs = mock_responder_pyme.call_args
             self.assertIn('datos_interpretados_archivo', called_kwargs)
-            self.assertEqual(called_kwargs['datos_interpretados_archivo'], {'kind': 'image', 'raw_text': 'Imagen de un bache'})
+            self.assertEqual(called_kwargs['datos_interpretados_archivo'], {'texto_extraido': 'Imagen de un bache'})
 
 if __name__ == '__main__':
     unittest.main()
