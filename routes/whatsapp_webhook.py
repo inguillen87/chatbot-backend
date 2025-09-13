@@ -175,67 +175,85 @@ def whatsapp_webhook():
         )
         db.session.add(session_context_db_entry)
         db.session.commit()
-        print(f"New session DB entry prepared for {chat_session_id_internal}.")
-
-        if twilio_client:
-            try:
-                # 1. Send Twilio Template Message (Sticker + Short Greeting)
-                template_sid = current_app.config.get("WELCOME_TEMPLATE_SID")
-                user_name = getattr(end_user, "name", "") or "vecino/a"
-
-                if template_sid:
-                    twilio_client.messages.create(
-                        from_=to_number_raw,
-                        to=from_number_raw,
-                        content_sid=template_sid,
-                        content_variables=json.dumps({"1": user_name}),
-                    )
-                else:
-                    # Fallback to simple text if template is not configured
-                    greeting_template = "¡Hola, {name}! Soy Juni."
-                    greeting = greeting_template.format(name=user_name)
-                    twilio_client.messages.create(
-                        from_=to_number_raw,
-                        to=from_number_raw,
-                        body=greeting
-                    )
-
-                # 2. Generate and schedule the main welcome message
-                welcome_response_payload = responder_chatboc(
-                    pregunta="hola",
-                    owner_user=client_user,
-                    current_user=end_user,
-                    rubro_obj=client_user.rubro,
-                    chat_db_context=session_context_db_entry,
-                    rubro_nombre_frontend=None,
-                    tipo_chat=client_user.tipo_chat,
-                    anon_id=from_number_cleaned,
-                    chat_session_uuid=chat_session_id_internal,
-                    channel="whatsapp"
-                )
-
-                delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
-                _send_delayed_payload(
-                    client=twilio_client,
-                    to_number=to_number_raw,
-                    from_number=from_number_raw,
-                    payload=welcome_response_payload,
-                    delay=delay,
-                    app=current_app._get_current_object()
-                )
-
-            except Exception as e:
-                current_app.logger.error(f"Error sending multi-step welcome message: {e}")
-
-        # Stop processing here to avoid sending a duplicate message
-        return "OK", 200
 
     # Ensure context_data is a dict
     if not isinstance(session_context_db_entry.context_data, dict):
         session_context_db_entry.context_data = {}
 
-    # Determine incoming text before any special handling
+    # --- Boti-style Welcome Message Branch ---
+    from services.municipio_responder import normalizar_texto
+    from datetime import datetime
+
     button_payload = post_vars.get("ButtonPayload")
+    list_id = post_vars.get("ListId")
+    incoming_text = button_payload or list_id or post_vars.get("Body", "")
+    normalized_input = normalizar_texto(incoming_text.strip())
+
+    GREETING_KEYWORDS = {"hola", "buenas", "buenos dias", "buenas tardes", "buenas noches"}
+    OVERRIDE_KEYWORDS = {"menu", "menu principal", "reiniciar", "resetear", "volver", "cancelar", "terminar"}
+
+    is_greeting = normalized_input in GREETING_KEYWORDS
+    is_override = normalized_input in OVERRIDE_KEYWORDS
+
+    municipio_ctx = session_context_db_entry.context_data.get(CONTEXTO_MUNICIPIO, {})
+    is_waiting_for_info = _esperando_info_libre(municipio_ctx)
+
+    # Cooldown logic
+    now = datetime.now().timestamp()
+    last_welcome_ts = session_context_db_entry.context_data.get("last_welcome_ts", 0)
+    is_rate_limited = (now - last_welcome_ts) < 15
+
+    should_trigger_welcome = is_override or (is_greeting and not is_waiting_for_info)
+
+    if should_trigger_welcome and not is_rate_limited:
+        current_app.logger.info(f"[WELCOME] Triggering Boti-style welcome for user {from_number_cleaned}. Reason: '{normalized_input}'.")
+
+        session_context_db_entry.context_data["last_welcome_ts"] = now
+        safe_flag_modified(session_context_db_entry, "context_data")
+        db.session.commit()
+
+        if twilio_client:
+            try:
+                template_sid = current_app.config.get("WELCOME_TEMPLATE_SID")
+                user_name = getattr(end_user, "name", "") or "vecino/a"
+                if template_sid:
+                    twilio_client.messages.create(
+                        from_=to_number_raw, to=from_number_raw,
+                        content_sid=template_sid,
+                        content_variables=json.dumps({"1": user_name}),
+                    )
+                    current_app.logger.info(f"[WELCOME] Template {template_sid} sent to {from_number_cleaned}.")
+                else:
+                    greeting_template = "¡Hola, {name}! Soy JUNI."
+                    greeting = greeting_template.format(name=user_name)
+                    twilio_client.messages.create(from_=to_number_raw, to=from_number_raw, body=greeting)
+                    current_app.logger.info(f"[WELCOME] Fallback text sent to {from_number_cleaned}.")
+            except Exception as e:
+                current_app.logger.error(f"[WELCOME] Failed to send sticker/template: {e}")
+
+            try:
+                welcome_response_payload = responder_chatboc(
+                    pregunta="hola", owner_user=client_user, current_user=end_user,
+                    rubro_obj=client_user.rubro, chat_db_context=session_context_db_entry,
+                    tipo_chat=client_user.tipo_chat, anon_id=from_number_cleaned,
+                    chat_session_uuid=chat_session_id_internal, channel="whatsapp"
+                )
+                delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
+                _send_delayed_payload(
+                    client=twilio_client, to_number=to_number_raw, from_number=from_number_raw,
+                    payload=welcome_response_payload, delay=delay, app=current_app._get_current_object()
+                )
+                current_app.logger.info(f"[WELCOME] Scheduled delayed menu for {from_number_cleaned}.")
+            except Exception as e:
+                 current_app.logger.error(f"[WELCOME] Failed to schedule delayed menu: {e}")
+
+        return "OK", 200
+    elif should_trigger_welcome and is_rate_limited:
+        current_app.logger.info(f"[WELCOME] Welcome skipped for {from_number_cleaned} due to rate-limit.")
+    elif is_greeting and is_waiting_for_info:
+        current_app.logger.info(f"[WELCOME] Welcome skipped for {from_number_cleaned} because bot is waiting for info.")
+
+    # Determine incoming text before any special handling (re-declaration to ensure it's available for the rest of the code)
     list_id = post_vars.get("ListId")
     incoming_text = button_payload or list_id or post_vars.get("Body", "")
 
