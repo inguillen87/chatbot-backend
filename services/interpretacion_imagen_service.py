@@ -41,11 +41,18 @@ def _descargar_imagen(url: str) -> Optional[bytes]:
         return None
     if url.startswith("/"):
         local_path = os.path.join(app.root_path, url.lstrip("/"))
-        try:
-            with open(local_path, "rb") as f:
-                return f.read()
-        except OSError as e:
-            logger.error(f"❌ Error al leer imagen local {local_path}: {e}", exc_info=True)
+        if os.path.exists(local_path):
+            try:
+                with open(local_path, "rb") as f:
+                    return f.read()
+            except OSError as e:
+                logger.error(f"❌ Error al leer imagen local {local_path}: {e}", exc_info=True)
+                return None
+        base = app.config.get("APP_PUBLIC_BASE_URL")
+        if base:
+            url = base.rstrip("/") + url
+        else:
+            logger.error(f"❌ Imagen local no encontrada y APP_PUBLIC_BASE_URL no configurada: {local_path}")
             return None
     try:
         response = requests.get(
