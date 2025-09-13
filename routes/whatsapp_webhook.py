@@ -447,11 +447,18 @@ def whatsapp_webhook():
         ctxm = ctx[CONTEXTO_MUNICIPIO]
         datos = ctxm.get("datos_parciales_llm_reclamo", {})
         estado_prev = ctxm.get("estado_conversacion")
+        reclamo_state = ctxm.get("reclamo_flow_v2", {}).get("state")
         hay_reclamo_en_curso = bool(datos) or estado_prev in (
             "ESPERANDO_DIRECCION_RECLAMO",
             "ESPERANDO_DESCRIPCION_RECLAMO",
             "ESPERANDO_FOTO_RECLAMO",
             "ESPERANDO_CONFIRMACION_RECLAMO",
+            "ESPERANDO_MENU_EDICION",
+        ) or reclamo_state in (
+            "ESPERANDO_DIRECCION",
+            "ESPERANDO_DESCRIPCION",
+            "ESPERANDO_FOTO",
+            "ESPERANDO_CONFIRMACION",
             "ESPERANDO_MENU_EDICION",
         )
         try:
