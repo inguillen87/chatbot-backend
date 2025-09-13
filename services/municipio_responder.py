@@ -277,7 +277,12 @@ class ReclamoFlowHandler:
         self.flow_context['datos_reclamo']['descripcion'] = user_input
         if not self.flow_context['datos_reclamo'].get('direccion'):
             self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
-            return {"message_body": "Gracias. ¿Cuál es la dirección exacta del problema (calle y número)?"}
+            categoria = self.flow_context['datos_reclamo'].get('categoria', '')
+            mensaje = (
+                f"Gracias por la descripción para tu reclamo de *{categoria}*.\n\n"
+                "Ahora, por favor, indicame la dirección exacta del problema (calle, número, distrito/barrio)."
+            )
+            return {"message_body": mensaje}
         else:
             # If a photo was already provided earlier or is present in the
             # context, do not ask for another one.
@@ -320,31 +325,43 @@ class ReclamoFlowHandler:
     def ask_for_contact_details(self, force_prompt: bool = False):
         datos = self.flow_context.setdefault('datos_reclamo', {})
 
-        # If we are not forcing a prompt, skip directly to confirmation even if
-        # some fields are missing. The user can choose to editar los datos later
-        # if necessary.
-        if not force_prompt:
+        # Check if essential contact details are missing.
+        # We consider name, dni, and email as essential to ask for.
+        # Phone is usually pre-filled.
+        essential_fields_missing = not all(datos.get(f) for f in ['nombre', 'dni', 'email'])
+
+        # Force the prompt if explicitly requested OR if essential data is missing.
+        should_force_prompt = force_prompt or essential_fields_missing
+
+        if not should_force_prompt:
             self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
             return self.get_confirmation_message()
 
-        # Otherwise, build a message showing what we already have and request
-        # only the missing pieces.
+        # Build a message showing what we already have and request only the missing pieces.
         self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
         required_fields = ['nombre', 'dni', 'email', 'telefono']
         known_parts = []
         missing = []
-        field_labels = {'nombre': 'nombre', 'dni': 'DNI', 'email': 'email', 'telefono': 'teléfono'}
+        field_labels = {'nombre': 'nombre completo', 'dni': 'DNI', 'email': 'email', 'telefono': 'teléfono'}
         for field in required_fields:
-            if datos.get(field):
-                known_parts.append(f"{field_labels[field]}: {datos[field]}")
+            if datos.get(field) and datos[field] != 'Vecino/a' and '@whatsapp.chatboc.com' not in str(datos[field]):
+                 known_parts.append(f"{field_labels[field]}: {datos[field]}")
             else:
+                # Don't ask for phone if we already have it from the system
+                if field == 'telefono' and datos.get('telefono'):
+                    continue
                 missing.append(field_labels[field])
 
         message = "Ya casi terminamos."
         if known_parts:
-            message += " Tengo: " + ", ".join(known_parts) + "."
+            message += " Ya tengo estos datos:\n" + "\n".join(f"- {part}" for part in known_parts)
         if missing:
-            message += " Por favor, indicame " + ", ".join(missing) + "."
+            message += "\n\nPara finalizar, por favor indicame los datos que faltan: " + ", ".join(missing) + "."
+        else:
+            # This case happens if force_prompt was true but all data is present.
+            # It means we came from the "Edit" flow.
+            message = "Por favor, enviame los datos que querés corregir."
+
 
         return {"message_body": message}
 
@@ -362,21 +379,40 @@ class ReclamoFlowHandler:
 
     def get_confirmation_message(self):
         datos = self.flow_context.get('datos_reclamo', {})
-        mensaje = "Por favor, confirmá que los datos de tu reclamo son correctos:\n\nDatos del reclamo:\n"
-        mensaje += f"- Categoría: {datos.get('categoria', 'No especificada')}\n"
-        mensaje += f"- Dirección: {datos.get('direccion', 'No especificada')}\n"
-        mensaje += f"- Descripción: {datos.get('descripcion', 'No especificada')}\n\n"
-        mensaje += "Datos personales:\n"
-        mensaje += f"- Nombre: {datos.get('nombre', 'No especificado')}\n"
-        mensaje += f"- DNI: {datos.get('dni', 'No especificado')}\n"
-        mensaje += f"- Email: {datos.get('email', 'No especificado')}\n"
-        mensaje += f"- Teléfono: {datos.get('telefono', 'No especificado')}\n"
-        mensaje += f"- Foto adjunta: {'Sí' if datos.get('foto_url') else 'No'}\n"
-        return {
+
+        # Helper to format each line, handling empty values gracefully
+        def format_line(label, value, default_value='No especificado'):
+            return f"*{label}:* {value or default_value}"
+
+        # Building the message with improved formatting
+        mensaje = (
+            "Por favor, confirmá que los datos de tu reclamo son correctos:\n\n"
+            "📄 *Resumen del Reclamo*\n"
+            f"{format_line('Categoría', datos.get('categoria'))}\n"
+            f"{format_line('Dirección', datos.get('direccion'))}\n"
+            f"{format_line('Descripción', datos.get('descripcion'))}\n\n"
+            "👤 *Tus Datos*\n"
+            f"{format_line('Nombre', datos.get('nombre'))}\n"
+            f"{format_line('DNI', datos.get('dni'))}\n"
+            f"{format_line('Email', datos.get('email'))}\n"
+            f"{format_line('Teléfono', datos.get('telefono'))}\n"
+            f"*{'Foto adjunta'}:* {'Sí' if datos.get('foto_url') else 'No'}"
+        )
+
+        response = {
             "message_body": mensaje,
-            "options_list": [{"texto": "✅ Confirmar", "action_id": "reclamo_confirmar_si"}, {"texto": "✏️ Editar datos", "action_id": "reclamo_confirmar_no"}, {"texto": "❌ Cancelar", "action_id": "reclamo_cancelar"}],
+            "options_list": [
+                {"texto": "✅ Confirmar", "action_id": "reclamo_confirmar_si"},
+                {"texto": "✏️ Editar datos", "action_id": "reclamo_confirmar_no"},
+                {"texto": "❌ Cancelar", "action_id": "reclamo_cancelar"}
+            ],
             "message_type": "interactive_buttons"
         }
+
+        if datos.get('foto_url'):
+            response['image_url'] = datos.get('foto_url')
+
+        return response
 
     def handle_confirmacion(self, user_input, payload):
         action = payload.get("action")
@@ -417,6 +453,7 @@ class ReclamoFlowHandler:
             )
             return self.end_flow(error_message, show_menu=True)
         elif any(word in normalized for word in negatives) or action == "reclamo_confirmar_no":
+            logger.info("User chose to edit data. Transitioning to ask for contact details.")
             return self.ask_for_contact_details(force_prompt=True)
         else:  # Cancel or any other input
             cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
@@ -435,7 +472,7 @@ class ReclamoFlowHandler:
         if show_menu:
             menu_payload = GreetingHandler(self.context).handle({})
             payload["delayed_payload"] = menu_payload
-            payload["delay_seconds"] = 20
+            payload["delay_seconds"] = 5
 
         return payload
 # Initialize the classifier globally
@@ -748,6 +785,7 @@ class ConversationState(Enum):
     ESPERANDO_CORRECCION_DATOS_RECLAMO = auto()
     ESPERANDO_SELECCION_CONTACTO_CATEGORIA = auto()
     ESPERANDO_INTENCION_UBICACION = auto()
+    ESPERANDO_NOMBRE_INICIAL = auto()
 
 # Palabras clave sencillas para detectar consultas generales de servicios
 GENERAL_QUERY_KEYWORDS = [
@@ -871,11 +909,14 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
             "¿Cómo te puedo ayudar hoy?"
         )
     else:
-        welcome_message = (
-            "¡Hola! 👋 Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
-            "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más.\n\n"
-            "¿Cómo te puedo ayudar hoy?"
-        )
+        # User's name is not known, ask for it.
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NOMBRE_INICIAL.name
+        return {
+            "message_body": "¡Hola! Soy JUNI, tu Asistente Virtual. Para una atención más personalizada, ¿podrías decirme tu nombre?",
+            "message_type": "text",
+            "fuente": "pedir_nombre_inicial"
+        }
 
     channel = context.get("channel", "web")
     if channel == "whatsapp":
@@ -3813,6 +3854,32 @@ def responder_municipio(
     # --- FIN: Manejo de selección de menú de reclamos ---
 
 
+        elif estado_conversacion == ConversationState.ESPERANDO_NOMBRE_INICIAL.name:
+            nombre_usuario = pregunta_str.strip()
+            if len(nombre_usuario) > 2:
+                # Save the name
+                if viewer_user:
+                    viewer_user.name = nombre_usuario
+                    db.session.add(viewer_user)
+                    db.session.commit()
+
+                contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+                if 'contacto_usuario' not in contexto_municipio_actual:
+                    contexto_municipio_actual['contacto_usuario'] = {}
+                contexto_municipio_actual['contacto_usuario']['nombre'] = nombre_usuario
+                contexto_municipio_actual['estado_conversacion'] = None # Reset state
+
+                # Now call the greeting handler again to show the main menu
+                handler = GreetingHandler(context)
+                response = handler.handle({})
+                # Prepend a confirmation message
+                response['message_body'] = f"¡Gracias, {nombre_usuario}! " + response['message_body'].split('!')[1]
+                return _finalize_response(response)
+            else:
+                return _finalize_response({
+                    "message_body": "No entendí tu nombre. Por favor, ¿podrías repetirlo?",
+                    "fuente": "nombre_no_entendido"
+                })
     elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_CONTACTO_CATEGORIA.name:
         selected_category_action = received_payload.get('action')
         pregunta_str_norm = normalizar_texto(pregunta_str or '')
