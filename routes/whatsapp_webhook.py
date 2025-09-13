@@ -86,13 +86,18 @@ def _should_send_media(ctx: dict, url: str, ttl: int = 300) -> bool:
     return True
 
 
-def _send_with_retry(from_: str, to: str, body: str, max_retries: int = 3):
+def _send_with_retry(
+    from_: str, to: str, body: str, media_url: str | None = None, max_retries: int = 3
+):
     """Send a WhatsApp message with retries and log the Twilio SID."""
     if not twilio_client:
         return None
+    params = {"from_": from_, "to": to, "body": body}
+    if media_url:
+        params["media_url"] = [media_url]
     for attempt in range(1, max_retries + 1):
         try:
-            msg = twilio_client.messages.create(from_=from_, to=to, body=body)
+            msg = twilio_client.messages.create(**params)
             current_app.logger.info(f"Twilio message SID: {msg.sid}")
             return msg
         except Exception as e:
@@ -467,13 +472,24 @@ def whatsapp_webhook():
         except Exception:
             display = f"Lat: {latitud}, Lon: {longitud}"
 
+        maps_url = f"https://www.google.com/maps/search/?q={latitud},{longitud}"
+        gkey = os.getenv("GOOGLE_MAPS_API_KEY")
+        static_map_url = (
+            "https://maps.googleapis.com/maps/api/staticmap?center="
+            f"{latitud},{longitud}&zoom=18&size=800x500&markers=color:red|{latitud},{longitud}&key={gkey}"
+            if gkey
+            else None
+        )
         datos.update(
             {
                 "coordenadas": {"lat": latitud, "lon": longitud},
                 "ubicacion": display,
                 "label_ubicacion": post_vars.get("Label"),
+                "maps_search_url": maps_url,
             }
         )
+        if static_map_url:
+            datos["static_map_url"] = static_map_url
         ctxm["datos_parciales_llm_reclamo"] = datos
 
         if hay_reclamo_en_curso:
@@ -490,18 +506,19 @@ def whatsapp_webhook():
             db.session.add(session_context_db_entry)
             db.session.commit()
             if twilio_client:
-                maps_url = f"https://www.google.com/maps/search/?q={latitud},{longitud}"
+                label = post_vars.get("Label")
+                label_line = f"\nEtiqueta: {label}" if label else ""
                 confirm_text = (
                     "📍 Ubicación detectada:\n"
-                    f"{display}\n¿Es acá?\n1) Sí, es acá\n2) No, corregir\n"
+                    f"{display}{label_line}\n¿Es acá?\n1) Sí, es acá\n2) No, corregir\n"
                     f"🔗 Abrir mapa: {maps_url}"
                 )
-                for chunk in _split_message(confirm_text):
-                    _send_with_retry(
-                        from_=to_number_raw,
-                        to=from_number_raw,
-                        body=chunk,
-                    )
+                _send_with_retry(
+                    from_=to_number_raw,
+                    to=from_number_raw,
+                    body=confirm_text,
+                    media_url=static_map_url,
+                )
                 audio_text = render_audio_text(
                     confirm_text, options=ctx.get("last_options_sent")
                 )
@@ -534,19 +551,21 @@ def whatsapp_webhook():
             db.session.add(session_context_db_entry)
             db.session.commit()
             if twilio_client:
+                label = post_vars.get("Label")
+                label_part = f" ({label})" if label else ""
                 intro_text = (
-                    f"Recibí tu ubicación en {display}. ¿Qué te gustaría hacer?\n"
+                    f"Recibí tu ubicación en {display}{label_part}. ¿Qué te gustaría hacer?\n"
                     "1) Iniciar un Reclamo\n"
                     "2) Enviar una Sugerencia\n"
                     "3) Cancelar\n"
                     "4) Menú"
                 )
-                for chunk in _split_message(intro_text):
-                    _send_with_retry(
-                        from_=to_number_raw,
-                        to=from_number_raw,
-                        body=chunk,
-                    )
+                _send_with_retry(
+                    from_=to_number_raw,
+                    to=from_number_raw,
+                    body=intro_text,
+                    media_url=static_map_url,
+                )
                 audio_text = render_audio_text(
                     intro_text, options=ctx.get("last_options_sent")
                 )

@@ -78,7 +78,6 @@ from services.address_resolver import AddressResolver
 from services.geo_service import reverse_geocode
 from types import SimpleNamespace
 from services.integrations.twilio_client import send_whatsapp
-from .map_preview import generate_static_map
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 DEBUG_ECHO_NUMBERS = set(filter(None, os.getenv("DEBUG_ECHO_NUMBERS", "").split(",")))
@@ -1006,21 +1005,26 @@ class ReclamoFlowHandler:
             else:
                 maps_url = datos.get("maps_search_url")
                 direccion_display = datos.get("direccion") or ""
-                msg = (
-                    "📍 Ubicación detectada:\n"
-                    f"{direccion_display}\n¿Es acá?\n1) Sí\n2) No"
-                )
+                label = datos.get("label_ubicacion")
+                msg = "📍 Ubicación detectada:\n" + direccion_display
+                if label:
+                    msg += f" ({label})"
+                msg += "\n¿Es acá?\n1) Sí\n2) No"
                 if maps_url:
                     msg += f"\n🔗 Abrir mapa: {maps_url}"
                 opciones = [
                     {"texto": "1) Sí", "action_id": "confirmar_ubicacion"},
                     {"texto": "2) No", "action_id": "editar_ubicacion"},
                 ]
-                return {
+                response = {
                     "message_body": msg,
                     "options_list": opciones,
                     "message_type": "interactive_buttons",
                 }
+                if datos.get("static_map_url"):
+                    response["image_url"] = datos["static_map_url"]
+                    response["image_alt_text"] = "Mapa de la ubicación"
+                return response
 
         if user_input.strip().isdigit() and datos.get("address_candidates"):
             idx = int(user_input.strip()) - 1
@@ -1062,10 +1066,11 @@ class ReclamoFlowHandler:
                 {"texto": "1) Sí", "action_id": "confirmar_ubicacion"},
                 {"texto": "2) No", "action_id": "editar_ubicacion"},
             ]
-            msg = (
-                "📍 Ubicación detectada:\n"
-                f"{direccion_display}\n¿Es acá?\n1) Sí\n2) No"
-            )
+            label = datos.get("label_ubicacion") or loc.get("label")
+            msg = "📍 Ubicación detectada:\n" + direccion_display
+            if label:
+                msg += f" ({label})"
+            msg += "\n¿Es acá?\n1) Sí\n2) No"
             maps_url = datos.get("maps_search_url")
             if maps_url:
                 msg += f"\n🔗 Abrir mapa: {maps_url}"
@@ -2857,11 +2862,11 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 {"texto": "1) Sí", "action_id": "confirmar_ubicacion"},
                 {"texto": "2) No", "action_id": "editar_ubicacion"},
             ]
-            msg = (
-                "📍 Ubicación detectada:\n"
-                f"{loc.get('ubicacion')}\n¿Es acá?\n"
-                "1) Sí\n2) No"
-            )
+            label = loc.get("label") or datos.get("label_ubicacion")
+            msg = "📍 Ubicación detectada:\n" + loc.get("ubicacion")
+            if label:
+                msg += f" ({label})"
+            msg += "\n¿Es acá?\n1) Sí\n2) No"
             image_url = None
             image_alt = None
             coords = loc.get("coordenadas") or {}
@@ -2870,10 +2875,13 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             if lat and lon:
                 maps_url = f"https://maps.google.com/?q={lat},{lon}"
                 msg += f"\n🔗 Abrir mapa: {maps_url}"
-                try:
-                    image_url, image_alt = generate_static_map(lat, lon)
-                except Exception:
-                    logger_actual.exception("Error generating static map preview")
+                gkey = os.getenv("GOOGLE_MAPS_API_KEY")
+                if gkey:
+                    image_url = (
+                        "https://maps.googleapis.com/maps/api/staticmap?center="
+                        f"{lat},{lon}&zoom=18&size=800x500&markers=color:red|{lat},{lon}&key={gkey}"
+                    )
+                    image_alt = f"Mapa de la ubicación ({lat}, {lon})"
             response_payload = {
                 "message_body": msg,
                 "options_list": opciones,
@@ -4376,10 +4384,11 @@ def responder_municipio(
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             maps_url = datos.get("maps_search_url")
-            msg = (
-                "📍 Ubicación detectada:\n"
-                f"{address}\n¿Es acá?\n1) Sí\n2) No"
-            )
+            label = datos.get("label_ubicacion")
+            msg = "📍 Ubicación detectada:\n" + address
+            if label:
+                msg += f" ({label})"
+            msg += "\n¿Es acá?\n1) Sí\n2) No"
             if maps_url:
                 msg += f"\n🔗 Abrir mapa: {maps_url}"
             return (
@@ -4428,12 +4437,34 @@ def responder_municipio(
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
 
-            return _finalize_response({
-                "message_body": f"Recibí tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
+            loc = received_payload.get("ubicacion_usuario", {})
+            lat = loc.get("latitude") or loc.get("lat")
+            lon = loc.get("longitude") or loc.get("lng")
+            label = loc.get("label") or loc.get("label_ubicacion")
+            maps_url = f"https://maps.google.com/?q={lat},{lon}" if lat and lon else None
+            gkey = os.getenv("GOOGLE_MAPS_API_KEY")
+            static_map_url = (
+                "https://maps.googleapis.com/maps/api/staticmap?center="
+                f"{lat},{lon}&zoom=18&size=800x500&markers=color:red|{lat},{lon}&key={gkey}"
+                if gkey and lat and lon
+                else None
+            )
+            msg = f"Recibí tu ubicación en *{address}*"
+            if label:
+                msg += f" ({label})"
+            msg += ". ¿Qué te gustaría hacer?"
+            if maps_url:
+                msg += f"\n🔗 Abrir mapa: {maps_url}"
+            payload = {
+                "message_body": msg,
                 "options_list": opciones_proactivas,
                 "message_type": "interactive_buttons",
                 "fuente": "proactive_location_handler",
-            })
+            }
+            if static_map_url:
+                payload["image_url"] = static_map_url
+                payload["image_alt_text"] = "Mapa de la ubicación"
+            return _finalize_response(payload)
     # --- FIN: Manejo Proactivo de Ubicación ---
 
 
@@ -5957,14 +5988,10 @@ def responder_municipio(
     # --- End Handle post-login resumption ---
 
     if contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name:
-        ubicacion_display = (
-            contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
-            .get("ubicacion", "")
-        )
-        coords = (
-            contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
-            .get("coordenadas", {})
-        )
+        datos_llm = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+        ubicacion_display = datos_llm.get("ubicacion", "")
+        label_ubicacion = datos_llm.get("label_ubicacion")
+        coords = datos_llm.get("coordenadas", {})
         lat = coords.get("lat") or coords.get("latitude")
         lon = coords.get("lng") or coords.get("lon") or coords.get("longitude")
         maps_url = f"https://maps.google.com/?q={lat},{lon}" if lat and lon else None
@@ -5995,18 +6022,21 @@ def responder_municipio(
                 {"texto": "1) Sí", "action_id": "confirmar_ubicacion"},
                 {"texto": "2) No", "action_id": "editar_ubicacion"},
             ]
-            msg = (
-                "📍 Ubicación detectada:\n"
-                f"*{ubicacion_display}*\n¿Es acá?\n1) Sí\n2) No"
-            )
+            msg = "📍 Ubicación detectada:\n" + f"*{ubicacion_display}*"
+            if label_ubicacion:
+                msg += f" ({label_ubicacion})"
+            msg += "\n¿Es acá?\n1) Sí\n2) No"
             image_url = None
             image_alt = None
             if maps_url:
                 msg += f"\n🔗 Abrir mapa: {maps_url}"
-                try:
-                    image_url, image_alt = generate_static_map(lat, lon)
-                except Exception:
-                    logger_actual.exception("Error generating static map preview")
+                gkey = os.getenv("GOOGLE_MAPS_API_KEY")
+                if gkey and lat and lon:
+                    image_url = (
+                        "https://maps.googleapis.com/maps/api/staticmap?center="
+                        f"{lat},{lon}&zoom=18&size=800x500&markers=color:red|{lat},{lon}&key={gkey}"
+                    )
+                    image_alt = f"Mapa de la ubicación ({lat}, {lon})"
             payload = {
                 "message_body": msg,
                 "options_list": opciones,
