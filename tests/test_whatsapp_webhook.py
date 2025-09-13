@@ -731,6 +731,34 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertIn(fake_audio, audio_kwargs.get("media_url", [])[0])
         mock_tts.assert_called_once()
 
+    def test_location_message_retries_on_failure(self):
+        """If sending the confirmation fails, the webhook should retry."""
+        self._create_confirmed_session()
+        with patch('routes.whatsapp_webhook.reverse_geocode') as mock_geo, \
+             patch('routes.whatsapp_webhook.time.sleep', return_value=None):
+            mock_geo.return_value = {"display": "Fake Street 123"}
+            success_msg = MagicMock()
+            success_msg.sid = "SMretry"
+            self.mock_twilio_create.side_effect = [Exception("fail"), success_msg]
+
+            payload = {
+                "To": f"whatsapp:{self.test_whatsapp_number_str}",
+                "From": f"whatsapp:{self.test_user_number_str}",
+                "MessageType": "location",
+                "Latitude": "-33.0",
+                "Longitude": "-68.0",
+                "SmsSid": "SMloc",
+                "SmsMessageSid": "SMloc",
+                "SmsStatus": "received",
+                "NumMedia": "0",
+                "Body": "",
+            }
+            headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(self.mock_twilio_create.call_count, 2)
+
     @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_audio_attachment_transcribes_text(self, mock_requests_get):
         mock_response = MagicMock()
