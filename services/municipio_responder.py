@@ -2746,6 +2746,11 @@ llamar_openai = llamar_llm_con_fallback
 
 def accion_crear_reclamo_municipio(datos_reclamo, context):
     """Wrapper that delegates ticket creation and triggers a post-ticket promo."""
+    if not datos_reclamo.get("descripcion"):
+        pregunta_raw = (context or {}).get("user_input_raw", "")
+        if pregunta_raw.strip():
+            datos_reclamo["descripcion"] = pregunta_raw
+
     handler = CrearReclamoActionHandler(context=context)
     contexto = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
     result = _execute_crear_reclamo(handler, datos_reclamo, contexto)
