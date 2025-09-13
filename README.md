@@ -263,9 +263,13 @@ This project can be deployed as a multi-tenant SaaS solution. Each company has i
 
 ## Log Utilities
 You can inspect log files using `script_filter_logs.py`.
-This helper allows filtering by log level, searching with a regular expression
-and limiting the output to the last N lines. Example:
+This helper allows filtering by log level, searching with a regular expression,
+colorizing log levels and even following the file in real time. Examples:
 
 ```bash
+# Show the last 50 error lines containing "reclamo"
 python script_filter_logs.py logs/chatbot.log --level ERROR --contains reclamo --tail 50
+
+# Follow the log and colorize levels
+python script_filter_logs.py logs/chatbot.log --follow
 ```
