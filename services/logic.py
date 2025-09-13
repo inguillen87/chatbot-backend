@@ -277,9 +277,15 @@ def responder_chatboc(
                         file_content, media_content_type
                     )
                     if doc_ai_result.get("success"):
-                        datos_interpretados_de_archivo = {
-                            "texto_extraido": doc_ai_result.get("text", "")
-                        }
+                        # `doc_ai_result` may be an object or a dict. It should expose the
+                        # extracted text via a `text` attribute or `text`/`raw_text` keys.
+                        texto_extraido = (
+                            getattr(doc_ai_result, "text", None)
+                            or doc_ai_result.get("text")
+                            or doc_ai_result.get("raw_text")
+                            or ""
+                        )
+                        datos_interpretados_de_archivo = {"texto_extraido": texto_extraido}
                     else:
                         datos_interpretados_de_archivo = {
                             "error": "No se pudo procesar el documento."
