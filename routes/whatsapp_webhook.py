@@ -31,9 +31,7 @@ from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.geo_service import reverse_geocode
 from services.openai_maps_service import geocodificar_inversa_llm
 from services.municipio_responder import CONTEXTO_MUNICIPIO
-from services.audio_transcription_service import (
-    transcribe_audio_from_url as stt_transcribe_audio_from_url,
-)
+from services import audio_transcription_service
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -219,25 +217,6 @@ def whatsapp_webhook():
         post_vars["ubicacion_usuario"] = {"lat": coords["lat"], "lon": coords["lng"]}
         post_vars["location"] = coords
 
-    # Transcribir notas de voz o audios adjuntos (ignorar imágenes u otros medios)
-    message_type = request.form.get("MessageType", "")
-    media_content_type = request.form.get("MediaContentType0", "")
-    if (
-        stt_transcribe_audio_from_url
-        and (
-            message_type in ("voice", "audio")
-            or media_content_type.startswith("audio/")
-        )
-    ):
-        media_url = post_vars.get("MediaUrl0")
-        if media_url and TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
-            transcript = stt_transcribe_audio_from_url(
-                media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-            )
-            if transcript:
-                body = post_vars.get("Body", "")
-                post_vars["Body"] = f"{body} {transcript}".strip()
-
     to_number_raw = post_vars.get("To", "")
     from_number_raw = post_vars.get("From", "")
     to_number_cleaned = to_number_raw.replace("whatsapp:", "")
@@ -296,66 +275,6 @@ def whatsapp_webhook():
         db.session.add(session_context_db_entry)
         db.session.commit()
 
-    # --- Handle location messages and persist coordinates ---
-    msg_type = post_vars.get("MessageType")
-    if msg_type == "location":
-        lat = post_vars.get("Latitude")
-        lon = post_vars.get("Longitude")
-        ctx = session_context_db_entry.context_data
-        ctx.setdefault("contexto_municipio_v2", {})
-        ctxm = ctx["contexto_municipio_v2"]
-        datos = ctxm.get("datos_parciales_llm_reclamo", {})
-        datos.update({
-            "coordenadas": {"lat": lat, "lon": lon},
-        })
-        try:
-            geo = reverse_geocode(float(lat), float(lon))
-            display = geo.get("display", f"Lat: {lat}, Lon: {lon}")
-        except Exception:
-            display = f"Lat: {lat}, Lon: {lon}"
-        maps_url = f"https://www.google.com/maps/search/?q={lat},{lon}"
-        datos["ubicacion"] = display
-        ctxm["datos_parciales_llm_reclamo"] = datos
-        ctxm["estado_conversacion"] = "ESPERANDO_CONFIRMACION_UBICACION"
-        ctx["last_options_sent"] = [
-            {"texto": "1) Sí, es acá", "action_id": "confirmar_ubicacion"},
-            {"texto": "2) No, corregir", "action_id": "editar_ubicacion"},
-        ]
-        safe_flag_modified(session_context_db_entry, "context_data")
-        db.session.add(session_context_db_entry)
-        db.session.commit()
-
-        if twilio_client:
-            confirm_payload = {
-                "type": "button",
-                "body": {
-                    "text": (
-                        "📍 Ubicación detectada:\n"
-                        f"{display}\n¿Es acá?\n1) Sí, es acá\n2) No, corregir\n"
-                        f"🔗 Abrir mapa: {maps_url}"
-                    )
-                },
-                "action": {
-                    "buttons": [
-                        {
-                            "type": "reply",
-                            "reply": {"id": "confirmar_ubicacion", "title": "1) Sí, es acá"},
-                        },
-                        {
-                            "type": "reply",
-                            "reply": {"id": "editar_ubicacion", "title": "2) No, corregir"},
-                        },
-                    ]
-                },
-            }
-            twilio_client.messages.create(
-                from_=to_number_raw,
-                to=from_number_raw,
-                body="Seleccioná una opción",
-                persistent_action=[f"whatsapp:{json.dumps(confirm_payload)}"],
-            )
-        return "OK", 200
-
     # Determine incoming text before any special handling
     button_payload = post_vars.get("ButtonPayload")
     list_id = post_vars.get("ListId")
@@ -403,8 +322,9 @@ def whatsapp_webhook():
         db.session.commit()
 
     # --- Message and Media Handling SECOND ---
-    num_media = int(post_vars.get("NumMedia", "0") or 0)
     media_url = post_vars.get("MediaUrl0")  # TODO: soportar múltiples adjuntos
+    # Some unit tests omit `NumMedia`; treat presence of MediaUrl0 as an indicator of media.
+    num_media = int(post_vars.get("NumMedia") or (1 if media_url else 0))
     media_content_type = post_vars.get("MediaContentType0")
     uploaded_file_info = None
     message_body = incoming_text
@@ -440,14 +360,17 @@ def whatsapp_webhook():
             )
 
             if adjunto:
-                # Prepare the info for the chatbot logic, which will be used for all media types
+                # Prepare the info for the chatbot logic, ensuring serializable fields
+                public_url = getattr(adjunto, "public_url", None)
+                if public_url and not isinstance(public_url, str):
+                    public_url = str(public_url)
                 uploaded_file_info = {
                     "id": adjunto.id,
                     "url": adjunto.url,
-                    "public_url": getattr(adjunto, "public_url", None),
+                    "public_url": public_url,
                     "mime_type": adjunto.mime,
                     "name": adjunto.nombre_original,
-                    "source": "whatsapp"
+                    "source": "whatsapp",
                 }
                 current_app.logger.info(f"WhatsApp media processed and saved as ArchivoAdjunto ID: {adjunto.id}")
             else:
@@ -456,7 +379,7 @@ def whatsapp_webhook():
             if media_content_type and media_content_type.startswith("audio/"):
                 session_context_db_entry.context_data['source_is_audio'] = True
                 # We pass the direct URL to the transcription service
-                transcribed_text = stt_transcribe_audio_from_url(
+                transcribed_text = audio_transcription_service.transcribe_audio_from_url(
                     media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
                 )
                 if transcribed_text:
@@ -480,7 +403,14 @@ def whatsapp_webhook():
             if media_content_type and media_content_type.startswith("image/"):
                 ctx = session_context_db_entry.context_data
                 ctx["es_foto"] = True
-                ctx["foto_url"] = (uploaded_file_info or {}).get("public_url") or (uploaded_file_info or {}).get("url") or media_url
+                foto_url = (
+                    (uploaded_file_info or {}).get("public_url")
+                    or (uploaded_file_info or {}).get("url")
+                    or media_url
+                )
+                if foto_url and not isinstance(foto_url, str):
+                    foto_url = str(foto_url)
+                ctx["foto_url"] = foto_url
                 safe_flag_modified(session_context_db_entry, "context_data")
                 db.session.add(session_context_db_entry)
                 db.session.commit()
@@ -536,71 +466,43 @@ def whatsapp_webhook():
             db.session.commit()
             if twilio_client:
                 maps_url = f"https://www.google.com/maps/search/?q={latitud},{longitud}"
-                confirm_payload = {
-                    "type": "button",
-                    "body": {
-                        "text": (
-                            "📍 Ubicación detectada:\n"
-                            f"{display}\n¿Es acá?\n1) Sí, es acá\n2) No, corregir\n"
-                            f"🔗 Abrir mapa: {maps_url}"
-                        )
-                    },
-                    "action": {
-                        "buttons": [
-                            {
-                                "type": "reply",
-                                "reply": {"id": "confirmar_ubicacion", "title": "1) Sí, es acá"},
-                            },
-                            {
-                                "type": "reply",
-                                "reply": {"id": "editar_ubicacion", "title": "2) No, corregir"},
-                            },
-                        ]
-                    },
-                }
-                twilio_client.messages.create(
-                    from_=to_number_raw,
-                    to=from_number_raw,
-                    body="Seleccioná una opción",
-                    persistent_action=[f"whatsapp:{json.dumps(confirm_payload)}"],
+                confirm_text = (
+                    "📍 Ubicación detectada:\n"
+                    f"{display}\n¿Es acá?\n1) Sí, es acá\n2) No, corregir\n"
+                    f"🔗 Abrir mapa: {maps_url}"
                 )
+                for chunk in _split_message(confirm_text):
+                    twilio_client.messages.create(
+                        from_=to_number_raw,
+                        to=from_number_raw,
+                        body=chunk,
+                    )
             return "OK", 200
         else:
             ctxm["estado_conversacion"] = "ESPERANDO_INTENCION_UBICACION"
+            ctx["last_options_sent"] = [
+                {"texto": "1) Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
+                {"texto": "2) Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
+                {"texto": "3) Cancelar", "action_id": "cancelar"},
+                {"texto": "4) Menú", "action_id": "menu_principal"},
+            ]
             safe_flag_modified(session_context_db_entry, "context_data")
             db.session.add(session_context_db_entry)
             db.session.commit()
             if twilio_client:
-                menu_payload = {
-                    "type": "button",
-                    "body": {"text": f"Recibí tu ubicación en {display}. ¿Qué te gustaría hacer?"},
-                    "action": {
-                        "buttons": [
-                            {
-                                "type": "reply",
-                                "reply": {
-                                    "id": "iniciar_reclamo_con_ubicacion",
-                                    "title": "Iniciar un Reclamo",
-                                },
-                            },
-                            {
-                                "type": "reply",
-                                "reply": {
-                                    "id": "enviar_sugerencia_con_ubicacion",
-                                    "title": "Enviar una Sugerencia",
-                                },
-                            },
-                            {"type": "reply", "reply": {"id": "cancelar", "title": "Cancelar"}},
-                            {"type": "reply", "reply": {"id": "menu_principal", "title": "Menú"}},
-                        ]
-                    },
-                }
-                twilio_client.messages.create(
-                    from_=to_number_raw,
-                    to=from_number_raw,
-                    body="Seleccioná una opción",
-                    persistent_action=[f"whatsapp:{json.dumps(menu_payload)}"],
+                intro_text = (
+                    f"Recibí tu ubicación en {display}. ¿Qué te gustaría hacer?\n"
+                    "1) Iniciar un Reclamo\n"
+                    "2) Enviar una Sugerencia\n"
+                    "3) Cancelar\n"
+                    "4) Menú"
                 )
+                for chunk in _split_message(intro_text):
+                    twilio_client.messages.create(
+                        from_=to_number_raw,
+                        to=from_number_raw,
+                        body=chunk,
+                    )
             return "OK", 200
 
     # --- Human Chat Check ---
@@ -620,18 +522,21 @@ def whatsapp_webhook():
     esperando_info = _esperando_info_libre(municipio_ctx)
 
     # Solo traducir números a acciones cuando no estamos esperando información libre.
-    mapped_action = False
+    mapped_action_id = None
     if message_body.isdigit() and last_options and not esperando_info:
         idx = int(message_body) - 1
         if 0 <= idx < len(last_options):
             selected = last_options[idx]
             message_body = (
-                selected.get("id")
-                or selected.get("action_id")
+                selected.get("category_name")
                 or selected.get("texto")
                 or message_body
             )
-            mapped_action = True
+            mapped_action_id = (
+                selected.get("id")
+                or selected.get("action_id")
+                or selected.get("texto")
+            )
 
     # --- Call Real Chatbot Logic: responder_chatboc ---
     # Initialize with a default error response
@@ -692,8 +597,8 @@ def whatsapp_webhook():
             payload_data = {"action_id": button_payload}
         elif list_id:
             payload_data = {"action_id": list_id}
-        elif mapped_action:
-            payload_data = {"action_id": message_body}
+        elif mapped_action_id:
+            payload_data = {"action_id": mapped_action_id}
         if payload_data:
             kwargs_for_bot["payload"] = payload_data
 
