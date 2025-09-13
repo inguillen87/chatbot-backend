@@ -2624,6 +2624,361 @@ def responder_municipio(
     }
     # --- FIN REFACTOR ---
 
+    # --- START OF RESTRUCTURED LOGIC ---
+    # The primary change is to handle active conversation states FIRST, before
+    # any other processing like intent classification or menu keyword matching.
+
+    estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
+
+    # 1. Handle active conversation states first.
+    if estado_conversacion:
+        if estado_conversacion == 'ESPERANDO_CONFIRMACION_STT':
+            transcript_pendiente = contexto_municipio_actual.get('stt_transcript_pendiente')
+            contexto_municipio_actual['estado_conversacion'] = None
+            contexto_municipio_actual.pop('stt_transcript_pendiente', None)
+
+            if "si" in normalizar_texto(pregunta_str) or (action and "si" in action):
+                pregunta_str = transcript_pendiente
+                if "pregunta" in received_payload:
+                    received_payload["pregunta"] = pregunta_str
+            else:
+                return _finalize_response({
+                    "message_body": "Entendido. Por favor, intentá de nuevo o escribí tu consulta.",
+                    "options_list": []
+                })
+
+        elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name:
+            pregunta_str_menu = ""
+            if isinstance(pregunta_original, str):
+                pregunta_str_menu = pregunta_original
+            elif isinstance(pregunta_original, dict) and "pregunta" in pregunta_original:
+                pregunta_str_menu = pregunta_original["pregunta"]
+
+            selected_action = action or find_menu_action_by_input(pregunta_str_menu, _get_main_menu_payload(context).get('options_list', []))
+            if not selected_action:
+                selected_action = find_global_menu_action(pregunta_str_menu)
+
+            if selected_action:
+                contexto_municipio_actual['estado_conversacion'] = None
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                response = handle_main_menu_action(selected_action, context, chat_db_context)
+                if response:
+                    return _finalize_response(response)
+            else:
+                logger_actual.info(f"Input '{pregunta_str_menu}' is not a menu option. Treating as a general query.")
+                contexto_municipio_actual['estado_conversacion'] = None
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+
+        elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name:
+            pregunta_str_reclamo = ""
+            if isinstance(pregunta_original, str):
+                pregunta_str_reclamo = pregunta_original
+            elif isinstance(pregunta_original, dict) and "pregunta" in pregunta_original:
+                pregunta_str_reclamo = pregunta_original["pregunta"]
+
+            logger_actual.info(f"Handling input in ESPERANDO_SELECCION_MENU_RECLAMOS state. Input: '{pregunta_str_reclamo}', Action: '{action}'")
+
+            reclamo_categories = {
+                "reclamo_luminaria": "Luminaria", "reclamo_arbolado": "Arbolado",
+                "reclamo_limpieza_riego": "Limpieza y riego", "reclamo_arreglo_calle": "Arreglo de calle",
+                "reclamo_otros": "Otros"
+            }
+
+            selected_category_name = None
+            if action in reclamo_categories:
+                selected_category_name = reclamo_categories[action]
+            else:
+                normalized_input = normalizar_texto(pregunta_str_reclamo or "")
+                if pregunta_str_reclamo == "0" or normalized_input in RETURN_TO_MAIN_MENU:
+                    return _finalize_response(GreetingHandler(context).handle({}))
+
+                reclamo_options = _get_reclamos_menu().get("options_list", [])
+                if pregunta_str_reclamo.isdigit():
+                    for option in reclamo_options:
+                        if option.get("id_accion") == pregunta_str_reclamo:
+                            selected_category_name = option.get("category_name")
+                            break
+                if not selected_category_name:
+                    plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
+                    details = extract_reclamo_details_from_text(pregunta_str_reclamo, plain_text_options)
+                    selected_category_name = details.pop("categoria_sugerida", None)
+
+            if selected_category_name:
+                handler = ReclamoFlowHandler(context, chat_db_context)
+                datos_iniciales = {}
+                if details.get("descripcion_sugerida"):
+                    datos_iniciales["descripcion"] = details["descripcion_sugerida"]
+                if details.get("direccion_sugerida"):
+                    datos_iniciales["direccion"] = details["direccion_sugerida"]
+                response_dict = handler.start_flow(
+                    datos_iniciales=datos_iniciales or None,
+                    categoria_inicial=selected_category_name,
+                )
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(response_dict)
+            else:
+                return _finalize_response(_get_reclamos_menu())
+
+        elif estado_conversacion == ConversationState.ESPERANDO_INTENCION_UBICACION.name:
+            ubicacion_contextual = contexto_municipio_actual.pop('ubicacion_contextual', None)
+            address = ubicacion_contextual.get('address', 'la ubicación proporcionada') if ubicacion_contextual else 'la ubicación proporcionada'
+
+            if not action:
+                pregunta_menu = ""
+                if isinstance(pregunta_original, str):
+                    pregunta_menu = pregunta_original
+                elif isinstance(pregunta_original, dict):
+                    pregunta_menu = pregunta_original.get("pregunta", "")
+                opciones = [
+                    {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
+                    {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
+                    {"texto": "Cancelar", "action_id": "cancelar"},
+                ]
+                action = find_menu_action_by_input(pregunta_menu, opciones)
+
+            if action == "iniciar_reclamo_con_ubicacion":
+                handler = ReclamoFlowHandler(context, chat_db_context)
+                datos_iniciales = {"direccion": address}
+                if ubicacion_contextual:
+                    datos_iniciales['coordenadas'] = {"lat": ubicacion_contextual.get("latitude"), "lon": ubicacion_contextual.get("longitude")}
+                response_dict = handler.start_flow(datos_iniciales=datos_iniciales)
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                return _finalize_response(response_dict)
+            elif action == "enviar_sugerencia_con_ubicacion":
+                contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
+                contexto_municipio_actual['ubicacion_contextual_sugerencia'] = address
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                return _finalize_response({"message_body": f"Excelente. Por favor, escribí tu sugerencia relacionada con la ubicación: *{address}*.", "fuente": "handler_enviar_sugerencia_con_ubicacion"})
+            else:
+                contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(
+                    {
+                        "message_body": f"No entendí la opción. ¿Qué te gustaría hacer en *{address}*?",
+                        "options_list": [
+                            {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
+                            {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
+                            {"texto": "Cancelar", "action_id": "cancelar"},
+                            {"texto": "Menú", "action_id": "menu_principal"},
+                        ],
+                        "fuente": "proactive_location_handler",
+                    }
+                )
+
+        elif estado_conversacion == ConversationState.ESPERANDO_NUMERO_TICKET.name:
+            numero_ticket = ''.join(filter(str.isdigit, pregunta_str or ''))
+            if not numero_ticket:
+                return _finalize_response({
+                    "message_body": "No parece ser un número de reclamo válido. Por favor, intentá de nuevo.",
+                    "fuente": "handler_consultar_reclamo_invalido"
+                })
+
+            municipio_id = context.get("municipio_id", MUNICIPIO_ID)
+            # Assuming ticket numbers are unique per municipality. If not, this might need a PIN.
+            # For now, implementing a direct lookup as the user flow implies.
+            ticket_query = MunicipioTicket.query.filter_by(nro_ticket=numero_ticket)
+            try:
+                ticket_query = ticket_query.filter_by(municipio_id=int(municipio_id))
+            except (TypeError, ValueError):
+                pass
+            ticket = ticket_query.first()
+
+            contexto_municipio_actual.pop('numero_ticket_consulta', None)
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context: flag_modified(chat_db_context, "context_data")
+
+
+            botones = []
+            if ticket:
+                contactos = cargar_configuracion_municipio(municipio_id, "contactos_especializados.json")
+                contacto_especializado = contactos.get(ticket.categoria, contactos.get("default", {})) if isinstance(contactos, dict) else {}
+                municipio_config = context.get("municipio_config_actual", {})
+                base_chat_url = municipio_config.get("base_chat_url", "https://www.chatboc.ar/chat")
+                mensaje, botones = formatear_ticket_respuesta(
+                    "reclamo",
+                    ticket.nombre_vecino or "Vecino/a",
+                    ticket.detalles or ticket.pregunta or "",
+                    ticket.categoria,
+                    f"M-{ticket.nro_ticket}",
+                    contacto_especializado,
+                    base_chat_url,
+                    consulta_pin=ticket.consulta_pin,
+                )
+                mensaje += f"\n\n🔔 *Estado actual:* {ticket.estado}"
+            else:
+                mensaje = (
+                    "No encontramos un ticket con ese número y PIN. Por favor, verifica los datos e intenta nuevamente."
+                )
+            final_payload = _message_with_menu(mensaje, context)
+            final_payload['fuente'] = 'handler_consultar_reclamo'
+            if botones:
+                final_payload['options_list'] = botones + final_payload.get('options_list', [])
+                final_payload['message_type'] = 'interactive_buttons'
+            return _finalize_response(final_payload)
+        elif estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name:
+            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context)
+            if switch_response:
+                return _finalize_response(switch_response)
+            sugerencia_texto = pregunta_str
+            if len(sugerencia_texto) < 10:
+                return _finalize_response({"message_body": "Tu sugerencia parece un poco corta. ¿Podrías darme un poco más de detalle?", "fuente": "sugerencia_muy_corta"})
+
+            ubicacion_sugerencia = contexto_municipio_actual.pop('ubicacion_contextual_sugerencia', 'N/A')
+            viewer_user_obj = context.get("viewer_user_obj")
+            contacto_prev = contexto_municipio_actual.get('contacto_usuario', {})
+            datos_sugerencia = {
+                "categoria": "Sugerencia",
+                "descripcion": sugerencia_texto,
+                "ubicacion": ubicacion_sugerencia,
+                "nombre": (
+                    getattr(viewer_user_obj, "name", None)
+                    or getattr(viewer_user_obj, "nombre", None)
+                    or contacto_prev.get("nombre")
+                ),
+                "dni": getattr(viewer_user_obj, "dni", None) or contacto_prev.get("dni"),
+                "email": getattr(viewer_user_obj, "email", None) or contacto_prev.get("email"),
+                "direccion": getattr(viewer_user_obj, "direccion", None) or contacto_prev.get("direccion"),
+                "telefono": getattr(viewer_user_obj, "telefono", None) or contacto_prev.get("telefono"),
+            }
+
+            campos_faltantes = [c for c in ["nombre", "dni", "email", "direccion"] if not datos_sugerencia.get(c)]
+            contexto_municipio_actual['datos_sugerencia'] = datos_sugerencia
+            contexto_municipio_actual['contacto_usuario'] = {
+                k: datos_sugerencia.get(k)
+                for k in ["nombre", "dni", "email", "direccion", "telefono"]
+                if datos_sugerencia.get(k)
+            }
+            if campos_faltantes:
+                contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                campos_texto = ', '.join(campos_faltantes)
+                return _finalize_response({
+                    "message_body": f"Para registrar tu sugerencia necesito: {campos_texto}. Podés escribir todo en un solo mensaje.",
+                    "fuente": "pide_datos_contacto_sugerencia"
+                })
+
+            mensaje_confirmacion = (
+                "Por favor, confirmá si los datos para tu sugerencia son correctos:\n"
+                f"- **Nombre**: {datos_sugerencia.get('nombre')}\n"
+                f"- **DNI**: {datos_sugerencia.get('dni')}\n"
+                f"- **Email**: {datos_sugerencia.get('email')}\n"
+                f"- **Dirección**: {datos_sugerencia.get('direccion')}\n"
+                f"- **Sugerencia**: {sugerencia_texto}"
+            )
+            botones = [
+                {"texto": "Sí, enviar sugerencia", "action_id": "confirmar_sugerencia_si"},
+                {"texto": "No, corregir", "action_id": "confirmar_sugerencia_no"},
+            ]
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name
+            if chat_db_context: flag_modified(chat_db_context, "context_data")
+            return _finalize_response({
+                "message_body": mensaje_confirmacion,
+                "options_list": botones,
+                "message_type": "interactive_buttons",
+                "fuente": "pide_confirmacion_sugerencia"
+            })
+
+        elif estado_conversacion == ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name:
+            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context)
+            if switch_response:
+                return _finalize_response(switch_response)
+            datos_guardados = contexto_municipio_actual.get('datos_sugerencia', {})
+            campos_requeridos = ["nombre", "dni", "email", "direccion"]
+
+            # Primero intentamos extraer con regex para los campos aún faltantes.
+            nuevos_datos = extract_multiple_contact_details_regex(
+                pregunta_str, campos_requeridos + ["telefono"]
+            )
+            for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
+                if nuevos_datos.get(campo):
+                    datos_guardados[campo] = nuevos_datos[campo]
+
+            campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
+
+            # Utilizar el LLM solo si todavía faltan campos
+            if campos_faltantes:
+                try:
+                    llm_datos = extract_multiple_contact_details_llm(
+                        pregunta_str, campos_requeridos + ["telefono"]
+                    )
+                    if llm_datos:
+                        for campo, valor in llm_datos.items():
+                            if valor and campo in ["nombre", "dni", "email", "direccion", "telefono"]:
+                                datos_guardados[campo] = valor
+                except Exception as e:
+                    logger.error("[DATOS_SUGERENCIA] LLM fallback failed: %s", e)
+                campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
+
+            contexto_municipio_actual['datos_sugerencia'] = datos_guardados
+            # Persist contact info for future interactions
+            contexto_municipio_actual['contacto_usuario'] = {
+                k: datos_guardados.get(k)
+                for k in ["nombre", "dni", "email", "direccion", "telefono"]
+                if datos_guardados.get(k)
+            }
+            if campos_faltantes:
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response({
+                    "message_body": f"Aún necesito: {', '.join(campos_faltantes)}. Podés enviarlos todos juntos.",
+                    "fuente": "datos_contacto_sugerencia_incompletos"
+                })
+
+            mensaje_confirmacion = (
+                "Por favor, confirmá si los datos para tu sugerencia son correctos:\n"
+                f"- **Nombre**: {datos_guardados.get('nombre')}\n"
+                f"- **DNI**: {datos_guardados.get('dni')}\n"
+                f"- **Email**: {datos_guardados.get('email')}\n"
+                f"- **Dirección**: {datos_guardados.get('direccion')}\n"
+                f"- **Sugerencia**: {datos_guardados.get('descripcion')}"
+            )
+            botones = [
+                {"texto": "Sí, enviar sugerencia", "action_id": "confirmar_sugerencia_si"},
+                {"texto": "No, corregir", "action_id": "confirmar_sugerencia_no"},
+            ]
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name
+            if chat_db_context: flag_modified(chat_db_context, "context_data")
+            return _finalize_response({
+                "message_body": mensaje_confirmacion,
+                "options_list": botones,
+                "message_type": "interactive_buttons",
+                "fuente": "pide_confirmacion_sugerencia"
+            })
+
+        elif estado_conversacion == ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name:
+            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context)
+            if switch_response:
+                return _finalize_response(switch_response)
+            texto_normalizado = normalizar_texto(pregunta_str)
+            afirmativos = ["si", "enviar", "guardar", "guarda", "ok", "dale", "confirmar"]
+            if (
+                action == "confirmar_sugerencia_si"
+                or texto_normalizado.strip() == "1"
+                or any(a in texto_normalizado for a in afirmativos)
+            ):
+                datos_confirmados = contexto_municipio_actual.pop('datos_sugerencia', {})
+                handler = CrearReclamoActionHandler(context)
+                response = handler.execute(datos_confirmados)
+                if response.get("success"):
+                    response["message_to_user"] = f"✅ ¡Hemos recibido tu sugerencia! Muchas gracias por tu aporte. Lo hemos registrado con el número de ticket `{response.get('data', {}).get('nro_ticket', 'N/A')}` para su seguimiento."
+                    contexto_municipio_actual['estado_conversacion'] = None
+                    if chat_db_context: flag_modified(chat_db_context, "context_data")
+                    final_payload = _message_with_menu(response["message_to_user"], context)
+                    final_payload['success'] = True
+                    return _finalize_response(final_payload)
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                return _finalize_response(response)
+            else:
+                contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                return _finalize_response({
+                    "message_body": "Entendido. Por favor, enviá los datos correctos en un solo mensaje.",
+                    "fuente": "pide_correccion_sugerencia"
+                })
+
     # --- Manejo rápido de reclamos detectados vía imagen ---
     datos_interpretados_archivo = context.get("datos_interpretados_archivo")
     flujo_activo = (
