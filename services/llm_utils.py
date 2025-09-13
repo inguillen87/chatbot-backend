@@ -253,10 +253,6 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
                         heuristic_value = addresses[0].strip()
             elif field == "email_cliente":
                 heuristic_value = extract_email(text)
-            elif field == "dni_cliente":
-                dni_match = re.search(r"\b\d{7,8}\b", text)
-                if dni_match:
-                    heuristic_value = dni_match.group(0)
             if heuristic_value:
                 extracted_data[field] = heuristic_value
 
@@ -274,9 +270,7 @@ def extract_complaint_details_llm(text: str, default_localidad: str | None = Non
 
     Returns:
         A dictionary with keys like "tipo_problema", "ubicacion_problema",
-        "descripcion_problema", "distrito_problema" y datos de contacto si
-        se mencionan ("nombre_usuario", "telefono_usuario", "email_usuario",
-        "dni_usuario").  Returns an empty dictionary on error.
+        "descripcion_problema". Returns an empty dictionary on error.
     """
     if not text:
         return {}
@@ -302,15 +296,10 @@ def extract_complaint_details_llm(text: str, default_localidad: str | None = Non
         "Eres un asistente amable y comprensivo. Analiza el RECLAMO DEL USUARIO y extrae los siguientes detalles: "
         "1. 'tipo_problema': La categoría general del problema (ej: 'Alumbrado público', 'Recolección de residuos', 'Fuga de agua'). "
         "2. 'ubicacion_problema': El lugar específico del problema (calle, número, etc.). "
-        "3. 'distrito_problema': El barrio o distrito mencionado para esa ubicación. "
-        "4. 'descripcion_problema': Un resumen claro y conciso del reclamo. "
-        "5. 'nombre_usuario': Nombre de la persona si se menciona. "
-        "6. 'telefono_usuario': Teléfono del usuario si se menciona. "
-        "7. 'email_usuario': Correo electrónico del usuario si se menciona. "
-        "8. 'dni_usuario': DNI del usuario si se menciona. "
+        "3. 'descripcion_problema': Un resumen claro y conciso del reclamo. "
         f"{location_context_instruction} "
         "Devuelve la información SOLAMENTE como un objeto JSON válido con estas claves. "
-        "Si no encuentras un detalle, omite la clave. "
+        "Si no encuentras un detalle, puedes omitir la clave. "
         "No añadas explicaciones ni texto conversacional.\n\n"
         f"RECLAMO DEL USUARIO: \"{text}\"\n\n"
         "RESPUESTA JSON:"
@@ -323,20 +312,11 @@ def extract_complaint_details_llm(text: str, default_localidad: str | None = Non
             cleaned_response = _clean_llm_json_output(response_content)
             if cleaned_response:
                 extracted_details = json.loads(cleaned_response)
-                # Filter out empty values for the expected keys.
-                valid_keys = [
-                    "tipo_problema",
-                    "ubicacion_problema",
-                    "distrito_problema",
-                    "descripcion_problema",
-                    "nombre_usuario",
-                    "telefono_usuario",
-                    "email_usuario",
-                    "dni_usuario",
-                ]
-                extracted_details = {
-                    k: v for k, v in extracted_details.items() if k in valid_keys and v
-                }
+                # Filter out empty values, but keep all three primary keys if possible, even if empty.
+                # This might be better handled by the caller if specific keys are always expected.
+                # For now, just ensure the main keys are what we expect.
+                valid_keys = ["tipo_problema", "ubicacion_problema", "descripcion_problema"]
+                extracted_details = {k: v for k, v in extracted_details.items() if k in valid_keys and v} # Only keep non-empty values for expected keys
             else:
                  logger.info(f"[LLM_COMPLAINT_EXTRACT] LLM response was empty after cleaning for text: {text}")
         else:

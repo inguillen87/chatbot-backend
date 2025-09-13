@@ -260,9 +260,9 @@ def responder_chatboc(
     # Los handlers (responder_municipio, responder_pyme) son responsables de cargar/guardar
     # su propio contexto desde/hacia chat_db_context.context_data usando chat_session_uuid como posible sub-key si es necesario.
 
-    response = None
+    response_data = None
     if tipo_chat == "municipio":
-        response = responder_municipio(
+        response_data = responder_municipio(
             pregunta_original=pregunta, # La pregunta original del usuario
             owner_user=owner_user,
             rubro_obj=rubro_obj,
@@ -274,7 +274,7 @@ def responder_chatboc(
             **kwargs, # Contiene datos_interpretados_archivo y archivo_id_para_asociar
         )
     elif tipo_chat == "pyme":
-        response = responder_pyme(
+        response_data = responder_pyme(
             pregunta_original=pregunta,
             owner_user=owner_user,
             rubro_obj=rubro_obj,
@@ -288,19 +288,7 @@ def responder_chatboc(
     else:
         # Esto no debería ocurrir debido a las validaciones previas de tipo_chat
         logger.error(f"Error crítico: tipo_chat '{tipo_chat}' no es ni 'municipio' ni 'pyme' en la parte final de responder_chatboc.")
-        response = {"respuesta": "Error interno: tipo de chat no configurado correctamente.", "fuente": "sistema_error"}
-
-    # Some handlers may return ``(payload, extras)`` or similar sequences.
-    # Normalize to separate the payload (dict) from optional extras so the rest
-    # of the function can safely operate on ``response_data`` without errors.
-    if isinstance(response, (tuple, list)):
-        response_data = response[0] or {}
-        extras = response[1] if len(response) > 1 else {}
-    else:
-        response_data = response or {}
-        extras = {}
-    if not isinstance(response_data, dict):
-        response_data = {}
+        response_data = {"respuesta": "Error interno: tipo de chat no configurado correctamente.", "fuente": "sistema_error"}
 
     # Always enable audio responses for accessibility
     context_data = chat_db_context.context_data if chat_db_context else {}
@@ -308,19 +296,14 @@ def responder_chatboc(
         response_data['generar_audio'] = True
 
     # --- Audio Response Generation ---
-    if isinstance(response_data, dict) and response_data.get('generar_audio'):
+    if response_data and response_data.get('generar_audio') and not response_data.get('audio_url'):
         text_to_speak = response_data.get('audio_text')
-        base_text = response_data.get('message_body') or response_data.get('message_to_user', '')
         if not text_to_speak:
-            base_text = response_data.get('message_body') or response_data.get('message_to_user', '')
             text_to_speak = render_audio_text(
-                base_text,
+                response_data.get('message_body', ''),
                 response_data.get('options_list'),
                 response_data.get('categorias'),
             )
-        elif base_text:
-            # Ensure provided audio_text is prefixed with the conversational summary
-            text_to_speak = f"{base_text}\n{text_to_speak}"
         if text_to_speak:
             from services.tts_orchestrator import generar_audio_con_fallback
             audio_url = generar_audio_con_fallback(text_to_speak)

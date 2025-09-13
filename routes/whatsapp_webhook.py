@@ -63,7 +63,7 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
 
             formatted = build_interactive_response(
                 options=payload.get("options_list", []),
-                body_text=payload.get("message_body") or payload.get("message_to_user", ""),
+                body_text=payload.get("message_body", ""),
                 channel="whatsapp",
                 message_type=payload.get("message_type", "text"),
                 original_bot_response=payload,
@@ -475,7 +475,7 @@ def whatsapp_webhook():
         # bot_response_dict is already set to a default error message, so we just log and continue
 
     # Update respuesta_del_bot_text for logging from the final bot_response_dict
-    respuesta_del_bot_text = bot_response_dict.get('message_body') or bot_response_dict.get('message_to_user', "Error: message_body no encontrado en la respuesta del bot.")
+    respuesta_del_bot_text = bot_response_dict.get('message_body', "Error: message_body no encontrado en la respuesta del bot.")
     print(f"Bot response text for logging: '{respuesta_del_bot_text}', Session context to save: {session_context_db_entry.context_data}")
 
     # --- Format Response and Save Session ---

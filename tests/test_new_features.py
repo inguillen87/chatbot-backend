@@ -60,25 +60,6 @@ class TestNewFeatures(unittest.TestCase):
         )
         self.assertIn("654321", message)
         self.assertTrue(any("pin=654321" in b.get("url", "") for b in buttons))
-        self.assertIn("https://example.com/tickets/99999?pin=654321", message)
-
-    def test_formatear_ticket_respuesta_incluye_contacto(self):
-        message, _ = formatear_ticket_respuesta(
-            "reclamo",
-            "Ana",
-            "Descripción",
-            "Categoria",
-            "M-88888",
-            base_chat_url="https://example.com/tickets",
-            dni="12345678",
-            telefono="+549261000000",
-            email="ana@example.com",
-        )
-        self.assertIn("12345678", message)
-        self.assertIn("+549261000000", message)
-        self.assertIn("ana@example.com", message)
-        self.assertIn("Actualizar datos", message)
-        self.assertIn("https://example.com/tickets/88888", message)
 
     def test_greeting_handler_final_menu(self):
         """
@@ -145,9 +126,11 @@ class TestNewFeatures(unittest.TestCase):
             channel="whatsapp",
         )
 
-        self.assertIn("Elegí una opción", response.get("message_body", ""))
-        self.assertGreaterEqual(len(response.get("options_list", [])), 4)
-        self.assertTrue(response.get("options_list"))
+        self.assertIn("Podés compartir tu ubicación", response.get("message_body", ""))
+        self.assertEqual(len(response.get("options_list", [])), 4)
+        self.assertTrue(
+            any(opt.get("texto") == "🗣️ Reclamos y Consultas" for opt in response.get("options_list", []))
+        )
 
     @patch('services.llm_orchestrator.llamar_llm_con_fallback')
     def test_keyword_pago_tasas(self, mock_llamar_gemini):
@@ -234,7 +217,7 @@ class TestNewFeatures(unittest.TestCase):
             chat_db_context=MagicMock(context_data={}),
         )
         body = response.get("message_body", "").lower()
-        self.assertIn("planta de recolección", body)
+        self.assertIn("punto limpio", body)
         self.assertNotIn("facebook.com", body)
         self.assertNotIn("instagram.com", body)
         options = response.get("options_list", [])
@@ -325,8 +308,7 @@ class TestNewFeatures(unittest.TestCase):
             'usuario': 'Juan',
             'telefono': '2615550000',
             'email': 'juan@example.com',
-            'pin': '555444',
-            'dni': '12345678'
+            'pin': '555444'
         }
         respuesta = handler.execute(datos_llm)
         self.assertEqual(respuesta.get('image_url'), 'http://example.com/promo.jpg')

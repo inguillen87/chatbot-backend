@@ -5,24 +5,12 @@ from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
 import random
 from services.ticket_service import servicio_tickets
-from services.notifications import (
-    enviar_notificacion_whatsapp_con_plantilla,
-    enviar_notificacion_sms,
-)
-from services.herramientas_municipio import (
-    parse_direccion_completa as parse_direccion,
-    direccion_es_valida,
-    validar_y_formatear_direccion,
-)
+from services.notifications import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
+from services.herramientas_municipio import parse_direccion_completa as parse_direccion, direccion_es_valida
 from services.ticket_utils import formatear_ticket_respuesta
-from services.common_utils import (
-    validar_telefono,
-    formatear_telefono_e164,
-    validar_email,
-)
+from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.config_loader import cargar_configuracion_municipio
-from models import MunicipioTicket, User
-from extensions import db as _db
+from models import MunicipioTicket
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +59,6 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
         viewer_user = self.context.get("viewer_user_obj")
-        if viewer_user and getattr(viewer_user, "id", None):
-            viewer_user = _db.session.get(User, viewer_user.id)
-            self.context["viewer_user_obj"] = viewer_user
 
         # Fusionar datos: action_data tiene prioridad, luego el contexto del reclamo, luego el perfil del usuario
         datos_parciales = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
@@ -90,23 +75,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             if parsed_address and parsed_address.get('localidad'):
                 distrito_llm = parsed_address.get('localidad')
                 logger.info(f"Parsed district: {distrito_llm}")
-
         coordenadas_llm = action_data.get("coordenadas") or datos_parciales.get("coordenadas")
-
-        # Geocoding: validate and enrich address with coordinates and formatted text
-        if ubicacion_llm and not coordenadas_llm:
-            geo_info = validar_y_formatear_direccion(ubicacion_llm)
-            if geo_info:
-                ubicacion_llm = geo_info.get("formatted_address", ubicacion_llm)
-                coordenadas_llm = {
-                    "lat": geo_info.get("lat"),
-                    "lon": geo_info.get("lng"),
-                }
-                if not distrito_llm:
-                    parsed_geo = parse_direccion(ubicacion_llm)
-                    if parsed_geo and parsed_geo.get("localidad"):
-                        distrito_llm = parsed_geo["localidad"]
-                        logger.info(f"Parsed district from geocoded address: {distrito_llm}")
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
 
         # Lógica de fusión de datos de contacto mejorada
@@ -189,32 +158,37 @@ class CrearReclamoActionHandler(BaseActionHandler):
         logger.info(f"DEBUG: nombre_vecino_final: {nombre_vecino_final}")
         logger.info(f"DEBUG: telefono_final: {telefono_final}")
         logger.info(f"DEBUG: email_final: {email_final}")
-        if not nombre_vecino_final or nombre_vecino_final == "Vecino/a":
-            campos_faltantes.append("nombre")
-        if not telefono_final:
-            campos_faltantes.append("telefono")
-        if not email_final:
-            campos_faltantes.append("email")
-        if not dni_final:
-            campos_faltantes.append("dni")
+        logger.info(f"DEBUG: campos_faltantes before: {campos_faltantes}")
+        if not viewer_user and (nombre_vecino_final == "Vecino/a" or not telefono_final or not email_final or not dni_final):
+             if nombre_vecino_final == "Vecino/a":
+                 campos_faltantes.append("nombre")
+             if not telefono_final:
+                 campos_faltantes.append("telefono")
+             if not email_final:
+                 campos_faltantes.append("email")
+             if not dni_final:
+                 campos_faltantes.append("dni")
         logger.info(f"DEBUG: campos_faltantes after: {campos_faltantes}")
 
         # La lógica de confirmación ahora se maneja en 'municipio_responder.py'
         # Este handler ahora solo valida y crea.
 
         if campos_faltantes:
+            # Eliminar duplicados
             campos_faltantes = sorted(list(set(campos_faltantes)))
             self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
-            mensaje = (
-                "Para cerrar el reclamo, necesitás completar tus datos en *una sola línea* "
-                "(Nombre completo, Email, Teléfono, DNI, Dirección de contacto). "
-                "Ejemplo: Juan Perez, juan@mail.com, 2615551234, 30123456, Don Bosco 55 Junín"
-            )
+
+            # Mensaje más amigable y botones de acción
+            mensaje = f"Para continuar con tu reclamo, necesito algunos datos más: **{', '.join(campos_faltantes)}**. Por favor, indícamelos."
+            botones = [{"texto": f"Ingresar {campo.replace('_', ' ')}", "id_accion": f"ingresar_{campo}"} for campo in campos_faltantes]
+            botones.append({"texto": "Cancelar reclamo", "id_accion": "cancelar_reclamo"})
+
             return {
                 "success": False,
                 "message_to_user": mensaje,
-                "message_type": "text",
-                "next_state_hint": "ESPERANDO_DATOS_CONTACTO",
+                "pedir_info": campos_faltantes,
+                "options_list": botones,
+                "message_type": "interactive_list" if len(botones) > 3 else "interactive_buttons"
             }
 
         # --- Handle PIN (generate if missing) ---
@@ -250,8 +224,9 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 viewer_user.dni = dni_final
                 updated = True
             if updated:
-                _db.session.add(viewer_user)
-                _db.session.commit()
+                from models import db
+                db.session.add(viewer_user)
+                db.session.commit()
                 logger.info(f"User profile for {viewer_user.id} updated with new contact info.")
         pregunta_original = self.context.get("pregunta_actual_usuario", "")
 
@@ -401,26 +376,17 @@ class CrearReclamoActionHandler(BaseActionHandler):
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/tickets/municipio')
             promo_image_url = municipio_config.get('promo_image_url')
             categoria_display = categoria
-            try:
-                mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
-                    "reclamo",
-                    ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
-                    descripcion,
-                    categoria_display,
-                    nro_ticket_str,
-                    contacto_especializado,
-                    base_chat_url,
-                    dni=ticket_data_cleaned.get("dni_vecino"),
-                    telefono=ticket_data_cleaned.get("telefono_vecino"),
-                    email=ticket_data_cleaned.get("email_vecino"),
-                    consulta_pin=pin_final,
-                )
-            except Exception as e_fmt:
-                logger.exception("Error formateando resumen del ticket", exc_info=True)
-                mensaje_respuesta = (
-                    f"✅ *¡Reclamo recibido!*\nN° de Ticket: M-{nro_ticket_str}"
-                )
-                botones_finales = []
+            mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
+                "reclamo",
+                ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
+                descripcion,
+                categoria_display,
+                nro_ticket_str,
+                contacto_especializado,
+                base_chat_url,
+                dni=ticket_data_cleaned.get("dni_vecino"),
+                consulta_pin=pin_final,
+            )
 
             # Log para debug
             logger.info(f"Respuesta formateada: '{mensaje_respuesta}', Botones: {botones_finales}")
@@ -480,7 +446,7 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
             return {
                 "success": False,
                 "message_to_user": f"No encontré el ticket M-{ticket_id_str} o el PIN es incorrecto.",
-                "options_list": [{"texto": "Ingresar otro número", "action_id": "consultar_estado_ticket"}],
+                "options_list": [{"texto": "Ingresar otro número", "id_accion": "consultar_estado_ticket"}],
                 "message_type": "interactive_buttons",
             }
 
@@ -488,7 +454,7 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
         user_message = (
             f"El ticket M-{ticket.nro_ticket} sobre '{asunto}' se encuentra actualmente: **{ticket.estado}**."
         )
-        botones = [{"texto": "Consultar otro ticket", "action_id": "consultar_estado_ticket"}]
+        botones = [{"texto": "Consultar otro ticket", "id_accion": "consultar_estado_ticket"}]
         return {
             "success": True,
             "message_to_user": user_message,
@@ -520,7 +486,7 @@ class ConsultarInfoTramiteActionHandler(BaseActionHandler):
             }
         else:
             botones = info_tramite.get("botones", []).copy()
-            botones.append({"texto": "Consultar otro trámite", "action_id": "info_tramite"})
+            botones.append({"texto": "Consultar otro trámite", "id_accion": "info_tramite"})
             return {
                 "success": True,
                 "message_to_user": info_tramite.get("contenido", "No hay información disponible para este trámite."),
@@ -658,7 +624,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
 
             # Añadir el botón de acción específico para sugerencias
             botones_finales = botones_generados
-            botones_finales.append({"texto": "Hacer otra sugerencia", "action_id": "hacer_sugerencia"})
+            botones_finales.append({"texto": "Hacer otra sugerencia", "id_accion": "hacer_sugerencia"})
 
             return {
                 "success": True,
@@ -764,7 +730,7 @@ class DerivarHumanoActionHandler(BaseActionHandler):
 
             # Since downstream functions need the object, fetch it from the DB
             from models import MunicipioTicket
-            sala_obj = _db.session.get(MunicipioTicket, sala_dict['id'])
+            sala_obj = db.session.get(MunicipioTicket, sala_dict['id'])
             if not sala_obj:
                 raise Exception(f"No se pudo recuperar el ticket recién creado con ID {sala_dict['id']}")
 
@@ -887,9 +853,9 @@ class MenuPrincipalActionHandler(BaseActionHandler):
             "success": True,
             "message_to_user": "Estas son las cosas que puedo hacer por vos:",
             "options_list": [
-                {"texto": "Hacer un Reclamo", "action_id": "crear_reclamo"},
-                {"texto": "Consultas y Turnos", "action_id": "consultar_tramite"},
-                {"texto": "Buscar estacionamiento", "action_id": "buscar_estacionamiento"},
+                {"texto": "Hacer un Reclamo", "id_accion": "crear_reclamo"},
+                {"texto": "Consultas y Turnos", "id_accion": "consultar_tramite"},
+                {"texto": "Buscar estacionamiento", "id_accion": "buscar_estacionamiento"},
             ],
             "message_type": "interactive_buttons"
         }

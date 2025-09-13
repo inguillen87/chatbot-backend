@@ -8,22 +8,9 @@ from sqlalchemy.orm.attributes import flag_modified
 from services.llm_orchestrator import llamar_llm_con_fallback
 from services.conversation_state import ConversationState
 from services.actions.municipio_actions import CrearReclamoActionHandler
-from services.municipio_responder import (
-    GreetingHandler,
-    _get_main_menu_payload,
-    extract_reclamo_details_from_text,
-)
-try:  # pragma: no cover - optional dependency in some environments
-    from services.flows.reclamos import _get_reclamos_menu
-except ModuleNotFoundError:  # pragma: no cover
-    _get_reclamos_menu = None
-try:  # pragma: no cover - es_consulta_general may be absent
-    from services.herramientas_municipio import TOOL_REGISTRY, es_consulta_general
-except ImportError:  # pragma: no cover
-    from services.herramientas_municipio import TOOL_REGISTRY
-
-    def es_consulta_general(*args, **kwargs):
-        return False
+from services.municipio_responder import GreetingHandler, _get_main_menu_payload
+from services.flows.reclamos import _get_reclamos_menu
+from services.herramientas_municipio import TOOL_REGISTRY, es_consulta_general
 from services.llm_utils import extract_multiple_contact_details_llm
 
 logger = logging.getLogger(__name__)
@@ -80,46 +67,6 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         contexto_municipio_actual.pop("esperando_info_llm", None)
         contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
         estado_conversacion_para_llm = ConversationState.CONVERSACION_GENERAL_LLM.name
-
-    # --- Heuristic extraction prior to invoking the LLM ---
-    reclamo_opts = _get_reclamos_menu().get("options_list", []) if _get_reclamos_menu else []
-    detalles_rapidos = extract_reclamo_details_from_text(pregunta_str, reclamo_opts, use_llm=False)
-    if detalles_rapidos:
-        datos_reclamo = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
-        if detalles_rapidos.get("categoria_sugerida") and not datos_reclamo.get("categoria"):
-            datos_reclamo["categoria"] = detalles_rapidos["categoria_sugerida"]
-        if detalles_rapidos.get("descripcion_sugerida") and not datos_reclamo.get("descripcion"):
-            datos_reclamo["descripcion"] = detalles_rapidos["descripcion_sugerida"]
-        if detalles_rapidos.get("direccion_sugerida") and not datos_reclamo.get("ubicacion"):
-            datos_reclamo["ubicacion"] = detalles_rapidos["direccion_sugerida"]
-        if detalles_rapidos.get("distrito_sugerido") and not datos_reclamo.get("distrito"):
-            datos_reclamo["distrito"] = detalles_rapidos["distrito_sugerido"]
-
-        tiene_categoria = bool(datos_reclamo.get("categoria"))
-        tiene_ubicacion = bool(datos_reclamo.get("ubicacion"))
-
-        if tiene_categoria and tiene_ubicacion:
-            if not datos_reclamo.get("descripcion"):
-                datos_reclamo["descripcion"] = detalles_rapidos.get("descripcion_sugerida", pregunta_str)
-            handler = CrearReclamoActionHandler(context)
-            return handler.execute(datos_reclamo), contexto_municipio_actual
-        if tiene_categoria and not tiene_ubicacion:
-            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
-            return {
-                "message_body": (
-                    "Para avanzar necesito la ubicación exacta del problema: calle, número y barrio o distrito; "
-                    "si es en una esquina, indicá las calles aledañas."
-                ),
-                "options_list": [],
-                "message_type": "text",
-            }, contexto_municipio_actual
-        if tiene_ubicacion and not tiene_categoria:
-            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CATEGORIA_RECLAMO.name
-            return {
-                "message_body": "¿Qué tipo de problema es? (por ejemplo arbolado, luminaria, limpieza)",
-                "options_list": [],
-                "message_type": "text",
-            }, contexto_municipio_actual
 
     if estado_conversacion_para_llm in [
         ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name,
@@ -187,8 +134,6 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         accion_backend_llm = respuesta_llm_dict.get("accion_backend")
         datos_estructura_llm = respuesta_llm_dict.get("datos_estructura")
         pedir_info_llm = respuesta_llm_dict.get("pedir_info")
-        if isinstance(pedir_info_llm, str) and "," in pedir_info_llm:
-            pedir_info_llm = [p.strip() for p in pedir_info_llm.split(",") if p.strip()]
         botones_llm = respuesta_llm_dict.get("botones", [])
 
         if not respuesta_usuario_llm and accion_backend_llm not in ["crear_reclamo", "ejecutar_herramienta"]:
@@ -218,22 +163,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
         # Other actions... (this is a simplified version of the logic)
 
-        else:  # Fallback for general conversation or missing info
-            if (
-                estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-                and contexto_municipio_actual.get("esperando_info_llm_reclamo")
-            ):
-                contexto_municipio_actual.setdefault("historial_llm_reclamo", []).append(nuevo_turno_historial)
-                contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-            else:
-                contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
-                contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
-
-            return {
-                "message_body": respuesta_usuario_llm,
-                "options_list": botones_llm,
-                "message_type": "interactive_buttons" if botones_llm else "text",
-            }, contexto_municipio_actual
+        else: # Fallback for general conversation
+            contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+            return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text"}, contexto_municipio_actual
 
     except Exception as e_llm:
         logger.error(f"[HANDLE_LLM] Error: {e_llm}", exc_info=True)
