@@ -168,6 +168,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
         ctx.context_data["last_options_sent"] = [
             {"id": "menu_principal", "texto": "Menú"},
+            {"id": "volver", "texto": "Volver"},
             {"id": "cancelar", "texto": "Cancelar"},
         ]
         ctx.context_data[CONTEXTO_MUNICIPIO] = {"esperando_info_llm": "ubicacion"}
@@ -197,6 +198,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
         ctx.context_data["last_options_sent"] = [
             {"id": "menu_principal", "texto": "Menú"},
+            {"id": "volver", "texto": "Volver"},
             {"id": "cancelar", "texto": "Cancelar"},
         ]
         ctx.context_data[CONTEXTO_MUNICIPIO] = {"esperando_info_llm_reclamo": "descripcion"}

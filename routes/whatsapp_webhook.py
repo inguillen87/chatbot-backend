@@ -532,18 +532,21 @@ def whatsapp_webhook():
     esperando_info = _esperando_info_libre(municipio_ctx)
 
     # Solo traducir números a acciones cuando no estamos esperando información libre.
-    mapped_action = False
+    mapped_action_id = None
     if message_body.isdigit() and last_options and not esperando_info:
         idx = int(message_body) - 1
         if 0 <= idx < len(last_options):
             selected = last_options[idx]
             message_body = (
-                selected.get("id")
-                or selected.get("action_id")
+                selected.get("category_name")
                 or selected.get("texto")
                 or message_body
             )
-            mapped_action = True
+            mapped_action_id = (
+                selected.get("id")
+                or selected.get("action_id")
+                or selected.get("texto")
+            )
 
     # --- Call Real Chatbot Logic: responder_chatboc ---
     # Initialize with a default error response
@@ -604,8 +607,8 @@ def whatsapp_webhook():
             payload_data = {"action_id": button_payload}
         elif list_id:
             payload_data = {"action_id": list_id}
-        elif mapped_action:
-            payload_data = {"action_id": message_body}
+        elif mapped_action_id:
+            payload_data = {"action_id": mapped_action_id}
         if payload_data:
             kwargs_for_bot["payload"] = payload_data
 

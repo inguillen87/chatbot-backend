@@ -98,7 +98,6 @@ CANCEL_KEYWORDS = {
     for k in [
         "cancelar",
         "salir",
-        "volver",
         "menu",
         "menú principal",
         "menu principal",
@@ -109,6 +108,18 @@ CANCEL_KEYWORDS = {
         "empezar de nuevo",
         "volver a empezar",
         "empezar de cero",
+    ]
+}
+
+BACK_KEYWORDS = {
+    normalizar_texto(k)
+    for k in [
+        "volver",
+        "volver atras",
+        "volver atrás",
+        "atras",
+        "atrás",
+        "retroceder",
     ]
 }
 
@@ -737,6 +748,8 @@ class ReclamoFlowHandler:
     def check_for_cancel(self, user_input, payload):
         normalized_input = normalizar_texto(user_input)
         action = (payload.get("action_id") or payload.get("action") or "").lower()
+        if normalized_input in BACK_KEYWORDS or action == "volver":
+            return self.go_back()
         if (
             normalized_input in CANCEL_KEYWORDS
             or action in {"cancelar", "menu_principal"}
@@ -746,6 +759,17 @@ class ReclamoFlowHandler:
                 show_menu=True,
             )
         return None
+
+    def go_back(self):
+        state_name = self.flow_context.get("state")
+        state = ReclamoState[state_name] if state_name else None
+        if state == ReclamoState.ESPERANDO_DESCRIPCION:
+            self.flow_context["state"] = ReclamoState.ESPERANDO_CATEGORIA.name
+            return _get_reclamos_menu()
+        return self.end_flow(
+            "Operación cancelada. ¿En qué más te puedo ayudar?",
+            show_menu=True,
+        )
 
     def handle(self, user_input, payload):
         cancel_response = self.check_for_cancel(user_input, payload)
