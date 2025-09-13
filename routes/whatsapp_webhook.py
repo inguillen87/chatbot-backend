@@ -348,6 +348,7 @@ def whatsapp_webhook():
     num_media = int(post_vars.get("NumMedia") or (1 if media_url else 0))
     media_content_type = post_vars.get("MediaContentType0")
     uploaded_file_info = None
+    interpretacion_media_data = None
     message_body = incoming_text
 
     if num_media > 0 and media_url:
@@ -402,9 +403,15 @@ def whatsapp_webhook():
                 transcription_bundle = audio_transcription_service.transcribe_audio_from_url(
                     media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
                 )
-                if transcription_bundle and not transcription_bundle.get("error"):
-                    message_body = transcription_bundle.get("raw_text", "")
-                    interpretacion_media_data = transcription_bundle
+                if isinstance(transcription_bundle, dict):
+                    if not transcription_bundle.get("error"):
+                        message_body = transcription_bundle.get("raw_text", "")
+                        interpretacion_media_data = transcription_bundle
+                    else:
+                        current_app.logger.warning("Audio transcription failed or returned empty.")
+                elif transcription_bundle:
+                    message_body = transcription_bundle
+                    interpretacion_media_data = {"raw_text": transcription_bundle}
                 else:
                     current_app.logger.warning("Audio transcription failed or returned empty.")
             else:
@@ -429,6 +436,15 @@ def whatsapp_webhook():
                 if foto_url and not isinstance(foto_url, str):
                     foto_url = str(foto_url)
                 ctx["foto_url"] = foto_url
+                # If a claim flow is already active, mirror the photo there so
+                # it is not lost when the user continues with additional
+                # information (e.g. location or description).
+                ctx.setdefault(CONTEXTO_MUNICIPIO, {})
+                ctxm = ctx[CONTEXTO_MUNICIPIO]
+                reclamo_flow = ctxm.get("reclamo_flow_v2")
+                if reclamo_flow:
+                    reclamo_flow.setdefault("datos_reclamo", {})["foto_url"] = foto_url
+
                 safe_flag_modified(session_context_db_entry, "context_data")
                 db.session.add(session_context_db_entry)
                 db.session.commit()
@@ -618,7 +634,6 @@ def whatsapp_webhook():
     try:
         print(f"Calling responder_chatboc for session_id: {chat_session_id_internal}, owner_user: {client_user.name}")
 
-        interpretacion_media_data = None
         if uploaded_file_info:
             mime_type = uploaded_file_info.get("mime_type", "")
             if mime_type.startswith("video/") and media_url:
