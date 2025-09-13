@@ -448,13 +448,19 @@ def whatsapp_webhook():
         datos = ctxm.get("datos_parciales_llm_reclamo", {})
         estado_prev = ctxm.get("estado_conversacion")
         reclamo_state = ctxm.get("reclamo_flow_v2", {}).get("state")
-        hay_reclamo_en_curso = bool(datos) or estado_prev in (
-            "ESPERANDO_DIRECCION_RECLAMO",
-            "ESPERANDO_DESCRIPCION_RECLAMO",
-            "ESPERANDO_FOTO_RECLAMO",
-            "ESPERANDO_CONFIRMACION_RECLAMO",
-            "ESPERANDO_MENU_EDICION",
-        ) or reclamo_state in (
+        estado_reclamo_ctx = (
+            isinstance(estado_prev, str)
+            and (
+                estado_prev.endswith("_RECLAMO")
+                or estado_prev
+                in {
+                    "EN_FLUJO_RECLAMO",
+                    "ESPERANDO_DATOS_CONTACTO",
+                    "ESPERANDO_DATOS_PERSONALES",
+                }
+            )
+        )
+        hay_reclamo_en_curso = bool(datos) or estado_reclamo_ctx or reclamo_state in (
             "ESPERANDO_DIRECCION",
             "ESPERANDO_DESCRIPCION",
             "ESPERANDO_FOTO",
@@ -464,8 +470,10 @@ def whatsapp_webhook():
         try:
             geo = reverse_geocode(float(latitud), float(longitud))
             display = geo.get("display", f"Lat: {latitud}, Lon: {longitud}")
+            distrito = geo.get("barrio") or geo.get("localidad")
         except Exception:
             display = f"Lat: {latitud}, Lon: {longitud}"
+            distrito = None
 
         datos.update(
             {
@@ -474,6 +482,8 @@ def whatsapp_webhook():
                 "label_ubicacion": post_vars.get("Label"),
             }
         )
+        if distrito:
+            datos["distrito"] = distrito
         ctxm["datos_parciales_llm_reclamo"] = datos
 
         if hay_reclamo_en_curso:
