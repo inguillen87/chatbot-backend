@@ -54,6 +54,7 @@ from services.municipio_responder import responder_municipio
 from services.pymes import responder_pyme
 from services.response_formatter import render_audio_text
 from services import preferences
+from services.ticket_draft import get_ticket_draft, merge_ticket_fields
 
 # PROMPT_CLASIFICACION_INTENCION y _clasificar_intencion_con_llm han sido eliminados.
 # La clasificación de intención ahora es responsabilidad de llamar_llm_con_fallback con JULES_SYSTEM_PROMPT.
@@ -109,6 +110,11 @@ def responder_chatboc(
             chat_db_context.context_data.pop('stt_pending_confirmation', None)
             safe_flag_modified(chat_db_context, "context_data")
         return {"message_body": "Entendido. Por favor, envía tu mensaje de nuevo."}
+
+    # Ensure ticket draft structure exists in session context
+    if chat_db_context and chat_db_context.context_data is not None:
+        municipio_ctx = chat_db_context.context_data.setdefault("contexto_municipio_v2", {})
+        get_ticket_draft(municipio_ctx)
 
     # 1. Determinar el 'effective_owner_user' (la entidad o bot dueño)
     effective_owner_user = owner_user
@@ -208,6 +214,12 @@ def responder_chatboc(
                     chat_db_context.context_data["ids_archivos_para_asociar"] = (
                         ids_archivos_para_asociar
                     )
+                    municipio_ctx = chat_db_context.context_data.setdefault(
+                        "contexto_municipio_v2", {}
+                    )
+                    merge_ticket_fields(
+                        municipio_ctx, {"adjuntos": ids_archivos_para_asociar}
+                    )
                     safe_flag_modified(chat_db_context, "context_data")
             current_app.logger.info(
                 f"[LOGIC] Procesando uploaded_file_info para ArchivoAdjunto ID: {archivo_id}"
@@ -301,6 +313,28 @@ def responder_chatboc(
     kwargs["archivo_id_para_asociar"] = archivo_id_para_asociar_al_ticket
     kwargs["ids_archivos_para_asociar"] = ids_archivos_para_asociar
     kwargs["procesamiento_archivo_en_curso"] = procesamiento_archivo_en_curso
+
+    if (
+        chat_db_context
+        and chat_db_context.context_data is not None
+        and datos_interpretados_de_archivo
+    ):
+        municipio_ctx = chat_db_context.context_data.setdefault(
+            "contexto_municipio_v2", {}
+        )
+        extracted = {}
+        if datos_interpretados_de_archivo.get("categoria_sugerida"):
+            extracted["categoria"] = datos_interpretados_de_archivo["categoria_sugerida"]
+        if datos_interpretados_de_archivo.get("descripcion_sugerida"):
+            extracted["descripcion"] = datos_interpretados_de_archivo["descripcion_sugerida"]
+        if datos_interpretados_de_archivo.get("direccion_sugerida"):
+            extracted["direccion"] = datos_interpretados_de_archivo["direccion_sugerida"]
+        if datos_interpretados_de_archivo.get("coordenadas"):
+            coords = datos_interpretados_de_archivo["coordenadas"]
+            extracted["lat"] = coords.get("lat")
+            extracted["lng"] = coords.get("lng")
+        if merge_ticket_fields(municipio_ctx, extracted):
+            safe_flag_modified(chat_db_context, "context_data")
 
     if "uploaded_file_info" in kwargs:  # Limpiar para no pasarlo si ya se usó.
         del kwargs["uploaded_file_info"]
