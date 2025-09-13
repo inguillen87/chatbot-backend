@@ -34,6 +34,7 @@ from services.municipio_responder import CONTEXTO_MUNICIPIO
 from services import audio_transcription_service
 from services.response_formatter import render_audio_text
 from services.tts_orchestrator import generar_audio_con_fallback
+from urllib.parse import urlparse
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -86,15 +87,55 @@ def _should_send_media(ctx: dict, url: str, ttl: int = 300) -> bool:
     return True
 
 
+_ALLOWED_MEDIA_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".pdf", ".mp3", ".mp4"}
+
+
+def _is_valid_media_url(url: str) -> bool:
+    """Return True if the URL is https and has an allowed extension."""
+    if not url or not url.startswith("https://"):
+        return False
+    path = urlparse(url).path
+    ext = os.path.splitext(path)[1].lower()
+    return ext in _ALLOWED_MEDIA_EXTENSIONS
+
+
+def _prepare_media_param(params: dict) -> dict:
+    """Validate and normalize media_url in Twilio message params."""
+    media_urls = params.get("media_url")
+    if not media_urls:
+        return params
+    if isinstance(media_urls, str):
+        media_urls = [media_urls]
+    valid_urls = []
+    for url in media_urls:
+        absolute_url = _ensure_absolute_url(url)
+        if _is_valid_media_url(absolute_url):
+            valid_urls.append(absolute_url)
+        else:
+            current_app.logger.error(f"Invalid media URL: {url}")
+    if valid_urls:
+        params["media_url"] = valid_urls
+    else:
+        params.pop("media_url", None)
+    return params
+
+
 def _send_with_retry(
-    from_: str, to: str, body: str, media_url: str | None = None, max_retries: int = 3
+    from_: str,
+    to: str,
+    body: str = "",
+    media_url: str | None = None,
+    max_retries: int = 3,
 ):
     """Send a WhatsApp message with retries and log the Twilio SID."""
     if not twilio_client:
         return None
-    params = {"from_": from_, "to": to, "body": body}
+    params = {"from_": from_, "to": to}
+    if body or not media_url:
+        params["body"] = body or " "
     if media_url:
         params["media_url"] = [media_url]
+    params = _prepare_media_param(params)
     for attempt in range(1, max_retries + 1):
         try:
             msg = twilio_client.messages.create(**params)
@@ -187,6 +228,8 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
             image_url = formatted.get("image_url")
             if image_url and "persistent_action" not in params:
                 params["media_url"] = [image_url]
+
+            params = _prepare_media_param(params)
 
             try:
                 client.messages.create(**params)
@@ -563,16 +606,11 @@ def whatsapp_webhook():
                 )
                 if audio_url:
                     absolute_audio_url = _ensure_absolute_url(audio_url)
-                    try:
-                        twilio_client.messages.create(
-                            from_=to_number_raw,
-                            to=from_number_raw,
-                            media_url=[absolute_audio_url],
-                        )
-                    except Exception as e:
-                        current_app.logger.error(
-                            f"Error sending audio message: {e}"
-                        )
+                    _send_with_retry(
+                        from_=to_number_raw,
+                        to=from_number_raw,
+                        media_url=absolute_audio_url,
+                    )
             return "OK", 200
         else:
             ctxm["estado_conversacion"] = "ESPERANDO_INTENCION_UBICACION"
@@ -609,16 +647,11 @@ def whatsapp_webhook():
                 )
                 if audio_url:
                     absolute_audio_url = _ensure_absolute_url(audio_url)
-                    try:
-                        twilio_client.messages.create(
-                            from_=to_number_raw,
-                            to=from_number_raw,
-                            media_url=[absolute_audio_url],
-                        )
-                    except Exception as e:
-                        current_app.logger.error(
-                            f"Error sending audio message: {e}"
-                        )
+                    _send_with_retry(
+                        from_=to_number_raw,
+                        to=from_number_raw,
+                        media_url=absolute_audio_url,
+                    )
             return "OK", 200
 
     # --- Human Chat Check ---
@@ -904,6 +937,8 @@ def whatsapp_webhook():
                     if _should_send_media(session_context_db_entry.context_data, image_url):
                         text_message_params['media_url'] = [image_url]
 
+                text_message_params = _prepare_media_param(text_message_params)
+
                 twilio_client.messages.create(**text_message_params)
 
                 # Prepare the interactive message (without media)
@@ -941,6 +976,7 @@ def whatsapp_webhook():
                 }
                 if 'media_url' in message_params:
                     first_chunk_params['media_url'] = message_params['media_url']
+                first_chunk_params = _prepare_media_param(first_chunk_params)
                 main_message = twilio_client.messages.create(**first_chunk_params)
                 print(f"Mensaje parte 1/{len(chunks)} enviado a {from_number_raw}, SID: {main_message.sid}")
 
@@ -967,6 +1003,7 @@ def whatsapp_webhook():
                 safe_flag_modified(session_context_db_entry, 'context_data')
                 db.session.add(session_context_db_entry)
                 db.session.commit()
+                message_params = _prepare_media_param(message_params)
                 main_message = twilio_client.messages.create(**message_params)
                 print(f"Mensaje principal enviado a {from_number_raw}, SID: {main_message.sid}")
 
@@ -974,25 +1011,11 @@ def whatsapp_webhook():
             audio_url = bot_response_dict.get('audio_url')
             if audio_url:
                 absolute_audio_url = _ensure_absolute_url(audio_url)
-                audio_message_params = {
-                    'from_': to_number_raw,
-                    'to': from_number_raw,
-                    'media_url': [absolute_audio_url]
-                }
-                current_app.logger.debug(
-                    f"Sending WhatsApp audio params: {audio_message_params}"
+                _send_with_retry(
+                    from_=to_number_raw,
+                    to=from_number_raw,
+                    media_url=absolute_audio_url,
                 )
-                try:
-                    audio_message = twilio_client.messages.create(
-                        **audio_message_params
-                    )
-                    print(
-                        f"Mensaje de audio enviado a {from_number_raw}, SID: {audio_message.sid}"
-                    )
-                except Exception as e:
-                    current_app.logger.error(
-                        f"Error sending audio message: {e}"
-                    )
 
         except Exception as e:
             print(f"Error al enviar mensaje de Twilio: {e}")
