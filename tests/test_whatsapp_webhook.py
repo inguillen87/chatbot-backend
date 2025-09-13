@@ -168,6 +168,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
         ctx.context_data["last_options_sent"] = [
             {"id": "menu_principal", "texto": "Menú"},
+            {"id": "volver", "texto": "Volver"},
             {"id": "cancelar", "texto": "Cancelar"},
         ]
         ctx.context_data[CONTEXTO_MUNICIPIO] = {"esperando_info_llm": "ubicacion"}
@@ -197,6 +198,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
         ctx.context_data["last_options_sent"] = [
             {"id": "menu_principal", "texto": "Menú"},
+            {"id": "volver", "texto": "Volver"},
             {"id": "cancelar", "texto": "Cancelar"},
         ]
         ctx.context_data[CONTEXTO_MUNICIPIO] = {"esperando_info_llm_reclamo": "descripcion"}
@@ -696,6 +698,38 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertIn('body', second_call)
         self.assertNotIn('media_url', second_call)
         self.assertIn('persistent_action', second_call)
+
+    @patch('routes.whatsapp_webhook.generar_audio_con_fallback')
+    @patch('routes.whatsapp_webhook.reverse_geocode')
+    def test_location_message_sends_confirmation(self, mock_geo, mock_tts):
+        """Location messages should trigger text and audio confirmations."""
+        self._create_confirmed_session()
+        mock_geo.return_value = {"display": "Fake Street 123"}
+        fake_audio = "/static/audio/loc.mp3"
+        mock_tts.return_value = fake_audio
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "MessageType": "location",
+            "Latitude": "-33.0",
+            "Longitude": "-68.0",
+            "SmsSid": "SMloc",
+            "SmsMessageSid": "SMloc",
+            "SmsStatus": "received",
+            "NumMedia": "0",
+            "Body": "",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.mock_twilio_create.call_count, 2)
+        text_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertIn("Recibí tu ubicación", text_kwargs["body"])
+        audio_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        self.assertIn(fake_audio, audio_kwargs.get("media_url", [])[0])
+        mock_tts.assert_called_once()
 
     @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_audio_attachment_transcribes_text(self, mock_requests_get):
