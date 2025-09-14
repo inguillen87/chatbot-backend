@@ -503,9 +503,8 @@ class ReclamoFlowHandler:
                 final_payload = self.end_flow(message, show_menu=True, image_url=punto_limpio_logo)
 
                 if nro_ticket and pin_consulta:
-                    # Assuming the base URL is in the config
-                    base_url = current_app.config.get("TICKET_CONSULTA_BASE_URL", "https://www.juninmendoza.gov.ar/consulta-de-ticket/")
-                    ver_ticket_url = f"{base_url}?ticket={nro_ticket.replace('M-', '')}&pin={pin_consulta}"
+                    base_url = "https://www.chatboc.ar/chat/"
+                    ver_ticket_url = f"{base_url}{nro_ticket.replace('M-', '')}?pin={pin_consulta}"
                     final_payload.setdefault("options_list", []).append(
                         {"texto": "Ver Ticket", "url": ver_ticket_url, "type": "url"}
                     )
