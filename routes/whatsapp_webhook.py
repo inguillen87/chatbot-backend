@@ -304,16 +304,15 @@ def whatsapp_webhook():
     media_content_type = post_vars.get("MediaContentType0")
     uploaded_file_info = None
     message_body = incoming_text
+    interpretacion_media_data = None  # Initialize to store data from media handlers
 
     if media_url and media_content_type:
+        from services.media_handlers import process_whatsapp_media
         try:
-            # Download the file from Twilio's URL first
             auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
             r = requests.get(media_url, auth=auth)
             r.raise_for_status()
             media_content = r.content
-
-            # Create a FileStorage object to be compatible with our services
             file_stream = io.BytesIO(media_content)
             file_name = f"whatsapp_media_{uuid.uuid4().hex[:12]}"
             file_storage = FileStorage(
@@ -322,49 +321,29 @@ def whatsapp_webhook():
                 content_type=media_content_type
             )
 
-            # Use the attachment service to save the file and create a thumbnail if applicable
-            adjunto = create_attachment_with_thumbnail(
+            # Delegate processing to the new media handler service
+            new_message_body, new_uploaded_file_info, new_interpreted_data = process_whatsapp_media(
                 file_storage=file_storage,
+                media_url=media_url,
+                media_type=media_content_type,
                 user_id=end_user.id if end_user else None,
-                session_id=chat_session_id_internal
+                session_id=chat_session_id_internal,
+                client_user=client_user
             )
 
-            if adjunto:
-                # Prepare the info for the chatbot logic, which will be used for all media types
-                uploaded_file_info = {
-                    "id": adjunto.id,
-                    "url": adjunto.url,
-                    "mime_type": adjunto.mime,
-                    "name": adjunto.nombre_original,
-                    "source": "whatsapp"
-                }
-                current_app.logger.info(f"WhatsApp media processed and saved as ArchivoAdjunto ID: {adjunto.id}")
-            else:
-                current_app.logger.error("create_attachment_with_thumbnail failed to process the WhatsApp media")
-
-            if media_content_type.startswith("audio/"):
-                session_context_db_entry.context_data['source_is_audio'] = True
-                from services.audio_transcription_service import transcribe_audio_from_url
-                # We pass the direct URL to the transcription service
-                transcribed_text = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-                if transcribed_text:
-                    message_body = transcribed_text
-                    uploaded_file_info['transcribed_text'] = transcribed_text
-                else:
-                    current_app.logger.warning("Audio transcription failed or returned empty.")
-            else:
-                # If it's not audio, remove the source_is_audio flag
-                session_context_db_entry.context_data.pop('source_is_audio', None)
+            # Update webhook-level variables with the results from the handler
+            if new_message_body:
+                message_body = new_message_body
+            if new_uploaded_file_info:
+                uploaded_file_info = new_uploaded_file_info
+            if new_interpreted_data:
+                interpretacion_media_data = new_interpreted_data
 
         except requests.exceptions.RequestException as e:
             current_app.logger.error(f"Error downloading media from Twilio URL {media_url}: {e}")
         except Exception as e:
             current_app.logger.error(f"Error processing WhatsApp media file: {e}", exc_info=True)
-            # Reset uploaded_file_info if processing fails
-            uploaded_file_info = None
-    else:
-        # If no media, ensure the flag is not present
-        session_context_db_entry.context_data.pop('source_is_audio', None)
+            uploaded_file_info = None # Ensure it's reset on failure
 
     # --- Location Handling ---
     latitud = post_vars.get("Latitude")
@@ -447,11 +426,6 @@ def whatsapp_webhook():
     try:
         print(f"Calling responder_chatboc for session_id: {chat_session_id_internal}, owner_user: {client_user.name}")
 
-        interpretacion_media_data = None
-        if uploaded_file_info:
-            mime_type = uploaded_file_info.get("mime_type", "")
-            if not mime_type.startswith("audio/"):
-                interpretacion_media_data = clasificar_adjunto_whatsapp(uploaded_file_info, client_user)
         # Location info should not be treated as interpreted media.
         # It should be passed directly as location data.
 
