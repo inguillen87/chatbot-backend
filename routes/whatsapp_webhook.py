@@ -13,7 +13,6 @@ import uuid
 from services.logic import responder_chatboc  # Import the correct chatbot logic processor
 from sqlalchemy.orm import joinedload  # To potentially eager load User.rubro
 from utils.db_utils import safe_flag_modified
-from services.notifications import enviar_bienvenida_whatsapp
 from services.gcs_service import upload_to_gcs
 from services.attachment_service import create_attachment_with_thumbnail
 from services.llm_utils import extract_multiple_contact_details_llm
@@ -225,9 +224,11 @@ def whatsapp_webhook():
                         "from_": to_number_raw,
                         "to": from_number_raw,
                         "content_sid": template_sid,
+                        # Always supply the template variables. WhatsApp requires
+                        # all placeholders to be populated, so an empty string is
+                        # safer than omitting the field and triggering a 400.
+                        "content_variables": json.dumps({"1": user_name or ""}),
                     }
-                    if user_name:
-                        params["content_variables"] = json.dumps({"1": user_name})
                     twilio_client.messages.create(**params)
                     current_app.logger.info(
                         f"[WELCOME] Template {template_sid} sent to {from_number_cleaned} with name: {user_name or '<unknown>'}."
