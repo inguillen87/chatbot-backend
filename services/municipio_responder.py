@@ -3181,17 +3181,30 @@ def responder_municipio(
 
 
         elif estado_conversacion == ConversationState.ESPERANDO_NUMERO_TICKET.name:
-            numero_ticket = ''.join(filter(str.isdigit, pregunta_str or ''))
-            if not numero_ticket:
+            numero_guardado = contexto_municipio_actual.get('numero_ticket_consulta')
+            if not numero_guardado:
+                numero_ticket = ''.join(filter(str.isdigit, pregunta_str or ''))
+                if not numero_ticket:
+                    return _finalize_response({
+                        "message_body": "Por favor, ingresá un número de reclamo válido.",
+                        "fuente": "handler_consultar_reclamo"
+                    })
+                contexto_municipio_actual['numero_ticket_consulta'] = numero_ticket
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return _finalize_response({
-                    "message_body": "No parece ser un número de reclamo válido. Por favor, intentá de nuevo.",
-                    "fuente": "handler_consultar_reclamo_invalido"
+                    "message_body": "Ingresá el PIN de 6 dígitos asociado al ticket.",
+                    "fuente": "handler_consultar_reclamo"
+                })
+
+            pin = ''.join(filter(str.isdigit, pregunta_str or ''))
+            if len(pin) != 6:
+                return _finalize_response({
+                    "message_body": "El PIN debe tener 6 dígitos.",
+                    "fuente": "handler_consultar_reclamo"
                 })
 
             municipio_id = context.get("municipio_id", MUNICIPIO_ID)
-            # Assuming ticket numbers are unique per municipality. If not, this might need a PIN.
-            # For now, implementing a direct lookup as the user flow implies.
-            ticket_query = MunicipioTicket.query.filter_by(nro_ticket=numero_ticket)
+            ticket_query = MunicipioTicket.query.filter_by(nro_ticket=numero_guardado, consulta_pin=pin)
             try:
                 ticket_query = ticket_query.filter_by(municipio_id=int(municipio_id))
             except (TypeError, ValueError):
