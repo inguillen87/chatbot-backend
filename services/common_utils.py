@@ -670,10 +670,9 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         "categorias": categorias,
         "generar_audio": True
     }
-    config = context.get("municipio_config_actual", {})
-    image_url = config.get("welcome_image_url")
-    if image_url:
-        response["image_url"] = image_url
+    # Do not include a header image in the initial greeting menu to keep the
+    # conversation lightweight and similar to other professional bots like
+    # Boti. Removing the image avoids large headers in WhatsApp.
     return response
 
 def clean_text_for_tts(text: str) -> str:

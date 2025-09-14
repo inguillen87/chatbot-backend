@@ -215,20 +215,47 @@ def whatsapp_webhook():
         if twilio_client:
             try:
                 template_sid = current_app.config.get("WELCOME_TEMPLATE_SID")
-                # Prioritize DB name, then WhatsApp profile name, then fallback.
-                user_name = getattr(end_user, "name", "") or post_vars.get("ProfileName") or "vecino/a"
+                # Prioritize DB name, then WhatsApp profile name. Avoid generic
+                # "vecino" fallback so the bot either personalizes or greets
+                # without a name and lets downstream logic ask for it.
+                user_name = getattr(end_user, "name", "") or (post_vars.get("ProfileName") or "").strip()
+
                 if template_sid:
-                    twilio_client.messages.create(
-                        from_=to_number_raw, to=from_number_raw,
-                        content_sid=template_sid,
-                        content_variables=json.dumps({"1": user_name}),
+                    params = {
+                        "from_": to_number_raw,
+                        "to": from_number_raw,
+                        "content_sid": template_sid,
+                    }
+                    if user_name:
+                        params["content_variables"] = json.dumps({"1": user_name})
+                    twilio_client.messages.create(**params)
+                    current_app.logger.info(
+                        f"[WELCOME] Template {template_sid} sent to {from_number_cleaned} with name: {user_name or '<unknown>'}."
                     )
-                    current_app.logger.info(f"[WELCOME] Template {template_sid} sent to {from_number_cleaned} with name: {user_name}.")
+
+                    # Send an explicit text greeting so the user always sees a
+                    # welcome message even if the template contains only the
+                    # sticker.
+                    greeting = (
+                        f"¡Hola, {user_name}! Soy JUNI."
+                        if user_name
+                        else "¡Hola! Soy JUNI."
+                    )
+                    twilio_client.messages.create(
+                        from_=to_number_raw, to=from_number_raw, body=greeting
+                    )
                 else:
-                    greeting_template = "¡Hola, {name}! Soy JUNI."
-                    greeting = greeting_template.format(name=user_name)
-                    twilio_client.messages.create(from_=to_number_raw, to=from_number_raw, body=greeting)
-                    current_app.logger.info(f"[WELCOME] Fallback text sent to {from_number_cleaned} with name: {user_name}.")
+                    greeting = (
+                        f"¡Hola, {user_name}! Soy JUNI."
+                        if user_name
+                        else "¡Hola! Soy JUNI."
+                    )
+                    twilio_client.messages.create(
+                        from_=to_number_raw, to=from_number_raw, body=greeting
+                    )
+                    current_app.logger.info(
+                        f"[WELCOME] Fallback text sent to {from_number_cleaned} with name: {user_name or '<unknown>'}."
+                    )
             except Exception as e:
                 current_app.logger.error(f"[WELCOME] Failed to send sticker/template: {e}")
 
