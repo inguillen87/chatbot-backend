@@ -2728,7 +2728,9 @@ def responder_municipio(
         elif isinstance(pregunta_original, dict) and "pregunta" in pregunta_original:
             pregunta_str_menu = pregunta_original["pregunta"]
 
-        emoji_category = EMOJI_RECLAMO_CATEGORIES.get(pregunta_str_menu.strip())
+        pregunta_str_menu = pregunta_str_menu.strip().replace("\uFE0F", "")
+
+        emoji_category = EMOJI_RECLAMO_CATEGORIES.get(pregunta_str_menu)
         if emoji_category:
             handler = ReclamoFlowHandler(context, chat_db_context)
             response_dict = handler.start_flow(categoria_inicial=emoji_category)
@@ -2737,7 +2739,7 @@ def responder_municipio(
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response(response_dict)
 
-        emoji_action = EMOJI_MAIN_MENU_ACTIONS.get(pregunta_str_menu.strip())
+        emoji_action = EMOJI_MAIN_MENU_ACTIONS.get(pregunta_str_menu)
         if emoji_action:
             contexto_municipio_actual['estado_conversacion'] = None
             if chat_db_context:

@@ -89,6 +89,13 @@ def test_emoji_shortcut_without_initial_state(owner_user):
     assert flow["datos_reclamo"]["categoria"] == "Luminaria"
 
 
+def test_variation_selector_emoji_shortcut(owner_user):
+    result = run_turn("\U0001F6E3\uFE0F", owner_user=owner_user)
+    assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Arreglo de calle"
+
+
 def test_car_emoji_triggers_licencia(owner_user):
     result = run_turn("\U0001F697", owner_user=owner_user)
     assert "Licencia de Conducir" in result.response["message_body"]
