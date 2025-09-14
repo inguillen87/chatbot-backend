@@ -61,12 +61,26 @@ def _parse_request(tipo_chat_fijo: str | None = None):
             tipo_chat = tipo_chat_fijo
         else:
             tipo_chat = _normalizar_tipo_chat(data.get("tipo_chat"))
-            if tipo_chat not in ("pyme", "municipio"):
-                raise ValueError("'tipo_chat' debe ser 'pyme' o 'municipio'")
 
         contexto_previo = data.get("contexto_previo")
         rubro_id = data.get("rubro_id")
-        rubro_clave = data.get("rubro_clave")
+        rubro_clave = data.get("rubro_clave") or data.get("rubro")
+
+        if tipo_chat not in ("pyme", "municipio"):
+            rubro_obj_tmp = None
+            try:
+                if rubro_id:
+                    rubro_obj_tmp = Rubro.query.get(int(rubro_id))
+                elif rubro_clave:
+                    rubro_obj_tmp = Rubro.query.filter(func.lower(Rubro.clave) == func.lower(str(rubro_clave))).first()
+            except Exception:
+                rubro_obj_tmp = None
+
+            if rubro_obj_tmp:
+                tipo_chat = "municipio" if es_rubro_publico(rubro_obj_tmp) else "pyme"
+            else:
+                raise ValueError("'tipo_chat' debe ser 'pyme' o 'municipio'")
+
         attachment_info = data.get("attachmentInfo") or data.get("attachment_info")
         location = data.get("location")
         ticket_id = data.get("ticket_id")
