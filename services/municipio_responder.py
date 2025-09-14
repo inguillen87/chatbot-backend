@@ -1284,6 +1284,15 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             flag_modified(chat_db_context, "context_data")
         return submenu
 
+    if action_id == "mostrar_menu_ayuda":
+        submenu = _get_ayuda_menu()
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return submenu
+
     if action_id == "consultar_estado_reclamo":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NUMERO_TICKET.name
@@ -2195,6 +2204,7 @@ MENU_KEYWORDS = {
     # Tasas y Servicios
     "pago_de_tasas_vigentes": ["pagar", "pago", "tasas", "tasa", "boleta", "impuestos", "municipal", "tributo", "tributos", "arancel", "aranceles", "impuesto municipal", "impuestos municipales"],
     "buscar_estacionamiento": ["estacionamiento", "estacionar", "aparcamiento", "parking", "estacionar auto", "donde estacionar", "lugar para estacionar"],
+    "mostrar_menu_ayuda": ["ayuda", "como usar", "uso", "emojis", "help"],
     "recoleccion_residuos": ["recoleccion", "residuos", "basura", "basurero", "cuando pasa el camion", "recolector", "recogida", "recoleccion de basura"]
 }
 
@@ -2404,6 +2414,8 @@ EMOJI_MAIN_MENU_ACTIONS = {
     "\u274C": "cancelar", # ❌
     "\U0001F4DC": "mostrar_menu_tramites", # 📜
     "\U0001F4F0": "mostrar_menu_informacion", # 📰
+    "\u2753": "mostrar_menu_ayuda", # ❓
+    "\u2139\ufe0f": "mostrar_menu_ayuda", # ℹ️
 }
 
 def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> str | None:
@@ -2559,6 +2571,41 @@ def _get_estacionamiento_menu():
         "message_type": "interactive_buttons",
         "options_list": opciones,
         "fuente": "submenu_estacionamiento_v1",
+        "generar_audio": True,
+    }
+
+def _get_ayuda_menu():
+    emojis = [
+        ("🗣️", "Reclamos y Consultas"),
+        ("🚗", "Trámites y Turnos"),
+        ("📰", "Información del Municipio"),
+        ("🅿️", "Estacionamiento"),
+        ("❓", "Ayuda"),
+        ("📝", "Iniciar un Reclamo"),
+        ("💡", "Enviar una Sugerencia"),
+        ("📞", "Contactos Útiles"),
+        ("📅", "Solicitar Turnos"),
+        ("💵", "Pagar Tasas Municipales"),
+        ("🎭", "Agenda Cultural y Noticias"),
+        ("🐾", "Veterinaria y Bromatología"),
+        ("🏗️", "Obras"),
+        ("♻️", "Punto Limpio"),
+        ("🔍", "Consultar Estado de Reclamo"),
+    ]
+    lines = [f"{emoji} {desc}" for emoji, desc in emojis]
+    message_body = (
+        "Guía rápida:\n\n"
+        + "\n".join(lines)
+    )
+    opciones = [
+        {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
+        {"texto": "Cancelar", "action_id": "cancelar"},
+    ]
+    return {
+        "message_body": message_body,
+        "message_type": "interactive_buttons",
+        "options_list": opciones,
+        "fuente": "submenu_ayuda_v1",
         "generar_audio": True,
     }
 
@@ -4194,13 +4241,19 @@ def responder_municipio(
                     viewer_user.name = nombre_usuario
                     db.session.add(viewer_user)
                     db.session.commit()
-                
-                contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+
+                context["profile_name"] = nombre_usuario
+                chat_data = context.get("chat_db_context_data", {})
+                chat_data["profile_name"] = nombre_usuario
+                contexto_municipio_actual = chat_data.setdefault(CONTEXTO_MUNICIPIO, {})
                 if 'contacto_usuario' not in contexto_municipio_actual:
                     contexto_municipio_actual['contacto_usuario'] = {}
                 contexto_municipio_actual['contacto_usuario']['nombre'] = nombre_usuario
                 contexto_municipio_actual['estado_conversacion'] = None # Reset state
-                
+                if chat_db_context and isinstance(chat_db_context.context_data, dict):
+                    chat_db_context.context_data["profile_name"] = nombre_usuario
+                    flag_modified(chat_db_context, "context_data")
+
                 # Now call the greeting handler again to show the main menu
                 handler = GreetingHandler(context)
                 response = handler.handle({})

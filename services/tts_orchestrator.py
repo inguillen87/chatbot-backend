@@ -29,6 +29,7 @@ def sanitize_for_tts(raw: str) -> str:
         cleaned,
     )
     cleaned = re.sub(r"(?i)\b(hs|hrs)\b", "horas", cleaned)
+    cleaned = re.sub(r"\s*\n+\s*", ". ", cleaned)
     return " ".join(cleaned.split())
 
 
@@ -74,11 +75,11 @@ def generar_audio_con_fallback(text: str) -> str | None:
 
     # 1. Try OpenAI
     try:
-        speed_env = os.getenv("TTS_SPEECH_SPEED", "0.9")
+        speed_env = os.getenv("TTS_SPEECH_SPEED", "0.85")
         try:
             speech_speed = float(speed_env)
         except ValueError:
-            speech_speed = 0.9
+            speech_speed = 0.85
         logger.info("TTS Orchestrator: Trying OpenAI...")
         audio_url = generar_audio_openai(text, speed=speech_speed)
         if audio_url:
