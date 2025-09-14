@@ -2346,6 +2346,47 @@ RECLAMO_KEYWORDS = {
     "Otros": ["otros", "otro", "varios"],
 }
 
+# Emojis que disparan acciones rápidas desde el menú principal.
+# Permiten a personas con dificultades de escritura iniciar flujos con un solo
+# ícono.
+EMOJI_RECLAMO_CATEGORIES = {
+    "\U0001F4A1": "Luminaria",       # 💡
+    "\U0001F526": "Luminaria",       # 🔦
+    "\U0001F333": "Arbolado",       # 🌳
+    "\U0001F332": "Arbolado",       # 🌲
+    "\U0001F334": "Arbolado",       # 🌴
+    "\U0001F5D1": "Limpieza y riego",  # 🗑️
+    "\U0001F6AE": "Limpieza y riego",  # 🚮
+    "\U0001F9F9": "Limpieza y riego",  # 🧹
+    "\U0001F6A7": "Arreglo de calle", # 🚧
+    "\U0001F6E3": "Arreglo de calle", # 🛣️
+    "\U0001F4A7": "Pérdida de agua",   # 💧
+    "\U0001F6B0": "Pérdida de agua",   # 🚰
+    "\U0001F4A6": "Pérdida de agua",   # 💦
+    "\u26AB": "Otros",              # ⚫
+    "\u2753": "Otros",              # ❓
+}
+
+EMOJI_MAIN_MENU_ACTIONS = {
+    "\U0001F4E9": "enviar_sugerencia", # 📩
+    "\U0001F697": "licencia_de_conducir", # 🚗
+    "\U0001F4DE": "contactos_utiles", # 📞
+    "\U0001F4C5": "solicitar_turnos", # 📅
+    "\U0001F4B5": "pago_de_tasas_vigentes", # 💵
+    "\U0001F3AD": "agenda_y_noticias", # 🎭
+    "\U0001F43E": "veterinaria_bromatologia", # 🐾
+    "\U0001F3D7": "obras", # 🏗️
+    "\u267B": "punto_limpio", # ♻️
+    "\U0001F17F": "buscar_estacionamiento", # 🅿️
+    "\U0001F3DB": "menu_principal", # 🏛️
+    "\U0001F5E3": "mostrar_menu_reclamos", # 🗣️
+    "\U0001F4DD": "iniciar_reclamo", # 📝
+    "\U0001F50D": "consultar_estado_reclamo", # 🔍
+    "\u274C": "cancelar", # ❌
+    "\U0001F4DC": "mostrar_menu_tramites", # 📜
+    "\U0001F4F0": "mostrar_menu_informacion", # 📰
+}
+
 def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> str | None:
     """
     Finds a reclamo category based on user input, checking for number, first letter, or keywords.
@@ -2651,6 +2692,7 @@ def responder_municipio(
     # any other processing like intent classification or menu keyword matching.
 
     estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
+    action = received_payload.get("action")
 
     # Detectar número de ticket ingresado directamente antes de evaluar menús
     if (
@@ -2672,6 +2714,37 @@ def responder_municipio(
             "message_body": "Ingresá el PIN de 6 dígitos asociado al ticket.",
             "fuente": "handler_consultar_reclamo",
         })
+
+    # Permitir atajos por emoji incluso si la conversación aún no tiene estado
+    # (p.ej., primer mensaje del usuario) o si está esperando una selección
+    # del menú principal.
+    if (
+        not estado_conversacion
+        or estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+    ):
+        pregunta_str_menu = ""
+        if isinstance(pregunta_original, str):
+            pregunta_str_menu = pregunta_original
+        elif isinstance(pregunta_original, dict) and "pregunta" in pregunta_original:
+            pregunta_str_menu = pregunta_original["pregunta"]
+
+        emoji_category = EMOJI_RECLAMO_CATEGORIES.get(pregunta_str_menu.strip())
+        if emoji_category:
+            handler = ReclamoFlowHandler(context, chat_db_context)
+            response_dict = handler.start_flow(categoria_inicial=emoji_category)
+            contexto_municipio_actual['estado_conversacion'] = 'EN_FLUJO_RECLAMO'
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response_dict)
+
+        emoji_action = EMOJI_MAIN_MENU_ACTIONS.get(pregunta_str_menu.strip())
+        if emoji_action:
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            response = handle_main_menu_action(emoji_action, context, chat_db_context)
+            if response:
+                return _finalize_response(response)
 
     # 1. Handle active conversation states first.
     if estado_conversacion:
@@ -3279,6 +3352,7 @@ def responder_municipio(
                 datos_iniciales=datos_iniciales or None,
                 categoria_inicial=detected_category,
             )
+            contexto_municipio_actual["estado_conversacion"] = "EN_FLUJO_RECLAMO"
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response(response_dict)
