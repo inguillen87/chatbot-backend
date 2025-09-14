@@ -3,6 +3,7 @@
 import io
 import os
 
+import re
 import requests
 import httpx
 from openai import OpenAI
@@ -13,6 +14,27 @@ from openai import OpenAI
 # in CI) to avoid initialization errors.
 http_client = httpx.Client(proxy=None, trust_env=False)
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", "test"), http_client=http_client)
+
+
+def normalize_spanish_transcription(text: str) -> str:
+    """Expand common abbreviations and regionalisms for clearer understanding.
+
+    This lightly normalizes transcriptions so downstream prompts can rely on
+    full words.  It currently focuses on a few frequent shortcuts used in
+    Spanish chats and voice notes.
+    """
+
+    replacements = {
+        "xq": "porque",
+        "pq": "porque",
+        "dnd": "donde",
+        "sr": "señor",
+        "sra": "señora",
+        "uds": "ustedes",
+    }
+    for short, full in replacements.items():
+        text = re.sub(rf"\b{short}\b", full, text, flags=re.IGNORECASE)
+    return text
 
 def transcribe_audio_from_url(url: str, account_sid: str, auth_token: str) -> str | None:
     """Download an audio file and transcribe it using OpenAI Whisper.
@@ -45,6 +67,8 @@ def transcribe_audio_from_url(url: str, account_sid: str, auth_token: str) -> st
             )
 
         text = getattr(transcription, "text", None)
+        if text:
+            text = normalize_spanish_transcription(text)
         return text or None
 
     except requests.exceptions.RequestException as e:

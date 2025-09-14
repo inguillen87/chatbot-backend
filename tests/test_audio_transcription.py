@@ -1,7 +1,10 @@
 import unittest
 from unittest.mock import patch, MagicMock
 
-from services.audio_transcription_service import transcribe_audio_from_url
+from services.audio_transcription_service import (
+    transcribe_audio_from_url,
+    normalize_spanish_transcription,
+)
 
 class TestAudioTranscriptionService(unittest.TestCase):
 
@@ -40,6 +43,13 @@ class TestAudioTranscriptionService(unittest.TestCase):
 
         # Assertions
         self.assertIsNone(result)
+
+    def test_normalize_spanish_transcription(self):
+        raw = "sr juan xq dnd estan uds"
+        normalized = normalize_spanish_transcription(raw)
+        self.assertEqual(
+            normalized, "señor juan porque donde estan ustedes"
+        )
 
     @patch('services.audio_transcription_service.requests.get')
     @patch('services.audio_transcription_service.openai_client')
