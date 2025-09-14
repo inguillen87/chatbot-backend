@@ -57,6 +57,7 @@ class TestMenuKeywords(unittest.TestCase):
         chat_ctx = SimpleNamespace(
             chat_session_id="test",
             context_data={
+                "profile_name": "Test",
                 CONTEXTO_MUNICIPIO: {
                     "estado_conversacion": ConversationState.ESPERANDO_SELECCION_DE_LISTA.name,
                     "menu_opciones": [
@@ -83,7 +84,7 @@ class TestMenuKeywords(unittest.TestCase):
                          }
                      },
                  ):
-                response = responder_municipio("3", owner, rubro, chat_db_context=chat_ctx)
+                response = responder_municipio("3", owner, rubro, chat_db_context=chat_ctx, profile_name="Test")
         self.assertIn("Veterinaria y Bromatología", response["message_body"])
         self.assertIsNone(chat_ctx.context_data[CONTEXTO_MUNICIPIO].get("estado_conversacion"))
 
@@ -114,6 +115,9 @@ class TestMenuKeywords(unittest.TestCase):
 
     def test_punto_limpio_keyword(self):
         self.assertEqual(find_global_menu_action("punto limpio"), "punto_limpio")
+
+    def test_ayuda_keyword(self):
+        self.assertEqual(find_global_menu_action("ayuda"), "mostrar_menu_ayuda")
 
 
 if __name__ == "__main__":
