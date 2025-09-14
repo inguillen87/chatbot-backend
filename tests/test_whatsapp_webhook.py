@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import os
 import sys
+import json
 
 # Añadir el directorio raíz del proyecto al sys.path
 project_root_whatsapp = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -16,8 +17,6 @@ from services.municipio_responder import CONTEXTO_MUNICIPIO
 # and to avoid potential issues if models.py itself tries to import app-context related things early.
 # However, for direct use in tests, they are typically at the top. Let's try keeping them here.
 import models
-# JSON import is no longer needed
-# import json
 
 class TestConfig(Config):
     TESTING = True
@@ -79,7 +78,13 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.mock_twilio_client = self.twilio_client_patch.start()
         self.mock_twilio_create = self.mock_twilio_client.messages.create
 
-        self.welcome_patch = patch('routes.whatsapp_webhook.enviar_bienvenida_whatsapp', MagicMock())
+        # Provide a placeholder for the old welcome helper so assertions
+        # referencing it don't break even though production code no longer uses it.
+        self.welcome_patch = patch(
+            'routes.whatsapp_webhook.enviar_bienvenida_whatsapp',
+            MagicMock(),
+            create=True,
+        )
         self.mock_welcome = self.welcome_patch.start()
 
     def _create_confirmed_session(self):
@@ -111,6 +116,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
     def test_whatsapp_webhook_valid_request(self):
         # Arrange
         self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
 
         mock_twilio_message = MagicMock()
         mock_twilio_message.sid = "SMxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_test_sid"
@@ -119,7 +125,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         payload = {
             "To": f"whatsapp:{self.test_whatsapp_number_str}",
             "From": f"whatsapp:{self.test_user_number_str}",
-            "Body": "Hello Test"
+            "Body": "hola"
         }
         headers = { "X-Twilio-Signature": "dummy_signature_valid" }
 
@@ -131,16 +137,15 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertEqual(response.data.decode(), "OK")
         self.mock_validator.validate.assert_called_once()
 
-        # The bot should now derive to human, so we don't expect an echo.
-        # We just check that the webhook returns OK and that the bot was called.
-        # The response to the user is handled by the bot logic, which is mocked here.
-        # In a real scenario, the bot would send a message like "Connecting you to an agent..."
-        # and the test for that would be in the bot logic tests, not the webhook test.
-        self.mock_twilio_create.assert_called_once()
-        self.mock_welcome.assert_called_once_with(
-            self.test_user_number_str,
-            "Vecino/a"
-        )
+        # The webhook should send both the template/sticker and a plain text greeting,
+        # so messages.create is invoked twice. The template call must include an empty
+        # string for the name placeholder when unknown.
+        self.assertEqual(self.mock_twilio_create.call_count, 2)
+        first_call_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertIn("content_variables", first_call_kwargs)
+
+        # Legacy welcome helper is no longer used.
+        self.mock_welcome.assert_not_called()
 
     def test_whatsapp_webhook_invalid_signature(self):
         # Arrange

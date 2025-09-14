@@ -14,12 +14,14 @@ def test_greeting_handler_whatsapp_menu():
 
     # Assert that the response is correct
     assert response is not None
-    # Check for the new generic greeting message
-    assert "¡Hola! 👋 Soy JUNI" in response.get("message_body", "")
-    # Check for the correct number of options in the WhatsApp menu
-    assert len(response.get("options_list", [])) == 4
-    # Check for the correct source
-    assert response.get("fuente") == "greeting_handler_structured_menu_v2"
+    # When no user name is known, the bot should ask for it instead of using a
+    # generic fallback like "vecino".
+    assert "¿podrías decirme tu nombre?" in response.get("message_body", "")
+    # The initial prompt doesn't include menu options until the user provides
+    # their name, so options_list should be empty and fuente marks the request
+    # for the name.
+    assert response.get("options_list") is None or len(response.get("options_list", [])) == 0
+    assert response.get("fuente") == "pedir_nombre_inicial"
 
 
 def test_greeting_handler_preserves_profile_name():
