@@ -218,6 +218,8 @@ def whatsapp_webhook():
                 # "vecino" fallback so the bot either personalizes or greets
                 # without a name and lets downstream logic ask for it.
                 user_name = getattr(end_user, "name", "") or (post_vars.get("ProfileName") or "").strip()
+                if user_name.lower() in {"vecino", "vecina", "vecino/a"}:
+                    user_name = ""
 
                 if template_sid:
                     params = {
@@ -238,18 +240,18 @@ def whatsapp_webhook():
                     # welcome message even if the template contains only the
                     # sticker.
                     greeting = (
-                        f"¡Hola, {user_name}! Soy JUNI."
+                        f"*¡Hola, {user_name}!* Acá *Juni* \U0001F44B"
                         if user_name
-                        else "¡Hola! Soy JUNI."
+                        else "*¡Hola!* Acá *Juni* \U0001F44B"
                     )
                     twilio_client.messages.create(
                         from_=to_number_raw, to=from_number_raw, body=greeting
                     )
                 else:
                     greeting = (
-                        f"¡Hola, {user_name}! Soy JUNI."
+                        f"*¡Hola, {user_name}!* Acá *Juni* \U0001F44B"
                         if user_name
-                        else "¡Hola! Soy JUNI."
+                        else "*¡Hola!* Acá *Juni* \U0001F44B"
                     )
                     twilio_client.messages.create(
                         from_=to_number_raw, to=from_number_raw, body=greeting
