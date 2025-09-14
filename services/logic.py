@@ -305,8 +305,8 @@ def responder_chatboc(
                 response_data.get('categorias'),
             )
         if text_to_speak:
-            from services.tts_orchestrator import generar_audio_con_fallback
-            audio_url = generar_audio_con_fallback(text_to_speak)
+            from services.tts_orchestrator import generar_audio
+            audio_url = generar_audio(text_to_speak)
             if audio_url:
                 response_data['audio_url'] = audio_url
                 logger.info(f"Generated audio response at {audio_url}")

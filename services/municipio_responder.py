@@ -2685,7 +2685,11 @@ def _get_reclamos_menu():
     }
 
 
-SIMPLE_GREETINGS = {"hola", "buenos dias", "buenas tardes", "buenas noches", "menu", "hola buenos dias", "hola buenas tardes", "hola buenas noches", "buenas"}
+SIMPLE_GREETINGS = {
+    "hola", "buenos dias", "buenas tardes", "buenas noches", "menu",
+    "hola buenos dias", "hola buenas tardes", "hola buenas noches", "buenas",
+    "que tal", "como va", "todo bien", "buenas como va"
+}
 RETURN_TO_MAIN_MENU = {"volver al inicio", "volver al menu", "inicio", "menu", "menú principal"}
 
 def responder_municipio(
@@ -2807,6 +2811,17 @@ def responder_municipio(
     # --- FIN REFACTOR ---
 
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
+
+    # --- START GREETING CHECK (MOVED) ---
+    # This must run before any stateful logic to ensure greetings always reset the flow.
+    normalized_input_for_greeting = normalizar_texto(pregunta_str or "").strip()
+    if (normalized_input_for_greeting in SIMPLE_GREETINGS or pregunta_str == "__INIT__"):
+        logger_actual.info(f"Greeting keyword detected ('{pregunta_str}'). Resetting conversation and showing main menu.")
+        handler = GreetingHandler(context)
+        response = handler.handle(received_payload)
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response(response)
 
     # --- START OF RESTRUCTURED LOGIC ---
     # The primary change is to handle active conversation states FIRST, before
@@ -3501,16 +3516,6 @@ def responder_municipio(
     # --- END DIRECT RECLAMO DETECTION FOR TEXT OR AUDIO ---
 
     # --- START INTENT CLASSIFICATION ---
-    # FIX: First, check for simple keywords and __INIT__ to be more robust and cost-effective
-    normalized_input_for_greeting = normalizar_texto(pregunta_str or "").strip()
-    if (normalized_input_for_greeting in SIMPLE_GREETINGS or pregunta_str == "__INIT__") and not normalized_input_for_greeting.isdigit():
-        logger_actual.info(f"Simple greeting or __INIT__ keyword detected ('{pregunta_str}'). Bypassing LLM and showing main menu.")
-        handler = GreetingHandler(context)
-        response = handler.handle(received_payload)
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return _finalize_response(response)
-
     # If it's not a simple greeting, proceed with intent classification
     intent, intent_payload = intent_classifier.classify(pregunta_str)
     logger_actual.info(f"[IntentClassifier] Classified intent: {intent} with payload: {intent_payload}")

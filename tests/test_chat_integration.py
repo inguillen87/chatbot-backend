@@ -151,7 +151,7 @@ class TestChatIntegration(unittest.TestCase):
         # Check that we don't get a JSON error response.
         self.assertNotIn("error", data)
 
-    @patch('services.tts_orchestrator.generar_audio_con_fallback', return_value=None)
+    @patch('services.tts_orchestrator.generar_audio', return_value=None)
     @patch('services.municipio_responder.llamar_gemini')
     def test_anonymous_chat_greets_with_saved_name(self, mock_llamar_gemini, mock_tts):
         """Ensure the greeting uses the stored profile name from a prior request."""
@@ -190,7 +190,7 @@ class TestChatIntegration(unittest.TestCase):
         self.assertIn("Soy JUNI", data.get("message_body", ""))  # Check for new welcome message
         self.assertIsNotNone(data.get("options_list"))  # The new format uses 'options_list' for buttons/menu items.
 
-    @patch('services.tts_orchestrator.generar_audio_con_fallback', return_value=None)
+    @patch('services.tts_orchestrator.generar_audio', return_value=None)
     @patch('services.municipio_responder.llamar_gemini')
     def test_authenticated_chat_prefers_profile_name(self, mock_llamar_gemini, mock_tts):
         """An authenticated request should still greet with the stored profile name."""
