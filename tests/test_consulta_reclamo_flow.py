@@ -8,7 +8,7 @@ sys.path.insert(0, project_root)
 from app import create_app, db
 from config import TestConfig
 from models import User, Rubro, ChatSessionContext, MunicipioTicket
-from services.municipio_responder import responder_municipio, ConversationState
+from services.municipio_responder import responder_municipio, ConversationState, clear_municipio_cache
 
 class TestConsultaReclamoFlow(unittest.TestCase):
     def setUp(self):
@@ -39,6 +39,7 @@ class TestConsultaReclamoFlow(unittest.TestCase):
         db.session.commit()
 
         payload = {"action": "consultar_estado_reclamo"}
+        clear_municipio_cache()
         response = responder_municipio(
             pregunta_original=payload,
             owner_user=owner_user,
@@ -76,7 +77,11 @@ class TestConsultaReclamoFlow(unittest.TestCase):
         )
 
         self.assertIn("en_proceso", response3["message_body"])
-        self.assertIsNone(chat_context.context_data['contexto_municipio_v2'].get('estado_conversacion'))
+        # After providing the PIN, the flow resets to the main menu
+        self.assertEqual(
+            chat_context.context_data['contexto_municipio_v2'].get('estado_conversacion'),
+            ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+        )
 
     def test_consulta_estado_reclamo_text_action(self):
         owner_user = User.query.get(1)
@@ -115,6 +120,60 @@ class TestConsultaReclamoFlow(unittest.TestCase):
         )
 
         self.assertIn("ingresá el número", response["message_body"])
+        self.assertEqual(
+            chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
+            ConversationState.ESPERANDO_NUMERO_TICKET.name
+        )
+
+    def test_consulta_estado_reclamo_desde_menu(self):
+        owner_user = User.query.get(1)
+        rubro_obj = owner_user.rubro
+        # Simulate user at the main menu with options present
+        chat_context = ChatSessionContext(
+            chat_session_id='test_consulta_desde_menu',
+            user_id=1,
+            context_data={
+                'contexto_municipio_v2': {
+                    'estado_conversacion': ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name,
+                    'menu_opciones': [
+                        {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo"},
+                        {"texto": "💡 Enviar una Sugerencia", "action_id": "enviar_sugerencia"},
+                        {"texto": "🤔 Consultar Estado de Reclamo", "action_id": "consultar_estado_reclamo"},
+                    ]
+                }
+            }
+        )
+        db.session.add(chat_context)
+        db.session.commit()
+
+        # User asks to consult a ticket from the menu context
+        clear_municipio_cache()
+        response = responder_municipio(
+            pregunta_original='consultar reclamo',
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=owner_user,
+            chat_db_context=chat_context
+        )
+
+        self.assertIn("ingresá el número", response["message_body"])
+        self.assertEqual(
+            chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
+            ConversationState.ESPERANDO_NUMERO_TICKET.name
+        )
+        # menu_opciones should be cleared so numeric input is accepted
+        self.assertFalse(chat_context.context_data['contexto_municipio_v2'].get('menu_opciones'))
+
+        clear_municipio_cache()
+        response2 = responder_municipio(
+            pregunta_original='123456',
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=owner_user,
+            chat_db_context=chat_context
+        )
+
+        self.assertIn("PIN", response2["message_body"])
         self.assertEqual(
             chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
             ConversationState.ESPERANDO_NUMERO_TICKET.name

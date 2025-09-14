@@ -1268,6 +1268,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
     if action_id == "consultar_estado_reclamo":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NUMERO_TICKET.name
+        contexto_municipio_actual.pop('menu_opciones', None)
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return {
@@ -2596,6 +2597,8 @@ def responder_municipio(
         for key, value in kwargs.items():
             received_payload[key] = value
 
+    action = received_payload.get("action")
+
     chat_db_context_live_data = {}
     if chat_db_context and chat_db_context.context_data is not None:
         chat_db_context_live_data = chat_db_context.context_data
@@ -2623,6 +2626,8 @@ def responder_municipio(
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
     }
     # --- FIN REFACTOR ---
+
+    contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
 
     # --- START OF RESTRUCTURED LOGIC ---
     # The primary change is to handle active conversation states FIRST, before
@@ -2767,56 +2772,6 @@ def responder_municipio(
                     }
                 )
 
-        elif estado_conversacion == ConversationState.ESPERANDO_NUMERO_TICKET.name:
-            numero_ticket = ''.join(filter(str.isdigit, pregunta_str or ''))
-            if not numero_ticket:
-                return _finalize_response({
-                    "message_body": "No parece ser un número de reclamo válido. Por favor, intentá de nuevo.",
-                    "fuente": "handler_consultar_reclamo_invalido"
-                })
-
-            municipio_id = context.get("municipio_id", MUNICIPIO_ID)
-            # Assuming ticket numbers are unique per municipality. If not, this might need a PIN.
-            # For now, implementing a direct lookup as the user flow implies.
-            ticket_query = MunicipioTicket.query.filter_by(nro_ticket=numero_ticket)
-            try:
-                ticket_query = ticket_query.filter_by(municipio_id=int(municipio_id))
-            except (TypeError, ValueError):
-                pass
-            ticket = ticket_query.first()
-
-            contexto_municipio_actual.pop('numero_ticket_consulta', None)
-            contexto_municipio_actual['estado_conversacion'] = None
-            if chat_db_context: flag_modified(chat_db_context, "context_data")
-
-
-            botones = []
-            if ticket:
-                contactos = cargar_configuracion_municipio(municipio_id, "contactos_especializados.json")
-                contacto_especializado = contactos.get(ticket.categoria, contactos.get("default", {})) if isinstance(contactos, dict) else {}
-                municipio_config = context.get("municipio_config_actual", {})
-                base_chat_url = municipio_config.get("base_chat_url", "https://www.chatboc.ar/chat")
-                mensaje, botones = formatear_ticket_respuesta(
-                    "reclamo",
-                    ticket.nombre_vecino or "Vecino/a",
-                    ticket.detalles or ticket.pregunta or "",
-                    ticket.categoria,
-                    f"M-{ticket.nro_ticket}",
-                    contacto_especializado,
-                    base_chat_url,
-                    consulta_pin=ticket.consulta_pin,
-                )
-                mensaje += f"\n\n🔔 *Estado actual:* {ticket.estado}"
-            else:
-                mensaje = (
-                    "No encontramos un ticket con ese número y PIN. Por favor, verifica los datos e intenta nuevamente."
-                )
-            final_payload = _message_with_menu(mensaje, context)
-            final_payload['fuente'] = 'handler_consultar_reclamo'
-            if botones:
-                final_payload['options_list'] = botones + final_payload.get('options_list', [])
-                final_payload['message_type'] = 'interactive_buttons'
-            return _finalize_response(final_payload)
         elif estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name:
             switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context)
             if switch_response:
