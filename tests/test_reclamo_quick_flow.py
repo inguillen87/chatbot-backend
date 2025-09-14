@@ -4,7 +4,16 @@ from models import ChatSessionContext
 from app import db
 
 
-def run_turn(message, state=None, preset_dp=None, location=None, owner_user=None, flow_state=None, contact_info=None):
+def run_turn(
+    message,
+    state=None,
+    preset_dp=None,
+    location=None,
+    owner_user=None,
+    flow_state=None,
+    contact_info=None,
+    set_state=True,
+):
     existing = ChatSessionContext.query.get("test_session")
     if existing:
         db.session.delete(existing)
@@ -14,7 +23,10 @@ def run_turn(message, state=None, preset_dp=None, location=None, owner_user=None
     muni = ctx.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
     if contact_info:
         muni["contacto_usuario"] = contact_info
-    muni["estado_conversacion"] = state or "ESPERANDO_SELECCION_MENU_PRINCIPAL"
+    if set_state:
+        muni["estado_conversacion"] = state or "ESPERANDO_SELECCION_MENU_PRINCIPAL"
+    elif state is not None:
+        muni["estado_conversacion"] = state
     if flow_state:
         muni["reclamo_flow_v2"] = {"state": flow_state, "datos_reclamo": {}}
     if preset_dp:
@@ -65,6 +77,13 @@ def test_hueco_en_vereda_maps_to_arreglo(owner_user):
 
 def test_emoji_shortcut_from_main_menu(owner_user):
     result = run_turn("\U0001F4A1", owner_user=owner_user)
+    assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Luminaria"
+
+
+def test_emoji_shortcut_without_initial_state(owner_user):
+    result = run_turn("\U0001F4A1", owner_user=owner_user, set_state=False)
     assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
     flow = result.ctx["reclamo_flow_v2"]
     assert flow["datos_reclamo"]["categoria"] == "Luminaria"
