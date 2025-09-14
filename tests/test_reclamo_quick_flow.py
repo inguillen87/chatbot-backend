@@ -63,6 +63,34 @@ def test_hueco_en_vereda_maps_to_arreglo(owner_user):
     assert flow["datos_reclamo"]["categoria"] == "Arreglo de calle"
 
 
+def test_emoji_shortcut_from_main_menu(owner_user):
+    result = run_turn("\U0001F4A1", owner_user=owner_user)
+    assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Luminaria"
+
+
+def test_car_emoji_triggers_licencia(owner_user):
+    result = run_turn("\U0001F697", owner_user=owner_user)
+    assert "Licencia de Conducir" in result.response["message_body"]
+
+
+def test_phone_emoji_triggers_contactos(owner_user):
+    result = run_turn("\U0001F4DE", owner_user=owner_user)
+    assert "Seleccioná una categoría" in result.response["message_body"]
+
+
+def test_calendar_emoji_triggers_turnos(owner_user):
+    result = run_turn("\U0001F4C5", owner_user=owner_user)
+    assert any("Solicitar Turno" in opt.get("texto", "") for opt in result.response.get("options_list", []))
+
+
+def test_tap_emoji_triggers_water(owner_user):
+    result = run_turn("\U0001F6B0", owner_user=owner_user)
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Pérdida de agua"
+
+
 def test_numeric_selection_maps_to_category(owner_user):
     result = run_turn(
         "5",
