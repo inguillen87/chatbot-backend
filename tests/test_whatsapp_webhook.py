@@ -148,7 +148,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.mock_welcome.assert_not_called()
 
     def test_welcome_skips_generic_profile_name(self):
-        """ProfileName 'Vecino/a' should not appear in the greeting."""
+        """Generic profile names should trigger a name request."""
         self._create_confirmed_session()
         self.mock_validator.validate.return_value = True
         self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
@@ -174,7 +174,32 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertEqual(json.loads(template_kwargs["content_variables"]).get("1"), "")
 
         text_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
-        self.assertEqual(text_kwargs.get("body"), "*¡Hola!* Acá *Juni* 👋")
+        self.assertEqual(text_kwargs.get("body"), "*¡Hola!* Soy *Juni* 👋 ¿Cómo te llamás?")
+
+    def test_welcome_asks_for_name_when_unknown(self):
+        """When no name is known, the bot should ask for it."""
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.mock_twilio_create.call_count, 2)
+
+        text_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        self.assertEqual(text_kwargs.get("body"), "*¡Hola!* Soy *Juni* 👋 ¿Cómo te llamás?")
+
+        session_id = f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
+        self.assertTrue(ctx.context_data.get("awaiting_user_name"))
+
 
     def test_whatsapp_webhook_invalid_signature(self):
         # Arrange
@@ -376,7 +401,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         payload = {
             "To": f"whatsapp:{self.test_whatsapp_number_str}",
             "From": f"whatsapp:{self.test_user_number_str}",
-            "Body": "hola"
+            "Body": "consulta"
         }
         headers = {"X-Twilio-Signature": "dummy_signature_valid"}
 
