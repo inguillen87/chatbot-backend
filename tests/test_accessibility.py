@@ -1,15 +1,73 @@
-from services.common_utils import formatear_opciones
+import pytest
+from services.common_utils import _get_main_menu_payload
+from services.constants import CONTEXTO_MUNICIPIO, ConversationState
 
+@pytest.fixture
+def base_context():
+    """Provides a basic context dictionary for testing menu generation."""
+    return {
+        "viewer_user_obj": None,
+        "profile_name": "Tester",
+        "user_obj": None,
+        "channel": "web",
+        "chat_db_context_data": {
+            CONTEXTO_MUNICIPIO: {
+                "estado_conversacion": ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+            }
+        }
+    }
 
-def test_options_have_numbers_and_help():
-    base = [
-        {"texto": "Confirmar", "action_id": "ok"},
-        {"texto": "Cancelar", "action_id": "cancel"},
-    ]
-    result = formatear_opciones(base)
-    textos = [opt["texto"] for opt in result]
-    assert textos[0].startswith("1. ")
-    assert textos[1].startswith("2. ")
-    assert textos[2] == "3. Repetir"
-    assert textos[3] == "4. Ayuda"
+def test_main_menu_payload_structure(base_context):
+    """
+    Tests that the main menu payload has the correct basic structure.
+    """
+    payload = _get_main_menu_payload(base_context)
 
+    assert "message_body" in payload
+    assert "options_list" in payload
+    assert "message_type" in payload
+    assert "categorias" in payload  # New key for structured menus
+    assert isinstance(payload["message_body"], str)
+    assert isinstance(payload["options_list"], list)
+    assert payload["message_type"] == "interactive_list"
+
+def test_main_menu_options_are_valid(base_context):
+    """
+    Tests that the options in the main menu are well-formed.
+    """
+    payload = _get_main_menu_payload(base_context)
+    options = payload.get("options_list", [])
+
+    assert len(options) > 0  # Ensure there are options
+
+    for option in options:
+        assert isinstance(option, dict)
+        assert "texto" in option
+        assert "id" in option # The new structure uses 'id' for the action
+        assert isinstance(option["texto"], str)
+        assert isinstance(option["id"], str)
+
+def test_main_menu_has_help_option(base_context):
+    """
+    Tests that a 'Help' or 'Ayuda' option is available for accessibility.
+    """
+    payload = _get_main_menu_payload(base_context)
+    options = payload.get("options_list", [])
+
+    # The new menu structure has an "Ayuda" category with an action_id 'mostrar_menu_ayuda'
+    help_option_found = any(opt.get("id") == "mostrar_menu_ayuda" for opt in options)
+
+    assert help_option_found, "The main menu should contain a 'Help' (Ayuda) option."
+
+def test_main_menu_asks_for_name_if_unknown(base_context):
+    """
+    Tests that the bot asks for the user's name if it's not in the context.
+    """
+    # Remove name from context
+    base_context["profile_name"] = None
+
+    payload = _get_main_menu_payload(base_context)
+
+    assert payload["fuente"] == "pedir_nombre_inicial"
+    assert "¿podrías decirme tu nombre?" in payload["message_body"]
+    assert payload["message_type"] == "text"

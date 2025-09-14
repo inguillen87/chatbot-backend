@@ -1,53 +1,89 @@
-from unittest.mock import MagicMock
+import pytest
+from services.municipio_responder import ReclamoFlowHandler
+from services.constants import CONTEXTO_MUNICIPIO
 
-from services.municipio_responder import (
-    pedir_datos_contacto_compacto,
-    ReclamoFlowHandler,
-    CONTEXTO_MUNICIPIO,
-)
-
-
-def test_contact_prompt_is_accessible():
-    msg = pedir_datos_contacto_compacto()
-    body = msg["message_body"]
-    assert "*Nombre y apellido*" in body
-    assert "*DNI*" in body
-    assert "*Teléfono*" in body
-    assert "*Email*" in body
-    # Ensure bullet formatting and guidance text
-    assert body.count("•") >= 4
-    assert "Podés mandarlos en una sola línea" in body
-
-
-def test_contact_prompt_only_missing_fields():
-    msg = pedir_datos_contacto_compacto(["nombre", "telefono"])
-    body = msg["message_body"]
-    assert "*Nombre y apellido*" in body
-    assert "*Teléfono*" in body
-    assert "*DNI*" not in body
-    assert "*Email*" not in body
-    assert body.count("•") == 2
-
-
-def _build_handler_with_contact():
-    flow_context = {
-        "datos_reclamo": {
-            "categoria": "Bache",
-            "direccion": "Calle 123",
-            "descripcion": "pozo",
-            "nombre": "Juan",
-            "dni": "123",
-            "telefono": "+5400000000",
-            "email": "juan@example.com",
+@pytest.fixture
+def flow_handler():
+    """Provides a ReclamoFlowHandler instance with a basic context."""
+    context = {
+        "chat_db_context_data": {
+            CONTEXTO_MUNICIPIO: {
+                "reclamo_flow_v2": {
+                    "datos_reclamo": {}
+                }
+            }
         }
     }
-    context = {"chat_db_context_data": {CONTEXTO_MUNICIPIO: {"reclamo_flow_v2": flow_context}}}
-    return ReclamoFlowHandler(context, MagicMock())
+    return ReclamoFlowHandler(context, chat_db_context=None)
 
+def test_prompt_includes_all_fields_when_empty(flow_handler):
+    """
+    Tests that the prompt asks for all required fields when no contact data is present.
+    """
+    response = flow_handler.ask_for_contact_details(force_prompt=True)
+    prompt = response.get("message_body", "").lower()
 
-def test_contact_summary_includes_repeat_and_help():
-    handler = _build_handler_with_contact()
-    msg = handler.ask_for_contact_details()
-    options = [opt["texto"] for opt in msg.get("options_list", [])]
-    assert "4. Repetir" in options
-    assert "5. Ayuda" in options
+    assert "nombre" in prompt
+    assert "dni" in prompt
+    assert "email" in prompt
+    assert "teléfono" in prompt
+
+def test_prompt_omits_known_fields(flow_handler):
+    """
+    Tests that the prompt message shows known fields and asks for missing ones.
+    """
+    flow_handler.flow_context['datos_reclamo'].update({
+        "nombre": "Juan Perez",
+        "email": "juan@test.com"
+    })
+
+    response = flow_handler.ask_for_contact_details(force_prompt=True)
+    prompt = response.get("message_body", "")
+    prompt_lower = prompt.lower()
+
+    assert "nombre completo: juan perez" in prompt_lower
+    assert "email: juan@test.com" in prompt_lower
+
+    assert "dni" in prompt_lower
+    assert "teléfono" in prompt_lower
+
+def test_prompt_moves_to_confirmation_when_full(flow_handler):
+    """
+    Tests that if all essential data is present, it moves to the confirmation step.
+    """
+    flow_handler.flow_context['datos_reclamo'].update({
+        "nombre": "Juan Perez",
+        "email": "juan@test.com",
+        "telefono": "2615551234",
+        "dni": "30123456",
+        "categoria": "Test Category",
+        "descripcion": "Test Description",
+        "direccion": "Test Address"
+    })
+
+    response = flow_handler.ask_for_contact_details()
+
+    assert "confirmá que los datos de tu reclamo son correctos" in response.get("message_body", "").lower()
+    assert response.get("message_type") == "interactive_buttons"
+    assert any(opt.get("action_id") == "reclamo_confirmar_si" for opt in response.get("options_list", []))
+
+def test_prompt_can_be_forced_when_full(flow_handler):
+    """
+    Tests that the prompt can be forced even if all data is present.
+    """
+    flow_handler.flow_context['datos_reclamo'].update({
+        "nombre": "Juan Perez",
+        "email": "juan@test.com",
+        "telefono": "2615551234",
+        "dni": "30123456"
+    })
+
+    response = flow_handler.ask_for_contact_details(force_prompt=True)
+    prompt_lower = response.get("message_body", "").lower()
+
+    assert "nombre completo: juan perez" in prompt_lower
+    assert "dni: 30123456" in prompt_lower
+    assert "email: juan@test.com" in prompt_lower
+    assert "teléfono: 2615551234" in prompt_lower
+
+    assert "datos que querés corregir" in prompt_lower

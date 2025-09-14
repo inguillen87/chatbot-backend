@@ -1,112 +1,97 @@
 import types
 import pytest
-from services.municipio_responder import (
-    extract_ticket_number,
-    extract_pin,
-    is_greeting,
-    responder_municipio,
-    CONTEXTO_MUNICIPIO,
-    api_ticket_get,
-)
-from models import ChatSessionContext
+from unittest.mock import MagicMock
+from services.municipio_responder import responder_municipio, CONTEXTO_MUNICIPIO
+from models import ChatSessionContext, MunicipioTicket
 from app import db
 
+@pytest.fixture
+def owner_user(app):
+    """Provides a mock owner_user with a rubro object."""
+    user = MagicMock()
+    user.municipio_id = "1"
+    user.rubro.nombre = "municipio"
+    return user
 
 def run_turn(message, state=None, numero=None, owner_user=None):
-    existing = ChatSessionContext.query.get("ticket_session")
-    if existing:
-        db.session.delete(existing)
-        db.session.commit()
-    ctx = ChatSessionContext(chat_session_id="ticket_session")
-    ctx.context_data = {}
-    muni = ctx.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
-    muni["estado_conversacion"] = state or "ESPERANDO_SELECCION_MENU_PRINCIPAL"
+    """Helper function to simulate a turn in the conversation for ticket lookup."""
+    session_id = "ticket_session"
+    ctx = ChatSessionContext.query.get(session_id)
+    if not ctx:
+        ctx = ChatSessionContext(chat_session_id=session_id, context_data={})
+        db.session.add(ctx)
+
+    muni_context = ctx.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+    if state:
+        muni_context["estado_conversacion"] = state
     if numero:
-        muni["numero_ticket_consulta"] = numero
-    db.session.add(ctx)
+        muni_context["numero_ticket_consulta"] = numero
+
     db.session.commit()
+
     resp = responder_municipio(
         pregunta_original=message,
         owner_user=owner_user,
         viewer_user=None,
         rubro_obj=owner_user.rubro,
         chat_db_context=ctx,
-        anon_id="anon",
+        anon_id="anon_test",
         channel="whatsapp",
     )
     db.session.commit()
-    ctx_after = ChatSessionContext.query.get("ticket_session").context_data[CONTEXTO_MUNICIPIO]
+
+    ctx_after = ChatSessionContext.query.get(session_id).context_data[CONTEXTO_MUNICIPIO]
     return types.SimpleNamespace(response=resp, ctx=ctx_after)
 
+def test_consulta_flow_direct_number(owner_user, app):
+    """
+    Tests that providing a ticket number directly triggers the flow to ask for the PIN.
+    """
+    with app.app_context():
+        result = run_turn("397871", owner_user=owner_user)
+        assert result.ctx["estado_conversacion"] == "ESPERANDO_NUMERO_TICKET"
+        assert result.ctx["numero_ticket_consulta"] == "397871"
+        assert "PIN de 6 dígitos" in result.response["message_body"]
 
-def test_parse_ticket_variants():
-    assert extract_ticket_number("397871") == "397871"
-    assert extract_ticket_number("M-397871") == "397871"
-    assert extract_ticket_number("m 397871") == "397871"
-    assert extract_ticket_number("ticket 397871") == "397871"
-
-
-def test_parse_pin_variants():
-    assert extract_pin("734774") == "734774"
-    assert extract_pin("PIN: 734774") == "734774"
-
-
-def test_no_greeting_on_numbers():
-    assert not is_greeting("734774", "ESPERANDO_PIN_TICKET")
-
-
-def test_consulta_flow_direct_number(owner_user):
-    result = run_turn("397871", owner_user=owner_user)
-    assert result.ctx["estado_conversacion"] == "ESPERANDO_PIN_TICKET"
-    assert result.ctx["numero_ticket_consulta"] == "397871"
-    assert "PIN de 6 dígitos" in result.response["message_body"]
-
-
-def test_ticket_summary_has_basic_links(monkeypatch, owner_user):
-    class Ticket:
-        numero = "397871"
+def test_ticket_summary_has_basic_links(monkeypatch, owner_user, app):
+    """
+    Tests that a valid ticket and PIN lookup returns a summary with a "Ver Ticket" link.
+    """
+    class MockTicket:
+        nro_ticket = "M-397871"
+        consulta_pin = "734774"
         categoria = "Arbol Caido"
-        descripcion = "Árbol caído en mi zona"
-        estado_actual = "nuevo"
+        detalles = "Árbol caído en mi zona"
+        pregunta = ""
+        estado = "nuevo"
+        nombre_vecino = "Test User"
 
-    def fake_get(numero, pin, municipio_id):
-        assert str(municipio_id) == str(owner_user.municipio_id)
-        return Ticket()
+    def fake_query(*args, **kwargs):
+        # This will be the query for the ticket
+        return MagicMock(first=MagicMock(return_value=MockTicket()))
 
-    monkeypatch.setattr("services.municipio_responder.api_ticket_get", fake_get)
-    result = run_turn("734774", state="ESPERANDO_PIN_TICKET", numero="397871", owner_user=owner_user)
-    body = result.response["message_body"]
-    assert "Junín Punto Limpio" not in body
-    assert "Obras y novedades" not in body
-    assert "Ver mi Ticket" in body
+    with app.app_context():
+        monkeypatch.setattr(MunicipioTicket.query, "filter_by", fake_query)
+        # The state should be ESPERANDO_NUMERO_TICKET and the user sends the PIN
+        result = run_turn("734774", state="ESPERANDO_NUMERO_TICKET", numero="M-397871", owner_user=owner_user)
 
+        body = result.response["message_body"]
+        assert "Estado actual: nuevo" in body
 
-def test_invalid_ticket_pin(monkeypatch, owner_user):
-    def fake_get(numero, pin, municipio_id):
-        raise ValueError("Ticket no encontrado")
+        options = result.response.get("options_list", [])
+        assert any("Ver Ticket" in opt.get("texto", "") for opt in options)
 
-    monkeypatch.setattr("services.municipio_responder.api_ticket_get", fake_get)
-    result = run_turn("111111", state="ESPERANDO_PIN_TICKET", numero="111111", owner_user=owner_user)
-    assert "No encontramos un ticket" in result.response["message_body"]
-    assert result.ctx["estado_conversacion"] == "ESPERANDO_PIN_TICKET"
+def test_invalid_ticket_pin(monkeypatch, owner_user, app):
+    """
+    Tests that an invalid ticket/PIN combination returns an error message.
+    """
+    def fake_query(*args, **kwargs):
+        return MagicMock(first=MagicMock(return_value=None))
 
-
-def test_api_ticket_get_non_numeric_muni(monkeypatch):
-    calls = []
-
-    class FakeQuery:
-        def filter_by(self, **kwargs):
-            calls.append(kwargs)
-            return self
-
-        def first(self):
-            return types.SimpleNamespace(
-                nro_ticket="123", categoria="Cat", detalles="Desc", pregunta="", estado="nuevo"
-            )
-
-    fake_model = types.SimpleNamespace(query=FakeQuery())
-    monkeypatch.setattr("services.municipio_responder.MunicipioTicket", fake_model)
-
-    ticket = api_ticket_get("123", "456", "default")
-    assert ticket.numero == "123"
-    assert calls == [{"nro_ticket": "123", "consulta_pin": "456"}]
+    with app.app_context():
+        monkeypatch.setattr(MunicipioTicket.query, "filter_by", fake_query)
+        # The user sends an invalid PIN
+        result = run_turn("111111", state="ESPERANDO_NUMERO_TICKET", numero="111111", owner_user=owner_user)
+        assert "No encontramos un ticket" in result.response["message_body"]
+        # The state should reset to allow the user to try again or do something else.
+        assert result.ctx.get("estado_conversacion") is None

@@ -2,7 +2,7 @@ import os
 import re
 from typing import Optional
 
-from .location_service import _extract_from_maps_url, geocode_address
+from .location_service import geocode_address
 from .geo_context import get_geo_context
 
 # Regex to capture Google Maps URLs
@@ -10,6 +10,13 @@ MAPS_URL_RE = re.compile(
     r"https?://(?:maps\.app\.goo\.gl|(?:www\.)?google\.com/maps/[^\s]*)",
     re.IGNORECASE,
 )
+
+def _extract_from_maps_url(url: str) -> dict:
+    """Extracts latitude and longitude from a Google Maps URL."""
+    match = re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", url)
+    if match:
+        return {"lat": float(match.group(1)), "lng": float(match.group(2))}
+    return {}
 
 def extract_location(input_str: str) -> Optional[dict]:
     """Return location data from a Google Maps URL or plain text.

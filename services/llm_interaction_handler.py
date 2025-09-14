@@ -9,8 +9,9 @@ from services.llm_orchestrator import llamar_llm_con_fallback
 from services.conversation_state import ConversationState
 from services.actions.municipio_actions import CrearReclamoActionHandler
 from services.municipio_responder import GreetingHandler, _get_main_menu_payload
-from services.flows.reclamos import _get_reclamos_menu
-from services.herramientas_municipio import TOOL_REGISTRY, es_consulta_general
+from services.municipio_responder import _get_reclamos_menu
+from services.herramientas_municipio import TOOL_REGISTRY
+from services.municipio_responder import es_consulta_general
 from services.llm_utils import extract_multiple_contact_details_llm
 
 logger = logging.getLogger(__name__)

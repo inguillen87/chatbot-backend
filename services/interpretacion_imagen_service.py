@@ -437,9 +437,13 @@ def _procesar_interpretacion_reclamo(
          }
 
     imagen_descripcion_para_llm = ". ".join(prompt_description_parts) + "."
-    logger.info(f"📝 [RECLAMO_IMG_PROC] Descripción para LLM (desde imagen): {imagen_descripcion_para_llm} (Análisis ID: {analisis_id_for_log})")
 
-    detalles_llm = extract_complaint_details_llm(imagen_descripcion_para_llm) or {}
+    from services.llm_utils import generar_descripcion_natural_de_imagen
+    descripcion_natural = generar_descripcion_natural_de_imagen(imagen_descripcion_para_llm)
+
+    logger.info(f"📝 [RECLAMO_IMG_PROC] Descripción para LLM (desde imagen): {descripcion_natural} (Análisis ID: {analisis_id_for_log})")
+
+    detalles_llm = extract_complaint_details_llm(descripcion_natural) or {}
     if not isinstance(detalles_llm, dict):
         detalles_llm = {}
 

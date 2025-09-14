@@ -372,10 +372,10 @@ class ReclamoFlowHandler:
         required_fields = ['nombre', 'dni', 'email', 'telefono']
         known_parts = []
         missing = []
-        field_labels = {'nombre': 'nombre completo', 'dni': 'DNI', 'email': 'email', 'telefono': 'teléfono'}
+        field_labels = {'nombre': 'Nombre completo', 'dni': 'DNI', 'email': 'Email', 'telefono': 'Teléfono'}
         for field in required_fields:
             if datos.get(field) and datos[field] != 'Vecino/a' and '@whatsapp.chatboc.com' not in str(datos[field]):
-                 known_parts.append(f"{field_labels[field]}: {datos[field]}")
+                known_parts.append(f"{field_labels[field].capitalize()}: {datos[field]}")
             else:
                 # Don't ask for phone if we already have it from the system
                 if field == 'telefono' and datos.get('telefono'):
@@ -403,13 +403,13 @@ class ReclamoFlowHandler:
             message_lines.append("*Para finalizar, por favor, completá tus datos:*")
             for part in missing:
                 if "nombre" in part.lower():
-                    message_lines.append(f"👤 {part}")
+                    message_lines.append(f"👤 {part.capitalize()}")
                 elif "dni" in part.lower():
-                    message_lines.append(f"🆔 {part}")
+                    message_lines.append(f"🆔 {part.capitalize()}")
                 elif "email" in part.lower():
-                    message_lines.append(f"📧 {part}")
+                    message_lines.append(f"📧 {part.capitalize()}")
                 else:
-                    message_lines.append(part)
+                    message_lines.append(part.capitalize())
             message_lines.append("\nPodés escribir todos los datos juntos en un solo mensaje.")
         else:
             message_lines.append("Por favor, enviame los datos que querés corregir.")
@@ -488,19 +488,30 @@ class ReclamoFlowHandler:
             handler = CrearReclamoActionHandler(self.context)
             result = handler.execute(action_data)
             if result.get("success"):
-                nro_ticket = result.get("data", {}).get("nro_ticket")
+                ticket_data = result.get("data", {})
+                nro_ticket = ticket_data.get("nro_ticket")
+                pin_consulta = ticket_data.get("consulta_pin")
+
                 message = result.get(
                     "message_to_user",
                     f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{nro_ticket}*. Te mantendremos informado sobre el estado del mismo por este medio.",
                 )
-                message += (
-                    "\n\n¿Sabías que estamos trabajando para una Junín más limpia?\n"
-                    "Planta de recolección, reciclaje y elaboración de productos sustentables.\n"
-                    "Ladrillos, tejas, postes, mangueras, impresión 3D, luminarias LED y paneles solares.\n"
-                    "Más info: https://www.juninmendoza.gov.ar/punto-limpio/"
-                )
+
+                # The promotional message is now handled by the image_url and the frontend
                 punto_limpio_logo = "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png"
-                return self.end_flow(message, show_menu=True, image_url=punto_limpio_logo)
+
+                final_payload = self.end_flow(message, show_menu=True, image_url=punto_limpio_logo)
+
+                if nro_ticket and pin_consulta:
+                    # Assuming the base URL is in the config
+                    base_url = current_app.config.get("TICKET_CONSULTA_BASE_URL", "https://www.juninmendoza.gov.ar/consulta-de-ticket/")
+                    ver_ticket_url = f"{base_url}?ticket={nro_ticket.replace('M-', '')}&pin={pin_consulta}"
+                    final_payload.setdefault("options_list", []).append(
+                        {"texto": "Ver Ticket", "url": ver_ticket_url, "type": "url"}
+                    )
+                    final_payload["message_type"] = "interactive_buttons"
+
+                return final_payload
             error_message = result.get(
                 "message_to_user",
                 "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde.",
@@ -523,9 +534,10 @@ class ReclamoFlowHandler:
             payload["image_url"] = image_url
 
         if show_menu:
-            menu_payload = GreetingHandler(self.context).handle({})
+            # Directly call the payload generator for a reduced menu
+            menu_payload = _get_main_menu_payload(self.context, reduced=True)
             payload["delayed_payload"] = menu_payload
-            payload["delay_seconds"] = 5
+            payload["delay_seconds"] = 20
 
         return payload
 # Initialize the classifier globally
@@ -3241,7 +3253,7 @@ def responder_municipio(
         {
           "intent": "crear_reclamo",
           "data": {
-            "categoria": "Una de las siguientes: Luminaria, Arbolado, Limpieza y riego, Arreglo de calle, Pérdida de agua, Otros",
+            "categoria": "Una de las siguientes: - Luminaria - Arbolado - Limpieza y riego - Arreglo de calle - Pérdida de agua - Otros",
             "descripcion": "Una descripción breve y clara del problema que se ve en la imagen."
           }
         }
@@ -3492,7 +3504,7 @@ def responder_municipio(
     # --- START INTENT CLASSIFICATION ---
     # FIX: First, check for simple keywords and __INIT__ to be more robust and cost-effective
     normalized_input_for_greeting = normalizar_texto(pregunta_str or "").strip()
-    if normalized_input_for_greeting in SIMPLE_GREETINGS or pregunta_str == "__INIT__":
+    if (normalized_input_for_greeting in SIMPLE_GREETINGS or pregunta_str == "__INIT__") and not normalized_input_for_greeting.isdigit():
         logger_actual.info(f"Simple greeting or __INIT__ keyword detected ('{pregunta_str}'). Bypassing LLM and showing main menu.")
         handler = GreetingHandler(context)
         response = handler.handle(received_payload)

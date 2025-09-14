@@ -572,7 +572,7 @@ if __name__ == '__main__':
     logger = logging.getLogger(__name__)
     logger.info("Common utils placeholder script executed.")
 
-def _get_main_menu_payload(context: dict, welcome_message_override: str = None) -> dict:
+def _get_main_menu_payload(context: dict, welcome_message_override: Optional[str] = None, reduced: bool = False) -> Dict[str, Any]:
     """
     Generates the main menu payload with the new, structured layout.
     """
@@ -870,105 +870,75 @@ def construir_respuesta_sugerir_registro(mensaje_personalizado: Optional[str] = 
     }
 
 def extract_multiple_contact_details_regex(text: str, potential_fields: list | None = None) -> dict:
-    """Extract contact details using simple regex heuristics.
-
-    Parameters
-    ----------
-    text: str
-        The raw user input.
-    potential_fields: list | None
-        Which fields to try to extract. Defaults to common ones used in the
-        reclamo flow (nombre, dni, email, telefono).
+    """
+    Extract contact details using improved regex and structural heuristics.
     """
     if not text:
         return {}
 
     if potential_fields is None:
-        potential_fields = ["nombre", "dni", "email", "telefono", "ciudad"]
+        potential_fields = ["nombre", "dni", "email", "telefono", "direccion"]
 
     from utils.validators import (
         extract_email,
         extract_phone,
         extract_name,
-        extract_address,
         extract_dni,
-        validate_name,
     )
 
-    extracted_data: dict[str, str] = {}
+    extracted_data: dict[str, Optional[str]] = {}
 
-    remaining_text = text
+    remaining_text = f" {text} "
 
-    # Handle simple enumerated inputs like:
-    # "1. Juan Perez\n2. +54 911 12345678\n3. CABA"
-    enumerados = re.findall(r"\b[123][\).:\-]?\s*([^\n]+)", text)
-    if len(enumerados) >= 3:
-        nombre_enumerado = enumerados[0].strip()
-        extracted_data.setdefault("nombre", nombre_enumerado)
-        remaining_text = remaining_text.replace(nombre_enumerado, " ")
-        telefono_candidato = enumerados[1].strip()
-        telefono_norm = extract_phone(telefono_candidato)
-        if telefono_norm:
-            extracted_data.setdefault("telefono", telefono_norm)
-            remaining_text = remaining_text.replace(telefono_candidato, " ")
-        else:
-            extracted_data.setdefault("telefono", telefono_candidato)
-            remaining_text = remaining_text.replace(telefono_candidato, " ")
-        ciudad_enumerada = enumerados[2].strip()
-        extracted_data.setdefault("ciudad", ciudad_enumerada)
-        remaining_text = remaining_text.replace(ciudad_enumerada, " ")
-
-    def _remove_from_remaining(value: str) -> None:
+    def _remove_from_remaining(value: Optional[str]) -> None:
         nonlocal remaining_text
         if value:
-            remaining_text = remaining_text.replace(value, " ")
+            safe_value = re.escape(value)
+            remaining_text = re.sub(safe_value, " ", remaining_text, flags=re.IGNORECASE)
 
-    # Primero extraemos campos fácilmente identificables para eliminarlos
-    # del texto antes de intentar obtener nombre y dirección.
-    for field in ["dni", "email", "telefono", "ciudad"]:
-        if field not in potential_fields:
-            continue
-        heuristic_value = None
-        if field == "dni":
-            heuristic_value = extract_dni(remaining_text)
-        elif field == "email":
-            heuristic_value = extract_email(remaining_text)
-        elif field == "telefono":
-            heuristic_value = extract_phone(remaining_text)
-            if heuristic_value:
-                extracted_data[field] = heuristic_value
-                _remove_from_remaining(heuristic_value)
-                _remove_from_remaining(re.sub(r"\D", "", heuristic_value))
-            continue
-        elif field == "ciudad":
-            heuristic_value = extract_address(remaining_text)
-        if heuristic_value:
-            extracted_data[field] = heuristic_value
-            _remove_from_remaining(heuristic_value)
+    # --- Step 1: Extract easily identifiable patterns first ---
+    # Order: email, DNI, then phone, as DNI is more specific and less ambiguous.
+    if "email" in potential_fields:
+        email = extract_email(remaining_text)
+        if email:
+            extracted_data["email"] = email
+            _remove_from_remaining(email)
 
-    # If the text explicitly mentions the address field, keep only what follows
-    lower_remaining = remaining_text.lower()
-    for kw in ["direccion", "dirección", "dir."]:
-        idx = lower_remaining.find(kw)
-        if idx != -1:
-            remaining_text = remaining_text[idx + len(kw):]
-            remaining_text = re.sub(r"^[\s:.,-]+", "", remaining_text)
-            break
+    if "dni" in potential_fields:
+        dni_match_tuple = extract_dni(remaining_text)
+        if dni_match_tuple:
+            normalized_dni, raw_dni = dni_match_tuple
+            extracted_data["dni"] = normalized_dni
+            _remove_from_remaining(raw_dni)
+            # Also remove variants with "DNI" prefix for cleaner remaining text
+            _remove_from_remaining(f"DNI {raw_dni}")
 
-    leftover = remaining_text.strip()
-    tokens = leftover.split()
+    if "telefono" in potential_fields:
+        phone_match = extract_phone(remaining_text)
+        if phone_match:
+            normalized_phone, raw_phone = phone_match
+            extracted_data["telefono"] = normalized_phone
+            _remove_from_remaining(raw_phone)
 
-    if (
-        "nombre" in potential_fields
-        and "nombre" not in extracted_data
-        and len(tokens) >= 2
-    ):
-        candidate = " ".join(tokens[:2])
-        if validate_name(candidate):
-            extracted_data["nombre"] = candidate
-            tokens = tokens[2:]
+    # --- Step 2: Attempt to find name and address from the remaining text ---
+    remaining_text = re.sub(r'\s+', ' ', remaining_text).strip(" ,")
 
-    if "direccion" in potential_fields and "direccion" not in extracted_data and tokens:
-        extracted_data["direccion"] = " ".join(tokens).strip()
+    dir_match = re.search(r'(?:dirección|direccion|domicilio)\s*[:\s-]\s*(.*)', remaining_text, re.IGNORECASE)
+    if dir_match:
+        address_candidate = dir_match.group(1).strip()
+        if "direccion" in potential_fields:
+            extracted_data["direccion"] = address_candidate
+        _remove_from_remaining(dir_match.group(0))
+        remaining_text = re.sub(r'\s+', ' ', remaining_text).strip(" ,")
 
-    return extracted_data
+    if "nombre" in potential_fields:
+        name = extract_name(remaining_text)
+        if name:
+            extracted_data["nombre"] = name
+            _remove_from_remaining(name)
+            remaining_text = re.sub(r'\s+', ' ', remaining_text).strip(" ,")
+
+    if "direccion" not in extracted_data and "direccion" in potential_fields and remaining_text:
+        extracted_data["direccion"] = remaining_text
+
+    return {k: v for k, v in extracted_data.items() if v}
