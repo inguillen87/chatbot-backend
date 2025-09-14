@@ -218,6 +218,8 @@ def whatsapp_webhook():
                 # "vecino" fallback so the bot either personalizes or greets
                 # without a name and lets downstream logic ask for it.
                 user_name = getattr(end_user, "name", "") or (post_vars.get("ProfileName") or "").strip()
+                if user_name.lower() in {"vecino", "vecina", "vecino/a"}:
+                    user_name = ""
 
                 if template_sid:
                     params = {
@@ -234,29 +236,20 @@ def whatsapp_webhook():
                         f"[WELCOME] Template {template_sid} sent to {from_number_cleaned} with name: {user_name or '<unknown>'}."
                     )
 
-                    # Send an explicit text greeting so the user always sees a
-                    # welcome message even if the template contains only the
-                    # sticker.
-                    greeting = (
-                        f"¡Hola, {user_name}! Soy JUNI."
-                        if user_name
-                        else "¡Hola! Soy JUNI."
-                    )
-                    twilio_client.messages.create(
-                        from_=to_number_raw, to=from_number_raw, body=greeting
-                    )
-                else:
-                    greeting = (
-                        f"¡Hola, {user_name}! Soy JUNI."
-                        if user_name
-                        else "¡Hola! Soy JUNI."
-                    )
-                    twilio_client.messages.create(
-                        from_=to_number_raw, to=from_number_raw, body=greeting
-                    )
-                    current_app.logger.info(
-                        f"[WELCOME] Fallback text sent to {from_number_cleaned} with name: {user_name or '<unknown>'}."
-                    )
+                greeting = (
+                    f"*¡Hola, {user_name}!* Acá *Juni* \U0001F44B"
+                    if user_name
+                    else "*¡Hola!* Soy *Juni* \U0001F44B ¿Cómo te llamás?"
+                )
+                twilio_client.messages.create(
+                    from_=to_number_raw, to=from_number_raw, body=greeting
+                )
+
+                if not user_name:
+                    session_context_db_entry.context_data["awaiting_user_name"] = True
+                    safe_flag_modified(session_context_db_entry, "context_data")
+                    db.session.commit()
+                    return "OK", 200
             except Exception as e:
                 current_app.logger.error(f"[WELCOME] Failed to send sticker/template: {e}")
 
@@ -274,7 +267,7 @@ def whatsapp_webhook():
                 )
                 current_app.logger.info(f"[WELCOME] Scheduled delayed menu for {from_number_cleaned}.")
             except Exception as e:
-                 current_app.logger.error(f"[WELCOME] Failed to schedule delayed menu: {e}")
+                current_app.logger.error(f"[WELCOME] Failed to schedule delayed menu: {e}")
 
         return "OK", 200
     elif should_trigger_welcome and is_rate_limited:
@@ -285,6 +278,50 @@ def whatsapp_webhook():
     # Determine incoming text before any special handling (re-declaration to ensure it's available for the rest of the code)
     list_id = post_vars.get("ListId")
     incoming_text = button_payload or list_id or post_vars.get("Body", "")
+
+    if session_context_db_entry.context_data.get("awaiting_user_name"):
+        name_candidate = incoming_text.strip()
+        if name_candidate:
+            try:
+                extracted = extract_multiple_contact_details_llm(name_candidate, ["nombre"])
+            except Exception as e:
+                current_app.logger.error(f"[WELCOME] Name extraction failed: {e}")
+                extracted = {}
+            new_name = extracted.get("nombre") or name_candidate
+            update_user_profile(end_user, {"name": new_name})
+            session_context_db_entry.context_data.pop("awaiting_user_name", None)
+            safe_flag_modified(session_context_db_entry, "context_data")
+            db.session.commit()
+            if twilio_client:
+                twilio_client.messages.create(
+                    from_=to_number_raw,
+                    to=from_number_raw,
+                    body=f"¡Encantado, {new_name}! ¿En qué puedo ayudarte?",
+                )
+            try:
+                welcome_response_payload = responder_chatboc(
+                    pregunta="hola", owner_user=client_user, current_user=end_user,
+                    rubro_obj=client_user.rubro, chat_db_context=session_context_db_entry,
+                    tipo_chat=client_user.tipo_chat, anon_id=from_number_cleaned,
+                    chat_session_uuid=chat_session_id_internal, channel="whatsapp",
+                )
+                delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
+                _send_delayed_payload(
+                    client=twilio_client,
+                    to_number=to_number_raw,
+                    from_number=from_number_raw,
+                    payload=welcome_response_payload,
+                    delay=delay,
+                    app=current_app._get_current_object(),
+                )
+                current_app.logger.info(
+                    f"[WELCOME] Scheduled delayed menu for {from_number_cleaned}."
+                )
+            except Exception as e:
+                current_app.logger.error(
+                    f"[WELCOME] Failed to schedule delayed menu after name: {e}"
+                )
+            return "OK", 200
 
     # --- Handle pending paginated messages ---
     pending_chunks = session_context_db_entry.context_data.get("pending_chunks", [])

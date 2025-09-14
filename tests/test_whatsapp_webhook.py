@@ -147,6 +147,60 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         # Legacy welcome helper is no longer used.
         self.mock_welcome.assert_not_called()
 
+    def test_welcome_skips_generic_profile_name(self):
+        """Generic profile names should trigger a name request."""
+        self._create_confirmed_session()
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+
+        mock_twilio_message = MagicMock()
+        mock_twilio_message.sid = "SMxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_test_sid"
+        self.mock_twilio_create.return_value = mock_twilio_message
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+            "ProfileName": "Vecino/a",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.mock_twilio_create.call_count, 2)
+
+        template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertEqual(json.loads(template_kwargs["content_variables"]).get("1"), "")
+
+        text_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        self.assertEqual(text_kwargs.get("body"), "*¡Hola!* Soy *Juni* 👋 ¿Cómo te llamás?")
+
+    def test_welcome_asks_for_name_when_unknown(self):
+        """When no name is known, the bot should ask for it."""
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.mock_twilio_create.call_count, 2)
+
+        text_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        self.assertEqual(text_kwargs.get("body"), "*¡Hola!* Soy *Juni* 👋 ¿Cómo te llamás?")
+
+        session_id = f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
+        self.assertTrue(ctx.context_data.get("awaiting_user_name"))
+
+
     def test_whatsapp_webhook_invalid_signature(self):
         # Arrange
         self.mock_validator.validate.return_value = False # Simulate invalid signature
@@ -347,16 +401,33 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         payload = {
             "To": f"whatsapp:{self.test_whatsapp_number_str}",
             "From": f"whatsapp:{self.test_user_number_str}",
-            "Body": "hola"
+            "Body": "consulta"
         }
         headers = {"X-Twilio-Signature": "dummy_signature_valid"}
 
-        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+        def instant_timer(delay, func):
+            class Dummy:
+                daemon = True
+                def __init__(self, delay, func):
+                    func()
+                def start(self):
+                    pass
+            return Dummy(delay, func)
+
+        with patch('routes.whatsapp_webhook.threading.Timer', side_effect=instant_timer):
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
         self.assertEqual(response.status_code, 200)
         self.mock_twilio_create.assert_called()
-        _, kwargs_twilio = self.mock_twilio_create.call_args
-        self.assertIn('media_url', kwargs_twilio)
-        self.assertEqual(kwargs_twilio['media_url'][0], 'http://example.com/promo.jpg')
+
+        found = False
+        for call in self.mock_twilio_create.call_args_list:
+            kwargs_twilio = call.kwargs
+            if 'media_url' in kwargs_twilio:
+                self.assertEqual(kwargs_twilio['media_url'][0], 'http://example.com/promo.jpg')
+                found = True
+                break
+        self.assertTrue(found, "Expected media_url call not found")
 
     @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_docx_attachment(self, mock_requests_get):
