@@ -8,7 +8,7 @@ sys.path.insert(0, project_root)
 from app import create_app, db
 from config import TestConfig
 from models import User, Rubro, ChatSessionContext, MunicipioTicket
-from services.municipio_responder import responder_municipio, ConversationState
+from services.municipio_responder import responder_municipio, ConversationState, clear_municipio_cache
 
 class TestConsultaReclamoFlow(unittest.TestCase):
     def setUp(self):
@@ -25,6 +25,7 @@ class TestConsultaReclamoFlow(unittest.TestCase):
         ticket = MunicipioTicket(nro_ticket='123456', municipio_id=1, categoria='Luminaria', estado='en_proceso', consulta_pin='654321')
         db.session.add(ticket)
         db.session.commit()
+        clear_municipio_cache()
 
     def tearDown(self):
         db.session.remove()
@@ -118,6 +119,31 @@ class TestConsultaReclamoFlow(unittest.TestCase):
         self.assertEqual(
             chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
             ConversationState.ESPERANDO_NUMERO_TICKET.name
+        )
+
+    def test_consulta_estado_reclamo_con_numero_directo(self):
+        owner_user = User.query.get(1)
+        rubro_obj = owner_user.rubro
+        chat_context = ChatSessionContext(chat_session_id='test_consulta_numero_directo', user_id=1, context_data={})
+        db.session.add(chat_context)
+        db.session.commit()
+
+        response = responder_municipio(
+            pregunta_original='123456',
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=owner_user,
+            chat_db_context=chat_context
+        )
+
+        self.assertIn("PIN", response["message_body"])
+        self.assertEqual(
+            chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
+            ConversationState.ESPERANDO_NUMERO_TICKET.name
+        )
+        self.assertEqual(
+            chat_context.context_data['contexto_municipio_v2']['numero_ticket_consulta'],
+            '123456'
         )
 
 if __name__ == '__main__':
