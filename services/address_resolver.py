@@ -2,9 +2,7 @@ import re
 import unicodedata
 from typing import Optional, Dict, Any, List
 
-import requests
-
-from services.location_service import NOMINATIM_USER_AGENT, geocode_address
+from services.location_service import geocode_address
 import logging
 
 logger = logging.getLogger(__name__)
@@ -62,71 +60,37 @@ class AddressResolver:
         number_hint = number_hint_match.group(0) if number_hint_match else None
         return {"streets": [street_a, street_b], "number_hint": number_hint}
 
-    # Geocoding using Nominatim with bounding box and Google fallback
     def _geocode(self, street_query: str) -> List[Dict[str, Any]]:
-        url = "https://nominatim.openstreetmap.org/search"
-        params = {
-            "street": street_query,
-            "city": self.city,
-            "state": self.state,
-            "countrycodes": self.country,
-            "format": "json",
-            # Increase result count to surface multiple candidates
-            "limit": 5,
-        }
-        if self.enforce_bounds and self.bounds:
-            params["viewbox"] = f"{self.bounds[0]},{self.bounds[3]},{self.bounds[2]},{self.bounds[1]}"
-            params["bounded"] = 1
-        headers = {"User-Agent": NOMINATIM_USER_AGENT}
+        """
+        Geocodes a street query using the application's location_service.
+        """
+        full_query = f"{street_query}, {self.city}, {self.state}"
         try:
-            resp = requests.get(url, params=params, headers=headers, timeout=5)
-            resp.raise_for_status()
-            data = resp.json()
-            results = []
-            for item in data or []:
-                lat = float(item.get("lat"))
-                lon = float(item.get("lon"))
-                results.append(
-                    {
-                        "lat": lat,
-                        "lon": lon,
-                        "display_name": item.get("display_name"),
-                        "maps_search_url": f"https://maps.google.com/?q={lat},{lon}",
-                    }
-                )
-            if results:
-                return results
-        except Exception as e:
-            logger.warning("Geocode via Nominatim failed for '%s': %s", street_query, e)
+            gmaps_result = geocode_address(full_query)
+            if not gmaps_result:
+                return []
 
-        # Fallback multi-tenant (Google si hay key; si no, Nominatim sesgado)
-        try:
-            alt = geocode_address(
-                street_query,
-                geo_ctx={
-                    "city": self.city,
-                    "state": self.state,
-                    "country": self.country,
-                    "bounds": self.bounds if self.enforce_bounds else None,
-                    "region_hint": self.region_hint,
-                    "locale": self.locale,
-                },
-            )
-            if alt:
-                lat = alt.get("lat")
-                lon = alt.get("lng")
-                return [
-                    {
-                        "lat": lat,
-                        "lon": lon,
-                        "display_name": alt.get("display_name"),
-                        "maps_search_url": alt.get("maps_search_url")
-                        or f"https://maps.google.com/?q={lat},{lon}",
-                    }
-                ]
+            lat = gmaps_result.get("geometry", {}).get("location", {}).get("lat")
+            # Google Maps API uses 'lng' for longitude.
+            lon = gmaps_result.get("geometry", {}).get("location", {}).get("lng")
+            display_name = gmaps_result.get("formatted_address")
+
+            if lat is None or lon is None:
+                return []
+
+            # AddressResolver expects a list of candidates. We return one from Google.
+            return [
+                {
+                    "lat": lat,
+                    "lon": lon,  # The rest of the class expects 'lon'
+                    "display_name": display_name,
+                    "maps_search_url": f"https://maps.google.com/?q={lat},{lon}",
+                    "raw_google_result": gmaps_result,
+                }
+            ]
         except Exception as e:
-            logger.error("Fallback geocode failed for '%s': %s", street_query, e)
-        return []
+            logger.error(f"Geocode via location_service failed for '{full_query}': {e}", exc_info=True)
+            return []
 
     def resolve(self, raw_address: str) -> Optional[Dict[str, Any]]:
         if not raw_address:

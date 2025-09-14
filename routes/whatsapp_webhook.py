@@ -421,7 +421,7 @@ def whatsapp_webhook():
                 # We pass the direct URL to the transcription service
                 transcribed_text = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
                 if transcribed_text:
-                    message_body = transcribed_text
+                    message_body = f"El siguiente texto es una transcripción de un mensaje de voz: '{transcribed_text}'"
                     uploaded_file_info['transcribed_text'] = transcribed_text
                 else:
                     current_app.logger.warning("Audio transcription failed or returned empty.")

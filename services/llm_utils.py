@@ -631,6 +631,34 @@ def clasificar_entidad_con_llm(texto_usuario: str) -> str:
         print(f"Failed to parse cleaned complex TC JSON: {e}")
 
 
+def generar_descripcion_natural_de_imagen(elementos: str) -> str:
+    """
+    Genera una descripción natural a partir de una lista de elementos detectados en una imagen.
+    """
+    if not elementos:
+        return "No se detectaron elementos visuales."
+
+    from services.llm_bridge import llamar_llm_para_generacion_texto
+
+    prompt = (
+        "Eres un asistente que describe imágenes de forma natural para un reporte. "
+        "Basado en los siguientes elementos detectados en una imagen, genera una descripción concisa en una sola oración. "
+        "No uses la frase 'En la imagen se observa'. Comienza directamente con la descripción.\n\n"
+        f"Elementos detectados: '{elementos}'\n\n"
+        "Descripción en una oración:"
+    )
+    try:
+        descripcion = llamar_llm_para_generacion_texto(
+            system_prompt_especifico="Genera una descripción de imagen en una oración.",
+            user_prompt=prompt,
+            temperature=0.5
+        )
+        return descripcion.strip() if descripcion else elementos
+    except Exception as e:
+        logger.error(f"Error al generar descripción natural de imagen: {e}")
+        return elementos # Fallback a los elementos crudos
+
+
 print("Done with llm_utils.py basic execution tests.")
 
 def extraer_lista_pedido_de_texto_con_llm(texto_ocr: str, pyme_id_context: Optional[int] = None) -> List[Dict[str, Any]]:

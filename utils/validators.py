@@ -35,26 +35,47 @@ def validate_email_address(correo: str) -> bool:
 
 
 def normalize_phone(telefono: str, region: str = "AR") -> Optional[str]:
-    """Return phone number in E.164 format or None if invalid."""
-    if not telefono:
+    """
+    Return phone number in E.164 format or None if invalid.
+    Includes specific logic for Argentinian mobile numbers.
+    """
+    if not isinstance(telefono, str):
         return None
-    telefono = telefono.strip()
+
+    solo_numeros = re.sub(r"\D", "", telefono)
+    if len(solo_numeros) < 8:
+        return None
+
+    # Use phonenumbers library if available for robust parsing
     if phonenumbers:
         try:
-            parsed = phonenumbers.parse(telefono, region)
-            if not phonenumbers.is_valid_number(parsed):
-                return None
-            return phonenumbers.format_number(
-                parsed, phonenumbers.PhoneNumberFormat.E164
-            )
+            # The library is smart enough to handle most cases if region is correct
+            parsed = phonenumbers.parse(solo_numeros, region)
+            if phonenumbers.is_valid_number(parsed):
+                return phonenumbers.format_number(
+                    parsed, phonenumbers.PhoneNumberFormat.E164
+                )
         except phonenumbers.NumberParseException:
-            return None
-    digits = re.sub(r"\D", "", telefono)
-    if len(digits) < 8:
-        return None
-    if not telefono.startswith("+"):
-        return "+" + digits
-    return telefono
+            # If library fails, fallback to manual formatting
+            pass
+
+    # Manual fallback formatting (less robust, but covers common AR cases)
+    cod_pais = "54"
+    if solo_numeros.startswith(cod_pais):
+        if len(solo_numeros) == 12 and not solo_numeros.startswith('549'):
+            return f"+549{solo_numeros[2:]}"
+        return f"+{solo_numeros}"
+
+    if region == "AR":
+        if solo_numeros.startswith('0'):
+            solo_numeros = solo_numeros[1:]
+        if solo_numeros.startswith('15'):
+            solo_numeros = solo_numeros[2:]
+        if len(solo_numeros) == 10:
+            return f"+{cod_pais}9{solo_numeros}"
+        return f"+{cod_pais}{solo_numeros}"
+
+    return f"+{cod_pais}{solo_numeros}"
 
 
 def validate_address(direccion: str) -> bool:
@@ -73,25 +94,56 @@ def extract_email(text: str) -> Optional[str]:
     return None
 
 
-def extract_phone(text: str, region: str = "AR") -> Optional[str]:
-    """Extract and normalize the first phone number found in text."""
+def extract_phone(text: str, region: str = "AR") -> Optional[tuple[str, str]]:
+    """
+    Extract and normalize the first phone number found in text.
+    Returns a tuple of (normalized_phone, raw_match) or None.
+    """
     if not text:
         return None
-    match = re.search(r"\+?\d[\d\s.-]{7,}\d", text)
+    # This regex is more stable for finding a single phone number without being too greedy.
+    match = re.search(r"(\+?\d[\d\s.-]{7,18}\d)", text)
     if match:
-        return normalize_phone(match.group(0), region=region)
+        raw_match = match.group(0).strip()
+        normalized = normalize_phone(raw_match, region=region)
+        if normalized:
+            return normalized, raw_match
     return None
 
 
 def extract_name(text: str) -> Optional[str]:
-    """Extract a probable name from phrases like 'soy NAME' or 'me llamo NAME'."""
+    """Extract a probable name from text, looking for keywords or patterns."""
     if not text:
         return None
-    m = re.search(r"(?:soy|me llamo|mi nombre es)\s+([A-Za-zÁÉÍÓÚÑáéíóúñ ]{2,50})", text, re.IGNORECASE)
-    if m:
-        candidate = m.group(1).strip()
-        if validate_name(candidate):
-            return candidate
+
+    # Pattern 1: Explicit declaration ("soy", "me llamo", etc.)
+    m_explicit = re.search(r"(?:soy|me llamo|mi nombre es)\s+([A-Za-zÁÉÍÓÚÑáéíóúñ ]{2,50})", text, re.IGNORECASE)
+    if m_explicit:
+        candidate = m_explicit.group(1).strip()
+        candidate_match = re.match(r"^[A-Za-zÁÉÍÓÚÑáéíóúñ\s]+", candidate)
+        if candidate_match:
+            candidate = candidate_match.group(0).strip()
+            if validate_name(candidate):
+                return candidate
+
+    # Pattern 2: Assume the first 2-3 words are a name.
+    words = text.strip().split()
+    if not words:
+        return None
+
+    for i in range(min(3, len(words)), 1, -1):
+        candidate = " ".join(words[:i])
+        # Clean trailing punctuation that might invalidate the name
+        clean_candidate = re.sub(r'[,;:]$', '', candidate).strip()
+        if validate_name(clean_candidate):
+            return clean_candidate
+
+    # Fallback for a single-word name
+    if len(words) >= 1:
+        clean_candidate = re.sub(r'[,;:]$', '', words[0]).strip()
+        if validate_name(clean_candidate):
+            return clean_candidate
+
     return None
 
 
@@ -107,11 +159,25 @@ def extract_address(text: str) -> Optional[str]:
     return None
 
 
-def extract_dni(text: str) -> Optional[str]:
-    """Extract an Argentine DNI number (7-8 digits) from text."""
+def extract_dni(text: str) -> Optional[tuple[str, str]]:
+    """
+    Extracts an Argentine DNI (7-8 digits), ignoring dots or spaces.
+    Returns a tuple of (normalized_dni, raw_match) or None.
+    """
     if not text:
         return None
-    match = re.search(r"\b\d{7,8}\b", text)
+    # This regex looks for a sequence of digits that could be a DNI,
+    # allowing for dots or spaces as separators.
+    # It captures XX.XXX.XXX or X.XXX.XXX or XXXXXXXX patterns.
+    match = re.search(r'\b(\d{1,2}[.\s]?\d{3}[.\s]?\d{3})\b', text)
     if match:
-        return match.group(0)
+        raw_match = match.group(0)
+        normalized = re.sub(r'\D', '', raw_match)
+        if 7 <= len(normalized) <= 8:
+            return normalized, raw_match
+    # Fallback for numbers without separators
+    match = re.search(r'\b(\d{7,8})\b', text)
+    if match:
+        raw_match = match.group(0)
+        return raw_match, raw_match
     return None

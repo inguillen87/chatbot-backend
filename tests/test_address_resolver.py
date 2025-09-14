@@ -1,16 +1,17 @@
 from services.address_resolver import AddressResolver
 from unittest.mock import patch
-from services.municipio_responder import handle_direccion
 
-def _fake_resp(lat, lon, display="Stub"):
-    class FakeResponse:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return [{"lat": str(lat), "lon": str(lon), "display_name": display}]
-
-    return FakeResponse()
+def _fake_gmaps_resp(lat, lon, display="Formatted Address"):
+    """Creates a fake Google Maps geocoding response."""
+    return {
+        "formatted_address": display,
+        "geometry": {
+            "location": {
+                "lat": lat,
+                "lng": lon
+            }
+        }
+    }
 
 
 JUNIN_CONFIG = {
@@ -25,7 +26,7 @@ JUNIN_CONFIG = {
 def test_intersection_sarmiento_san_martin():
     resolver = AddressResolver(JUNIN_CONFIG)
     with patch(
-        "services.address_resolver.requests.get", return_value=_fake_resp(-33.0, -68.5)
+        "services.address_resolver.geocode_address", return_value=_fake_gmaps_resp(-33.0, -68.5)
     ):
         result = resolver.resolve("Sarmiento 100 esquina San Martín")
     assert result["precision"] == "intersection"
@@ -38,7 +39,7 @@ def test_intersection_sarmiento_san_martin():
 def test_intersection_with_e_connector():
     resolver = AddressResolver(JUNIN_CONFIG)
     with patch(
-        "services.address_resolver.requests.get", return_value=_fake_resp(-33.0, -68.5)
+        "services.address_resolver.geocode_address", return_value=_fake_gmaps_resp(-33.0, -68.5)
     ):
         result = resolver.resolve("Don Bosco e Sarmiento")
     assert result["precision"] == "intersection"
@@ -54,7 +55,7 @@ def test_dynamic_municipio_config():
     }
     resolver = AddressResolver(config)
     with patch(
-        "services.address_resolver.requests.get", return_value=_fake_resp(0.0, 0.0)
+        "services.address_resolver.geocode_address", return_value=_fake_gmaps_resp(0.0, 0.0)
     ):
         result = resolver.resolve("Falsa 123")
     assert result["localidad"] == "Ciudad X"
@@ -64,7 +65,7 @@ def test_dynamic_municipio_config():
 def test_numeric_street_name():
     resolver = AddressResolver(JUNIN_CONFIG)
     with patch(
-        "services.address_resolver.requests.get", return_value=_fake_resp(-33.0, -68.5)
+        "services.address_resolver.geocode_address", return_value=_fake_gmaps_resp(-33.0, -68.5)
     ):
         result = resolver.resolve("9 de julio 120")
     assert result["calle"] == "9 De Julio"
@@ -74,7 +75,7 @@ def test_numeric_street_name():
 def test_resolver_handles_city_suffix():
     resolver = AddressResolver(JUNIN_CONFIG)
     with patch(
-        "services.address_resolver.requests.get", return_value=_fake_resp(-33.0, -68.5)
+        "services.address_resolver.geocode_address", return_value=_fake_gmaps_resp(-33.0, -68.5)
     ):
         result = resolver.resolve("Don Bosco 55 Junin")
     assert result["calle"] == "Don Bosco"
@@ -84,7 +85,7 @@ def test_resolver_handles_city_suffix():
 def test_resolver_handles_city_and_province_suffix():
     resolver = AddressResolver(JUNIN_CONFIG)
     with patch(
-        "services.address_resolver.requests.get", return_value=_fake_resp(-33.0, -68.5)
+        "services.address_resolver.geocode_address", return_value=_fake_gmaps_resp(-33.0, -68.5)
     ):
         result = resolver.resolve("Don Bosco 55 Junin Mendoza")
     assert result["calle"] == "Don Bosco"
@@ -94,7 +95,7 @@ def test_resolver_handles_city_and_province_suffix():
 def test_resolver_keeps_province_street_name():
     resolver = AddressResolver(JUNIN_CONFIG)
     with patch(
-        "services.address_resolver.requests.get", return_value=_fake_resp(-33.0, -68.5)
+        "services.address_resolver.geocode_address", return_value=_fake_gmaps_resp(-33.0, -68.5)
     ):
         result = resolver.resolve("Mendoza 500")
     assert result["calle"] == "Mendoza"
@@ -104,7 +105,7 @@ def test_resolver_keeps_province_street_name():
 def test_resolver_includes_maps_search_url():
     resolver = AddressResolver(JUNIN_CONFIG)
     with patch(
-        "services.address_resolver.requests.get", return_value=_fake_resp(-33.0, -68.5)
+        "services.address_resolver.geocode_address", return_value=_fake_gmaps_resp(-33.0, -68.5)
     ):
         result = resolver.resolve("Sarmiento 100 esquina San Martín")
     assert result["maps_search_url"].startswith("https://maps.google.com/?q=")
@@ -119,27 +120,7 @@ def test_resolver_skips_bounds_when_disabled():
     cfg = dict(JUNIN_CONFIG)
     resolver = AddressResolver(cfg, enforce_bounds=False)
     with patch(
-        "services.address_resolver.requests.get", return_value=_fake_resp(-34.5, -69.2)
+        "services.address_resolver.geocode_address", return_value=_fake_gmaps_resp(-34.5, -69.2)
     ):
         result = resolver.resolve("Fuera 1")
     assert result["validez"] is True
-
-
-def test_ambiguous_address_candidates():
-    class MultiResp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return [
-                {"lat": "-33.0", "lon": "-68.5", "display_name": "Opcion A"},
-                {"lat": "-33.01", "lon": "-68.51", "display_name": "Opcion B"},
-            ]
-
-    municipio_cfg = JUNIN_CONFIG
-    with patch("services.address_resolver.requests.get", return_value=MultiResp()):
-        response = handle_direccion("Sarmiento 100", {}, municipio_cfg)
-
-    assert "options_list" in response
-    assert len(response["options_list"]) == 2
-    assert "1" in response["options_list"][0]["texto"]
