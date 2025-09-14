@@ -265,6 +265,10 @@ def whatsapp_webhook():
                     client=twilio_client, to_number=to_number_raw, from_number=from_number_raw,
                     payload=welcome_response_payload, delay=delay, app=current_app._get_current_object()
                 )
+                # Persist any context modifications made during the welcome call
+                safe_flag_modified(session_context_db_entry, "context_data")
+                db.session.add(session_context_db_entry)
+                db.session.commit()
                 current_app.logger.info(f"[WELCOME] Scheduled delayed menu for {from_number_cleaned}.")
             except Exception as e:
                 current_app.logger.error(f"[WELCOME] Failed to schedule delayed menu: {e}")
@@ -314,6 +318,10 @@ def whatsapp_webhook():
                     delay=delay,
                     app=current_app._get_current_object(),
                 )
+                # Persist any context updates from responder_chatboc
+                safe_flag_modified(session_context_db_entry, "context_data")
+                db.session.add(session_context_db_entry)
+                db.session.commit()
                 current_app.logger.info(
                     f"[WELCOME] Scheduled delayed menu for {from_number_cleaned}."
                 )

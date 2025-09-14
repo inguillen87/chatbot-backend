@@ -865,36 +865,55 @@ from services.google_search import google_search
 
 class GreetingHandler(BaseMunicipioHandler):
     def handle(self, payload: dict) -> dict | None:
+        """Reset and initialize municipal context for a greeting."""
         chat_db_context_data = self.context.get("chat_db_context_data")
 
-        if not chat_db_context_data:
-            logger.warning("[GreetingHandler] chat_db_context_data no encontrado. No se puede hacer un reseteo completo.")
-            contexto_municipio_actual = {}
-        else:
-            logger.info("[GreetingHandler] Saludo detectado. Realizando reseteo completo del contexto.")
+        if not isinstance(chat_db_context_data, dict):
+            logger.warning(
+                "[GreetingHandler] chat_db_context_data no encontrado. No se puede hacer un reseteo completo."
+            )
+            chat_db_context_data = {}
+            self.context["chat_db_context_data"] = chat_db_context_data
+
+        contexto_municipio_actual: dict = {}
+
+        if chat_db_context_data:
+            logger.info(
+                "[GreetingHandler] Saludo detectado. Realizando reseteo completo del contexto."
+            )
 
             # Preserve essential info if it exists
-            user_info = chat_db_context_data.get(CONTEXTO_MUNICIPIO, {}).get('user', {})
-            contacto_prev = chat_db_context_data.get(CONTEXTO_MUNICIPIO, {}).get('contacto_usuario', {})
-            profile_name = chat_db_context_data.get('profile_name')
+            user_info = chat_db_context_data.get(CONTEXTO_MUNICIPIO, {}).get("user", {})
+            contacto_prev = chat_db_context_data.get(CONTEXTO_MUNICIPIO, {}).get(
+                "contacto_usuario", {}
+            )
+            profile_name = chat_db_context_data.get("profile_name")
 
             # Clear the entire context to prevent stale data from any flow
             chat_db_context_data.clear()
 
             # Restore essential info into a fresh context
-            contexto_municipio_nuevo = chat_db_context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+            contexto_municipio_actual = chat_db_context_data.setdefault(
+                CONTEXTO_MUNICIPIO, {}
+            )
             if contacto_prev:
-                contexto_municipio_nuevo['contacto_usuario'] = contacto_prev
+                contexto_municipio_actual["contacto_usuario"] = contacto_prev
             if user_info:
-                contexto_municipio_nuevo['user'] = user_info
+                contexto_municipio_actual["user"] = user_info
             if profile_name:
-                chat_db_context_data['profile_name'] = profile_name
-
-            contexto_municipio_actual = contexto_municipio_nuevo
+                chat_db_context_data["profile_name"] = profile_name
+        else:
+            contexto_municipio_actual = chat_db_context_data.setdefault(
+                CONTEXTO_MUNICIPIO, {}
+            )
 
         # Establecer el estado para esperar una selección del menú principal en el próximo turno.
-        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
-        logger.info(f"[GreetingHandler] Nuevo estado de conversación: {contexto_municipio_actual['estado_conversacion']}")
+        contexto_municipio_actual["estado_conversacion"] = (
+            ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+        )
+        logger.info(
+            f"[GreetingHandler] Nuevo estado de conversación: {contexto_municipio_actual['estado_conversacion']}"
+        )
 
         # Usar la función centralizada para obtener el payload del menú.
         return _get_main_menu_payload(self.context)
