@@ -101,6 +101,11 @@ def test_car_emoji_triggers_licencia(owner_user):
     assert "Licencia de Conducir" in result.response["message_body"]
 
 
+def test_car_variation_emoji_triggers_licencia(owner_user):
+    result = run_turn("\U0001F697\uFE0F", owner_user=owner_user)
+    assert "Licencia de Conducir" in result.response["message_body"]
+
+
 def test_phone_emoji_triggers_contactos(owner_user):
     result = run_turn("\U0001F4DE", owner_user=owner_user)
     assert "Seleccioná una categoría" in result.response["message_body"]

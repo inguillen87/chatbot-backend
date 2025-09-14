@@ -228,11 +228,38 @@ class ReclamoFlowHandler:
             return self.ask_for_contact_details()
 
     def handle_categoria(self, user_input):
-        self.flow_context['datos_reclamo']['categoria'] = user_input
-        self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
-        return {
-            "message_body": f"Perfecto. Iniciemos tu reclamo por *{user_input}*.\n\nPor favor, describí brevemente el problema."
-        }
+        reclamo_options = _get_reclamos_menu().get("options_list", [])
+        plain_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
+
+        category = find_reclamo_category_by_input(user_input, plain_options)
+        details = {}
+        if not category:
+            details = extract_reclamo_details_from_text(user_input, plain_options)
+            category = details.pop("categoria_sugerida", None)
+
+        if not category:
+            return {
+                "message_body": "No pude reconocer la categoría. Por favor elegí una opción o describí el problema."
+            }
+
+        datos = self.flow_context.setdefault('datos_reclamo', {})
+        datos['categoria'] = category
+        if details.get('descripcion_sugerida'):
+            datos['descripcion'] = details['descripcion_sugerida']
+        if details.get('direccion_sugerida'):
+            datos['direccion'] = details['direccion_sugerida']
+
+        if not datos.get('descripcion'):
+            self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
+            return {
+                "message_body": f"Perfecto. Iniciemos tu reclamo por *{category}*.\n\nPor favor, describí brevemente el problema."
+            }
+
+        if not datos.get('direccion'):
+            self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
+            return {"message_body": "¿Dónde ocurre el problema? Indicá la dirección."}
+
+        return self.ask_for_contact_details()
 
     def handle_direccion(self, user_input, payload):
         if payload.get("es_ubicacion") and payload.get("ubicacion_usuario"):
@@ -568,6 +595,14 @@ def _super_normalize(s: str) -> str:
     """More aggressive normalization for matching, removes all non-alphanumeric chars."""
     s = normalizar_texto(s)
     return re.sub(r'[^a-z0-9]', '', s)
+
+
+VARIATION_SELECTOR = "\uFE0F"
+
+
+def strip_variation_selector(s: str) -> str:
+    """Remove emoji variation selector (U+FE0F) from input."""
+    return s.replace(VARIATION_SELECTOR, "") if isinstance(s, str) else s
 
 
 def extract_description_and_check_confirmation(text: str, confirmation_keywords: set) -> tuple[str | None, bool]:
@@ -2188,6 +2223,12 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
     if not user_input or not menu_buttons:
         return None
 
+    user_input = strip_variation_selector(user_input)
+
+    # Allow emoji shortcuts regardless of menu context.
+    if user_input in EMOJI_MAIN_MENU_ACTIONS:
+        return EMOJI_MAIN_MENU_ACTIONS[user_input]
+
     # 0. Direct action_id match to support clients sending the action identifier
     normalized_action = normalizar_texto(user_input.strip())
     for button in menu_buttons:
@@ -2393,6 +2434,11 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
     """
     if not user_input or not reclamo_options:
         return None
+
+    user_input = strip_variation_selector(user_input)
+
+    if user_input in EMOJI_RECLAMO_CATEGORIES:
+        return EMOJI_RECLAMO_CATEGORIES[user_input]
 
     normalized_input = normalizar_texto(user_input.strip())
 
@@ -2728,7 +2774,7 @@ def responder_municipio(
         elif isinstance(pregunta_original, dict) and "pregunta" in pregunta_original:
             pregunta_str_menu = pregunta_original["pregunta"]
 
-        pregunta_str_menu = pregunta_str_menu.strip().replace("\uFE0F", "")
+        pregunta_str_menu = strip_variation_selector(pregunta_str_menu.strip())
 
         emoji_category = EMOJI_RECLAMO_CATEGORIES.get(pregunta_str_menu)
         if emoji_category:
