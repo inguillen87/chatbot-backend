@@ -6,7 +6,7 @@ import unicodedata # <--- ¡Importante agregar esta línea!
 import re
 from services.config_loader import cargar_configuracion_municipio
 from services.location_service import geocode_address
-from services.tts_orchestrator import generar_audio_con_fallback
+from services.tts_orchestrator import generar_audio
 from models import MunicipioTicket
 from database import db
 from services.openai_bridge import client as openai_client
@@ -888,7 +888,7 @@ TOOL_REGISTRY = {
         "roles_permitidos": ["usuario", "empleado", "admin_municipio"]
     },
     "generar_respuesta_audio": {
-        "funcion": generar_audio_con_fallback,
+        "funcion": generar_audio,
         "descripcion": "Convierte un texto a voz y devuelve la URL de un archivo de audio.",
         "parametros": {
             "text": {

@@ -27,7 +27,7 @@ class TestSocketService(unittest.TestCase):
 
     @patch('socket_service.emit')
     @patch('services.municipio_responder.responder_municipio')
-    @patch('socket_service.generar_audio_con_fallback')
+    @patch('socket_service.generar_audio')
     def test_audio_welcome_message(self, mock_generar_audio, mock_responder_municipio, mock_emit):
         # Arrange
         mock_responder_municipio.return_value = {
