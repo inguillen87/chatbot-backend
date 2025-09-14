@@ -2587,6 +2587,26 @@ def responder_municipio(
         pregunta_str = ""
         received_payload["pregunta"] = ""
 
+    # Detección temprana de números de ticket antes de cualquier otra lógica
+    if (
+        isinstance(pregunta_str, str)
+        and pregunta_str.strip().isdigit()
+        and len(pregunta_str.strip()) >= 6
+        and chat_db_context is not None
+    ):
+        chat_ctx_data = chat_db_context.context_data if chat_db_context.context_data is not None else {}
+        contexto_municipio_actual = chat_ctx_data.setdefault(CONTEXTO_MUNICIPIO, {})
+        estado_existente = contexto_municipio_actual.get("estado_conversacion")
+        if not estado_existente or estado_existente == ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name:
+            contexto_municipio_actual['numero_ticket_consulta'] = pregunta_str.strip()
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NUMERO_TICKET.name
+            chat_db_context.context_data = chat_ctx_data
+            flag_modified(chat_db_context, "context_data")
+            return {
+                "message_body": "Ingresá el PIN de 6 dígitos asociado al ticket.",
+                "fuente": "handler_consultar_reclamo",
+            }
+
     normalized_question = normalizar_texto(pregunta_str)
     if normalized_question in MUNICIPIO_RESPONSE_CACHE:
         logger_actual.info("responder_municipio: returning cached response")
@@ -2631,6 +2651,27 @@ def responder_municipio(
     # any other processing like intent classification or menu keyword matching.
 
     estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
+
+    # Detectar número de ticket ingresado directamente antes de evaluar menús
+    if (
+        not received_payload.get("action")
+        and isinstance(pregunta_str, str)
+        and pregunta_str.strip().isdigit()
+        and len(pregunta_str.strip()) >= 6
+        and (
+            not estado_conversacion
+            or estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+        )
+    ):
+        numero_ticket = ''.join(filter(str.isdigit, pregunta_str))
+        contexto_municipio_actual['numero_ticket_consulta'] = numero_ticket
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NUMERO_TICKET.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response({
+            "message_body": "Ingresá el PIN de 6 dígitos asociado al ticket.",
+            "fuente": "handler_consultar_reclamo",
+        })
 
     # 1. Handle active conversation states first.
     if estado_conversacion:
