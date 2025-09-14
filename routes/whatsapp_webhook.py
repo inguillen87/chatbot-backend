@@ -216,6 +216,7 @@ def whatsapp_webhook():
             try:
                 template_sid = current_app.config.get("WELCOME_TEMPLATE_SID")
                 # Prioritize DB name, then WhatsApp profile name, then fallback.
+                # Prioritize DB name, then WhatsApp profile name, then fallback.
                 user_name = getattr(end_user, "name", "") or post_vars.get("ProfileName") or "vecino/a"
                 if template_sid:
                     twilio_client.messages.create(
@@ -304,7 +305,7 @@ def whatsapp_webhook():
     media_content_type = post_vars.get("MediaContentType0")
     uploaded_file_info = None
     message_body = incoming_text
-    interpretacion_media_data = None  # Initialize to store data from media handlers
+    interpretacion_media_data = None  # This will be populated by the media handler
 
     if media_url and media_content_type:
         from services.media_handlers import process_whatsapp_media
@@ -315,14 +316,10 @@ def whatsapp_webhook():
             media_content = r.content
             file_stream = io.BytesIO(media_content)
             file_name = f"whatsapp_media_{uuid.uuid4().hex[:12]}"
-            file_storage = FileStorage(
-                stream=file_stream,
-                filename=file_name,
-                content_type=media_content_type
-            )
+            file_storage = FileStorage(stream=file_stream, filename=file_name, content_type=media_content_type)
 
-            # Delegate processing to the new media handler service
-            new_message_body, new_uploaded_file_info, new_interpreted_data = process_whatsapp_media(
+            # Delegate all media processing to the centralized handler
+            message_body, uploaded_file_info, interpretacion_media_data = process_whatsapp_media(
                 file_storage=file_storage,
                 media_url=media_url,
                 media_type=media_content_type,
@@ -330,19 +327,12 @@ def whatsapp_webhook():
                 session_id=chat_session_id_internal,
                 client_user=client_user
             )
-
-            # Update webhook-level variables with the results from the handler
-            if new_message_body:
-                message_body = new_message_body
-            if new_uploaded_file_info:
-                uploaded_file_info = new_uploaded_file_info
-            if new_interpreted_data:
-                interpretacion_media_data = new_interpreted_data
-
         except requests.exceptions.RequestException as e:
             current_app.logger.error(f"Error downloading media from Twilio URL {media_url}: {e}")
+            message_body = "[Error al descargar el archivo adjunto]"
         except Exception as e:
             current_app.logger.error(f"Error processing WhatsApp media file: {e}", exc_info=True)
+            message_body = "[Error al procesar el archivo adjunto]"
             uploaded_file_info = None # Ensure it's reset on failure
 
     # --- Location Handling ---
@@ -425,9 +415,6 @@ def whatsapp_webhook():
 
     try:
         print(f"Calling responder_chatboc for session_id: {chat_session_id_internal}, owner_user: {client_user.name}")
-
-        # Location info should not be treated as interpreted media.
-        # It should be passed directly as location data.
 
         kwargs_for_bot = {"source_channel": "whatsapp"}
         if uploaded_file_info:
