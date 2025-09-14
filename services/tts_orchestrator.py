@@ -3,8 +3,17 @@ import os
 import hashlib
 import shutil
 import re
+import textwrap
 
 logger = logging.getLogger(__name__)
+
+
+def _summarize_if_long(text: str, max_chars: int = 500) -> str:
+    """Truncate long strings so speech does not become overwhelming."""
+
+    if len(text) <= max_chars:
+        return text
+    return textwrap.shorten(text, width=max_chars, placeholder=" ...")
 
 
 def sanitize_for_tts(raw: str) -> str:
@@ -14,6 +23,8 @@ def sanitize_for_tts(raw: str) -> str:
     - Removes URLs, emojis and other non standard symbols.
     - Normalizes numbered options like ``1)`` to ``Opción 1:``.
     - Expands common time abbreviations such as ``hs``/``hrs`` to "horas".
+    - Converts bullet points to explicit "Punto" markers.
+    - Shortens overly long texts.
     """
 
     cleaned = re.sub(r"https?://\S+", "", raw)  # strip URLs
@@ -22,6 +33,8 @@ def sanitize_for_tts(raw: str) -> str:
     cleaned = re.sub(r"[^\w\s.,;:0-9áéíóúÁÉÍÓÚñÑüÜ-]", "", cleaned)
     # Normalize numbered options like "1.", "1)" or "1-" to "Opción 1:"
     cleaned = re.sub(r"(?m)^\s*(\d+)[\.)-]\s*", r"Opción \1: ", cleaned)
+    # Convert bullet points to explicit prompts
+    cleaned = re.sub(r"(?m)^\s*[\-•]\s*", "Punto: ", cleaned)
     # Expand time abbreviations (e.g., "18 hs" -> "18 horas", "24hrs" -> "24 horas")
     cleaned = re.sub(
         r"(?i)\b(\d{1,2}(?:[:.]\d{2})?)\s*(hs|hrs)\b",
@@ -29,7 +42,9 @@ def sanitize_for_tts(raw: str) -> str:
         cleaned,
     )
     cleaned = re.sub(r"(?i)\b(hs|hrs)\b", "horas", cleaned)
-    return " ".join(cleaned.split())
+    cleaned = re.sub(r"\s*\n+\s*", ". ", cleaned)
+    cleaned = " ".join(cleaned.split())
+    return _summarize_if_long(cleaned)
 
 
 def generar_audio_con_fallback(text: str) -> str | None:
@@ -74,11 +89,11 @@ def generar_audio_con_fallback(text: str) -> str | None:
 
     # 1. Try OpenAI
     try:
-        speed_env = os.getenv("TTS_SPEECH_SPEED", "0.9")
+        speed_env = os.getenv("TTS_SPEECH_SPEED", "0.85")
         try:
             speech_speed = float(speed_env)
         except ValueError:
-            speech_speed = 0.9
+            speech_speed = 0.85
         logger.info("TTS Orchestrator: Trying OpenAI...")
         audio_url = generar_audio_openai(text, speed=speech_speed)
         if audio_url:

@@ -594,7 +594,7 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
     if welcome_message_override:
         welcome_message = welcome_message_override
     elif user_name:
-        welcome_message = f"¡Hola, {user_name}!"
+        welcome_message = f"👋 ¡Hola, {user_name}!"
     else:
         # User's name is not known, ask for it.
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
@@ -606,8 +606,9 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
         }
 
     main_text_body = (
-        "Soy JUNI, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
-        "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más.\n\n"
+        "Soy *JUNI*, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
+        "*Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz* con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más. Este servicio es accesible y está listo para ayudarte.\n\n"
+        "También podés usar emojis para realizar acciones rápidas.\n\n"
         "¿Cómo te puedo ayudar hoy?"
     )
 
@@ -615,12 +616,13 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
     if channel == "whatsapp":
         # Simplified menu for WhatsApp: only top-level categories
         categorias = [{
-            "titulo": "Categorías",
+            "titulo": "*Categorías*",
             "botones": [
                 {"texto": "🗣️ Reclamos y Consultas", "action_id": "mostrar_menu_reclamos"},
                 {"texto": "🚗 Trámites y Turnos", "action_id": "mostrar_menu_tramites"},
                 {"texto": "📰 Información del Municipio", "action_id": "mostrar_menu_informacion"},
                 {"texto": "🅿️ Estacionamiento", "action_id": "mostrar_menu_estacionamiento"},
+                {"texto": "❓ Ayuda", "action_id": "mostrar_menu_ayuda"},
             ]
         }]
 
@@ -651,6 +653,9 @@ def _get_main_menu_payload(context: dict, welcome_message_override: str = None) 
             ]},
             {"titulo": "🅿️ Estacionamiento", "botones": [
                 {"texto": "🅿️ Buscar Estacionamiento Libre", "action_id": "buscar_estacionamiento"},
+            ]},
+            {"titulo": "❓ Ayuda", "botones": [
+                {"texto": "ℹ️ Cómo usar el bot", "action_id": "mostrar_menu_ayuda"},
             ]}
         ]
 
@@ -708,7 +713,9 @@ def clean_text_for_tts(text: str) -> str:
     # Remove other special characters that might be read aloud, like the hand wave emoji not caught by the range
     text = text.replace('👋', '').replace('🛠️', '').replace('📄', '').replace('📅', '').replace('📰', '').replace('🗣️', '').replace('📸', '').replace('📍', '')
 
-    # Replace multiple newlines and spaces with a single space
+    # Replace newlines with periods to encourage pauses
+    text = re.sub(r'\s*\n+\s*', '. ', text)
+    # Replace multiple spaces with a single space
     text = re.sub(r'\s+', ' ', text).strip()
 
     return text
