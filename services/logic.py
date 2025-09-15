@@ -188,6 +188,7 @@ def responder_chatboc(
     # --- Inicio: Lógica de manejo de archivo adjunto y su análisis ---
     uploaded_file_info = kwargs.get("uploaded_file_info")
     datos_interpretados_de_archivo = kwargs.get("datos_interpretados_archivo")
+    skip_image_analysis = kwargs.pop("skip_media_analysis", False)
     archivo_id_para_asociar_al_ticket = None
     procesamiento_archivo_en_curso = False # Nueva bandera
 
@@ -214,7 +215,11 @@ def responder_chatboc(
                 kwargs["es_foto"] = True
                 stored_url = uploaded_file_info.get("url") if uploaded_file_info else None
                 kwargs["foto_url"] = stored_url or media_url
-                if chat_db_context and chat_db_context.context_data:
+                if (
+                    not skip_image_analysis
+                    and chat_db_context
+                    and chat_db_context.context_data
+                ):
                     muni_ctx = chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {})
                     if muni_ctx.get("reclamo_flow_v2", {}).get("state"):
                         skip_image_analysis = True

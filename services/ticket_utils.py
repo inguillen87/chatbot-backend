@@ -111,8 +111,7 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
         respuesta += f"- *PIN de seguimiento:* `{consulta_pin}`\n"
 
     if nombre_asesor:
-        if not respuesta.endswith("\n"):
-            respuesta += "\n"
+        respuesta = respuesta.rstrip("\n") + "\n"
         respuesta += "📞 *Contacto para seguimiento:*\n"
         respuesta += f"- *Nombre:* {nombre_asesor}\n"
         if titulo_asesor:
