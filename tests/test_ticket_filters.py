@@ -61,18 +61,13 @@ class TicketFiltersTests(unittest.TestCase):
         self.app_context.pop()
 
     def test_estado_filter_municipio(self):
-        municipio_user = User(email='municipio@test.com', name='Test Municipio', rol='admin', tipo_chat='municipio')
-        municipio_user.set_password('password')
-        db.session.add(municipio_user)
-        db.session.commit()
-
-        admin_user = User(email='admin@test.com', name='Admin Test', rol='admin', municipio_id=municipio_user.id, tipo_chat='municipio')
+        admin_user = User(email='admin@test.com', name='Admin Test', rol='admin', municipio_id=5, tipo_chat='municipio')
         admin_user.set_password('password')
         db.session.add(admin_user)
         db.session.commit()
 
-        t1 = MunicipioTicket(id=1, nro_ticket='1', estado='abierto', fecha=datetime.now(), categoria='A', direccion=None, latitud=None, longitud=None, municipio_id=municipio_user.id)
-        t2 = MunicipioTicket(id=2, nro_ticket='2', estado='cerrado', fecha=datetime.now(), categoria='A', direccion=None, latitud=None, longitud=None, municipio_id=municipio_user.id)
+        t1 = MunicipioTicket(id=1, nro_ticket='1', estado='abierto', fecha=datetime.now(), categoria='A', direccion=None, latitud=None, longitud=None, municipio_id=5)
+        t2 = MunicipioTicket(id=2, nro_ticket='2', estado='cerrado', fecha=datetime.now(), categoria='A', direccion=None, latitud=None, longitud=None, municipio_id=5)
         db.session.add_all([t1, t2])
         db.session.commit()
 
@@ -84,10 +79,6 @@ class TicketFiltersTests(unittest.TestCase):
             self.assertEqual(data['tickets'][0]['id'], 1)
 
     def test_categoria_filter_pyme(self):
-        from models import Rubro
-        rubro = Rubro(id=7, nombre="Test Rubro", clave="test_rubro")
-        db.session.add(rubro)
-
         pyme_user = User(email='pyme@test.com', name='Pyme Test', rol='admin', rubro_id=7, tipo_chat='pyme')
         pyme_user.set_password('password')
         db.session.add(pyme_user)

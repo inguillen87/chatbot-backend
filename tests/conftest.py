@@ -3,13 +3,9 @@ eventlet.monkey_patch()
 import pytest
 from app import create_app, db
 from config import TestingConfig
-@pytest.fixture(scope='function')
+@pytest.fixture(scope='session')
 def app():
-    """
-    Create a new app instance for each test function.
-    Function scope ensures that each test gets a fresh, isolated app,
-    preventing issues with shared state like database model definitions.
-    """
+    """Create a new app instance for each test session."""
     app = create_app(TestingConfig)
     return app
 

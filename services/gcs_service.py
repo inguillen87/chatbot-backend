@@ -4,7 +4,6 @@ import io
 import requests
 from flask import current_app
 from werkzeug.utils import secure_filename
-from werkzeug.datastructures import FileStorage
 from services.thumbnail_service import generar_thumbnail
 
 # Optional Cloudinary storage

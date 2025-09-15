@@ -2,11 +2,10 @@ import unittest
 from unittest.mock import patch
 from app import create_app, db
 from models import MunicipioTicket, User, TicketComentario
-from config import TestConfig
 
 class TicketProgressRouteTest(unittest.TestCase):
     def setUp(self):
-        self.app = create_app(TestConfig)
+        self.app = create_app()
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()

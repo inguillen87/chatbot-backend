@@ -2,15 +2,10 @@ import unittest
 import json
 from app import create_app, db
 from models import User, MunicipioTicket, PymeTicket, Rubro
-from config import TestConfig as BaseTestConfig
-
-class TestConfig(BaseTestConfig):
-    # any specific overrides for this test file
-    pass
 
 class TicketStateSyncTest(unittest.TestCase):
     def setUp(self):
-        self.app = create_app(TestConfig)
+        self.app = create_app()
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()

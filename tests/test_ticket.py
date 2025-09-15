@@ -5,12 +5,14 @@ from unittest.mock import patch
 from app import create_app
 from extensions import db
 from models import User, MunicipioTicket, TicketComentario
-from config import TestConfig
 import json
 
 class TicketRoutesTests(unittest.TestCase):
     def setUp(self):
-        self.app = create_app(TestConfig)
+        self.app = create_app()
+        self.app.config['TESTING'] = True
+        self.app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
+        self.app.config['SESSION_TYPE'] = 'filesystem'
         self.client = self.app.test_client()
         with self.app.app_context():
             db.create_all()
@@ -134,6 +136,7 @@ class TicketRoutesTests(unittest.TestCase):
                 name="Juan Perez",
                 email="juan.perez@test.com",
                 telefono="+5490000000000",
+                dni="11111111",
                 rol="usuario",
                 direccion="Calle Falsa 123",
                 empresa_id=admin_user.id
