@@ -2,7 +2,6 @@
 import logging
 import re
 from .base_action_handler import BaseActionHandler
-from services.gcs_service import upload_file_from_url
 from typing import Dict, Any
 import random
 from services.ticket_service import servicio_tickets
@@ -64,13 +63,9 @@ class CrearReclamoActionHandler(BaseActionHandler):
         datos_parciales_llm = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
         contacto_ctx = contexto_reclamo.get("contacto_usuario", {})
 
-        # --- Data Gathering & Validation ---
-        # Process each field individually, checking for validity at each step
-        # to ensure the first valid piece of data from the precedence chain is used.
-        # Precedence: action_data > datos_parciales_llm > viewer_user
-
-        # Claim Details
-        categoria = action_data.get("categoria") or datos_parciales_llm.get("categoria")
+        # Fusionar datos: action_data tiene prioridad, luego el contexto del reclamo, luego el perfil del usuario
+        datos_parciales = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
+        categoria = action_data.get("categoria") or datos_parciales.get("categoria")
         if categoria:
             categoria = re.sub(r"^[^\w]+", "", str(categoria)).strip()
         descripcion = action_data.get("descripcion") or datos_parciales_llm.get("descripcion")
@@ -105,8 +100,20 @@ class CrearReclamoActionHandler(BaseActionHandler):
             or self.context.get("profile_name")
             or "Vecino/a"
         )
+        profile_name_from_user_obj = getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None)
+        profile_name_from_context = self.context.get("profile_name")
 
-        # Contact Info - Phone
+        # Prioritize LLM name, then profile from user object, then profile from context.
+        nombre_vecino_final = "Vecino/a"  # Default
+        if isinstance(llm_name, str) and llm_name.strip():
+            nombre_vecino_final = llm_name
+        elif isinstance(profile_name_from_user_obj, str) and profile_name_from_user_obj.strip():
+            nombre_vecino_final = profile_name_from_user_obj
+        elif isinstance(profile_name_from_context, str) and profile_name_from_context.strip():
+            nombre_vecino_final = profile_name_from_context
+
+        telefono_from_llm = (action_data.get("telefono") or datos_parciales.get("telefono") or
+                             action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado"))
         telefono_final = None
         phone_sources = [
             action_data.get("telefono"),
@@ -152,22 +159,29 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         # Optional contact address
         direccion_contacto = (
-            action_data.get("direccion")
-            or datos_parciales_llm.get("direccion_contacto")
-            or getattr(viewer_user, "direccion", None)
+            action_data.get("direccion_contacto")
+            or datos_parciales.get("direccion_contacto")
+            or action_data.get("direccion")
         )
+        if not direccion_contacto and viewer_user:
+            direccion_contacto = getattr(viewer_user, "direccion", None)
 
-        # Handle Photo Upload
-        public_foto_url = None
-        if foto_url_llm:
-            logger.info(f"Uploading photo from temporary URL: {foto_url_llm}")
-            upload_result = upload_file_from_url(foto_url_llm)
-            if upload_result and upload_result.get("original_url"):
-                public_foto_url = upload_result.get("original_url")
-                logger.info(f"Photo uploaded to public URL: {public_foto_url}")
-            else:
-                logger.warning(f"Failed to upload photo from URL: {foto_url_llm}")
-                public_foto_url = foto_url_llm  # Fallback
+
+        # Actualizar el contexto con los datos más recientes para persistencia
+        for key, value in [
+            ("categoria_reclamo", categoria),
+            ("descripcion_reclamo", descripcion),
+            ("direccion_reclamo", ubicacion_llm),
+            ("coordenadas_reclamo", coordenadas_llm),
+            ("nombre_vecino", nombre_vecino_final),
+            ("telefono_vecino", telefono_final),
+            ("email_vecino", email_final),
+            ("dni_vecino", dni_final),
+            ("direccion_contacto", direccion_contacto),
+            ("foto_url", foto_url_llm),
+        ]:
+            if value:
+                contexto_reclamo[key] = value
 
         # Validación de datos esenciales para la creación del ticket
         # Default required fields if not specified in config
@@ -216,9 +230,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
         # --- Handle PIN (generate if missing) ---
         pin_llm = (
             action_data.get("pin")
-            or datos_parciales_llm.get("pin")
-            or action_data.get("consulta_pin")
-            or datos_parciales_llm.get("consulta_pin")
+            or datos_parciales.get("pin")
+            or datos_parciales.get("consulta_pin")
         )
         pin_str = str(pin_llm).strip() if pin_llm else ""
         if pin_str.isdigit() and len(pin_str) == 6:
@@ -294,7 +307,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "latitud": coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None,
             "longitud": coordenadas_llm.get("lon") if isinstance(coordenadas_llm, dict) else None,
             "origen_reclamo": "LLM_CHATBOT",
-            "foto_url_directa": public_foto_url,
+            "foto_url_directa": foto_url_llm,
             "canal_ingreso": self.context.get("channel"),
             "consulta_pin": pin_final,
         }

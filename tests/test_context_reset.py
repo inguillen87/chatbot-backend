@@ -34,7 +34,7 @@ class TestContextReset(unittest.TestCase):
             db.session.remove()
             db.drop_all()
 
-    @patch('services.municipio_responder.handle_llm_interaction')
+    @patch('services.municipio_responder.llamar_gemini')
     def test_general_query_resets_reclamo_context(self, mock_llm):
         with self.app.app_context():
             owner_user = User.query.get(1)

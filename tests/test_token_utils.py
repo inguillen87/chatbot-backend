@@ -9,11 +9,11 @@ if project_root_token_utils not in sys.path:
 
 from app import create_app
 from routes.auth import obtener_token
-from config import TestConfig
 
 class TokenExtractionTests(unittest.TestCase):
     def setUp(self):
-        app = create_app(TestConfig)
+        app = create_app()
+        app.config['TESTING'] = True
         self.app = app
 
     def test_authorization_without_bearer(self):

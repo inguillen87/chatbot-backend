@@ -210,6 +210,7 @@ def responder_chatboc(
             # picture was already provided. This allows the claim flow to reuse the
             # initial image instead of prompting for another one after location is
             # sent.
+            skip_image_analysis = False
             if media_content_type and media_content_type.startswith("image/"):
                 kwargs["es_foto"] = True
                 stored_url = uploaded_file_info.get("url") if uploaded_file_info else None

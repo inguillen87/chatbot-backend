@@ -117,9 +117,9 @@ class TestNewFeatures(unittest.TestCase):
         self.assertEqual(len(respuesta.get("options_list", [])), 12)
 
     @patch('services.llm_orchestrator.llamar_llm_con_fallback')
-    def test_llm_mostrar_menu_returns_full_menu(self, mock_llm_orchestrator):
+    def test_llm_mostrar_menu_returns_full_menu(self, mock_llamar_gemini):
         """Verifica que la acción "mostrar_menu" del LLM devuelve el menú completo."""
-        mock_llm_orchestrator.return_value = (
+        mock_llamar_gemini.return_value = (
             {
                 "message_body": "Partial menu",  # Should be replaced by local menu
                 "accion_backend": "mostrar_menu",
@@ -144,9 +144,9 @@ class TestNewFeatures(unittest.TestCase):
         )
 
     @patch('services.llm_orchestrator.llamar_llm_con_fallback')
-    def test_keyword_pago_tasas(self, mock_llm_orchestrator):
+    def test_keyword_pago_tasas(self, mock_llamar_gemini):
         """Ingresar un mensaje sobre impuestos debe devolver info de tasas sin usar el LLM."""
-        mock_llm_orchestrator.return_value = ({}, {})
+        mock_llamar_gemini.return_value = ({}, {})
         response = responder_municipio(
             pregunta_original="Quiero pagar un impuesto",
             owner_user=MagicMock(id=1),
@@ -154,12 +154,12 @@ class TestNewFeatures(unittest.TestCase):
             chat_db_context=MagicMock(context_data={}),
         )
         self.assertIn("tasas municipales", response.get("message_body", ""))
-        mock_llm_orchestrator.assert_not_called()
+        mock_llamar_gemini.assert_not_called()
 
     @patch('services.llm_orchestrator.llamar_llm_con_fallback')
-    def test_keyword_estacionamiento(self, mock_llm_orchestrator):
+    def test_keyword_estacionamiento(self, mock_llamar_gemini):
         """Solicitar estacionamiento por texto debe activar la acción correspondiente."""
-        mock_llm_orchestrator.return_value = ({}, {})
+        mock_llamar_gemini.return_value = ({}, {})
         response = responder_municipio(
             pregunta_original="Necesito estacionar mi auto",
             owner_user=MagicMock(id=1),
@@ -167,12 +167,12 @@ class TestNewFeatures(unittest.TestCase):
             chat_db_context=MagicMock(context_data={}),
         )
         self.assertIn("estacionamiento libre", response.get("message_body", "").lower())
-        mock_llm_orchestrator.assert_not_called()
+        mock_llamar_gemini.assert_not_called()
 
     @patch('services.llm_orchestrator.llamar_llm_con_fallback')
-    def test_keyword_defensa_consumidor(self, mock_llm_orchestrator):
+    def test_keyword_defensa_consumidor(self, mock_llamar_gemini):
         """Preguntar por defensa del consumidor devuelve contacto y evita LLM."""
-        mock_llm_orchestrator.return_value = ({}, {})
+        mock_llamar_gemini.return_value = ({}, {})
         response = responder_municipio(
             pregunta_original="Necesito defensa del consumidor",
             owner_user=MagicMock(id=1),
@@ -180,12 +180,12 @@ class TestNewFeatures(unittest.TestCase):
             chat_db_context=MagicMock(context_data={}),
         )
         self.assertIn("Defensa del Consumidor", response.get("message_body", ""))
-        mock_llm_orchestrator.assert_not_called()
+        mock_llamar_gemini.assert_not_called()
 
     @patch('services.llm_orchestrator.llamar_llm_con_fallback')
-    def test_keyword_recoleccion_residuos(self, mock_llm_orchestrator):
+    def test_keyword_recoleccion_residuos(self, mock_llamar_gemini):
         """Consultas sobre recolección deben responder con horarios sin usar LLM."""
-        mock_llm_orchestrator.return_value = ({}, {})
+        mock_llamar_gemini.return_value = ({}, {})
         response = responder_municipio(
             pregunta_original="¿Cuando pasa el camión de basura?",
             owner_user=MagicMock(id=1),
@@ -193,12 +193,12 @@ class TestNewFeatures(unittest.TestCase):
             chat_db_context=MagicMock(context_data={}),
         )
         self.assertIn("camión recolector", response.get("message_body", ""))
-        mock_llm_orchestrator.assert_not_called()
+        mock_llamar_gemini.assert_not_called()
 
     @patch('services.llm_orchestrator.llamar_llm_con_fallback')
-    def test_keyword_obras(self, mock_llm_orchestrator):
+    def test_keyword_obras(self, mock_llamar_gemini):
         """Consultas sobre obras deben responder sin usar el LLM."""
-        mock_llm_orchestrator.return_value = ({}, {})
+        mock_llamar_gemini.return_value = ({}, {})
         response = responder_municipio(
             pregunta_original="¿Qué obras están haciendo?",
             owner_user=MagicMock(id=1),
@@ -215,12 +215,12 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("Instagram", social)
         self.assertTrue(social["Facebook"].get("image_url"))
         self.assertTrue(social["Instagram"].get("image_url"))
-        mock_llm_orchestrator.assert_not_called()
+        mock_llamar_gemini.assert_not_called()
 
     @patch('services.llm_orchestrator.llamar_llm_con_fallback')
-    def test_keyword_punto_limpio(self, mock_llm_orchestrator):
+    def test_keyword_punto_limpio(self, mock_llamar_gemini):
         """Preguntar por punto limpio debe devolver info y evitar el LLM."""
-        mock_llm_orchestrator.return_value = ({}, {})
+        mock_llamar_gemini.return_value = ({}, {})
         response = responder_municipio(
             pregunta_original="¿Dónde está el punto limpio?",
             owner_user=MagicMock(id=1),
@@ -241,12 +241,12 @@ class TestNewFeatures(unittest.TestCase):
             response.get("image_url"),
             "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png",
         )
-        mock_llm_orchestrator.assert_not_called()
+        mock_llamar_gemini.assert_not_called()
 
     @patch('services.llm_orchestrator.llamar_llm_con_fallback')
-    def test_keyword_tributo(self, mock_llm_orchestrator):
+    def test_keyword_tributo(self, mock_llamar_gemini):
         """El uso de la palabra 'tributo' debe resolverse sin el LLM."""
-        mock_llm_orchestrator.return_value = ({}, {})
+        mock_llamar_gemini.return_value = ({}, {})
         response = responder_municipio(
             pregunta_original="¿Dónde pago un tributo municipal?",
             owner_user=MagicMock(id=1),
@@ -254,12 +254,12 @@ class TestNewFeatures(unittest.TestCase):
             chat_db_context=MagicMock(context_data={}),
         )
         self.assertIn("tasas municipales", response.get("message_body", ""))
-        mock_llm_orchestrator.assert_not_called()
+        mock_llamar_gemini.assert_not_called()
 
     @patch('services.municipio_responder.cargar_agenda_cultural')
     @patch('services.llm_orchestrator.llamar_llm_con_fallback')
-    def test_agenda_incluye_imagen_evento(self, mock_llm_orchestrator, mock_cargar):
-        mock_llm_orchestrator.return_value = ({}, {})
+    def test_agenda_incluye_imagen_evento(self, mock_llamar_llm, mock_cargar):
+        mock_llamar_llm.return_value = ({}, {})
         mock_cargar.return_value = {
             "eventos": [
                 {
@@ -278,7 +278,7 @@ class TestNewFeatures(unittest.TestCase):
         )
         self.assertEqual(response.get("image_url"), "http://example.com/event.jpg")
         self.assertIn("maratón", response.get("message_body", "").lower())
-        mock_llm_orchestrator.assert_not_called()
+        mock_llamar_llm.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono', return_value=True)

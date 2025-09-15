@@ -22,12 +22,11 @@ def _create_user():
     db.session.commit()
     return user
 
-from config import TestConfig
-
 @unittest.skipIf(create_app is None, "Flask not available")
 class WidgetConfigEndpointTests(unittest.TestCase):
     def setUp(self):
-        self.app = create_app(TestConfig)
+        self.app = create_app()
+        self.app.config["TESTING"] = True
         self.ctx = self.app.app_context()
         self.ctx.push()
         db.create_all()

@@ -4,15 +4,54 @@ from app import create_app, db
 from models import User, Rubro, ChatSessionContext
 from services.municipio_responder import responder_municipio
 
-from models import ChatSessionContext
+@pytest.fixture(scope='module')
+def test_client():
+    """Configura la aplicación Flask para las pruebas."""
+    app = create_app()
+    app.config.update({
+        "TESTING": True,
+        "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:",
+        "WTF_CSRF_ENABLED": False,
+        "TWILIO_ACCOUNT_SID": "test_sid",
+        "TWILIO_AUTH_TOKEN": "test_token",
+    })
+
+    with app.app_context():
+        db.create_all()
+        db.session.query(ChatSessionContext).delete()
+        db.session.query(User).delete()
+        db.session.query(Rubro).delete()
+        db.session.commit()
+
+        rubro = Rubro(nombre="municipio", clave="municipio")
+        db.session.add(rubro)
+        user = User(
+            name="Test User",
+            email="test@example.com",
+            password_hash="test",
+            nombre_empresa="Municipalidad de Test",
+            tipo_chat="municipio",
+            rubro=rubro,
+            municipio_id=1
+        )
+        db.session.add(user)
+        db.session.commit()
+
+    with app.test_client() as testing_client:
+        with app.app_context():
+            yield testing_client
+    with app.app_context():
+        db.drop_all()
+
 @pytest.fixture
 def mock_llm():
-    """Mock para la función handle_llm_interaction."""
-    with patch('services.municipio_responder.handle_llm_interaction') as mock:
+    """Mock para la función llamar_gemini."""
+    with patch('services.municipio_responder.llamar_gemini') as mock:
         yield mock
 
-def test_full_claim_in_one_go(client, owner_user, mock_llm):
+def test_full_claim_in_one_go(test_client, mock_llm):
     """Prueba la creación de un reclamo cuando el usuario da toda la info de una vez."""
+    owner_user = User.query.first()
     chat_session_id = "whatsapp_1_123456789"
     chat_db_context = ChatSessionContext(chat_session_id=chat_session_id, user_id=owner_user.id, anon_id="123456789")
     db.session.add(chat_db_context)
@@ -56,8 +95,9 @@ def test_full_claim_in_one_go(client, owner_user, mock_llm):
         assert kwargs['ticket_data']['categoria'] == "Semáforos"
         assert kwargs['ticket_data']['nombre_vecino'] == "Marcelo Guillen"
 
-def test_claim_in_multiple_steps(client, owner_user, mock_llm):
+def test_claim_in_multiple_steps(test_client, mock_llm):
     """Prueba la creación de un reclamo en múltiples interacciones."""
+    owner_user = User.query.first()
     chat_session_id = "whatsapp_1_987654321"
     chat_db_context = ChatSessionContext(chat_session_id=chat_session_id, user_id=owner_user.id, anon_id="987654321")
     db.session.add(chat_db_context)
