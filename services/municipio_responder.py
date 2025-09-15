@@ -216,7 +216,7 @@ class ReclamoFlowHandler:
             self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
             # Construct a message confirming the data we have
             categoria = self.flow_context['datos_reclamo']['categoria']
-            return {"message_body": f"Reclamo por *{categoria}*.\n\n📍 Para continuar, por favor, indicame la dirección exacta del problema (ej: Av. San Martín 123, Junín)."}
+            return {"message_body": f"Reclamo por *{categoria}*.\n\n📍 Para continuar, por favor, indicame la dirección exacta del problema."}
         else:
             # All initial data is present, move to confirmation or next step
             return self.ask_for_contact_details()
@@ -304,7 +304,7 @@ class ReclamoFlowHandler:
             categoria = self.flow_context['datos_reclamo'].get('categoria', '')
             mensaje = (
                 f"Gracias por la descripción para tu reclamo de *{categoria}*.\n\n"
-                "Ahora, por favor, indicame la dirección exacta del problema (calle, número, distrito/barrio). Por ejemplo: Av. San Martín 123, Junín."
+                "Ahora, por favor, indicame la dirección exacta del problema (calle, número, distrito/barrio)."
             )
             return {"message_body": mensaje}
         else:
@@ -358,7 +358,7 @@ class ReclamoFlowHandler:
             return self.get_confirmation_message()
 
         # This block only runs if force_prompt is True (user chose to edit).
-        self.flow_context['state'] = ConversationState.ESPERANDO_DATO_CONTACTO.name
+        self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
         datos = self.flow_context.setdefault('datos_reclamo', {})
 
         required_fields = ['nombre', 'dni', 'email', 'telefono']
@@ -384,28 +384,14 @@ class ReclamoFlowHandler:
         return {"message_body": message}
 
     def handle_datos_contacto(self, user_input):
-        contact_details = extract_multiple_contact_details_llm(user_input)
-        if not contact_details:
-            # Fallback to regex if LLM fails
-            contact_details = extract_multiple_contact_details_regex(user_input)
-
+        contact_details = extract_multiple_contact_details_regex(user_input)
         if not contact_details:
             return {"message_body": "No pude identificar tus datos. Por favor, intentá de nuevo incluyendo nombre, DNI, email y teléfono."}
 
         datos_reclamo = self.flow_context['datos_reclamo']
         for k, v in contact_details.items():
             if v:
-                # Map keys from LLM/regex to the keys used in datos_reclamo
-                if k == "nombre_cliente":
-                    datos_reclamo["nombre"] = v
-                elif k == "telefono_cliente":
-                    datos_reclamo["telefono"] = v
-                elif k == "email_cliente":
-                    datos_reclamo["email"] = v
-                elif k == "dni_cliente":
-                    datos_reclamo["dni"] = v
-                else:
-                    datos_reclamo[k] = v
+                datos_reclamo[k] = v
         self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
         return self.get_confirmation_message()
 
@@ -489,13 +475,11 @@ class ReclamoFlowHandler:
                     final_payload["message_type"] = "interactive_buttons"
 
                 return final_payload
-            else: # If success is False, it means more info is needed
-                self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
-                return {
-                    "message_body": result.get("message_to_user"),
-                    "options_list": result.get("options_list", []),
-                    "message_type": result.get("message_type", "text"),
-                }
+            error_message = result.get(
+                "message_to_user",
+                "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde.",
+            )
+            return self.end_flow(error_message, show_menu=True)
         elif any(word in normalized for word in negatives) or action == "reclamo_confirmar_no":
             return self.ask_for_contact_details(force_prompt=True)
         else:  # Cancel or any other input
@@ -2988,12 +2972,6 @@ def responder_municipio(
 
     # 1. Handle active conversation states first.
     if estado_conversacion:
-        if estado_conversacion == ConversationState.ESPERANDO_DATO_CONTACTO.name:
-            handler = ReclamoFlowHandler(context, chat_db_context)
-            response = handler.handle_datos_contacto(pregunta_str)
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-            return _finalize_response(response)
         if estado_conversacion == 'ESPERANDO_CONFIRMACION_STT':
             transcript_pendiente = contexto_municipio_actual.get('stt_transcript_pendiente')
             contexto_municipio_actual['estado_conversacion'] = None
