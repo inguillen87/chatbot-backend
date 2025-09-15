@@ -44,7 +44,7 @@ def generar_audio_openai(text: str, speed: float = 0.9) -> str | None:
 
         response = client.audio.speech.create(
             model="tts-1-hd",
-            voice="nova",
+            voice="alloy",
             input=text,
             speed=speed,
         )

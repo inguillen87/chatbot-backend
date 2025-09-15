@@ -10,26 +10,21 @@ from services.actions.municipio_actions import DerivarHumanoActionHandler as Mun
 from services.actions.pyme_actions import DerivarHumanoActionHandlerPyme as PymeDerivarHandler
 from services.chat_orchestrator import ChatOrchestrator
 
-@pytest.fixture
-def app_context():
-    app = create_app(TestConfig)
-    with app.app_context():
-        db.create_all()
-        yield
-        db.session.remove()
-        db.drop_all()
-
 class TestDerivarHumanoAction:
+
+    @pytest.fixture(autouse=True)
+    def setup(self, init_database):
+        self.db = init_database
 
     @patch('services.actions.municipio_actions.socketio.emit')
     @patch('services.actions.municipio_actions.emit_ticket_update')
-    def test_crea_ticket_municipio_con_db_y_socket(self, mock_emit_update, mock_socket_emit, app_context):
+    def test_crea_ticket_municipio_con_db_y_socket(self, mock_emit_update, mock_socket_emit):
         """
         Tests that a live chat ticket is created for a municipality,
         persisted in the DB, and a socket event is emitted.
         """
         # Arrange
-        owner_user = User(id=1, municipio_id=10, name="Municipio Test", email="municipio@test.com")
+        owner_user = User(id=10, municipio_id=10, name="Municipio Test", email="municipio@test.com")
         owner_user.set_password("test")
         viewer_user = User(id=5, name="Juan", telefono="123456789", email="juan@test.com")
         viewer_user.set_password("test")
@@ -66,12 +61,12 @@ class TestDerivarHumanoAction:
         mock_emit_update.assert_called_once()
 
     @patch('services.actions.pyme_actions.emit_ticket_update')
-    def test_crea_ticket_pyme_con_db(self, mock_emit_update, app_context):
+    def test_crea_ticket_pyme_con_db(self, mock_emit_update):
         """
         Tests that a live chat ticket is created for a Pyme and persisted in the DB.
         """
         # Arrange
-        owner_user = User(id=2, pyme_id=20, name="Pyme Test", email="pyme@test.com")
+        owner_user = User(id=20, pyme_id=20, name="Pyme Test", email="pyme@test.com")
         owner_user.set_password("test")
         viewer_user = User(id=9, name="Ana", telefono="987654321", email="ana@test.com")
         viewer_user.set_password("test")
@@ -105,9 +100,9 @@ class TestDerivarHumanoAction:
         mock_emit_update.assert_called_once()
 
     @patch('services.actions.pyme_actions.emit_ticket_update')
-    def test_orchestrator_routes_to_pyme_handler(self, mock_emit_update, app_context):
+    def test_orchestrator_routes_to_pyme_handler(self, mock_emit_update):
         # Arrange
-        owner_user = User(id=2, pyme_id=20, name="Pyme Test", email="pyme@test.com")
+        owner_user = User(id=20, pyme_id=20, name="Pyme Test", email="pyme@test.com")
         owner_user.set_password("test")
         viewer_user = User(id=9, name="Ana", telefono="987654321", email="ana@test.com")
         viewer_user.set_password("test")
@@ -136,9 +131,9 @@ class TestDerivarHumanoAction:
 
     @patch('services.actions.municipio_actions.socketio.emit')
     @patch('services.actions.municipio_actions.emit_ticket_update')
-    def test_orchestrator_routes_to_municipio_handler(self, mock_emit_update, mock_socket_emit, app_context):
+    def test_orchestrator_routes_to_municipio_handler(self, mock_emit_update, mock_socket_emit):
         # Arrange
-        owner_user = User(id=1, municipio_id=10, name="Municipio Test", email="municipio@test.com")
+        owner_user = User(id=10, municipio_id=10, name="Municipio Test", email="municipio@test.com")
         owner_user.set_password("test")
         viewer_user = User(id=5, name="Juan", telefono="123456789", email="juan@test.com")
         viewer_user.set_password("test")

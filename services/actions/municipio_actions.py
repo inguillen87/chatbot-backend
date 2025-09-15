@@ -61,25 +61,85 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
         viewer_user = self.context.get("viewer_user_obj")
+        datos_parciales_llm = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
 
-        # Fusionar datos: action_data tiene prioridad, luego el contexto del reclamo, luego el perfil del usuario
-        datos_parciales = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
-        categoria = action_data.get("categoria") or datos_parciales.get("categoria")
+        # --- Data Gathering & Validation ---
+        # Process each field individually, checking for validity at each step
+        # to ensure the first valid piece of data from the precedence chain is used.
+        # Precedence: action_data > datos_parciales_llm > viewer_user
+
+        # Claim Details
+        categoria = action_data.get("categoria") or datos_parciales_llm.get("categoria")
         if categoria:
-            categoria = re.sub(r'^[^\w]+', '', categoria).strip()
-        descripcion = action_data.get("descripcion") or datos_parciales.get("descripcion")
-        ubicacion_llm = action_data.get("ubicacion") or datos_parciales.get("ubicacion")
-        distrito_llm = action_data.get("distrito") or datos_parciales.get("distrito")
+            categoria = re.sub(r"^[^\w]+", "", str(categoria)).strip()
+        descripcion = action_data.get("descripcion") or datos_parciales_llm.get("descripcion")
+        ubicacion_llm = action_data.get("ubicacion") or datos_parciales_llm.get("ubicacion")
+        distrito_llm = action_data.get("distrito") or datos_parciales_llm.get("distrito")
+        coordenadas_llm = action_data.get("coordenadas") or datos_parciales_llm.get("coordenadas")
+        foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales_llm.get("foto_url")
 
-        if ubicacion_llm and not distrito_llm:
-            logger.info(f"Attempting to parse district from address: {ubicacion_llm}")
-            parsed_address = parse_direccion(ubicacion_llm)
-            if parsed_address and parsed_address.get('localidad'):
-                distrito_llm = parsed_address.get('localidad')
-                logger.info(f"Parsed district: {distrito_llm}")
-        coordenadas_llm = action_data.get("coordenadas") or datos_parciales.get("coordenadas")
+        # Contact Info - Name
+        nombre_vecino_final = (
+            action_data.get("usuario")
+            or action_data.get("nombre")
+            or datos_parciales_llm.get("usuario")
+            or action_data.get("nombre_usuario_detectado")
+            or datos_parciales_llm.get("nombre_usuario_detectado")
+            or getattr(viewer_user, "name", None)
+            or getattr(viewer_user, "nombre", None)
+            or self.context.get("profile_name")
+            or "Vecino/a"
+        )
 
-        foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
+        # Contact Info - Phone
+        telefono_final = None
+        phone_sources = [
+            action_data.get("telefono"),
+            action_data.get("telefono_detectado"),
+            datos_parciales_llm.get("telefono"),
+            datos_parciales_llm.get("telefono_detectado"),
+            getattr(viewer_user, "telefono", None)
+        ]
+        for phone in phone_sources:
+            if phone and validar_telefono(str(phone)):
+                telefono_final = formatear_telefono_e164(str(phone))
+                break
+
+        # Contact Info - Email
+        email_final = None
+        email_sources = [
+            action_data.get("email"),
+            action_data.get("email_detectado"),
+            datos_parciales_llm.get("email"),
+            datos_parciales_llm.get("email_detectado"),
+            getattr(viewer_user, "email", None)
+        ]
+        for email in email_sources:
+            if email and validar_email(str(email)):
+                email_final = str(email).lower()
+                break
+
+        # Contact Info - DNI
+        dni_final = None
+        dni_sources = [
+            action_data.get("dni"),
+            datos_parciales_llm.get("dni"),
+            getattr(viewer_user, "dni", None)
+        ]
+        for dni in dni_sources:
+            dni_str = str(dni).strip() if dni else ""
+            if dni_str.isdigit():
+                dni_final = dni_str
+                break
+
+        # Optional contact address
+        direccion_contacto = (
+            action_data.get("direccion")
+            or datos_parciales_llm.get("direccion_contacto")
+            or getattr(viewer_user, "direccion", None)
+        )
+
+        # Handle Photo Upload
         public_foto_url = None
         if foto_url_llm:
             logger.info(f"Uploading photo from temporary URL: {foto_url_llm}")
@@ -89,77 +149,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 logger.info(f"Photo uploaded to public URL: {public_foto_url}")
             else:
                 logger.warning(f"Failed to upload photo from URL: {foto_url_llm}")
-                public_foto_url = foto_url_llm # Fallback to original URL if upload fails
-
-        # Lógica de fusión de datos de contacto mejorada
-        llm_name = (
-            action_data.get("nombre")
-            or action_data.get("usuario")
-            or datos_parciales.get("usuario")
-            or action_data.get("nombre_usuario_detectado")
-            or datos_parciales.get("nombre_usuario_detectado")
-        )
-        profile_name_from_user_obj = getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None)
-        profile_name_from_context = self.context.get("profile_name")
-
-        # Prioritize LLM name, then profile from user object, then profile from context.
-        nombre_vecino_final = "Vecino/a"  # Default
-        if isinstance(llm_name, str) and llm_name.strip():
-            nombre_vecino_final = llm_name
-        elif isinstance(profile_name_from_user_obj, str) and profile_name_from_user_obj.strip():
-            nombre_vecino_final = profile_name_from_user_obj
-        elif isinstance(profile_name_from_context, str) and profile_name_from_context.strip():
-            nombre_vecino_final = profile_name_from_context
-
-        telefono_from_llm = (action_data.get("telefono") or datos_parciales.get("telefono") or
-                             action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado"))
-        telefono_final = None
-        if telefono_from_llm and validar_telefono(telefono_from_llm):
-            telefono_final = formatear_telefono_e164(telefono_from_llm)
-        elif viewer_user and getattr(viewer_user, "telefono", None) and validar_telefono(str(viewer_user.telefono)):
-             telefono_final = formatear_telefono_e164(str(viewer_user.telefono))
-
-
-        email_from_llm = (action_data.get("email") or datos_parciales.get("email") or
-                          action_data.get("email_detectado") or datos_parciales.get("email_detectado"))
-        email_final = None
-        if email_from_llm and validar_email(email_from_llm):
-            email_final = email_from_llm.lower()
-        elif viewer_user and getattr(viewer_user, "email", None) and validar_email(str(viewer_user.email)):
-            email_final = str(viewer_user.email).lower()
-
-        dni_from_llm = action_data.get("dni") or datos_parciales.get("dni")
-        dni_final = None
-        if dni_from_llm and isinstance(dni_from_llm, str) and dni_from_llm.isdigit():
-            dni_final = dni_from_llm
-        elif viewer_user and getattr(viewer_user, "dni", None) and str(viewer_user.dni).isdigit():
-            dni_final = str(viewer_user.dni)
-
-        # Optional contact address (for suggestion flows)
-        direccion_contacto = (
-            action_data.get("direccion_contacto")
-            or datos_parciales.get("direccion_contacto")
-            or action_data.get("direccion")
-        )
-        if not direccion_contacto and viewer_user:
-            direccion_contacto = getattr(viewer_user, "direccion", None)
-
-
-        # Actualizar el contexto con los datos más recientes para persistencia
-        for key, value in [
-            ("categoria_reclamo", categoria),
-            ("descripcion_reclamo", descripcion),
-            ("direccion_reclamo", ubicacion_llm),
-            ("coordenadas_reclamo", coordenadas_llm),
-            ("nombre_vecino", nombre_vecino_final),
-            ("telefono_vecino", telefono_final),
-            ("email_vecino", email_final),
-            ("dni_vecino", dni_final),
-            ("direccion_contacto", direccion_contacto),
-            ("foto_url", public_foto_url),
-        ]:
-            if value:
-                contexto_reclamo[key] = value
+                public_foto_url = foto_url_llm  # Fallback
 
         # Validación de datos esenciales para la creación del ticket
         municipio_config = self.context.get("municipio_config_actual", {})
@@ -209,8 +199,9 @@ class CrearReclamoActionHandler(BaseActionHandler):
         # --- Handle PIN (generate if missing) ---
         pin_llm = (
             action_data.get("pin")
-            or datos_parciales.get("pin")
-            or datos_parciales.get("consulta_pin")
+            or datos_parciales_llm.get("pin")
+            or action_data.get("consulta_pin")
+            or datos_parciales_llm.get("consulta_pin")
         )
         pin_str = str(pin_llm).strip() if pin_llm else ""
         if pin_str.isdigit() and len(pin_str) == 6:
