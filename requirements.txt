@@ -99,6 +99,7 @@ google-cloud-documentai==3.5.0
 google-cloud-speech==2.33.0
 google-cloud-texttospeech==2.27.0
 google-cloud-vision==3.10.2
+elevenlabs
 google-cloud-aiplatform==1.102.0
 google-cloud-bigquery==3.34.0
 google-cloud-core==2.4.3

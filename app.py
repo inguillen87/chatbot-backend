@@ -157,10 +157,19 @@ def create_app(config_class=Config):
 
     # Sesiones en servidor (solo runtime normal)
     if not MIGRATIONS_ONLY:
+        # La instanciación de Session() DEBE estar dentro de create_app
+        # para evitar problemas de redefinición de tablas en tests.
         session_ext = Session()
         app.config['SESSION_SQLALCHEMY'] = db
         if app.config.get("TESTING"):
+            # Usar filesystem para tests para evitar problemas con la DB en memoria
+            # y la creación de la tabla 'sessions'
             app.config['SESSION_TYPE'] = 'filesystem'
+            # Asegurarse que el directorio exista
+            session_dir = os.path.join(app.instance_path, 'flask_session')
+            os.makedirs(session_dir, exist_ok=True)
+            app.config['SESSION_FILE_DIR'] = session_dir
+
         session_ext.init_app(app)
 
     # Logging de app
