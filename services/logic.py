@@ -53,6 +53,7 @@ from services.llm_utils import clasificar_entidad_con_llm
 from services.municipio_responder import responder_municipio
 from services.pymes import responder_pyme
 from services.response_formatter import render_audio_text
+from services.constants import CONTEXTO_MUNICIPIO
 
 # PROMPT_CLASIFICACION_INTENCION y _clasificar_intencion_con_llm han sido eliminados.
 # La clasificación de intención ahora es responsabilidad de llamar_llm_con_fallback con JULES_SYSTEM_PROMPT.
@@ -208,31 +209,47 @@ def responder_chatboc(
             # picture was already provided. This allows the claim flow to reuse the
             # initial image instead of prompting for another one after location is
             # sent.
+            skip_image_analysis = False
             if media_content_type and media_content_type.startswith("image/"):
                 kwargs["es_foto"] = True
                 kwargs["foto_url"] = media_url
+                if chat_db_context:
+                    muni_ctx = chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {})
+                    if muni_ctx.get("reclamo_flow_v2", {}).get("state"):
+                        skip_image_analysis = True
 
-            try:
-                response = requests.get(media_url, auth=(current_app.config.get("TWILIO_ACCOUNT_SID"), current_app.config.get("TWILIO_AUTH_TOKEN")))
-                response.raise_for_status()
-                file_content = response.content
-
-                if media_content_type.startswith("image/"):
-                    datos_interpretados_de_archivo = interpretar_imagen_para_chat(
-                        archivo_adjunto=uploaded_file_info,
-                        tipo_interpretacion="reclamo_auto_descripcion_categoria"
+            if not skip_image_analysis:
+                try:
+                    response = requests.get(
+                        media_url,
+                        auth=(
+                            current_app.config.get("TWILIO_ACCOUNT_SID"),
+                            current_app.config.get("TWILIO_AUTH_TOKEN"),
+                        ),
                     )
-                else:
-                    doc_ai_result = document_processing_service.process_document(file_content, media_content_type)
-                    if doc_ai_result:
-                        # Aquí puedes procesar el resultado de Document AI
-                        # Por ahora, solo extraemos el texto
-                        datos_interpretados_de_archivo = {"texto_extraido": doc_ai_result.text}
+                    response.raise_for_status()
+                    file_content = response.content
+
+                    if media_content_type.startswith("image/"):
+                        datos_interpretados_de_archivo = interpretar_imagen_para_chat(
+                            archivo_adjunto=uploaded_file_info,
+                            tipo_interpretacion="reclamo_auto_descripcion_categoria",
+                        )
                     else:
-                        datos_interpretados_de_archivo = {"error": "No se pudo procesar el documento."}
-            except requests.exceptions.RequestException as e:
-                current_app.logger.error(f"Error descargando archivo de WhatsApp: {e}")
-                datos_interpretados_de_archivo = {"error": "No se pudo descargar el archivo."}
+                        doc_ai_result = document_processing_service.process_document(
+                            file_content, media_content_type
+                        )
+                        if doc_ai_result:
+                            # Aquí puedes procesar el resultado de Document AI
+                            # Por ahora, solo extraemos el texto
+                            datos_interpretados_de_archivo = {"texto_extraido": doc_ai_result.text}
+                        else:
+                            datos_interpretados_de_archivo = {"error": "No se pudo procesar el documento."}
+                except requests.exceptions.RequestException as e:
+                    current_app.logger.error(f"Error descargando archivo de WhatsApp: {e}")
+                    datos_interpretados_de_archivo = {"error": "No se pudo descargar el archivo."}
+            else:
+                datos_interpretados_de_archivo = {}
 
     # Actualizar kwargs para pasar la información a los handlers específicos
     kwargs["datos_interpretados_archivo"] = datos_interpretados_de_archivo
