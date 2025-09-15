@@ -13,7 +13,14 @@ import unicodedata
 import difflib
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
-from models import MunicipioTicket, TicketComentario, db, SitioWebInfo, Conversacion
+from models import (
+    MunicipioTicket,
+    TicketComentario,
+    ChatSessionContext,
+    db,
+    SitioWebInfo,
+    Conversacion,
+)
 from services.ticket_service import servicio_tickets
 from utils.db_utils import safe_flag_modified
 # Compatibilidad hacia atrás para pruebas que parchean `flag_modified`
@@ -211,9 +218,290 @@ class ReclamoFlowHandler:
 
         # Reuse previously provided contact info stored in municipal context
         contacto_prev = self.municipal_ctx.get('contacto_usuario', {})
+        contacto_cache = self.municipal_ctx.setdefault('contacto_usuario', {})
         if contacto_prev:
             for campo in ['nombre', 'email', 'telefono', 'dni']:
                 _apply_prefill(campo, contacto_prev.get(campo))
+
+        def _remember_contact() -> None:
+            """Persist any populated contact values back into the session cache."""
+            for campo in ['nombre', 'dni', 'email', 'telefono']:
+                valor = datos.get(campo)
+                if not valor:
+                    continue
+                if campo == 'nombre' and valor == 'Vecino/a':
+                    continue
+                if isinstance(valor, str) and not valor.strip():
+                    continue
+                contacto_cache.setdefault(campo, valor)
+
+        def _needs_contact_data(field: str) -> bool:
+            value = datos.get(field)
+            if not value:
+                return True
+            if not isinstance(value, str):
+                return False
+            stripped = value.strip()
+            if not stripped:
+                return True
+            lowered = stripped.lower()
+            if field == 'nombre' and lowered in {'vecino', 'vecina', 'vecine', 'vecino/a'}:
+                return True
+            if field == 'email' and stripped.endswith('@whatsapp.chatboc.com'):
+                return True
+            if field == 'dni':
+                return len(re.sub(r"\D", "", stripped)) < 6
+            if field == 'telefono':
+                return not validar_telefono(stripped)
+            return False
+
+        missing_contact_fields = [
+            field for field in ['nombre', 'dni', 'email', 'telefono']
+            if _needs_contact_data(field)
+        ]
+
+        if missing_contact_fields:
+            chat_db_data = self.context.get('chat_db_context_data', {})
+            telefono_candidates_raw = [
+                datos.get('telefono'),
+                self.context.get('telefono_usuario'),
+                self.context.get('anon_id'),
+            ]
+            if isinstance(chat_db_data, dict):
+                telefono_candidates_raw.append(chat_db_data.get('telefono_usuario'))
+            if self.chat_db_context:
+                telefono_candidates_raw.append(getattr(self.chat_db_context, 'anon_id', None))
+                ctx_data = getattr(self.chat_db_context, 'context_data', {})
+                if isinstance(ctx_data, dict):
+                    telefono_candidates_raw.append(ctx_data.get('telefono_usuario'))
+
+            telefono_normalizado = None
+            for candidato in telefono_candidates_raw:
+                if not candidato:
+                    continue
+                candidato_str = str(candidato).strip()
+                if not candidato_str:
+                    continue
+
+                digits_only = re.sub(r"\D", "", candidato_str)
+                digit_variants = []
+                if digits_only:
+                    if len(digits_only) >= 10:
+                        digit_variants.append(digits_only[-10:])
+                    if len(digits_only) >= 11:
+                        digit_variants.append(digits_only[-11:])
+                    digit_variants.append(digits_only)
+
+                # If the candidate already appears to be in E.164, test it first
+                if candidato_str.startswith("+") and validar_telefono(candidato_str):
+                    digit_variants.insert(0, candidato_str)
+
+                for variant in digit_variants:
+                    if not variant:
+                        continue
+                    normalized = formatear_telefono_e164(str(variant))
+                    if normalized and validar_telefono(normalized):
+                        telefono_normalizado = normalized
+                        break
+                if telefono_normalizado:
+                    break
+
+            if telefono_normalizado and (
+                not datos.get('telefono')
+                or not validar_telefono(str(datos.get('telefono')))
+            ):
+                datos['telefono'] = telefono_normalizado
+                _remember_contact()
+
+            if datos.get('telefono') and not validar_telefono(str(datos.get('telefono'))):
+                datos.pop('telefono', None)
+
+            anon_candidates = []
+            for candidato in [
+                self.context.get('anon_id'),
+                getattr(self.chat_db_context, 'anon_id', None) if self.chat_db_context else None,
+            ]:
+                if candidato and candidato not in anon_candidates:
+                    anon_candidates.append(str(candidato))
+
+            # Attempt to recover contact info from previous sessions stored in DB
+            session_prefill_applied = False
+            try:
+                session_candidates = {c for c in anon_candidates if c}
+                if telefono_normalizado:
+                    session_candidates.add(telefono_normalizado)
+                if session_candidates:
+                    query = ChatSessionContext.query.filter(
+                        ChatSessionContext.anon_id.in_(session_candidates)
+                    )
+                    if (
+                        self.chat_db_context
+                        and getattr(self.chat_db_context, 'chat_session_id', None)
+                    ):
+                        query = query.filter(
+                            ChatSessionContext.chat_session_id
+                            != self.chat_db_context.chat_session_id
+                        )
+                    previous_context = (
+                        query.order_by(ChatSessionContext.last_updated.desc()).first()
+                    )
+                else:
+                    previous_context = None
+
+                if previous_context and isinstance(previous_context.context_data, dict):
+                    municipal_snapshot = previous_context.context_data.get(
+                        CONTEXTO_MUNICIPIO, {}
+                    )
+                    if isinstance(municipal_snapshot, dict):
+                        contact_nodes = []
+                        contacto_prev_session = municipal_snapshot.get('contacto_usuario')
+                        if isinstance(contacto_prev_session, dict):
+                            contact_nodes.append(contacto_prev_session)
+                        flow_snapshot = municipal_snapshot.get('reclamo_flow_v2')
+                        if isinstance(flow_snapshot, dict):
+                            datos_snapshot = flow_snapshot.get('datos_reclamo')
+                            if isinstance(datos_snapshot, dict):
+                                contact_nodes.append(datos_snapshot)
+
+                        for node in contact_nodes:
+                            if not node:
+                                continue
+                            for campo in ['nombre', 'email', 'telefono', 'dni']:
+                                valor_original = datos.get(campo)
+                                _apply_prefill(campo, node.get(campo))
+                                if datos.get(campo) != valor_original and node.get(campo):
+                                    session_prefill_applied = True
+
+                        if session_prefill_applied:
+                            logger.info(
+                                "Prefill de contacto usando contexto previo %s",
+                                previous_context.chat_session_id,
+                            )
+            except Exception as exc:
+                logger.warning(
+                    "No se pudieron recuperar datos de contacto desde sesiones previas: %s",
+                    exc,
+                )
+
+            if session_prefill_applied:
+                _remember_contact()
+
+            previous_ticket = None
+            try:
+                owner_user = self.context.get('user_obj')
+                municipio_id = getattr(owner_user, 'municipio_id', None)
+                for candidato in anon_candidates:
+                    if not candidato:
+                        continue
+                    query = MunicipioTicket.query.filter_by(anon_id=candidato)
+                    if municipio_id:
+                        query = query.filter_by(municipio_id=municipio_id)
+                    previous_ticket = (
+                        query.order_by(MunicipioTicket.fecha.desc()).first()
+                    )
+                    if previous_ticket:
+                        break
+
+                phone_candidates: list[str] = []
+
+                def _add_phone_candidate(raw_value) -> None:
+                    if not raw_value:
+                        return
+                    raw_str = str(raw_value).strip()
+                    if not raw_str:
+                        return
+                    if raw_str not in phone_candidates:
+                        phone_candidates.append(raw_str)
+                    digits = re.sub(r"\D", "", raw_str)
+                    if digits:
+                        if digits not in phone_candidates:
+                            phone_candidates.append(digits)
+                        prefixed = digits if digits.startswith("+") else f"+{digits}"
+                        if prefixed not in phone_candidates:
+                            phone_candidates.append(prefixed)
+                        normalized = formatear_telefono_e164(raw_str)
+                        if normalized and normalized not in phone_candidates:
+                            phone_candidates.append(normalized)
+
+                if not previous_ticket:
+                    _add_phone_candidate(datos.get('telefono'))
+                    _add_phone_candidate(telefono_normalizado)
+                    _add_phone_candidate(self.context.get('telefono_usuario'))
+                    _add_phone_candidate(self.context.get('anon_id'))
+                    _add_phone_candidate(contacto_cache.get('telefono'))
+                    if viewer:
+                        _add_phone_candidate(getattr(viewer, 'telefono', None))
+                        _add_phone_candidate(getattr(viewer, 'telefono_vecino', None))
+
+                    for phone in phone_candidates:
+                        query = MunicipioTicket.query.filter_by(telefono_vecino=phone)
+                        if municipio_id:
+                            query = query.filter_by(municipio_id=municipio_id)
+                        previous_ticket = (
+                            query.order_by(MunicipioTicket.fecha.desc()).first()
+                        )
+                        if previous_ticket:
+                            logger.info(
+                                "Prefill de contacto usando ticket previo %s (match telefono=%s)",
+                                getattr(previous_ticket, 'nro_ticket', 'N/A'),
+                                phone,
+                            )
+                            break
+
+                if (not previous_ticket) and phone_candidates:
+                    digits_for_lookup = next(
+                        (
+                            re.sub(r"\D", "", cand)
+                            for cand in phone_candidates
+                            if re.sub(r"\D", "", cand)
+                        ),
+                        None,
+                    )
+                    if digits_for_lookup and len(digits_for_lookup) >= 6:
+                        query = MunicipioTicket.query
+                        if municipio_id:
+                            query = query.filter_by(municipio_id=municipio_id)
+                        potential_matches = (
+                            query.filter(MunicipioTicket.telefono_vecino.isnot(None))
+                            .order_by(MunicipioTicket.fecha.desc())
+                            .limit(25)
+                            .all()
+                        )
+                        for ticket in potential_matches:
+                            ticket_digits = re.sub(
+                                r"\D", "", str(ticket.telefono_vecino or "")
+                            )
+                            if not ticket_digits:
+                                continue
+                            if (
+                                ticket_digits == digits_for_lookup
+                                or ticket_digits.endswith(digits_for_lookup[-8:])
+                            ):
+                                previous_ticket = ticket
+                                logger.info(
+                                    "Prefill de contacto usando ticket previo %s (match digitos=%s)",
+                                    getattr(ticket, 'nro_ticket', 'N/A'),
+                                    digits_for_lookup,
+                                )
+                                break
+            except Exception as exc:
+                logger.warning(
+                    "No se pudieron prellenar datos de contacto desde tickets previos: %s",
+                    exc,
+                )
+                previous_ticket = None
+
+            if previous_ticket:
+                logger.info(
+                    "Prefill de contacto usando ticket previo %s para anon_id %s",
+                    getattr(previous_ticket, 'nro_ticket', 'N/A'),
+                    getattr(previous_ticket, 'anon_id', 'N/A'),
+                )
+                _apply_prefill('nombre', previous_ticket.nombre_vecino, previous_ticket.nombre_display_whatsapp)
+                _apply_prefill('email', previous_ticket.email_vecino)
+                _apply_prefill('telefono', previous_ticket.telefono_vecino)
+                _apply_prefill('dni', previous_ticket.dni_vecino)
+                _remember_contact()
 
         if categoria_inicial and not self.flow_context['datos_reclamo'].get('categoria'):
             self.flow_context['datos_reclamo']['categoria'] = categoria_inicial
@@ -264,6 +552,14 @@ class ReclamoFlowHandler:
             datos['descripcion'] = details['descripcion_sugerida']
         if details.get('direccion_sugerida'):
             datos['direccion'] = details['direccion_sugerida']
+
+        if (
+            not datos.get('descripcion')
+            and isinstance(user_input, str)
+            and not user_input.strip().isdigit()
+            and len(user_input.strip()) >= 10
+        ):
+            datos['descripcion'] = user_input.strip()
 
         if not datos.get('descripcion'):
             self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
@@ -2768,9 +3064,7 @@ def responder_municipio(
             }
 
     normalized_question = normalizar_texto(pregunta_str)
-    if normalized_question in MUNICIPIO_RESPONSE_CACHE:
-        logger_actual.info("responder_municipio: returning cached response")
-        return MUNICIPIO_RESPONSE_CACHE[normalized_question]
+    cached_response = MUNICIPIO_RESPONSE_CACHE.get(normalized_question)
 
     if kwargs:
         for key, value in kwargs.items():
@@ -2779,6 +3073,19 @@ def responder_municipio(
     chat_db_context_live_data = {}
     if chat_db_context and chat_db_context.context_data is not None:
         chat_db_context_live_data = chat_db_context.context_data
+
+    contexto_municipio_actual = chat_db_context_live_data.get(CONTEXTO_MUNICIPIO, {})
+    flow_activo = False
+    if isinstance(contexto_municipio_actual, dict):
+        estado_actual = contexto_municipio_actual.get("estado_conversacion")
+        flow_activo = (
+            estado_actual == "EN_FLUJO_RECLAMO"
+            or bool(contexto_municipio_actual.get("reclamo_flow_v2"))
+        )
+
+    if cached_response and not flow_activo:
+        logger_actual.info("responder_municipio: returning cached response")
+        return cached_response
 
     # Crear el diccionario de contexto principal una sola vez
     context = {

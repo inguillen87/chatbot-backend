@@ -1,6 +1,10 @@
 import types
-from services.municipio_responder import responder_municipio, CONTEXTO_MUNICIPIO
-from models import ChatSessionContext
+from services.municipio_responder import (
+    responder_municipio,
+    CONTEXTO_MUNICIPIO,
+    clear_municipio_cache,
+)
+from models import ChatSessionContext, MunicipioTicket
 from app import db
 
 
@@ -13,12 +17,13 @@ def run_turn(
     flow_state=None,
     contact_info=None,
     set_state=True,
+    anon_id="anon",
 ):
     existing = ChatSessionContext.query.get("test_session")
     if existing:
         db.session.delete(existing)
         db.session.commit()
-    ctx = ChatSessionContext(chat_session_id="test_session")
+    ctx = ChatSessionContext(chat_session_id="test_session", anon_id=anon_id)
     ctx.context_data = {}
     muni = ctx.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
     if contact_info:
@@ -37,13 +42,14 @@ def run_turn(
     if location:
         payload["ubicacion_usuario"] = location
         payload["es_ubicacion"] = True
+    clear_municipio_cache()
     resp = responder_municipio(
         pregunta_original=payload if location else message,
         owner_user=owner_user,
         viewer_user=None,
         rubro_obj=owner_user.rubro,
         chat_db_context=ctx,
-        anon_id="anon",
+        anon_id=anon_id,
         channel="whatsapp",
     )
     db.session.commit()
@@ -195,6 +201,107 @@ def test_prefill_dni_from_contact(owner_user):
     )
     flow = result.ctx["reclamo_flow_v2"]
     assert flow["datos_reclamo"]["dni"] == "32877851"
+
+
+def test_prefill_contact_from_previous_ticket(owner_user):
+    ticket = MunicipioTicket(
+        pregunta="Reporte anterior",
+        categoria="Arbolado",
+        municipio_id=owner_user.id,
+        anon_id="anon",
+        telefono_vecino="+5492611234567",
+        email_vecino="marcelo@example.com",
+        dni_vecino="32877851",
+        nombre_vecino="Marcelo",
+        nro_ticket="987654321_prefill",
+        consulta_pin="123456",
+    )
+    db.session.add(ticket)
+    db.session.commit()
+
+    try:
+        result = run_turn("hay una rama peligrosa", owner_user=owner_user)
+        flow = result.ctx["reclamo_flow_v2"]
+        datos = flow["datos_reclamo"]
+        assert datos["email"] == "marcelo@example.com"
+        assert datos["dni"] == "32877851"
+        assert datos["telefono"] == "+5492611234567"
+        assert datos["nombre"] == "Marcelo"
+        assert "Para continuar, por favor, indicame la dirección exacta del problema" in result.response["message_body"]
+        assert flow['state'] == 'ESPERANDO_DIRECCION'
+    finally:
+        db.session.delete(ticket)
+        db.session.commit()
+
+
+def test_prefill_contact_from_ticket_phone_match(owner_user):
+    stored_phone = "+5492617778888"
+    ticket = MunicipioTicket(
+        pregunta="Ticket con telefono",
+        categoria="Arbolado",
+        municipio_id=owner_user.id,
+        anon_id="prev_anon",
+        telefono_vecino=stored_phone,
+        email_vecino="contacto-previo@example.com",
+        dni_vecino="30111222",
+        nombre_vecino="Marcelo Contacto",
+        nro_ticket="123123123_phone",
+        consulta_pin="456789",
+    )
+    db.session.add(ticket)
+    db.session.commit()
+
+    try:
+        result = run_turn(
+            "se corto el arbol",
+            owner_user=owner_user,
+            anon_id="whatsapp_4_+5492617778888",
+        )
+        datos = result.ctx["reclamo_flow_v2"]["datos_reclamo"]
+        assert datos["telefono"] == stored_phone
+        assert datos["email"] == "contacto-previo@example.com"
+        assert datos["dni"] == "30111222"
+        assert datos["nombre"] == "Marcelo Contacto"
+    finally:
+        db.session.delete(ticket)
+        db.session.commit()
+
+
+def test_prefill_contact_from_previous_session(owner_user):
+    anon = "+5492615550000"
+    previous_ctx = ChatSessionContext(
+        chat_session_id="previous_session",
+        anon_id=anon,
+        context_data={
+            CONTEXTO_MUNICIPIO: {
+                "contacto_usuario": {
+                    "nombre": "Marcelo",
+                    "dni": "30111222",
+                    "email": "marcelo@example.com",
+                    "telefono": anon,
+                }
+            }
+        },
+    )
+    db.session.add(previous_ctx)
+    db.session.commit()
+
+    try:
+        result = run_turn(
+            "hay una rama peligrosa",
+            owner_user=owner_user,
+            anon_id=anon,
+        )
+        flow = result.ctx["reclamo_flow_v2"]
+        datos = flow["datos_reclamo"]
+        assert datos["email"] == "marcelo@example.com"
+        assert datos["dni"] == "30111222"
+        assert datos["telefono"] == anon
+        assert datos["nombre"] == "Marcelo"
+        assert flow["state"] == "ESPERANDO_DIRECCION"
+    finally:
+        db.session.delete(previous_ctx)
+        db.session.commit()
 
 
 def test_handle_direccion_uses_normalizer(monkeypatch, owner_user):
