@@ -40,7 +40,10 @@ def _descargar_imagen(url: str) -> Optional[bytes]:
     if not url:
         return None
     if url.startswith("/"):
-        local_path = os.path.join(app.root_path, url.lstrip("/"))
+        # Based on logs, app.root_path is /app/app, but uploads are in /app/uploads.
+        # This corrects the path by looking in the parent directory of app.root_path.
+        base_path = os.path.dirname(app.root_path)
+        local_path = os.path.join(base_path, url.lstrip('/'))
         try:
             with open(local_path, "rb") as f:
                 return f.read()
