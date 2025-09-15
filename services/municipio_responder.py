@@ -282,9 +282,28 @@ class ReclamoFlowHandler:
                 candidato_str = str(candidato).strip()
                 if not candidato_str:
                     continue
-                normalizado = formatear_telefono_e164(candidato_str)
-                if normalizado and validar_telefono(normalizado):
-                    telefono_normalizado = normalizado
+
+                digits_only = re.sub(r"\D", "", candidato_str)
+                digit_variants = []
+                if digits_only:
+                    if len(digits_only) >= 10:
+                        digit_variants.append(digits_only[-10:])
+                    if len(digits_only) >= 11:
+                        digit_variants.append(digits_only[-11:])
+                    digit_variants.append(digits_only)
+
+                # If the candidate already appears to be in E.164, test it first
+                if candidato_str.startswith("+") and validar_telefono(candidato_str):
+                    digit_variants.insert(0, candidato_str)
+
+                for variant in digit_variants:
+                    if not variant:
+                        continue
+                    normalized = formatear_telefono_e164(str(variant))
+                    if normalized and validar_telefono(normalized):
+                        telefono_normalizado = normalized
+                        break
+                if telefono_normalizado:
                     break
 
             if telefono_normalizado and (
@@ -372,6 +391,8 @@ class ReclamoFlowHandler:
                 owner_user = self.context.get('user_obj')
                 municipio_id = getattr(owner_user, 'municipio_id', None)
                 for candidato in anon_candidates:
+                    if not candidato:
+                        continue
                     query = MunicipioTicket.query.filter_by(anon_id=candidato)
                     if municipio_id:
                         query = query.filter_by(municipio_id=municipio_id)
@@ -381,15 +402,88 @@ class ReclamoFlowHandler:
                     if previous_ticket:
                         break
 
-                if not previous_ticket and datos.get('telefono'):
-                    query = MunicipioTicket.query.filter_by(
-                        telefono_vecino=datos.get('telefono')
+                phone_candidates: list[str] = []
+
+                def _add_phone_candidate(raw_value) -> None:
+                    if not raw_value:
+                        return
+                    raw_str = str(raw_value).strip()
+                    if not raw_str:
+                        return
+                    if raw_str not in phone_candidates:
+                        phone_candidates.append(raw_str)
+                    digits = re.sub(r"\D", "", raw_str)
+                    if digits:
+                        if digits not in phone_candidates:
+                            phone_candidates.append(digits)
+                        prefixed = digits if digits.startswith("+") else f"+{digits}"
+                        if prefixed not in phone_candidates:
+                            phone_candidates.append(prefixed)
+                        normalized = formatear_telefono_e164(raw_str)
+                        if normalized and normalized not in phone_candidates:
+                            phone_candidates.append(normalized)
+
+                if not previous_ticket:
+                    _add_phone_candidate(datos.get('telefono'))
+                    _add_phone_candidate(telefono_normalizado)
+                    _add_phone_candidate(self.context.get('telefono_usuario'))
+                    _add_phone_candidate(self.context.get('anon_id'))
+                    _add_phone_candidate(contacto_cache.get('telefono'))
+                    if viewer:
+                        _add_phone_candidate(getattr(viewer, 'telefono', None))
+                        _add_phone_candidate(getattr(viewer, 'telefono_vecino', None))
+
+                    for phone in phone_candidates:
+                        query = MunicipioTicket.query.filter_by(telefono_vecino=phone)
+                        if municipio_id:
+                            query = query.filter_by(municipio_id=municipio_id)
+                        previous_ticket = (
+                            query.order_by(MunicipioTicket.fecha.desc()).first()
+                        )
+                        if previous_ticket:
+                            logger.info(
+                                "Prefill de contacto usando ticket previo %s (match telefono=%s)",
+                                getattr(previous_ticket, 'nro_ticket', 'N/A'),
+                                phone,
+                            )
+                            break
+
+                if (not previous_ticket) and phone_candidates:
+                    digits_for_lookup = next(
+                        (
+                            re.sub(r"\D", "", cand)
+                            for cand in phone_candidates
+                            if re.sub(r"\D", "", cand)
+                        ),
+                        None,
                     )
-                    if municipio_id:
-                        query = query.filter_by(municipio_id=municipio_id)
-                    previous_ticket = (
-                        query.order_by(MunicipioTicket.fecha.desc()).first()
-                    )
+                    if digits_for_lookup and len(digits_for_lookup) >= 6:
+                        query = MunicipioTicket.query
+                        if municipio_id:
+                            query = query.filter_by(municipio_id=municipio_id)
+                        potential_matches = (
+                            query.filter(MunicipioTicket.telefono_vecino.isnot(None))
+                            .order_by(MunicipioTicket.fecha.desc())
+                            .limit(25)
+                            .all()
+                        )
+                        for ticket in potential_matches:
+                            ticket_digits = re.sub(
+                                r"\D", "", str(ticket.telefono_vecino or "")
+                            )
+                            if not ticket_digits:
+                                continue
+                            if (
+                                ticket_digits == digits_for_lookup
+                                or ticket_digits.endswith(digits_for_lookup[-8:])
+                            ):
+                                previous_ticket = ticket
+                                logger.info(
+                                    "Prefill de contacto usando ticket previo %s (match digitos=%s)",
+                                    getattr(ticket, 'nro_ticket', 'N/A'),
+                                    digits_for_lookup,
+                                )
+                                break
             except Exception as exc:
                 logger.warning(
                     "No se pudieron prellenar datos de contacto desde tickets previos: %s",

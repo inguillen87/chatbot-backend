@@ -234,6 +234,39 @@ def test_prefill_contact_from_previous_ticket(owner_user):
         db.session.commit()
 
 
+def test_prefill_contact_from_ticket_phone_match(owner_user):
+    stored_phone = "+5492617778888"
+    ticket = MunicipioTicket(
+        pregunta="Ticket con telefono",
+        categoria="Arbolado",
+        municipio_id=owner_user.id,
+        anon_id="prev_anon",
+        telefono_vecino=stored_phone,
+        email_vecino="contacto-previo@example.com",
+        dni_vecino="30111222",
+        nombre_vecino="Marcelo Contacto",
+        nro_ticket="123123123_phone",
+        consulta_pin="456789",
+    )
+    db.session.add(ticket)
+    db.session.commit()
+
+    try:
+        result = run_turn(
+            "se corto el arbol",
+            owner_user=owner_user,
+            anon_id="whatsapp_4_+5492617778888",
+        )
+        datos = result.ctx["reclamo_flow_v2"]["datos_reclamo"]
+        assert datos["telefono"] == stored_phone
+        assert datos["email"] == "contacto-previo@example.com"
+        assert datos["dni"] == "30111222"
+        assert datos["nombre"] == "Marcelo Contacto"
+    finally:
+        db.session.delete(ticket)
+        db.session.commit()
+
+
 def test_prefill_contact_from_previous_session(owner_user):
     anon = "+5492615550000"
     previous_ctx = ChatSessionContext(
