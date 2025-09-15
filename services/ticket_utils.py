@@ -90,10 +90,10 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
     if dni:
         respuesta += f"- *DNI:* `{dni}`\n"
     if consulta_pin:
-        respuesta += f"- *PIN de seguimiento:* `{consulta_pin}`\n"
+        respuesta += f"- *PIN de seguimiento:* `{consulta_pin}`"
 
     if nombre_asesor:
-        respuesta += "\n📞 *Contacto para seguimiento:*\n"
+        respuesta += "\n\n📞 *Contacto para seguimiento:*\n"
         respuesta += f"- *Nombre:* {nombre_asesor}\n"
         if titulo_asesor:
             respuesta += f"- *Cargo:* {titulo_asesor}\n"

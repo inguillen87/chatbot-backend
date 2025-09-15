@@ -43,9 +43,9 @@ class ImageLocationDescriptionFlowTest(unittest.TestCase):
         self.app_context.pop()
 
     @patch("services.municipio_responder.analizar_imagen_con_fallback", return_value=None)
-    @patch("services.municipio_responder.reverse_geocode")
-    def test_image_location_description_single_ticket(self, mock_reverse, _mock_analyze):
-        mock_reverse.return_value = {"display": "Calle 123", "localidad": "Ciudad"}
+    @patch("services.geo.reverse.reverse")
+    def test_image_location_description_single_ticket(self, mock_geo_reverse, _mock_analyze):
+        mock_geo_reverse.return_value = {"display": "Calle 123", "localidad": "Ciudad"}
 
         # 1. User sends an image
         responder_municipio(

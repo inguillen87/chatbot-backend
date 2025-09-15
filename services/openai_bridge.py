@@ -25,7 +25,7 @@ except Exception as e:
     logger.error(f"Failed to initialize OpenAI client: {e}")
     client = None
 
-def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, chat_session_id: str) -> tuple[dict, dict]:
+def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, chat_session_id: str, system_prompt_override: str | None = None) -> tuple[dict, dict]:
     """
     Calls the OpenAI API and formats the response to be compatible with the application's structure.
     """
@@ -35,7 +35,9 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
     # 1. Format the history for OpenAI's chat endpoint
     # The system prompt goes first.
     from services.chatbot_prompts import JULES_SYSTEM_PROMPT
-    messages = [{"role": "system", "content": JULES_SYSTEM_PROMPT}]
+
+    prompt_a_usar = system_prompt_override if system_prompt_override else JULES_SYSTEM_PROMPT
+    messages = [{"role": "system", "content": prompt_a_usar}]
 
     for item in historial:
         role = item.get("role")

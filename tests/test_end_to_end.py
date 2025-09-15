@@ -7,6 +7,7 @@ import sys
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
+from config import TestConfig
 from services.municipio_responder import responder_municipio
 
 class TestEndToEnd(unittest.TestCase):
@@ -14,7 +15,7 @@ class TestEndToEnd(unittest.TestCase):
     def setUp(self):
         os.environ["GOOGLE_PROJECT_ID"] = "test-project"
         from app import create_app
-        self.app = create_app()
+        self.app = create_app(config_class=TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
 

@@ -45,14 +45,14 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    @patch('services.google_text_to_speech.generate_audio_url')
-    def test_audio_response_is_generated_for_audio_input(self, mock_generate_audio_url):
+    @patch('services.tts_orchestrator.generar_audio')
+    def test_audio_response_is_generated_for_audio_input(self, mock_generar_audio):
         """
         Tests if an audio response is generated when the input was audio.
         """
         # --- Setup ---
         fake_audio_url = "/static/audio/test_audio.mp3"
-        mock_generate_audio_url.return_value = fake_audio_url
+        mock_generar_audio.return_value = fake_audio_url
 
         self.viewer_user.prefers_audio = True
         db.session.commit()
@@ -80,17 +80,16 @@ class TestAccessibilityAndMedia(unittest.TestCase):
             )
 
         # --- Assert ---
-        mock_generate_audio_url.assert_called_once()
-        args, _ = mock_generate_audio_url.call_args
+        mock_generar_audio.assert_called_once()
+        args, _ = mock_generar_audio.call_args
         self.assertEqual(args[0], "Esta es una respuesta de prueba.")
-        self.assertEqual(args[2], self.viewer_user)
         self.assertIn('audio_url', response_dict)
         self.assertEqual(response_dict['audio_url'], fake_audio_url)
 
-    @patch('services.google_text_to_speech.generate_audio_url')
-    def test_audio_generated_when_flag_missing_but_source_is_audio(self, mock_generate_audio_url):
+    @patch('services.tts_orchestrator.generar_audio')
+    def test_audio_generated_when_flag_missing_but_source_is_audio(self, mock_generar_audio):
         fake_audio_url = "/static/audio/test_audio.mp3"
-        mock_generate_audio_url.return_value = fake_audio_url
+        mock_generar_audio.return_value = fake_audio_url
 
         chat_session = ChatSessionContext(
             chat_session_id='auto_audio_session',
@@ -112,7 +111,7 @@ class TestAccessibilityAndMedia(unittest.TestCase):
                 chat_db_context=chat_session
             )
 
-        mock_generate_audio_url.assert_called_once()
+        mock_generar_audio.assert_called_once()
         self.assertEqual(response_dict.get('audio_url'), fake_audio_url)
 
     def test_button_fallback_formats_options_as_text_list(self):
@@ -147,13 +146,13 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         )
         self.assertEqual(formatted_payload['text']['body'], expected_body)
 
-    @patch('services.municipio_responder.llamar_gemini')
-    def test_finalizar_tramite_action_resets_context(self, mock_llamar_gemini):
+    @patch('services.municipio_responder.handle_llm_interaction')
+    def test_finalizar_tramite_action_resets_context(self, mock_handle_llm):
         """
         Tests if the 'finalizar_tramite' action correctly resets the conversation context.
         """
         # --- Setup ---
-        mock_llamar_gemini.return_value = (
+        mock_handle_llm.return_value = (
             {
                 "message_body": "De nada. ¡Hasta luego!",
                 "accion_backend": "finalizar_tramite",
@@ -197,15 +196,15 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         self.assertEqual(final_context.get('estado_conversacion'), ConversationState.CONVERSACION_GENERAL_LLM.name)
 
     @unittest.skip("Test is flawed and needs to be rewritten. Mocks wrong handler.")
-    @patch('services.pymes.llamar_gemini')
+    @patch('services.pymes.handle_llm_interaction')
     @patch('requests.get')
     @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat')
-    def test_media_and_location_data_is_passed_to_handler(self, mock_interpretar_imagen, mock_requests_get, mock_llamar_gemini):
+    def test_media_and_location_data_is_passed_to_handler(self, mock_interpretar_imagen, mock_requests_get, mock_handle_llm):
         """
         Tests that location and interpreted image data are correctly passed to the final handler.
         """
         # --- Setup ---
-        mock_llamar_gemini.return_value = {"accion_backend": "responder_directamente", "message_body": "OK"}
+        mock_handle_llm.return_value = {"accion_backend": "responder_directamente", "message_body": "OK"}
         mock_response = MagicMock()
         mock_response.raise_for_status.return_value = None
         mock_response.content = b'fake_image_bytes'

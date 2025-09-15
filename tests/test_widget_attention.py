@@ -8,8 +8,8 @@ except Exception:
 @unittest.skipIf(create_app is None, "Flask not available")
 class WidgetAttentionEndpointTests(unittest.TestCase):
     def setUp(self):
-        app = create_app()
-        app.config['TESTING'] = True
+        from config import TestConfig
+        app = create_app(TestConfig)
         self.client = app.test_client()
 
     def test_default_message(self):
@@ -18,8 +18,8 @@ class WidgetAttentionEndpointTests(unittest.TestCase):
         self.assertIn('mensaje', resp.get_json())
 
     def test_random_from_choices(self):
-        app = create_app()
-        app.config['TESTING'] = True
+        from config import TestConfig
+        app = create_app(TestConfig)
         app.config['ATTENTION_BUBBLE_CHOICES'] = ['hola', 'reclamo']
         client = app.test_client()
         resp = client.get('/widget/attention')

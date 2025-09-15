@@ -3,10 +3,11 @@ from unittest.mock import patch
 from app import create_app, db
 from models import MunicipioTicket, User, TicketComentario
 from utils.auth_helpers import generar_token
+from config import TestConfig
 
 class TicketPublicEndpointTest(unittest.TestCase):
     def setUp(self):
-        self.app = create_app()
+        self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
