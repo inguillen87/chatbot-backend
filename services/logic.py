@@ -212,7 +212,8 @@ def responder_chatboc(
             skip_image_analysis = False
             if media_content_type and media_content_type.startswith("image/"):
                 kwargs["es_foto"] = True
-                kwargs["foto_url"] = media_url
+                stored_url = uploaded_file_info.get("url") if uploaded_file_info else None
+                kwargs["foto_url"] = stored_url or media_url
                 if chat_db_context and chat_db_context.context_data:
                     muni_ctx = chat_db_context.context_data.get(CONTEXTO_MUNICIPIO, {})
                     if muni_ctx.get("reclamo_flow_v2", {}).get("state"):

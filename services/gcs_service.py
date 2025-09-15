@@ -1,8 +1,9 @@
+import logging
 import os
 import uuid
 import io
 import requests
-from flask import current_app
+from flask import current_app, has_app_context
 from werkzeug.utils import secure_filename
 from services.thumbnail_service import generar_thumbnail
 
@@ -29,6 +30,9 @@ else:  # pragma: no cover - avoid import errors when disabled
 
 BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "chatboc-files")
 MAX_FILE_SIZE = 15 * 1024 * 1024  # 15 MB
+
+
+logger = logging.getLogger(__name__)
 
 
 def _get_gcs_client():
@@ -134,35 +138,48 @@ def _save_to_cloudinary(
     mimetype: str,
     thumbnail_bytes: bytes | None,
     thumb_meta: dict | None,
-) -> dict:
-    """Upload files to Cloudinary when enabled."""
-    file_obj = io.BytesIO(file_bytes)
-    upload_result = uploader.upload(
-        file_obj, public_id=unique_name, resource_type="auto"
-    )
-    original_url = upload_result.get("secure_url") or upload_result.get("url")
+) -> dict | None:
+    """Upload files to Cloudinary when enabled.
 
-    thumb_url = None
-    if thumbnail_bytes and thumb_meta:
-        thumb_id = get_thumb_filename(unique_name)
-        thumb_res = uploader.upload(
-            io.BytesIO(thumbnail_bytes),
-            public_id=thumb_id,
-            resource_type="image",
-            format="webp",
+    Returns ``None`` if the upload fails so callers can gracefully fall back to
+    the next configured storage backend.
+    """
+    try:  # pragma: no cover - exercised via unit tests with mocks
+        file_obj = io.BytesIO(file_bytes)
+        upload_result = uploader.upload(
+            file_obj, public_id=unique_name, resource_type="auto"
         )
-        thumb_url = thumb_res.get("secure_url") or thumb_res.get("url")
-        thumb_meta["url"] = thumb_url
+        original_url = upload_result.get("secure_url") or upload_result.get("url")
 
-    return {
-        "unique_name": unique_name,
-        "original_url": original_url,
-        "size": len(file_bytes),
-        "original_name": original_filename,
-        "mimetype": mimetype,
-        "thumb_meta": thumb_meta,
-        "thumbUrl": thumb_url,
-    }
+        thumb_url = None
+        if thumbnail_bytes and thumb_meta:
+            thumb_id = get_thumb_filename(unique_name)
+            thumb_res = uploader.upload(
+                io.BytesIO(thumbnail_bytes),
+                public_id=thumb_id,
+                resource_type="image",
+                format="webp",
+            )
+            thumb_url = thumb_res.get("secure_url") or thumb_res.get("url")
+            thumb_meta["url"] = thumb_url
+
+        return {
+            "unique_name": unique_name,
+            "original_url": original_url,
+            "size": len(file_bytes),
+            "original_name": original_filename,
+            "mimetype": mimetype,
+            "thumb_meta": thumb_meta,
+            "thumbUrl": thumb_url,
+        }
+    except Exception as exc:  # pragma: no cover - the behaviour is tested via mocks
+        log_kwargs = {"exc_info": True}
+        message = "Cloudinary upload failed for %s: %s"
+        if has_app_context():
+            current_app.logger.error(message, original_filename, exc, **log_kwargs)
+        else:
+            logger.error(message, original_filename, exc, **log_kwargs)
+        return None
 
 
 def upload_to_gcs(file_storage) -> dict | None:
@@ -196,13 +213,19 @@ def upload_to_gcs(file_storage) -> dict | None:
             None,
             None,
         )
-        return {
-            "unique_name": result["unique_name"],
-            "public_url": result["original_url"],
-            "size": result["size"],
-            "original_name": result["original_name"],
-            "mimetype": result["mimetype"],
-        }
+        if result:
+            return {
+                "unique_name": result["unique_name"],
+                "public_url": result["original_url"],
+                "size": result["size"],
+                "original_name": result["original_name"],
+                "mimetype": result["mimetype"],
+            }
+        warning_msg = "Falling back to secondary storage after Cloudinary upload failure."
+        if has_app_context():
+            current_app.logger.warning(warning_msg)
+        else:
+            logger.warning(warning_msg)
 
     # If GCS is disabled, store locally and return its metadata
     if not GCS_ENABLED:
@@ -284,7 +307,7 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
     )
 
     if CLOUDINARY_ENABLED:
-        return _save_to_cloudinary(
+        cloudinary_result = _save_to_cloudinary(
             original_filename,
             file_bytes,
             unique_name,
@@ -292,6 +315,13 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
             thumbnail_bytes,
             thumb_meta,
         )
+        if cloudinary_result:
+            return cloudinary_result
+        warning_msg = "Falling back to alternative storage after Cloudinary upload failure."
+        if has_app_context():
+            current_app.logger.warning(warning_msg)
+        else:
+            logger.warning(warning_msg)
 
     if VERCEL_BLOB_RW_TOKEN:
         return _save_to_vercel_blob(
