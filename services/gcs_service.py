@@ -1,11 +1,23 @@
+import logging
 import os
 import uuid
 import io
 import requests
-from flask import current_app
+from flask import current_app, has_app_context
 from werkzeug.utils import secure_filename
 from werkzeug.datastructures import FileStorage
 from services.thumbnail_service import generar_thumbnail
+
+# Optional Cloudinary storage
+CLOUDINARY_URL = os.environ.get("CLOUDINARY_URL")
+CLOUDINARY_ENABLED = bool(CLOUDINARY_URL)
+if CLOUDINARY_ENABLED:  # pragma: no cover - optional dependency
+    import cloudinary
+    from cloudinary import uploader
+
+    cloudinary.config(cloudinary_url=CLOUDINARY_URL)
+else:  # pragma: no cover - avoid import when disabled
+    uploader = None
 
 # Google Cloud Storage can be optionally disabled (e.g., when billing is off).
 GCS_ENABLED = os.environ.get("GCS_ENABLED", "false").lower() == "true"
@@ -20,10 +32,15 @@ else:  # pragma: no cover - avoid import errors when disabled
 BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "chatboc-files")
 MAX_FILE_SIZE = 15 * 1024 * 1024  # 15 MB
 
+
+logger = logging.getLogger(__name__)
+
+
 def _get_gcs_client():
     """Initializes and returns a GCS client."""
     # This could be extended with more robust credential handling if needed
     return storage.Client()
+
 
 def get_thumb_filename(original_filename: str) -> str:
     """Generates a predictable thumbnail filename from an original filename."""
@@ -31,9 +48,14 @@ def get_thumb_filename(original_filename: str) -> str:
     return f"{base}_thumb.webp"
 
 
-def _save_to_local(original_filename: str, file_bytes: bytes, unique_name: str,
-                   mimetype: str, thumbnail_bytes: bytes | None,
-                   thumb_meta: dict | None) -> dict:
+def _save_to_local(
+    original_filename: str,
+    file_bytes: bytes,
+    unique_name: str,
+    mimetype: str,
+    thumbnail_bytes: bytes | None,
+    thumb_meta: dict | None,
+) -> dict:
     """Save files to the local filesystem when GCS is unavailable."""
     upload_dir = current_app.config.get(
         "LOCAL_UPLOAD_FOLDER",
@@ -68,9 +90,14 @@ def _save_to_local(original_filename: str, file_bytes: bytes, unique_name: str,
     }
 
 
-def _save_to_vercel_blob(original_filename: str, file_bytes: bytes, unique_name: str,
-                         mimetype: str, thumbnail_bytes: bytes | None,
-                         thumb_meta: dict | None) -> dict | None:
+def _save_to_vercel_blob(
+    original_filename: str,
+    file_bytes: bytes,
+    unique_name: str,
+    mimetype: str,
+    thumbnail_bytes: bytes | None,
+    thumb_meta: dict | None,
+) -> dict | None:
     """Save files to Vercel Blob storage when configured."""
     if not VERCEL_BLOB_RW_TOKEN:
         return None
@@ -87,7 +114,9 @@ def _save_to_vercel_blob(original_filename: str, file_bytes: bytes, unique_name:
     if thumbnail_bytes and thumb_meta:
         headers["x-vercel-filename"] = get_thumb_filename(unique_name)
         headers["Content-Type"] = "image/webp"
-        resp_thumb = requests.post(VERCEL_BLOB_API, headers=headers, data=thumbnail_bytes)
+        resp_thumb = requests.post(
+            VERCEL_BLOB_API, headers=headers, data=thumbnail_bytes
+        )
         resp_thumb.raise_for_status()
         thumb_url = resp_thumb.json().get("url")
         thumb_meta["url"] = thumb_url
@@ -101,6 +130,58 @@ def _save_to_vercel_blob(original_filename: str, file_bytes: bytes, unique_name:
         "thumb_meta": thumb_meta,
         "thumbUrl": thumb_url,
     }
+
+
+def _save_to_cloudinary(
+    original_filename: str,
+    file_bytes: bytes,
+    unique_name: str,
+    mimetype: str,
+    thumbnail_bytes: bytes | None,
+    thumb_meta: dict | None,
+) -> dict | None:
+    """Upload files to Cloudinary when enabled.
+
+    Returns ``None`` if the upload fails so callers can gracefully fall back to
+    the next configured storage backend.
+    """
+    try:  # pragma: no cover - exercised via unit tests with mocks
+        file_obj = io.BytesIO(file_bytes)
+        upload_result = uploader.upload(
+            file_obj, public_id=unique_name, resource_type="auto"
+        )
+        original_url = upload_result.get("secure_url") or upload_result.get("url")
+
+        thumb_url = None
+        if thumbnail_bytes and thumb_meta:
+            thumb_id = get_thumb_filename(unique_name)
+            thumb_res = uploader.upload(
+                io.BytesIO(thumbnail_bytes),
+                public_id=thumb_id,
+                resource_type="image",
+                format="webp",
+            )
+            thumb_url = thumb_res.get("secure_url") or thumb_res.get("url")
+            thumb_meta["url"] = thumb_url
+
+        return {
+            "unique_name": unique_name,
+            "original_url": original_url,
+            "size": len(file_bytes),
+            "original_name": original_filename,
+            "mimetype": mimetype,
+            "thumb_meta": thumb_meta,
+            "thumbUrl": thumb_url,
+        }
+    except Exception as exc:  # pragma: no cover - the behaviour is tested via mocks
+        log_kwargs = {"exc_info": True}
+        message = "Cloudinary upload failed for %s: %s"
+        if has_app_context():
+            current_app.logger.error(message, original_filename, exc, **log_kwargs)
+        else:
+            logger.error(message, original_filename, exc, **log_kwargs)
+        return None
+
 
 def upload_to_gcs(file_storage) -> dict | None:
     """Upload a file to the configured storage backend.
@@ -121,11 +202,42 @@ def upload_to_gcs(file_storage) -> dict | None:
     original_filename = secure_filename(file_storage.filename)
     unique_name = f"{uuid.uuid4().hex}_{original_filename}"
 
+    file_storage.seek(0)
+    file_bytes = file_storage.read()
+
+    if CLOUDINARY_ENABLED:
+        result = _save_to_cloudinary(
+            original_filename,
+            file_bytes,
+            unique_name,
+            file_storage.mimetype,
+            None,
+            None,
+        )
+        if result:
+            return {
+                "unique_name": result["unique_name"],
+                "public_url": result["original_url"],
+                "size": result["size"],
+                "original_name": result["original_name"],
+                "mimetype": result["mimetype"],
+            }
+        warning_msg = "Falling back to secondary storage after Cloudinary upload failure."
+        if has_app_context():
+            current_app.logger.warning(warning_msg)
+        else:
+            logger.warning(warning_msg)
+
     # If GCS is disabled, store locally and return its metadata
     if not GCS_ENABLED:
-        file_storage.seek(0)
-        file_bytes = file_storage.read()
-        local = _save_to_local(original_filename, file_bytes, unique_name, file_storage.mimetype, None, None)
+        local = _save_to_local(
+            original_filename,
+            file_bytes,
+            unique_name,
+            file_storage.mimetype,
+            None,
+            None,
+        )
         return {
             "unique_name": local["unique_name"],
             "public_url": local["original_url"],
@@ -139,16 +251,13 @@ def upload_to_gcs(file_storage) -> dict | None:
         bucket = storage_client.bucket(BUCKET_NAME)
         blob = bucket.blob(unique_name)
 
-        # Rewind the file stream before uploading
-        file_storage.seek(0)
-        blob.upload_from_file(file_storage, content_type=file_storage.mimetype)
+        blob.upload_from_string(file_bytes, content_type=file_storage.mimetype)
 
-        # Check file size after upload
         if blob.size > MAX_FILE_SIZE:
             current_app.logger.warning(
                 f"User uploaded a file larger than MAX_FILE_SIZE: {original_filename} ({blob.size} bytes)"
             )
-            blob.delete()  # Clean up the oversized file
+            blob.delete()
             return None
 
         return {
@@ -163,6 +272,7 @@ def upload_to_gcs(file_storage) -> dict | None:
             f"Error uploading file {original_filename} to GCS: {e}", exc_info=True
         )
         return None
+
 
 def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
     """Upload a file and its generated thumbnail to storage.
@@ -186,12 +296,33 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
     file_bytes = file_storage.read()
 
     if len(file_bytes) > MAX_FILE_SIZE:
-        current_app.logger.warning(f"File '{original_filename}' exceeds max size of {MAX_FILE_SIZE} bytes.")
+        current_app.logger.warning(
+            f"File '{original_filename}' exceeds max size of {MAX_FILE_SIZE} bytes."
+        )
         return None
 
     # Create a new stream for thumbnail generation
     file_stream_for_thumb = io.BytesIO(file_bytes)
-    thumbnail_bytes, thumb_meta = generar_thumbnail(file_stream_for_thumb, file_storage.mimetype)
+    thumbnail_bytes, thumb_meta = generar_thumbnail(
+        file_stream_for_thumb, file_storage.mimetype
+    )
+
+    if CLOUDINARY_ENABLED:
+        cloudinary_result = _save_to_cloudinary(
+            original_filename,
+            file_bytes,
+            unique_name,
+            file_storage.mimetype,
+            thumbnail_bytes,
+            thumb_meta,
+        )
+        if cloudinary_result:
+            return cloudinary_result
+        warning_msg = "Falling back to alternative storage after Cloudinary upload failure."
+        if has_app_context():
+            current_app.logger.warning(warning_msg)
+        else:
+            logger.warning(warning_msg)
 
     if VERCEL_BLOB_RW_TOKEN:
         return _save_to_vercel_blob(
@@ -217,16 +348,14 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
         storage_client = _get_gcs_client()
         bucket = storage_client.bucket(BUCKET_NAME)
 
-        # 1. Upload Original File
         blob_original = bucket.blob(unique_name)
         blob_original.upload_from_string(file_bytes, content_type=file_storage.mimetype)
 
         thumb_url = None
-        # 2. Upload Thumbnail if available
         if thumbnail_bytes and thumb_meta:
             thumb_filename = get_thumb_filename(unique_name)
             blob_thumb = bucket.blob(thumb_filename)
-            blob_thumb.upload_from_string(thumbnail_bytes, content_type='image/webp')
+            blob_thumb.upload_from_string(thumbnail_bytes, content_type="image/webp")
             thumb_url = blob_thumb.public_url
             thumb_meta["url"] = thumb_url
             current_app.logger.info(f"Thumbnail uploaded to {thumb_url}")
@@ -246,7 +375,9 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
             f"Error in guardar_adjunto_y_thumbnail for {original_filename}: {e}",
             exc_info=True,
         )
-        current_app.logger.warning("Falling back to local file storage for attachments.")
+        current_app.logger.warning(
+            "Falling back to local file storage for attachments."
+        )
         return _save_to_local(
             original_filename,
             file_bytes,
@@ -255,6 +386,7 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
             thumbnail_bytes,
             thumb_meta,
         )
+
 
 def upload_file_from_url(url: str) -> dict | None:
     """
@@ -275,22 +407,27 @@ def upload_file_from_url(url: str) -> dict | None:
             ext = content_type.split("/")[-1]
             filename = f"{filename}.{ext}"
 
-
         file_stream = io.BytesIO(response.content)
 
         # Create a FileStorage-like object
         file_storage = FileStorage(
             stream=file_stream,
             filename=filename,
-            content_type=response.headers.get("content-type", "application/octet-stream"),
+            content_type=response.headers.get(
+                "content-type", "application/octet-stream"
+            ),
         )
 
         current_app.logger.info(f"Uploading file from URL: {url} as {filename}")
         return guardar_adjunto_y_thumbnail(file_storage)
 
     except requests.exceptions.RequestException as e:
-        current_app.logger.error(f"Failed to download file from URL {url}: {e}", exc_info=True)
+        current_app.logger.error(
+            f"Failed to download file from URL {url}: {e}", exc_info=True
+        )
         return None
     except Exception as e:
-        current_app.logger.error(f"Failed to upload file from URL {url}: {e}", exc_info=True)
+        current_app.logger.error(
+            f"Failed to upload file from URL {url}: {e}", exc_info=True
+        )
         return None

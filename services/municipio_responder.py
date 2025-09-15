@@ -153,52 +153,68 @@ class ReclamoFlowHandler:
         logger.info("Iniciando flujo de reclamo v2.")
         self.flow_context.clear()
         self.flow_context['datos_reclamo'] = datos_iniciales or {}
+        datos = self.flow_context['datos_reclamo']
+
+        def _apply_prefill(field: str, *candidates) -> None:
+            """Populate ``datos`` with the first meaningful value available."""
+            existing = datos.get(field)
+            if existing and existing != 'Vecino/a' and '@whatsapp.chatboc.com' not in str(existing):
+                return
+            for candidate in candidates:
+                if not candidate:
+                    continue
+                if isinstance(candidate, str):
+                    candidate = candidate.strip()
+                    if not candidate:
+                        continue
+                    if field == 'nombre' and candidate == 'Vecino/a':
+                        continue
+                datos[field] = candidate
+                break
 
         # Si la conversación comenzó con una foto (context['foto_url']) pero
         # aún no se reflejó en los datos del reclamo, la agregamos para evitar
         # que se le vuelva a solicitar al usuario.
         if (
             self.context.get("foto_url")
-            and not self.flow_context['datos_reclamo'].get('foto_url')
+            and not datos.get('foto_url')
         ):
-            self.flow_context['datos_reclamo']['foto_url'] = self.context.get("foto_url")
+            datos['foto_url'] = self.context.get("foto_url")
 
         # Pre-fill contact details from the viewer if available so we do not
         # ask the user for information we already have.
         viewer = self.context.get("viewer_user_obj")
         if viewer:
-            datos = self.flow_context['datos_reclamo']
             # Some viewer objects store attributes with different names. Fall back
             # to common alternatives to avoid asking for data we already have.
-            datos.setdefault(
+            _apply_prefill(
                 'nombre',
-                getattr(viewer, 'name', None)
-                or getattr(viewer, 'nombre', None)
-                or getattr(viewer, 'nombre_vecino', None),
+                getattr(viewer, 'name', None),
+                getattr(viewer, 'nombre', None),
+                getattr(viewer, 'nombre_vecino', None),
             )
-            datos.setdefault(
+            _apply_prefill(
                 'email',
-                getattr(viewer, 'email', None)
-                or getattr(viewer, 'email_vecino', None),
+                getattr(viewer, 'email', None),
+                getattr(viewer, 'email_vecino', None),
             )
-            datos.setdefault(
+            _apply_prefill(
                 'telefono',
-                getattr(viewer, 'telefono', None)
-                or getattr(viewer, 'telefono_vecino', None),
+                getattr(viewer, 'telefono', None),
+                getattr(viewer, 'telefono_vecino', None),
             )
-            datos.setdefault(
+            _apply_prefill(
                 'dni',
-                getattr(viewer, 'dni', None)
-                or getattr(viewer, 'dni_vecino', None)
-                or getattr(viewer, 'documento', None),
+                getattr(viewer, 'dni', None),
+                getattr(viewer, 'dni_vecino', None),
+                getattr(viewer, 'documento', None),
             )
 
         # Reuse previously provided contact info stored in municipal context
         contacto_prev = self.municipal_ctx.get('contacto_usuario', {})
         if contacto_prev:
-            datos = self.flow_context['datos_reclamo']
             for campo in ['nombre', 'email', 'telefono', 'dni']:
-                datos.setdefault(campo, contacto_prev.get(campo))
+                _apply_prefill(campo, contacto_prev.get(campo))
 
         if categoria_inicial and not self.flow_context['datos_reclamo'].get('categoria'):
             self.flow_context['datos_reclamo']['categoria'] = categoria_inicial
@@ -347,41 +363,49 @@ class ReclamoFlowHandler:
             }
 
     def ask_for_contact_details(self, force_prompt: bool = False):
-        """
-        Asks for contact details ONLY if forced (i.e., user wants to edit).
-        Otherwise, transitions directly to the confirmation step.
-        """
-        if not force_prompt:
-            # Default behavior: proceed directly to confirmation. The confirmation
-            # message itself will display what data is known or missing.
+        """Ask for missing contact details or allow editing if requested."""
+        datos = self.flow_context.setdefault('datos_reclamo', {})
+        required_fields = ['nombre', 'dni', 'email', 'telefono']
+        field_labels = {
+            'nombre': 'Nombre completo',
+            'dni': 'DNI',
+            'email': 'Email',
+            'telefono': 'Teléfono',
+        }
+
+        missing = [
+            f for f in required_fields
+            if not datos.get(f)
+            or datos.get(f) == 'Vecino/a'
+            or '@whatsapp.chatboc.com' in str(datos.get(f))
+        ]
+
+        if not force_prompt and not missing:
             self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
             return self.get_confirmation_message()
 
-        # This block only runs if force_prompt is True (user chose to edit).
         self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
-        datos = self.flow_context.setdefault('datos_reclamo', {})
 
-        required_fields = ['nombre', 'dni', 'email', 'telefono']
         known_parts = []
-        missing = []
-        field_labels = {'nombre': 'Nombre completo', 'dni': 'DNI', 'email': 'Email', 'telefono': 'Teléfono'}
-
+        missing_labels = []
         for field in required_fields:
             value = datos.get(field)
-            # Check if value is meaningful before showing it as "known"
-            if value and value != 'Vecino/a' and '@whatsapp.chatboc.com' not in str(value):
+            if value and field not in missing and '@whatsapp.chatboc.com' not in str(value) and value != 'Vecino/a':
                 known_parts.append(f"{field_labels[field].capitalize()}: {value}")
             else:
-                missing.append(field_labels[field])
+                missing_labels.append(field_labels[field])
 
-        message_lines = ["✏️ Entendido. Por favor, enviá los datos que querés corregir o agregar.\n"]
-        if missing:
-            message_lines.append(f"Podés incluir: {', '.join(missing)}.")
+        message_lines = []
+        if known_parts:
+            message_lines.append("¡Ya casi terminamos! ✍️")
+            message_lines.append("*Datos que ya tenemos:*")
+            message_lines.extend(known_parts)
+        if missing_labels:
+            message_lines.append("\n*Para finalizar, por favor, completá tus datos:*")
+            message_lines.extend(missing_labels)
+        message_lines.append("\nPodés escribir todos los datos juntos en un solo mensaje para actualizar o corregir.")
 
-        message_lines.append("\nEscribí todos los datos juntos en un solo mensaje para actualizar.")
-
-        message = "\n".join(message_lines)
-        return {"message_body": message}
+        return {"message_body": "\n".join(message_lines)}
 
     def handle_datos_contacto(self, user_input):
         contact_details = extract_multiple_contact_details_regex(user_input)

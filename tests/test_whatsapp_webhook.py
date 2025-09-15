@@ -582,6 +582,65 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertEqual(kwargs["pregunta"], "Sí, es correcto")
 
     @patch('routes.whatsapp_webhook.requests.get')
+    def test_image_attachment_skips_analysis_when_reclamo_active(self, mock_requests_get):
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.content = b'fake-image-content'
+        mock_requests_get.return_value = mock_response
+
+        self.mock_validator.validate.return_value = True
+
+        mock_twilio_message = MagicMock()
+        mock_twilio_message.sid = "SM_image_skip"
+        self.mock_twilio_create.return_value = mock_twilio_message
+
+        self._create_confirmed_session()
+
+        session = ChatSessionContext.query.filter_by(
+            chat_session_id=f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        ).first()
+        session.context_data.setdefault(CONTEXTO_MUNICIPIO, {})['reclamo_flow_v2'] = {
+            'state': 'ESPERANDO_FOTO',
+            'datos_reclamo': {}
+        }
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(session, "context_data")
+        db.session.commit()
+
+        with patch('routes.whatsapp_webhook.responder_chatboc') as mock_bot, \
+             patch('routes.whatsapp_webhook.create_attachment_with_thumbnail') as mock_create_attachment, \
+             patch('routes.whatsapp_webhook.clasificar_adjunto_whatsapp') as mock_classifier:
+            mock_bot.return_value = {"message_body": "Ok"}
+            mock_adjunto = MagicMock()
+            mock_adjunto.id = 33
+            mock_adjunto.url = 'http://fake.storage/skip.jpg'
+            mock_adjunto.mime = 'image/jpeg'
+            mock_adjunto.nombre_original = 'skip.jpg'
+            mock_create_attachment.return_value = mock_adjunto
+
+            payload = {
+                "To": f"whatsapp:{self.test_whatsapp_number_str}",
+                "From": f"whatsapp:{self.test_user_number_str}",
+                "Body": "Archivo",
+                "MediaUrl0": "http://example.com/skip.jpg",
+                "MediaContentType0": "image/jpeg"
+            }
+            headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data.decode(), "OK")
+
+            mock_classifier.assert_not_called()
+            mock_bot.assert_called_once()
+            kwargs = mock_bot.call_args.kwargs
+            self.assertIn("uploaded_file_info", kwargs)
+            self.assertEqual(kwargs["uploaded_file_info"]["mime_type"], "image/jpeg")
+            self.assertTrue(kwargs.get("es_foto"))
+            self.assertNotIn("datos_interpretados_archivo", kwargs)
+
+    @patch('routes.whatsapp_webhook.requests.get')
     def test_whatsapp_webhook_audio_attachment_skips_classification(self, mock_requests_get):
         # Mock the download response
         mock_response = MagicMock()

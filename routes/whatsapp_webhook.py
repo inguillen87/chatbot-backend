@@ -376,6 +376,7 @@ def whatsapp_webhook():
     media_url = post_vars.get("MediaUrl0")
     media_content_type = post_vars.get("MediaContentType0")
     uploaded_file_info = None
+    skip_media_analysis = False
     message_body = incoming_text
 
     if media_url and media_content_type:
@@ -403,6 +404,9 @@ def whatsapp_webhook():
             )
 
             if adjunto:
+                thumb_url = None
+                if getattr(adjunto, "analisis", None) and isinstance(adjunto.analisis.datos_estructurados, dict):
+                    thumb_url = adjunto.analisis.datos_estructurados.get("url")
                 # Prepare the info for the chatbot logic, which will be used for all media types
                 uploaded_file_info = {
                     "id": adjunto.id,
@@ -411,6 +415,8 @@ def whatsapp_webhook():
                     "name": adjunto.nombre_original,
                     "source": "whatsapp"
                 }
+                if thumb_url:
+                    uploaded_file_info["thumbnail_url"] = thumb_url
                 current_app.logger.info(f"WhatsApp media processed and saved as ArchivoAdjunto ID: {adjunto.id}")
             else:
                 current_app.logger.error("create_attachment_with_thumbnail failed to process the WhatsApp media")
@@ -490,6 +496,10 @@ def whatsapp_webhook():
         session_context_db_entry.context_data.get(CONTEXTO_MUNICIPIO)
         or session_context_db_entry.context_data.get("contexto_municipio", {})
     )
+    if isinstance(municipio_ctx, dict):
+        flow_state = (municipio_ctx.get("reclamo_flow_v2") or {}).get("state")
+        if flow_state:
+            skip_media_analysis = True
     esperando_info = _esperando_info_libre(municipio_ctx)
 
     # Solo traducir números a acciones cuando no estamos esperando información libre.
@@ -523,7 +533,7 @@ def whatsapp_webhook():
         interpretacion_media_data = None
         if uploaded_file_info:
             mime_type = uploaded_file_info.get("mime_type", "")
-            if not mime_type.startswith("audio/"):
+            if not skip_media_analysis and not mime_type.startswith("audio/"):
                 interpretacion_media_data = clasificar_adjunto_whatsapp(uploaded_file_info, client_user)
         # Location info should not be treated as interpreted media.
         # It should be passed directly as location data.
@@ -531,9 +541,13 @@ def whatsapp_webhook():
         kwargs_for_bot = {"source_channel": "whatsapp"}
         if uploaded_file_info:
             kwargs_for_bot["uploaded_file_info"] = uploaded_file_info
-            # Also add the specific keys the old flow handler expects
-            kwargs_for_bot["es_foto"] = True
-            kwargs_for_bot["foto_url"] = uploaded_file_info.get("url")
+            mime_type = uploaded_file_info.get("mime_type", "")
+            if mime_type.startswith("image/"):
+                # Also add the specific keys the old flow handler expects
+                kwargs_for_bot["es_foto"] = True
+                kwargs_for_bot["foto_url"] = uploaded_file_info.get("url")
+            if skip_media_analysis:
+                kwargs_for_bot["skip_media_analysis"] = True
         if location_info:
             # Pass location_info and mark it explicitly as a location payload
             kwargs_for_bot["location"] = location_info
