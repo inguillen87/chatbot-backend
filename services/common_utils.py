@@ -613,34 +613,57 @@ def _get_main_menu_payload(context: dict, welcome_message_override: Optional[str
     )
 
     channel = context.get("channel", "web")
-    # This improved version of the main menu uses emojis and bolding for better UX.
-    # It also unifies the menu structure for both WhatsApp and web channels.
-    categorias = [
-        {"titulo": "🗣️ *Reclamos y Consultas*", "botones": [
-            {"texto": "📝 Iniciar un Reclamo", "action_id": "iniciar_reclamo"},
-            {"texto": "💡 Enviar una Sugerencia", "action_id": "enviar_sugerencia"},
-            {"texto": "🤔 Consultar Estado de Reclamo", "action_id": "consultar_estado_reclamo"},
-        ]},
-        {"titulo": "🚗 *Trámites y Turnos*", "botones": [
-            {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
-            {"texto": "🗓️ Solicitar Otros Turnos", "action_id": "solicitar_turnos"},
-            {"texto": "💵 Pagar Tasas Municipales", "action_id": "pago_de_tasas_vigentes"},
-        ]},
-        {"titulo": "📰 *Información y Servicios*", "botones": [
-            {"texto": "🎭 Agenda y Noticias", "action_id": "agenda_y_noticias"},
-            {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
-            {"texto": "📞 Contactos Útiles", "action_id": "contactos_utiles"},
-            {"texto": "🅿️ Estacionamiento", "action_id": "buscar_estacionamiento"},
-            {"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"},
-        ]},
-    ]
-
-    flat_buttons = []
-    for categoria in categorias:
-        for boton in categoria.get('botones', []):
+    if channel == "whatsapp":
+        # Simplified menu for WhatsApp: only top-level categories
+        categorias = [{
+            "titulo": "*Categorías*",
+            "botones": [
+                {"texto": "🗣️ Reclamos y Consultas", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "🚗 Trámites y Turnos", "action_id": "mostrar_menu_tramites"},
+                {"texto": "📰 Información del Municipio", "action_id": "mostrar_menu_informacion"},
+                {"texto": "🅿️ Estacionamiento", "action_id": "mostrar_menu_estacionamiento"},
+                {"texto": "❓ Ayuda", "action_id": "mostrar_menu_ayuda"},
+            ]
+        }]
+        flat_buttons = []
+        for boton in categorias[0].get('botones', []):
             new_boton = boton.copy()
             new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
             flat_buttons.append(new_boton)
+    else:
+        # Full accordion-style menu for web/widget channels
+        categorias = [
+            {"titulo": "🗣️ Reclamos y Consultas", "botones": [
+                {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "💡 Enviar una Sugerencia", "action_id": "enviar_sugerencia"},
+                {"texto": "🤔 Consultar Estado de Reclamo", "action_id": "consultar_estado_reclamo"},
+                {"texto": "📞 Contactos Útiles", "action_id": "contactos_utiles"},
+            ]},
+            {"titulo": "🚗 Trámites y Turnos", "botones": [
+                {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
+                {"texto": "🗓️ Solicitar Otros Turnos", "action_id": "solicitar_turnos"},
+                {"texto": "💵 Pagar Tasas Municipales", "action_id": "pago_de_tasas_vigentes"},
+            ]},
+            {"titulo": "📰 Información del Municipio", "botones": [
+                {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
+                {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
+                {"texto": "🏗️ Obras", "action_id": "obras"},
+                {"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"},
+            ]},
+            {"titulo": "🅿️ Estacionamiento", "botones": [
+                {"texto": "🅿️ Buscar Estacionamiento Libre", "action_id": "buscar_estacionamiento"},
+            ]},
+            {"titulo": "❓ Ayuda", "botones": [
+                {"texto": "ℹ️ Cómo usar el bot", "action_id": "mostrar_menu_ayuda"},
+            ]}
+        ]
+        flat_buttons = []
+        for categoria in categorias:
+            for boton in categoria.get('botones', []):
+                new_boton = boton.copy()
+                new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
+                flat_buttons.append(new_boton)
+
 
     response = {
         "message_body": f"{welcome_message}\n\n{main_text_body}",
