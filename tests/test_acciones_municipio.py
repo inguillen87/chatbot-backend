@@ -271,7 +271,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         respuesta = handler.execute(datos_llm)
         self.assertFalse(respuesta["success"])
         # The new logic correctly identifies the user's name from the "usuario" field
-        self.assertIn("necesito algunos datos más: **descripcion, email, telefono**", respuesta["message_to_user"])
+        self.assertIn("necesito algunos datos más: **descripcion, dni, email, telefono**", respuesta["message_to_user"])
         mock_crear_ticket.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
@@ -282,21 +282,16 @@ class TestAccionesMunicipio(unittest.TestCase):
         respuesta = handler.execute(datos_llm)
         self.assertFalse(respuesta["success"])
         # The new logic correctly identifies the user's name from the "usuario" field
-        self.assertIn("necesito algunos datos más: **email, telefono, ubicacion**", respuesta["message_to_user"])
+        self.assertIn("necesito algunos datos más: **dni, email, telefono, ubicacion**", respuesta["message_to_user"])
         mock_crear_ticket.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
     @patch('services.actions.municipio_actions.validar_email', return_value=True)
     @patch('services.actions.municipio_actions.formatear_telefono_e164', return_value="+541234567890")
-    def test_accion_crear_reclamo_sin_pin_genera_uno_nuevo(
+    def test_accion_crear_reclamo_sin_pin_pide_pin(
         self, mock_formatear_tel, mock_validar_email, mock_validar_tel, mock_crear_ticket
     ):
-        """
-        Verifica que si no se provee un PIN, el sistema genera uno automáticamente y crea el ticket.
-        """
-        mock_crear_ticket.return_value = {"id": 6, "nro_ticket": "generado", "consulta_pin": "randompin"}
-
         datos_llm = {
             "categoria": "Alumbrado",
             "descripcion": "Luz apagada",
@@ -305,18 +300,14 @@ class TestAccionesMunicipio(unittest.TestCase):
             "email": "vecino@example.com",
             "usuario": "Juan",
             "dni": "12345678"
-            # No PIN provided
         }
         context = {"viewer_user_obj": None, "user_obj": MagicMock(id=1, municipio_id="testmuni"), "anon_id": "testanon"}
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
-
-        self.assertTrue(respuesta["success"])
-        mock_crear_ticket.assert_called_once()
-        _, kwargs = mock_crear_ticket.call_args
-        self.assertIn('consulta_pin', kwargs['ticket_data'])
-        self.assertTrue(kwargs['ticket_data']['consulta_pin'].isdigit())
-        self.assertEqual(len(kwargs['ticket_data']['consulta_pin']), 6)
+        self.assertFalse(respuesta["success"])
+        self.assertEqual(respuesta["pedir_info"], "pin_ticket")
+        self.assertIn("PIN", respuesta["message_to_user"])
+        mock_crear_ticket.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono')
@@ -395,7 +386,6 @@ class TestAccionesMunicipio(unittest.TestCase):
         mock_viewer_user.nombre = "Homero J. Simpson"
         mock_viewer_user.telefono = None
         mock_viewer_user.email = None
-        mock_viewer_user.dni = None
 
         mock_owner_user = MagicMock(spec=User)
         mock_owner_user.id = 1
@@ -405,10 +395,7 @@ class TestAccionesMunicipio(unittest.TestCase):
             "viewer_user_obj": mock_viewer_user,
             "user_obj": mock_owner_user,
             "anon_id": None,
-            "municipio_config_actual": {
-                "ejemplo_direccion": "Av. Siempreviva 742",
-                "campos_requeridos_reclamo": ['descripcion', 'ubicacion', 'nombre', 'telefono', 'email', 'dni']
-            },
+            "municipio_config_actual": {"ejemplo_direccion": "Av. Siempreviva 742"},
             "chat_session_uuid": "test-session-uuid-123",
             "chat_db_context_data": {"processed_idempotency_keys": {}}
         }
@@ -416,10 +403,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
 
-        self.assertFalse(respuesta["success"])
-        self.assertIn("telefono", respuesta["pedir_info"])
-        self.assertIn("email", respuesta["pedir_info"])
-        self.assertIn("dni", respuesta["pedir_info"])
+        self.assertTrue(respuesta["success"])
 
     @patch('services.herramientas_municipio.geocode_address')
     def test_direccion_es_valida(self, mock_geocode):
@@ -496,10 +480,10 @@ class TestAccionesMunicipio(unittest.TestCase):
         )
         self.assertEqual(response["fuente"], "handler_agenda_y_noticias")
 
-    @patch('services.municipio_responder.handle_llm_interaction')
-    def test_points_of_interest_handler_with_location(self, mock_handle_llm):
+    @patch('services.municipio_responder.llamar_gemini')
+    def test_points_of_interest_handler_with_location(self, mock_llamar_gemini):
         # Simulate the LLM deciding to use the google_search tool
-        mock_handle_llm.return_value = (
+        mock_llamar_gemini.return_value = (
             {
                 "accion_backend": "ejecutar_herramienta",
                 "message_body": "Buscando farmacias...",
@@ -543,10 +527,10 @@ class TestAccionesMunicipio(unittest.TestCase):
                 TOOL_REGISTRY['google_search']['funcion'] = original_google_search
 
     @patch('services.municipio_responder.google_search')
-    @patch('services.municipio_responder.handle_llm_interaction')
-    def test_points_of_interest_handler_without_location(self, mock_handle_llm, mock_google_search):
+    @patch('services.municipio_responder.llamar_gemini')
+    def test_points_of_interest_handler_without_location(self, mock_llamar_gemini, mock_google_search):
         # Simulate the LLM asking for location
-        mock_handle_llm.return_value = ({"message_body": "Para darte información precisa, necesito tu ubicación. ¿Podrías compartirla?",
+        mock_llamar_gemini.return_value = ({"message_body": "Para darte información precisa, necesito tu ubicación. ¿Podrías compartirla?",
                                             "accion_backend": "pedir_info", "pedir_info": "ubicacion"}, {})
 
         from services.municipio_responder import responder_municipio

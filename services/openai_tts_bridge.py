@@ -43,7 +43,7 @@ def generar_audio_openai(text: str, speed: float = 0.9) -> str | None:
         logger.info(f"Requesting OpenAI speech synthesis for text: '{text[:50]}...'")
 
         response = client.audio.speech.create(
-            model="tts-1-hd",
+            model="tts-1",
             voice="alloy",
             input=text,
             speed=speed,

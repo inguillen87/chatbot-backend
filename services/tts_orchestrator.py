@@ -16,60 +16,34 @@ def _summarize_if_long(text: str, max_chars: int = 500) -> str:
     return textwrap.shorten(text, width=max_chars, placeholder=" ...")
 
 
-def _deletrear_numeros(texto: str) -> str:
-    """Expande números en una cadena a su forma hablada, deletreando dígitos."""
-    from num2words import num2words
-
-    def reemplazo(match):
-        return ' '.join(list(match.group(0)))
-
-    def reemplazar_moneda(match):
-        numero_str = match.group(1).replace('.', '').replace(',', '.')
-        try:
-            numero = float(numero_str)
-            parte_entera = int(numero)
-            parte_decimal = int(round((numero - parte_entera) * 100))
-
-            texto_entero = num2words(parte_entera, lang='es')
-            if parte_decimal > 0:
-                texto_decimal = num2words(parte_decimal, lang='es')
-                return f"{texto_entero} pesos con {texto_decimal} centavos"
-            else:
-                return f"{texto_entero} pesos"
-        except (ValueError, TypeError):
-            return match.group(0)
-
-    # Deletrea números de 5 o más dígitos para IDs de ticket, etc.
-    texto = re.sub(r'\b\d{5,}\b', reemplazo, texto)
-    # Deletrea "M-12345" como "eme guión uno dos tres..."
-    texto = re.sub(r'\b[A-Za-z]-\d+\b', lambda m: ' '.join(list(m.group(0).replace('-', ' guión '))), texto)
-    # Maneja valores monetarios
-    texto = re.sub(r'\$\s*([\d.,]+)', reemplazar_moneda, texto)
-    return texto
-
 def sanitize_for_tts(raw: str) -> str:
-    """Prepare text so synthesized audio is clear and accessible."""
-    cleaned = re.sub(r"https?://\S+", "", raw)
+    """Prepare text so synthesized audio is clear and accessible.
+
+    The sanitizer:
+    - Removes URLs, emojis and other non standard symbols.
+    - Normalizes numbered options like ``1)`` to ``Opción 1:``.
+    - Expands common time abbreviations such as ``hs``/``hrs`` to "horas".
+    - Converts bullet points to explicit "Punto" markers.
+    - Shortens overly long texts.
+    """
+
+    cleaned = re.sub(r"https?://\S+", "", raw)  # strip URLs
     cleaned = cleaned.replace("*", "")
+    # remove emojis and nonstandard symbols
     cleaned = re.sub(r"[^\w\s.,;:0-9áéíóúÁÉÍÓÚñÑüÜ-]", "", cleaned)
+    # Normalize numbered options like "1.", "1)" or "1-" to "Opción 1:"
     cleaned = re.sub(r"(?m)^\s*(\d+)[\.)-]\s*", r"Opción \1: ", cleaned)
+    # Convert bullet points to explicit prompts
     cleaned = re.sub(r"(?m)^\s*[\-•]\s*", "Punto: ", cleaned)
-    cleaned = re.sub(r"(?i)\b(\d{1,2}(?:[:.]\d{2})?)\s*(hs|hrs)\b", r"\1 horas", cleaned)
+    # Expand time abbreviations (e.g., "18 hs" -> "18 horas", "24hrs" -> "24 horas")
+    cleaned = re.sub(
+        r"(?i)\b(\d{1,2}(?:[:.]\d{2})?)\s*(hs|hrs)\b",
+        r"\1 horas",
+        cleaned,
+    )
     cleaned = re.sub(r"(?i)\b(hs|hrs)\b", "horas", cleaned)
-
-    # Deletrear números de ticket y otros códigos largos
-    cleaned = _deletrear_numeros(cleaned)
-
-    # Mejorar el ritmo y la entonación
-    cleaned = cleaned.replace("\n\n", ". ") # Doble salto de línea como pausa mayor
-    cleaned = cleaned.replace("\n", ". ") # Salto de línea simple como pausa
-    cleaned = re.sub(r'\s*\.+\s*', '. ', cleaned) # Normalizar múltiples puntos
+    cleaned = re.sub(r"\s*\n+\s*", ". ", cleaned)
     cleaned = " ".join(cleaned.split())
-
-    # Pausa después del saludo
-    if cleaned.lower().startswith("hola"):
-        cleaned = cleaned.replace("Hola", "Hola, ", 1)
-
     return _summarize_if_long(cleaned)
 
 
@@ -108,36 +82,24 @@ def generar_audio(text: str) -> str | None:
             logger.warning(f"TTS Service: Failed to cache audio file from {generated_path}: {e}")
         return audio_url
 
-    # Import providers lazily to avoid heavy dependencies at module import time
-    from services.elevenlabs_bridge import generar_audio_elevenlabs
+    # Import the OpenAI provider lazily to avoid heavy dependencies at module import time
     from services.openai_tts_bridge import generar_audio_openai
 
-    speed_env = os.getenv("TTS_SPEECH_SPEED", "1.0")
+    # Try OpenAI
     try:
-        speech_speed = float(speed_env)
-    except (ValueError, TypeError):
-        speech_speed = 1.0
-
-    # Try ElevenLabs first
-    try:
-        logger.info("TTS Service: Trying ElevenLabs...")
-        audio_url = generar_audio_elevenlabs(text, speed=speech_speed)
-        if audio_url:
-            logger.info("TTS Service: ElevenLabs successful.")
-            return cache_and_return(audio_url)
-        logger.warning("TTS Service: ElevenLabs returned None. Trying fallback.")
-    except Exception as e:
-        logger.error(f"TTS Service: ElevenLabs failed with an exception: {e}. Trying fallback.", exc_info=True)
-
-    # Fallback to OpenAI
-    try:
-        logger.info("TTS Service: Trying OpenAI as fallback...")
+        speed_env = os.getenv("TTS_SPEECH_SPEED", "0.85")
+        try:
+            speech_speed = float(speed_env)
+        except (ValueError, TypeError):
+            speech_speed = 0.85
+        logger.info("TTS Service: Trying OpenAI...")
         audio_url = generar_audio_openai(text, speed=speech_speed)
         if audio_url:
-            logger.info("TTS Service: OpenAI fallback successful.")
+            logger.info("TTS Service: OpenAI successful.")
             return cache_and_return(audio_url)
-        logger.warning("TTS Service: OpenAI fallback also returned None.")
+
+        logger.warning("TTS Service: OpenAI returned None without raising an exception.")
         return None
     except Exception as e:
-        logger.error(f"TTS Service: OpenAI fallback failed with an exception: {e}", exc_info=True)
+        logger.error(f"TTS Service: OpenAI failed with an exception: {e}", exc_info=True)
         return None
