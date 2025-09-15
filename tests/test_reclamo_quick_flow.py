@@ -1,6 +1,6 @@
 import types
 from services.municipio_responder import responder_municipio, CONTEXTO_MUNICIPIO
-from models import ChatSessionContext
+from models import ChatSessionContext, MunicipioTicket
 from app import db
 
 
@@ -195,6 +195,37 @@ def test_prefill_dni_from_contact(owner_user):
     )
     flow = result.ctx["reclamo_flow_v2"]
     assert flow["datos_reclamo"]["dni"] == "32877851"
+
+
+def test_prefill_contact_from_previous_ticket(owner_user):
+    ticket = MunicipioTicket(
+        pregunta="Reporte anterior",
+        categoria="Arbolado",
+        municipio_id=owner_user.id,
+        anon_id="anon",
+        telefono_vecino="+5492611234567",
+        email_vecino="marcelo@example.com",
+        dni_vecino="32877851",
+        nombre_vecino="Marcelo",
+        nro_ticket="987654321_prefill",
+        consulta_pin="123456",
+    )
+    db.session.add(ticket)
+    db.session.commit()
+
+    try:
+        result = run_turn("hay una rama peligrosa", owner_user=owner_user)
+        flow = result.ctx["reclamo_flow_v2"]
+        datos = flow["datos_reclamo"]
+        assert datos["email"] == "marcelo@example.com"
+        assert datos["dni"] == "32877851"
+        assert datos["telefono"] == "+5492611234567"
+        assert datos["nombre"] == "Marcelo"
+        assert "Para continuar, por favor, indicame la dirección exacta del problema" in result.response["message_body"]
+        assert flow['state'] == 'ESPERANDO_DIRECCION'
+    finally:
+        db.session.delete(ticket)
+        db.session.commit()
 
 
 def test_handle_direccion_uses_normalizer(monkeypatch, owner_user):

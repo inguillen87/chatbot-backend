@@ -215,6 +215,118 @@ class ReclamoFlowHandler:
             for campo in ['nombre', 'email', 'telefono', 'dni']:
                 _apply_prefill(campo, contacto_prev.get(campo))
 
+        def _needs_contact_data(field: str) -> bool:
+            value = datos.get(field)
+            if not value:
+                return True
+            if not isinstance(value, str):
+                return False
+            stripped = value.strip()
+            if not stripped:
+                return True
+            lowered = stripped.lower()
+            if field == 'nombre' and lowered in {'vecino', 'vecina', 'vecine', 'vecino/a'}:
+                return True
+            if field == 'email' and stripped.endswith('@whatsapp.chatboc.com'):
+                return True
+            if field == 'dni':
+                return len(re.sub(r"\D", "", stripped)) < 6
+            if field == 'telefono':
+                return not validar_telefono(stripped)
+            return False
+
+        missing_contact_fields = [
+            field for field in ['nombre', 'dni', 'email', 'telefono']
+            if _needs_contact_data(field)
+        ]
+
+        if missing_contact_fields:
+            chat_db_data = self.context.get('chat_db_context_data', {})
+            telefono_candidates_raw = [
+                datos.get('telefono'),
+                self.context.get('telefono_usuario'),
+                self.context.get('anon_id'),
+            ]
+            if isinstance(chat_db_data, dict):
+                telefono_candidates_raw.append(chat_db_data.get('telefono_usuario'))
+            if self.chat_db_context:
+                telefono_candidates_raw.append(getattr(self.chat_db_context, 'anon_id', None))
+                ctx_data = getattr(self.chat_db_context, 'context_data', {})
+                if isinstance(ctx_data, dict):
+                    telefono_candidates_raw.append(ctx_data.get('telefono_usuario'))
+
+            telefono_normalizado = None
+            for candidato in telefono_candidates_raw:
+                if not candidato:
+                    continue
+                candidato_str = str(candidato).strip()
+                if not candidato_str:
+                    continue
+                normalizado = formatear_telefono_e164(candidato_str)
+                if normalizado and validar_telefono(normalizado):
+                    telefono_normalizado = normalizado
+                    break
+
+            if telefono_normalizado and (
+                not datos.get('telefono')
+                or not validar_telefono(str(datos.get('telefono')))
+            ):
+                datos['telefono'] = telefono_normalizado
+
+            if datos.get('telefono') and not validar_telefono(str(datos.get('telefono'))):
+                datos.pop('telefono', None)
+
+            anon_candidates = []
+            for candidato in [
+                self.context.get('anon_id'),
+                getattr(self.chat_db_context, 'anon_id', None) if self.chat_db_context else None,
+            ]:
+                if candidato and candidato not in anon_candidates:
+                    anon_candidates.append(str(candidato))
+
+            previous_ticket = None
+            try:
+                for candidato in anon_candidates:
+                    previous_ticket = (
+                        MunicipioTicket.query
+                        .filter_by(anon_id=candidato)
+                        .order_by(MunicipioTicket.fecha.desc())
+                        .first()
+                    )
+                    if previous_ticket:
+                        break
+
+                if not previous_ticket and datos.get('telefono'):
+                    previous_ticket = (
+                        MunicipioTicket.query
+                        .filter_by(telefono_vecino=datos.get('telefono'))
+                        .order_by(MunicipioTicket.fecha.desc())
+                        .first()
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "No se pudieron prellenar datos de contacto desde tickets previos: %s",
+                    exc,
+                )
+                previous_ticket = None
+
+            if previous_ticket:
+                logger.info(
+                    "Prefill de contacto usando ticket previo %s para anon_id %s",
+                    getattr(previous_ticket, 'nro_ticket', 'N/A'),
+                    getattr(previous_ticket, 'anon_id', 'N/A'),
+                )
+                _apply_prefill('nombre', previous_ticket.nombre_vecino, previous_ticket.nombre_display_whatsapp)
+                _apply_prefill('email', previous_ticket.email_vecino)
+                _apply_prefill('telefono', previous_ticket.telefono_vecino)
+                _apply_prefill('dni', previous_ticket.dni_vecino)
+
+                contacto_cache = self.municipal_ctx.setdefault('contacto_usuario', {})
+                for campo in ['nombre', 'dni', 'email', 'telefono']:
+                    valor = datos.get(campo)
+                    if valor and not contacto_cache.get(campo):
+                        contacto_cache[campo] = valor
+
         if categoria_inicial and not self.flow_context['datos_reclamo'].get('categoria'):
             self.flow_context['datos_reclamo']['categoria'] = categoria_inicial
 
@@ -264,6 +376,14 @@ class ReclamoFlowHandler:
             datos['descripcion'] = details['descripcion_sugerida']
         if details.get('direccion_sugerida'):
             datos['direccion'] = details['direccion_sugerida']
+
+        if (
+            not datos.get('descripcion')
+            and isinstance(user_input, str)
+            and not user_input.strip().isdigit()
+            and len(user_input.strip()) >= 10
+        ):
+            datos['descripcion'] = user_input.strip()
 
         if not datos.get('descripcion'):
             self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
@@ -2768,9 +2888,7 @@ def responder_municipio(
             }
 
     normalized_question = normalizar_texto(pregunta_str)
-    if normalized_question in MUNICIPIO_RESPONSE_CACHE:
-        logger_actual.info("responder_municipio: returning cached response")
-        return MUNICIPIO_RESPONSE_CACHE[normalized_question]
+    cached_response = MUNICIPIO_RESPONSE_CACHE.get(normalized_question)
 
     if kwargs:
         for key, value in kwargs.items():
@@ -2779,6 +2897,19 @@ def responder_municipio(
     chat_db_context_live_data = {}
     if chat_db_context and chat_db_context.context_data is not None:
         chat_db_context_live_data = chat_db_context.context_data
+
+    contexto_municipio_actual = chat_db_context_live_data.get(CONTEXTO_MUNICIPIO, {})
+    flow_activo = False
+    if isinstance(contexto_municipio_actual, dict):
+        estado_actual = contexto_municipio_actual.get("estado_conversacion")
+        flow_activo = (
+            estado_actual == "EN_FLUJO_RECLAMO"
+            or bool(contexto_municipio_actual.get("reclamo_flow_v2"))
+        )
+
+    if cached_response and not flow_activo:
+        logger_actual.info("responder_municipio: returning cached response")
+        return cached_response
 
     # Crear el diccionario de contexto principal una sola vez
     context = {
