@@ -353,71 +353,49 @@ class ReclamoFlowHandler:
             }
 
     def ask_for_contact_details(self, force_prompt: bool = False):
+        """Ask for missing contact details or allow editing if requested."""
         datos = self.flow_context.setdefault('datos_reclamo', {})
-        
-        # Check if essential contact details are missing.
-        # We consider name, dni, and email as essential to ask for.
-        # Phone is usually pre-filled.
-        essential_fields_missing = not all(datos.get(f) for f in ['nombre', 'dni', 'email'])
-        
-        # Force the prompt if explicitly requested OR if essential data is missing.
-        should_force_prompt = force_prompt or essential_fields_missing
+        required_fields = ['nombre', 'dni', 'email', 'telefono']
+        field_labels = {
+            'nombre': 'Nombre completo',
+            'dni': 'DNI',
+            'email': 'Email',
+            'telefono': 'Teléfono',
+        }
 
-        if not should_force_prompt:
+        missing = [
+            f for f in required_fields
+            if not datos.get(f)
+            or datos.get(f) == 'Vecino/a'
+            or '@whatsapp.chatboc.com' in str(datos.get(f))
+        ]
+
+        if not force_prompt and not missing:
             self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
             return self.get_confirmation_message()
 
-        # Build a message showing what we already have and request only the missing pieces.
         self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
-        required_fields = ['nombre', 'dni', 'email', 'telefono']
+
         known_parts = []
-        missing = []
-        field_labels = {'nombre': 'Nombre completo', 'dni': 'DNI', 'email': 'Email', 'telefono': 'Teléfono'}
+        missing_labels = []
         for field in required_fields:
-            if datos.get(field) and datos[field] != 'Vecino/a' and '@whatsapp.chatboc.com' not in str(datos[field]):
-                known_parts.append(f"{field_labels[field].capitalize()}: {datos[field]}")
+            value = datos.get(field)
+            if value and field not in missing and '@whatsapp.chatboc.com' not in str(value) and value != 'Vecino/a':
+                known_parts.append(f"{field_labels[field].capitalize()}: {value}")
             else:
-                # Don't ask for phone if we already have it from the system
-                if field == 'telefono' and datos.get('telefono'):
-                    continue
-                missing.append(field_labels[field])
+                missing_labels.append(field_labels[field])
 
-        message_lines = ["¡Ya casi terminamos! ✍️\n"]
+        message_lines = []
         if known_parts:
+            message_lines.append("¡Ya casi terminamos! ✍️")
             message_lines.append("*Datos que ya tenemos:*")
-            for part in known_parts:
-                # Adding emojis for better UX
-                if "nombre" in part.lower():
-                    message_lines.append(f"👤 {part}")
-                elif "dni" in part.lower():
-                    message_lines.append(f"🆔 {part}")
-                elif "email" in part.lower():
-                    message_lines.append(f"📧 {part}")
-                elif "teléfono" in part.lower():
-                    message_lines.append(f"📞 {part}")
-                else:
-                    message_lines.append(part)
-            message_lines.append("")
+            message_lines.extend(known_parts)
+        if missing_labels:
+            message_lines.append("\n*Para finalizar, por favor, completá tus datos:*")
+            message_lines.extend(missing_labels)
+        message_lines.append("\nPodés escribir todos los datos juntos en un solo mensaje para actualizar o corregir.")
 
-        if missing:
-            message_lines.append("*Para finalizar, por favor, completá tus datos:*")
-            for part in missing:
-                if "nombre" in part.lower():
-                    message_lines.append(f"👤 {part.capitalize()}")
-                elif "dni" in part.lower():
-                    message_lines.append(f"🆔 {part.capitalize()}")
-                elif "email" in part.lower():
-                    message_lines.append(f"📧 {part.capitalize()}")
-                else:
-                    message_lines.append(part.capitalize())
-            message_lines.append("\nPodés escribir todos los datos juntos en un solo mensaje.")
-        else:
-            message_lines.append("Por favor, enviame los datos que querés corregir.")
-
-        message = "\n".join(message_lines)
-
-
-        return {"message_body": message}
+        return {"message_body": "\n".join(message_lines)}
 
     def handle_datos_contacto(self, user_input):
         contact_details = extract_multiple_contact_details_regex(user_input)
