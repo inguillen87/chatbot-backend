@@ -88,29 +88,34 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 distrito_llm = municipio_config.get("ciudad") or municipio_config.get("ciudad_default")
 
         # Contact Info - Name
-        nombre_vecino_final = (
-            action_data.get("usuario")
-            or action_data.get("nombre")
-            or datos_parciales_llm.get("usuario")
-            or action_data.get("nombre_usuario_detectado")
-            or datos_parciales_llm.get("nombre_usuario_detectado")
-            or getattr(viewer_user, "name", None)
-            or getattr(viewer_user, "nombre", None)
-            or contacto_ctx.get("nombre")
-            or self.context.get("profile_name")
-            or "Vecino/a"
-        )
-        profile_name_from_user_obj = getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None)
-        profile_name_from_context = self.context.get("profile_name")
+        def _sanitize_nombre(valor: Any) -> str | None:
+            if not isinstance(valor, str):
+                return None
+            cleaned = valor.strip()
+            if not cleaned:
+                return None
+            cleaned_lower = cleaned.lower()
+            if cleaned_lower in {"vecino", "vecina", "vecine", "vecino/a"}:
+                return None
+            return cleaned
 
-        # Prioritize LLM name, then profile from user object, then profile from context.
-        nombre_vecino_final = "Vecino/a"  # Default
-        if isinstance(llm_name, str) and llm_name.strip():
-            nombre_vecino_final = llm_name
-        elif isinstance(profile_name_from_user_obj, str) and profile_name_from_user_obj.strip():
-            nombre_vecino_final = profile_name_from_user_obj
-        elif isinstance(profile_name_from_context, str) and profile_name_from_context.strip():
-            nombre_vecino_final = profile_name_from_context
+        candidate_names = [
+            action_data.get("usuario"),
+            action_data.get("nombre"),
+            datos_parciales_llm.get("usuario"),
+            datos_parciales_llm.get("nombre"),
+            action_data.get("nombre_usuario_detectado"),
+            datos_parciales_llm.get("nombre_usuario_detectado"),
+            contacto_ctx.get("nombre"),
+            getattr(viewer_user, "name", None) if viewer_user else None,
+            getattr(viewer_user, "nombre", None) if viewer_user else None,
+            self.context.get("profile_name"),
+        ]
+
+        nombre_vecino_final = next(
+            (clean for clean in map(_sanitize_nombre, candidate_names) if clean),
+            "Vecino/a",
+        )
 
         telefono_from_llm = (action_data.get("telefono") or datos_parciales.get("telefono") or
                              action_data.get("telefono_detectado") or datos_parciales.get("telefono_detectado"))
