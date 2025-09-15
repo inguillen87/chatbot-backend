@@ -32,9 +32,9 @@ class ReclamoMenuRepeatTestCase(unittest.TestCase):
         self.app_context.pop()
 
     @patch('services.llm_orchestrator.llamar_llm_con_fallback')
-    def test_repeating_reclamo_command_returns_menu(self, mock_llamar_gemini):
+    def test_repeating_reclamo_command_returns_menu(self, mock_llm_orchestrator):
         # Mock the LLM to return an action that shows the menu
-        mock_llamar_gemini.return_value = (
+        mock_llm_orchestrator.return_value = (
             {
                 "accion_backend": "mostrar_menu_reclamos",
                 "message_body": "Aquí tienes el menú de reclamos."

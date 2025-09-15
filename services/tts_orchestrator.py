@@ -16,34 +16,40 @@ def _summarize_if_long(text: str, max_chars: int = 500) -> str:
     return textwrap.shorten(text, width=max_chars, placeholder=" ...")
 
 
+def _deletrear_numeros(texto: str) -> str:
+    """Expande números en una cadena a su forma hablada, deletreando dígitos."""
+    def reemplazo(match):
+        return ' '.join(list(match.group(0)))
+
+    # Deletrea números de 5 o más dígitos para IDs de ticket, etc.
+    texto = re.sub(r'\b\d{5,}\b', reemplazo, texto)
+    # Deletrea "M-12345" como "eme guión uno dos tres..."
+    texto = re.sub(r'\b[A-Za-z]-\d+\b', lambda m: ' '.join(list(m.group(0).replace('-', ' guión '))), texto)
+    return texto
+
 def sanitize_for_tts(raw: str) -> str:
-    """Prepare text so synthesized audio is clear and accessible.
-
-    The sanitizer:
-    - Removes URLs, emojis and other non standard symbols.
-    - Normalizes numbered options like ``1)`` to ``Opción 1:``.
-    - Expands common time abbreviations such as ``hs``/``hrs`` to "horas".
-    - Converts bullet points to explicit "Punto" markers.
-    - Shortens overly long texts.
-    """
-
-    cleaned = re.sub(r"https?://\S+", "", raw)  # strip URLs
+    """Prepare text so synthesized audio is clear and accessible."""
+    cleaned = re.sub(r"https?://\S+", "", raw)
     cleaned = cleaned.replace("*", "")
-    # remove emojis and nonstandard symbols
     cleaned = re.sub(r"[^\w\s.,;:0-9áéíóúÁÉÍÓÚñÑüÜ-]", "", cleaned)
-    # Normalize numbered options like "1.", "1)" or "1-" to "Opción 1:"
     cleaned = re.sub(r"(?m)^\s*(\d+)[\.)-]\s*", r"Opción \1: ", cleaned)
-    # Convert bullet points to explicit prompts
     cleaned = re.sub(r"(?m)^\s*[\-•]\s*", "Punto: ", cleaned)
-    # Expand time abbreviations (e.g., "18 hs" -> "18 horas", "24hrs" -> "24 horas")
-    cleaned = re.sub(
-        r"(?i)\b(\d{1,2}(?:[:.]\d{2})?)\s*(hs|hrs)\b",
-        r"\1 horas",
-        cleaned,
-    )
+    cleaned = re.sub(r"(?i)\b(\d{1,2}(?:[:.]\d{2})?)\s*(hs|hrs)\b", r"\1 horas", cleaned)
     cleaned = re.sub(r"(?i)\b(hs|hrs)\b", "horas", cleaned)
-    cleaned = re.sub(r"\s*\n+\s*", ". ", cleaned)
+
+    # Deletrear números de ticket y otros códigos largos
+    cleaned = _deletrear_numeros(cleaned)
+
+    # Mejorar el ritmo y la entonación
+    cleaned = cleaned.replace("\n\n", ". ") # Doble salto de línea como pausa mayor
+    cleaned = cleaned.replace("\n", ". ") # Salto de línea simple como pausa
+    cleaned = re.sub(r'\s*\.+\s*', '. ', cleaned) # Normalizar múltiples puntos
     cleaned = " ".join(cleaned.split())
+
+    # Pausa después del saludo
+    if cleaned.lower().startswith("hola"):
+        cleaned = cleaned.replace("Hola", "Hola, ", 1)
+
     return _summarize_if_long(cleaned)
 
 

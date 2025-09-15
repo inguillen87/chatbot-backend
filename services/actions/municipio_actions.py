@@ -2,6 +2,7 @@
 import logging
 import re
 from .base_action_handler import BaseActionHandler
+from services.gcs_service import upload_file_from_url
 from typing import Dict, Any
 import random
 from services.ticket_service import servicio_tickets
@@ -77,7 +78,18 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 distrito_llm = parsed_address.get('localidad')
                 logger.info(f"Parsed district: {distrito_llm}")
         coordenadas_llm = action_data.get("coordenadas") or datos_parciales.get("coordenadas")
+
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
+        public_foto_url = None
+        if foto_url_llm:
+            logger.info(f"Uploading photo from temporary URL: {foto_url_llm}")
+            upload_result = upload_file_from_url(foto_url_llm)
+            if upload_result and upload_result.get("original_url"):
+                public_foto_url = upload_result.get("original_url")
+                logger.info(f"Photo uploaded to public URL: {public_foto_url}")
+            else:
+                logger.warning(f"Failed to upload photo from URL: {foto_url_llm}")
+                public_foto_url = foto_url_llm # Fallback to original URL if upload fails
 
         # Lógica de fusión de datos de contacto mejorada
         llm_name = (
@@ -144,32 +156,34 @@ class CrearReclamoActionHandler(BaseActionHandler):
             ("email_vecino", email_final),
             ("dni_vecino", dni_final),
             ("direccion_contacto", direccion_contacto),
-            ("foto_url", foto_url_llm),
+            ("foto_url", public_foto_url),
         ]:
             if value:
                 contexto_reclamo[key] = value
 
         # Validación de datos esenciales para la creación del ticket
-        campos_faltantes = []
-        if not descripcion:
-            campos_faltantes.append("descripcion")
-        if not ubicacion_llm and not coordenadas_llm:
-            campos_faltantes.append("ubicacion")
-        logger.info(f"DEBUG: viewer_user: {viewer_user}")
-        logger.info(f"DEBUG: nombre_vecino_final: {nombre_vecino_final}")
-        logger.info(f"DEBUG: telefono_final: {telefono_final}")
-        logger.info(f"DEBUG: email_final: {email_final}")
-        logger.info(f"DEBUG: campos_faltantes before: {campos_faltantes}")
-        if not viewer_user and (nombre_vecino_final == "Vecino/a" or not telefono_final or not email_final or not dni_final):
-             if nombre_vecino_final == "Vecino/a":
-                 campos_faltantes.append("nombre")
-             if not telefono_final:
-                 campos_faltantes.append("telefono")
-             if not email_final:
-                 campos_faltantes.append("email")
-             if not dni_final:
-                 campos_faltantes.append("dni")
-        logger.info(f"DEBUG: campos_faltantes after: {campos_faltantes}")
+        municipio_config = self.context.get("municipio_config_actual", {})
+        # Default required fields if not specified in config
+        campos_requeridos = municipio_config.get(
+            "campos_requeridos_reclamo",
+            ['descripcion', 'ubicacion', 'nombre', 'telefono', 'email']
+        )
+
+        datos_finales_reclamo = {
+            "categoria": categoria,
+            "descripcion": descripcion,
+            "ubicacion": ubicacion_llm or coordenadas_llm,
+            "nombre": nombre_vecino_final if nombre_vecino_final != "Vecino/a" else None,
+            "telefono": telefono_final,
+            "email": email_final,
+            "dni": dni_final,
+        }
+
+        campos_faltantes = [campo for campo in campos_requeridos if not datos_finales_reclamo.get(campo)]
+
+        logger.info(f"DEBUG: Campos requeridos: {campos_requeridos}")
+        logger.info(f"DEBUG: Datos finales reclamo: {datos_finales_reclamo}")
+        logger.info(f"DEBUG: campos_faltantes after check: {campos_faltantes}")
 
         # La lógica de confirmación ahora se maneja en 'municipio_responder.py'
         # Este handler ahora solo valida y crea.
@@ -270,7 +284,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "latitud": coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None,
             "longitud": coordenadas_llm.get("lon") if isinstance(coordenadas_llm, dict) else None,
             "origen_reclamo": "LLM_CHATBOT",
-            "foto_url_directa": foto_url_llm,
+            "foto_url_directa": public_foto_url,
             "canal_ingreso": self.context.get("channel"),
             "consulta_pin": pin_final,
         }

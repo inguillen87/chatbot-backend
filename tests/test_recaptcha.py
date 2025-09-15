@@ -1,10 +1,11 @@
 import unittest
 from app import create_app
 from utils.recaptcha import verify_recaptcha
+from config import TestConfig
 
 class RecaptchaUtilsTest(unittest.TestCase):
     def setUp(self):
-        self.app = create_app()
+        self.app = create_app(TestConfig)
         self.ctx = self.app.app_context()
         self.ctx.push()
 

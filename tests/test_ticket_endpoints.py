@@ -7,7 +7,7 @@ import json
 
 class TicketEndpointsTest(unittest.TestCase):
     def setUp(self):
-        self.app = create_app()
+        self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
@@ -163,7 +163,7 @@ class TicketEndpointsTest(unittest.TestCase):
         self.assertGreater(len(data['mensajes']), 0)
 
         comment_with_attachment = data['mensajes'][0]
-        self.assertEqual(comment_with_attachment['comentario'], "Test comment with attachment")
+        self.assertEqual(comment_with_attachment['mensaje'], "Test comment with attachment")
         self.assertIn('attachmentInfo', comment_with_attachment)
         self.assertIsNotNone(comment_with_attachment['attachmentInfo'])
         self.assertEqual(comment_with_attachment['attachmentInfo']['name'], "test_image.jpg")

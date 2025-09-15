@@ -45,8 +45,8 @@ def test_client():
 
 @pytest.fixture
 def mock_llm():
-    """Mock para la función llamar_gemini."""
-    with patch('services.municipio_responder.llamar_gemini') as mock:
+    """Mock para la función handle_llm_interaction."""
+    with patch('services.municipio_responder.handle_llm_interaction') as mock:
         yield mock
 
 def test_full_claim_in_one_go(test_client, mock_llm):

@@ -21,7 +21,8 @@ class TicketSearchTests(unittest.TestCase):
         self.admin.set_password('password')
         self.neighbor = User(email='vecino@test.com', name='Juan Gomez')
         self.neighbor.set_password('password')
-        db.session.add_all([self.admin, self.neighbor])
+        muni_user = User(id=5, name="Test Muni", email="muni@test.com", password_hash="a", tipo_chat='municipio')
+        db.session.add_all([self.admin, self.neighbor, muni_user])
         db.session.commit()
 
         t1 = MunicipioTicket(id=1, nro_ticket='100', estado='nuevo', fecha=datetime.now(),

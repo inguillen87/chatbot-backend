@@ -46,8 +46,8 @@ class TestClaimCreationFlow(unittest.TestCase):
         self.app_context.pop()
 
     @unittest.skip("Skipping flawed test to be rewritten later.")
-    @patch('services.municipio_responder.llamar_gemini')
-    def test_full_claim_creation_flow(self, mock_llamar_gemini):
+    @patch('services.municipio_responder.handle_llm_interaction')
+    def test_full_claim_creation_flow(self, mock_handle_llm):
         """
         Simula un flujo completo de creación de reclamos, verificando que el contexto se mantiene
         y que la información se recopila correctamente a través de varios mensajes.
@@ -81,7 +81,7 @@ class TestClaimCreationFlow(unittest.TestCase):
                 db.session.commit()
 
                 # El LLM ahora también extrae el email y teléfono que faltan del perfil del usuario
-                mock_llamar_gemini.return_value = {
+                mock_handle_llm.return_value = {
                     "accion_backend": "crear_reclamo",
                     "datos_estructura": {
                         "nombre_usuario_detectado": "Juan Perez",
@@ -101,22 +101,19 @@ class TestClaimCreationFlow(unittest.TestCase):
             # Verifica que el email del viewer_user (que no tenía) se haya actualizado
             self.assertEqual(self.viewer_user.email, "vecino@test.com")
 
-    @patch('services.municipio_responder.llamar_gemini')
-    def test_claim_creation_with_google_maps_link(self, mock_llamar_gemini):
+    @patch('services.municipio_responder.handle_llm_interaction')
+    def test_claim_creation_with_google_maps_link(self, mock_handle_llm):
         """
         Verifica que el bot puede extraer una dirección de un link de Google Maps.
         """
         with self.app.app_context():
             # El usuario envía un link de Google Maps
-            mock_llamar_gemini.return_value = (
-                {
-                    "message_body": "Gracias por la dirección. ¿Podrías describir el problema?",
-                    "accion_backend": "iniciar_reclamo",
-                    "datos_estructura": {"target": "municipio", "ubicacion": "Villegas 900, M5584, San Martín, Mendoza, AR"},
-                    "pedir_info": "descripcion"
-                },
-                {}
-            )
+            mock_handle_llm.return_value = {
+                "message_body": "Gracias por la dirección. ¿Podrías describir el problema?",
+                "accion_backend": "iniciar_reclamo",
+                "datos_estructura": {"target": "municipio", "ubicacion": "Villegas 900, M5584, San Martín, Mendoza, AR"},
+                "pedir_info": "descripcion"
+            }
 
             respuesta = responder_municipio(
                 pregunta_original="https://maps.google.com/maps/search/Hospedaje%20Finca%20La%20Siciliana/@-33.03129332,-68.50156402,17z?hl=es Villegas 900, M5584, AR",

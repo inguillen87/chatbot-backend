@@ -12,8 +12,17 @@ class MunicipioMetricasServiceTests(unittest.TestCase):
         self.ctx.push()
         db.create_all()
 
+        # Create users and a municipality "user" to satisfy foreign key constraints
+        from models import User
+        muni_user = User(id=1, name="Test Muni", email="muni@test.com", password_hash="a", tipo_chat='municipio')
+        user1 = User(id=2, name="Test User 1", email="u1@test.com", password_hash="a")
+        user2 = User(id=3, name="Test User 2", email="u2@test.com", password_hash="a")
+        db.session.add_all([muni_user, user1, user2])
+        db.session.commit()
+
+
         # Create sample tickets
-        t1 = MunicipioTicket(municipio_id=1, estado='nuevo', user_id=1)
+        t1 = MunicipioTicket(municipio_id=1, estado='nuevo', user_id=2)
         t2 = MunicipioTicket(municipio_id=1, estado='cerrado', user_id=1)
         t3 = MunicipioTicket(municipio_id=1, estado='cerrado', user_id=2)
         db.session.add_all([t1, t2, t3])

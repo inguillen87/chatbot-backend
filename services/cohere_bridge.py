@@ -14,7 +14,7 @@ except Exception as e:
     logger.error(f"Failed to initialize Cohere client: {e}")
     co = None
 
-def llamar_cohere(app, mensaje_usuario: str, usuario: dict, historial: list, chat_session_id: str) -> tuple[dict, dict]:
+def llamar_cohere(app, mensaje_usuario: str, usuario: dict, historial: list, chat_session_id: str, system_prompt_override: str | None = None) -> tuple[dict, dict]:
     """
     Calls the Cohere API and formats the response to be compatible with the application's structure.
     """
@@ -36,6 +36,8 @@ def llamar_cohere(app, mensaje_usuario: str, usuario: dict, historial: list, cha
     # For Cohere, the "preamble" is similar to a system prompt.
     from services.chatbot_prompts import JULES_SYSTEM_PROMPT # Re-using the same system prompt
 
+    prompt_a_usar = system_prompt_override if system_prompt_override else JULES_SYSTEM_PROMPT
+
     # The message from the user
     message = ""
     try:
@@ -51,7 +53,7 @@ def llamar_cohere(app, mensaje_usuario: str, usuario: dict, historial: list, cha
         response = co.chat(
             message=message,
             chat_history=chat_history,
-            preamble=JULES_SYSTEM_PROMPT,
+            preamble=prompt_a_usar,
             model="command-r",  # A good default model
             temperature=0.3,
         )

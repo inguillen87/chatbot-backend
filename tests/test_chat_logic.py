@@ -66,14 +66,14 @@ class ChatLogicTestCase(unittest.TestCase):
             self.assertIn('pedir_info', json_data)
 
     @patch('services.logic.responder_municipio')
-    @patch('services.google_text_to_speech.TextToSpeechService.synthesize_speech')
-    def test_audio_response_is_generated_for_audio_input(self, mock_synthesize_speech, mock_responder_municipio):
+    @patch('services.tts_orchestrator.generar_audio')
+    def test_audio_response_is_generated_for_audio_input(self, mock_generar_audio, mock_responder_municipio):
         """
         Tests if an audio response is generated when the input was audio.
         """
         # --- Setup ---
         fake_audio_url = "/static/audio/test_audio.mp3"
-        mock_synthesize_speech.return_value = fake_audio_url
+        mock_generar_audio.return_value = fake_audio_url
         mock_responder_municipio.return_value = {
             "message_body": "Esta es una respuesta de prueba.",
             "options_list": [],
@@ -103,7 +103,7 @@ class ChatLogicTestCase(unittest.TestCase):
         )
 
         # --- Assert ---
-        mock_synthesize_speech.assert_called_once_with("Esta es una respuesta de prueba.")
+        mock_generar_audio.assert_called_once_with("Esta es una respuesta de prueba.")
         self.assertIn('audio_url', response_dict)
         self.assertEqual(response_dict['audio_url'], fake_audio_url)
         self.assertNotIn('source_is_audio', chat_session.context_data)
