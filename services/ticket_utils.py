@@ -80,20 +80,40 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
     }
     texto_tipo = tipos.get(tipo, "Consulta")
 
+    def _resumir_descripcion(texto: str) -> str:
+        """Corta prefijos innecesarios de la descripción para un resumen más claro."""
+        if not texto:
+            return texto
+        texto = texto.strip()
+        prefijos = [
+            r"^tengo\s+un?\s+\w+\s+",
+            r"^hay\s+un?\s+\w+\s+",
+        ]
+        for patron in prefijos:
+            nuevo = re.sub(patron, "", texto, flags=re.IGNORECASE)
+            if nuevo != texto:
+                texto = nuevo
+                break
+        return texto
+
+    descripcion_resumen = _resumir_descripcion(descripcion)
+
     respuesta = f"""✅ *¡{texto_tipo} recibido, {nombre_usuario}!*
 
 📄 *Resumen de tu {texto_tipo}:*
 - *N° de Ticket:* `{id_ticket}`
 - *Categoría:* {categoria}
-- *Descripción:* {descripcion}
+- *Descripción:* {descripcion_resumen}
 """
     if dni:
         respuesta += f"- *DNI:* `{dni}`\n"
     if consulta_pin:
-        respuesta += f"- *PIN de seguimiento:* `{consulta_pin}`"
+        respuesta += f"- *PIN de seguimiento:* `{consulta_pin}`\n"
 
     if nombre_asesor:
-        respuesta += "\n\n📞 *Contacto para seguimiento:*\n"
+        if not respuesta.endswith("\n"):
+            respuesta += "\n"
+        respuesta += "📞 *Contacto para seguimiento:*\n"
         respuesta += f"- *Nombre:* {nombre_asesor}\n"
         if titulo_asesor:
             respuesta += f"- *Cargo:* {titulo_asesor}\n"

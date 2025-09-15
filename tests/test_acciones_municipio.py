@@ -631,5 +631,31 @@ class TestAccionesMunicipio(unittest.TestCase):
             self.assertEqual(response["fuente"], "municipio_fallback_google_search")
             mock_google_search.assert_called_with("unhandled query")
 
+    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket', return_value={'id': 1, 'nro_ticket': '123', 'consulta_pin': '111111'})
+    @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
+    @patch('services.actions.municipio_actions.validar_email', return_value=True)
+    @patch('services.actions.municipio_actions.formatear_telefono_e164', return_value='+5492611234567')
+    @patch('services.actions.municipio_actions.parse_direccion', return_value={'localidad': 'Junín'})
+    def test_parse_distrito_uses_municipio_config(self, mock_parse, mock_fmt, mock_val_email, mock_val_tel, mock_crear):
+        datos_llm = {
+            'categoria': 'Luminaria',
+            'descripcion': 'poste caido',
+            'ubicacion': 'sarmiento y san martin',
+            'nombre': 'Juan',
+            'telefono': '2611234567',
+            'email': 'juan@test.com'
+        }
+        context = {
+            'viewer_user_obj': None,
+            'user_obj': MagicMock(id=1, municipio_id='default'),
+            'anon_id': 'anonX',
+            'municipio_config_actual': {'ciudad': 'Junín'}
+        }
+        handler = CrearReclamoActionHandler(context)
+        handler.execute(datos_llm)
+        mock_parse.assert_called_once_with('sarmiento y san martin', {'ciudad': 'Junín'})
+        _, kwargs = mock_crear.call_args
+        self.assertEqual(kwargs['ticket_data']['distrito'], 'Junín')
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
