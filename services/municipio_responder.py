@@ -13,7 +13,6 @@ import unicodedata
 import difflib
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
-from sqlalchemy import or_
 from models import MunicipioTicket, TicketComentario, db, SitioWebInfo, Conversacion
 from services.ticket_service import servicio_tickets
 from utils.db_utils import safe_flag_modified
@@ -211,12 +210,19 @@ class ReclamoFlowHandler:
             # This case is less likely if categoria is present, but good to have
             self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
             categoria = self.flow_context['datos_reclamo']['categoria']
-            return {"message_body": f"¡Entendido! Reclamo por *{categoria}*.\n\n📝 Ahora, por favor, describí brevemente el problema."}
+            return {"message_body": f"Entendido, el reclamo es por *{categoria}*. Ahora, por favor, describí brevemente el problema."}
         elif not self.flow_context['datos_reclamo'].get('direccion'):
             self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
             # Construct a message confirming the data we have
             categoria = self.flow_context['datos_reclamo']['categoria']
-            return {"message_body": f"Reclamo por *{categoria}*.\n\n📍 Para continuar, por favor, indicame la dirección exacta del problema."}
+            descripcion = self.flow_context['datos_reclamo'].get('descripcion', 'No especificada')
+
+            # If the description came from an image, it might be generic.
+            # We can tailor the message.
+            if self.flow_context['datos_reclamo'].get('origen_descripcion') == 'imagen':
+                 return {"message_body": f"Gracias a tu imagen, entiendo que el reclamo es por *{categoria}* (problema similar a: '{descripcion}').\n\nPara continuar, por favor, indicame la dirección exacta del problema."}
+            else:
+                 return {"message_body": f"Reclamo por *{categoria}*.\n\nPara continuar, por favor, indicame la dirección exacta del problema."}
         else:
             # All initial data is present, move to confirmation or next step
             return self.ask_for_contact_details()
@@ -286,10 +292,10 @@ class ReclamoFlowHandler:
 
         self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
         return {
-            "message_body": "📸 ¿Querés agregar una foto? Una imagen ayuda mucho a resolver el problema.",
+            "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
             "options_list": [
-                {"texto": "✅ Sí, agregar foto", "action_id": "reclamo_adjuntar_foto_si"},
-                {"texto": "❌ No, omitir foto", "action_id": "reclamo_adjuntar_foto_no"},
+                {"texto": "Sí, agregar foto", "action_id": "reclamo_adjuntar_foto_si"},
+                {"texto": "No, omitir foto", "action_id": "reclamo_adjuntar_foto_no"},
             ],
             "message_type": "interactive_buttons",
         }
@@ -347,40 +353,70 @@ class ReclamoFlowHandler:
             }
 
     def ask_for_contact_details(self, force_prompt: bool = False):
-        """
-        Asks for contact details ONLY if forced (i.e., user wants to edit).
-        Otherwise, transitions directly to the confirmation step.
-        """
-        if not force_prompt:
-            # Default behavior: proceed directly to confirmation. The confirmation
-            # message itself will display what data is known or missing.
+        datos = self.flow_context.setdefault('datos_reclamo', {})
+        
+        # Check if essential contact details are missing.
+        # We consider name, dni, and email as essential to ask for.
+        # Phone is usually pre-filled.
+        essential_fields_missing = not all(datos.get(f) for f in ['nombre', 'dni', 'email'])
+        
+        # Force the prompt if explicitly requested OR if essential data is missing.
+        should_force_prompt = force_prompt or essential_fields_missing
+
+        if not should_force_prompt:
             self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
             return self.get_confirmation_message()
 
-        # This block only runs if force_prompt is True (user chose to edit).
+        # Build a message showing what we already have and request only the missing pieces.
         self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
-        datos = self.flow_context.setdefault('datos_reclamo', {})
-
         required_fields = ['nombre', 'dni', 'email', 'telefono']
         known_parts = []
         missing = []
         field_labels = {'nombre': 'Nombre completo', 'dni': 'DNI', 'email': 'Email', 'telefono': 'Teléfono'}
-
         for field in required_fields:
-            value = datos.get(field)
-            # Check if value is meaningful before showing it as "known"
-            if value and value != 'Vecino/a' and '@whatsapp.chatboc.com' not in str(value):
-                known_parts.append(f"{field_labels[field].capitalize()}: {value}")
+            if datos.get(field) and datos[field] != 'Vecino/a' and '@whatsapp.chatboc.com' not in str(datos[field]):
+                known_parts.append(f"{field_labels[field].capitalize()}: {datos[field]}")
             else:
+                # Don't ask for phone if we already have it from the system
+                if field == 'telefono' and datos.get('telefono'):
+                    continue
                 missing.append(field_labels[field])
 
-        message_lines = ["✏️ Entendido. Por favor, enviá los datos que querés corregir o agregar.\n"]
-        if missing:
-            message_lines.append(f"Podés incluir: {', '.join(missing)}.")
+        message_lines = ["¡Ya casi terminamos! ✍️\n"]
+        if known_parts:
+            message_lines.append("*Datos que ya tenemos:*")
+            for part in known_parts:
+                # Adding emojis for better UX
+                if "nombre" in part.lower():
+                    message_lines.append(f"👤 {part}")
+                elif "dni" in part.lower():
+                    message_lines.append(f"🆔 {part}")
+                elif "email" in part.lower():
+                    message_lines.append(f"📧 {part}")
+                elif "teléfono" in part.lower():
+                    message_lines.append(f"📞 {part}")
+                else:
+                    message_lines.append(part)
+            message_lines.append("")
 
-        message_lines.append("\nEscribí todos los datos juntos en un solo mensaje para actualizar.")
+        if missing:
+            message_lines.append("*Para finalizar, por favor, completá tus datos:*")
+            for part in missing:
+                if "nombre" in part.lower():
+                    message_lines.append(f"👤 {part.capitalize()}")
+                elif "dni" in part.lower():
+                    message_lines.append(f"🆔 {part.capitalize()}")
+                elif "email" in part.lower():
+                    message_lines.append(f"📧 {part.capitalize()}")
+                else:
+                    message_lines.append(part.capitalize())
+            message_lines.append("\nPodés escribir todos los datos juntos en un solo mensaje.")
+        else:
+            message_lines.append("Por favor, enviame los datos que querés corregir.")
 
         message = "\n".join(message_lines)
+
+
         return {"message_body": message}
 
     def handle_datos_contacto(self, user_input):
@@ -404,23 +440,23 @@ class ReclamoFlowHandler:
 
         # Building the message with improved formatting
         mensaje = (
-            "¡Perfecto! 👍 Por favor, confirmá que los datos de tu reclamo son correctos:\n\n"
-            "📄 **Resumen del Reclamo**\n"
-            f"🏷️ {format_line('Categoría', datos.get('categoria'))}\n"
-            f"📍 {format_line('Dirección', datos.get('direccion'))}\n"
-            f"📝 {format_line('Descripción', datos.get('descripcion'))}\n\n"
-            "👤 **Tus Datos**\n"
-            f"👤 {format_line('Nombre', datos.get('nombre'))}\n"
-            f"🆔 {format_line('DNI', datos.get('dni'))}\n"
-            f"📧 {format_line('Email', datos.get('email'))}\n"
-            f"📞 {format_line('Teléfono', datos.get('telefono'))}\n"
-            f"📸 *Foto adjunta:* {'✅ Sí' if datos.get('foto_url') else '❌ No'}"
+            "Por favor, confirmá que los datos de tu reclamo son correctos:\n\n"
+            "📄 *Resumen del Reclamo*\n"
+            f"{format_line('Categoría', datos.get('categoria'))}\n"
+            f"{format_line('Dirección', datos.get('direccion'))}\n"
+            f"{format_line('Descripción', datos.get('descripcion'))}\n\n"
+            "👤 *Tus Datos*\n"
+            f"{format_line('Nombre', datos.get('nombre'))}\n"
+            f"{format_line('DNI', datos.get('dni'))}\n"
+            f"{format_line('Email', datos.get('email'))}\n"
+            f"{format_line('Teléfono', datos.get('telefono'))}\n"
+            f"*{'Foto adjunta'}:* {'Sí' if datos.get('foto_url') else 'No'}"
         )
         
         response = {
             "message_body": mensaje,
             "options_list": [
-                {"texto": "✅ Confirmar y enviar", "action_id": "reclamo_confirmar_si"},
+                {"texto": "✅ Confirmar", "action_id": "reclamo_confirmar_si"},
                 {"texto": "✏️ Editar datos", "action_id": "reclamo_confirmar_no"},
                 {"texto": "❌ Cancelar", "action_id": "reclamo_cancelar"}
             ],
@@ -1630,7 +1666,6 @@ BOTONES_COMANDOS_MUNICIPIO = {
 
 # Utiliza el orquestador de LLMs que intenta OpenAI y Cohere.
 from services.llm_orchestrator import llamar_llm_con_fallback
-from services.chatbot_prompts import get_jules_system_prompt
 
 # Imports necesarios para la función accion_crear_reclamo_municipio
 # (Algunos pueden estar ya importados globalmente en el archivo)
@@ -1810,20 +1845,13 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                         mensaje_completo_para_llm["analisis_previo_imagen"] = resumen_analisis
 
         try:
-            # --- Jules's addition for localized prompt ---
-            municipio_config = context.get("municipio_config_actual", {})
-            ciudad_municipio = municipio_config.get("ciudad", "esta ciudad")
-            system_prompt = get_jules_system_prompt(ciudad_municipio)
-            # --- End of Jules's addition ---
-
             mensaje_para_llm = json.dumps(mensaje_completo_para_llm)
             respuesta_llm_dict, context_dict = llamar_llm_con_fallback(
                 app=app,
                 mensaje_usuario=mensaje_para_llm,
                 usuario=usuario_info_llm,
                 historial=historial_para_llm,
-                chat_session_id=context.get("chat_session_uuid"),
-                system_prompt_override=system_prompt
+                chat_session_id=context.get("chat_session_uuid")
             )
             logger.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
             if isinstance(context_dict, dict) and chat_db_context:
@@ -2784,120 +2812,6 @@ def responder_municipio(
 
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
 
-    # START: Jules's addition to pre-fill user data from past tickets
-    if anon_id and not contexto_municipio_actual.get('contacto_usuario'):
-        logger_actual.info(f"Searching for past tickets for anon_id: {anon_id} to pre-fill contact data.")
-        # We assume anon_id is the user's phone number. We search in both anon_id and telefono_vecino for robustness.
-        latest_ticket = MunicipioTicket.query.filter(
-            or_(MunicipioTicket.anon_id == anon_id, MunicipioTicket.telefono_vecino == anon_id),
-            MunicipioTicket.nombre_vecino.isnot(None),
-            MunicipioTicket.email_vecino.isnot(None)
-        ).order_by(MunicipioTicket.ultima_actividad.desc()).first()
-
-        if latest_ticket:
-            logger_actual.info(f"Found past ticket {latest_ticket.nro_ticket}. Pre-filling contact info.")
-            contacto_usuario = {
-                "nombre": latest_ticket.nombre_vecino,
-                "email": latest_ticket.email_vecino,
-                "dni": latest_ticket.dni_vecino,
-                "telefono": latest_ticket.telefono_vecino
-            }
-            # Filter out None values before setting
-            contexto_municipio_actual['contacto_usuario'] = {k: v for k, v in contacto_usuario.items() if v}
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-    # END: Jules's addition
-
-    # --- INICIO: Reconocimiento de Número de Ticket en Cualquier Momento ---
-    if isinstance(pregunta_str, str) and not received_payload.get("action"):
-        # Check if the current state is one where we are expecting a ticket number. If so, don't trigger this "anytime" logic.
-        if contexto_municipio_actual.get("estado_conversacion") != ConversationState.ESPERANDO_NUMERO_TICKET.name:
-            # Expresión regular para M-123456 o 123456 (6+ dígitos)
-            match = re.fullmatch(r"(?:[Mm]-)?(\d{6,})", pregunta_str.strip())
-            if match:
-                numero_ticket = match.group(1)
-                logger_actual.info(f"Ticket number '{numero_ticket}' detected directly from user input.")
-                contexto_municipio_actual['numero_ticket_consulta'] = numero_ticket
-                contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NUMERO_TICKET.name
-                if chat_db_context:
-                    flag_modified(chat_db_context, "context_data")
-                return _finalize_response({
-                    "message_body": "Por favor, ingresá el PIN de 6 dígitos asociado a ese ticket.",
-                    "fuente": "anytime_ticket_check"
-                })
-    # --- FIN: Reconocimiento de Número de Ticket ---
-
-    # --- INICIO: Chequeo Proactivo de Tickets ---
-    estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
-
-    if estado_conversacion == ConversationState.ESPERANDO_CONFIRMACION_CONSULTA_TICKET.name:
-        ticket_id_proactivo = contexto_municipio_actual.get("ticket_id_proactivo")
-        # Limpiar el estado para el siguiente turno
-        contexto_municipio_actual.pop("estado_conversacion", None)
-        contexto_municipio_actual.pop("ticket_id_proactivo", None)
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-
-        if "si" in normalizar_texto(pregunta_str):
-            from .actions.municipio_actions import ConsultarEstadoTicketActionHandler
-            handler = ConsultarEstadoTicketActionHandler(context)
-            # El handler espera id_ticket_mencionado y pin.
-            # En este flujo proactivo, asumimos que el usuario no necesita PIN.
-            # Buscamos el ticket por ID para obtener el PIN y el número.
-            ticket = db.session.get(MunicipioTicket, ticket_id_proactivo)
-            if ticket:
-                return _finalize_response(handler.execute({
-                    "id_ticket_mencionado": ticket.nro_ticket,
-                    "pin": ticket.consulta_pin
-                }))
-        else:  # Si la respuesta es "no" o cualquier otra cosa, la conversación continúa normalmente.
-            logger_actual.info(
-                "User declined proactive ticket check. Showing main menu without clearing context."
-            )
-            # FIX: Do not call GreetingHandler, as it clears the context including the 'proactive_check_done' flag.
-            # Instead, manually set the state to wait for a menu selection and return the main menu payload.
-            contexto_municipio_actual[
-                "estado_conversacion"
-            ] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-
-            response = _get_main_menu_payload(context)
-            response[
-                "message_body"
-            ] = "Entendido. ¿En qué te puedo ayudar entonces?"
-            return _finalize_response(response)
-
-    # Solo buscar ticket si no estamos ya en un flujo de consulta
-    elif not estado_conversacion and anon_id and not contexto_municipio_actual.get('proactive_check_done'):
-        # Marcar que el chequeo ya se hizo en esta sesión.
-        contexto_municipio_actual['proactive_check_done'] = True
-        two_days_ago = datetime.now(ARG_TZ) - timedelta(days=2)
-        recent_ticket = (
-            MunicipioTicket.query.filter(MunicipioTicket.anon_id == anon_id)
-            .filter(MunicipioTicket.ultima_actividad >= two_days_ago)
-            .order_by(MunicipioTicket.ultima_actividad.desc())
-            .first()
-        )
-
-        if recent_ticket:
-            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_CONSULTA_TICKET.name
-            contexto_municipio_actual["ticket_id_proactivo"] = recent_ticket.id
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-
-            return _finalize_response({
-                "message_body": f"Noté que tenés un reclamo reciente (N° M-{recent_ticket.nro_ticket}). ¿Estás contactándote por eso?",
-                "options_list": [
-                    {"texto": "Sí", "action_id": "proactive_check_yes"},
-                    {"texto": "No", "action_id": "proactive_check_no"},
-                ],
-                "message_type": "interactive_buttons",
-                "fuente": "proactive_ticket_check",
-            })
-    # --- FIN: Chequeo Proactivo de Tickets ---
-
-
     # --- START GREETING CHECK (MOVED) ---
     # This must run before any stateful logic to ensure greetings always reset the flow.
     normalized_input_for_greeting = normalizar_texto(pregunta_str or "").strip()
@@ -3057,7 +2971,6 @@ def responder_municipio(
                         if option.get("id_accion") == pregunta_str_reclamo:
                             selected_category_name = option.get("category_name")
                             break
-                details = {}
                 if not selected_category_name:
                     plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
                     details = extract_reclamo_details_from_text(pregunta_str_reclamo, plain_text_options)
@@ -3525,8 +3438,7 @@ def responder_municipio(
                     "message_type": "interactive_buttons"
                 })
             else:
-                # Add a prefix to signal to the LLM that this is a transcription
-                pregunta_str = f"Transcripción de audio: {transcript}"
+                pregunta_str = transcript # Use high-confidence transcript as the new question
                 # Update the payload so subsequent logic sees the transcribed text
                 if "pregunta" in received_payload:
                     received_payload["pregunta"] = pregunta_str

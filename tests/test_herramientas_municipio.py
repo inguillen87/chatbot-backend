@@ -2,7 +2,18 @@ import pytest
 from unittest.mock import patch, Mock
 from services.herramientas_municipio import validar_y_formatear_direccion, consultar_noticias_municipio
 from models import MunicipioTicket, db
+from app import create_app
+from config import TestConfig
 from datetime import datetime
+
+@pytest.fixture
+def app_context():
+    app = create_app(TestConfig)
+    with app.app_context():
+        db.create_all()
+        yield
+        db.session.remove()
+        db.drop_all()
 
 @patch('services.herramientas_municipio.Maps_API_KEY', 'fake_api_key')
 @patch('services.herramientas_municipio.requests.get')
@@ -53,7 +64,7 @@ def test_validar_y_formatear_direccion_invalida(mock_get):
     # Assert
     assert resultado is None
 
-def test_consultar_noticias_municipio_exitosa(init_database):
+def test_consultar_noticias_municipio_exitosa(app_context):
     """
     Tests the successful retrieval of news and events from the database.
     """
@@ -73,7 +84,7 @@ def test_consultar_noticias_municipio_exitosa(init_database):
     assert "Evento 2" in resultado
     assert "Resumen 2" in resultado
 
-def test_consultar_noticias_municipio_sin_noticias(init_database):
+def test_consultar_noticias_municipio_sin_noticias(app_context):
     """
     Tests the case where no news or events are found in the database.
     """

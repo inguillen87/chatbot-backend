@@ -283,7 +283,7 @@ class TestProactiveFlows(unittest.TestCase):
             channel="whatsapp",
         )
 
-        self.assertIn("confirmá que los datos", response2["message_body"])
+        self.assertIn("Ya casi terminamos", response2["message_body"])
         self.assertEqual(
             chat_context.context_data['contexto_municipio_v2']['reclamo_flow_v2']['datos_reclamo']['direccion'],
             "Calle Falsa 123",

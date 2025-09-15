@@ -24,5 +24,3 @@ sandbox_venv/
 # Pero permite que la estructura instance/ exista
 node_modules
 !data/estacionamiento/camaras.json
-flask_session/
-test_output.txt

@@ -4,7 +4,7 @@ from services.cohere_bridge import llamar_cohere
 
 logger = logging.getLogger(__name__)
 
-def llamar_llm_con_fallback(app, mensaje_usuario: str, usuario: dict, historial: list, chat_session_id: str, system_prompt_override: str | None = None):
+def llamar_llm_con_fallback(app, mensaje_usuario: str, usuario: dict, historial: list, chat_session_id: str):
     """
     Try LLM providers in priority order (OpenAI, then Cohere).
     Falls back to the next provider on failure and returns the first successful
@@ -25,7 +25,7 @@ def llamar_llm_con_fallback(app, mensaje_usuario: str, usuario: dict, historial:
     for name, func in providers:
         try:
             logger.info(f"Attempting LLM call with provider: {name}")
-            return func(app, mensaje_usuario, usuario, historial, chat_session_id, system_prompt_override=system_prompt_override)
+            return func(app, mensaje_usuario, usuario, historial, chat_session_id)
         except Exception as exc:  # pragma: no cover - defensive logging
             last_error = exc
             logger.warning(f"{name} call failed with error: {exc}")

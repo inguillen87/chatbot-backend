@@ -59,8 +59,6 @@ def my_on_connect_listener(dbapi_connection, connection_record):
         pass
 
 def create_app(config_class=Config):
-    from database import db
-    # db.metadata.clear()
     app = Flask(__name__)
     app.url_map.strict_slashes = False
     print("Creating app...")
@@ -77,6 +75,7 @@ def create_app(config_class=Config):
     # --- Diagnóstico de sesión (solo en runtime normal) ---
     if not MIGRATIONS_ONLY:
         print("--- DIAGNÓSTICO DE SESIÓN (desde app.py) ---")
+        session_ext = Session()
         print(f"SECRET_KEY leída por Flask: {app.config.get('SECRET_KEY')}")
         print(f"SESSION_COOKIE_SECURE: {app.config.get('SESSION_COOKIE_SECURE')}")
         print(f"SESSION_COOKIE_SAMESITE: {app.config.get('SESSION_COOKIE_SAMESITE')}")
@@ -157,19 +156,10 @@ def create_app(config_class=Config):
 
     # Sesiones en servidor (solo runtime normal)
     if not MIGRATIONS_ONLY:
-        # La instanciación de Session() DEBE estar dentro de create_app
-        # para evitar problemas de redefinición de tablas en tests.
-        session_ext = Session()
         app.config['SESSION_SQLALCHEMY'] = db
+        session_ext = Session()
         if app.config.get("TESTING"):
-            # Usar filesystem para tests para evitar problemas con la DB en memoria
-            # y la creación de la tabla 'sessions'
             app.config['SESSION_TYPE'] = 'filesystem'
-            # Asegurarse que el directorio exista
-            session_dir = os.path.join(app.instance_path, 'flask_session')
-            os.makedirs(session_dir, exist_ok=True)
-            app.config['SESSION_FILE_DIR'] = session_dir
-
         session_ext.init_app(app)
 
     # Logging de app

@@ -4,7 +4,6 @@ import io
 import requests
 from flask import current_app
 from werkzeug.utils import secure_filename
-from werkzeug.datastructures import FileStorage
 from services.thumbnail_service import generar_thumbnail
 
 # Google Cloud Storage can be optionally disabled (e.g., when billing is off).
@@ -255,42 +254,3 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
             thumbnail_bytes,
             thumb_meta,
         )
-
-def upload_file_from_url(url: str) -> dict | None:
-    """
-    Downloads a file from a URL and uploads it to the configured storage.
-    """
-    if not url:
-        return None
-
-    try:
-        response = requests.get(url, stream=True)
-        response.raise_for_status()
-
-        # Get filename from URL
-        filename = url.split("/")[-1].split("?")[0] or "attachment.jpg"
-        if not os.path.splitext(filename)[1]:
-            # If no extension, try to guess from content type
-            content_type = response.headers.get("content-type", "image/jpeg")
-            ext = content_type.split("/")[-1]
-            filename = f"{filename}.{ext}"
-
-
-        file_stream = io.BytesIO(response.content)
-
-        # Create a FileStorage-like object
-        file_storage = FileStorage(
-            stream=file_stream,
-            filename=filename,
-            content_type=response.headers.get("content-type", "application/octet-stream"),
-        )
-
-        current_app.logger.info(f"Uploading file from URL: {url} as {filename}")
-        return guardar_adjunto_y_thumbnail(file_storage)
-
-    except requests.exceptions.RequestException as e:
-        current_app.logger.error(f"Failed to download file from URL {url}: {e}", exc_info=True)
-        return None
-    except Exception as e:
-        current_app.logger.error(f"Failed to upload file from URL {url}: {e}", exc_info=True)
-        return None
