@@ -1,5 +1,5 @@
 import pytest
-from services.municipio_responder import ReclamoFlowHandler
+from services.municipio_responder import ReclamoFlowHandler, ReclamoState
 from services.constants import CONTEXTO_MUNICIPIO
 
 @pytest.fixture
@@ -87,3 +87,11 @@ def test_prompt_can_be_forced_when_full(flow_handler):
     assert "teléfono: 2615551234" in prompt_lower
 
     assert "datos que querés corregir" in prompt_lower
+
+
+def test_default_prompt_when_missing_data(flow_handler):
+    """When data is missing and not forced, the handler should prompt for it."""
+    response = flow_handler.ask_for_contact_details()
+    assert flow_handler.flow_context['state'] == ReclamoState.ESPERANDO_DATOS_CONTACTO.name
+    body = response.get("message_body", "").lower()
+    assert "dni" in body and "email" in body
