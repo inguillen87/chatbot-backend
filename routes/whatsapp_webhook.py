@@ -403,6 +403,9 @@ def whatsapp_webhook():
             )
 
             if adjunto:
+                thumb_url = None
+                if getattr(adjunto, "analisis", None) and isinstance(adjunto.analisis.datos_estructurados, dict):
+                    thumb_url = adjunto.analisis.datos_estructurados.get("url")
                 # Prepare the info for the chatbot logic, which will be used for all media types
                 uploaded_file_info = {
                     "id": adjunto.id,
@@ -411,6 +414,8 @@ def whatsapp_webhook():
                     "name": adjunto.nombre_original,
                     "source": "whatsapp"
                 }
+                if thumb_url:
+                    uploaded_file_info["thumbnail_url"] = thumb_url
                 current_app.logger.info(f"WhatsApp media processed and saved as ArchivoAdjunto ID: {adjunto.id}")
             else:
                 current_app.logger.error("create_attachment_with_thumbnail failed to process the WhatsApp media")

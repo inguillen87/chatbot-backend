@@ -62,6 +62,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
         contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
         viewer_user = self.context.get("viewer_user_obj")
         datos_parciales_llm = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
+        contacto_ctx = contexto_reclamo.get("contacto_usuario", {})
 
         # --- Data Gathering & Validation ---
         # Process each field individually, checking for validity at each step
@@ -78,6 +79,19 @@ class CrearReclamoActionHandler(BaseActionHandler):
         coordenadas_llm = action_data.get("coordenadas") or datos_parciales_llm.get("coordenadas")
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales_llm.get("foto_url")
 
+        municipio_config = self.context.get("municipio_config_actual", {})
+        if ubicacion_llm and not distrito_llm:
+            try:
+                logger.info(f"Attempting to parse district from address: {ubicacion_llm}")
+                parsed_addr = parse_direccion(ubicacion_llm, municipio_config)
+                if parsed_addr and parsed_addr.get("localidad"):
+                    distrito_llm = parsed_addr.get("localidad")
+                else:
+                    distrito_llm = municipio_config.get("ciudad") or municipio_config.get("ciudad_default")
+            except Exception as e:
+                logger.warning(f"Failed to parse district from address: {e}")
+                distrito_llm = municipio_config.get("ciudad") or municipio_config.get("ciudad_default")
+
         # Contact Info - Name
         nombre_vecino_final = (
             action_data.get("usuario")
@@ -87,6 +101,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             or datos_parciales_llm.get("nombre_usuario_detectado")
             or getattr(viewer_user, "name", None)
             or getattr(viewer_user, "nombre", None)
+            or contacto_ctx.get("nombre")
             or self.context.get("profile_name")
             or "Vecino/a"
         )
@@ -98,7 +113,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             action_data.get("telefono_detectado"),
             datos_parciales_llm.get("telefono"),
             datos_parciales_llm.get("telefono_detectado"),
-            getattr(viewer_user, "telefono", None)
+            getattr(viewer_user, "telefono", None),
+            contacto_ctx.get("telefono")
         ]
         for phone in phone_sources:
             if phone and validar_telefono(str(phone)):
@@ -112,7 +128,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             action_data.get("email_detectado"),
             datos_parciales_llm.get("email"),
             datos_parciales_llm.get("email_detectado"),
-            getattr(viewer_user, "email", None)
+            getattr(viewer_user, "email", None),
+            contacto_ctx.get("email")
         ]
         for email in email_sources:
             if email and validar_email(str(email)):
@@ -124,7 +141,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
         dni_sources = [
             action_data.get("dni"),
             datos_parciales_llm.get("dni"),
-            getattr(viewer_user, "dni", None)
+            getattr(viewer_user, "dni", None),
+            contacto_ctx.get("dni")
         ]
         for dni in dni_sources:
             dni_str = str(dni).strip() if dni else ""
@@ -152,7 +170,6 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 public_foto_url = foto_url_llm  # Fallback
 
         # Validación de datos esenciales para la creación del ticket
-        municipio_config = self.context.get("municipio_config_actual", {})
         # Default required fields if not specified in config
         campos_requeridos = municipio_config.get(
             "campos_requeridos_reclamo",
@@ -217,23 +234,25 @@ class CrearReclamoActionHandler(BaseActionHandler):
         # Update viewer_user object if it exists and we have new info
         if viewer_user:
             updated = False
-            if nombre_vecino_final and not viewer_user.name:
+            if nombre_vecino_final and nombre_vecino_final != getattr(viewer_user, "name", None):
                 viewer_user.name = nombre_vecino_final
                 updated = True
-            if telefono_final and not viewer_user.telefono:
+            if telefono_final and telefono_final != getattr(viewer_user, "telefono", None):
                 viewer_user.telefono = telefono_final
                 updated = True
-            if email_final and not viewer_user.email:
+            if email_final and email_final != getattr(viewer_user, "email", None):
                 viewer_user.email = email_final
                 updated = True
-            if dni_final and not getattr(viewer_user, "dni", None):
+            if dni_final and dni_final != getattr(viewer_user, "dni", None):
                 viewer_user.dni = dni_final
                 updated = True
             if updated:
                 from models import db
                 db.session.add(viewer_user)
                 db.session.commit()
-                logger.info(f"User profile for {viewer_user.id} updated with new contact info.")
+                logger.info(
+                    f"User profile for {getattr(viewer_user, 'id', 'unknown')} updated with new contact info."
+                )
         pregunta_original = self.context.get("pregunta_actual_usuario", "")
 
         contactos = cargar_configuracion_municipio(
