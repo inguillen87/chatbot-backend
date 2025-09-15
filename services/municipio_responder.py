@@ -152,52 +152,68 @@ class ReclamoFlowHandler:
         logger.info("Iniciando flujo de reclamo v2.")
         self.flow_context.clear()
         self.flow_context['datos_reclamo'] = datos_iniciales or {}
+        datos = self.flow_context['datos_reclamo']
+
+        def _apply_prefill(field: str, *candidates) -> None:
+            """Populate ``datos`` with the first meaningful value available."""
+            existing = datos.get(field)
+            if existing and existing != 'Vecino/a' and '@whatsapp.chatboc.com' not in str(existing):
+                return
+            for candidate in candidates:
+                if not candidate:
+                    continue
+                if isinstance(candidate, str):
+                    candidate = candidate.strip()
+                    if not candidate:
+                        continue
+                    if field == 'nombre' and candidate == 'Vecino/a':
+                        continue
+                datos[field] = candidate
+                break
 
         # Si la conversación comenzó con una foto (context['foto_url']) pero
         # aún no se reflejó en los datos del reclamo, la agregamos para evitar
         # que se le vuelva a solicitar al usuario.
         if (
             self.context.get("foto_url")
-            and not self.flow_context['datos_reclamo'].get('foto_url')
+            and not datos.get('foto_url')
         ):
-            self.flow_context['datos_reclamo']['foto_url'] = self.context.get("foto_url")
+            datos['foto_url'] = self.context.get("foto_url")
 
         # Pre-fill contact details from the viewer if available so we do not
         # ask the user for information we already have.
         viewer = self.context.get("viewer_user_obj")
         if viewer:
-            datos = self.flow_context['datos_reclamo']
             # Some viewer objects store attributes with different names. Fall back
             # to common alternatives to avoid asking for data we already have.
-            datos.setdefault(
+            _apply_prefill(
                 'nombre',
-                getattr(viewer, 'name', None)
-                or getattr(viewer, 'nombre', None)
-                or getattr(viewer, 'nombre_vecino', None),
+                getattr(viewer, 'name', None),
+                getattr(viewer, 'nombre', None),
+                getattr(viewer, 'nombre_vecino', None),
             )
-            datos.setdefault(
+            _apply_prefill(
                 'email',
-                getattr(viewer, 'email', None)
-                or getattr(viewer, 'email_vecino', None),
+                getattr(viewer, 'email', None),
+                getattr(viewer, 'email_vecino', None),
             )
-            datos.setdefault(
+            _apply_prefill(
                 'telefono',
-                getattr(viewer, 'telefono', None)
-                or getattr(viewer, 'telefono_vecino', None),
+                getattr(viewer, 'telefono', None),
+                getattr(viewer, 'telefono_vecino', None),
             )
-            datos.setdefault(
+            _apply_prefill(
                 'dni',
-                getattr(viewer, 'dni', None)
-                or getattr(viewer, 'dni_vecino', None)
-                or getattr(viewer, 'documento', None),
+                getattr(viewer, 'dni', None),
+                getattr(viewer, 'dni_vecino', None),
+                getattr(viewer, 'documento', None),
             )
 
         # Reuse previously provided contact info stored in municipal context
         contacto_prev = self.municipal_ctx.get('contacto_usuario', {})
         if contacto_prev:
-            datos = self.flow_context['datos_reclamo']
             for campo in ['nombre', 'email', 'telefono', 'dni']:
-                datos.setdefault(campo, contacto_prev.get(campo))
+                _apply_prefill(campo, contacto_prev.get(campo))
 
         if categoria_inicial and not self.flow_context['datos_reclamo'].get('categoria'):
             self.flow_context['datos_reclamo']['categoria'] = categoria_inicial
