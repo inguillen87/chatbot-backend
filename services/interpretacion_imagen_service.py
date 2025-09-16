@@ -465,7 +465,7 @@ def _procesar_interpretacion_reclamo(
         if sugerida_categoria_vision:
             final_categoria_sugerida = sugerida_categoria_vision
             datos_internos_analisis['final_categoria_sugerida'] = final_categoria_sugerida
-            datos_internos_analisis['final_descripcion_sugerida'] = imagen_descripcion_para_llm
+            datos_internos_analisis['final_descripcion_sugerida'] = descripcion_natural
             datos_internos_analisis['es_reclamo_sugerido'] = True
             if analisis_db_record:
                 analisis_db_record.estado_analisis = "completado"
@@ -476,7 +476,7 @@ def _procesar_interpretacion_reclamo(
             return {
                 'es_reclamo': True,
                 'categoria_sugerida': final_categoria_sugerida,
-                'descripcion_sugerida': imagen_descripcion_para_llm,
+                'descripcion_sugerida': descripcion_natural,
                 'texto_ocr': extracted_ocr_text,
                 'analisis_id': analisis_db_record.id if analisis_db_record else None,
                 'error': None,
@@ -486,7 +486,7 @@ def _procesar_interpretacion_reclamo(
         if fallback_categoria:
             final_categoria_sugerida = fallback_categoria
             datos_internos_analisis['final_categoria_sugerida'] = final_categoria_sugerida
-            datos_internos_analisis['final_descripcion_sugerida'] = imagen_descripcion_para_llm
+            datos_internos_analisis['final_descripcion_sugerida'] = descripcion_natural
             datos_internos_analisis['es_reclamo_sugerido'] = True
             if analisis_db_record:
                 analisis_db_record.estado_analisis = "completado"
@@ -497,7 +497,7 @@ def _procesar_interpretacion_reclamo(
             return {
                 'es_reclamo': True,
                 'categoria_sugerida': final_categoria_sugerida,
-                'descripcion_sugerida': imagen_descripcion_para_llm,
+                'descripcion_sugerida': descripcion_natural,
                 'texto_ocr': extracted_ocr_text,
                 'analisis_id': analisis_db_record.id if analisis_db_record else None,
                 'error': None,
