@@ -98,7 +98,20 @@ def _esperando_info_libre(municipio_ctx: dict) -> bool:
     context keys when asking the user for additional information. This helper
     centralizes the check so numeric shortcuts and other automated handlers
     can pause while the bot waits for a free-form response.
+
+    When the structured reclamo flow (``reclamo_flow_v2``) is active we allow
+    numeric shortcuts so users can answer "1", "2" or "3" even if an older
+    LLM-driven key like ``esperando_info_llm_reclamo`` is still present in the
+    session (for example after migrating from the previous flow). In that case
+    we explicitly bypass the guard below.
     """
+
+    if not isinstance(municipio_ctx, dict):
+        return False
+
+    flow_state = (municipio_ctx.get("reclamo_flow_v2") or {}).get("state")
+    if flow_state or municipio_ctx.get("reclamo_flow_activo"):
+        return False
 
     return (
         municipio_ctx.get("esperando_info_llm")
