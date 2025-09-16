@@ -265,12 +265,49 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 viewer_user.dni = dni_final
                 updated = True
             if updated:
-                from models import db
+                from models import db, User
+                from sqlalchemy.exc import IntegrityError
                 db.session.add(viewer_user)
-                db.session.commit()
-                logger.info(
-                    f"User profile for {getattr(viewer_user, 'id', 'unknown')} updated with new contact info."
-                )
+                try:
+                    db.session.commit()
+                    logger.info(f"User profile for {getattr(viewer_user, 'id', 'unknown')} updated with new contact info.")
+                except IntegrityError as e:
+                    db.session.rollback()
+                    if "user_email_key" in str(e) and email_final:
+                        logger.warning(f"IntegrityError on user update. Email '{email_final}' may already exist. Attempting to link to existing user.")
+                        existing_user = User.query.filter(User.email.ilike(email_final)).first()
+                        if existing_user:
+                            logger.info(f"Found existing user (ID: {existing_user.id}) with email '{email_final}'. Switching ticket owner.")
+                            viewer_user = existing_user
+
+                            # Update missing fields on the existing user
+                            updated_existing = False
+                            if nombre_vecino_final and not viewer_user.name:
+                                viewer_user.name = nombre_vecino_final
+                                updated_existing = True
+                            if telefono_final and not viewer_user.telefono:
+                                viewer_user.telefono = telefono_final
+                                updated_existing = True
+                            if dni_final and not viewer_user.dni:
+                                viewer_user.dni = dni_final
+                                updated_existing = True
+
+                            if updated_existing:
+                                try:
+                                    db.session.add(viewer_user)
+                                    db.session.commit()
+                                    logger.info(f"Updated missing fields on existing user {viewer_user.id}.")
+                                except Exception as e_inner:
+                                    logger.error(f"Failed to update missing fields on existing user {viewer_user.id}: {e_inner}", exc_info=True)
+                                    db.session.rollback()
+                        else:
+                            logger.error(f"Could not find user with email '{email_final}' despite IntegrityError. Proceeding without email for this transaction.")
+                            viewer_user.email = None
+                            db.session.add(viewer_user)
+                            db.session.commit()
+                    else:
+                        logger.error(f"An unhandled IntegrityError occurred: {e}", exc_info=True)
+                        raise
         pregunta_original = self.context.get("pregunta_actual_usuario", "")
 
         contactos = cargar_configuracion_municipio(
