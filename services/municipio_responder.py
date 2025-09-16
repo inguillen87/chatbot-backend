@@ -2578,6 +2578,10 @@ def extract_reclamo_details_from_text(user_input: str, reclamo_options: list) ->
         details["descripcion_sugerida"] = llm_details["descripcion_problema"]
     if llm_details.get("ubicacion_problema"):
         details["direccion_sugerida"] = llm_details["ubicacion_problema"]
+    if llm_details.get("nombre_cliente"):
+        details["nombre_sugerido"] = llm_details.get("nombre_cliente")
+    if llm_details.get("email_cliente"):
+        details["email_sugerido"] = llm_details.get("email_cliente")
 
     # --- Fallback heuristics when LLM data is missing ---
     if "categoria_sugerida" not in details:
@@ -3557,6 +3561,10 @@ def responder_municipio(
                 datos_iniciales["descripcion"] = details["descripcion_sugerida"]
             if details.get("direccion_sugerida"):
                 datos_iniciales["direccion"] = details["direccion_sugerida"]
+            if details.get("nombre_sugerido"):
+                datos_iniciales["nombre"] = details.get("nombre_sugerido")
+            if details.get("email_sugerido"):
+                datos_iniciales["email"] = details.get("email_sugerido")
             response_dict = handler.start_flow(
                 datos_iniciales=datos_iniciales or None,
                 categoria_inicial=detected_category,
