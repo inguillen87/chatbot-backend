@@ -98,63 +98,9 @@ class ServicioTickets:
         }
 
     def crear_nuevo_ticket(self, tipo_ticket: Literal["municipio", "pyme"], ticket_data: Dict[str, Any]) -> Union[PymeTicket, MunicipioTicket, None, dict]:
-        from models import User  # Import User model here to avoid circular import at module level
         creator = self.creators.get(tipo_ticket)
         if not creator:
             raise ValueError(f"Tipo de ticket inválido: '{tipo_ticket}'.")
-
-        # --- Lógica de manejo de usuario mejorada ---
-        email_llm = ticket_data.get("email_vecino")
-        user_existente = None
-
-        if email_llm:
-            # Buscar usuario existente por email, ignorando mayúsculas/minúsculas.
-            user_existente = User.query.filter(db.func.lower(User.email) == db.func.lower(email_llm)).first()
-
-        if user_existente:
-            logger.info(f"Usuario existente encontrado por email '{email_llm}'. ID: {user_existente.id}. Asociando ticket.")
-            # Si encontramos un usuario por email, ESE es el usuario correcto para el ticket.
-            ticket_data["user_id"] = user_existente.id
-            ticket_data["anon_id"] = None # Nos aseguramos de que no quede como anónimo
-
-            # Actualizar datos del usuario existente solo si los campos están vacíos
-            nombre_llm = ticket_data.get("nombre_vecino")
-            telefono_llm = ticket_data.get("telefono_vecino")
-            if nombre_llm and not user_existente.name:
-                user_existente.name = nombre_llm
-            if telefono_llm and not user_existente.telefono:
-                user_existente.telefono = telefono_llm
-
-            # Usar los datos del perfil como fallback solo cuando el ticket no los provee
-            ticket_data['nombre_vecino'] = ticket_data.get('nombre_vecino') or user_existente.name
-            ticket_data['email_vecino'] = ticket_data.get('email_vecino') or user_existente.email
-            ticket_data['telefono_vecino'] = ticket_data.get('telefono_vecino') or user_existente.telefono
-
-        elif ticket_data.get("user_id"):
-            # Si no se encontró por email pero se pasó un user_id (ej. usuario logueado anónimo), usamos ese.
-            user_actual = db.session.get(User, ticket_data.get("user_id"))
-            if user_actual:
-                logger.info(f"Actualizando perfil para usuario ID: {user_actual.id} con datos del reclamo.")
-                # Actualizar el perfil del usuario actual si se proporcionaron datos nuevos
-                nombre_llm = ticket_data.get("nombre_vecino")
-                email_llm = ticket_data.get("email_vecino")
-                telefono_llm = ticket_data.get("telefono_vecino")
-
-                if nombre_llm and nombre_llm != user_actual.name:
-                    user_actual.name = nombre_llm
-                # Solo intentar actualizar email si es diferente y no nulo
-                if email_llm and email_llm != user_actual.email:
-                    # Este es el punto que puede causar el error si el email ya existe en otro usuario.
-                    # La lógica anterior ya debería haber capturado este caso, pero es una salvaguarda.
-                    user_actual.email = email_llm
-                if telefono_llm and telefono_llm != user_actual.telefono:
-                    user_actual.telefono = telefono_llm
-            else:
-                 logger.warning(f"Se proveyó un user_id ({ticket_data.get('user_id')}) para crear un ticket, pero el usuario no fue encontrado.")
-
-        # El commit se movió al final de la transacción en routes/chat.py
-        # para evitar detached instances.
-        # --- Fin de la lógica de manejo de usuario ---
 
         # Inferir categoría a partir de campos alternativos si no fue provista
         if not ticket_data.get("categoria"):

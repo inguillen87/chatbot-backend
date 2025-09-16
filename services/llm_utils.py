@@ -315,6 +315,10 @@ def extract_complaint_details_llm(text: str, default_localidad: str | None = Non
         "1. 'tipo_problema': La categoría general del problema (ej: 'Alumbrado público', 'Recolección de residuos', 'Fuga de agua'). "
         "2. 'ubicacion_problema': El lugar específico del problema (calle, número, etc.). "
         "3. 'descripcion_problema': Un resumen claro y conciso del reclamo. "
+        "4. 'nombre_cliente': El nombre de la persona que reclama, si lo menciona. "
+        "5. 'email_cliente': El email de la persona, si lo menciona. NOTA: A veces, la transcripción de audio confunde '@' con un punto ('.'). Si ves algo como 'usuario.dominio.com', es muy probable que sea 'usuario@dominio.com'. "
+        "6. 'telefono_cliente': El teléfono de la persona, si lo menciona. "
+        "7. 'dni_cliente': El DNI de la persona, si lo menciona. "
         f"{location_context_instruction} "
         "Devuelve la información SOLAMENTE como un objeto JSON válido con estas claves. "
         "Si no encuentras un detalle, puedes omitir la clave. "
@@ -330,11 +334,9 @@ def extract_complaint_details_llm(text: str, default_localidad: str | None = Non
             cleaned_response = _clean_llm_json_output(response_content)
             if cleaned_response:
                 extracted_details = json.loads(cleaned_response)
-                # Filter out empty values, but keep all three primary keys if possible, even if empty.
-                # This might be better handled by the caller if specific keys are always expected.
-                # For now, just ensure the main keys are what we expect.
-                valid_keys = ["tipo_problema", "ubicacion_problema", "descripcion_problema"]
-                extracted_details = {k: v for k, v in extracted_details.items() if k in valid_keys and v} # Only keep non-empty values for expected keys
+                # Ensure all potential fields are considered valid
+                valid_keys = ["tipo_problema", "ubicacion_problema", "descripcion_problema", "nombre_cliente", "email_cliente", "telefono_cliente", "dni_cliente"]
+                extracted_details = {k: v for k, v in extracted_details.items() if k in valid_keys and v}
             else:
                  logger.info(f"[LLM_COMPLAINT_EXTRACT] LLM response was empty after cleaning for text: {text}")
         else:

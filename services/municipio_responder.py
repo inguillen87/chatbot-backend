@@ -204,23 +204,14 @@ class ReclamoFlowHandler:
             if municipio_id:
                 query = query.filter_by(municipio_id=municipio_id)
 
-            # Prioritize the logged-in user (viewer) if they exist
-            if viewer and hasattr(viewer, 'id'):
-                # Find the last ticket created by this specific user
-                ticket_by_viewer = query.filter_by(creado_por_id=viewer.id).order_by(MunicipioTicket.fecha.desc()).first()
-                if ticket_by_viewer:
-                    last_ticket = ticket_by_viewer
-                    logger.info(f"Prefilling contact data from last ticket {last_ticket.nro_ticket} found by viewer_user.id {viewer.id}.")
-
-            # If no ticket was found for the logged-in user, or if there's no logged-in user,
-            # fall back to using the anonymous ID.
-            if not last_ticket:
-                anon_id = self.context.get('anon_id')
-                if anon_id:
-                    ticket_by_anon = query.filter_by(anon_id=anon_id).order_by(MunicipioTicket.fecha.desc()).first()
-                    if ticket_by_anon:
-                        last_ticket = ticket_by_anon
-                        logger.info(f"Prefilling contact data from last ticket {last_ticket.nro_ticket} found by anon_id.")
+            # Find the last ticket using the anonymous ID to identify the user
+            # across requests in the same session.
+            anon_id = self.context.get('anon_id')
+            if anon_id:
+                ticket_by_anon = query.filter_by(anon_id=anon_id).order_by(MunicipioTicket.fecha.desc()).first()
+                if ticket_by_anon:
+                    last_ticket = ticket_by_anon
+                    logger.info(f"Prefilling contact data from last ticket {last_ticket.nro_ticket} found by anon_id.")
         except Exception as e:
             logger.warning(f"Error fetching last ticket for prefill: {e}")
 
@@ -287,8 +278,11 @@ class ReclamoFlowHandler:
         category = find_reclamo_category_by_input(user_input, plain_options)
         details = {}
         if not category:
-            details = extract_reclamo_details_from_text(user_input, plain_options)
-            category = details.pop("categoria_sugerida", None)
+            municipio_config = self.context.get("municipio_config_actual", {})
+            default_localidad = municipio_config.get("ciudad")
+            default_provincia = municipio_config.get("provincia")
+            details = extract_reclamo_details_from_text(user_input, plain_options, default_localidad=default_localidad, default_provincia=default_provincia)
+            category = details.pop("categoria", None)
 
         if not category:
             return {
@@ -297,10 +291,11 @@ class ReclamoFlowHandler:
 
         datos = self.flow_context.setdefault('datos_reclamo', {})
         datos['categoria'] = category
-        if details.get('descripcion_sugerida'):
-            datos['descripcion'] = details['descripcion_sugerida']
-        if details.get('direccion_sugerida'):
-            datos['direccion'] = details['direccion_sugerida']
+
+        # Update datos with all extracted details
+        for key, value in details.items():
+            if value:
+                datos[key] = value
 
         if (
             not datos.get('descripcion')
@@ -1323,19 +1318,23 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
         user_input = context.get("user_input_raw", "")
         reclamo_opts = _get_reclamos_menu().get("options_list", [])
-        details = extract_reclamo_details_from_text(user_input, reclamo_opts)
-        detected_category = details.pop("categoria_sugerida", None)
+
+        # Pass location context
+        municipio_config = context.get("municipio_config_actual", {})
+        default_localidad = municipio_config.get("ciudad")
+        default_provincia = municipio_config.get("provincia")
+
+        details = extract_reclamo_details_from_text(user_input, reclamo_opts, default_localidad=default_localidad, default_provincia=default_provincia)
+
+        detected_category = details.pop("categoria", None)
         handler = ReclamoFlowHandler(context, chat_db_context)
         if detected_category:
             logger.info(
                 f"[MENU_ACTION] Auto-detected category '{detected_category}' from input."
             )
-        # Map remaining suggested fields into initial data
-        datos_iniciales = {}
-        if details.get("descripcion_sugerida"):
-            datos_iniciales["descripcion"] = details["descripcion_sugerida"]
-        if details.get("direccion_sugerida"):
-            datos_iniciales["direccion"] = details["direccion_sugerida"]
+        # 'details' now contains all other fields like 'descripcion', 'direccion', 'nombre', etc.
+        datos_iniciales = details
+
         response_dict = handler.start_flow(
             datos_iniciales=datos_iniciales or None,
             categoria_inicial=detected_category,
@@ -2556,38 +2555,44 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
     return None
 
 
-def extract_reclamo_details_from_text(user_input: str, reclamo_options: list) -> dict:
-    """Attempt to extract category, description and address from a user message.
+def extract_reclamo_details_from_text(user_input: str, reclamo_options: list, default_localidad: str | None = None, default_provincia: str | None = None) -> dict:
+    """Attempt to extract category, description, address, and contact details from a user message.
 
     The function first tries to leverage the LLM-based extractor so we obtain
     a short category, concise description and any location mentioned by the
     user. If the LLM fails or returns partial data we fall back to the legacy
     keyword heuristics so the flow can still progress.
     """
-    details: dict[str, str] = {}
+    details: dict[str, str | None] = {}
     if not user_input:
         return details
 
     # --- Primary extraction using LLM ---
-    llm_details = extract_complaint_details_llm(user_input) or {}
+    llm_details = extract_complaint_details_llm(user_input, default_localidad=default_localidad, default_provincia=default_provincia) or {}
+
+    # Map LLM fields to the keys used in the application context
     if llm_details.get("tipo_problema"):
-        mapped = find_reclamo_category_by_input(llm_details["tipo_problema"], reclamo_options)
-        if mapped:
-            details["categoria_sugerida"] = mapped
-    if llm_details.get("descripcion_problema"):
-        details["descripcion_sugerida"] = llm_details["descripcion_problema"]
-    if llm_details.get("ubicacion_problema"):
-        details["direccion_sugerida"] = llm_details["ubicacion_problema"]
-    if llm_details.get("nombre_cliente"):
-        details["nombre_sugerido"] = llm_details.get("nombre_cliente")
-    if llm_details.get("email_cliente"):
-        details["email_sugerido"] = llm_details.get("email_cliente")
+        mapped_category = find_reclamo_category_by_input(llm_details["tipo_problema"], reclamo_options)
+        if mapped_category:
+            details["categoria"] = mapped_category
+
+    key_mapping = {
+        "descripcion_problema": "descripcion",
+        "ubicacion_problema": "direccion",
+        "nombre_cliente": "nombre",
+        "email_cliente": "email",
+        "telefono_cliente": "telefono",
+        "dni_cliente": "dni"
+    }
+    for llm_key, app_key in key_mapping.items():
+        if llm_details.get(llm_key):
+            details[app_key] = llm_details[llm_key]
 
     # --- Fallback heuristics when LLM data is missing ---
-    if "categoria_sugerida" not in details:
+    if "categoria" not in details:
         category = find_reclamo_category_by_input(user_input, reclamo_options)
         if category:
-            details["categoria_sugerida"] = category
+            details["categoria"] = category
             description_source = user_input
             normalized = normalizar_texto(user_input)
             for kw in RECLAMO_KEYWORDS.get(category, []):
@@ -2598,14 +2603,14 @@ def extract_reclamo_details_from_text(user_input: str, reclamo_options: list) ->
                     if len(parts) > 1 and parts[1].strip():
                         description_source = parts[1].strip(" ,.-")
                     break
-            if description_source and description_source != user_input and "descripcion_sugerida" not in details:
-                details["descripcion_sugerida"] = description_source
+            if description_source and description_source != user_input and "descripcion" not in details:
+                details["descripcion"] = description_source
 
-    if "direccion_sugerida" not in details:
+    if "direccion" not in details:
         import re
         match = re.search(r"en\s+([A-Za-zÀ-ÿ'\s]+?)\s+(\d{1,5})", user_input, re.IGNORECASE)
         if match:
-            details["direccion_sugerida"] = f"{match.group(1).strip()} {match.group(2)}"
+            details["direccion"] = f"{match.group(1).strip()} {match.group(2)}"
 
     return details
 
