@@ -12,6 +12,7 @@ from services.common_utils import validar_telefono, formatear_telefono_e164, val
 from services.config_loader import cargar_configuracion_municipio
 from models import MunicipioTicket
 from services.common_utils import _get_main_menu_payload
+from services.promo_service import get_ticket_promo
 
 logger = logging.getLogger(__name__)
 
@@ -419,6 +420,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/tickets/municipio')
             promo_image_url = municipio_config.get('promo_image_url')
             categoria_display = categoria
+            include_description = not bool(foto_url_llm)
             mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
                 "reclamo",
                 ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
@@ -429,8 +431,27 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 base_chat_url,
                 dni=ticket_data_cleaned.get("dni_vecino"),
                 consulta_pin=pin_final,
-                include_description=False,
+                include_description=include_description,
             )
+
+            promo_info = get_ticket_promo(self.context)
+            if promo_info:
+                promo_text = promo_info.get("message_body")
+                if promo_text:
+                    mensaje_respuesta = mensaje_respuesta.rstrip() + "\n\n" + promo_text
+
+                promo_button = promo_info.get("button")
+                if promo_button:
+                    existing_urls = {
+                        btn.get("url")
+                        for btn in botones_finales
+                        if isinstance(btn, dict) and btn.get("url")
+                    }
+                    if promo_button.get("url") not in existing_urls:
+                        botones_finales.append(promo_button)
+
+                if not promo_image_url and promo_info.get("image_url"):
+                    promo_image_url = promo_info["image_url"]
 
             # Log para debug
             logger.info(f"Respuesta formateada: '{mensaje_respuesta}', Botones: {botones_finales}")
