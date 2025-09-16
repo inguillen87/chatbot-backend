@@ -115,6 +115,19 @@ class ReclamoFlowHandler:
         )
         self.municipal_ctx = municipal_ctx
         self.flow_context = municipal_ctx.setdefault("reclamo_flow_v2", {})
+
+        # Clean legacy LLM flags so shortcuts like numeric answers aren't
+        # blocked after migrating to the structured flow.
+        for legacy_key in (
+            "esperando_info_llm",
+            "esperando_info_llm_reclamo",
+            "historial_llm_reclamo",
+            "datos_parciales_llm_reclamo",
+        ):
+            municipal_ctx.pop(legacy_key, None)
+
+        municipal_ctx["reclamo_flow_activo"] = True
+
         self.greeting_handler = GreetingHandler(context)
 
 
@@ -161,16 +174,11 @@ class ReclamoFlowHandler:
         self.flow_context['datos_reclamo'] = datos_iniciales or {}
         datos = self.flow_context['datos_reclamo']
 
-        # Prefill from image analysis if available
-        if self.context.get("foto_url") and not datos.get('foto_url'):
-            datos['foto_url'] = self.context.get("foto_url")
-        if self.context.get("datos_interpretados_archivo"):
-            interpreted = self.context.get("datos_interpretados_archivo")
-            if not datos.get('categoria') and interpreted.get('categoria_sugerida'):
-                datos['categoria'] = interpreted.get('categoria_sugerida')
-            if not datos.get('descripcion') and interpreted.get('descripcion_sugerida'):
-                datos['descripcion'] = interpreted.get('descripcion_sugerida')
-                datos['origen_descripcion'] = 'imagen'
+        default_city = (
+            (self.context.get("municipio_config_actual") or {}).get("ciudad")
+        )
+        if default_city:
+            datos.setdefault("distrito", default_city)
 
         def _apply_prefill(field: str, *candidates) -> None:
             """Populate ``datos`` with the first meaningful value available."""
@@ -318,6 +326,20 @@ class ReclamoFlowHandler:
         return self.ask_for_contact_details()
 
     def handle_direccion(self, user_input, payload):
+        municipio_cfg = self.context.get("municipio_config_actual") or {}
+        default_city = municipio_cfg.get("ciudad")
+
+        def _append_city(addr: str | None) -> str | None:
+            if not addr or not default_city:
+                return addr
+            ciudad_norm = normalizar_texto(default_city)
+            if not ciudad_norm:
+                return addr
+            direccion_norm = normalizar_texto(addr)
+            if ciudad_norm not in direccion_norm:
+                return f"{addr}, {default_city}"
+            return addr
+
         if payload.get("es_ubicacion") and payload.get("ubicacion_usuario"):
             location_data = payload.get("ubicacion_usuario")
             address = location_data.get("address")
@@ -329,15 +351,18 @@ class ReclamoFlowHandler:
                 )
                 if direccion_info:
                     address = direccion_info.get("formatted_address")
-            self.flow_context['datos_reclamo']['direccion'] = (
-                address
-                if address
-                else f"Lat: {location_data.get('latitude')}, Lon: {location_data.get('longitude')}"
-            )
+            if address:
+                address = _append_city(address)
+            else:
+                address = f"Lat: {location_data.get('latitude')}, Lon: {location_data.get('longitude')}"
+            self.flow_context['datos_reclamo']['direccion'] = address
         elif len(user_input) < 5:
             return {"message_body": "La dirección parece muy corta. Por favor, ingresá una dirección más completa (calle y número)."}
         else:
-            self.flow_context['datos_reclamo']['direccion'] = user_input
+            self.flow_context['datos_reclamo']['direccion'] = _append_city(user_input)
+
+        if default_city:
+            self.flow_context['datos_reclamo'].setdefault('distrito', default_city)
 
         # If a photo was already provided earlier in the flow or exists in the
         # context (e.g. the user started the claim by sending an image), skip
@@ -506,20 +531,107 @@ class ReclamoFlowHandler:
 
     def handle_confirmacion(self, user_input, payload):
         action = payload.get("action")
-        normalized = user_input.lower()
-        affirmatives = {"si", "sí", "confirmo", "confirmar", "ok", "okay", "acepto", "aceptar", "dale"}
-        negatives = {"no", "editar", "modificar", "cambiar"}
-        if any(word in normalized for word in affirmatives) or action == "reclamo_confirmar_si":
+        normalized_raw = user_input.strip().lower()
+        normalized_simple = normalizar_texto(user_input)
+
+        action_aliases = {
+            "1": "reclamo_confirmar_si",
+            "uno": "reclamo_confirmar_si",
+            "opcion 1": "reclamo_confirmar_si",
+            "opcion uno": "reclamo_confirmar_si",
+            "2": "reclamo_confirmar_no",
+            "dos": "reclamo_confirmar_no",
+            "opcion 2": "reclamo_confirmar_no",
+            "opcion dos": "reclamo_confirmar_no",
+            "3": "reclamo_cancelar",
+            "tres": "reclamo_cancelar",
+            "opcion 3": "reclamo_cancelar",
+            "opcion tres": "reclamo_cancelar",
+        }
+
+        if not action:
+            action = action_aliases.get(normalized_simple)
+            if action:
+                payload["action"] = action
+
+        normalized = normalized_raw.replace("_", " ")
+
+        affirmatives = {
+            "si",
+            "sí",
+            "confirmo",
+            "confirmar",
+            "ok",
+            "okay",
+            "acepto",
+            "aceptar",
+            "dale",
+            "1",
+            "uno",
+            "opcion 1",
+            "opción 1",
+        }
+        negatives = {
+            "no",
+            "editar",
+            "modificar",
+            "cambiar",
+            "2",
+            "dos",
+            "opcion 2",
+            "opción 2",
+        }
+        cancel_words = {
+            "cancelar",
+            "cancelá",
+            "cancelarlo",
+            "cancel",
+            "anular",
+            "salir",
+            "3",
+            "tres",
+            "opcion 3",
+            "opción 3",
+        }
+
+        def contains_keyword(text, keywords):
+            if not text:
+                return False
+            return any(re.search(rf"\\b{re.escape(word)}\\b", text) for word in keywords)
+
+        is_cancel = action == "reclamo_cancelar" or contains_keyword(normalized, cancel_words)
+        is_negative = action == "reclamo_confirmar_no" or contains_keyword(normalized, negatives)
+        is_affirmative = action == "reclamo_confirmar_si" or contains_keyword(normalized, affirmatives)
+
+        if is_cancel:
+            cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
+            return self.end_flow(cancel_msg, show_menu=True)
+        elif is_negative:
+            return self.ask_for_contact_details(force_prompt=True)
+        elif is_affirmative:
             datos = self.flow_context.get('datos_reclamo', {})
+            municipio_cfg = self.context.get("municipio_config_actual", {}) or {}
+            default_city = municipio_cfg.get("ciudad")
+            direccion = datos.get("direccion")
+            if default_city and direccion:
+                ciudad_norm = normalizar_texto(default_city)
+                direccion_norm = normalizar_texto(direccion)
+                if ciudad_norm and ciudad_norm not in direccion_norm:
+                    direccion = f"{direccion}, {default_city}"
+                    datos['direccion'] = direccion
+
+            distrito = datos.get("distrito") or default_city
+
             action_data = {
                 "categoria": datos.get("categoria"),
                 "descripcion": datos.get("descripcion"),
-                "ubicacion": datos.get("direccion"),
+                "ubicacion": direccion,
                 "usuario": datos.get("nombre"),
                 "dni": datos.get("dni"),
                 "email": datos.get("email"),
                 "telefono": datos.get("telefono"),
                 "foto_url_adjunta": datos.get("foto_url"),
+                "distrito": distrito,
             }
             handler = CrearReclamoActionHandler(self.context)
             result = handler.execute(action_data)
@@ -533,18 +645,46 @@ class ReclamoFlowHandler:
                     f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{nro_ticket}*. Te mantendremos informado sobre el estado del mismo por este medio.",
                 )
 
-                # The promotional message is now handled by the image_url and the frontend
-                punto_limpio_logo = "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png"
+                municipio_cfg = self.context.get("municipio_config_actual", {})
+                default_promo_image = (
+                    result.get("image_url")
+                    or municipio_cfg.get("promo_image_url")
+                    or "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png"
+                )
 
-                final_payload = self.end_flow(message, show_menu=True, image_url=punto_limpio_logo)
+                final_payload = self.end_flow(message, show_menu=True, image_url=default_promo_image)
+
+                options_from_handler = result.get("options_list") or []
+                if options_from_handler:
+                    final_payload["options_list"] = [
+                        opt.copy() if isinstance(opt, dict) else opt
+                        for opt in options_from_handler
+                    ]
+                    final_payload["message_type"] = result.get("message_type", "interactive_buttons")
+
+                existing_urls = {
+                    opt.get("url")
+                    for opt in final_payload.get("options_list", [])
+                    if isinstance(opt, dict)
+                }
 
                 if nro_ticket and pin_consulta:
                     base_url = "https://www.chatboc.ar/chat/"
                     ver_ticket_url = f"{base_url}{nro_ticket.replace('M-', '')}?pin={pin_consulta}"
-                    final_payload.setdefault("options_list", []).append(
-                        {"texto": "Ver Ticket", "url": ver_ticket_url, "type": "url"}
-                    )
-                    final_payload["message_type"] = "interactive_buttons"
+                    if ver_ticket_url not in existing_urls:
+                        final_payload.setdefault("options_list", []).append(
+                            {"texto": "Ver Ticket", "url": ver_ticket_url, "type": "url"}
+                        )
+                        final_payload["message_type"] = "interactive_buttons"
+
+                for key in ("data", "audio_url"):
+                    if result.get(key) is not None:
+                        final_payload[key] = result[key]
+
+                if result.get("delayed_payload"):
+                    final_payload["delayed_payload"] = result["delayed_payload"]
+                    if result.get("delay_seconds") is not None:
+                        final_payload["delay_seconds"] = result.get("delay_seconds")
 
                 return final_payload
             error_message = result.get(
@@ -552,17 +692,21 @@ class ReclamoFlowHandler:
                 "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde.",
             )
             return self.end_flow(error_message, show_menu=True)
-        elif any(word in normalized for word in negatives) or action == "reclamo_confirmar_no":
-            return self.ask_for_contact_details(force_prompt=True)
-        else:  # Cancel or any other input
-            cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
-            return self.end_flow(cancel_msg, show_menu=True)
+        else:
+            # Re-enviar el resumen para que la persona pueda elegir una opción válida.
+            reminder = (
+                "No entendí tu respuesta. Por favor, elegí una de las opciones disponibles para continuar.\n\n"
+            )
+            confirmation = self.get_confirmation_message()
+            confirmation["message_body"] = reminder + confirmation["message_body"]
+            return confirmation
 
     def end_flow(self, message, show_menu=False, image_url=None):
         self.flow_context.clear()
         # Remove flow data from municipio context so subsequent turns don't
         # enter this handler unintentionally.
         self.municipal_ctx.pop("reclamo_flow_v2", None)
+        self.municipal_ctx.pop("reclamo_flow_activo", None)
 
         payload = {"message_body": message, "message_type": "text"}
         if image_url:
