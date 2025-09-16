@@ -6,12 +6,17 @@ from typing import Dict, Any
 import random
 from services.ticket_service import servicio_tickets
 from services.notifications import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
-from services.herramientas_municipio import parse_direccion_completa as parse_direccion, direccion_es_valida
+from services.herramientas_municipio import (
+    parse_direccion_completa as parse_direccion,
+    direccion_es_valida,
+    normalizar_texto,
+)
 from services.ticket_utils import formatear_ticket_respuesta
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.config_loader import cargar_configuracion_municipio
 from models import MunicipioTicket
 from services.common_utils import _get_main_menu_payload
+from services.promo_service import get_ticket_promo
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +80,12 @@ class CrearReclamoActionHandler(BaseActionHandler):
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales_llm.get("foto_url")
 
         municipio_config = self.context.get("municipio_config_actual", {})
+        default_city = municipio_config.get("ciudad") or municipio_config.get("ciudad_default")
+        if ubicacion_llm and default_city:
+            ciudad_norm = normalizar_texto(default_city)
+            if ciudad_norm and ciudad_norm not in normalizar_texto(ubicacion_llm):
+                ubicacion_llm = f"{ubicacion_llm}, {default_city}"
+
         if ubicacion_llm and not distrito_llm:
             try:
                 logger.info(f"Attempting to parse district from address: {ubicacion_llm}")
@@ -419,6 +430,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/tickets/municipio')
             promo_image_url = municipio_config.get('promo_image_url')
             categoria_display = categoria
+            include_description = False
             mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
                 "reclamo",
                 ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
@@ -429,18 +441,30 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 base_chat_url,
                 dni=ticket_data_cleaned.get("dni_vecino"),
                 consulta_pin=pin_final,
+                include_description=include_description,
             )
+
+            promo_info = get_ticket_promo(self.context)
+            if promo_info:
+                promo_text = promo_info.get("message_body")
+                if promo_text:
+                    mensaje_respuesta = mensaje_respuesta.rstrip() + "\n\n" + promo_text
+
+                promo_button = promo_info.get("button")
+                if promo_button:
+                    existing_urls = {
+                        btn.get("url")
+                        for btn in botones_finales
+                        if isinstance(btn, dict) and btn.get("url")
+                    }
+                    if promo_button.get("url") not in existing_urls:
+                        botones_finales.append(promo_button)
+
+                if not promo_image_url and promo_info.get("image_url"):
+                    promo_image_url = promo_info["image_url"]
 
             # Log para debug
             logger.info(f"Respuesta formateada: '{mensaje_respuesta}', Botones: {botones_finales}")
-
-            # Add "Punto Limpio" promotion
-            mensaje_respuesta += (
-                "\n\n*¿Sabías que estamos trabajando para una Junín más limpia?* ♻️\n"
-                "Conocé nuestra planta de recolección, reciclaje y elaboración de productos sustentables.\n"
-                "Ladrillos, tejas, postes, mangueras, impresión 3D, luminarias LED y paneles solares.\n"
-                "Más info: https://www.juninmendoza.gov.ar/punto-limpio/"
-            )
 
             # Delayed menu
             menu_payload = _get_main_menu_payload(self.context)
