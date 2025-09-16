@@ -226,7 +226,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
             return {
                 "success": False,
-                "message_body": mensaje,
+                "message_to_user": mensaje,
                 "pedir_info": campos_faltantes,
                 "options_list": botones,
                 "message_type": "interactive_list" if len(botones) > 3 else "interactive_buttons"
@@ -249,8 +249,28 @@ class CrearReclamoActionHandler(BaseActionHandler):
         # Recopilación final de datos y creación del ticket
         owner_user = self.context.get("user_obj")
 
-        # The logic for updating/creating the user is now handled by the ticket_service
-        # to centralize user management and correctly handle IntegrityError.
+        # Update viewer_user object if it exists and we have new info
+        if viewer_user:
+            updated = False
+            if nombre_vecino_final and nombre_vecino_final != getattr(viewer_user, "name", None):
+                viewer_user.name = nombre_vecino_final
+                updated = True
+            if telefono_final and telefono_final != getattr(viewer_user, "telefono", None):
+                viewer_user.telefono = telefono_final
+                updated = True
+            if email_final and email_final != getattr(viewer_user, "email", None):
+                viewer_user.email = email_final
+                updated = True
+            if dni_final and dni_final != getattr(viewer_user, "dni", None):
+                viewer_user.dni = dni_final
+                updated = True
+            if updated:
+                from models import db
+                db.session.add(viewer_user)
+                db.session.commit()
+                logger.info(
+                    f"User profile for {getattr(viewer_user, 'id', 'unknown')} updated with new contact info."
+                )
         pregunta_original = self.context.get("pregunta_actual_usuario", "")
 
         contactos = cargar_configuracion_municipio(
@@ -427,7 +447,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
             return {
                 "success": True,
-                "message_body": mensaje_respuesta,
+                "message_to_user": mensaje_respuesta,
                 "options_list": botones_finales,
                 "message_type": "interactive_buttons" if botones_finales else "text",
                 "image_url": promo_image_url,
@@ -444,7 +464,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             logger.error(f"Error en CrearReclamoActionHandler: {e}", exc_info=True)
             response = {
                 "success": False,
-                "message_body": "Hubo un problema al registrar tu reclamo. Por favor, intenta de nuevo más tarde.",
+                "message_to_user": "Hubo un problema al registrar tu reclamo. Por favor, intenta de nuevo más tarde.",
                 "error_details": str(e)
             }
             print(f"DEBUG: CrearReclamoActionHandler returning error: {response}")
