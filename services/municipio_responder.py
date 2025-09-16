@@ -2073,6 +2073,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
                 try:
                     logger.info(f"[HERRAMIENTA] Intentando ejecutar: {nombre_herramienta} con params: {parametros_herramienta}")
+                    import inspect
+                    sig = inspect.signature(funcion_herramienta)
+                    if 'context' in sig.parameters:
+                        parametros_herramienta['context'] = context
                     resultado_herramienta = funcion_herramienta(**parametros_herramienta)
                     logger.info(f"[HERRAMIENTA] Resultado de {nombre_herramienta}: {str(resultado_herramienta)[:200]}...")
 
@@ -2781,11 +2785,24 @@ def responder_municipio(
     app = current_app._get_current_object()
 
     # Cargar config específica del municipio (si existe)
-    final_municipio_config = CONFIG_MUNICIPIO  # Default global
+    final_municipio_config = CONFIG_MUNICIPIO.copy()  # Default global
     owner_user_municipio_id_str = str(owner_user.municipio_id) if owner_user and hasattr(owner_user, 'municipio_id') and owner_user.municipio_id else MUNICIPIO_ID
+
+    # Load from JSON file
     loaded_specific_config = cargar_configuracion_municipio(owner_user_municipio_id_str, "config.json")
     if loaded_specific_config:
-        final_municipio_config = loaded_specific_config
+        final_municipio_config.update(loaded_specific_config)
+
+    # Override with data from the User model (database) if available
+    if owner_user:
+        if getattr(owner_user, 'ciudad', None):
+            final_municipio_config['ciudad'] = owner_user.ciudad
+        if getattr(owner_user, 'provincia', None):
+            final_municipio_config['provincia'] = owner_user.provincia
+        if getattr(owner_user, 'pais', None):
+            final_municipio_config['pais'] = owner_user.pais
+        if getattr(owner_user, 'direccion', None):
+            final_municipio_config['direccion'] = owner_user.direccion
 
     # Poblar el payload con los datos de la solicitud
     received_payload = {}
@@ -4518,7 +4535,7 @@ def responder_municipio(
                 logger_actual.info(f"Attempting to geocode textual address: '{pregunta_str}'")
 
                 # We can use the simpler geocoding tool here
-                geocoded_location = validar_y_formatear_direccion(pregunta_str)
+                geocoded_location = validar_y_formatear_direccion(pregunta_str, municipio_config=context.get("municipio_config_actual"))
 
                 if geocoded_location:
                     # Address was valid, proceed with the original query
