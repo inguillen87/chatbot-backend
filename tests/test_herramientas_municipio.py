@@ -36,15 +36,23 @@ def test_validar_y_formatear_direccion_exitosa(mock_get):
         "status": "OK"
     }
     mock_get.return_value = mock_response
+    mock_config = {"ciudad": "Junin", "provincia": "Mendoza"}
 
     # Act
-    resultado = validar_y_formatear_direccion("Av. Siempreviva 742")
+    resultado = validar_y_formatear_direccion("Av. Siempreviva 742", municipio_config=mock_config)
 
     # Assert
     assert resultado is not None
     assert resultado["formatted_address"] == "Av. Siempreviva 742, Springfield, EE. UU."
     assert resultado["lat"] == 40.7128
     assert resultado["lng"] == -74.0060
+
+    # Assert that the requests.get mock was called with the correct biasing components
+    mock_get.assert_called_once()
+    call_kwargs = mock_get.call_args.kwargs
+    assert 'params' in call_kwargs
+    assert call_kwargs['params']['components'] == 'country:AR|administrative_area:Mendoza|locality:Junin'
+
 
 @patch('services.herramientas_municipio.Maps_API_KEY', 'fake_api_key')
 @patch('services.herramientas_municipio.requests.get')
@@ -59,7 +67,7 @@ def test_validar_y_formatear_direccion_invalida(mock_get):
     mock_get.return_value = mock_response
 
     # Act
-    resultado = validar_y_formatear_direccion("una dirección inválida")
+    resultado = validar_y_formatear_direccion("una dirección inválida", municipio_config=None)
 
     # Assert
     assert resultado is None
@@ -131,7 +139,7 @@ def test_validar_y_formatear_direccion_error_api(mock_get):
     mock_get.return_value = mock_response
 
     # Act
-    resultado = validar_y_formatear_direccion("Av. Siempreviva 742")
+    resultado = validar_y_formatear_direccion("Av. Siempreviva 742", municipio_config=None)
 
     # Assert
     assert resultado is None
