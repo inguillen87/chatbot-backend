@@ -6,7 +6,11 @@ from typing import Dict, Any
 import random
 from services.ticket_service import servicio_tickets
 from services.notifications import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
-from services.herramientas_municipio import parse_direccion_completa as parse_direccion, direccion_es_valida
+from services.herramientas_municipio import (
+    parse_direccion_completa as parse_direccion,
+    direccion_es_valida,
+    normalizar_texto,
+)
 from services.ticket_utils import formatear_ticket_respuesta
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.config_loader import cargar_configuracion_municipio
@@ -76,6 +80,12 @@ class CrearReclamoActionHandler(BaseActionHandler):
         foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales_llm.get("foto_url")
 
         municipio_config = self.context.get("municipio_config_actual", {})
+        default_city = municipio_config.get("ciudad") or municipio_config.get("ciudad_default")
+        if ubicacion_llm and default_city:
+            ciudad_norm = normalizar_texto(default_city)
+            if ciudad_norm and ciudad_norm not in normalizar_texto(ubicacion_llm):
+                ubicacion_llm = f"{ubicacion_llm}, {default_city}"
+
         if ubicacion_llm and not distrito_llm:
             try:
                 logger.info(f"Attempting to parse district from address: {ubicacion_llm}")
@@ -420,7 +430,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/tickets/municipio')
             promo_image_url = municipio_config.get('promo_image_url')
             categoria_display = categoria
-            include_description = not bool(foto_url_llm)
+            include_description = False
             mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
                 "reclamo",
                 ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),

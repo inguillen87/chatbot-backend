@@ -115,6 +115,19 @@ class ReclamoFlowHandler:
         )
         self.municipal_ctx = municipal_ctx
         self.flow_context = municipal_ctx.setdefault("reclamo_flow_v2", {})
+
+        # Clean legacy LLM flags so shortcuts like numeric answers aren't
+        # blocked after migrating to the structured flow.
+        for legacy_key in (
+            "esperando_info_llm",
+            "esperando_info_llm_reclamo",
+            "historial_llm_reclamo",
+            "datos_parciales_llm_reclamo",
+        ):
+            municipal_ctx.pop(legacy_key, None)
+
+        municipal_ctx["reclamo_flow_activo"] = True
+
         self.greeting_handler = GreetingHandler(context)
 
 
@@ -160,6 +173,12 @@ class ReclamoFlowHandler:
         self.flow_context.clear()
         self.flow_context['datos_reclamo'] = datos_iniciales or {}
         datos = self.flow_context['datos_reclamo']
+
+        default_city = (
+            (self.context.get("municipio_config_actual") or {}).get("ciudad")
+        )
+        if default_city:
+            datos.setdefault("distrito", default_city)
 
         def _apply_prefill(field: str, *candidates) -> None:
             """Populate ``datos`` with the first meaningful value available."""
@@ -574,6 +593,20 @@ class ReclamoFlowHandler:
         return self.ask_for_contact_details()
 
     def handle_direccion(self, user_input, payload):
+        municipio_cfg = self.context.get("municipio_config_actual") or {}
+        default_city = municipio_cfg.get("ciudad")
+
+        def _append_city(addr: str | None) -> str | None:
+            if not addr or not default_city:
+                return addr
+            ciudad_norm = normalizar_texto(default_city)
+            if not ciudad_norm:
+                return addr
+            direccion_norm = normalizar_texto(addr)
+            if ciudad_norm not in direccion_norm:
+                return f"{addr}, {default_city}"
+            return addr
+
         if payload.get("es_ubicacion") and payload.get("ubicacion_usuario"):
             location_data = payload.get("ubicacion_usuario")
             address = location_data.get("address")
@@ -585,15 +618,18 @@ class ReclamoFlowHandler:
                 )
                 if direccion_info:
                     address = direccion_info.get("formatted_address")
-            self.flow_context['datos_reclamo']['direccion'] = (
-                address
-                if address
-                else f"Lat: {location_data.get('latitude')}, Lon: {location_data.get('longitude')}"
-            )
+            if address:
+                address = _append_city(address)
+            else:
+                address = f"Lat: {location_data.get('latitude')}, Lon: {location_data.get('longitude')}"
+            self.flow_context['datos_reclamo']['direccion'] = address
         elif len(user_input) < 5:
             return {"message_body": "La dirección parece muy corta. Por favor, ingresá una dirección más completa (calle y número)."}
         else:
-            self.flow_context['datos_reclamo']['direccion'] = user_input
+            self.flow_context['datos_reclamo']['direccion'] = _append_city(user_input)
+
+        if default_city:
+            self.flow_context['datos_reclamo'].setdefault('distrito', default_city)
 
         # If a photo was already provided earlier in the flow or exists in the
         # context (e.g. the user started the claim by sending an image), skip
@@ -760,7 +796,31 @@ class ReclamoFlowHandler:
 
     def handle_confirmacion(self, user_input, payload):
         action = payload.get("action")
-        normalized = user_input.strip().lower()
+        normalized_raw = user_input.strip().lower()
+        normalized_simple = normalizar_texto(user_input)
+
+        action_aliases = {
+            "1": "reclamo_confirmar_si",
+            "uno": "reclamo_confirmar_si",
+            "opcion 1": "reclamo_confirmar_si",
+            "opcion uno": "reclamo_confirmar_si",
+            "2": "reclamo_confirmar_no",
+            "dos": "reclamo_confirmar_no",
+            "opcion 2": "reclamo_confirmar_no",
+            "opcion dos": "reclamo_confirmar_no",
+            "3": "reclamo_cancelar",
+            "tres": "reclamo_cancelar",
+            "opcion 3": "reclamo_cancelar",
+            "opcion tres": "reclamo_cancelar",
+        }
+
+        if not action:
+            action = action_aliases.get(normalized_simple)
+            if action:
+                payload["action"] = action
+
+        normalized = normalized_raw.replace("_", " ")
+
         affirmatives = {
             "si",
             "sí",
@@ -815,15 +875,28 @@ class ReclamoFlowHandler:
             return self.ask_for_contact_details(force_prompt=True)
         elif is_affirmative:
             datos = self.flow_context.get('datos_reclamo', {})
+            municipio_cfg = self.context.get("municipio_config_actual", {}) or {}
+            default_city = municipio_cfg.get("ciudad")
+            direccion = datos.get("direccion")
+            if default_city and direccion:
+                ciudad_norm = normalizar_texto(default_city)
+                direccion_norm = normalizar_texto(direccion)
+                if ciudad_norm and ciudad_norm not in direccion_norm:
+                    direccion = f"{direccion}, {default_city}"
+                    datos['direccion'] = direccion
+
+            distrito = datos.get("distrito") or default_city
+
             action_data = {
                 "categoria": datos.get("categoria"),
                 "descripcion": datos.get("descripcion"),
-                "ubicacion": datos.get("direccion"),
+                "ubicacion": direccion,
                 "usuario": datos.get("nombre"),
                 "dni": datos.get("dni"),
                 "email": datos.get("email"),
                 "telefono": datos.get("telefono"),
                 "foto_url_adjunta": datos.get("foto_url"),
+                "distrito": distrito,
             }
             handler = CrearReclamoActionHandler(self.context)
             result = handler.execute(action_data)
@@ -898,6 +971,7 @@ class ReclamoFlowHandler:
         # Remove flow data from municipio context so subsequent turns don't
         # enter this handler unintentionally.
         self.municipal_ctx.pop("reclamo_flow_v2", None)
+        self.municipal_ctx.pop("reclamo_flow_activo", None)
 
         payload = {"message_body": message, "message_type": "text"}
         if image_url:

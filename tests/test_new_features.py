@@ -129,7 +129,7 @@ class TestNewFeatures(unittest.TestCase):
         'consulta_pin': '654321'
     })
     @patch('services.actions.municipio_actions.get_ticket_promo', return_value=None)
-    def test_handler_keeps_description_without_photo(self, mock_promo, mock_crear, mock_format):
+    def test_handler_omits_description_without_photo(self, mock_promo, mock_crear, mock_format):
         context = {
             'viewer_user_obj': None,
             'user_obj': MagicMock(id=1, municipio_id='default'),
@@ -146,7 +146,7 @@ class TestNewFeatures(unittest.TestCase):
             'email': 'ana@example.com',
         })
         _, kwargs = mock_format.call_args
-        self.assertTrue(kwargs.get('include_description'))
+        self.assertFalse(kwargs.get('include_description'))
 
     def test_greeting_handler_final_menu(self):
         """

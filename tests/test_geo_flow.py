@@ -80,7 +80,10 @@ class GeoFlowTests(unittest.TestCase):
                 'telefono': '123'
             }
         }
-        context = {'chat_db_context_data': {CONTEXTO_MUNICIPIO: {'reclamo_flow_v2': flow_data}}}
+        context = {
+            'chat_db_context_data': {CONTEXTO_MUNICIPIO: {'reclamo_flow_v2': flow_data}},
+            'municipio_config_actual': {'ciudad': 'Junín, Mendoza'},
+        }
         with patch('services.municipio_responder.CrearReclamoActionHandler') as mock_handler:
             instance = mock_handler.return_value
             instance.execute.return_value = {'success': True, 'message_to_user': 'ok', 'data': {}}
@@ -88,6 +91,10 @@ class GeoFlowTests(unittest.TestCase):
             handler = ReclamoFlowHandler(context, chat_context)
             response = handler.handle_confirmacion('1', {})
         instance.execute.assert_called_once()
+        call_args, _ = instance.execute.call_args
+        action_payload = call_args[0]
+        assert 'Junín' in action_payload.get('ubicacion', '')
+        assert action_payload.get('distrito') == 'Junín, Mendoza'
         assert 'ok' in response['message_body'].lower()
 
     def test_confirmacion_texto_invalido_reitera(self):
