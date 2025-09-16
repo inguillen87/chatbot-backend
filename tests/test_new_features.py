@@ -9,8 +9,10 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from services.ticket_utils import formatear_ticket_respuesta
+from services.promo_service import get_ticket_promo
 from services.municipio_responder import GreetingHandler
 from services.municipio_responder import responder_municipio
+from services.actions.municipio_actions import CrearReclamoActionHandler
 from config import TestConfig
 from app import create_app
 from models import db
@@ -71,6 +73,80 @@ class TestNewFeatures(unittest.TestCase):
         )
         self.assertIn("caido a mitad de cuadra", message)
         self.assertNotIn("tengo un poste", message)
+
+    def test_formatear_ticket_respuesta_sin_descripcion(self):
+        message, _ = formatear_ticket_respuesta(
+            "reclamo",
+            "Ana",
+            "tengo un bache enorme en la esquina",
+            "Bacheo",
+            "M-321",
+            include_description=False,
+        )
+        self.assertIn("Categoría", message)
+        self.assertNotIn("Descripción", message)
+
+    def test_ticket_promo_default_message(self):
+        promo = get_ticket_promo({})
+        self.assertIsNotNone(promo)
+        self.assertIn("Junín", promo["message_body"])
+        self.assertIn("Punto Limpio", promo["message_body"])
+        self.assertIn("punto-limpio", promo["message_body"])
+        self.assertIn("button", promo)
+        self.assertEqual(promo["button"]["texto"], "♻️ Punto Limpio")
+
+    @patch('services.actions.municipio_actions.formatear_ticket_respuesta', return_value=("ok", []))
+    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket', return_value={
+        'id': 1,
+        'nro_ticket': '123456',
+        'consulta_pin': '654321'
+    })
+    @patch('services.actions.municipio_actions.get_ticket_promo', return_value=None)
+    def test_handler_skips_description_when_photo(self, mock_promo, mock_crear, mock_format):
+        context = {
+            'viewer_user_obj': None,
+            'user_obj': MagicMock(id=1, municipio_id='default'),
+            'municipio_config_actual': {},
+            'anon_id': 'anon123',
+        }
+        handler = CrearReclamoActionHandler(context)
+        handler.execute({
+            'categoria': 'Limpieza',
+            'descripcion': 'Descripción generada por IA',
+            'ubicacion': 'San Martín 100',
+            'usuario': 'Ana',
+            'telefono': '2611234567',
+            'email': 'ana@example.com',
+            'foto_url_adjunta': 'https://example.com/foto.jpg',
+        })
+        _, kwargs = mock_format.call_args
+        self.assertFalse(kwargs.get('include_description'))
+
+    @patch('services.actions.municipio_actions.formatear_ticket_respuesta', return_value=("ok", []))
+    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket', return_value={
+        'id': 1,
+        'nro_ticket': '123456',
+        'consulta_pin': '654321'
+    })
+    @patch('services.actions.municipio_actions.get_ticket_promo', return_value=None)
+    def test_handler_omits_description_without_photo(self, mock_promo, mock_crear, mock_format):
+        context = {
+            'viewer_user_obj': None,
+            'user_obj': MagicMock(id=1, municipio_id='default'),
+            'municipio_config_actual': {},
+            'anon_id': 'anon123',
+        }
+        handler = CrearReclamoActionHandler(context)
+        handler.execute({
+            'categoria': 'Limpieza',
+            'descripcion': 'Descripción del reclamo',
+            'ubicacion': 'San Martín 100',
+            'usuario': 'Ana',
+            'telefono': '2611234567',
+            'email': 'ana@example.com',
+        })
+        _, kwargs = mock_format.call_args
+        self.assertFalse(kwargs.get('include_description'))
 
     def test_greeting_handler_final_menu(self):
         """
@@ -301,7 +377,6 @@ class TestNewFeatures(unittest.TestCase):
     ):
         """El reclamo final debe incluir la imagen promocional configurada."""
         mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "12345", "consulta_pin": "555444"}
-        from services.actions.municipio_actions import CrearReclamoActionHandler
         context = {
             'municipio_config_actual': {
                 'promo_image_url': 'http://example.com/promo.jpg',
