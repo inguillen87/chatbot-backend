@@ -2097,6 +2097,70 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
 
         mensaje_completo_para_llm = {"texto": pregunta_str}
+        ubicacion_llm_fuente = context.get("ubicacion_usuario") or {}
+        if not ubicacion_llm_fuente:
+            chat_context_data = context.get("chat_db_context_data", {})
+            if isinstance(chat_context_data, dict):
+                ubicacion_llm_fuente = chat_context_data.get("ubicacion_usuario") or {}
+                if not ubicacion_llm_fuente:
+                    contexto_llm = chat_context_data.get(CONTEXTO_MUNICIPIO, {})
+                    if isinstance(contexto_llm, dict):
+                        ubicacion_llm_fuente = contexto_llm.get("ubicacion_contextual") or {}
+
+        if isinstance(ubicacion_llm_fuente, dict) and ubicacion_llm_fuente:
+            ubicacion_para_llm: dict[str, Any] = {}
+
+            lat = ubicacion_llm_fuente.get("latitude") or ubicacion_llm_fuente.get("lat")
+            lon = ubicacion_llm_fuente.get("longitude") or ubicacion_llm_fuente.get("lon")
+
+            def _convert_float(valor):
+                try:
+                    return float(valor)
+                except (TypeError, ValueError):
+                    return valor
+
+            if lat is not None or lon is not None:
+                coords_dict: dict[str, Any] = {}
+                if lat is not None:
+                    coords_dict["lat"] = _convert_float(lat)
+                if lon is not None:
+                    coords_dict["lon"] = _convert_float(lon)
+                if coords_dict:
+                    ubicacion_para_llm["coordenadas"] = coords_dict
+
+            direccion = (
+                ubicacion_llm_fuente.get("address")
+                or ubicacion_llm_fuente.get("direccion")
+                or ubicacion_llm_fuente.get("description")
+            )
+            if direccion:
+                ubicacion_para_llm["direccion"] = direccion
+
+            if ubicacion_llm_fuente.get("localidad"):
+                ubicacion_para_llm["localidad"] = ubicacion_llm_fuente.get("localidad")
+
+            if ubicacion_llm_fuente.get("accuracy") is not None:
+                ubicacion_para_llm["accuracy"] = _convert_float(ubicacion_llm_fuente.get("accuracy"))
+
+            if ubicacion_para_llm:
+                mensaje_completo_para_llm["ubicacion"] = ubicacion_para_llm
+
+        if context.get("es_ubicacion"):
+            mensaje_completo_para_llm["es_ubicacion"] = True
+
+        chat_context_data = context.get("chat_db_context_data", {})
+        source_is_audio = bool(context.get("source_is_audio"))
+        if isinstance(chat_context_data, dict):
+            if not source_is_audio:
+                source_is_audio = bool(chat_context_data.get("source_is_audio"))
+            if not source_is_audio:
+                contexto_llm = chat_context_data.get(CONTEXTO_MUNICIPIO, {})
+                if isinstance(contexto_llm, dict):
+                    source_is_audio = bool(contexto_llm.get("source_is_audio"))
+
+        if source_is_audio:
+            mensaje_completo_para_llm["fuente_audio"] = True
+
         if context.get("es_foto") and context.get("foto_url"):
             mensaje_completo_para_llm["imagen_url"] = context.get("foto_url")
             if contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw"):
