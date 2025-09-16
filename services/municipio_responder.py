@@ -642,17 +642,19 @@ class ReclamoFlowHandler:
         """Normalize text and detect explicit confirmation aliases."""
 
         normalized_raw = user_input.strip().lower()
-        normalized_simple = payload.get("_normalized_simple")
-        if not normalized_simple:
-            normalized_simple = normalizar_texto(user_input)
+        # Always derive the normalized string from the current input so stale
+        # values cached in the payload don't leak keywords from previous turns.
+        normalized_simple = normalizar_texto(user_input)
 
         action = payload.get("action") or payload.get("action_id")
-        if not action:
-            action = CONFIRMATION_ACTION_ALIASES.get(normalized_simple)
-            if not action:
-                action = CONFIRMATION_ACTION_ALIASES.get(normalized_raw)
-            if action:
-                payload["action"] = action
+        alias_action = (
+            CONFIRMATION_ACTION_ALIASES.get(normalized_simple)
+            or CONFIRMATION_ACTION_ALIASES.get(normalized_raw)
+        )
+        if alias_action:
+            action = alias_action
+            payload["action"] = alias_action
+            payload["action_id"] = alias_action
 
         payload["_normalized_raw"] = normalized_raw
         payload["_normalized_simple"] = normalized_simple
