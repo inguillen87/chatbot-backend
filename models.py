@@ -78,7 +78,6 @@ class User(db.Model, UserMixin):
     latitud = db.Column(db.Float, nullable=True)
     longitud = db.Column(db.Float, nullable=True)
     telefono = db.Column(db.String(20), nullable=True)
-    link_web = db.Column(db.String(255), nullable=True)
     logo_url = db.Column(db.String(255), nullable=True)
     color_primario = db.Column(db.String(20), nullable=True)
     color_secundario = db.Column(db.String(20), nullable=True)

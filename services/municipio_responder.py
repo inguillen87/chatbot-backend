@@ -189,44 +189,53 @@ class ReclamoFlowHandler:
                 datos[field] = candidate
                 break
 
-        # --- Comprehensive Contact Prefill ---
+        # --- Comprehensive Contact Prefill (Refactored) ---
         viewer = self.context.get("viewer_user_obj")
         contacto_cache = self.municipal_ctx.setdefault('contacto_usuario', {})
-
-        # 1. From viewer object (logged-in user)
-        if viewer:
-            _apply_prefill('nombre', getattr(viewer, 'name', None), getattr(viewer, 'nombre', None))
-            _apply_prefill('email', getattr(viewer, 'email', None))
-            _apply_prefill('telefono', getattr(viewer, 'telefono', None))
-            _apply_prefill('dni', getattr(viewer, 'dni', None), getattr(viewer, 'dni_vecino', None))
-
-        # 2. From current session's contact cache
-        _apply_prefill('nombre', contacto_cache.get('nombre'))
-        _apply_prefill('email', contacto_cache.get('email'))
-        _apply_prefill('telefono', contacto_cache.get('telefono'))
-        _apply_prefill('dni', contacto_cache.get('dni'))
-
-        # 3. From previous tickets (Deep prefill)
         last_ticket = None
+
+        # 1. Find the last ticket to source contact data from.
+        #    Priority: Logged-in user's tickets > Anonymous session's tickets.
         try:
             owner_user = self.context.get('user_obj')
             municipio_id = getattr(owner_user, 'municipio_id', None)
-            anon_id = self.context.get('anon_id')
-            if anon_id:
-                query = MunicipioTicket.query.filter_by(anon_id=anon_id)
-                if municipio_id:
-                    query = query.filter_by(municipio_id=municipio_id)
-                last_ticket = query.order_by(MunicipioTicket.fecha.desc()).first()
-                if last_ticket:
-                    logger.info(f"Prefilling contact data from last ticket {last_ticket.nro_ticket} found by anon_id.")
+
+            query = MunicipioTicket.query
+            if municipio_id:
+                query = query.filter_by(municipio_id=municipio_id)
+
+            # Prioritize the logged-in user (viewer) if they exist
+            if viewer and hasattr(viewer, 'id'):
+                # Find the last ticket created by this specific user
+                ticket_by_viewer = query.filter_by(creado_por_id=viewer.id).order_by(MunicipioTicket.fecha.desc()).first()
+                if ticket_by_viewer:
+                    last_ticket = ticket_by_viewer
+                    logger.info(f"Prefilling contact data from last ticket {last_ticket.nro_ticket} found by viewer_user.id {viewer.id}.")
+
+            # If no ticket was found for the logged-in user, or if there's no logged-in user,
+            # fall back to using the anonymous ID.
+            if not last_ticket:
+                anon_id = self.context.get('anon_id')
+                if anon_id:
+                    ticket_by_anon = query.filter_by(anon_id=anon_id).order_by(MunicipioTicket.fecha.desc()).first()
+                    if ticket_by_anon:
+                        last_ticket = ticket_by_anon
+                        logger.info(f"Prefilling contact data from last ticket {last_ticket.nro_ticket} found by anon_id.")
         except Exception as e:
             logger.warning(f"Error fetching last ticket for prefill: {e}")
 
+        # 2. Apply prefill from the found ticket
         if last_ticket:
             _apply_prefill('nombre', last_ticket.nombre_vecino, last_ticket.nombre_display_whatsapp)
             _apply_prefill('email', last_ticket.email_vecino)
             _apply_prefill('telefono', last_ticket.telefono_vecino)
             _apply_prefill('dni', last_ticket.dni_vecino)
+
+        # 3. From current session's contact cache (as a fallback)
+        _apply_prefill('nombre', contacto_cache.get('nombre'))
+        _apply_prefill('email', contacto_cache.get('email'))
+        _apply_prefill('telefono', contacto_cache.get('telefono'))
+        _apply_prefill('dni', contacto_cache.get('dni'))
 
         # 4. From WhatsApp profile name if no other name is found
         _apply_prefill('nombre', self.context.get('profile_name'))
