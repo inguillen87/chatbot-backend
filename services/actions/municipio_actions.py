@@ -226,7 +226,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
             return {
                 "success": False,
-                "message_to_user": mensaje,
+                "message_body": mensaje,
                 "pedir_info": campos_faltantes,
                 "options_list": botones,
                 "message_type": "interactive_list" if len(botones) > 3 else "interactive_buttons"
@@ -427,7 +427,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
             return {
                 "success": True,
-                "message_to_user": mensaje_respuesta,
+                "message_body": mensaje_respuesta,
                 "options_list": botones_finales,
                 "message_type": "interactive_buttons" if botones_finales else "text",
                 "image_url": promo_image_url,
@@ -444,7 +444,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             logger.error(f"Error en CrearReclamoActionHandler: {e}", exc_info=True)
             response = {
                 "success": False,
-                "message_to_user": "Hubo un problema al registrar tu reclamo. Por favor, intenta de nuevo más tarde.",
+                "message_body": "Hubo un problema al registrar tu reclamo. Por favor, intenta de nuevo más tarde.",
                 "error_details": str(e)
             }
             print(f"DEBUG: CrearReclamoActionHandler returning error: {response}")
