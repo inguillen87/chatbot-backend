@@ -799,7 +799,21 @@ class ReclamoFlowHandler:
             "opción 3",
         }
 
-        if action == "reclamo_confirmar_si" or normalized in affirmatives or any(word in normalized for word in affirmatives):
+        def contains_keyword(text, keywords):
+            if not text:
+                return False
+            return any(re.search(rf"\\b{re.escape(word)}\\b", text) for word in keywords)
+
+        is_cancel = action == "reclamo_cancelar" or contains_keyword(normalized, cancel_words)
+        is_negative = action == "reclamo_confirmar_no" or contains_keyword(normalized, negatives)
+        is_affirmative = action == "reclamo_confirmar_si" or contains_keyword(normalized, affirmatives)
+
+        if is_cancel:
+            cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
+            return self.end_flow(cancel_msg, show_menu=True)
+        elif is_negative:
+            return self.ask_for_contact_details(force_prompt=True)
+        elif is_affirmative:
             datos = self.flow_context.get('datos_reclamo', {})
             action_data = {
                 "categoria": datos.get("categoria"),
@@ -842,11 +856,6 @@ class ReclamoFlowHandler:
                 "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde.",
             )
             return self.end_flow(error_message, show_menu=True)
-        elif action == "reclamo_confirmar_no" or normalized in negatives or any(word in normalized for word in negatives):
-            return self.ask_for_contact_details(force_prompt=True)
-        elif action == "reclamo_cancelar" or normalized in cancel_words or any(word in normalized for word in cancel_words):
-            cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
-            return self.end_flow(cancel_msg, show_menu=True)
         else:
             # Re-enviar el resumen para que la persona pueda elegir una opción válida.
             reminder = (
