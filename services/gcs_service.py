@@ -3,7 +3,7 @@ import os
 import uuid
 import io
 import requests
-from flask import current_app, has_app_context, request
+from flask import current_app, has_app_context
 from werkzeug.utils import secure_filename
 from services.thumbnail_service import generar_thumbnail
 
@@ -76,17 +76,7 @@ def _save_to_local(
         thumb_meta["url"] = thumb_url
 
     rel_path = os.path.relpath(original_path, current_app.root_path)
-    relative_url = "/" + rel_path.replace(os.sep, "/")
-
-    # Generate an absolute URL if in a request context
-    original_url = relative_url
-    if has_app_context() and request:
-        base_url = request.url_root.rstrip('/')
-        original_url = f"{base_url}{relative_url}"
-        if thumb_url:
-            thumb_url = f"{base_url}{thumb_url}"
-            if thumb_meta:
-                thumb_meta["url"] = thumb_url
+    original_url = "/" + rel_path.replace(os.sep, "/")
 
     return {
         "unique_name": unique_name,

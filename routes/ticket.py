@@ -525,9 +525,6 @@ def _serialize_ticket_details(ticket, ticket_type):
         "progreso_estados": progreso_estados,
     }
 
-    if hasattr(ticket, 'foto_url_directa'):
-        ticket_data['foto_url_directa'] = ticket.foto_url_directa
-
     if ticket_type == "municipio":
         ruta_data = None
         if getattr(ticket, 'latitud', None) is not None and getattr(ticket, 'longitud', None) is not None:

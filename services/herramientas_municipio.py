@@ -243,43 +243,29 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
         return None
 
 # --- HERRAMIENTA 1: CONSULTA DE RECOLECCIÓN ---
-def consultar_recoleccion_por_direccion(direccion: str, context: dict | None = None) -> str:
+def consultar_recoleccion_por_direccion(direccion: str) -> str:
     """
     Herramienta profesional que usa la API de Google Maps para geocodificar una dirección
     y luego determina el horario de recolección.
     """
+    # ... (El código de esta función está perfecto, no necesita cambios)
     logger.info(f"[HERRAMIENTA GEO] Buscando horario para: '{direccion}'")
 
     if not Maps_API_KEY:
         logger.error("[HERRAMIENTA GEO] Clave de API de Google Maps (Maps_API_KEY) no configurada en el entorno.")
+        # Return a message that allows the flow to continue if this function is called unexpectedly during a reclamo.
         return "Error de configuración: El servicio de mapas no está disponible en este momento. No se pudo validar la dirección geográficamente, pero puedes continuar con el reclamo si la dirección es correcta."
 
-    municipio_config = context.get("municipio_config_actual") if context else CONFIG_MUNICIPIO
-    if not municipio_config:
-        municipio_config = CONFIG_MUNICIPIO
+    ciudad = CONFIG_MUNICIPIO.get("ciudad", "")
+    if ciudad and ciudad.lower() not in direccion.lower():
+        direccion_completa = f"{direccion}, {ciudad}"
+    else:
+        direccion_completa = direccion
 
-    ciudad = municipio_config.get("ciudad", "")
-    provincia = municipio_config.get("provincia", "")
-
-    component_parts = ["country:AR"]
-    if provincia and provincia != 'N/A':
-        component_parts.append(f"administrative_area:{provincia.replace(' ', '')}")
-    if ciudad and ciudad != 'N/A':
-        component_parts.append(f"locality:{ciudad.replace(' ', '')}")
-
-    components_str = "|".join(component_parts)
-    logger.info(f"Geocoding recoleccion with components: {components_str}")
-
-    params = {
-        'address': direccion,
-        'key': Maps_API_KEY,
-        'language': 'es',
-        'components': components_str
-    }
-    geocode_url = "https://maps.googleapis.com/maps/api/geocode/json"
+    geocode_url = f"https://maps.googleapis.com/maps/api/geocode/json?address={requests.utils.quote(direccion_completa)}&key={Maps_API_KEY}"
 
     try:
-        response = requests.get(geocode_url, params=params)
+        response = requests.get(geocode_url)
         response.raise_for_status()
         data = response.json()
 
@@ -639,32 +625,21 @@ def buscar_puntos_de_interes(
 def log_uso_herramienta(nombre, usuario, parametros, resultado):
     logger.info(f"[USO_HERRAMIENTA] {nombre} | Usuario: {usuario} | Parámetros: {parametros} | Resultado: {resultado[:100]}")
 
-def validar_y_formatear_direccion(direccion: str, municipio_config: dict | None = None) -> dict | None:
+def validar_y_formatear_direccion(direccion: str) -> dict | None:
     """
     Valida y formatea una dirección utilizando la API de Google Maps,
-    con bias hacia la localidad y provincia del municipio.
+    con bias hacia Argentina.
     """
     if not Maps_API_KEY:
         logger.error("[GEO] Maps_API_KEY no configurada.")
         return None
 
-    component_parts = ["country:AR"]
-    if municipio_config:
-        provincia = municipio_config.get("provincia")
-        localidad = municipio_config.get("ciudad")
-        if provincia and provincia != 'N/A':
-            component_parts.append(f"administrative_area:{provincia.replace(' ', '')}")
-        if localidad and localidad != 'N/A':
-            component_parts.append(f"locality:{localidad.replace(' ', '')}")
-
-    components_str = "|".join(component_parts)
-    logger.info(f"Geocoding with components: {components_str}")
-
+    # Componentes para sesgar la búsqueda a Argentina
     params = {
         'address': direccion,
         'key': Maps_API_KEY,
         'language': 'es',
-        'components': components_str
+        'components': 'country:AR'
     }
 
     geocode_url = "https://maps.googleapis.com/maps/api/geocode/json"
