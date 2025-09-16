@@ -11,6 +11,7 @@ import json
 from enum import Enum, auto
 import unicodedata
 import difflib
+from typing import Any
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
 from models import (
@@ -97,6 +98,96 @@ CANCEL_KEYWORDS = {
     ]
 }
 
+
+CANCEL_RECLAMO_MESSAGE = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
+
+
+def _build_confirmation_aliases() -> dict[str, str]:
+    """Map common numeric replies to structured confirmation actions."""
+
+    alias_pairs = [
+        ("1", "reclamo_confirmar_si"),
+        ("uno", "reclamo_confirmar_si"),
+        ("opcion 1", "reclamo_confirmar_si"),
+        ("opción 1", "reclamo_confirmar_si"),
+        ("opcion uno", "reclamo_confirmar_si"),
+        ("opción uno", "reclamo_confirmar_si"),
+        ("2", "reclamo_confirmar_no"),
+        ("dos", "reclamo_confirmar_no"),
+        ("opcion 2", "reclamo_confirmar_no"),
+        ("opción 2", "reclamo_confirmar_no"),
+        ("opcion dos", "reclamo_confirmar_no"),
+        ("opción dos", "reclamo_confirmar_no"),
+        ("3", "reclamo_cancelar"),
+        ("tres", "reclamo_cancelar"),
+        ("opcion 3", "reclamo_cancelar"),
+        ("opción 3", "reclamo_cancelar"),
+        ("opcion tres", "reclamo_cancelar"),
+        ("opción tres", "reclamo_cancelar"),
+    ]
+
+    aliases: dict[str, str] = {}
+    for raw_key, action in alias_pairs:
+        normalized_key = normalizar_texto(raw_key)
+        if not normalized_key:
+            continue
+        aliases[normalized_key] = action
+    return aliases
+
+
+CONFIRMATION_ACTION_ALIASES = _build_confirmation_aliases()
+
+
+def _build_keyword_set(keywords: list[str]) -> set[str]:
+    normalized_values: set[str] = set()
+    for word in keywords:
+        normalized = normalizar_texto(word)
+        if normalized:
+            normalized_values.add(normalized)
+    return normalized_values
+
+
+AFFIRMATIVE_CONFIRMATION_KEYWORDS = _build_keyword_set([
+    "si",
+    "sí",
+    "confirmo",
+    "confirmar",
+    "ok",
+    "okay",
+    "acepto",
+    "aceptar",
+    "dale",
+    "listo",
+    "perfecto",
+    "correcto",
+])
+
+NEGATIVE_CONFIRMATION_KEYWORDS = _build_keyword_set([
+    "no",
+    "editar",
+    "modificar",
+    "cambiar",
+    "corregir",
+    "actualizar",
+    "ajustar",
+    "volver",
+    "erroneo",
+    "equivocado",
+    "mal",
+    "incorrecto",
+])
+
+CANCEL_CONFIRMATION_KEYWORDS = _build_keyword_set([
+    "cancelar",
+    "cancelá",
+    "cancelarlo",
+    "cancelalo",
+    "cancel",
+    "anular",
+    "salir",
+    "abortar",
+])
+
 # Simple cache to avoid recomputing responses for repeated municipal queries
 MUNICIPIO_RESPONSE_CACHE = TTLCache(maxsize=256, ttl=3600)
 
@@ -131,26 +222,43 @@ class ReclamoFlowHandler:
         self.greeting_handler = GreetingHandler(context)
 
 
-    def check_for_cancel(self, user_input, payload):
+    def check_for_cancel(self, user_input, payload, state=None):
         normalized_input = normalizar_texto(user_input)
         action = (payload.get("action_id") or payload.get("action") or "").lower()
+
+        if state == ReclamoState.ESPERANDO_CONFIRMACION:
+            if not action:
+                alias_action = CONFIRMATION_ACTION_ALIASES.get(normalized_input)
+                if alias_action:
+                    action = alias_action
+                    payload["action"] = action
+
+            if action in {"reclamo_confirmar_si", "reclamo_confirmar_no"}:
+                return None
+
+            if (
+                action == "reclamo_cancelar"
+                or normalized_input in CANCEL_CONFIRMATION_KEYWORDS
+            ):
+                return self.end_flow(CANCEL_RECLAMO_MESSAGE, show_menu=True)
+
         if (
             normalized_input in CANCEL_KEYWORDS
             or action in {"cancelar", "menu_principal"}
         ):
-            return self.end_flow(
-                "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?",
-                show_menu=True,
-            )
+            return self.end_flow(CANCEL_RECLAMO_MESSAGE, show_menu=True)
         return None
 
     def handle(self, user_input, payload):
-        cancel_response = self.check_for_cancel(user_input, payload)
-        if cancel_response:
-            return cancel_response
-
         state_name = self.flow_context.get("state")
         state = ReclamoState[state_name] if state_name else None
+
+        if state == ReclamoState.ESPERANDO_CONFIRMACION:
+            self._resolve_confirmation_inputs(user_input, payload)
+
+        cancel_response = self.check_for_cancel(user_input, payload, state)
+        if cancel_response:
+            return cancel_response
 
         if state == ReclamoState.ESPERANDO_CATEGORIA:
             return self.handle_categoria(user_input)
@@ -492,7 +600,8 @@ class ReclamoFlowHandler:
 
     def get_confirmation_message(self):
         datos = self.flow_context.get('datos_reclamo', {})
-        
+
+        # Helper to format each line, handling empty values gracefully
         def format_line(label, value, default_value='No especificado'):
             return f"*{label}:* {value or default_value}"
 
@@ -529,83 +638,50 @@ class ReclamoFlowHandler:
 
         return response
 
-    def handle_confirmacion(self, user_input, payload):
-        action = payload.get("action")
+    def _resolve_confirmation_inputs(self, user_input: str, payload: dict[str, Any]):
+        """Normalize text and detect explicit confirmation aliases."""
+
         normalized_raw = user_input.strip().lower()
-        normalized_simple = normalizar_texto(user_input)
+        normalized_simple = payload.get("_normalized_simple")
+        if not normalized_simple:
+            normalized_simple = normalizar_texto(user_input)
 
-        action_aliases = {
-            "1": "reclamo_confirmar_si",
-            "uno": "reclamo_confirmar_si",
-            "opcion 1": "reclamo_confirmar_si",
-            "opcion uno": "reclamo_confirmar_si",
-            "2": "reclamo_confirmar_no",
-            "dos": "reclamo_confirmar_no",
-            "opcion 2": "reclamo_confirmar_no",
-            "opcion dos": "reclamo_confirmar_no",
-            "3": "reclamo_cancelar",
-            "tres": "reclamo_cancelar",
-            "opcion 3": "reclamo_cancelar",
-            "opcion tres": "reclamo_cancelar",
-        }
-
+        action = payload.get("action") or payload.get("action_id")
         if not action:
-            action = action_aliases.get(normalized_simple)
+            action = CONFIRMATION_ACTION_ALIASES.get(normalized_simple)
+            if not action:
+                action = CONFIRMATION_ACTION_ALIASES.get(normalized_raw)
             if action:
                 payload["action"] = action
 
-        normalized = normalized_raw.replace("_", " ")
+        payload["_normalized_raw"] = normalized_raw
+        payload["_normalized_simple"] = normalized_simple
+        return action, normalized_raw, normalized_simple
 
-        affirmatives = {
-            "si",
-            "sí",
-            "confirmo",
-            "confirmar",
-            "ok",
-            "okay",
-            "acepto",
-            "aceptar",
-            "dale",
-            "1",
-            "uno",
-            "opcion 1",
-            "opción 1",
-        }
-        negatives = {
-            "no",
-            "editar",
-            "modificar",
-            "cambiar",
-            "2",
-            "dos",
-            "opcion 2",
-            "opción 2",
-        }
-        cancel_words = {
-            "cancelar",
-            "cancelá",
-            "cancelarlo",
-            "cancel",
-            "anular",
-            "salir",
-            "3",
-            "tres",
-            "opcion 3",
-            "opción 3",
-        }
+    def handle_confirmacion(self, user_input, payload):
+        action, _, normalized_simple = self._resolve_confirmation_inputs(user_input, payload)
+        normalized = (normalized_simple or "").replace("_", " ")
 
-        def contains_keyword(text, keywords):
+        def contains_keyword(text: str, keywords: set[str]) -> bool:
             if not text:
                 return False
-            return any(re.search(rf"\\b{re.escape(word)}\\b", text) for word in keywords)
+            return any(re.search(rf"\b{re.escape(word)}\b", text) for word in keywords)
 
-        is_cancel = action == "reclamo_cancelar" or contains_keyword(normalized, cancel_words)
-        is_negative = action == "reclamo_confirmar_no" or contains_keyword(normalized, negatives)
-        is_affirmative = action == "reclamo_confirmar_si" or contains_keyword(normalized, affirmatives)
+        is_cancel = (
+            action == "reclamo_cancelar"
+            or contains_keyword(normalized, CANCEL_CONFIRMATION_KEYWORDS)
+        )
+        is_negative = (
+            action == "reclamo_confirmar_no"
+            or contains_keyword(normalized, NEGATIVE_CONFIRMATION_KEYWORDS)
+        )
+        is_affirmative = (
+            action == "reclamo_confirmar_si"
+            or contains_keyword(normalized, AFFIRMATIVE_CONFIRMATION_KEYWORDS)
+        )
 
         if is_cancel:
-            cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
-            return self.end_flow(cancel_msg, show_menu=True)
+            return self.end_flow(CANCEL_RECLAMO_MESSAGE, show_menu=True)
         elif is_negative:
             return self.ask_for_contact_details(force_prompt=True)
         elif is_affirmative:
