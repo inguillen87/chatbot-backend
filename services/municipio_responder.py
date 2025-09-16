@@ -161,6 +161,17 @@ class ReclamoFlowHandler:
         self.flow_context['datos_reclamo'] = datos_iniciales or {}
         datos = self.flow_context['datos_reclamo']
 
+        # Prefill from image analysis if available
+        if self.context.get("foto_url") and not datos.get('foto_url'):
+            datos['foto_url'] = self.context.get("foto_url")
+        if self.context.get("datos_interpretados_archivo"):
+            interpreted = self.context.get("datos_interpretados_archivo")
+            if not datos.get('categoria') and interpreted.get('categoria_sugerida'):
+                datos['categoria'] = interpreted.get('categoria_sugerida')
+            if not datos.get('descripcion') and interpreted.get('descripcion_sugerida'):
+                datos['descripcion'] = interpreted.get('descripcion_sugerida')
+                datos['origen_descripcion'] = 'imagen'
+
         def _apply_prefill(field: str, *candidates) -> None:
             """Populate ``datos`` with the first meaningful value available."""
             existing = datos.get(field)
@@ -173,338 +184,67 @@ class ReclamoFlowHandler:
                     candidate = candidate.strip()
                     if not candidate:
                         continue
-                    if field == 'nombre' and candidate == 'Vecino/a':
+                    if field == 'nombre' and candidate.lower() in {'vecino', 'vecina', 'vecino/a'}:
                         continue
                 datos[field] = candidate
                 break
 
-        # Si la conversación comenzó con una foto (context['foto_url']) pero
-        # aún no se reflejó en los datos del reclamo, la agregamos para evitar
-        # que se le vuelva a solicitar al usuario.
-        if (
-            self.context.get("foto_url")
-            and not datos.get('foto_url')
-        ):
-            datos['foto_url'] = self.context.get("foto_url")
-
-        # Pre-fill contact details from the viewer if available so we do not
-        # ask the user for information we already have.
+        # --- Comprehensive Contact Prefill (Refactored) ---
         viewer = self.context.get("viewer_user_obj")
-        if viewer:
-            # Some viewer objects store attributes with different names. Fall back
-            # to common alternatives to avoid asking for data we already have.
-            _apply_prefill(
-                'nombre',
-                getattr(viewer, 'name', None),
-                getattr(viewer, 'nombre', None),
-                getattr(viewer, 'nombre_vecino', None),
-            )
-            _apply_prefill(
-                'email',
-                getattr(viewer, 'email', None),
-                getattr(viewer, 'email_vecino', None),
-            )
-            _apply_prefill(
-                'telefono',
-                getattr(viewer, 'telefono', None),
-                getattr(viewer, 'telefono_vecino', None),
-            )
-            _apply_prefill(
-                'dni',
-                getattr(viewer, 'dni', None),
-                getattr(viewer, 'dni_vecino', None),
-                getattr(viewer, 'documento', None),
-            )
-
-        # Reuse previously provided contact info stored in municipal context
-        contacto_prev = self.municipal_ctx.get('contacto_usuario', {})
         contacto_cache = self.municipal_ctx.setdefault('contacto_usuario', {})
-        if contacto_prev:
-            for campo in ['nombre', 'email', 'telefono', 'dni']:
-                _apply_prefill(campo, contacto_prev.get(campo))
+        last_ticket = None
 
-        def _remember_contact() -> None:
-            """Persist any populated contact values back into the session cache."""
-            for campo in ['nombre', 'dni', 'email', 'telefono']:
-                valor = datos.get(campo)
-                if not valor:
-                    continue
-                if campo == 'nombre' and valor == 'Vecino/a':
-                    continue
-                if isinstance(valor, str) and not valor.strip():
-                    continue
-                contacto_cache.setdefault(campo, valor)
+        # 1. Find the last ticket to source contact data from.
+        #    Priority: Logged-in user's tickets > Anonymous session's tickets.
+        try:
+            owner_user = self.context.get('user_obj')
+            municipio_id = getattr(owner_user, 'municipio_id', None)
 
-        def _needs_contact_data(field: str) -> bool:
-            value = datos.get(field)
-            if not value:
-                return True
-            if not isinstance(value, str):
-                return False
-            stripped = value.strip()
-            if not stripped:
-                return True
-            lowered = stripped.lower()
-            if field == 'nombre' and lowered in {'vecino', 'vecina', 'vecine', 'vecino/a'}:
-                return True
-            if field == 'email' and stripped.endswith('@whatsapp.chatboc.com'):
-                return True
-            if field == 'dni':
-                return len(re.sub(r"\D", "", stripped)) < 6
-            if field == 'telefono':
-                return not validar_telefono(stripped)
-            return False
+            query = MunicipioTicket.query
+            if municipio_id:
+                query = query.filter_by(municipio_id=municipio_id)
 
-        missing_contact_fields = [
-            field for field in ['nombre', 'dni', 'email', 'telefono']
-            if _needs_contact_data(field)
-        ]
+            # Find the last ticket using the anonymous ID to identify the user
+            # across requests in the same session.
+            anon_id = self.context.get('anon_id')
+            if anon_id:
+                ticket_by_anon = query.filter_by(anon_id=anon_id).order_by(MunicipioTicket.fecha.desc()).first()
+                if ticket_by_anon:
+                    last_ticket = ticket_by_anon
+                    logger.info(f"Prefilling contact data from last ticket {last_ticket.nro_ticket} found by anon_id.")
+        except Exception as e:
+            logger.warning(f"Error fetching last ticket for prefill: {e}")
 
-        if missing_contact_fields:
-            chat_db_data = self.context.get('chat_db_context_data', {})
-            telefono_candidates_raw = [
-                datos.get('telefono'),
-                self.context.get('telefono_usuario'),
-                self.context.get('anon_id'),
-            ]
-            if isinstance(chat_db_data, dict):
-                telefono_candidates_raw.append(chat_db_data.get('telefono_usuario'))
-            if self.chat_db_context:
-                telefono_candidates_raw.append(getattr(self.chat_db_context, 'anon_id', None))
-                ctx_data = getattr(self.chat_db_context, 'context_data', {})
-                if isinstance(ctx_data, dict):
-                    telefono_candidates_raw.append(ctx_data.get('telefono_usuario'))
+        # 2. Apply prefill from the found ticket
+        if last_ticket:
+            _apply_prefill('nombre', last_ticket.nombre_vecino, last_ticket.nombre_display_whatsapp)
+            _apply_prefill('email', last_ticket.email_vecino)
+            _apply_prefill('telefono', last_ticket.telefono_vecino)
+            _apply_prefill('dni', last_ticket.dni_vecino)
 
-            telefono_normalizado = None
-            for candidato in telefono_candidates_raw:
-                if not candidato:
-                    continue
-                candidato_str = str(candidato).strip()
-                if not candidato_str:
-                    continue
+        # 3. From current session's contact cache (as a fallback)
+        _apply_prefill('nombre', contacto_cache.get('nombre'))
+        _apply_prefill('email', contacto_cache.get('email'))
+        _apply_prefill('telefono', contacto_cache.get('telefono'))
+        _apply_prefill('dni', contacto_cache.get('dni'))
 
-                digits_only = re.sub(r"\D", "", candidato_str)
-                digit_variants = []
-                if digits_only:
-                    if len(digits_only) >= 10:
-                        digit_variants.append(digits_only[-10:])
-                    if len(digits_only) >= 11:
-                        digit_variants.append(digits_only[-11:])
-                    digit_variants.append(digits_only)
+        # 4. From WhatsApp profile name if no other name is found
+        _apply_prefill('nombre', self.context.get('profile_name'))
 
-                # If the candidate already appears to be in E.164, test it first
-                if candidato_str.startswith("+") and validar_telefono(candidato_str):
-                    digit_variants.insert(0, candidato_str)
+        # 5. From anon_id as a fallback for phone number
+        _apply_prefill('telefono', self.context.get('anon_id'))
 
-                for variant in digit_variants:
-                    if not variant:
-                        continue
-                    normalized = formatear_telefono_e164(str(variant))
-                    if normalized and validar_telefono(normalized):
-                        telefono_normalizado = normalized
-                        break
-                if telefono_normalizado:
-                    break
+        # Remember any newly found data in the session cache
+        for campo in ['nombre', 'dni', 'email', 'telefono']:
+            if datos.get(campo):
+                contacto_cache.setdefault(campo, datos.get(campo))
 
-            if telefono_normalizado and (
-                not datos.get('telefono')
-                or not validar_telefono(str(datos.get('telefono')))
-            ):
-                datos['telefono'] = telefono_normalizado
-                _remember_contact()
-
-            if datos.get('telefono') and not validar_telefono(str(datos.get('telefono'))):
-                datos.pop('telefono', None)
-
-            anon_candidates = []
-            for candidato in [
-                self.context.get('anon_id'),
-                getattr(self.chat_db_context, 'anon_id', None) if self.chat_db_context else None,
-            ]:
-                if candidato and candidato not in anon_candidates:
-                    anon_candidates.append(str(candidato))
-
-            # Attempt to recover contact info from previous sessions stored in DB
-            session_prefill_applied = False
-            try:
-                session_candidates = {c for c in anon_candidates if c}
-                if telefono_normalizado:
-                    session_candidates.add(telefono_normalizado)
-                if session_candidates:
-                    query = ChatSessionContext.query.filter(
-                        ChatSessionContext.anon_id.in_(session_candidates)
-                    )
-                    if (
-                        self.chat_db_context
-                        and getattr(self.chat_db_context, 'chat_session_id', None)
-                    ):
-                        query = query.filter(
-                            ChatSessionContext.chat_session_id
-                            != self.chat_db_context.chat_session_id
-                        )
-                    previous_context = (
-                        query.order_by(ChatSessionContext.last_updated.desc()).first()
-                    )
-                else:
-                    previous_context = None
-
-                if previous_context and isinstance(previous_context.context_data, dict):
-                    municipal_snapshot = previous_context.context_data.get(
-                        CONTEXTO_MUNICIPIO, {}
-                    )
-                    if isinstance(municipal_snapshot, dict):
-                        contact_nodes = []
-                        contacto_prev_session = municipal_snapshot.get('contacto_usuario')
-                        if isinstance(contacto_prev_session, dict):
-                            contact_nodes.append(contacto_prev_session)
-                        flow_snapshot = municipal_snapshot.get('reclamo_flow_v2')
-                        if isinstance(flow_snapshot, dict):
-                            datos_snapshot = flow_snapshot.get('datos_reclamo')
-                            if isinstance(datos_snapshot, dict):
-                                contact_nodes.append(datos_snapshot)
-
-                        for node in contact_nodes:
-                            if not node:
-                                continue
-                            for campo in ['nombre', 'email', 'telefono', 'dni']:
-                                valor_original = datos.get(campo)
-                                _apply_prefill(campo, node.get(campo))
-                                if datos.get(campo) != valor_original and node.get(campo):
-                                    session_prefill_applied = True
-
-                        if session_prefill_applied:
-                            logger.info(
-                                "Prefill de contacto usando contexto previo %s",
-                                previous_context.chat_session_id,
-                            )
-            except Exception as exc:
-                logger.warning(
-                    "No se pudieron recuperar datos de contacto desde sesiones previas: %s",
-                    exc,
-                )
-
-            if session_prefill_applied:
-                _remember_contact()
-
-            previous_ticket = None
-            try:
-                owner_user = self.context.get('user_obj')
-                municipio_id = getattr(owner_user, 'municipio_id', None)
-                for candidato in anon_candidates:
-                    if not candidato:
-                        continue
-                    query = MunicipioTicket.query.filter_by(anon_id=candidato)
-                    if municipio_id:
-                        query = query.filter_by(municipio_id=municipio_id)
-                    previous_ticket = (
-                        query.order_by(MunicipioTicket.fecha.desc()).first()
-                    )
-                    if previous_ticket:
-                        break
-
-                phone_candidates: list[str] = []
-
-                def _add_phone_candidate(raw_value) -> None:
-                    if not raw_value:
-                        return
-                    raw_str = str(raw_value).strip()
-                    if not raw_str:
-                        return
-                    if raw_str not in phone_candidates:
-                        phone_candidates.append(raw_str)
-                    digits = re.sub(r"\D", "", raw_str)
-                    if digits:
-                        if digits not in phone_candidates:
-                            phone_candidates.append(digits)
-                        prefixed = digits if digits.startswith("+") else f"+{digits}"
-                        if prefixed not in phone_candidates:
-                            phone_candidates.append(prefixed)
-                        normalized = formatear_telefono_e164(raw_str)
-                        if normalized and normalized not in phone_candidates:
-                            phone_candidates.append(normalized)
-
-                if not previous_ticket:
-                    _add_phone_candidate(datos.get('telefono'))
-                    _add_phone_candidate(telefono_normalizado)
-                    _add_phone_candidate(self.context.get('telefono_usuario'))
-                    _add_phone_candidate(self.context.get('anon_id'))
-                    _add_phone_candidate(contacto_cache.get('telefono'))
-                    if viewer:
-                        _add_phone_candidate(getattr(viewer, 'telefono', None))
-                        _add_phone_candidate(getattr(viewer, 'telefono_vecino', None))
-
-                    for phone in phone_candidates:
-                        query = MunicipioTicket.query.filter_by(telefono_vecino=phone)
-                        if municipio_id:
-                            query = query.filter_by(municipio_id=municipio_id)
-                        previous_ticket = (
-                            query.order_by(MunicipioTicket.fecha.desc()).first()
-                        )
-                        if previous_ticket:
-                            logger.info(
-                                "Prefill de contacto usando ticket previo %s (match telefono=%s)",
-                                getattr(previous_ticket, 'nro_ticket', 'N/A'),
-                                phone,
-                            )
-                            break
-
-                if (not previous_ticket) and phone_candidates:
-                    digits_for_lookup = next(
-                        (
-                            re.sub(r"\D", "", cand)
-                            for cand in phone_candidates
-                            if re.sub(r"\D", "", cand)
-                        ),
-                        None,
-                    )
-                    if digits_for_lookup and len(digits_for_lookup) >= 6:
-                        query = MunicipioTicket.query
-                        if municipio_id:
-                            query = query.filter_by(municipio_id=municipio_id)
-                        potential_matches = (
-                            query.filter(MunicipioTicket.telefono_vecino.isnot(None))
-                            .order_by(MunicipioTicket.fecha.desc())
-                            .limit(25)
-                            .all()
-                        )
-                        for ticket in potential_matches:
-                            ticket_digits = re.sub(
-                                r"\D", "", str(ticket.telefono_vecino or "")
-                            )
-                            if not ticket_digits:
-                                continue
-                            if (
-                                ticket_digits == digits_for_lookup
-                                or ticket_digits.endswith(digits_for_lookup[-8:])
-                            ):
-                                previous_ticket = ticket
-                                logger.info(
-                                    "Prefill de contacto usando ticket previo %s (match digitos=%s)",
-                                    getattr(ticket, 'nro_ticket', 'N/A'),
-                                    digits_for_lookup,
-                                )
-                                break
-            except Exception as exc:
-                logger.warning(
-                    "No se pudieron prellenar datos de contacto desde tickets previos: %s",
-                    exc,
-                )
-                previous_ticket = None
-
-            if previous_ticket:
-                logger.info(
-                    "Prefill de contacto usando ticket previo %s para anon_id %s",
-                    getattr(previous_ticket, 'nro_ticket', 'N/A'),
-                    getattr(previous_ticket, 'anon_id', 'N/A'),
-                )
-                _apply_prefill('nombre', previous_ticket.nombre_vecino, previous_ticket.nombre_display_whatsapp)
-                _apply_prefill('email', previous_ticket.email_vecino)
-                _apply_prefill('telefono', previous_ticket.telefono_vecino)
-                _apply_prefill('dni', previous_ticket.dni_vecino)
-                _remember_contact()
 
         if categoria_inicial and not self.flow_context['datos_reclamo'].get('categoria'):
             self.flow_context['datos_reclamo']['categoria'] = categoria_inicial
+
+        if categoria_inicial and not datos.get('categoria'):
+            datos['categoria'] = categoria_inicial
 
         # Check what data is missing and transition to the correct state
         if not self.flow_context['datos_reclamo'].get('categoria'):
@@ -521,10 +261,10 @@ class ReclamoFlowHandler:
             categoria = self.flow_context['datos_reclamo']['categoria']
             descripcion = self.flow_context['datos_reclamo'].get('descripcion', 'No especificada')
 
-            # If the description came from an image, it might be generic.
-            # We can tailor the message.
+            # If the description came from an image, use a more natural message
             if self.flow_context['datos_reclamo'].get('origen_descripcion') == 'imagen':
-                 return {"message_body": f"Gracias a tu imagen, entiendo que el reclamo es por *{categoria}* (problema similar a: '{descripcion}').\n\nPara continuar, por favor, indicame la dirección exacta del problema."}
+                 # The 'descripcion' field now holds the natural language summary
+                 return {"message_body": f"Gracias a tu imagen, entiendo que el reclamo es por *{categoria}*. Veo que se trata de: \"{descripcion}\".\n\nPara continuar, por favor, indicame la dirección exacta del problema."}
             else:
                  return {"message_body": f"Reclamo por *{categoria}*.\n\nPara continuar, por favor, indicame la dirección exacta del problema."}
         else:
@@ -538,8 +278,11 @@ class ReclamoFlowHandler:
         category = find_reclamo_category_by_input(user_input, plain_options)
         details = {}
         if not category:
-            details = extract_reclamo_details_from_text(user_input, plain_options)
-            category = details.pop("categoria_sugerida", None)
+            municipio_config = self.context.get("municipio_config_actual", {})
+            default_localidad = municipio_config.get("ciudad")
+            default_provincia = municipio_config.get("provincia")
+            details = extract_reclamo_details_from_text(user_input, plain_options, default_localidad=default_localidad, default_provincia=default_provincia)
+            category = details.pop("categoria", None)
 
         if not category:
             return {
@@ -548,10 +291,11 @@ class ReclamoFlowHandler:
 
         datos = self.flow_context.setdefault('datos_reclamo', {})
         datos['categoria'] = category
-        if details.get('descripcion_sugerida'):
-            datos['descripcion'] = details['descripcion_sugerida']
-        if details.get('direccion_sugerida'):
-            datos['direccion'] = details['direccion_sugerida']
+
+        # Update datos with all extracted details
+        for key, value in details.items():
+            if value:
+                datos[key] = value
 
         if (
             not datos.get('descripcion')
@@ -724,24 +468,26 @@ class ReclamoFlowHandler:
     def get_confirmation_message(self):
         datos = self.flow_context.get('datos_reclamo', {})
         
-        # Helper to format each line, handling empty values gracefully
         def format_line(label, value, default_value='No especificado'):
             return f"*{label}:* {value or default_value}"
 
-        # Building the message with improved formatting
-        mensaje = (
-            "Por favor, confirmá que los datos de tu reclamo son correctos:\n\n"
-            "📄 *Resumen del Reclamo*\n"
-            f"{format_line('Categoría', datos.get('categoria'))}\n"
-            f"{format_line('Dirección', datos.get('direccion'))}\n"
-            f"{format_line('Descripción', datos.get('descripcion'))}\n\n"
-            "👤 *Tus Datos*\n"
-            f"{format_line('Nombre', datos.get('nombre'))}\n"
-            f"{format_line('DNI', datos.get('dni'))}\n"
-            f"{format_line('Email', datos.get('email'))}\n"
-            f"{format_line('Teléfono', datos.get('telefono'))}\n"
-            f"*{'Foto adjunta'}:* {'Sí' if datos.get('foto_url') else 'No'}"
-        )
+        # Build the summary message, ensuring all fields are included
+        summary_parts = [
+            "Por favor, confirmá que los datos de tu reclamo son correctos:\n",
+            "📄 *Resumen del Reclamo*",
+            format_line('Categoría', datos.get('categoria')),
+            format_line('Dirección', datos.get('direccion')),
+            format_line('Descripción', datos.get('descripcion')),
+            "",
+            "👤 *Tus Datos*",
+            format_line('Nombre', datos.get('nombre')),
+            format_line('DNI', datos.get('dni')),
+            format_line('Email', datos.get('email')),
+            format_line('Teléfono', datos.get('telefono')),
+            f"*Foto adjunta:* {'Sí' if datos.get('foto_url') else 'No'}"
+        ]
+
+        mensaje = "\n".join(summary_parts)
         
         response = {
             "message_body": mensaje,
@@ -1572,19 +1318,23 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
         user_input = context.get("user_input_raw", "")
         reclamo_opts = _get_reclamos_menu().get("options_list", [])
-        details = extract_reclamo_details_from_text(user_input, reclamo_opts)
-        detected_category = details.pop("categoria_sugerida", None)
+
+        # Pass location context
+        municipio_config = context.get("municipio_config_actual", {})
+        default_localidad = municipio_config.get("ciudad")
+        default_provincia = municipio_config.get("provincia")
+
+        details = extract_reclamo_details_from_text(user_input, reclamo_opts, default_localidad=default_localidad, default_provincia=default_provincia)
+
+        detected_category = details.pop("categoria", None)
         handler = ReclamoFlowHandler(context, chat_db_context)
         if detected_category:
             logger.info(
                 f"[MENU_ACTION] Auto-detected category '{detected_category}' from input."
             )
-        # Map remaining suggested fields into initial data
-        datos_iniciales = {}
-        if details.get("descripcion_sugerida"):
-            datos_iniciales["descripcion"] = details["descripcion_sugerida"]
-        if details.get("direccion_sugerida"):
-            datos_iniciales["direccion"] = details["direccion_sugerida"]
+        # 'details' now contains all other fields like 'descripcion', 'direccion', 'nombre', etc.
+        datos_iniciales = details
+
         response_dict = handler.start_flow(
             datos_iniciales=datos_iniciales or None,
             categoria_inicial=detected_category,
@@ -2323,6 +2073,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
                 try:
                     logger.info(f"[HERRAMIENTA] Intentando ejecutar: {nombre_herramienta} con params: {parametros_herramienta}")
+                    import inspect
+                    sig = inspect.signature(funcion_herramienta)
+                    if 'context' in sig.parameters:
+                        parametros_herramienta['context'] = context
                     resultado_herramienta = funcion_herramienta(**parametros_herramienta)
                     logger.info(f"[HERRAMIENTA] Resultado de {nombre_herramienta}: {str(resultado_herramienta)[:200]}...")
 
@@ -2805,34 +2559,44 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
     return None
 
 
-def extract_reclamo_details_from_text(user_input: str, reclamo_options: list) -> dict:
-    """Attempt to extract category, description and address from a user message.
+def extract_reclamo_details_from_text(user_input: str, reclamo_options: list, default_localidad: str | None = None, default_provincia: str | None = None) -> dict:
+    """Attempt to extract category, description, address, and contact details from a user message.
 
     The function first tries to leverage the LLM-based extractor so we obtain
     a short category, concise description and any location mentioned by the
     user. If the LLM fails or returns partial data we fall back to the legacy
     keyword heuristics so the flow can still progress.
     """
-    details: dict[str, str] = {}
+    details: dict[str, str | None] = {}
     if not user_input:
         return details
 
     # --- Primary extraction using LLM ---
-    llm_details = extract_complaint_details_llm(user_input) or {}
+    llm_details = extract_complaint_details_llm(user_input, default_localidad=default_localidad, default_provincia=default_provincia) or {}
+
+    # Map LLM fields to the keys used in the application context
     if llm_details.get("tipo_problema"):
-        mapped = find_reclamo_category_by_input(llm_details["tipo_problema"], reclamo_options)
-        if mapped:
-            details["categoria_sugerida"] = mapped
-    if llm_details.get("descripcion_problema"):
-        details["descripcion_sugerida"] = llm_details["descripcion_problema"]
-    if llm_details.get("ubicacion_problema"):
-        details["direccion_sugerida"] = llm_details["ubicacion_problema"]
+        mapped_category = find_reclamo_category_by_input(llm_details["tipo_problema"], reclamo_options)
+        if mapped_category:
+            details["categoria"] = mapped_category
+
+    key_mapping = {
+        "descripcion_problema": "descripcion",
+        "ubicacion_problema": "direccion",
+        "nombre_cliente": "nombre",
+        "email_cliente": "email",
+        "telefono_cliente": "telefono",
+        "dni_cliente": "dni"
+    }
+    for llm_key, app_key in key_mapping.items():
+        if llm_details.get(llm_key):
+            details[app_key] = llm_details[llm_key]
 
     # --- Fallback heuristics when LLM data is missing ---
-    if "categoria_sugerida" not in details:
+    if "categoria" not in details:
         category = find_reclamo_category_by_input(user_input, reclamo_options)
         if category:
-            details["categoria_sugerida"] = category
+            details["categoria"] = category
             description_source = user_input
             normalized = normalizar_texto(user_input)
             for kw in RECLAMO_KEYWORDS.get(category, []):
@@ -2843,14 +2607,14 @@ def extract_reclamo_details_from_text(user_input: str, reclamo_options: list) ->
                     if len(parts) > 1 and parts[1].strip():
                         description_source = parts[1].strip(" ,.-")
                     break
-            if description_source and description_source != user_input and "descripcion_sugerida" not in details:
-                details["descripcion_sugerida"] = description_source
+            if description_source and description_source != user_input and "descripcion" not in details:
+                details["descripcion"] = description_source
 
-    if "direccion_sugerida" not in details:
+    if "direccion" not in details:
         import re
         match = re.search(r"en\s+([A-Za-zÀ-ÿ'\s]+?)\s+(\d{1,5})", user_input, re.IGNORECASE)
         if match:
-            details["direccion_sugerida"] = f"{match.group(1).strip()} {match.group(2)}"
+            details["direccion"] = f"{match.group(1).strip()} {match.group(2)}"
 
     return details
 
@@ -3021,11 +2785,24 @@ def responder_municipio(
     app = current_app._get_current_object()
 
     # Cargar config específica del municipio (si existe)
-    final_municipio_config = CONFIG_MUNICIPIO  # Default global
+    final_municipio_config = CONFIG_MUNICIPIO.copy()  # Default global
     owner_user_municipio_id_str = str(owner_user.municipio_id) if owner_user and hasattr(owner_user, 'municipio_id') and owner_user.municipio_id else MUNICIPIO_ID
+
+    # Load from JSON file
     loaded_specific_config = cargar_configuracion_municipio(owner_user_municipio_id_str, "config.json")
     if loaded_specific_config:
-        final_municipio_config = loaded_specific_config
+        final_municipio_config.update(loaded_specific_config)
+
+    # Override with data from the User model (database) if available
+    if owner_user:
+        if getattr(owner_user, 'ciudad', None):
+            final_municipio_config['ciudad'] = owner_user.ciudad
+        if getattr(owner_user, 'provincia', None):
+            final_municipio_config['provincia'] = owner_user.provincia
+        if getattr(owner_user, 'pais', None):
+            final_municipio_config['pais'] = owner_user.pais
+        if getattr(owner_user, 'direccion', None):
+            final_municipio_config['direccion'] = owner_user.direccion
 
     # Poblar el payload con los datos de la solicitud
     received_payload = {}
@@ -3806,6 +3583,10 @@ def responder_municipio(
                 datos_iniciales["descripcion"] = details["descripcion_sugerida"]
             if details.get("direccion_sugerida"):
                 datos_iniciales["direccion"] = details["direccion_sugerida"]
+            if details.get("nombre_sugerido"):
+                datos_iniciales["nombre"] = details.get("nombre_sugerido")
+            if details.get("email_sugerido"):
+                datos_iniciales["email"] = details.get("email_sugerido")
             response_dict = handler.start_flow(
                 datos_iniciales=datos_iniciales or None,
                 categoria_inicial=detected_category,
@@ -4754,7 +4535,7 @@ def responder_municipio(
                 logger_actual.info(f"Attempting to geocode textual address: '{pregunta_str}'")
 
                 # We can use the simpler geocoding tool here
-                geocoded_location = validar_y_formatear_direccion(pregunta_str)
+                geocoded_location = validar_y_formatear_direccion(pregunta_str, municipio_config=context.get("municipio_config_actual"))
 
                 if geocoded_location:
                     # Address was valid, proceed with the original query

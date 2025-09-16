@@ -21,6 +21,7 @@ class TestReclamoFlowUX(unittest.TestCase):
                 "categoria": "Bache",
                 "descripcion": "pozo en la calle",
                 "foto_url": "http://example.com/foto.jpg",
+                "nombre": "Test User", "dni": "12345", "email": "test@test.com", "telefono": "+5492613168608"
             },
         }
         handler = self._build_handler(flow_context)
@@ -52,6 +53,7 @@ class TestReclamoFlowUX(unittest.TestCase):
                 "categoria": "Bache",
                 "direccion": "Calle 123",
                 "foto_url": "http://example.com/foto.jpg",
+                "nombre": "Test User", "dni": "12345", "email": "test@test.com", "telefono": "+5492613168608"
             },
         }
         handler = self._build_handler(flow_context)
@@ -70,6 +72,7 @@ class TestReclamoFlowUX(unittest.TestCase):
                 "categoria": "Bache",
                 "direccion": "Calle 123",
                 "descripcion": "pozo grande",
+                "nombre": "Test User", "dni": "12345", "email": "test@test.com", "telefono": "+5492613168608"
             }
         )
         self.assertEqual(
@@ -88,6 +91,7 @@ class TestReclamoFlowUX(unittest.TestCase):
                 "categoria": "Bache",
                 "direccion": "Calle 123",
                 "descripcion": "pozo grande",
+                "nombre": "Test User", "dni": "12345", "email": "test@test.com", "telefono": "+5492613168608"
             },
         }
         handler = self._build_handler(flow_context)
@@ -99,7 +103,7 @@ class TestReclamoFlowUX(unittest.TestCase):
         self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
         self.assertIn("foto adjunta", resp["message_body"].lower())
 
-    def test_missing_dni_goes_directly_to_confirmation(self):
+    def test_missing_dni_goes_to_contact_request(self):
         flow_context = {
             "datos_reclamo": {
                 "categoria": "Bache",
@@ -112,7 +116,7 @@ class TestReclamoFlowUX(unittest.TestCase):
         }
         handler = self._build_handler(flow_context)
         resp = handler.ask_for_contact_details()
-        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
         self.assertIn("dni", resp["message_body"].lower())
 
     def test_start_flow_prefills_dni_from_viewer_alias(self):
