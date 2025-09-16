@@ -453,6 +453,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "image_url": promo_image_url,
                 "delayed_payload": menu_payload,
                 "delay_seconds": 20,
+                "generar_audio": False,
                 "data": {
                     "ticket_id": ticket_creado.get('id'),
                     "nro_ticket": nro_ticket_str,

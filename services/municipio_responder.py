@@ -684,6 +684,7 @@ class ReclamoFlowHandler:
 
         if not force_prompt and not missing:
             self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
+            self.municipal_ctx['estado_conversacion'] = None
             return self.get_confirmation_message()
 
         self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name

@@ -103,7 +103,6 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
 📄 *Resumen de tu {texto_tipo}:*
 - *N° de Ticket:* `{id_ticket}`
 - *Categoría:* {categoria}
-- *Descripción:* {descripcion_resumen}
 """
     if dni:
         respuesta += f"- *DNI:* `{dni}`\n"
