@@ -429,18 +429,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 base_chat_url,
                 dni=ticket_data_cleaned.get("dni_vecino"),
                 consulta_pin=pin_final,
+                include_description=False,
             )
 
             # Log para debug
             logger.info(f"Respuesta formateada: '{mensaje_respuesta}', Botones: {botones_finales}")
-
-            # Add "Punto Limpio" promotion
-            mensaje_respuesta += (
-                "\n\n*¿Sabías que estamos trabajando para una Junín más limpia?* ♻️\n"
-                "Conocé nuestra planta de recolección, reciclaje y elaboración de productos sustentables.\n"
-                "Ladrillos, tejas, postes, mangueras, impresión 3D, luminarias LED y paneles solares.\n"
-                "Más info: https://www.juninmendoza.gov.ar/punto-limpio/"
-            )
 
             # Delayed menu
             menu_payload = _get_main_menu_payload(self.context)

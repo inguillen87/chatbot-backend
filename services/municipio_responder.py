@@ -760,10 +760,46 @@ class ReclamoFlowHandler:
 
     def handle_confirmacion(self, user_input, payload):
         action = payload.get("action")
-        normalized = user_input.lower()
-        affirmatives = {"si", "sí", "confirmo", "confirmar", "ok", "okay", "acepto", "aceptar", "dale"}
-        negatives = {"no", "editar", "modificar", "cambiar"}
-        if any(word in normalized for word in affirmatives) or action == "reclamo_confirmar_si":
+        normalized = user_input.strip().lower()
+        affirmatives = {
+            "si",
+            "sí",
+            "confirmo",
+            "confirmar",
+            "ok",
+            "okay",
+            "acepto",
+            "aceptar",
+            "dale",
+            "1",
+            "uno",
+            "opcion 1",
+            "opción 1",
+        }
+        negatives = {
+            "no",
+            "editar",
+            "modificar",
+            "cambiar",
+            "2",
+            "dos",
+            "opcion 2",
+            "opción 2",
+        }
+        cancel_words = {
+            "cancelar",
+            "cancelá",
+            "cancelarlo",
+            "cancel",
+            "anular",
+            "salir",
+            "3",
+            "tres",
+            "opcion 3",
+            "opción 3",
+        }
+
+        if action == "reclamo_confirmar_si" or normalized in affirmatives or any(word in normalized for word in affirmatives):
             datos = self.flow_context.get('datos_reclamo', {})
             action_data = {
                 "categoria": datos.get("categoria"),
@@ -806,11 +842,19 @@ class ReclamoFlowHandler:
                 "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde.",
             )
             return self.end_flow(error_message, show_menu=True)
-        elif any(word in normalized for word in negatives) or action == "reclamo_confirmar_no":
+        elif action == "reclamo_confirmar_no" or normalized in negatives or any(word in normalized for word in negatives):
             return self.ask_for_contact_details(force_prompt=True)
-        else:  # Cancel or any other input
+        elif action == "reclamo_cancelar" or normalized in cancel_words or any(word in normalized for word in cancel_words):
             cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
             return self.end_flow(cancel_msg, show_menu=True)
+        else:
+            # Re-enviar el resumen para que la persona pueda elegir una opción válida.
+            reminder = (
+                "No entendí tu respuesta. Por favor, elegí una de las opciones disponibles para continuar.\n\n"
+            )
+            confirmation = self.get_confirmation_message()
+            confirmation["message_body"] = reminder + confirmation["message_body"]
+            return confirmation
 
     def end_flow(self, message, show_menu=False, image_url=None):
         self.flow_context.clear()

@@ -72,6 +72,18 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("caido a mitad de cuadra", message)
         self.assertNotIn("tengo un poste", message)
 
+    def test_formatear_ticket_respuesta_sin_descripcion(self):
+        message, _ = formatear_ticket_respuesta(
+            "reclamo",
+            "Ana",
+            "tengo un bache enorme en la esquina",
+            "Bacheo",
+            "M-321",
+            include_description=False,
+        )
+        self.assertIn("Categoría", message)
+        self.assertNotIn("Descripción", message)
+
     def test_greeting_handler_final_menu(self):
         """
         Verifica que el GreetingHandler devuelve el menú principal final (v5).
