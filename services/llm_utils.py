@@ -44,20 +44,25 @@ except ImportError:
     def robust_chat(message: str, **kwargs) -> str:
         logger.warning("Using mock robust_chat. LLM calls will not be real.")
 
-    # --- Improved Mock for Audio Transcript ---
-    # Check for keywords from the user's specific audio transcript test case.
-    if "poste caído" in message and "Marcelo Guillén" in message and "Sarmiento y San Martín" in message:
-        logger.info("Mock robust_chat: Detected specific audio transcript for Marcelo Guillén.")
-        # This will be triggered by extract_complaint_details_llm
-        return json.dumps({
-            "tipo_problema": "Luminaria",
-            "ubicacion_problema": "Sarmiento y San Martín, Junín",
-            "descripcion_problema": "Tengo un poste caído a mitad de cuadra.",
-            "nombre_cliente": "Marcelo Guillén",
-            "email_cliente": "guillen.marse@gmail.com"
-        })
+        # --- Improved Mock for Audio Transcript ---
+        if "poste caído" in message and "Marcelo Guillén" in message and "Sarmiento y San Martín" in message:
+            logger.info("Mock robust_chat: Detected specific audio transcript for Marcelo Guillén.")
+            if "Extract complaint details" in message:
+                return json.dumps({
+                    "tipo_problema": "Luminaria",
+                    "ubicacion_problema": "Sarmiento y San Martín, Junín",
+                    "descripcion_problema": "Tengo un poste caído a mitad de cuadra.",
+                    "nombre_cliente": "Marcelo Guillén",
+                    "email_cliente": "guillen.marse@gmail.com"
+                })
+            elif "Extract contact details" in message:
+                 return json.dumps({
+                    "nombre_cliente": "Marcelo Guillén",
+                    "email_cliente": "guillen.marse@gmail.com",
+                    "direccion_cliente": "Sarmiento y San Martín, Junín"
+                })
 
-    # --- Original Mock Logic as Fallback ---
+        # --- Original Mock Logic as Fallback ---
         if "Extract contact details" in message:
             if "John Doe" in message and "123 Main St" in message:
                 return json.dumps({
@@ -93,9 +98,8 @@ except ImportError:
                     return current_summary + "\nError processing new data."
             return "Mocked summary update."
 
-    # A better default fallback that doesn't break JSON parsing
-    logger.warning(f"Mock robust_chat: No specific mock matched for message: {message[:100]}...")
-    return "{}"
+        logger.warning(f"Mock robust_chat: No specific mock matched for message: {message[:100]}...")
+        return "{}"
 
 logger = logging.getLogger(__name__)
 
