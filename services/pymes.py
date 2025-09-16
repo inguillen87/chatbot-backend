@@ -6,7 +6,9 @@ import uuid
 from typing import Optional
 from enum import Enum, auto
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import flag_modified
+from datetime import datetime
 from models import Conversacion, db, PymePedido
 try:
     from flask import session as flask_session, current_app, request # Añadir request
@@ -695,6 +697,7 @@ def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> O
     """
     Busca un usuario por su número de teléfono. Si no existe, crea uno nuevo
     asociado al `owner_user` (la pyme o municipio).
+    Maneja condiciones de carrera durante la creación.
     """
     if not phone_number or not owner_user:
         return None
@@ -726,12 +729,20 @@ def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> O
         db.session.commit()
         logger.info(f"Nuevo usuario de WhatsApp creado con ID {nuevo_usuario.id} para el teléfono '{phone_number}'")
         return nuevo_usuario
+    except IntegrityError:
+        db.session.rollback()
+        logger.warning(f"Race condition detectada al crear usuario para '{phone_number}'. Re-intentando búsqueda.")
+        user = models.User.query.filter_by(telefono=phone_number, empresa_id=owner_user.id).first()
+        if user:
+            logger.info(f"Usuario encontrado después de race condition para '{phone_number}'.")
+            return user
+        else:
+            logger.error(f"Fallo en race condition para '{phone_number}'. El usuario no existe incluso después del error de integridad.")
+            return None
     except Exception as e:
         db.session.rollback()
-        logger.error(f"Error al crear el usuario de WhatsApp para el teléfono '{phone_number}': {e}", exc_info=True)
+        logger.error(f"Error inesperado al crear el usuario de WhatsApp para el teléfono '{phone_number}': {e}", exc_info=True)
         return None
-
-from datetime import datetime
 
 def get_or_create_pyme_user_by_token(token: str) -> Optional[models.User]:
     """
