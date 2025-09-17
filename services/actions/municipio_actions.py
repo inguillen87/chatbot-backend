@@ -1,6 +1,8 @@
 # services/actions/municipio_actions.py
 import logging
 import re
+from urllib.parse import urlparse
+
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
 import random
@@ -17,6 +19,30 @@ from services import promo_service
 logger = logging.getLogger(__name__)
 
 CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
+
+
+def _normalize_url_for_comparison(raw_url: str) -> tuple[str, str]:
+    """Return normalized (domain, path) for URL comparison."""
+
+    if not raw_url:
+        return "", ""
+
+    try:
+        parsed = urlparse(raw_url)
+    except Exception:
+        return "", ""
+
+    domain = parsed.netloc.lower()
+    if domain.startswith("www."):
+        domain = domain[4:]
+
+    path = (parsed.path or "").strip()
+    if path:
+        if not path.startswith("/"):
+            path = f"/{path}"
+        path = path.rstrip("/")
+
+    return domain, path
 
 class BuscarEstacionamientoActionHandler(BaseActionHandler):
     action_name = "buscar_estacionamiento"
@@ -429,13 +455,46 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
                 promo_button = promo_section.get("button")
                 if promo_button:
-                    existing_urls = {
-                        boton.get("url")
-                        for boton in (botones_finales or [])
-                        if isinstance(boton, dict) and boton.get("url")
-                    }
-                    if promo_button.get("url") and promo_button.get("url") not in existing_urls:
-                        botones_finales.append(promo_button)
+                    promo_url = promo_button.get("url")
+                    matching_button = None
+
+                    if promo_url:
+                        promo_domain, promo_path = _normalize_url_for_comparison(promo_url)
+                        for boton in (botones_finales or []):
+                            if not isinstance(boton, dict):
+                                continue
+                            boton_type = boton.get("type")
+                            if boton_type and str(boton_type).lower() != "url":
+                                continue
+                            boton_url = boton.get("url")
+                            if not boton_url:
+                                continue
+
+                            boton_domain, boton_path = _normalize_url_for_comparison(boton_url)
+                            same_domain = bool(promo_domain and boton_domain and promo_domain == boton_domain)
+                            same_path = bool(promo_path and boton_path and promo_path == boton_path)
+
+                            if same_domain or same_path:
+                                matching_button = boton
+                                break
+
+                    if matching_button:
+                        promo_cta = promo_button.get("texto")
+                        existing_text = (matching_button.get("texto") or "").strip()
+                        normalized_existing = existing_text.replace("🌐", "").strip().lower()
+
+                        if promo_cta and (not existing_text or normalized_existing == "más información"):
+                            matching_button["texto"] = promo_cta
+
+                        matching_button.setdefault("type", "url")
+                    elif promo_url:
+                        existing_urls = {
+                            boton.get("url")
+                            for boton in (botones_finales or [])
+                            if isinstance(boton, dict) and boton.get("url")
+                        }
+                        if promo_url not in existing_urls:
+                            botones_finales.append(promo_button)
 
                 if not promo_image_url and promo_section.get("image_url"):
                     promo_image_url = promo_section.get("image_url")
