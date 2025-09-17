@@ -397,7 +397,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
             # Formatear respuesta y obtener el botón de contacto
             municipio_config = self.context.get('municipio_config_actual', {})
-            base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/tickets/municipio')
+            base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
             promo_image_url = municipio_config.get('promo_image_url')
             categoria_display = categoria
             mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
@@ -661,7 +661,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
 
             # Obtener la URL base del chat del contexto para el botón "Ver mi Ticket"
             municipio_config = self.context.get('municipio_config_actual', {})
-            base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/tickets/municipio')
+            base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
             promo_image_url = municipio_config.get('promo_image_url')
 
             respuesta_formateada, botones_generados = formatear_ticket_respuesta(

@@ -440,46 +440,51 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
         texto = texto.strip()
         texto = re.sub(r"^tengo\s+un?\s+", "", texto, flags=re.IGNORECASE)
         texto = re.sub(r"^hay\s+un?\s+", "", texto, flags=re.IGNORECASE)
-        resumen = construir_descripcion_breve(texto, max_chars=90)
+        resumen = construir_descripcion_breve(texto, max_chars=70)
         return resumen or texto
 
     descripcion_resumen = _resumir_descripcion(descripcion)
 
-    respuesta = f"""✅ *¡{texto_tipo} recibido, {nombre_usuario}!*
-
-📄 *Resumen de tu {texto_tipo}:*
-- *N° de Ticket:* `{id_ticket}`
-- *Categoría:* {categoria}
-- *Descripción:* {descripcion_resumen}
-"""
+    resumen_lineas: list[str] = []
+    if id_ticket:
+        resumen_lineas.append(f"• *Ticket:* `{id_ticket}`")
+    if categoria:
+        resumen_lineas.append(f"• *Categoría:* {categoria}")
+    if descripcion_resumen:
+        resumen_lineas.append(f"• *Descripción:* {descripcion_resumen}")
     if dni:
-        respuesta += f"- *DNI:* `{dni}`\n"
+        resumen_lineas.append(f"• *DNI:* `{dni}`")
     if consulta_pin:
-        respuesta += f"- *PIN de seguimiento:* `{consulta_pin}`\n"
+        resumen_lineas.append(f"• *PIN:* `{consulta_pin}`")
+
+    respuesta_lineas: list[str] = [f"✅ *¡{texto_tipo} recibido, {nombre_usuario}!*"]
+    if resumen_lineas:
+        respuesta_lineas.append("")
+        respuesta_lineas.append("📄 *Resumen rápido:*")
+        respuesta_lineas.extend(resumen_lineas)
 
     if nombre_asesor:
-        respuesta = respuesta.rstrip("\n") + "\n"
-        respuesta += "📞 *Contacto para seguimiento:*\n"
-        respuesta += f"- *Nombre:* {nombre_asesor}\n"
+        respuesta_lineas.append("")
+        respuesta_lineas.append("📞 *Contacto para seguimiento:*")
+        respuesta_lineas.append(f"• *Nombre:* {nombre_asesor}")
         if titulo_asesor:
-            respuesta += f"- *Cargo:* {titulo_asesor}\n"
+            respuesta_lineas.append(f"• *Cargo:* {titulo_asesor}")
         if telefono_asesor:
-            respuesta += f"- *Teléfono:* {telefono_asesor}\n"
+            respuesta_lineas.append(f"• *Teléfono:* {telefono_asesor}")
         if horario_asesor:
-            respuesta += f"- *Horario:* {horario_asesor}\n"
+            respuesta_lineas.append(f"• *Horario:* {horario_asesor}")
 
-    if link_informacion:
-        respuesta += f"🔗 *Más información:* {link_informacion}\n"
-
-    respuesta = respuesta.rstrip("\n") + "\n"
-    respuesta += "🤝 *Seguimiento:* Nuestro equipo te contactará con los datos que compartiste.\n"
+    seguimiento = "📌 *Seguimiento:* Te contactaremos con los datos que nos compartiste."
     if consulta_pin:
-        respuesta += (
-            "📌 *Consultá el estado:* Usá el botón \"Ver mi Ticket\" "
-            f"o tu PIN `{consulta_pin}`."
+        seguimiento += (
+            " También podés usar el botón \"Ver mi Ticket\" o tu PIN `{}`.".format(consulta_pin)
         )
     else:
-        respuesta += "📌 *Consultá el estado:* Usá el botón \"Ver mi Ticket\"."
+        seguimiento += " También podés usar el botón \"Ver mi Ticket\"."
+    respuesta_lineas.append("")
+    respuesta_lineas.append(seguimiento)
+
+    respuesta = "\n".join(respuesta_lineas).strip()
 
     # Limpiar URLs redundantes del cuerpo del mensaje
     respuesta_limpia = _remove_redundant_urls_from_message(respuesta, botones)

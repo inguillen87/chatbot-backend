@@ -541,32 +541,45 @@ class ReclamoFlowHandler:
                 nro_ticket = ticket_data.get("nro_ticket")
                 pin_consulta = ticket_data.get("consulta_pin")
 
-                message = result.get(
-                    "message_to_user",
-                    (
+                message = (
+                    result.get("message_body")
+                    or result.get("message_to_user")
+                    or (
                         f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{nro_ticket}*. "
                         + (
                             f"Usá el botón \"Ver Ticket\" o tu PIN `{pin_consulta}` para hacer seguimiento."
                             if pin_consulta
                             else "Usá el botón \"Ver Ticket\" para hacer seguimiento."
                         )
-                    ),
+                    )
                 )
 
-                # The promotional message is now handled by the image_url and the frontend
-                punto_limpio_logo = "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png"
+                options_list = result.get("options_list") or []
+                message_type = result.get("message_type")
+                if not message_type:
+                    message_type = "interactive_buttons" if options_list else "text"
 
-                final_payload = self.end_flow(message, show_menu=True, image_url=punto_limpio_logo)
+                extra_payload = {
+                    "message_type": message_type,
+                }
+                if options_list:
+                    extra_payload["options_list"] = list(options_list)
 
-                if nro_ticket and pin_consulta:
-                    base_url = "https://www.chatboc.ar/chat/"
-                    ver_ticket_url = f"{base_url}{nro_ticket.replace('M-', '')}?pin={pin_consulta}"
-                    final_payload.setdefault("options_list", []).append(
-                        {"texto": "Ver Ticket", "url": ver_ticket_url, "type": "url"}
-                    )
-                    final_payload["message_type"] = "interactive_buttons"
+                image_url = result.get("image_url")
+                if image_url:
+                    extra_payload["image_url"] = image_url
 
-                return final_payload
+                delayed_payload = result.get("delayed_payload")
+                if delayed_payload:
+                    extra_payload["delayed_payload"] = delayed_payload
+
+                delay_seconds = result.get("delay_seconds")
+                if delay_seconds is not None:
+                    extra_payload["delay_seconds"] = delay_seconds
+
+                show_menu = delayed_payload is None
+
+                return self.end_flow(message, show_menu=show_menu, extra_payload=extra_payload)
             error_message = result.get(
                 "message_to_user",
                 "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde.",
@@ -578,14 +591,24 @@ class ReclamoFlowHandler:
             cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
             return self.end_flow(cancel_msg, show_menu=True)
 
-    def end_flow(self, message, show_menu=False, image_url=None):
+    def end_flow(self, message, show_menu=False, image_url=None, extra_payload=None):
         self.flow_context.clear()
         # Remove flow data from municipio context so subsequent turns don't
         # enter this handler unintentionally.
         self.municipal_ctx.pop("reclamo_flow_v2", None)
 
-        payload = {"message_body": message, "message_type": "text"}
-        if image_url:
+        payload: dict[str, object] = {}
+        if extra_payload:
+            payload.update(extra_payload)
+
+        if message is not None:
+            payload["message_body"] = message
+        else:
+            payload.setdefault("message_body", "")
+
+        payload.setdefault("message_type", "text")
+
+        if image_url and "image_url" not in payload:
             payload["image_url"] = image_url
 
         if show_menu:
