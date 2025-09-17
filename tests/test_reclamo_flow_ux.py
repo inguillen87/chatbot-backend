@@ -14,6 +14,35 @@ class TestReclamoFlowUX(unittest.TestCase):
         context = {"chat_db_context_data": {CONTEXTO_MUNICIPIO: {"reclamo_flow_v2": flow_context}}}
         return ReclamoFlowHandler(context, MagicMock())
 
+    def test_start_flow_marks_state_active(self):
+        context = {"chat_db_context_data": {}}
+        handler = ReclamoFlowHandler(context, MagicMock())
+
+        handler.start_flow()
+
+        municipal_ctx = context["chat_db_context_data"].get(CONTEXTO_MUNICIPIO, {})
+        self.assertEqual(municipal_ctx.get("estado_conversacion"), "EN_FLUJO_RECLAMO")
+
+    def test_handle_categoria_volver_al_inicio_shows_menu(self):
+        context = {
+            "chat_db_context_data": {},
+            "profile_name": "Marcelo",
+        }
+        handler = ReclamoFlowHandler(context, MagicMock())
+        handler.start_flow()
+
+        # Simulate that we are waiting for a category choice and the user selects the first option.
+        handler.flow_context['state'] = ReclamoState.ESPERANDO_CATEGORIA.name
+        response = handler.handle("1", {"pregunta": "1"})
+
+        self.assertIn("JUNI", response.get("message_body", ""))
+        municipal_ctx = context["chat_db_context_data"].get(CONTEXTO_MUNICIPIO, {})
+        self.assertNotIn("reclamo_flow_v2", municipal_ctx)
+        self.assertEqual(
+            municipal_ctx.get("estado_conversacion"),
+            ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name,
+        )
+
     def test_skip_photo_prompt_if_already_has_photo(self):
         flow_context = {
             "state": ReclamoState.ESPERANDO_DIRECCION.name,

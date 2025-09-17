@@ -581,6 +581,40 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         _, kwargs = mock_bot.call_args
         self.assertEqual(kwargs["pregunta"], "Sí, es correcto")
 
+    @patch('routes.whatsapp_webhook.responder_chatboc')
+    def test_numeric_option_uses_category_name(self, mock_bot):
+        self.mock_validator.validate.return_value = True
+        self._create_confirmed_session()
+
+        session = ChatSessionContext.query.filter_by(
+            chat_session_id=f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        ).first()
+        session.context_data["last_options_sent"] = [
+            {"texto": "*Volver al inicio*", "id_accion": "0", "category_name": "Volver al inicio"},
+            {"texto": "💡 *Luminaria*", "id_accion": "1", "category_name": "Luminaria"},
+            {"texto": "💧 *Pérdida de agua*", "id_accion": "5", "category_name": "Pérdida de agua"},
+        ]
+        from sqlalchemy.orm.attributes import flag_modified
+
+        flag_modified(session, "context_data")
+        db.session.commit()
+
+        mock_bot.return_value = {"message_body": "ok"}
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "3",
+        }
+        headers = {"X-Twilio-Signature": "sig"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        mock_bot.assert_called_once()
+        _, kwargs = mock_bot.call_args
+        self.assertEqual(kwargs["pregunta"], "Pérdida de agua")
+
     @patch('routes.whatsapp_webhook.requests.get')
     def test_image_attachment_skips_analysis_when_reclamo_active(self, mock_requests_get):
         mock_response = MagicMock()
