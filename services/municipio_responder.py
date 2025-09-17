@@ -64,7 +64,7 @@ from services.tasks import process_image_for_chat_task
 from services.intent_classifier import IntentClassifier
 from services.multimodal_analyzer import analizar_imagen_con_fallback
 import json
-from services.ticket_utils import formatear_ticket_respuesta
+from services.ticket_utils import formatear_ticket_respuesta, construir_descripcion_breve
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
@@ -169,7 +169,9 @@ class ReclamoFlowHandler:
             if not datos.get('categoria') and interpreted.get('categoria_sugerida'):
                 datos['categoria'] = interpreted.get('categoria_sugerida')
             if not datos.get('descripcion') and interpreted.get('descripcion_sugerida'):
-                datos['descripcion'] = interpreted.get('descripcion_sugerida')
+                descripcion_interpretada = interpreted.get('descripcion_sugerida')
+                datos['descripcion'] = descripcion_interpretada
+                datos['descripcion_resumida'] = construir_descripcion_breve(descripcion_interpretada)
                 datos['origen_descripcion'] = 'imagen'
 
         def _apply_prefill(field: str, *candidates) -> None:
@@ -303,7 +305,9 @@ class ReclamoFlowHandler:
             and not user_input.strip().isdigit()
             and len(user_input.strip()) >= 10
         ):
-            datos['descripcion'] = user_input.strip()
+            descripcion_texto = user_input.strip()
+            datos['descripcion'] = descripcion_texto
+            datos['descripcion_resumida'] = construir_descripcion_breve(descripcion_texto)
 
         if not datos.get('descripcion'):
             self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
@@ -360,7 +364,9 @@ class ReclamoFlowHandler:
     def handle_descripcion(self, user_input):
         if len(user_input) < 10:
             return {"message_body": "Por favor, dame una descripción un poco más detallada del problema."}
-        self.flow_context['datos_reclamo']['descripcion'] = user_input
+        descripcion_texto = user_input.strip()
+        self.flow_context['datos_reclamo']['descripcion'] = descripcion_texto
+        self.flow_context['datos_reclamo']['descripcion_resumida'] = construir_descripcion_breve(descripcion_texto)
         if not self.flow_context['datos_reclamo'].get('direccion'):
             self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
             categoria = self.flow_context['datos_reclamo'].get('categoria', '')
@@ -467,9 +473,15 @@ class ReclamoFlowHandler:
 
     def get_confirmation_message(self):
         datos = self.flow_context.get('datos_reclamo', {})
-        
+
         def format_line(label, value, default_value='No especificado'):
             return f"*{label}:* {value or default_value}"
+
+        descripcion_resumen = datos.get('descripcion_resumida')
+        if not descripcion_resumen:
+            descripcion_resumen = construir_descripcion_breve(datos.get('descripcion'))
+            if descripcion_resumen:
+                datos['descripcion_resumida'] = descripcion_resumen
 
         # Build the summary message, ensuring all fields are included
         summary_parts = [
@@ -477,7 +489,7 @@ class ReclamoFlowHandler:
             "📄 *Resumen del Reclamo*",
             format_line('Categoría', datos.get('categoria')),
             format_line('Dirección', datos.get('direccion')),
-            format_line('Descripción', datos.get('descripcion')),
+            format_line('Descripción', descripcion_resumen or datos.get('descripcion')),
             "",
             "👤 *Tus Datos*",
             format_line('Nombre', datos.get('nombre')),
@@ -519,6 +531,7 @@ class ReclamoFlowHandler:
                 "dni": datos.get("dni"),
                 "email": datos.get("email"),
                 "telefono": datos.get("telefono"),
+                "descripcion_resumida": datos.get("descripcion_resumida"),
                 "foto_url_adjunta": datos.get("foto_url"),
             }
             handler = CrearReclamoActionHandler(self.context)
@@ -530,7 +543,14 @@ class ReclamoFlowHandler:
 
                 message = result.get(
                     "message_to_user",
-                    f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{nro_ticket}*. Te mantendremos informado sobre el estado del mismo por este medio.",
+                    (
+                        f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{nro_ticket}*. "
+                        + (
+                            f"Usá el botón \"Ver Ticket\" o tu PIN `{pin_consulta}` para hacer seguimiento."
+                            if pin_consulta
+                            else "Usá el botón \"Ver Ticket\" para hacer seguimiento."
+                        )
+                    ),
                 )
 
                 # The promotional message is now handled by the image_url and the frontend

@@ -12,6 +12,7 @@ from services.common_utils import validar_telefono, formatear_telefono_e164, val
 from services.config_loader import cargar_configuracion_municipio
 from models import MunicipioTicket
 from services.common_utils import _get_main_menu_payload
+from services import promo_service
 
 logger = logging.getLogger(__name__)
 
@@ -410,17 +411,34 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 dni=ticket_data_cleaned.get("dni_vecino"),
                 consulta_pin=pin_final,
             )
+            if botones_finales is None:
+                botones_finales = []
 
             # Log para debug
             logger.info(f"Respuesta formateada: '{mensaje_respuesta}', Botones: {botones_finales}")
 
-            # Add "Punto Limpio" promotion
-            mensaje_respuesta += (
-                "\n\n*¿Sabías que estamos trabajando para una Junín más limpia?* ♻️\n"
-                "Conocé nuestra planta de recolección, reciclaje y elaboración de productos sustentables.\n"
-                "Ladrillos, tejas, postes, mangueras, impresión 3D, luminarias LED y paneles solares.\n"
-                "Más info: https://www.juninmendoza.gov.ar/punto-limpio/"
+            # Append promotional content (image, CTA and button) in a structured way
+            promo_section = promo_service.build_ticket_promo_section(
+                ticket_number=nro_ticket_str,
+                neighbor_name=ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
             )
+            if promo_section:
+                promo_text = promo_section.get("message_body")
+                if promo_text:
+                    mensaje_respuesta = f"{mensaje_respuesta}\n\n{promo_text}"
+
+                promo_button = promo_section.get("button")
+                if promo_button:
+                    existing_urls = {
+                        boton.get("url")
+                        for boton in (botones_finales or [])
+                        if isinstance(boton, dict) and boton.get("url")
+                    }
+                    if promo_button.get("url") and promo_button.get("url") not in existing_urls:
+                        botones_finales.append(promo_button)
+
+                if not promo_image_url and promo_section.get("image_url"):
+                    promo_image_url = promo_section.get("image_url")
 
             # Delayed menu
             menu_payload = _get_main_menu_payload(self.context)
