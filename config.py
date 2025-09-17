@@ -129,6 +129,39 @@ class Config:
     PERMISSIONS_POLICY_HEADER = os.getenv("PERMISSIONS_POLICY_HEADER", "geolocation=(self)")
     TICKETS_PER_PAGE_DEFAULT = int(os.getenv("TICKETS_PER_PAGE_DEFAULT", "50"))
 
+    ANON_SESSION_COOKIE_NAME = os.getenv("ANON_SESSION_COOKIE_NAME", "chatboc_anon_id")
+    ANON_SESSION_COOKIE_MAX_AGE = int(os.getenv("ANON_SESSION_COOKIE_MAX_AGE", str(60 * 60 * 24 * 30)))
+
+    DEMO_MAX_MESSAGES_PER_SESSION = int(os.getenv("DEMO_MAX_MESSAGES_PER_SESSION", "5"))
+    DEMO_WELCOME_MESSAGE = os.getenv(
+        "DEMO_WELCOME_MESSAGE",
+        "👋 ¡Bienvenido a la demo de Chatboc! Elegí la experiencia que querés probar:",
+    )
+    DEMO_RUBROS = [
+        {
+            "key": os.getenv("DEMO_MUNICIPIO_KEY", "municipio"),
+            "nombre": os.getenv("DEMO_MUNICIPIO_NOMBRE", "Municipio Inteligente"),
+            "descripcion": os.getenv(
+                "DEMO_MUNICIPIO_DESCRIPCION",
+                "Descubrí cómo un municipio gestiona reclamos, trámites y consultas en segundos.",
+            ),
+            "token": os.getenv("DEMO_MUNICIPIO_TOKEN"),
+            "tipo_chat": os.getenv("DEMO_MUNICIPIO_TIPO_CHAT", "municipio"),
+            "rubro_clave": os.getenv("DEMO_MUNICIPIO_RUBRO", "municipio"),
+        },
+        {
+            "key": os.getenv("DEMO_BODEGA_KEY", "bodega"),
+            "nombre": os.getenv("DEMO_BODEGA_NOMBRE", "Bodega Cuatro Fincas"),
+            "descripcion": os.getenv(
+                "DEMO_BODEGA_DESCRIPCION",
+                "Probá la experiencia de compra de una pyme: catálogo de vinos, precios y pedidos en vivo.",
+            ),
+            "token": os.getenv("DEMO_BODEGA_TOKEN", "demo-token-bodega"),
+            "tipo_chat": os.getenv("DEMO_BODEGA_TIPO_CHAT", "pyme"),
+            "rubro_clave": os.getenv("DEMO_BODEGA_RUBRO", "bodega"),
+        },
+    ]
+
     GOOGLE_PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID", None)
     GOOGLE_DOCAI_LOCATION = os.getenv("GOOGLE_DOCAI_LOCATION", "us")
     GOOGLE_DOCAI_PROCESSOR_ID = os.getenv("GOOGLE_DOCAI_PROCESSOR_ID", None)

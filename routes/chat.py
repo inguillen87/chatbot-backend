@@ -4,6 +4,7 @@ import logging
 import random
 import uuid  # Added for chat_session_id generation
 from urllib.parse import urljoin
+from typing import Dict, List, Optional
 
 # Add project root to sys.path for this routes file
 project_root_chat_routes = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -30,6 +31,190 @@ from utils.auth_helpers import (
 from datetime import datetime, timedelta
 
 chat_bp = Blueprint("chat_bp", __name__)
+
+DEMO_ACTION_PREFIX = "demo_select_rubro"
+
+
+def _load_demo_rubros() -> List[Dict[str, Optional[str]]]:
+    """Recupera la configuración de demos y la enriquece con datos reales."""
+    demo_config = current_app.config.get("DEMO_RUBROS") or []
+    opciones: List[Dict[str, Optional[str]]] = []
+    seen_keys: set[str] = set()
+
+    for entry in demo_config:
+        if not isinstance(entry, dict):
+            continue
+
+        raw_key = entry.get("key") or entry.get("rubro_clave") or entry.get("nombre")
+        if not raw_key:
+            continue
+
+        key = str(raw_key).strip().lower().replace(" ", "_")
+        if not key or key in seen_keys:
+            continue
+
+        nombre = entry.get("nombre") or entry.get("display_name") or str(raw_key)
+        descripcion = entry.get("descripcion") or entry.get("description")
+        rubro_id_conf = entry.get("rubro_id")
+        rubro_clave_conf = entry.get("rubro_clave")
+        token_conf = entry.get("token")
+        user_id_conf = entry.get("user_id")
+        tipo_chat_conf = entry.get("tipo_chat")
+
+        owner_user = None
+        rubro_obj = None
+
+        if user_id_conf:
+            owner_user = User.query.get(user_id_conf)
+
+        if not owner_user and token_conf:
+            owner_user = User.query.filter_by(token=token_conf).first()
+
+        if not owner_user and rubro_id_conf:
+            rubro_obj = Rubro.query.get(rubro_id_conf)
+            if rubro_obj:
+                owner_user = User.query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
+                if not owner_user:
+                    owner_user = User.query.filter_by(rubro_id=rubro_obj.id, rol='admin').first()
+
+        if not owner_user and rubro_clave_conf:
+            rubro_obj = Rubro.query.filter(func.lower(Rubro.clave) == func.lower(str(rubro_clave_conf))).first()
+            if rubro_obj:
+                owner_user = User.query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
+                if not owner_user:
+                    owner_user = User.query.filter_by(rubro_id=rubro_obj.id, rol='admin').first()
+
+        if not owner_user and tipo_chat_conf == "municipio":
+            owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
+            if owner_user and not rubro_obj:
+                rubro_obj = owner_user.rubro
+
+        if owner_user and not rubro_obj:
+            rubro_obj = owner_user.rubro
+
+        if not owner_user or not rubro_obj:
+            current_app.logger.warning(
+                f"[demo] No se pudo preparar la demo '{key}' porque falta owner o rubro válido."
+            )
+            continue
+
+        tipo_chat = tipo_chat_conf or (
+            "municipio" if es_rubro_publico(rubro_obj) else getattr(owner_user, "tipo_chat", "pyme")
+        )
+
+        opciones.append(
+            {
+                "key": key,
+                "label": nombre,
+                "descripcion": descripcion,
+                "tipo_chat": tipo_chat,
+                "owner_user_id": owner_user.id,
+                "rubro_id": rubro_obj.id,
+                "rubro_clave": getattr(rubro_obj, "clave", None),
+            }
+        )
+        seen_keys.add(key)
+
+    return opciones
+
+
+def _extract_demo_key(action_id: Optional[str]) -> Optional[str]:
+    if not action_id:
+        return None
+    value = str(action_id).strip()
+    if not value:
+        return None
+
+    if ":" in value:
+        prefix, candidate = value.split(":", 1)
+        if prefix != DEMO_ACTION_PREFIX:
+            return None
+    elif value.startswith(f"{DEMO_ACTION_PREFIX}_"):
+        candidate = value[len(f"{DEMO_ACTION_PREFIX}_"):]
+    elif value.startswith(DEMO_ACTION_PREFIX):
+        candidate = value[len(DEMO_ACTION_PREFIX):]
+        candidate = candidate.lstrip(":_")
+    else:
+        return None
+
+    candidate = candidate.strip().lower()
+    return candidate or None
+
+
+def _is_init_payload(payload) -> bool:
+    if payload is None:
+        return True
+    if isinstance(payload, str):
+        return payload.strip() in ("", "__INIT__")
+    if isinstance(payload, dict):
+        inner = payload.get("pregunta")
+        if inner is None:
+            return True
+        if isinstance(inner, str) and inner.strip() in ("", "__INIT__"):
+            return True
+    return False
+
+
+def _build_demo_selector_payload(opciones: List[Dict[str, Optional[str]]]) -> Dict[str, object]:
+    mensaje = current_app.config.get(
+        "DEMO_WELCOME_MESSAGE",
+        "👋 ¡Bienvenido a la demo de Chatboc! Elegí la experiencia que querés probar:",
+    )
+    botones: List[Dict[str, object]] = []
+    for opcion in opciones:
+        action_value = f"{DEMO_ACTION_PREFIX}:{opcion['key']}"
+        boton = {
+            "texto": opcion["label"],
+            "action_id": action_value,
+            "action": action_value,
+            "id": action_value,
+        }
+        if opcion.get("descripcion"):
+            boton["descripcion"] = opcion["descripcion"]
+        botones.append(boton)
+
+    message_type = "interactive_list" if len(botones) > 1 else "interactive_buttons"
+    return {
+        "message_body": mensaje,
+        "options_list": botones,
+        "botones": botones,
+        "message_type": message_type,
+        "fuente": "demo_selector",
+        "generar_audio": True,
+    }
+
+
+def _build_demo_limit_response(limite: int) -> Dict[str, object]:
+    mensaje = (
+        "¡Gracias por probar Chatboc! Llegaste al límite de "
+        f"{limite} consultas de la demo interactiva. "
+        "Agendá una reunión con nuestro equipo para conocer el potencial completo de la plataforma."
+    )
+    botones = [
+        {
+            "texto": "Solicitar Demo Personalizada",
+            "action": "open_demo_form",
+            "action_id": "open_demo_form",
+            "id": "open_demo_form",
+        },
+        {"texto": "Iniciar Sesión", "action": "login", "action_id": "login", "id": "login"},
+        {
+            "texto": "Registrarme Gratis",
+            "action": "register",
+            "action_id": "register",
+            "id": "register",
+        },
+    ]
+    return {
+        "error": "demo_limit_reached",
+        "respuesta": mensaje,
+        "message_body": mensaje,
+        "options_list": botones,
+        "botones": botones,
+        "message_type": "interactive_buttons",
+        "fuente": "demo_limit",
+        "generar_audio": True,
+    }
 
 def _parse_request(tipo_chat_fijo: str | None = None):
     def _normalizar_tipo_chat(valor: str | None) -> str | None:
@@ -87,6 +272,10 @@ def _parse_request(tipo_chat_fijo: str | None = None):
         ticket_id = data.get("ticket_id")
         tipo_ticket = data.get("tipo_ticket")
         profile_name = data.get("nombre_usuario") or data.get("profile_name")
+        action_id = data.get("action") or data.get("action_id")
+
+        if isinstance(pregunta, dict):
+            action_id = action_id or pregunta.get("action") or pregunta.get("action_id")
 
 
         if attachment_info:
@@ -111,6 +300,7 @@ def _parse_request(tipo_chat_fijo: str | None = None):
             ticket_id,
             tipo_ticket,
             profile_name,
+            action_id,
             None,
         )
 
@@ -127,11 +317,13 @@ def _parse_request(tipo_chat_fijo: str | None = None):
             None,
             None,
             None,
+            None,
             jsonify({"error": str(e)}),
         )
     except Exception as e:
         current_app.logger.error(f"Error inesperado al parsear /ask: {e}")
         return (
+            None,
             None,
             None,
             None,
@@ -158,8 +350,9 @@ def _procesar_chat(
     current_user=None,
     owner_user=None,
     anon_id: str | None = None,
-):
+): 
     channel = "web"  # Define channel for this processing function
+    original_user_payload = None
     # --- Session and Context Initialization ---
     chat_session_id_header = request.headers.get("X-Chat-Session-Id")
     if not chat_session_id_header:
@@ -228,6 +421,8 @@ def _procesar_chat(
             uploaded_file_info = None
             archivo_adjunto_id = None
             location = None
+            action_id = None
+            original_user_payload = pregunta
         else:
             return jsonify({"error": "Audio file is empty."}), 400
     else:
@@ -244,10 +439,12 @@ def _procesar_chat(
                 ticket_id,
                 tipo_ticket,
                 profile_name,
+                action_id,
                 error_response,
             ) = _parse_request(tipo_chat_fijo)
             if error_response:
                 return error_response, 400
+            original_user_payload = pregunta
 
             # Fallback to cookies or stored session context if profile name not provided in JSON
             if not profile_name:
@@ -375,6 +572,18 @@ def _procesar_chat(
         owner_del_bot = None
         rubro_para_log = None
 
+        if chat_context_obj and chat_context_obj.context_data is None:
+            chat_context_obj.context_data = {}
+
+        contexto_chat = chat_context_obj.context_data if chat_context_obj else {}
+        if not isinstance(contexto_chat, dict):
+            contexto_chat = {}
+            if chat_context_obj:
+                chat_context_obj.context_data = contexto_chat
+
+        is_demo_selection_event = False
+        demo_options: Optional[List[Dict[str, Optional[str]]]] = None
+
         if rubro_id:
             rubro_obj_global = Rubro.query.get(rubro_id)
             if rubro_obj_global:
@@ -401,6 +610,105 @@ def _procesar_chat(
                     if not owner_del_bot:
                         owner_del_bot = User.query.filter_by(rubro_id=rubro_obj_global.id, rol='admin').first()
 
+        # Recuperar el owner de una demo previamente seleccionada si no vino en la request
+        if not owner_del_bot and isinstance(contexto_chat, dict):
+            stored_owner_id = contexto_chat.get("demo_owner_user_id")
+            if stored_owner_id:
+                potencial_owner = User.query.get(stored_owner_id)
+                if potencial_owner:
+                    owner_del_bot = potencial_owner
+                    rubro_obj_global = Rubro.query.get(contexto_chat.get("demo_rubro_id")) or potencial_owner.rubro
+                    if rubro_obj_global:
+                        rubro_para_log = rubro_para_log or getattr(rubro_obj_global, "nombre", None) or getattr(rubro_obj_global, "clave", None)
+                        if not rubro_id:
+                            rubro_id = rubro_obj_global.id
+                        if not rubro_clave and getattr(rubro_obj_global, "clave", None):
+                            rubro_clave = rubro_obj_global.clave
+                    tipo_chat = contexto_chat.get("demo_tipo_chat", tipo_chat)
+
+        demo_key = _extract_demo_key(action_id)
+        if not demo_key and isinstance(original_user_payload, dict):
+            demo_key = _extract_demo_key(original_user_payload.get("action") or original_user_payload.get("action_id"))
+
+        if not demo_key and isinstance(original_user_payload, str):
+            user_text = original_user_payload.strip().lower()
+            if user_text:
+                demo_options = _load_demo_rubros()
+                for opcion in demo_options:
+                    candidatos = {
+                        opcion["key"],
+                        opcion["label"].strip().lower(),
+                        (opcion.get("rubro_clave") or "").strip().lower(),
+                    }
+                    if user_text in candidatos:
+                        demo_key = opcion["key"]
+                        break
+
+        if demo_key:
+            demo_options = demo_options or _load_demo_rubros()
+            selected_demo = next((opt for opt in demo_options if opt["key"] == demo_key), None)
+            if not selected_demo:
+                selector_payload = _build_demo_selector_payload(demo_options)
+                selector_payload["message_body"] = (
+                    "No pude reconocer esa demo. Elegí una de las opciones disponibles para continuar."
+                )
+                return jsonify(selector_payload), 200
+
+            owner_del_bot = User.query.get(selected_demo["owner_user_id"])
+            rubro_obj_global = Rubro.query.get(selected_demo["rubro_id"]) if selected_demo.get("rubro_id") else None
+            if owner_del_bot and not rubro_obj_global:
+                rubro_obj_global = owner_del_bot.rubro
+
+            if not owner_del_bot or not rubro_obj_global:
+                current_app.logger.error(
+                    f"[demo] La demo '{demo_key}' no cuenta con usuario o rubro configurado correctamente."
+                )
+                demo_options = demo_options or _load_demo_rubros()
+                selector_payload = _build_demo_selector_payload(demo_options)
+                selector_payload["message_body"] = (
+                    "La demo seleccionada no está disponible en este momento. Elegí otra opción para continuar."
+                )
+                return jsonify(selector_payload), 200
+
+            rubro_para_log = selected_demo["label"]
+            tipo_chat = selected_demo["tipo_chat"]
+            rubro_id = getattr(rubro_obj_global, "id", rubro_id)
+            if getattr(rubro_obj_global, "clave", None):
+                rubro_clave = rubro_obj_global.clave
+
+            contexto_chat["demo_session"] = True
+            contexto_chat["demo_owner_user_id"] = owner_del_bot.id
+            contexto_chat["demo_rubro_id"] = rubro_obj_global.id if rubro_obj_global else None
+            contexto_chat["demo_tipo_chat"] = tipo_chat
+            contexto_chat["demo_key"] = selected_demo["key"]
+            contexto_chat["demo_message_count"] = 0
+            flag_modified(chat_context_obj, "context_data")
+
+            pregunta = "__INIT__"
+            original_user_payload = "__INIT__"
+            action_id = None
+            is_demo_selection_event = True
+
+        if not owner_del_bot:
+            demo_options = demo_options or _load_demo_rubros()
+            if demo_options:
+                contexto_chat["demo_session"] = True
+                contexto_chat.pop("demo_owner_user_id", None)
+                contexto_chat.pop("demo_rubro_id", None)
+                contexto_chat.pop("demo_tipo_chat", None)
+                contexto_chat.pop("demo_key", None)
+                flag_modified(chat_context_obj, "context_data")
+                selector_payload = _build_demo_selector_payload(demo_options)
+                try:
+                    commit_with_retry(db.session)
+                except Exception as e_commit:
+                    db.session.rollback()
+                    current_app.logger.error(
+                        f"Error guardando la selección de demo para la sesión {chat_session_id_header}: {e_commit}",
+                        exc_info=True,
+                    )
+                return jsonify(selector_payload), 200
+
         if not owner_del_bot and rubro_obj_global:
             current_app.logger.warning(
                 f"Rubro ID {rubro_obj_global.id} ('{rubro_para_log}') encontrado pero sin User owner asociado (empresa_id=None o rol=admin). Se continuará sin owner específico si el rubro es público.")
@@ -419,6 +727,32 @@ def _procesar_chat(
                 return jsonify({
                     "error": f"El bot ha alcanzado el límite de preguntas de su plan ({limite})."
                 }), 403
+
+        demo_limit = current_app.config.get("DEMO_MAX_MESSAGES_PER_SESSION", 0)
+        demo_session_activa = bool(isinstance(contexto_chat, dict) and contexto_chat.get("demo_session"))
+        incrementar_demo = (
+            demo_session_activa
+            and demo_limit
+            and demo_limit > 0
+            and not is_demo_selection_event
+            and not _is_init_payload(original_user_payload)
+        )
+
+        if incrementar_demo:
+            conteo_actual = int(contexto_chat.get("demo_message_count", 0)) + 1
+            contexto_chat["demo_message_count"] = conteo_actual
+            flag_modified(chat_context_obj, "context_data")
+            if conteo_actual > demo_limit:
+                respuesta_limite = _build_demo_limit_response(demo_limit)
+                try:
+                    commit_with_retry(db.session)
+                except Exception as e_commit:
+                    db.session.rollback()
+                    current_app.logger.error(
+                        f"Error al guardar el límite de la demo para la sesión {chat_session_id_header}: {e_commit}",
+                        exc_info=True,
+                    )
+                return jsonify(respuesta_limite), 403
 
         # The logic for file analysis has been moved to the upload endpoint.
         # The chat endpoint is only responsible for passing the attachmentInfo.
