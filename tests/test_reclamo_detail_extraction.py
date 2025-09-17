@@ -94,3 +94,28 @@ def test_detect_barrio_hint():
     )
     assert details["barrio_sugerido"] == "Jardín del centro"
     assert details["barrio"] == "Jardín del centro"
+
+
+def test_free_text_complaint_does_not_guess_contact_or_address(monkeypatch):
+    monkeypatch.setattr(
+        "services.municipio_responder.extract_multiple_contact_details_llm",
+        lambda *args, **kwargs: {},
+    )
+    monkeypatch.setattr(
+        "services.municipio_responder.extract_complaint_details_llm",
+        lambda *args, **kwargs: {},
+    )
+
+    message = (
+        "quiero pedir que corten las ramas de los arboles del barrio jardin en el centro de junin "
+        "esta tapando y cruzando la medianera me ensucia toda la pileta"
+    )
+    details = extract_reclamo_details_from_text(message, ["Arbolado"])
+
+    assert details["categoria_sugerida"] == "Arbolado"
+    assert details["descripcion_sugerida"].startswith("corten las ramas de los arboles")
+    assert "direccion" not in details
+    assert "direccion_sugerida" not in details
+    assert "nombre" not in details
+    assert "nombre_sugerido" not in details
+    assert details.get("barrio_sugerido") == "jardin en el centro de junin"
