@@ -2736,6 +2736,28 @@ def extract_reclamo_details_from_text(
             if llm_details.get(llm_key) and target_key not in details:
                 details[target_key] = llm_details[llm_key]
 
+    suggested_to_legacy = {
+        "categoria_sugerida": "categoria",
+        "descripcion_sugerida": "descripcion",
+        "direccion_sugerida": "direccion",
+        "nombre_sugerido": "nombre",
+        "telefono_sugerido": "telefono",
+        "email_sugerido": "email",
+        "dni_sugerido": "dni",
+        "barrio_sugerido": "barrio",
+        "distrito_sugerido": "distrito",
+    }
+
+    for suggested_key, legacy_key in suggested_to_legacy.items():
+        value = details.get(suggested_key)
+        if value and legacy_key not in details:
+            details[legacy_key] = value
+
+    for legacy_key, suggested_key in {v: k for k, v in suggested_to_legacy.items()}.items():
+        value = details.get(legacy_key)
+        if value and suggested_key not in details:
+            details[suggested_key] = value
+
     return details
 
 
