@@ -2097,6 +2097,70 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
 
         mensaje_completo_para_llm = {"texto": pregunta_str}
+        ubicacion_llm_fuente = context.get("ubicacion_usuario") or {}
+        if not ubicacion_llm_fuente:
+            chat_context_data = context.get("chat_db_context_data", {})
+            if isinstance(chat_context_data, dict):
+                ubicacion_llm_fuente = chat_context_data.get("ubicacion_usuario") or {}
+                if not ubicacion_llm_fuente:
+                    contexto_llm = chat_context_data.get(CONTEXTO_MUNICIPIO, {})
+                    if isinstance(contexto_llm, dict):
+                        ubicacion_llm_fuente = contexto_llm.get("ubicacion_contextual") or {}
+
+        if isinstance(ubicacion_llm_fuente, dict) and ubicacion_llm_fuente:
+            ubicacion_para_llm: dict[str, Any] = {}
+
+            lat = ubicacion_llm_fuente.get("latitude") or ubicacion_llm_fuente.get("lat")
+            lon = ubicacion_llm_fuente.get("longitude") or ubicacion_llm_fuente.get("lon")
+
+            def _convert_float(valor):
+                try:
+                    return float(valor)
+                except (TypeError, ValueError):
+                    return valor
+
+            if lat is not None or lon is not None:
+                coords_dict: dict[str, Any] = {}
+                if lat is not None:
+                    coords_dict["lat"] = _convert_float(lat)
+                if lon is not None:
+                    coords_dict["lon"] = _convert_float(lon)
+                if coords_dict:
+                    ubicacion_para_llm["coordenadas"] = coords_dict
+
+            direccion = (
+                ubicacion_llm_fuente.get("address")
+                or ubicacion_llm_fuente.get("direccion")
+                or ubicacion_llm_fuente.get("description")
+            )
+            if direccion:
+                ubicacion_para_llm["direccion"] = direccion
+
+            if ubicacion_llm_fuente.get("localidad"):
+                ubicacion_para_llm["localidad"] = ubicacion_llm_fuente.get("localidad")
+
+            if ubicacion_llm_fuente.get("accuracy") is not None:
+                ubicacion_para_llm["accuracy"] = _convert_float(ubicacion_llm_fuente.get("accuracy"))
+
+            if ubicacion_para_llm:
+                mensaje_completo_para_llm["ubicacion"] = ubicacion_para_llm
+
+        if context.get("es_ubicacion"):
+            mensaje_completo_para_llm["es_ubicacion"] = True
+
+        chat_context_data = context.get("chat_db_context_data", {})
+        source_is_audio = bool(context.get("source_is_audio"))
+        if isinstance(chat_context_data, dict):
+            if not source_is_audio:
+                source_is_audio = bool(chat_context_data.get("source_is_audio"))
+            if not source_is_audio:
+                contexto_llm = chat_context_data.get(CONTEXTO_MUNICIPIO, {})
+                if isinstance(contexto_llm, dict):
+                    source_is_audio = bool(contexto_llm.get("source_is_audio"))
+
+        if source_is_audio:
+            mensaje_completo_para_llm["fuente_audio"] = True
+
         if context.get("es_foto") and context.get("foto_url"):
             mensaje_completo_para_llm["imagen_url"] = context.get("foto_url")
             if contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw"):
@@ -2988,11 +3052,24 @@ def responder_municipio(
     # --- END DEBUG LOG ---
 
     normalized_question = None
+    cache_key = None
+    skip_cache_for_input = False
+
+    def _should_skip_cache_response(response: Any) -> bool:
+        if not isinstance(response, dict):
+            return False
+        data = response.get("data")
+        if isinstance(data, dict):
+            if any(data.get(key) for key in ("ticket_id", "nro_ticket", "consulta_pin")):
+                return True
+        if response.get("delayed_payload"):
+            return True
+        return False
 
     def _finalize_response(response):
         """Return the response unchanged; also store it in cache for repeated queries."""
-        if normalized_question:
-            MUNICIPIO_RESPONSE_CACHE[normalized_question] = response
+        if cache_key and not skip_cache_for_input and not _should_skip_cache_response(response):
+            MUNICIPIO_RESPONSE_CACHE[cache_key] = response
         return response
 
     logger_actual.info(
@@ -3062,16 +3139,53 @@ def responder_municipio(
                 "fuente": "handler_consultar_reclamo",
             }
 
-    normalized_question = normalizar_texto(pregunta_str)
-    cached_response = MUNICIPIO_RESPONSE_CACHE.get(normalized_question)
-
     if kwargs:
         for key, value in kwargs.items():
             received_payload[key] = value
 
     chat_db_context_live_data = {}
-    if chat_db_context and chat_db_context.context_data is not None:
+    if chat_db_context:
+        if chat_db_context.context_data is None:
+            chat_db_context.context_data = {}
         chat_db_context_live_data = chat_db_context.context_data
+
+    def _input_flag_is_true(value: Any) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "si"}
+        return bool(value)
+
+    skip_cache_for_input = any(
+        _input_flag_is_true(received_payload.get(flag))
+        for flag in ("es_foto", "es_archivo", "es_ubicacion")
+    ) or _input_flag_is_true(kwargs.get("datos_interpretados_archivo")) or _input_flag_is_true(kwargs.get("archivo_id_para_asociar"))
+    if not skip_cache_for_input:
+        if kwargs.get("source_is_audio") or chat_db_context_live_data.get("source_is_audio"):
+            skip_cache_for_input = True
+        else:
+            contexto_llm_cache = chat_db_context_live_data.get(CONTEXTO_MUNICIPIO, {})
+            if isinstance(contexto_llm_cache, dict) and contexto_llm_cache.get("source_is_audio"):
+                skip_cache_for_input = True
+
+    normalized_question = normalizar_texto(pregunta_str)
+    cache_namespace = None
+    if normalized_question:
+        namespace_candidates = [
+            kwargs.get("chat_session_uuid"),
+            getattr(chat_db_context, "chat_session_id", None) if chat_db_context else None,
+            anon_id,
+        ]
+        viewer_id = getattr(viewer_user, "id", None)
+        if viewer_id:
+            namespace_candidates.append(f"viewer:{viewer_id}")
+        for candidate in namespace_candidates:
+            if candidate:
+                cache_namespace = str(candidate)
+                break
+        if not cache_namespace:
+            cache_namespace = "global"
+        cache_key = f"{cache_namespace}:{normalized_question}"
+
+    cached_response = MUNICIPIO_RESPONSE_CACHE.get(cache_key) if cache_key else None
 
     contexto_municipio_actual = chat_db_context_live_data.get(CONTEXTO_MUNICIPIO, {})
     flow_activo = False
@@ -3083,8 +3197,11 @@ def responder_municipio(
         )
 
     if cached_response and not flow_activo:
-        logger_actual.info("responder_municipio: returning cached response")
-        return cached_response
+        if skip_cache_for_input:
+            logger_actual.info("Cache hit ignored for multimedia/audio input; recalculating response.")
+        else:
+            logger_actual.info("responder_municipio: returning cached response")
+            return cached_response
 
     # Crear el diccionario de contexto principal una sola vez
     context = {
