@@ -36,7 +36,12 @@ def build_ticket_promo_section(ticket_number: str | None = None, neighbor_name: 
     lines: list[str] = []
     headline = promo.get("headline")
     if headline:
-        lines.append(headline)
+        formatted_headline = headline
+        if not formatted_headline.startswith("*"):
+            formatted_headline = f"*{formatted_headline}"
+        if not formatted_headline.endswith("*"):
+            formatted_headline = f"{formatted_headline}*"
+        lines.append(formatted_headline)
 
     tagline = promo.get("tagline")
     if tagline:
