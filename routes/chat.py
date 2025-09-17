@@ -3,6 +3,7 @@ import os
 import logging
 import random
 import uuid  # Added for chat_session_id generation
+from urllib.parse import urljoin
 
 # Add project root to sys.path for this routes file
 project_root_chat_routes = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -608,6 +609,14 @@ def _procesar_chat(
 
         if interpretacion_imagen_resultado and not interpretacion_imagen_resultado.get("error"):
             resultado["interpretacion_adjunto"] = interpretacion_imagen_resultado
+
+        if isinstance(resultado, dict):
+            audio_url = resultado.get("audio_url")
+            if audio_url:
+                absolute_audio_url = urljoin(request.host_url, audio_url)
+                resultado["audio_url"] = absolute_audio_url
+                if channel == "web" and "audio" not in resultado:
+                    resultado["audio"] = {"link": absolute_audio_url}
 
         # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
         if is_anonymous and resultado and resultado.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"] and not (resultado.get("datos_estructura", {}).get("nombre_usuario_detectado") and resultado.get("datos_estructura", {}).get("telefono_detectado") and resultado.get("datos_estructura", {}).get("email_detectado")):
