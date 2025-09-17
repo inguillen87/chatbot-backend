@@ -64,7 +64,8 @@ class TestSugerenciaFlow(unittest.TestCase):
             viewer_user=viewer_user,
             chat_db_context=chat_context
         )
-        self.assertIn("Faltan: dni", response_2["message_body"])
+        self.assertIn("dni", response_2["message_body"].lower())
+        self.assertIn("necesito", response_2["message_body"].lower())
         self.assertEqual(
             chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
             ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
@@ -196,6 +197,61 @@ class TestSugerenciaFlow(unittest.TestCase):
             ctx.get("reclamo_flow_v2", {}).get("state"),
             ReclamoState.ESPERANDO_CATEGORIA.name,
         )
+
+    def test_sugerencia_preserva_nombre_existente_con_direccion(self):
+        owner_user = User.query.get(1)
+        rubro_obj = owner_user.rubro
+        # Usuario anónimo sin datos precargados
+        chat_context = ChatSessionContext(
+            chat_session_id='test_sugerencia_nombre',
+            user_id=1,
+            context_data={
+                'contexto_municipio_v2': {
+                    'contacto_usuario': {
+                        'nombre': 'Marcelo',
+                        'telefono': 'df64b30a-a4ba-43d8-ab6e-633da3e857c1'
+                    }
+                }
+            }
+        )
+        db.session.add(chat_context)
+        db.session.commit()
+
+        responder_municipio(
+            pregunta_original={"action": "enviar_sugerencia"},
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=None,
+            chat_db_context=chat_context
+        )
+
+        responder_municipio(
+            pregunta_original="Mejorar iluminación en las plazas",
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=None,
+            chat_db_context=chat_context
+        )
+
+        contacto_msg = "32877851 guillen.marce@gmail.com sarmiento 125 junin"
+        responder_municipio(
+            pregunta_original=contacto_msg,
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=None,
+            chat_db_context=chat_context
+        )
+
+        datos = chat_context.context_data['contexto_municipio_v2']['datos_sugerencia']
+        self.assertEqual(datos.get('nombre'), 'Marcelo')
+        self.assertEqual(datos.get('dni'), '32877851')
+        self.assertEqual(datos.get('email'), 'guillen.marce@gmail.com')
+        self.assertEqual(datos.get('direccion'), 'sarmiento 125 junin')
+
+        contacto = chat_context.context_data['contexto_municipio_v2'].get('contacto_usuario', {})
+        self.assertEqual(contacto.get('nombre'), 'Marcelo')
+        self.assertEqual(contacto.get('direccion'), 'sarmiento 125 junin')
+        self.assertNotIn('telefono', contacto)
 
 if __name__ == '__main__':
     unittest.main()

@@ -92,6 +92,8 @@ NAME_STOPWORDS = {
     "me",
 }
 
+PLACEHOLDER_NAMES = {"vecino", "vecina", "vecine", "vecino/a"}
+
 class ReclamoState(Enum):
     ESPERANDO_CATEGORIA = auto()
     ESPERANDO_DIRECCION = auto()
@@ -216,6 +218,20 @@ class ReclamoFlowHandler:
                         continue
                     if field == 'nombre' and candidate.lower() in {'vecino', 'vecina', 'vecino/a'}:
                         continue
+                    if field == 'telefono':
+                        cleaned_candidate = re.sub(
+                            r'^(tel\.?|teléfono|telefono|cel\.?|celular|whatsapp|wsapp|wa)[:\s-]*',
+                            '',
+                            candidate,
+                            flags=re.IGNORECASE,
+                        )
+                        cleaned_candidate = re.sub(r'\b(int|interno|intern)\b\.?:?', '', cleaned_candidate, flags=re.IGNORECASE)
+                        cleaned_candidate = cleaned_candidate.strip()
+                        if re.search(r'[A-Za-z]', cleaned_candidate):
+                            continue
+                        if len(re.sub(r'\D', '', cleaned_candidate)) < 6:
+                            continue
+                        candidate = cleaned_candidate
                 datos[field] = candidate
                 break
 
@@ -4002,11 +4018,15 @@ def responder_municipio(
 
             campos_faltantes = [c for c in ["nombre", "dni", "email", "direccion"] if not datos_sugerencia.get(c)]
             contexto_municipio_actual['datos_sugerencia'] = datos_sugerencia
-            contexto_municipio_actual['contacto_usuario'] = {
-                k: datos_sugerencia.get(k)
-                for k in ["nombre", "dni", "email", "direccion", "telefono"]
-                if datos_sugerencia.get(k)
-            }
+            contacto_actualizado = {}
+            for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
+                valor_campo = datos_sugerencia.get(campo)
+                if not valor_campo:
+                    continue
+                if campo == "telefono" and not validar_telefono(str(valor_campo)):
+                    continue
+                contacto_actualizado[campo] = valor_campo
+            contexto_municipio_actual['contacto_usuario'] = contacto_actualizado
             if campos_faltantes:
                 contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
                 if chat_db_context:
@@ -4049,9 +4069,31 @@ def responder_municipio(
             nuevos_datos = extract_multiple_contact_details_regex(
                 pregunta_str, campos_requeridos + ["telefono"]
             )
+            direccion_referencia = nuevos_datos.get("direccion") or datos_guardados.get("direccion") or ""
             for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
-                if nuevos_datos.get(campo):
-                    datos_guardados[campo] = nuevos_datos[campo]
+                valor_nuevo = nuevos_datos.get(campo)
+                if not valor_nuevo:
+                    continue
+                if campo == "telefono" and not validar_telefono(str(valor_nuevo)):
+                    continue
+                if campo == "nombre":
+                    if re.search(r"\d", str(valor_nuevo)):
+                        continue
+                    nombre_existente = datos_guardados.get("nombre")
+                    nombre_existente_normalizado = (
+                        normalizar_texto(nombre_existente) if nombre_existente else ""
+                    )
+                    valor_normalizado = normalizar_texto(valor_nuevo)
+                    if nombre_existente and nombre_existente_normalizado == valor_normalizado:
+                        continue
+                    if (
+                        direccion_referencia
+                        and valor_normalizado in normalizar_texto(direccion_referencia)
+                        and nombre_existente_normalizado
+                        and nombre_existente_normalizado not in PLACEHOLDER_NAMES
+                    ):
+                        continue
+                datos_guardados[campo] = valor_nuevo
 
             campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
 
@@ -4071,11 +4113,15 @@ def responder_municipio(
 
             contexto_municipio_actual['datos_sugerencia'] = datos_guardados
             # Persist contact info for future interactions
-            contexto_municipio_actual['contacto_usuario'] = {
-                k: datos_guardados.get(k)
-                for k in ["nombre", "dni", "email", "direccion", "telefono"]
-                if datos_guardados.get(k)
-            }
+            contacto_actualizado = {}
+            for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
+                valor_campo = datos_guardados.get(campo)
+                if not valor_campo:
+                    continue
+                if campo == "telefono" and not validar_telefono(str(valor_campo)):
+                    continue
+                contacto_actualizado[campo] = valor_campo
+            contexto_municipio_actual['contacto_usuario'] = contacto_actualizado
             if campos_faltantes:
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
@@ -4829,11 +4875,15 @@ def responder_municipio(
 
             campos_faltantes = [c for c in ["nombre", "dni", "email", "direccion"] if not datos_sugerencia.get(c)]
             contexto_municipio_actual['datos_sugerencia'] = datos_sugerencia
-            contexto_municipio_actual['contacto_usuario'] = {
-                k: datos_sugerencia.get(k)
-                for k in ["nombre", "dni", "email", "direccion", "telefono"]
-                if datos_sugerencia.get(k)
-            }
+            contacto_actualizado = {}
+            for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
+                valor_campo = datos_sugerencia.get(campo)
+                if not valor_campo:
+                    continue
+                if campo == "telefono" and not validar_telefono(str(valor_campo)):
+                    continue
+                contacto_actualizado[campo] = valor_campo
+            contexto_municipio_actual['contacto_usuario'] = contacto_actualizado
             if campos_faltantes:
                 contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
                 if chat_db_context:
@@ -4876,9 +4926,31 @@ def responder_municipio(
             nuevos_datos = extract_multiple_contact_details_regex(
                 pregunta_str, campos_requeridos + ["telefono"]
             )
+            direccion_referencia = nuevos_datos.get("direccion") or datos_guardados.get("direccion") or ""
             for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
-                if nuevos_datos.get(campo):
-                    datos_guardados[campo] = nuevos_datos[campo]
+                valor_nuevo = nuevos_datos.get(campo)
+                if not valor_nuevo:
+                    continue
+                if campo == "telefono" and not validar_telefono(str(valor_nuevo)):
+                    continue
+                if campo == "nombre":
+                    if re.search(r"\d", str(valor_nuevo)):
+                        continue
+                    nombre_existente = datos_guardados.get("nombre")
+                    nombre_existente_normalizado = (
+                        normalizar_texto(nombre_existente) if nombre_existente else ""
+                    )
+                    valor_normalizado = normalizar_texto(valor_nuevo)
+                    if nombre_existente and nombre_existente_normalizado == valor_normalizado:
+                        continue
+                    if (
+                        direccion_referencia
+                        and valor_normalizado in normalizar_texto(direccion_referencia)
+                        and nombre_existente_normalizado
+                        and nombre_existente_normalizado not in PLACEHOLDER_NAMES
+                    ):
+                        continue
+                datos_guardados[campo] = valor_nuevo
 
             campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
 
@@ -4898,11 +4970,15 @@ def responder_municipio(
 
             contexto_municipio_actual['datos_sugerencia'] = datos_guardados
             # Persist contact info for future interactions
-            contexto_municipio_actual['contacto_usuario'] = {
-                k: datos_guardados.get(k)
-                for k in ["nombre", "dni", "email", "direccion", "telefono"]
-                if datos_guardados.get(k)
-            }
+            contacto_actualizado = {}
+            for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
+                valor_campo = datos_guardados.get(campo)
+                if not valor_campo:
+                    continue
+                if campo == "telefono" and not validar_telefono(str(valor_campo)):
+                    continue
+                contacto_actualizado[campo] = valor_campo
+            contexto_municipio_actual['contacto_usuario'] = contacto_actualizado
             if campos_faltantes:
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
