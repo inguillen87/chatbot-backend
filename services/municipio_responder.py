@@ -11,6 +11,8 @@ import json
 from enum import Enum, auto
 import unicodedata
 import difflib
+from typing import Any, Optional
+from urllib.parse import parse_qs, unquote, urlparse
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
 from models import (
@@ -327,6 +329,23 @@ class ReclamoFlowHandler:
         return self.ask_for_contact_details()
 
     def handle_direccion(self, user_input, payload):
+        if not payload.get("es_ubicacion") and user_input:
+            link_info = _detect_location_link_info(user_input)
+            if link_info:
+                payload = dict(payload)
+                payload["es_ubicacion"] = True
+                location_payload = {
+                    k: v
+                    for k, v in {
+                        "address": link_info.get("address"),
+                        "latitude": link_info.get("latitude"),
+                        "longitude": link_info.get("longitude"),
+                    }.items()
+                    if v is not None
+                }
+                if location_payload:
+                    payload["ubicacion_usuario"] = location_payload
+
         if payload.get("es_ubicacion") and payload.get("ubicacion_usuario"):
             location_data = payload.get("ubicacion_usuario")
             address = location_data.get("address")
@@ -2925,6 +2944,199 @@ def _parse_intersection_and_district(
     return direccion, hints
 
 
+def _extract_coordinates_from_text(value: str) -> Optional[dict[str, float]]:
+    """Return latitude/longitude pairs found in free text when clearly expressed."""
+
+    if not value:
+        return None
+
+    coordinate_patterns = [
+        re.compile(r"(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)"),
+        re.compile(r"(-?\d{1,3}\.\d+)\s+(-?\d{1,3}\.\d+)"),
+    ]
+
+    for pattern in coordinate_patterns:
+        for match in pattern.finditer(value):
+            lat = float(match.group(1))
+            lon = float(match.group(2))
+            if -90 <= lat <= 90 and -180 <= lon <= 180:
+                return {"latitude": lat, "longitude": lon}
+
+    return None
+
+
+def _extract_coordinates_from_url(url: str) -> Optional[dict[str, float]]:
+    """Parse typical map URLs looking for embedded coordinates."""
+
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+
+    query = parse_qs(parsed.query)
+    for key in ("q", "query", "ll", "center"):
+        for value in query.get(key, []):
+            coords = _extract_coordinates_from_text(unquote(value))
+            if coords:
+                return coords
+
+    path_candidate = unquote(parsed.path or "")
+    match = re.search(r"@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)", path_candidate)
+    if match:
+        lat = float(match.group(1))
+        lon = float(match.group(2))
+        if -90 <= lat <= 90 and -180 <= lon <= 180:
+            return {"latitude": lat, "longitude": lon}
+
+    fragment_coords = _extract_coordinates_from_text(unquote(parsed.fragment or ""))
+    if fragment_coords:
+        return fragment_coords
+
+    return None
+
+
+def _detect_location_link_info(text: str) -> Optional[dict[str, Any]]:
+    """Detect whether a message mainly shares a location link or raw coordinates."""
+
+    if not text:
+        return None
+
+    location_keywords = (
+        "maps.google",
+        "maps.app.goo.gl",
+        "goo.gl/maps",
+        "waze.com",
+        "openstreetmap",
+        "mapa",
+    )
+
+    url_match = re.search(r"https?://[^\s>]+", text, re.IGNORECASE)
+    coords_in_text = _extract_coordinates_from_text(text)
+
+    info: dict[str, Any] = {}
+    cleaned_text = text.strip()
+
+    if url_match:
+        url = url_match.group(0)
+        host = urlparse(url).netloc.lower()
+        if any(keyword in host for keyword in location_keywords):
+            cleaned_text = (text[: url_match.start()] + " " + text[url_match.end():]).strip()
+            info["source"] = "link"
+            coords_from_url = _extract_coordinates_from_url(url)
+            if coords_from_url:
+                info.update(coords_from_url)
+        else:
+            url_match = None
+
+    if not url_match and not coords_in_text:
+        return None
+
+    if "source" not in info:
+        info["source"] = "coordinates"
+
+    if not info.get("latitude") and coords_in_text:
+        info.update(coords_in_text)
+
+    if coords_in_text:
+        cleaned_text = re.sub(r"-?\d{1,3}\.\d+[\s,]+-?\d{1,3}\.\d+", " ", cleaned_text).strip()
+
+    residual_words = [word for word in cleaned_text.split() if word]
+    if residual_words:
+        normalized_words = [normalizar_texto(word) for word in residual_words]
+        allowed_fillers = {
+            "aca",
+            "aqui",
+            "aquí",
+            "ubicacion",
+            "ubicación",
+            "ubic",
+            "pin",
+            "link",
+            "direccion",
+            "dirección",
+            "es",
+            "esta",
+            "este",
+            "mi",
+            "la",
+            "el",
+            "en",
+            "te",
+            "paso",
+        }
+        if len(residual_words) > 6 and not all(word in allowed_fillers for word in normalized_words):
+            return None
+        info["address"] = cleaned_text.strip()
+    else:
+        info["address"] = "la ubicación que compartiste"
+
+    return info
+
+
+def _try_start_reclamo_from_text(
+    pregunta_str: str,
+    context: dict[str, Any],
+    chat_db_context,
+    *,
+    default_localidad: str | None = None,
+    default_provincia: str | None = None,
+) -> Optional[dict[str, Any]]:
+    """Attempt to bootstrap the reclamo flow directly from a free-text message."""
+
+    if not pregunta_str:
+        return None
+
+    normalized_text = normalizar_texto(pregunta_str)
+    if len(normalized_text.split()) < 4 and len(pregunta_str.strip()) < 30:
+        return None
+
+    reclamo_options = _get_reclamos_menu().get("options_list", [])
+    plain_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
+
+    details = extract_reclamo_details_from_text(
+        pregunta_str,
+        plain_options,
+        default_localidad=default_localidad,
+        default_provincia=default_provincia,
+    )
+
+    category = details.get("categoria") or details.get("categoria_sugerida")
+    if not category:
+        return None
+
+    handler = ReclamoFlowHandler(context, chat_db_context)
+
+    datos_iniciales: dict[str, Any] = {}
+    field_mapping = (
+        ("descripcion", "descripcion_sugerida"),
+        ("direccion", "direccion_sugerida"),
+        ("nombre", "nombre_sugerido"),
+        ("email", "email_sugerido"),
+        ("telefono", "telefono_sugerido"),
+        ("dni", "dni_sugerido"),
+    )
+
+    for field, suggested_key in field_mapping:
+        value = details.get(suggested_key) or details.get(field)
+        if value:
+            datos_iniciales[field] = value
+
+    if details.get("barrio_sugerido"):
+        datos_iniciales.setdefault("barrio", details["barrio_sugerido"])
+    if details.get("distrito_sugerido"):
+        datos_iniciales.setdefault("distrito", details["distrito_sugerido"])
+
+    response = handler.start_flow(
+        datos_iniciales=datos_iniciales or None,
+        categoria_inicial=category,
+    )
+
+    if chat_db_context:
+        safe_flag_modified(chat_db_context, "context_data")
+
+    return response
+
+
 def _get_reclamos_consultas_menu():
     opciones = [
         {"texto": "📝 Iniciar un Reclamo", "action_id": "iniciar_reclamo"},
@@ -3153,6 +3365,24 @@ def responder_municipio(
         for key, value in kwargs.items():
             received_payload[key] = value
 
+    location_link_info = None
+    if (
+        not received_payload.get("es_ubicacion")
+        and isinstance(pregunta_str, str)
+        and pregunta_str.strip()
+    ):
+        location_link_info = _detect_location_link_info(pregunta_str)
+        if location_link_info:
+            link_payload = {}
+            if location_link_info.get("address"):
+                link_payload["address"] = location_link_info["address"]
+            if location_link_info.get("latitude") is not None and location_link_info.get("longitude") is not None:
+                link_payload["latitude"] = location_link_info["latitude"]
+                link_payload["longitude"] = location_link_info["longitude"]
+            if link_payload:
+                received_payload.setdefault("ubicacion_usuario", {}).update(link_payload)
+            received_payload["es_ubicacion"] = True
+
     chat_db_context_live_data = {}
     if chat_db_context and chat_db_context.context_data is not None:
         chat_db_context_live_data = chat_db_context.context_data
@@ -3191,10 +3421,60 @@ def responder_municipio(
         "action": received_payload.get("action"),
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
+        "location_link_info": location_link_info,
     }
     # --- FIN REFACTOR ---
 
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
+
+    if location_link_info:
+        flow_state = (
+            contexto_municipio_actual.get("reclamo_flow_v2", {})
+            .get("state")
+        )
+        if flow_state == ReclamoState.ESPERANDO_DIRECCION.name:
+            handler = ReclamoFlowHandler(context, chat_db_context)
+            payload_con_ubicacion = dict(received_payload)
+            payload_con_ubicacion["es_ubicacion"] = True
+            payload_con_ubicacion.setdefault("ubicacion_usuario", {}).update(
+                {
+                    k: v
+                    for k, v in {
+                        "address": location_link_info.get("address"),
+                        "latitude": location_link_info.get("latitude"),
+                        "longitude": location_link_info.get("longitude"),
+                    }.items()
+                    if v is not None
+                }
+            )
+            response = handler.handle(pregunta_str, payload_con_ubicacion)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response)
+
+        if not contexto_municipio_actual.get("estado_conversacion"):
+            address = location_link_info.get("address") or "la ubicación que compartiste"
+            opciones_proactivas = [
+                {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
+                {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
+                {"texto": "Cancelar", "action_id": "cancelar"},
+            ]
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
+            contexto_municipio_actual['ubicacion_contextual'] = {
+                "address": address,
+                "latitude": location_link_info.get("latitude"),
+                "longitude": location_link_info.get("longitude"),
+                "source": location_link_info.get("source", "link"),
+            }
+            contexto_municipio_actual['menu_opciones'] = opciones_proactivas
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response({
+                "message_body": f"Recibí tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
+                "options_list": opciones_proactivas,
+                "message_type": "interactive_buttons",
+                "fuente": "proactive_location_handler",
+            })
 
     # --- START GREETING CHECK (MOVED) ---
     # This must run before any stateful logic to ensure greetings always reset the flow.
@@ -3766,6 +4046,24 @@ def responder_municipio(
     if kwargs:
         received_payload.update(kwargs)
 
+    location_link_info = None
+    if (
+        not received_payload.get("es_ubicacion")
+        and isinstance(pregunta_str, str)
+        and pregunta_str.strip()
+    ):
+        location_link_info = _detect_location_link_info(pregunta_str)
+        if location_link_info:
+            link_payload = {}
+            if location_link_info.get("address"):
+                link_payload["address"] = location_link_info["address"]
+            if location_link_info.get("latitude") is not None and location_link_info.get("longitude") is not None:
+                link_payload["latitude"] = location_link_info["latitude"]
+                link_payload["longitude"] = location_link_info["longitude"]
+            if link_payload:
+                received_payload.setdefault("ubicacion_usuario", {}).update(link_payload)
+            received_payload["es_ubicacion"] = True
+
     chat_db_context_live_data = {}
     if chat_db_context and chat_db_context.context_data is not None:
         chat_db_context_live_data = chat_db_context.context_data
@@ -3785,6 +4083,7 @@ def responder_municipio(
         "chat_db_context_data": chat_db_context_live_data,
         "profile_name": kwargs.get("profile_name"),
         # Other kwargs will be in received_payload
+        "location_link_info": location_link_info,
     }
     # --- END CONTEXT INITIALIZATION ---
 
@@ -3875,33 +4174,6 @@ def responder_municipio(
             if response:
                 return _finalize_response(response)
     # --- END GLOBAL MENU SHORTCUTS ---
-
-    # --- START DIRECT RECLAMO DETECTION FOR TEXT OR AUDIO ---
-    if not contexto_municipio_actual.get("estado_conversacion"):
-        reclamo_options = _get_reclamos_menu().get("options_list", [])
-        plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
-        details = extract_reclamo_details_from_text(pregunta_str, plain_text_options)
-        detected_category = details.pop("categoria_sugerida", None)
-        if detected_category:
-            handler = ReclamoFlowHandler(context, chat_db_context)
-            datos_iniciales = {}
-            if details.get("descripcion_sugerida"):
-                datos_iniciales["descripcion"] = details["descripcion_sugerida"]
-            if details.get("direccion_sugerida"):
-                datos_iniciales["direccion"] = details["direccion_sugerida"]
-            if details.get("nombre_sugerido"):
-                datos_iniciales["nombre"] = details.get("nombre_sugerido")
-            if details.get("email_sugerido"):
-                datos_iniciales["email"] = details.get("email_sugerido")
-            response_dict = handler.start_flow(
-                datos_iniciales=datos_iniciales or None,
-                categoria_inicial=detected_category,
-            )
-            contexto_municipio_actual["estado_conversacion"] = "EN_FLUJO_RECLAMO"
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-            return _finalize_response(response_dict)
-    # --- END DIRECT RECLAMO DETECTION FOR TEXT OR AUDIO ---
 
     # --- START INTENT CLASSIFICATION ---
     # If it's not a simple greeting, proceed with intent classification
@@ -4406,6 +4678,20 @@ def responder_municipio(
             if response:
                 return _finalize_response(response)
 
+    if (
+        not contexto_municipio_actual.get("estado_conversacion")
+        and isinstance(pregunta_str, str)
+        and pregunta_str.strip()
+    ):
+        auto_reclamo_response = _try_start_reclamo_from_text(
+            pregunta_str,
+            context,
+            chat_db_context,
+            default_localidad=final_municipio_config.get("ciudad"),
+            default_provincia=final_municipio_config.get("provincia"),
+        )
+        if auto_reclamo_response:
+            return _finalize_response(auto_reclamo_response)
 
     USAR_LLM_PARA_RECLAMOS = True  # Habilita el flujo con LLM para reclamos
     respuesta_manejada_por_llm = False # Flag para indicar si el LLM ya manejó la respuesta

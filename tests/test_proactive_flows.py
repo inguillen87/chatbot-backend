@@ -283,7 +283,7 @@ class TestProactiveFlows(unittest.TestCase):
             channel="whatsapp",
         )
 
-        self.assertIn("Ya casi terminamos", response2["message_body"])
+        self.assertIn("Para finalizar", response2["message_body"])
         self.assertEqual(
             chat_context.context_data['contexto_municipio_v2']['reclamo_flow_v2']['datos_reclamo']['direccion'],
             "Calle Falsa 123",
@@ -292,6 +292,63 @@ class TestProactiveFlows(unittest.TestCase):
             chat_context.context_data['contexto_municipio_v2'].get('estado_conversacion'),
             ConversationState.ESPERANDO_INTENCION_UBICACION.name,
         )
+
+    def test_location_link_triggers_proactive_menu(self):
+        owner_user = User.query.get(1)
+        rubro_obj = owner_user.rubro
+        chat_context = ChatSessionContext(chat_session_id='test_location_link', user_id=1, context_data={})
+        db.session.add(chat_context)
+        db.session.commit()
+
+        response = responder_municipio(
+            pregunta_original="https://maps.app.goo.gl/example",
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=owner_user,
+            chat_db_context=chat_context,
+            channel="whatsapp",
+        )
+
+        self.assertIn("Recibí tu ubicación", response["message_body"])
+        opciones = [opt["texto"] for opt in response.get("options_list", [])]
+        self.assertIn("Iniciar un Reclamo", opciones)
+        contexto = chat_context.context_data['contexto_municipio_v2']
+        self.assertEqual(
+            contexto['estado_conversacion'],
+            ConversationState.ESPERANDO_INTENCION_UBICACION.name,
+        )
+        self.assertEqual(contexto['ubicacion_contextual'].get('source'), 'link')
+
+    @patch('services.municipio_responder.extract_multiple_contact_details_llm', return_value={})
+    @patch('services.municipio_responder.extract_complaint_details_llm', return_value={})
+    @patch('services.municipio_responder.ReclamoFlowHandler.start_flow')
+    def test_free_text_claim_bootstrap(self, mock_start_flow, _mock_complaint, _mock_contacts):
+        mock_start_flow.return_value = {"message_body": "OK"}
+
+        owner_user = User.query.get(1)
+        rubro_obj = owner_user.rubro
+        initial_context = {
+            'contexto_municipio_v2': {
+                'estado_conversacion': ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+            }
+        }
+        chat_context = ChatSessionContext(chat_session_id='test_auto_text', user_id=1, context_data=initial_context)
+        db.session.add(chat_context)
+        db.session.commit()
+
+        response = responder_municipio(
+            pregunta_original="quiero que corten las ramas de un arbol caido en barrio jardin",
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=owner_user,
+            chat_db_context=chat_context,
+            channel="whatsapp",
+        )
+
+        mock_start_flow.assert_called_once()
+        kwargs = mock_start_flow.call_args.kwargs
+        self.assertEqual(kwargs.get('categoria_inicial'), 'Arbolado')
+        self.assertTrue(response.get("message_body"))
 
 if __name__ == '__main__':
     unittest.main()
