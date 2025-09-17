@@ -76,6 +76,22 @@ LOCATION_KEYWORD_TOKENS = {
     "distrito": {"distrito", "zona", "localidad", "ciudad"},
 }
 
+NAME_STOPWORDS = {
+    "hola",
+    "buenos",
+    "buenas",
+    "buen",
+    "quiero",
+    "quisiera",
+    "necesito",
+    "consulta",
+    "consulto",
+    "solicito",
+    "pido",
+    "deseo",
+    "me",
+}
+
 class ReclamoState(Enum):
     ESPERANDO_CATEGORIA = auto()
     ESPERANDO_DIRECCION = auto()
@@ -181,6 +197,11 @@ class ReclamoFlowHandler:
                 datos['descripcion_resumida'] = construir_descripcion_breve(descripcion_interpretada)
                 datos['origen_descripcion'] = 'imagen'
 
+        if datos.get('descripcion') and not datos.get('descripcion_resumida'):
+            resumen = construir_descripcion_breve(datos.get('descripcion'))
+            if resumen:
+                datos['descripcion_resumida'] = resumen
+
         def _apply_prefill(field: str, *candidates) -> None:
             """Populate ``datos`` with the first meaningful value available."""
             existing = datos.get(field)
@@ -237,10 +258,17 @@ class ReclamoFlowHandler:
         _apply_prefill('telefono', contacto_cache.get('telefono'))
         _apply_prefill('dni', contacto_cache.get('dni'))
 
-        # 4. From WhatsApp profile name if no other name is found
+        # 4. From the viewer profile if available
+        if viewer:
+            _apply_prefill('nombre', getattr(viewer, 'name', None))
+            _apply_prefill('email', getattr(viewer, 'email', None))
+            _apply_prefill('telefono', getattr(viewer, 'telefono', None))
+            _apply_prefill('dni', getattr(viewer, 'dni_vecino', None))
+
+        # 5. From WhatsApp profile name if no other name is found
         _apply_prefill('nombre', self.context.get('profile_name'))
 
-        # 5. From anon_id as a fallback for phone number
+        # 6. From anon_id as a fallback for phone number
         _apply_prefill('telefono', self.context.get('anon_id'))
 
         # Remember any newly found data in the session cache
@@ -277,7 +305,20 @@ class ReclamoFlowHandler:
             else:
                  return {"message_body": f"Reclamo por *{categoria}*.\n\nPara continuar, por favor, indicame la dirección exacta del problema."}
         else:
-            # All initial data is present, move to confirmation or next step
+            if not datos.get('foto_url'):
+                if self.context.get('foto_url'):
+                    datos['foto_url'] = self.context.get('foto_url')
+                else:
+                    self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
+                    return {
+                        "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
+                        "options_list": [
+                            {"texto": "Sí, agregar foto", "action_id": "reclamo_adjuntar_foto_si"},
+                            {"texto": "No, omitir foto", "action_id": "reclamo_adjuntar_foto_no"},
+                        ],
+                        "message_type": "interactive_buttons",
+                    }
+
             return self.ask_for_contact_details()
 
     def handle_categoria(self, user_input):
@@ -541,11 +582,34 @@ class ReclamoFlowHandler:
         return response
 
     def handle_confirmacion(self, user_input, payload):
-        action = payload.get("action")
-        normalized = user_input.lower()
+        action = payload.get("action") or payload.get("action_id") or ""
+        normalized_plain = normalizar_texto(user_input or "")
+        tokens = set(filter(None, re.split(r"\W+", normalized_plain)))
+        choice = normalized_plain.strip()
+
         affirmatives = {"si", "sí", "confirmo", "confirmar", "ok", "okay", "acepto", "aceptar", "dale"}
         negatives = {"no", "editar", "modificar", "cambiar"}
-        if any(word in normalized for word in affirmatives) or action == "reclamo_confirmar_si":
+        affirmative_tokens = {normalizar_texto(word) for word in affirmatives}
+        negative_tokens = {normalizar_texto(word) for word in negatives}
+
+        edit_requested = (
+            action == "reclamo_confirmar_no"
+            or choice in {"2"}
+            or any(token in negative_tokens for token in tokens)
+            or ("confirmar" in normalized_plain and normalized_plain.endswith("no"))
+        )
+
+        confirm_requested = (
+            action == "reclamo_confirmar_si"
+            or choice in {"1"}
+            or any(token in affirmative_tokens for token in tokens)
+            or ("confirmar" in normalized_plain and normalized_plain.endswith("si"))
+        )
+
+        if edit_requested:
+            return self.ask_for_contact_details(force_prompt=True)
+
+        if confirm_requested:
             datos = self.flow_context.get('datos_reclamo', {})
             action_data = {
                 "categoria": datos.get("categoria"),
@@ -609,8 +673,6 @@ class ReclamoFlowHandler:
                 "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde.",
             )
             return self.end_flow(error_message, show_menu=True)
-        elif any(word in normalized for word in negatives) or action == "reclamo_confirmar_no":
-            return self.ask_for_contact_details(force_prompt=True)
         else:  # Cancel or any other input
             cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
             return self.end_flow(cancel_msg, show_menu=True)
@@ -2626,6 +2688,187 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
     return None
 
 
+def _strip_leading_phrases(text: str) -> str:
+    if not text:
+        return text
+
+    cleaned = text.strip()
+    if not cleaned:
+        return cleaned
+
+    patterns = [
+        r"^(hola|buenos dias|buen dia|buenas tardes|buenas noches|buenas)\s*[!,\-:]*\s*",
+        r"^(hola\s+)?(?:que\s+tal|buenas)\s*[!,\-:]*\s*",
+        r"^(?:me\s+gustaria|me\s+gustaría|quisiera|necesito|quiero|solicito|pido|deseo|podria|podrian|podrían|podríamos|podrías)\s+(?:que\s+)?",
+        r"^(?:pedir|pediria|pediría)\s+(?:que\s+)?",
+        r"^que\s+",
+        r"^(?:ver|saber)\s+si\s+",
+        r"^por\s+favor\s+",
+    ]
+
+    previous = None
+    while cleaned and cleaned != previous:
+        previous = cleaned
+        for pattern in patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
+
+    return cleaned or text.strip()
+
+
+def _strip_trailing_phrases(text: str) -> str:
+    if not text:
+        return text
+
+    cleaned = text.strip()
+    trailing_patterns = [
+        r"\s*(muchas\s+)?gracias[!\.]?\s*$",
+        r"\s*saludos?\s*$",
+    ]
+    for pattern in trailing_patterns:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
+
+    return cleaned or text.strip()
+
+
+def _is_plausible_name(value: str | None) -> bool:
+    if not value:
+        return False
+
+    normalized = normalizar_texto(value)
+    if not normalized:
+        return False
+
+    if any(char.isdigit() for char in normalized):
+        return False
+
+    tokens = normalized.split()
+    if not tokens:
+        return False
+
+    if tokens[0] in NAME_STOPWORDS:
+        return False
+
+    if len(tokens) == 1 and len(tokens[0]) < 3:
+        return False
+
+    return True
+
+
+def _clean_location_fragment(fragment: str | None, *, max_words: int = 7) -> str | None:
+    if not fragment:
+        return fragment
+
+    cleaned = fragment.strip(" ,.-")
+    if not cleaned:
+        return None
+
+    for separator in [",", ";", "."]:
+        if separator in cleaned:
+            cleaned = cleaned.split(separator, 1)[0].strip()
+
+    lowered = cleaned.lower()
+    clause_markers = [
+        " que ",
+        " qué ",
+        " esta ",
+        " está ",
+        " estan ",
+        " están ",
+        " hay ",
+        " tiene ",
+        " tienen ",
+        " tapando ",
+        " ensucia ",
+        " ensuciando ",
+        " rompio ",
+        " rompió ",
+        " rompiendo ",
+    ]
+    for marker in clause_markers:
+        idx = lowered.find(marker)
+        if idx != -1:
+            cleaned = cleaned[:idx].strip()
+            lowered = cleaned.lower()
+
+    words = cleaned.split()
+    if len(words) > max_words:
+        cleaned = " ".join(words[:max_words]).strip()
+
+    return cleaned or None
+
+
+def _looks_like_address(value: str | None) -> bool:
+    if not value:
+        return False
+
+    candidate = value.strip()
+    if len(candidate) < 5:
+        return False
+
+    normalized = normalizar_texto(candidate)
+    if not normalized:
+        return False
+
+    if len(normalized.split()) > 12:
+        return False
+
+    complaint_terms = {
+        "arbol",
+        "arboles",
+        "rama",
+        "ramas",
+        "ensucia",
+        "medianera",
+        "pileta",
+        "basura",
+        "quema",
+        "poda",
+    }
+    if any(term in normalized for term in complaint_terms):
+        return False
+
+    if any(char.isdigit() for char in normalized):
+        return True
+
+    if "esquina" in normalized or "km" in normalized:
+        return True
+
+    if any(term in normalized for term in {"kilometro", "kilometros"}):
+        return True
+
+    location_keywords = {
+        "calle",
+        "avenida",
+        "av",
+        "avda",
+        "pasaje",
+        "plaza",
+        "parque",
+        "boulevard",
+        "bulevar",
+        "ruta",
+        "manzana",
+        "mz",
+        "lote",
+        "sector",
+        "pasillo",
+        "camino",
+        "autopista",
+    }
+
+    padded_normalized = f" {normalized} "
+    if any(f" {kw} " in padded_normalized for kw in location_keywords):
+        return True
+
+    if normalized.startswith("plaza ") or normalized.startswith("parque "):
+        return True
+
+    if normalized.startswith("barrio "):
+        return False
+
+    return False
+
+
 def extract_reclamo_details_from_text(
     user_input: str,
     reclamo_options: list,
@@ -2646,31 +2889,24 @@ def extract_reclamo_details_from_text(
     if not user_input:
         return details
 
-    normalized_input = normalizar_texto(user_input)
+    cleaned_description = _strip_trailing_phrases(_strip_leading_phrases(user_input))
+    if cleaned_description:
+        cleaned_description = re.sub(r"\s{2,}", " ", cleaned_description).strip()
+        details["descripcion_sugerida"] = cleaned_description
 
-    # --- Heuristic extraction for categoría y descripción ---
     category = find_reclamo_category_by_input(user_input, reclamo_options)
     if category:
         details["categoria_sugerida"] = category
-        description_source = user_input
-        for kw in RECLAMO_KEYWORDS.get(category, []):
-            if kw in normalized_input:
-                pattern = re.compile(re.escape(kw), re.IGNORECASE)
-                parts = pattern.split(user_input, 1)
-                if len(parts) > 1 and parts[1].strip():
-                    candidate = parts[1].strip(" ,.-")
-                    # Avoid returning descriptions that are too short after trimming
-                    if len(candidate) >= 5 and len(candidate.split()) >= 2:
-                        description_source = candidate
-                break
-        if description_source:
-            details["descripcion_sugerida"] = description_source.strip()
 
     # --- Address heuristics (incluye intersecciones) ---
     direccion_interseccion, intersection_hints = _parse_intersection_and_district(
         user_input, default_localidad=default_localidad, default_provincia=default_provincia
     )
-    if direccion_interseccion and "direccion_sugerida" not in details:
+    if (
+        direccion_interseccion
+        and "direccion_sugerida" not in details
+        and _looks_like_address(direccion_interseccion)
+    ):
         details["direccion_sugerida"] = direccion_interseccion
     if intersection_hints.get("barrio") and "barrio_sugerido" not in details:
         details["barrio_sugerido"] = intersection_hints["barrio"]
@@ -2694,13 +2930,17 @@ def extract_reclamo_details_from_text(
     if "direccion_sugerida" not in details:
         match = re.search(r"\b(?:en|sobre|por)\s+([A-Za-zÀ-ÿ'\s]+?\d{1,5})\b", user_input, re.IGNORECASE)
         if match:
-            details["direccion_sugerida"] = match.group(1).strip()
+            candidate = match.group(1).strip()
+            if _looks_like_address(candidate):
+                details["direccion_sugerida"] = candidate
 
     if "direccion_sugerida" not in details:
         # Simple fallback: first street + number sequence.
         match = re.search(r"([A-Za-zÀ-ÿ'\s]+\d{1,5})", user_input)
         if match:
-            details["direccion_sugerida"] = match.group(1).strip()
+            candidate = match.group(1).strip()
+            if _looks_like_address(candidate):
+                details["direccion_sugerida"] = candidate
 
     # --- Contact heuristics / LLM extraction ---
     contact_fields = [
@@ -2722,6 +2962,10 @@ def extract_reclamo_details_from_text(
         value = contact_details.get(source_key)
         if value and target_key not in details:
             details[target_key] = value
+
+    direccion_candidate = details.get("direccion_sugerida")
+    if direccion_candidate and not _looks_like_address(direccion_candidate):
+        details.pop("direccion_sugerida", None)
 
     # Determine if the LLM extractor is still required.
     needs_llm = False
@@ -2752,8 +2996,15 @@ def extract_reclamo_details_from_text(
             "dni_cliente": "dni_sugerido",
         }
         for llm_key, target_key in llm_mapping.items():
-            if llm_details.get(llm_key) and target_key not in details:
-                details[target_key] = llm_details[llm_key]
+            value = llm_details.get(llm_key)
+            if not value:
+                continue
+            if target_key not in details or target_key in {"descripcion_sugerida", "direccion_sugerida"}:
+                details[target_key] = value
+
+    direccion_candidate = details.get("direccion_sugerida")
+    if direccion_candidate and not _looks_like_address(direccion_candidate):
+        details.pop("direccion_sugerida", None)
 
     suggested_to_legacy = {
         "categoria_sugerida": "categoria",
@@ -2776,6 +3027,21 @@ def extract_reclamo_details_from_text(
         value = details.get(legacy_key)
         if value and suggested_key not in details:
             details[suggested_key] = value
+
+    direccion_final = details.get("direccion")
+    if direccion_final and not _looks_like_address(direccion_final):
+        details.pop("direccion", None)
+        if not details.get("direccion_sugerida"):
+            details.pop("direccion_sugerida", None)
+
+    nombre_final = details.get("nombre")
+    if nombre_final and not _is_plausible_name(nombre_final):
+        details.pop("nombre", None)
+    nombre_sugerido = details.get("nombre_sugerido")
+    if nombre_sugerido and not _is_plausible_name(nombre_sugerido):
+        details.pop("nombre_sugerido", None)
+        if details.get("nombre") == nombre_sugerido:
+            details.pop("nombre", None)
 
     return details
 
@@ -2803,7 +3069,9 @@ def _detect_location_mentions(
 
     barrio_match = re.search(r"\b(?:barrio|bº|b°)\s+([A-Za-zÀ-ÿ'\s]+)", text, re.IGNORECASE)
     if barrio_match:
-        hints["barrio"] = barrio_match.group(1).strip(" ,.-")
+        barrio_clean = _clean_location_fragment(barrio_match.group(1))
+        if barrio_clean:
+            hints["barrio"] = barrio_clean
 
     distrito_match = re.search(
         r"\b(?:distrito|zona|localidad|ciudad)\s+([A-Za-zÀ-ÿ'\s]+)",
@@ -2811,7 +3079,9 @@ def _detect_location_mentions(
         re.IGNORECASE,
     )
     if distrito_match:
-        hints["distrito"] = distrito_match.group(1).strip(" ,.-")
+        distrito_clean = _clean_location_fragment(distrito_match.group(1))
+        if distrito_clean:
+            hints["distrito"] = distrito_clean
 
     normalized_text = normalizar_texto(text)
     connectors = ["en", "del", "de la", "en el", "en la", "de", "sobre"]
