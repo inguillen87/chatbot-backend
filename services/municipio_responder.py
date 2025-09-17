@@ -3052,11 +3052,24 @@ def responder_municipio(
     # --- END DEBUG LOG ---
 
     normalized_question = None
+    cache_key = None
+    skip_cache_for_input = False
+
+    def _should_skip_cache_response(response: Any) -> bool:
+        if not isinstance(response, dict):
+            return False
+        data = response.get("data")
+        if isinstance(data, dict):
+            if any(data.get(key) for key in ("ticket_id", "nro_ticket", "consulta_pin")):
+                return True
+        if response.get("delayed_payload"):
+            return True
+        return False
 
     def _finalize_response(response):
         """Return the response unchanged; also store it in cache for repeated queries."""
-        if normalized_question:
-            MUNICIPIO_RESPONSE_CACHE[normalized_question] = response
+        if cache_key and not skip_cache_for_input and not _should_skip_cache_response(response):
+            MUNICIPIO_RESPONSE_CACHE[cache_key] = response
         return response
 
     logger_actual.info(
@@ -3126,16 +3139,53 @@ def responder_municipio(
                 "fuente": "handler_consultar_reclamo",
             }
 
-    normalized_question = normalizar_texto(pregunta_str)
-    cached_response = MUNICIPIO_RESPONSE_CACHE.get(normalized_question)
-
     if kwargs:
         for key, value in kwargs.items():
             received_payload[key] = value
 
     chat_db_context_live_data = {}
-    if chat_db_context and chat_db_context.context_data is not None:
+    if chat_db_context:
+        if chat_db_context.context_data is None:
+            chat_db_context.context_data = {}
         chat_db_context_live_data = chat_db_context.context_data
+
+    def _input_flag_is_true(value: Any) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "si"}
+        return bool(value)
+
+    skip_cache_for_input = any(
+        _input_flag_is_true(received_payload.get(flag))
+        for flag in ("es_foto", "es_archivo", "es_ubicacion")
+    ) or _input_flag_is_true(kwargs.get("datos_interpretados_archivo")) or _input_flag_is_true(kwargs.get("archivo_id_para_asociar"))
+    if not skip_cache_for_input:
+        if kwargs.get("source_is_audio") or chat_db_context_live_data.get("source_is_audio"):
+            skip_cache_for_input = True
+        else:
+            contexto_llm_cache = chat_db_context_live_data.get(CONTEXTO_MUNICIPIO, {})
+            if isinstance(contexto_llm_cache, dict) and contexto_llm_cache.get("source_is_audio"):
+                skip_cache_for_input = True
+
+    normalized_question = normalizar_texto(pregunta_str)
+    cache_namespace = None
+    if normalized_question:
+        namespace_candidates = [
+            kwargs.get("chat_session_uuid"),
+            getattr(chat_db_context, "chat_session_id", None) if chat_db_context else None,
+            anon_id,
+        ]
+        viewer_id = getattr(viewer_user, "id", None)
+        if viewer_id:
+            namespace_candidates.append(f"viewer:{viewer_id}")
+        for candidate in namespace_candidates:
+            if candidate:
+                cache_namespace = str(candidate)
+                break
+        if not cache_namespace:
+            cache_namespace = "global"
+        cache_key = f"{cache_namespace}:{normalized_question}"
+
+    cached_response = MUNICIPIO_RESPONSE_CACHE.get(cache_key) if cache_key else None
 
     contexto_municipio_actual = chat_db_context_live_data.get(CONTEXTO_MUNICIPIO, {})
     flow_activo = False
@@ -3147,8 +3197,11 @@ def responder_municipio(
         )
 
     if cached_response and not flow_activo:
-        logger_actual.info("responder_municipio: returning cached response")
-        return cached_response
+        if skip_cache_for_input:
+            logger_actual.info("Cache hit ignored for multimedia/audio input; recalculating response.")
+        else:
+            logger_actual.info("responder_municipio: returning cached response")
+            return cached_response
 
     # Crear el diccionario de contexto principal una sola vez
     context = {
