@@ -69,6 +69,11 @@ from .constants import ConversationState, CONTEXTO_MUNICIPIO
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
+LOCATION_KEYWORD_TOKENS = {
+    "barrio": {"barrio", "b°", "bº"},
+    "distrito": {"distrito", "zona", "localidad", "ciudad"},
+}
+
 class ReclamoState(Enum):
     ESPERANDO_CATEGORIA = auto()
     ESPERANDO_DIRECCION = auto()
@@ -2602,64 +2607,300 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
     return None
 
 
-def extract_reclamo_details_from_text(user_input: str, reclamo_options: list, default_localidad: str | None = None, default_provincia: str | None = None) -> dict:
+def extract_reclamo_details_from_text(
+    user_input: str,
+    reclamo_options: list,
+    default_localidad: str | None = None,
+    default_provincia: str | None = None,
+) -> dict:
     """Attempt to extract category, description, address, and contact details from a user message.
 
-    The function first tries to leverage the LLM-based extractor so we obtain
-    a short category, concise description and any location mentioned by the
-    user. If the LLM fails or returns partial data we fall back to the legacy
-    keyword heuristics so the flow can still progress.
+    The extraction now follows a "heuristics first" approach so we can avoid
+    unnecessary llamadas al LLM cuando el mensaje es claro (por ejemplo,
+    "hay un árbol caído"). Only when crucial data is missing we fall back to
+    the LLM extractor. This behaviour is specially importante para los casos
+    donde queremos que un reclamo se dispare automáticamente al recibir texto
+    o una transcripción de audio sin depender siempre del modelo.
     """
+
     details: dict[str, str | None] = {}
     if not user_input:
         return details
 
-    # --- Primary extraction using LLM ---
-    llm_details = extract_complaint_details_llm(user_input, default_localidad=default_localidad, default_provincia=default_provincia) or {}
+    normalized_input = normalizar_texto(user_input)
 
-    # Map LLM fields to the keys used in the application context
-    if llm_details.get("tipo_problema"):
-        mapped_category = find_reclamo_category_by_input(llm_details["tipo_problema"], reclamo_options)
-        if mapped_category:
-            details["categoria"] = mapped_category
+    # --- Heuristic extraction for categoría y descripción ---
+    category = find_reclamo_category_by_input(user_input, reclamo_options)
+    if category:
+        details["categoria_sugerida"] = category
+        description_source = user_input
+        for kw in RECLAMO_KEYWORDS.get(category, []):
+            if kw in normalized_input:
+                pattern = re.compile(re.escape(kw), re.IGNORECASE)
+                parts = pattern.split(user_input, 1)
+                if len(parts) > 1 and parts[1].strip():
+                    candidate = parts[1].strip(" ,.-")
+                    # Avoid returning descriptions that are too short after trimming
+                    if len(candidate) >= 5 and len(candidate.split()) >= 2:
+                        description_source = candidate
+                break
+        if description_source:
+            details["descripcion_sugerida"] = description_source.strip()
 
-    key_mapping = {
-        "descripcion_problema": "descripcion",
-        "ubicacion_problema": "direccion",
-        "nombre_cliente": "nombre",
-        "email_cliente": "email",
-        "telefono_cliente": "telefono",
-        "dni_cliente": "dni"
-    }
-    for llm_key, app_key in key_mapping.items():
-        if llm_details.get(llm_key):
-            details[app_key] = llm_details[llm_key]
+    # --- Address heuristics (incluye intersecciones) ---
+    direccion_interseccion, intersection_hints = _parse_intersection_and_district(
+        user_input, default_localidad=default_localidad, default_provincia=default_provincia
+    )
+    if direccion_interseccion and "direccion_sugerida" not in details:
+        details["direccion_sugerida"] = direccion_interseccion
+    if intersection_hints.get("barrio") and "barrio_sugerido" not in details:
+        details["barrio_sugerido"] = intersection_hints["barrio"]
+    if intersection_hints.get("distrito") and "distrito_sugerido" not in details:
+        details["distrito_sugerido"] = intersection_hints["distrito"]
+    if intersection_hints.get("distrito_dudoso"):
+        if intersection_hints["distrito_dudoso"] != details.get("distrito_sugerido"):
+            details.setdefault("distrito_dudoso", intersection_hints["distrito_dudoso"])
 
-    # --- Fallback heuristics when LLM data is missing ---
-    if "categoria" not in details:
-        category = find_reclamo_category_by_input(user_input, reclamo_options)
-        if category:
-            details["categoria"] = category
-            description_source = user_input
-            normalized = normalizar_texto(user_input)
-            for kw in RECLAMO_KEYWORDS.get(category, []):
-                if kw in normalized:
-                    import re
-                    pattern = re.compile(re.escape(kw), re.IGNORECASE)
-                    parts = pattern.split(user_input, 1)
-                    if len(parts) > 1 and parts[1].strip():
-                        description_source = parts[1].strip(" ,.-")
-                    break
-            if description_source and description_source != user_input and "descripcion" not in details:
-                details["descripcion"] = description_source
+    location_mentions = _detect_location_mentions(
+        user_input, default_localidad=default_localidad, default_provincia=default_provincia
+    )
+    if location_mentions.get("barrio") and "barrio_sugerido" not in details:
+        details["barrio_sugerido"] = location_mentions["barrio"]
+    if location_mentions.get("distrito") and "distrito_sugerido" not in details:
+        details["distrito_sugerido"] = location_mentions["distrito"]
+    if location_mentions.get("distrito_dudoso"):
+        if location_mentions["distrito_dudoso"] != details.get("distrito_sugerido"):
+            details.setdefault("distrito_dudoso", location_mentions["distrito_dudoso"])
 
-    if "direccion" not in details:
-        import re
-        match = re.search(r"en\s+([A-Za-zÀ-ÿ'\s]+?)\s+(\d{1,5})", user_input, re.IGNORECASE)
+    if "direccion_sugerida" not in details:
+        match = re.search(r"\b(?:en|sobre|por)\s+([A-Za-zÀ-ÿ'\s]+?\d{1,5})\b", user_input, re.IGNORECASE)
         if match:
-            details["direccion"] = f"{match.group(1).strip()} {match.group(2)}"
+            details["direccion_sugerida"] = match.group(1).strip()
+
+    if "direccion_sugerida" not in details:
+        # Simple fallback: first street + number sequence.
+        match = re.search(r"([A-Za-zÀ-ÿ'\s]+\d{1,5})", user_input)
+        if match:
+            details["direccion_sugerida"] = match.group(1).strip()
+
+    # --- Contact heuristics / LLM extraction ---
+    contact_fields = [
+        "nombre_cliente",
+        "telefono_cliente",
+        "email_cliente",
+        "dni_cliente",
+        "direccion_cliente",
+    ]
+    contact_details = extract_multiple_contact_details_llm(user_input, contact_fields) or {}
+    contact_mapping = {
+        "nombre_cliente": "nombre_sugerido",
+        "telefono_cliente": "telefono_sugerido",
+        "email_cliente": "email_sugerido",
+        "dni_cliente": "dni_sugerido",
+        "direccion_cliente": "direccion_sugerida",
+    }
+    for source_key, target_key in contact_mapping.items():
+        value = contact_details.get(source_key)
+        if value and target_key not in details:
+            details[target_key] = value
+
+    # Determine if the LLM extractor is still required.
+    needs_llm = False
+    if not details.get("categoria_sugerida") or not details.get("descripcion_sugerida"):
+        needs_llm = True
+
+    llm_details = {}
+    if needs_llm:
+        llm_details = extract_complaint_details_llm(
+            user_input,
+            default_localidad=default_localidad,
+            default_provincia=default_provincia,
+        ) or {}
+
+    if llm_details:
+        if llm_details.get("tipo_problema") and "categoria_sugerida" not in details:
+            mapped_category = find_reclamo_category_by_input(llm_details["tipo_problema"], reclamo_options)
+            if mapped_category:
+                details["categoria_sugerida"] = mapped_category
+
+        llm_mapping = {
+            "descripcion_problema": "descripcion_sugerida",
+            "descripcion_corta": "descripcion_corta_sugerida",
+            "ubicacion_problema": "direccion_sugerida",
+            "nombre_cliente": "nombre_sugerido",
+            "email_cliente": "email_sugerido",
+            "telefono_cliente": "telefono_sugerido",
+            "dni_cliente": "dni_sugerido",
+        }
+        for llm_key, target_key in llm_mapping.items():
+            if llm_details.get(llm_key) and target_key not in details:
+                details[target_key] = llm_details[llm_key]
 
     return details
+
+
+def _find_subsequence(tokens: list[str], pattern: list[str]) -> int | None:
+    if not tokens or not pattern or len(pattern) > len(tokens):
+        return None
+    pattern_len = len(pattern)
+    for idx in range(len(tokens) - pattern_len + 1):
+        if tokens[idx : idx + pattern_len] == pattern:
+            return idx
+    return None
+
+
+def _detect_location_mentions(
+    text: str,
+    default_localidad: str | None = None,
+    default_provincia: str | None = None,
+) -> dict[str, str]:
+    """Extract barrio/distrito hints from free text without heavy keyword tables."""
+
+    hints: dict[str, str] = {}
+    if not text:
+        return hints
+
+    barrio_match = re.search(r"\b(?:barrio|bº|b°)\s+([A-Za-zÀ-ÿ'\s]+)", text, re.IGNORECASE)
+    if barrio_match:
+        hints["barrio"] = barrio_match.group(1).strip(" ,.-")
+
+    distrito_match = re.search(
+        r"\b(?:distrito|zona|localidad|ciudad)\s+([A-Za-zÀ-ÿ'\s]+)",
+        text,
+        re.IGNORECASE,
+    )
+    if distrito_match:
+        hints["distrito"] = distrito_match.group(1).strip(" ,.-")
+
+    normalized_text = normalizar_texto(text)
+    connectors = ["en", "del", "de la", "en el", "en la", "de", "sobre"]
+    if default_localidad:
+        normalized_localidad = normalizar_texto(default_localidad)
+        for connector in connectors:
+            pattern = f"{connector} {normalized_localidad}".strip()
+            if pattern and pattern in normalized_text:
+                hints.setdefault("distrito", default_localidad)
+                break
+
+    if default_provincia:
+        normalized_provincia = normalizar_texto(default_provincia)
+        if normalized_provincia and normalized_provincia in normalized_text:
+            if hints.get("distrito") != default_provincia:
+                hints.setdefault("distrito_dudoso", default_provincia)
+
+    return hints
+
+
+def _parse_intersection_and_district(
+    text: str,
+    default_localidad: str | None = None,
+    default_provincia: str | None = None,
+) -> tuple[str | None, dict[str, str]]:
+    """Detect addresses like "Calle 100 esquina Otra Calle" and capture barrio/distrito hints.
+
+    Returns a tuple ``(direccion, hints)`` where ``hints`` may include ``barrio`` (confident),
+    ``distrito`` (confident) or ``distrito_dudoso`` when we detect a possible reference but
+    without explicit keywords.
+    """
+
+    if not text:
+        return None, {}
+
+    normalized = normalizar_texto(text)
+    if "esquina" not in normalized:
+        return None, {}
+
+    idx = normalized.find("esquina")
+    before = text[:idx].strip(" ,.-")
+    after = text[idx + len("esquina") :].strip(" ,.-")
+
+    street1 = None
+    if before:
+        street1_match = re.search(r"([A-Za-zÀ-ÿ'\s]+\d{1,5})\s*$", before)
+        if street1_match:
+            street1 = street1_match.group(1).strip()
+        else:
+            before_tokens = before.split()
+            if len(before_tokens) >= 2:
+                street1 = " ".join(before_tokens[-2:])
+            else:
+                street1 = before
+
+    if not after:
+        direccion = street1.strip() if street1 else None
+        return direccion, {}
+
+    hints: dict[str, str] = {}
+    # First split by punctuation to isolate extra context (e.g., barrio/distrito)
+    street_candidate = after
+    location_context = ""
+    punctuation_split = re.split(r"[;,\.]+", after, maxsplit=1)
+    if len(punctuation_split) > 1:
+        street_candidate = punctuation_split[0].strip()
+        location_context = punctuation_split[1].strip()
+
+    tokens = street_candidate.split()
+    normalized_tokens = [normalizar_texto(tok) for tok in tokens]
+    split_idx: int | None = None
+    keyword_tokens = set().union(*LOCATION_KEYWORD_TOKENS.values())
+    for idx_token, normalized_token in enumerate(normalized_tokens):
+        if normalized_token in keyword_tokens:
+            split_idx = idx_token
+            break
+
+    if split_idx is None and default_localidad:
+        pattern_tokens = normalizar_texto(default_localidad).split()
+        if pattern_tokens:
+            match_idx = _find_subsequence(normalized_tokens, pattern_tokens)
+            if match_idx is not None:
+                split_idx = match_idx
+
+    if split_idx is None and default_provincia:
+        pattern_tokens = normalizar_texto(default_provincia).split()
+        if pattern_tokens:
+            match_idx = _find_subsequence(normalized_tokens, pattern_tokens)
+            if match_idx is not None:
+                split_idx = match_idx
+
+    if split_idx is not None:
+        street_tokens = tokens[:split_idx]
+        location_tokens = tokens[split_idx:]
+        street_candidate = " ".join(street_tokens).strip()
+        extra_location_text = " ".join(location_tokens).strip()
+        location_context = f"{extra_location_text} {location_context}".strip()
+
+    street2 = street_candidate.strip() if street_candidate else None
+    direccion = None
+    if street1 and street2:
+        direccion = f"{street1} esquina {street2}".strip()
+    elif street1:
+        direccion = street1.strip()
+    elif street2:
+        direccion = street2
+
+    location_context = location_context.strip()
+    if location_context:
+        barrio_match = re.search(r"\b(?:barrio|bº|b°)\s+([A-Za-zÀ-ÿ'\s]+)", location_context, re.IGNORECASE)
+        if barrio_match:
+            hints["barrio"] = barrio_match.group(1).strip(" ,.-")
+
+        distrito_match = re.search(
+            r"\b(?:distrito|zona|localidad|ciudad)\s+([A-Za-zÀ-ÿ'\s]+)",
+            location_context,
+            re.IGNORECASE,
+        )
+        if distrito_match:
+            hints["distrito"] = distrito_match.group(1).strip(" ,.-")
+        else:
+            normalized_context = normalizar_texto(location_context)
+            if default_localidad and normalizar_texto(default_localidad) in normalized_context:
+                hints["distrito"] = default_localidad
+            elif default_provincia and normalizar_texto(default_provincia) in normalized_context:
+                hints["distrito_dudoso"] = default_provincia
+            else:
+                hints["distrito_dudoso"] = location_context
+
+    return direccion, hints
 
 
 def _get_reclamos_consultas_menu():

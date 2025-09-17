@@ -13,7 +13,7 @@ def test_extract_reclamo_details_includes_contact(monkeypatch):
 
     called = {"complaint": False}
 
-    def fake_complaint(text):
+    def fake_complaint(text, **kwargs):
         called["complaint"] = True
         return {}
 
@@ -39,7 +39,7 @@ def test_extract_reclamo_details_includes_contact(monkeypatch):
 
 
 def test_llm_called_when_keywords_missing(monkeypatch):
-    def fake_complaint(text):
+    def fake_complaint(text, **kwargs):
         return {
             "tipo_problema": "luminaria",
             "descripcion_problema": "luz quemada",
@@ -65,7 +65,20 @@ def test_llm_called_when_keywords_missing(monkeypatch):
 
 def test_intersection_and_district_parsing():
     details = extract_reclamo_details_from_text(
-        "Sarmiento 100 esquina San Martin Junin Mendoza", ["Arbolado"]
+        "Sarmiento 100 esquina San Martin Junin Mendoza",
+        ["Arbolado"],
+        default_localidad="Junin",
+        default_provincia="Mendoza",
     )
     assert details["direccion_sugerida"] == "Sarmiento 100 esquina San Martin"
-    assert details["distrito_sugerido"] == "Junin Mendoza"
+    assert details["distrito_sugerido"] == "Junin"
+    assert details["distrito_dudoso"] == "Mendoza"
+
+
+def test_detect_barrio_hint():
+    details = extract_reclamo_details_from_text(
+        "hay ramas caidas en barrio Jardín del centro",
+        ["Arbolado"],
+        default_localidad="Junin",
+    )
+    assert details["barrio_sugerido"] == "Jardín del centro"
