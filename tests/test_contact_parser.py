@@ -83,5 +83,10 @@ class TestContactParserRegex(unittest.TestCase):
         self.assertIsNone(parsed.get("dni"))
         self.assertIsNone(parsed.get("telefono"))
 
+    def test_action_sentence_is_not_parsed_as_name(self):
+        texto = "quiero pedir que corten las ramas del barrio"
+        parsed = extract_multiple_contact_details_regex(texto)
+        self.assertNotIn("nombre", parsed)
+
 if __name__ == "__main__":
     unittest.main()

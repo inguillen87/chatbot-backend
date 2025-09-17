@@ -69,13 +69,35 @@ STOPWORDS = {
     "otro",
     "para",
     "pero",
+    "pido",
+    "pedir",
     "poco",
     "por",
     "porque",
+    "porfavor",
+    "favor",
     "presenta",
     "problema",
+    "queremos",
+    "queria",
+    "quería",
+    "quisiera",
+    "quisiéramos",
+    "quiero",
     "que",
     "qué",
+    "consulta",
+    "consulto",
+    "solicito",
+    "solicitar",
+    "necesito",
+    "agradezco",
+    "agradecer",
+    "vengo",
+    "hola",
+    "buenos",
+    "buenas",
+    "buen",
     "quien",
     "quién",
     "se",
@@ -185,6 +207,10 @@ DESCRIPTIVE_TOKENS = {
     "cortada",
     "cortado",
     "cortados",
+    "cruzada",
+    "cruzado",
+    "cruzando",
+    "cruzan",
     "caida",
     "caidas",
     "caido",
@@ -197,6 +223,15 @@ DESCRIPTIVE_TOKENS = {
     "deteriorado",
     "expuesta",
     "expuesto",
+    "ensucia",
+    "ensucian",
+    "ensuciada",
+    "ensuciado",
+    "ensuciando",
+    "sucia",
+    "sucias",
+    "sucio",
+    "sucios",
     "inundada",
     "inundado",
     "quemada",
@@ -214,6 +249,87 @@ DESCRIPTIVE_TOKENS = {
     "tapado",
 }
 
+IMPACT_TOKENS = {
+    "medianera",
+    "medianeras",
+    "pileta",
+    "piletas",
+    "patio",
+    "patios",
+    "casa",
+    "casas",
+    "techo",
+    "techos",
+    "pared",
+    "paredes",
+    "vereda",
+    "veredas",
+    "calle",
+    "calles",
+    "entrada",
+    "garaje",
+    "garage",
+    "cochera",
+    "auto",
+    "autos",
+    "vehiculo",
+    "vehículos",
+    "vehiculos",
+    "jardin",
+    "jardín",
+    "jardines",
+    "raiz",
+    "raíz",
+    "raices",
+    "raíces",
+    "poste",
+    "postes",
+}
+
+IMPACT_KEYWORDS = {
+    "medianera",
+    "pileta",
+    "patio",
+    "casa",
+    "techo",
+    "pared",
+    "paredes",
+    "vereda",
+    "calle",
+    "entrada",
+    "garaje",
+    "garage",
+    "cochera",
+    "auto",
+    "vehiculo",
+    "vehículos",
+    "vehiculos",
+    "jardin",
+    "jardín",
+    "raiz",
+    "raíz",
+    "raices",
+    "raíces",
+    "poste",
+    "postes",
+    "paredon",
+    "paredón",
+    "medianil",
+}
+
+IMPACT_SUBSTRINGS = (
+    "ensuci",
+    "bloque",
+    "tap",
+    "cruz",
+    "romp",
+    "invad",
+    "moja",
+    "inund",
+    "golpe",
+    "derrib",
+)
+
 FILLER_PATTERNS = [
     r"^la\s+(foto|imagen|escena)\s+(muestra|presenta|refleja)\s+",
     r"^esta\s+(foto|imagen)\s+(muestra|presenta)\s+",
@@ -229,6 +345,119 @@ FILLER_PATTERNS = [
 def _normalize_token(token: str) -> str:
     normalized = unicodedata.normalize("NFD", token)
     return "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+
+
+VERB_ENDINGS = (
+    "ando",
+    "iendo",
+    "yendo",
+    "aran",
+    "aran",
+    "aran",
+    "aron",
+    "aron",
+    "eron",
+    "ieron",
+    "iran",
+    "iran",
+    "aban",
+    "abas",
+    "amos",
+    "emos",
+    "imos",
+    "aste",
+    "iste",
+    "ado",
+    "ido",
+    "ando",
+    "endo",
+    "en",
+    "an",
+    "as",
+    "es",
+    "ará",
+    "erá",
+    "irá",
+    "arán",
+    "erán",
+    "irán",
+)
+
+VERB_EXCEPTIONS = {
+    "orden",
+    "origen",
+    "imagen",
+    "region",
+    "camion",
+    "camiones",
+    "precision",
+    "vision",
+    "television",
+    "decision",
+    "fusion",
+    "median",
+}
+
+
+def _looks_like_conjugated_verb(token_norm: str) -> bool:
+    if not token_norm:
+        return False
+    if token_norm in PRIORITY_ISSUES:
+        return False
+    if token_norm in DESCRIPTIVE_TOKENS or token_norm in IMPACT_TOKENS:
+        return False
+    if token_norm in VERB_EXCEPTIONS:
+        return False
+    if len(token_norm) <= 3:
+        return False
+    for ending in VERB_ENDINGS:
+        if token_norm.endswith(ending):
+            if ending in {"en", "an", "as", "es"} and len(token_norm) <= 4:
+                continue
+            return True
+    return False
+
+
+def _clean_clause_text(text: str | None) -> str:
+    if not text:
+        return ""
+    cleaned = re.sub(r"\s+", " ", str(text))
+    return cleaned.strip(" ,;:.\n")
+
+
+def _pluralize_spanish_verb(verb: str, subject: str | None) -> str:
+    if not verb:
+        return ""
+    verb = verb.lower()
+    subject_norm = (subject or "").strip().lower()
+    if subject_norm.endswith("s"):
+        if verb.endswith(("an", "en", "ón", "on", "án", "én")):
+            return verb
+        if verb.endswith("a"):
+            return verb[:-1] + "an"
+        if verb.endswith("e") or verb.endswith("i"):
+            return verb[:-1] + "en"
+        if verb.endswith("o"):
+            return verb[:-1] + "an"
+        if verb.endswith("u"):
+            return verb + "n"
+    return verb
+
+
+def _build_me_clause(verb: str, complement: str, subject: str | None, max_chars: int) -> str | None:
+    if not verb or not complement:
+        return None
+    clause = _clean_clause_text(complement)
+    if not clause:
+        return None
+    clause_lower = clause.lower()
+    if not any(keyword in clause_lower for keyword in IMPACT_KEYWORDS):
+        return None
+    pluralized = _pluralize_spanish_verb(verb, subject)
+    phrase = f"{pluralized} {clause_lower}".strip()
+    if max_chars > 0 and len(phrase) > max_chars:
+        phrase = phrase[:max_chars].rstrip(" ,;:.")
+    return phrase or None
 
 
 def construir_descripcion_breve(texto: str | None, max_chars: int = 80) -> str | None:
@@ -259,6 +488,28 @@ def construir_descripcion_breve(texto: str | None, max_chars: int = 80) -> str |
     if primer_clausula and len(primer_clausula) <= max(max_chars - 30, 30):
         return primer_clausula.rstrip(".,; ")
 
+    esta_clause = None
+    me_clause_data: tuple[str, str] | None = None
+
+    match_esta = re.search(
+        r"est[áa]\s+([^,.\n]+?)(?:\s+me\b|[,.\n]|$)",
+        primera_frase,
+        flags=re.IGNORECASE,
+    )
+    if match_esta:
+        esta_clause = match_esta.group(1).strip()
+
+    match_me = re.search(
+        r"\bme\s+([a-záéíóúñ]+)\s+([^,.\n]+)",
+        primera_frase,
+        flags=re.IGNORECASE,
+    )
+    if match_me:
+        me_clause_data = (
+            match_me.group(1).strip(),
+            match_me.group(2).strip(),
+        )
+
     tokens_matches = list(re.finditer(r"\b[\wÁÉÍÓÚáéíóúÜüÑñ]+\b", primera_frase))
     if not tokens_matches:
         truncado = primera_frase[:max_chars].rstrip(".,; ")
@@ -285,6 +536,18 @@ def construir_descripcion_breve(texto: str | None, max_chars: int = 80) -> str |
             issue_tokens_norm.append(token_norm)
             if token_norm in PRIORITY_ISSUES:
                 priority_issue_norms.append(token_norm)
+
+    if issue_tokens:
+        filtered_issue_tokens: list[str] = []
+        filtered_issue_norms: list[str] = []
+        for token_original, token_norm in zip(issue_tokens, issue_tokens_norm):
+            if _looks_like_conjugated_verb(token_norm):
+                continue
+            filtered_issue_tokens.append(token_original)
+            filtered_issue_norms.append(token_norm)
+        if filtered_issue_tokens:
+            issue_tokens = filtered_issue_tokens
+            issue_tokens_norm = filtered_issue_norms
 
     if not issue_tokens and location_tokens:
         resumen = location_tokens[0].capitalize()
@@ -317,7 +580,7 @@ def construir_descripcion_breve(texto: str | None, max_chars: int = 80) -> str |
     for idx, (token, norm) in enumerate(zip(issue_tokens, issue_tokens_norm)):
         if norm == main_issue_norm:
             continue
-        if norm in DESCRIPTIVE_TOKENS and idx >= main_issue_index:
+        if (norm in DESCRIPTIVE_TOKENS or norm in IMPACT_TOKENS) and idx >= main_issue_index:
             secondary_issue = token
             break
 
@@ -325,7 +588,15 @@ def construir_descripcion_breve(texto: str | None, max_chars: int = 80) -> str |
         for token, norm in zip(issue_tokens, issue_tokens_norm):
             if norm == main_issue_norm:
                 continue
-            if norm in DESCRIPTIVE_TOKENS:
+            if norm in DESCRIPTIVE_TOKENS or norm in IMPACT_TOKENS:
+                secondary_issue = token
+                break
+
+    if not secondary_issue:
+        for token, norm in zip(issue_tokens, issue_tokens_norm):
+            if norm == main_issue_norm:
+                continue
+            if any(norm.startswith(substr) for substr in IMPACT_SUBSTRINGS):
                 secondary_issue = token
                 break
 
@@ -348,6 +619,34 @@ def construir_descripcion_breve(texto: str | None, max_chars: int = 80) -> str |
     if main_location:
         resumen += f" en {main_location}"
 
+    effect_texts: list[str] = []
+    cleaned_esta = _clean_clause_text(esta_clause)
+    if cleaned_esta:
+        effect_texts.append(cleaned_esta.lower())
+    if me_clause_data and main_issue:
+        verb_raw, complement_raw = me_clause_data
+        me_clause_text = _build_me_clause(
+            verb_raw,
+            complement_raw,
+            main_issue,
+            max_chars - len(main_issue) - 5,
+        )
+        if me_clause_text:
+            effect_texts.append(me_clause_text)
+
+    if effect_texts:
+        effect_summary = effect_texts[0]
+        for extra in effect_texts[1:]:
+            if extra:
+                effect_summary += f" y {extra}"
+        candidate = f"{main_issue.capitalize()} {effect_summary}".strip()
+        if main_location and main_location.lower() not in candidate.lower():
+            candidate = f"{candidate} en {main_location}".strip()
+        if len(candidate) > max_chars:
+            candidate = candidate[:max_chars].rstrip(".,; ")
+        if candidate and (len(resumen.split()) <= 3 or len(candidate) > len(resumen)):
+            resumen = candidate
+
     if len(resumen) > max_chars:
         resumen = resumen[:max_chars].rstrip(".,; ")
 
@@ -361,31 +660,56 @@ def _remove_redundant_urls_from_message(message_body, options_list):
         return message_body
 
     message_body_str = str(message_body)
-
+    button_entries: list[tuple[str, str]] = []
     for option in options_list:
-        if not isinstance(option, dict) or 'url' not in option:
+        if not isinstance(option, dict):
+            continue
+        url = option.get('url')
+        if not url:
+            continue
+        texto = str(option.get('texto', '') or '').strip()
+        button_entries.append((url, texto))
+
+    if not button_entries:
+        return message_body_str
+
+    lines = message_body_str.splitlines()
+    cleaned_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            cleaned_lines.append(line)
             continue
 
-        url = option['url']
-        if url not in message_body_str:
-            continue
+        remove_line = False
+        for url, texto in button_entries:
+            if url not in stripped:
+                continue
+            has_bullet = stripped.startswith(("•", "-", "*"))
+            prefix = re.sub(r"^[•\-\s]+", "", stripped)
+            prefix_no_stars = prefix.lstrip("* ").strip()
+            texto_cf = texto.casefold()
 
-        index = message_body_str.find(url)
-        keep_url = False
-        if index != -1:
-            context_window = message_body_str[max(0, index - 40):index].lower()
-            if re.search(r"ver\s+mi\s+ticket", context_window, flags=re.IGNORECASE):
-                keep_url = True
-            elif re.search(r"ver\s+ticket", context_window, flags=re.IGNORECASE):
-                keep_url = True
+            if texto_cf:
+                if (prefix.casefold().startswith(texto_cf) or prefix_no_stars.casefold().startswith(texto_cf)) and not has_bullet:
+                    remove_line = True
+                    break
+            if not texto_cf or stripped == url or stripped.lower() == url.lower():
+                remove_line = True
+                break
 
-        if keep_url:
-            continue
+        if not remove_line:
+            cleaned_lines.append(line)
 
-        message_body_str = message_body_str.replace(url, '')
+    message_body_str = "\n".join(cleaned_lines)
 
     # Clean up common leftover phrases and extra spaces
-    message_body_str = re.sub(r'por favor\s+ingresá\s+al\s+siguiente\s+enlace\s*:?', '', message_body_str, flags=re.IGNORECASE).strip()
+    message_body_str = re.sub(
+        r'por favor\s+ingresá\s+al\s+siguiente\s+enlace\s*:?',
+        '',
+        message_body_str,
+        flags=re.IGNORECASE,
+    ).strip()
     message_body_str = re.sub(r'ingresá\s+al\s+siguiente\s+enlace\s*:?', '', message_body_str, flags=re.IGNORECASE).strip()
     message_body_str = re.sub(r'enlace\s*:?', '', message_body_str, flags=re.IGNORECASE).strip()
 
