@@ -8,7 +8,11 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from services.ticket_utils import formatear_ticket_respuesta
+from services.ticket_utils import (
+    formatear_ticket_respuesta,
+    construir_descripcion_breve,
+    _remove_redundant_urls_from_message,
+)
 from services.municipio_responder import GreetingHandler
 from services.municipio_responder import responder_municipio
 from config import TestConfig
@@ -71,6 +75,34 @@ class TestNewFeatures(unittest.TestCase):
         )
         self.assertIn("caido a mitad de cuadra", message)
         self.assertNotIn("tengo un poste", message)
+
+    def test_construir_descripcion_breve_incluye_detalle(self):
+        texto = (
+            "quiero pedir que corten las ramas de los arboles del barrio jardin en el centro de junin "
+            "esta tapando y cruzando la medianera me ensucia toda la pileta"
+        )
+        resumen = construir_descripcion_breve(texto)
+        self.assertIn("Ramas", resumen)
+        self.assertTrue(
+            "pileta" in resumen.lower() or "medianera" in resumen.lower(),
+            msg=f"Resumen poco descriptivo: {resumen}",
+        )
+
+    def test_remove_redundant_footer_links(self):
+        message = (
+            "🔗 *Seguimiento:*\n"
+            "• *Ver mi Ticket:* https://www.chatboc.ar/chat/799928?pin=768114\n"
+            "Visitar Punto Limpio: https://www.juninmendoza.gov.ar/\n"
+            "💬 Ver mi Ticket: https://www.chatboc.ar/chat/799928?pin=768114"
+        )
+        buttons = [
+            {"texto": "Visitar Punto Limpio", "url": "https://www.juninmendoza.gov.ar/"},
+            {"texto": "💬 Ver mi Ticket", "url": "https://www.chatboc.ar/chat/799928?pin=768114"},
+        ]
+        cleaned = _remove_redundant_urls_from_message(message, buttons)
+        self.assertNotIn("Visitar Punto Limpio:", cleaned)
+        self.assertNotIn("💬 Ver mi Ticket:", cleaned)
+        self.assertIn("• *Ver mi Ticket:* https://www.chatboc.ar/chat/799928?pin=768114", cleaned)
 
     def test_greeting_handler_final_menu(self):
         """

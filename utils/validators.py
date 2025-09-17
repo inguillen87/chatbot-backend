@@ -1,6 +1,30 @@
 import re
 from typing import Optional
 
+NAME_PREFIX_STOPWORDS = {
+    "hola",
+    "buenos",
+    "buenas",
+    "estimado",
+    "estimada",
+    "estimados",
+    "estimadas",
+    "queria",
+    "quería",
+    "quisiera",
+    "quiero",
+    "necesito",
+    "consulta",
+    "consulto",
+    "agradezco",
+    "gracias",
+    "solicito",
+    "solicitar",
+    "pido",
+    "pedir",
+    "buen",
+}
+
 try:
     from email_validator import validate_email, EmailNotValidError
 except Exception:  # pragma: no cover - optional dependency
@@ -111,38 +135,82 @@ def extract_phone(text: str, region: str = "AR") -> Optional[tuple[str, str]]:
     return None
 
 
+def _sanitize_name_candidate(value: str) -> str:
+    """Normalize spacing and drop non-letter characters for name detection."""
+
+    cleaned = re.sub(r"[^A-Za-zÁÉÍÓÚÑáéíóúñ ]", " ", value or "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;.")
+    return cleaned
+
+
 def extract_name(text: str) -> Optional[str]:
-    """Extract a probable name from text, looking for keywords or patterns."""
+    """Extract a probable name from text, looking for explicit cues first."""
+
+    if not text:
+        return None
+
+    text = str(text).strip()
     if not text:
         return None
 
     # Pattern 1: Explicit declaration ("soy", "me llamo", etc.)
-    m_explicit = re.search(r"(?:soy|me llamo|mi nombre es)\s+([A-Za-zÁÉÍÓÚÑáéíóúñ ]{2,50})", text, re.IGNORECASE)
+    m_explicit = re.search(
+        r"(?:soy|me llamo|mi nombre es)\s+([A-Za-zÁÉÍÓÚÑáéíóúñ ]{2,60})",
+        text,
+        re.IGNORECASE,
+    )
     if m_explicit:
-        candidate = m_explicit.group(1).strip()
-        candidate_match = re.match(r"^[A-Za-zÁÉÍÓÚÑáéíóúñ\s]+", candidate)
-        if candidate_match:
-            candidate = candidate_match.group(0).strip()
-            if validate_name(candidate):
-                return candidate
+        candidate = _sanitize_name_candidate(m_explicit.group(1))
+        if validate_name(candidate):
+            return candidate
 
-    # Pattern 2: Assume the first 2-3 words are a name.
-    words = text.strip().split()
-    if not words:
-        return None
+    # Pattern 2: Label-based input ("Nombre: Juan Perez")
+    m_label = re.search(
+        r"(?:^|[\n,;])\s*(?:nombre(?:\s+completo)?|nom)[:\-\s]+([A-Za-zÁÉÍÓÚÑáéíóúñ ]{2,60})",
+        text,
+        re.IGNORECASE,
+    )
+    if m_label:
+        candidate = _sanitize_name_candidate(m_label.group(1))
+        if validate_name(candidate):
+            return candidate
 
-    for i in range(min(3, len(words)), 1, -1):
-        candidate = " ".join(words[:i])
-        # Clean trailing punctuation that might invalidate the name
-        clean_candidate = re.sub(r'[,;:]$', '', candidate).strip()
-        if validate_name(clean_candidate):
-            return clean_candidate
+    # Pattern 3: Look for short segments likely containing only a name.
+    segments = []
+    segments.extend(filter(None, re.split(r"[\n]+", text)))
+    segments.extend(filter(None, re.split(r"[,;]", text)))
+    segments.append(text)
 
-    # Fallback for a single-word name
-    if len(words) >= 1:
-        clean_candidate = re.sub(r'[,;:]$', '', words[0]).strip()
-        if validate_name(clean_candidate):
-            return clean_candidate
+    for segment in segments:
+        segment = segment.strip()
+        if not segment:
+            continue
+        if len(segment) > 60:
+            continue
+        if any(char.isdigit() for char in segment):
+            continue
+
+        words = segment.split()
+        if not words or len(words) > 3:
+            continue
+
+        normalized_first = re.sub(r"^[^A-Za-zÁÉÍÓÚÑáéíóúñ]*", "", words[0]).lower().rstrip(":")
+        if normalized_first in NAME_PREFIX_STOPWORDS:
+            continue
+
+        candidate = _sanitize_name_candidate(segment)
+        if not candidate:
+            continue
+
+        if len(candidate) > 50 or len(candidate) < 2:
+            continue
+
+        # Avoid treating long sentences as names.
+        if len(segment) > 40 and len(words) > 1:
+            continue
+
+        if validate_name(candidate):
+            return candidate
 
     return None
 
