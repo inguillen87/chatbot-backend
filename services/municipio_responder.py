@@ -11,6 +11,8 @@ import json
 from enum import Enum, auto
 import unicodedata
 import difflib
+from typing import Any, Optional
+from urllib.parse import parse_qs, unquote, urlparse
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
 from models import (
@@ -68,6 +70,11 @@ from services.ticket_utils import formatear_ticket_respuesta, construir_descripc
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
+
+LOCATION_KEYWORD_TOKENS = {
+    "barrio": {"barrio", "b°", "bº"},
+    "distrito": {"distrito", "zona", "localidad", "ciudad"},
+}
 
 class ReclamoState(Enum):
     ESPERANDO_CATEGORIA = auto()
@@ -322,6 +329,23 @@ class ReclamoFlowHandler:
         return self.ask_for_contact_details()
 
     def handle_direccion(self, user_input, payload):
+        if not payload.get("es_ubicacion") and user_input:
+            link_info = _detect_location_link_info(user_input)
+            if link_info:
+                payload = dict(payload)
+                payload["es_ubicacion"] = True
+                location_payload = {
+                    k: v
+                    for k, v in {
+                        "address": link_info.get("address"),
+                        "latitude": link_info.get("latitude"),
+                        "longitude": link_info.get("longitude"),
+                    }.items()
+                    if v is not None
+                }
+                if location_payload:
+                    payload["ubicacion_usuario"] = location_payload
+
         if payload.get("es_ubicacion") and payload.get("ubicacion_usuario"):
             location_data = payload.get("ubicacion_usuario")
             address = location_data.get("address")
@@ -2602,64 +2626,515 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
     return None
 
 
-def extract_reclamo_details_from_text(user_input: str, reclamo_options: list, default_localidad: str | None = None, default_provincia: str | None = None) -> dict:
+def extract_reclamo_details_from_text(
+    user_input: str,
+    reclamo_options: list,
+    default_localidad: str | None = None,
+    default_provincia: str | None = None,
+) -> dict:
     """Attempt to extract category, description, address, and contact details from a user message.
 
-    The function first tries to leverage the LLM-based extractor so we obtain
-    a short category, concise description and any location mentioned by the
-    user. If the LLM fails or returns partial data we fall back to the legacy
-    keyword heuristics so the flow can still progress.
+    The extraction now follows a "heuristics first" approach so we can avoid
+    unnecessary llamadas al LLM cuando el mensaje es claro (por ejemplo,
+    "hay un árbol caído"). Only when crucial data is missing we fall back to
+    the LLM extractor. This behaviour is specially importante para los casos
+    donde queremos que un reclamo se dispare automáticamente al recibir texto
+    o una transcripción de audio sin depender siempre del modelo.
     """
+
     details: dict[str, str | None] = {}
     if not user_input:
         return details
 
-    # --- Primary extraction using LLM ---
-    llm_details = extract_complaint_details_llm(user_input, default_localidad=default_localidad, default_provincia=default_provincia) or {}
+    normalized_input = normalizar_texto(user_input)
 
-    # Map LLM fields to the keys used in the application context
-    if llm_details.get("tipo_problema"):
-        mapped_category = find_reclamo_category_by_input(llm_details["tipo_problema"], reclamo_options)
-        if mapped_category:
-            details["categoria"] = mapped_category
+    # --- Heuristic extraction for categoría y descripción ---
+    category = find_reclamo_category_by_input(user_input, reclamo_options)
+    if category:
+        details["categoria_sugerida"] = category
+        description_source = user_input
+        for kw in RECLAMO_KEYWORDS.get(category, []):
+            if kw in normalized_input:
+                pattern = re.compile(re.escape(kw), re.IGNORECASE)
+                parts = pattern.split(user_input, 1)
+                if len(parts) > 1 and parts[1].strip():
+                    candidate = parts[1].strip(" ,.-")
+                    # Avoid returning descriptions that are too short after trimming
+                    if len(candidate) >= 5 and len(candidate.split()) >= 2:
+                        description_source = candidate
+                break
+        if description_source:
+            details["descripcion_sugerida"] = description_source.strip()
 
-    key_mapping = {
-        "descripcion_problema": "descripcion",
-        "ubicacion_problema": "direccion",
-        "nombre_cliente": "nombre",
-        "email_cliente": "email",
-        "telefono_cliente": "telefono",
-        "dni_cliente": "dni"
-    }
-    for llm_key, app_key in key_mapping.items():
-        if llm_details.get(llm_key):
-            details[app_key] = llm_details[llm_key]
+    # --- Address heuristics (incluye intersecciones) ---
+    direccion_interseccion, intersection_hints = _parse_intersection_and_district(
+        user_input, default_localidad=default_localidad, default_provincia=default_provincia
+    )
+    if direccion_interseccion and "direccion_sugerida" not in details:
+        details["direccion_sugerida"] = direccion_interseccion
+    if intersection_hints.get("barrio") and "barrio_sugerido" not in details:
+        details["barrio_sugerido"] = intersection_hints["barrio"]
+    if intersection_hints.get("distrito") and "distrito_sugerido" not in details:
+        details["distrito_sugerido"] = intersection_hints["distrito"]
+    if intersection_hints.get("distrito_dudoso"):
+        if intersection_hints["distrito_dudoso"] != details.get("distrito_sugerido"):
+            details.setdefault("distrito_dudoso", intersection_hints["distrito_dudoso"])
 
-    # --- Fallback heuristics when LLM data is missing ---
-    if "categoria" not in details:
-        category = find_reclamo_category_by_input(user_input, reclamo_options)
-        if category:
-            details["categoria"] = category
-            description_source = user_input
-            normalized = normalizar_texto(user_input)
-            for kw in RECLAMO_KEYWORDS.get(category, []):
-                if kw in normalized:
-                    import re
-                    pattern = re.compile(re.escape(kw), re.IGNORECASE)
-                    parts = pattern.split(user_input, 1)
-                    if len(parts) > 1 and parts[1].strip():
-                        description_source = parts[1].strip(" ,.-")
-                    break
-            if description_source and description_source != user_input and "descripcion" not in details:
-                details["descripcion"] = description_source
+    location_mentions = _detect_location_mentions(
+        user_input, default_localidad=default_localidad, default_provincia=default_provincia
+    )
+    if location_mentions.get("barrio") and "barrio_sugerido" not in details:
+        details["barrio_sugerido"] = location_mentions["barrio"]
+    if location_mentions.get("distrito") and "distrito_sugerido" not in details:
+        details["distrito_sugerido"] = location_mentions["distrito"]
+    if location_mentions.get("distrito_dudoso"):
+        if location_mentions["distrito_dudoso"] != details.get("distrito_sugerido"):
+            details.setdefault("distrito_dudoso", location_mentions["distrito_dudoso"])
 
-    if "direccion" not in details:
-        import re
-        match = re.search(r"en\s+([A-Za-zÀ-ÿ'\s]+?)\s+(\d{1,5})", user_input, re.IGNORECASE)
+    if "direccion_sugerida" not in details:
+        match = re.search(r"\b(?:en|sobre|por)\s+([A-Za-zÀ-ÿ'\s]+?\d{1,5})\b", user_input, re.IGNORECASE)
         if match:
-            details["direccion"] = f"{match.group(1).strip()} {match.group(2)}"
+            details["direccion_sugerida"] = match.group(1).strip()
+
+    if "direccion_sugerida" not in details:
+        # Simple fallback: first street + number sequence.
+        match = re.search(r"([A-Za-zÀ-ÿ'\s]+\d{1,5})", user_input)
+        if match:
+            details["direccion_sugerida"] = match.group(1).strip()
+
+    # --- Contact heuristics / LLM extraction ---
+    contact_fields = [
+        "nombre_cliente",
+        "telefono_cliente",
+        "email_cliente",
+        "dni_cliente",
+        "direccion_cliente",
+    ]
+    contact_details = extract_multiple_contact_details_llm(user_input, contact_fields) or {}
+    contact_mapping = {
+        "nombre_cliente": "nombre_sugerido",
+        "telefono_cliente": "telefono_sugerido",
+        "email_cliente": "email_sugerido",
+        "dni_cliente": "dni_sugerido",
+        "direccion_cliente": "direccion_sugerida",
+    }
+    for source_key, target_key in contact_mapping.items():
+        value = contact_details.get(source_key)
+        if value and target_key not in details:
+            details[target_key] = value
+
+    # Determine if the LLM extractor is still required.
+    needs_llm = False
+    if not details.get("categoria_sugerida") or not details.get("descripcion_sugerida"):
+        needs_llm = True
+
+    llm_details = {}
+    if needs_llm:
+        llm_details = extract_complaint_details_llm(
+            user_input,
+            default_localidad=default_localidad,
+            default_provincia=default_provincia,
+        ) or {}
+
+    if llm_details:
+        if llm_details.get("tipo_problema") and "categoria_sugerida" not in details:
+            mapped_category = find_reclamo_category_by_input(llm_details["tipo_problema"], reclamo_options)
+            if mapped_category:
+                details["categoria_sugerida"] = mapped_category
+
+        llm_mapping = {
+            "descripcion_problema": "descripcion_sugerida",
+            "descripcion_corta": "descripcion_corta_sugerida",
+            "ubicacion_problema": "direccion_sugerida",
+            "nombre_cliente": "nombre_sugerido",
+            "email_cliente": "email_sugerido",
+            "telefono_cliente": "telefono_sugerido",
+            "dni_cliente": "dni_sugerido",
+        }
+        for llm_key, target_key in llm_mapping.items():
+            if llm_details.get(llm_key) and target_key not in details:
+                details[target_key] = llm_details[llm_key]
+
+    suggested_to_legacy = {
+        "categoria_sugerida": "categoria",
+        "descripcion_sugerida": "descripcion",
+        "direccion_sugerida": "direccion",
+        "nombre_sugerido": "nombre",
+        "telefono_sugerido": "telefono",
+        "email_sugerido": "email",
+        "dni_sugerido": "dni",
+        "barrio_sugerido": "barrio",
+        "distrito_sugerido": "distrito",
+    }
+
+    for suggested_key, legacy_key in suggested_to_legacy.items():
+        value = details.get(suggested_key)
+        if value and legacy_key not in details:
+            details[legacy_key] = value
+
+    for legacy_key, suggested_key in {v: k for k, v in suggested_to_legacy.items()}.items():
+        value = details.get(legacy_key)
+        if value and suggested_key not in details:
+            details[suggested_key] = value
 
     return details
+
+
+def _find_subsequence(tokens: list[str], pattern: list[str]) -> int | None:
+    if not tokens or not pattern or len(pattern) > len(tokens):
+        return None
+    pattern_len = len(pattern)
+    for idx in range(len(tokens) - pattern_len + 1):
+        if tokens[idx : idx + pattern_len] == pattern:
+            return idx
+    return None
+
+
+def _detect_location_mentions(
+    text: str,
+    default_localidad: str | None = None,
+    default_provincia: str | None = None,
+) -> dict[str, str]:
+    """Extract barrio/distrito hints from free text without heavy keyword tables."""
+
+    hints: dict[str, str] = {}
+    if not text:
+        return hints
+
+    barrio_match = re.search(r"\b(?:barrio|bº|b°)\s+([A-Za-zÀ-ÿ'\s]+)", text, re.IGNORECASE)
+    if barrio_match:
+        hints["barrio"] = barrio_match.group(1).strip(" ,.-")
+
+    distrito_match = re.search(
+        r"\b(?:distrito|zona|localidad|ciudad)\s+([A-Za-zÀ-ÿ'\s]+)",
+        text,
+        re.IGNORECASE,
+    )
+    if distrito_match:
+        hints["distrito"] = distrito_match.group(1).strip(" ,.-")
+
+    normalized_text = normalizar_texto(text)
+    connectors = ["en", "del", "de la", "en el", "en la", "de", "sobre"]
+    if default_localidad:
+        normalized_localidad = normalizar_texto(default_localidad)
+        for connector in connectors:
+            pattern = f"{connector} {normalized_localidad}".strip()
+            if pattern and pattern in normalized_text:
+                hints.setdefault("distrito", default_localidad)
+                break
+
+    if default_provincia:
+        normalized_provincia = normalizar_texto(default_provincia)
+        if normalized_provincia and normalized_provincia in normalized_text:
+            if hints.get("distrito") != default_provincia:
+                hints.setdefault("distrito_dudoso", default_provincia)
+
+    return hints
+
+
+def _parse_intersection_and_district(
+    text: str,
+    default_localidad: str | None = None,
+    default_provincia: str | None = None,
+) -> tuple[str | None, dict[str, str]]:
+    """Detect addresses like "Calle 100 esquina Otra Calle" and capture barrio/distrito hints.
+
+    Returns a tuple ``(direccion, hints)`` where ``hints`` may include ``barrio`` (confident),
+    ``distrito`` (confident) or ``distrito_dudoso`` when we detect a possible reference but
+    without explicit keywords.
+    """
+
+    if not text:
+        return None, {}
+
+    normalized = normalizar_texto(text)
+    if "esquina" not in normalized:
+        return None, {}
+
+    idx = normalized.find("esquina")
+    before = text[:idx].strip(" ,.-")
+    after = text[idx + len("esquina") :].strip(" ,.-")
+
+    street1 = None
+    if before:
+        street1_match = re.search(r"([A-Za-zÀ-ÿ'\s]+\d{1,5})\s*$", before)
+        if street1_match:
+            street1 = street1_match.group(1).strip()
+        else:
+            before_tokens = before.split()
+            if len(before_tokens) >= 2:
+                street1 = " ".join(before_tokens[-2:])
+            else:
+                street1 = before
+
+    if not after:
+        direccion = street1.strip() if street1 else None
+        return direccion, {}
+
+    hints: dict[str, str] = {}
+    # First split by punctuation to isolate extra context (e.g., barrio/distrito)
+    street_candidate = after
+    location_context = ""
+    punctuation_split = re.split(r"[;,\.]+", after, maxsplit=1)
+    if len(punctuation_split) > 1:
+        street_candidate = punctuation_split[0].strip()
+        location_context = punctuation_split[1].strip()
+
+    tokens = street_candidate.split()
+    normalized_tokens = [normalizar_texto(tok) for tok in tokens]
+    split_idx: int | None = None
+    keyword_tokens = set().union(*LOCATION_KEYWORD_TOKENS.values())
+    for idx_token, normalized_token in enumerate(normalized_tokens):
+        if normalized_token in keyword_tokens:
+            split_idx = idx_token
+            break
+
+    if split_idx is None and default_localidad:
+        pattern_tokens = normalizar_texto(default_localidad).split()
+        if pattern_tokens:
+            match_idx = _find_subsequence(normalized_tokens, pattern_tokens)
+            if match_idx is not None:
+                split_idx = match_idx
+
+    if split_idx is None and default_provincia:
+        pattern_tokens = normalizar_texto(default_provincia).split()
+        if pattern_tokens:
+            match_idx = _find_subsequence(normalized_tokens, pattern_tokens)
+            if match_idx is not None:
+                split_idx = match_idx
+
+    if split_idx is not None:
+        street_tokens = tokens[:split_idx]
+        location_tokens = tokens[split_idx:]
+        street_candidate = " ".join(street_tokens).strip()
+        extra_location_text = " ".join(location_tokens).strip()
+        location_context = f"{extra_location_text} {location_context}".strip()
+
+    street2 = street_candidate.strip() if street_candidate else None
+    direccion = None
+    if street1 and street2:
+        direccion = f"{street1} esquina {street2}".strip()
+    elif street1:
+        direccion = street1.strip()
+    elif street2:
+        direccion = street2
+
+    location_context = location_context.strip()
+    if location_context:
+        barrio_match = re.search(r"\b(?:barrio|bº|b°)\s+([A-Za-zÀ-ÿ'\s]+)", location_context, re.IGNORECASE)
+        if barrio_match:
+            hints["barrio"] = barrio_match.group(1).strip(" ,.-")
+
+        distrito_match = re.search(
+            r"\b(?:distrito|zona|localidad|ciudad)\s+([A-Za-zÀ-ÿ'\s]+)",
+            location_context,
+            re.IGNORECASE,
+        )
+        if distrito_match:
+            hints["distrito"] = distrito_match.group(1).strip(" ,.-")
+        else:
+            normalized_context = normalizar_texto(location_context)
+            if default_localidad and normalizar_texto(default_localidad) in normalized_context:
+                hints["distrito"] = default_localidad
+            elif default_provincia and normalizar_texto(default_provincia) in normalized_context:
+                hints["distrito_dudoso"] = default_provincia
+            else:
+                hints["distrito_dudoso"] = location_context
+
+    return direccion, hints
+
+
+def _extract_coordinates_from_text(value: str) -> Optional[dict[str, float]]:
+    """Return latitude/longitude pairs found in free text when clearly expressed."""
+
+    if not value:
+        return None
+
+    coordinate_patterns = [
+        re.compile(r"(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)"),
+        re.compile(r"(-?\d{1,3}\.\d+)\s+(-?\d{1,3}\.\d+)"),
+    ]
+
+    for pattern in coordinate_patterns:
+        for match in pattern.finditer(value):
+            lat = float(match.group(1))
+            lon = float(match.group(2))
+            if -90 <= lat <= 90 and -180 <= lon <= 180:
+                return {"latitude": lat, "longitude": lon}
+
+    return None
+
+
+def _extract_coordinates_from_url(url: str) -> Optional[dict[str, float]]:
+    """Parse typical map URLs looking for embedded coordinates."""
+
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+
+    query = parse_qs(parsed.query)
+    for key in ("q", "query", "ll", "center"):
+        for value in query.get(key, []):
+            coords = _extract_coordinates_from_text(unquote(value))
+            if coords:
+                return coords
+
+    path_candidate = unquote(parsed.path or "")
+    match = re.search(r"@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)", path_candidate)
+    if match:
+        lat = float(match.group(1))
+        lon = float(match.group(2))
+        if -90 <= lat <= 90 and -180 <= lon <= 180:
+            return {"latitude": lat, "longitude": lon}
+
+    fragment_coords = _extract_coordinates_from_text(unquote(parsed.fragment or ""))
+    if fragment_coords:
+        return fragment_coords
+
+    return None
+
+
+def _detect_location_link_info(text: str) -> Optional[dict[str, Any]]:
+    """Detect whether a message mainly shares a location link or raw coordinates."""
+
+    if not text:
+        return None
+
+    location_keywords = (
+        "maps.google",
+        "maps.app.goo.gl",
+        "goo.gl/maps",
+        "waze.com",
+        "openstreetmap",
+        "mapa",
+    )
+
+    url_match = re.search(r"https?://[^\s>]+", text, re.IGNORECASE)
+    coords_in_text = _extract_coordinates_from_text(text)
+
+    info: dict[str, Any] = {}
+    cleaned_text = text.strip()
+
+    if url_match:
+        url = url_match.group(0)
+        host = urlparse(url).netloc.lower()
+        if any(keyword in host for keyword in location_keywords):
+            cleaned_text = (text[: url_match.start()] + " " + text[url_match.end():]).strip()
+            info["source"] = "link"
+            coords_from_url = _extract_coordinates_from_url(url)
+            if coords_from_url:
+                info.update(coords_from_url)
+        else:
+            url_match = None
+
+    if not url_match and not coords_in_text:
+        return None
+
+    if "source" not in info:
+        info["source"] = "coordinates"
+
+    if not info.get("latitude") and coords_in_text:
+        info.update(coords_in_text)
+
+    if coords_in_text:
+        cleaned_text = re.sub(r"-?\d{1,3}\.\d+[\s,]+-?\d{1,3}\.\d+", " ", cleaned_text).strip()
+
+    residual_words = [word for word in cleaned_text.split() if word]
+    if residual_words:
+        normalized_words = [normalizar_texto(word) for word in residual_words]
+        allowed_fillers = {
+            "aca",
+            "aqui",
+            "aquí",
+            "ubicacion",
+            "ubicación",
+            "ubic",
+            "pin",
+            "link",
+            "direccion",
+            "dirección",
+            "es",
+            "esta",
+            "este",
+            "mi",
+            "la",
+            "el",
+            "en",
+            "te",
+            "paso",
+        }
+        if len(residual_words) > 6 and not all(word in allowed_fillers for word in normalized_words):
+            return None
+        info["address"] = cleaned_text.strip()
+    else:
+        info["address"] = "la ubicación que compartiste"
+
+    return info
+
+
+def _try_start_reclamo_from_text(
+    pregunta_str: str,
+    context: dict[str, Any],
+    chat_db_context,
+    *,
+    default_localidad: str | None = None,
+    default_provincia: str | None = None,
+) -> Optional[dict[str, Any]]:
+    """Attempt to bootstrap the reclamo flow directly from a free-text message."""
+
+    if not pregunta_str:
+        return None
+
+    normalized_text = normalizar_texto(pregunta_str)
+    if len(normalized_text.split()) < 4 and len(pregunta_str.strip()) < 30:
+        return None
+
+    reclamo_options = _get_reclamos_menu().get("options_list", [])
+    plain_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
+
+    details = extract_reclamo_details_from_text(
+        pregunta_str,
+        plain_options,
+        default_localidad=default_localidad,
+        default_provincia=default_provincia,
+    )
+
+    category = details.get("categoria") or details.get("categoria_sugerida")
+    if not category:
+        return None
+
+    handler = ReclamoFlowHandler(context, chat_db_context)
+
+    datos_iniciales: dict[str, Any] = {}
+    field_mapping = (
+        ("descripcion", "descripcion_sugerida"),
+        ("direccion", "direccion_sugerida"),
+        ("nombre", "nombre_sugerido"),
+        ("email", "email_sugerido"),
+        ("telefono", "telefono_sugerido"),
+        ("dni", "dni_sugerido"),
+    )
+
+    for field, suggested_key in field_mapping:
+        value = details.get(suggested_key) or details.get(field)
+        if value:
+            datos_iniciales[field] = value
+
+    if details.get("barrio_sugerido"):
+        datos_iniciales.setdefault("barrio", details["barrio_sugerido"])
+    if details.get("distrito_sugerido"):
+        datos_iniciales.setdefault("distrito", details["distrito_sugerido"])
+
+    response = handler.start_flow(
+        datos_iniciales=datos_iniciales or None,
+        categoria_inicial=category,
+    )
+
+    if chat_db_context:
+        safe_flag_modified(chat_db_context, "context_data")
+
+    return response
 
 
 def _get_reclamos_consultas_menu():
@@ -2890,6 +3365,24 @@ def responder_municipio(
         for key, value in kwargs.items():
             received_payload[key] = value
 
+    location_link_info = None
+    if (
+        not received_payload.get("es_ubicacion")
+        and isinstance(pregunta_str, str)
+        and pregunta_str.strip()
+    ):
+        location_link_info = _detect_location_link_info(pregunta_str)
+        if location_link_info:
+            link_payload = {}
+            if location_link_info.get("address"):
+                link_payload["address"] = location_link_info["address"]
+            if location_link_info.get("latitude") is not None and location_link_info.get("longitude") is not None:
+                link_payload["latitude"] = location_link_info["latitude"]
+                link_payload["longitude"] = location_link_info["longitude"]
+            if link_payload:
+                received_payload.setdefault("ubicacion_usuario", {}).update(link_payload)
+            received_payload["es_ubicacion"] = True
+
     chat_db_context_live_data = {}
     if chat_db_context and chat_db_context.context_data is not None:
         chat_db_context_live_data = chat_db_context.context_data
@@ -2928,10 +3421,60 @@ def responder_municipio(
         "action": received_payload.get("action"),
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
+        "location_link_info": location_link_info,
     }
     # --- FIN REFACTOR ---
 
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
+
+    if location_link_info:
+        flow_state = (
+            contexto_municipio_actual.get("reclamo_flow_v2", {})
+            .get("state")
+        )
+        if flow_state == ReclamoState.ESPERANDO_DIRECCION.name:
+            handler = ReclamoFlowHandler(context, chat_db_context)
+            payload_con_ubicacion = dict(received_payload)
+            payload_con_ubicacion["es_ubicacion"] = True
+            payload_con_ubicacion.setdefault("ubicacion_usuario", {}).update(
+                {
+                    k: v
+                    for k, v in {
+                        "address": location_link_info.get("address"),
+                        "latitude": location_link_info.get("latitude"),
+                        "longitude": location_link_info.get("longitude"),
+                    }.items()
+                    if v is not None
+                }
+            )
+            response = handler.handle(pregunta_str, payload_con_ubicacion)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response)
+
+        if not contexto_municipio_actual.get("estado_conversacion"):
+            address = location_link_info.get("address") or "la ubicación que compartiste"
+            opciones_proactivas = [
+                {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
+                {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
+                {"texto": "Cancelar", "action_id": "cancelar"},
+            ]
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
+            contexto_municipio_actual['ubicacion_contextual'] = {
+                "address": address,
+                "latitude": location_link_info.get("latitude"),
+                "longitude": location_link_info.get("longitude"),
+                "source": location_link_info.get("source", "link"),
+            }
+            contexto_municipio_actual['menu_opciones'] = opciones_proactivas
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response({
+                "message_body": f"Recibí tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
+                "options_list": opciones_proactivas,
+                "message_type": "interactive_buttons",
+                "fuente": "proactive_location_handler",
+            })
 
     # --- START GREETING CHECK (MOVED) ---
     # This must run before any stateful logic to ensure greetings always reset the flow.
@@ -3503,6 +4046,24 @@ def responder_municipio(
     if kwargs:
         received_payload.update(kwargs)
 
+    location_link_info = None
+    if (
+        not received_payload.get("es_ubicacion")
+        and isinstance(pregunta_str, str)
+        and pregunta_str.strip()
+    ):
+        location_link_info = _detect_location_link_info(pregunta_str)
+        if location_link_info:
+            link_payload = {}
+            if location_link_info.get("address"):
+                link_payload["address"] = location_link_info["address"]
+            if location_link_info.get("latitude") is not None and location_link_info.get("longitude") is not None:
+                link_payload["latitude"] = location_link_info["latitude"]
+                link_payload["longitude"] = location_link_info["longitude"]
+            if link_payload:
+                received_payload.setdefault("ubicacion_usuario", {}).update(link_payload)
+            received_payload["es_ubicacion"] = True
+
     chat_db_context_live_data = {}
     if chat_db_context and chat_db_context.context_data is not None:
         chat_db_context_live_data = chat_db_context.context_data
@@ -3522,6 +4083,7 @@ def responder_municipio(
         "chat_db_context_data": chat_db_context_live_data,
         "profile_name": kwargs.get("profile_name"),
         # Other kwargs will be in received_payload
+        "location_link_info": location_link_info,
     }
     # --- END CONTEXT INITIALIZATION ---
 
@@ -3612,33 +4174,6 @@ def responder_municipio(
             if response:
                 return _finalize_response(response)
     # --- END GLOBAL MENU SHORTCUTS ---
-
-    # --- START DIRECT RECLAMO DETECTION FOR TEXT OR AUDIO ---
-    if not contexto_municipio_actual.get("estado_conversacion"):
-        reclamo_options = _get_reclamos_menu().get("options_list", [])
-        plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
-        details = extract_reclamo_details_from_text(pregunta_str, plain_text_options)
-        detected_category = details.pop("categoria_sugerida", None)
-        if detected_category:
-            handler = ReclamoFlowHandler(context, chat_db_context)
-            datos_iniciales = {}
-            if details.get("descripcion_sugerida"):
-                datos_iniciales["descripcion"] = details["descripcion_sugerida"]
-            if details.get("direccion_sugerida"):
-                datos_iniciales["direccion"] = details["direccion_sugerida"]
-            if details.get("nombre_sugerido"):
-                datos_iniciales["nombre"] = details.get("nombre_sugerido")
-            if details.get("email_sugerido"):
-                datos_iniciales["email"] = details.get("email_sugerido")
-            response_dict = handler.start_flow(
-                datos_iniciales=datos_iniciales or None,
-                categoria_inicial=detected_category,
-            )
-            contexto_municipio_actual["estado_conversacion"] = "EN_FLUJO_RECLAMO"
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-            return _finalize_response(response_dict)
-    # --- END DIRECT RECLAMO DETECTION FOR TEXT OR AUDIO ---
 
     # --- START INTENT CLASSIFICATION ---
     # If it's not a simple greeting, proceed with intent classification
@@ -4143,6 +4678,20 @@ def responder_municipio(
             if response:
                 return _finalize_response(response)
 
+    if (
+        not contexto_municipio_actual.get("estado_conversacion")
+        and isinstance(pregunta_str, str)
+        and pregunta_str.strip()
+    ):
+        auto_reclamo_response = _try_start_reclamo_from_text(
+            pregunta_str,
+            context,
+            chat_db_context,
+            default_localidad=final_municipio_config.get("ciudad"),
+            default_provincia=final_municipio_config.get("provincia"),
+        )
+        if auto_reclamo_response:
+            return _finalize_response(auto_reclamo_response)
 
     USAR_LLM_PARA_RECLAMOS = True  # Habilita el flujo con LLM para reclamos
     respuesta_manejada_por_llm = False # Flag para indicar si el LLM ya manejó la respuesta
