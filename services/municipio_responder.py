@@ -35,6 +35,7 @@ from services.utils_placeholders import (
     obtener_respuesta_municipio,
 )
 from services.config_loader import cargar_configuracion_municipio
+from services.promo_service import get_active_promo
 from .actions.municipio_actions import (
     CrearReclamoActionHandler,
 )
@@ -524,34 +525,54 @@ class ReclamoFlowHandler:
             handler = CrearReclamoActionHandler(self.context)
             result = handler.execute(action_data)
             if result.get("success"):
+                # --- START: Final attempt at new logic ---
                 ticket_data = result.get("data", {})
                 nro_ticket = ticket_data.get("nro_ticket")
                 pin_consulta = ticket_data.get("consulta_pin")
+                nombre_usuario = datos.get("nombre", "Vecino/a")
 
-                message = result.get(
-                    "message_to_user",
-                    f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{nro_ticket}*. Te mantendremos informado sobre el estado del mismo.",
+                promo_data = get_active_promo()
+                promo_image = promo_data.get("image_url") if promo_data else None
+                promo_text = promo_data.get("text") if promo_data else ""
+                promo_link_text = promo_data.get("link_text") if promo_data else None
+                promo_link_url = promo_data.get("link_url") if promo_data else None
+
+                final_message_body = (
+                    f"✅ ¡Reclamo recibido, {nombre_usuario}! 📄\n\n"
+                    f"N° de Ticket: {nro_ticket}\n\n"
+                    f"{promo_text}"
                 )
 
-                # The promotional message is now handled by the image_url and the frontend
-                punto_limpio_logo = "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png"
+                # Use the robust end_flow method to handle state cleanup and delayed menu
+                final_payload = self.end_flow(final_message_body.strip(), show_menu=True, image_url=promo_image)
 
-                final_payload = self.end_flow(message, show_menu=True, image_url=punto_limpio_logo)
-
+                # Now, add the specific buttons we need
+                final_buttons = []
                 if nro_ticket and pin_consulta:
                     base_url = "https://www.chatboc.ar/chat/"
                     ver_ticket_url = f"{base_url}{nro_ticket.replace('M-', '')}?pin={pin_consulta}"
-                    final_payload.setdefault("options_list", []).append(
+                    final_buttons.append(
                         {"texto": "Ver Ticket", "url": ver_ticket_url, "type": "url"}
                     )
-                    final_payload["message_type"] = "interactive_buttons"
+
+                if promo_link_text and promo_link_url:
+                    final_buttons.append({
+                        "texto": promo_link_text,
+                        "url": promo_link_url,
+                        "type": "url"
+                    })
+
+                final_payload["options_list"] = final_buttons
+                final_payload["message_type"] = "interactive_buttons" if final_buttons else "text"
 
                 return final_payload
-            error_message = result.get(
-                "message_to_user",
-                "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde.",
-            )
-            return self.end_flow(error_message, show_menu=True)
+                # --- END: Final attempt ---
+            else:
+                error_message = result.get(
+                    "message_body",
+                    "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde.",
+                )
+                return self.end_flow(error_message, show_menu=True)
         elif any(word in normalized for word in negatives) or action == "reclamo_confirmar_no":
             return self.ask_for_contact_details(force_prompt=True)
         else:  # Cancel or any other input

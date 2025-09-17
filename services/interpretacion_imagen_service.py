@@ -438,103 +438,59 @@ def _procesar_interpretacion_reclamo(
 
     imagen_descripcion_para_llm = ". ".join(prompt_description_parts) + "."
 
-    from services.llm_utils import generar_descripcion_natural_de_imagen
-    descripcion_natural = generar_descripcion_natural_de_imagen(imagen_descripcion_para_llm)
+    # --- Start of new logic for concise description ---
+    # No longer calling LLM for description generation. We build it from keywords.
 
-    logger.info(f"📝 [RECLAMO_IMG_PROC] Descripción para LLM (desde imagen): {descripcion_natural} (Análisis ID: {analisis_id_for_log})")
+    final_categoria_sugerida = sugerida_categoria_vision
 
-    detalles_llm = extract_complaint_details_llm(descripcion_natural) or {}
-    if not isinstance(detalles_llm, dict):
-        detalles_llm = {}
-
-    datos_internos_analisis['llm_raw'] = detalles_llm
-    datos_internos_analisis['vision_inferred_category'] = sugerida_categoria_vision
-
-    if analisis_db_record:
-        # Forzar la actualización de JSONB en SQLAlchemy
-        current_datos_db = analisis_db_record.datos_estructurados or {}
-        current_datos_db.update(datos_internos_analisis)
-        analisis_db_record.datos_estructurados = dict(current_datos_db)
-
-
-    llm_tipo_problema = detalles_llm.get("tipo_problema","").strip()
-    llm_descripcion = detalles_llm.get("descripcion_problema", "").strip()
-
-    if not llm_tipo_problema:
-        # Si el LLM no devolvió categoría, intentar con la inferida por visión
-        if sugerida_categoria_vision:
-            final_categoria_sugerida = sugerida_categoria_vision
-            datos_internos_analisis['final_categoria_sugerida'] = final_categoria_sugerida
-            datos_internos_analisis['final_descripcion_sugerida'] = descripcion_natural
-            datos_internos_analisis['es_reclamo_sugerido'] = True
-            if analisis_db_record:
-                analisis_db_record.estado_analisis = "completado"
-                current_datos_db = analisis_db_record.datos_estructurados if isinstance(analisis_db_record.datos_estructurados, dict) else {}
-                current_datos_db.update(datos_internos_analisis)
-                analisis_db_record.datos_estructurados = current_datos_db
-                db.session.commit()
-            return {
-                'es_reclamo': True,
-                'categoria_sugerida': final_categoria_sugerida,
-                'descripcion_sugerida': descripcion_natural,
-                'texto_ocr': extracted_ocr_text,
-                'analisis_id': analisis_db_record.id if analisis_db_record else None,
-                'error': None,
-                'analisis_interno': datos_internos_analisis,
-            }
+    if not final_categoria_sugerida:
+        # If vision API didn't suggest a category, try to infer from text
         fallback_categoria = _infer_category_from_text(imagen_descripcion_para_llm)
         if fallback_categoria:
             final_categoria_sugerida = fallback_categoria
-            datos_internos_analisis['final_categoria_sugerida'] = final_categoria_sugerida
-            datos_internos_analisis['final_descripcion_sugerida'] = descripcion_natural
-            datos_internos_analisis['es_reclamo_sugerido'] = True
+        else:
+            # If still no category, we can't proceed with a claim
+            logger.info(f"ℹ️ [RECLAMO_IMG_PROC] No se pudo determinar una categoría. (Análisis ID: {analisis_id_for_log}).")
             if analisis_db_record:
-                analisis_db_record.estado_analisis = "completado"
-                current_datos_db = analisis_db_record.datos_estructurados if isinstance(analisis_db_record.datos_estructurados, dict) else {}
-                current_datos_db.update(datos_internos_analisis)
-                analisis_db_record.datos_estructurados = current_datos_db
+                analisis_db_record.estado_analisis = "completado_sin_categoria"
                 db.session.commit()
-            return {
-                'es_reclamo': True,
-                'categoria_sugerida': final_categoria_sugerida,
-                'descripcion_sugerida': descripcion_natural,
-                'texto_ocr': extracted_ocr_text,
-                'analisis_id': analisis_db_record.id if analisis_db_record else None,
-                'error': None,
-                'analisis_interno': datos_internos_analisis,
-            }
-        if analisis_db_record:
-            analisis_db_record.estado_analisis = "completado"
-            current_datos_db = analisis_db_record.datos_estructurados if isinstance(analisis_db_record.datos_estructurados, dict) else {}
-            current_datos_db.update(datos_internos_analisis)
-            analisis_db_record.datos_estructurados = current_datos_db
-            db.session.commit()
-        return {
-            "es_reclamo": False,
-            "motivo": "El análisis por IA no pudo confirmar un reclamo específico",
-            'analisis_id': analisis_db_record.id if analisis_db_record else None,
-            'analisis_interno': datos_internos_analisis
-        }
+            return { "es_reclamo": False, "motivo": "No se pudo determinar la categoría del reclamo." }
 
-    final_categoria_sugerida = ""
-    normalized_llm_cat = normalizar_texto_municipios(llm_tipo_problema)
-    matched_llm_cat = next((cat for cat in CATEGORIAS_RECLAMO if normalizar_texto_municipios(cat) == normalized_llm_cat), None)
-    if not matched_llm_cat:
-        from services.categorias_municipio import categorias_normalizadas as reclamo_categorias_norm_hm
-        from difflib import get_close_matches as get_close_matches_hm
+    # Generate the short description
+    # Get the top keywords from the vision results
+    detected_items = []
+    min_confidence = 0.6
+    for label in vision_results.get("labels", []):
+        confidence = label.get("confidence", label.get("score", 1.0))
+        if confidence >= min_confidence:
+            detected_items.append(normalizar_texto_municipios(label.get("description", "")))
+    for obj in vision_results.get("objects", []):
+        confidence = obj.get("confidence", obj.get("score", 1.0))
+        if confidence >= min_confidence:
+            detected_items.append(normalizar_texto_municipios(obj.get("name", "")))
 
-        close_matches_llm = get_close_matches_hm(normalized_llm_cat, reclamo_categorias_norm_hm, n=1, cutoff=0.75)
-        if close_matches_llm:
-            idx = reclamo_categorias_norm_hm.index(close_matches_llm[0])
-            matched_llm_cat = CATEGORIAS_RECLAMO[idx]
+    # Get unique, relevant keywords, excluding the category itself and common words
+    unique_items = []
+    # Exclude words that are part of the category name to avoid "Limpieza: limpieza"
+    exclude_words = set(final_categoria_sugerida.lower().split()) | {"calle", "camino", "carretera", "acera"}
+    for item in detected_items:
+        if item not in unique_items and item not in exclude_words:
+            unique_items.append(item)
 
-    if matched_llm_cat:
-        final_categoria_sugerida = matched_llm_cat
-        logger.info(f"[RECLAMO_IMG_PROC] LLM propuso categoría: '{llm_tipo_problema}', mapeada a: '{final_categoria_sugerida}'")
+    top_keywords = unique_items[:2] # Take top 2 keywords
+
+    if top_keywords:
+        short_description = f"{', '.join(top_keywords).capitalize()}"
+    else:
+        # Fallback if no useful keywords are found
+        short_description = f"Problema con {final_categoria_sugerida.lower()}"
+
+    logger.info(f"📝 [RECLAMO_IMG_PROC] Generated short description: '{short_description}' for category '{final_categoria_sugerida}'")
 
     datos_internos_analisis['final_categoria_sugerida'] = final_categoria_sugerida
-    datos_internos_analisis['final_descripcion_sugerida'] = llm_descripcion
+    datos_internos_analisis['final_descripcion_sugerida'] = short_description
     datos_internos_analisis['es_reclamo_sugerido'] = True
+    datos_internos_analisis['vision_inferred_category'] = sugerida_categoria_vision
 
     if analisis_db_record:
         analisis_db_record.estado_analisis = "completado"
@@ -546,7 +502,7 @@ def _procesar_interpretacion_reclamo(
     return {
         'es_reclamo': True,
         'categoria_sugerida': final_categoria_sugerida,
-        'descripcion_sugerida': llm_descripcion,
+        'descripcion_sugerida': short_description,
         'texto_ocr': extracted_ocr_text,
         'analisis_id': analisis_db_record.id if analisis_db_record else None,
         'error': None,

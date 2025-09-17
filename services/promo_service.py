@@ -1,23 +1,28 @@
-import time
+# services/promo_service.py
+from typing import Dict, Any, Optional
 
-PUNTO_LIMPIO_URL = "https://www.juninmendoza.gov.ar/punto-limpio"
-OBRAS_URL = "https://www.juninmendoza.gov.ar/obras"
-
-
-def send_post_ticket_promo(ctx: dict):
-    """Send a promotional message after ticket creation if not already sent.
-
-    Returns a payload with links to municipal initiatives or ``None`` if the
-    promotion was recently delivered in this conversation. The timestamp is
-    stored in ``ctx['promo_sent_ts']`` to avoid sending duplicates.
-    """
-    if ctx.get("promo_sent_ts"):
-        return None
-    ctx["promo_sent_ts"] = time.time()
-    return {
-        "message_body": (
-            f"♻️ Junín Punto Limpio: {PUNTO_LIMPIO_URL}\n"
-            f"📰 Obras y novedades: {OBRAS_URL}"
+# En el futuro, esto podría leerse desde una base de datos o un archivo de configuración
+# para permitir la actualización de promociones sin necesidad de un deploy.
+PROMOSIONES_ACTIVAS = [
+    {
+        "id": "punto_limpio_junin",
+        "image_url": "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png",
+        "text": (
+            "¿Sabías que estamos trabajando para una Junín más limpia? ♻️\n"
+            "Conocé nuestra planta de recolección, reciclaje y elaboración de productos sustentables.\n"
+            "Ladrillos, tejas, postes, mangueras, impresión 3D, luminarias LED y paneles solares."
         ),
-        "message_type": "text",
+        "link_text": "Más info",
+        "link_url": "https://www.juninmendoza.gov.ar/punto-limpio/"
     }
+    # Se podrían agregar más promociones aquí y rotarlas.
+]
+
+def get_active_promo() -> Optional[Dict[str, Any]]:
+    """
+    Devuelve la promoción activa.
+    Por ahora, devuelve la primera de la lista estática.
+    """
+    if PROMOSIONES_ACTIVAS:
+        return PROMOSIONES_ACTIVAS[0]
+    return None
