@@ -64,6 +64,7 @@ from services.tasks import process_image_for_chat_task
 from services.intent_classifier import IntentClassifier
 from services.multimodal_analyzer import analizar_imagen_con_fallback
 import json
+from services.promo_service import obtener_promocion_actual
 from services.ticket_utils import formatear_ticket_respuesta
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
 
@@ -528,15 +529,19 @@ class ReclamoFlowHandler:
                 nro_ticket = ticket_data.get("nro_ticket")
                 pin_consulta = ticket_data.get("consulta_pin")
 
+                promo = obtener_promocion_actual()
+
                 message = result.get(
                     "message_to_user",
-                    f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{nro_ticket}*. Te mantendremos informado sobre el estado del mismo por este medio.",
+                    f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{nro_ticket}*."
                 )
 
-                # The promotional message is now handled by the image_url and the frontend
-                punto_limpio_logo = "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png"
+                if promo and promo.get('texto'):
+                    message += f"\n\n{promo['texto']}"
 
-                final_payload = self.end_flow(message, show_menu=True, image_url=punto_limpio_logo)
+                promo_image_url = promo.get('imagen_url') if promo else None
+
+                final_payload = self.end_flow(message, show_menu=True, image_url=promo_image_url)
 
                 if nro_ticket and pin_consulta:
                     base_url = "https://www.chatboc.ar/chat/"
@@ -544,6 +549,13 @@ class ReclamoFlowHandler:
                     final_payload.setdefault("options_list", []).append(
                         {"texto": "Ver Ticket", "url": ver_ticket_url, "type": "url"}
                     )
+
+                if promo and promo.get('url'):
+                    final_payload.setdefault("options_list", []).append(
+                        {"texto": "Ver más", "url": promo['url'], "type": "url"}
+                    )
+
+                if final_payload.get("options_list"):
                     final_payload["message_type"] = "interactive_buttons"
 
                 return final_payload

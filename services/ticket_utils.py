@@ -126,7 +126,7 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
 
 
     respuesta += """
-Te mantendremos al tanto de las novedades. ¡Gracias por tu colaboración!"""
+¡Gracias por tu colaboración!"""
 
     # Limpiar URLs redundantes del cuerpo del mensaje
     respuesta_limpia = _remove_redundant_urls_from_message(respuesta, botones)
