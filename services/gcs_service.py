@@ -7,16 +7,70 @@ from flask import current_app, has_app_context, request
 from werkzeug.utils import secure_filename
 from services.thumbnail_service import generar_thumbnail
 
-# Optional Cloudinary storage
-CLOUDINARY_URL = os.environ.get("CLOUDINARY_URL")
-CLOUDINARY_ENABLED = bool(CLOUDINARY_URL)
-if CLOUDINARY_ENABLED:  # pragma: no cover - optional dependency
-    import cloudinary
-    from cloudinary import uploader
+logger = logging.getLogger(__name__)
 
-    cloudinary.config(cloudinary_url=CLOUDINARY_URL)
-else:  # pragma: no cover - avoid import when disabled
-    uploader = None
+
+def _init_cloudinary():  # pragma: no cover - thin wrapper validated via tests
+    """Return a tuple ``(enabled, uploader, extra_options)`` based on env vars."""
+
+    cloudinary_url = os.environ.get("CLOUDINARY_URL")
+    cloud_name = os.environ.get("CLOUDINARY_CLOUD_NAME")
+    api_key = os.environ.get("CLOUDINARY_API_KEY")
+    api_secret = os.environ.get("CLOUDINARY_API_SECRET")
+    upload_folder = os.environ.get("CLOUDINARY_UPLOAD_FOLDER")
+
+    config_kwargs = {}
+    if cloudinary_url:
+        config_kwargs["cloudinary_url"] = cloudinary_url
+    else:
+        provided_keys = [cloud_name, api_key, api_secret]
+        if any(provided_keys) and not all(provided_keys):
+            missing = []
+            if not cloud_name:
+                missing.append("CLOUDINARY_CLOUD_NAME")
+            if not api_key:
+                missing.append("CLOUDINARY_API_KEY")
+            if not api_secret:
+                missing.append("CLOUDINARY_API_SECRET")
+            logger.warning(
+                "Cloudinary credentials incomplete. Uploads disabled (missing: %s)",
+                ", ".join(missing),
+            )
+            return False, None, {}
+        if all(provided_keys):
+            config_kwargs.update(
+                cloud_name=cloud_name,
+                api_key=api_key,
+                api_secret=api_secret,
+            )
+
+    if not config_kwargs:
+        return False, None, {}
+
+    try:
+        import cloudinary  # pragma: no cover - optional dependency
+        from cloudinary import uploader as cloudinary_uploader
+    except Exception as exc:  # pragma: no cover - exercised via unit tests
+        logger.warning("Cloudinary SDK not available: %s", exc)
+        return False, None, {}
+
+    config_kwargs.setdefault("secure", True)
+    try:
+        cloudinary.config(**config_kwargs)
+    except Exception as exc:  # pragma: no cover - configuration errors logged
+        logger.error("Failed to configure Cloudinary: %s", exc, exc_info=True)
+        return False, None, {}
+
+    extra_options = {}
+    if upload_folder:
+        sanitized = upload_folder.strip().strip("/")
+        if sanitized:
+            extra_options["folder"] = sanitized
+
+    return True, cloudinary_uploader, extra_options
+
+
+CLOUDINARY_ENABLED, uploader, CLOUDINARY_UPLOAD_OPTIONS = _init_cloudinary()
 
 # Google Cloud Storage can be optionally disabled (e.g., when billing is off).
 GCS_ENABLED = os.environ.get("GCS_ENABLED", "false").lower() == "true"
@@ -30,9 +84,6 @@ else:  # pragma: no cover - avoid import errors when disabled
 
 BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "chatboc-files")
 MAX_FILE_SIZE = 15 * 1024 * 1024  # 15 MB
-
-
-logger = logging.getLogger(__name__)
 
 
 def _get_gcs_client():
@@ -156,19 +207,25 @@ def _save_to_cloudinary(
     """
     try:  # pragma: no cover - exercised via unit tests with mocks
         file_obj = io.BytesIO(file_bytes)
-        upload_result = uploader.upload(
-            file_obj, public_id=unique_name, resource_type="auto"
-        )
+        upload_kwargs = {"public_id": unique_name, "resource_type": "auto"}
+        if CLOUDINARY_UPLOAD_OPTIONS:
+            upload_kwargs.update(CLOUDINARY_UPLOAD_OPTIONS)
+        upload_result = uploader.upload(file_obj, **upload_kwargs)
         original_url = upload_result.get("secure_url") or upload_result.get("url")
 
         thumb_url = None
         if thumbnail_bytes and thumb_meta:
             thumb_id = get_thumb_filename(unique_name)
+            thumb_kwargs = {
+                "public_id": thumb_id,
+                "resource_type": "image",
+                "format": "webp",
+            }
+            if CLOUDINARY_UPLOAD_OPTIONS:
+                thumb_kwargs.update(CLOUDINARY_UPLOAD_OPTIONS)
             thumb_res = uploader.upload(
                 io.BytesIO(thumbnail_bytes),
-                public_id=thumb_id,
-                resource_type="image",
-                format="webp",
+                **thumb_kwargs,
             )
             thumb_url = thumb_res.get("secure_url") or thumb_res.get("url")
             thumb_meta["url"] = thumb_url
