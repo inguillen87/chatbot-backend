@@ -530,7 +530,7 @@ class ReclamoFlowHandler:
 
                 message = result.get(
                     "message_to_user",
-                    f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{nro_ticket}*. Te mantendremos informado sobre el estado del mismo por este medio.",
+                    f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{nro_ticket}*. Te mantendremos informado sobre el estado del mismo.",
                 )
 
                 # The promotional message is now handled by the image_url and the frontend
