@@ -580,60 +580,24 @@ def _get_main_menu_payload(context: dict, welcome_message_override: Optional[str
     profile_name = context.get("profile_name")
     owner_user = context.get("user_obj")
 
-    def _sanitize_name(value: Any) -> Optional[str]:
-        if not isinstance(value, str):
-            return None
-        cleaned = value.strip()
-        if not cleaned:
-            return None
-        lowered = cleaned.lower()
-        if lowered in {"vecino", "vecina", "vecine", "vecino/a"}:
-            return None
-        return cleaned
-
-    user_name: Optional[str] = None
-    owner_name = None
-    if owner_user:
-        owner_name = getattr(owner_user, "nombre", None) or getattr(owner_user, "name", None)
-
-    candidate_names: List[Optional[str]] = [
-        profile_name if isinstance(profile_name, str) else None,
-        getattr(viewer_user, "nombre", None) if viewer_user else None,
-        getattr(viewer_user, "name", None) if viewer_user else None,
-    ]
-
-    contexto_local = context.get(CONTEXTO_MUNICIPIO)
-    if isinstance(contexto_local, dict):
-        contacto_local = contexto_local.get("contacto_usuario")
-        if isinstance(contacto_local, dict):
-            candidate_names.append(contacto_local.get("nombre"))
-
-    chat_ctx_data = context.get("chat_db_context_data")
-    if isinstance(chat_ctx_data, dict):
-        contexto_guardado = chat_ctx_data.get(CONTEXTO_MUNICIPIO, {})
-        if isinstance(contexto_guardado, dict):
-            contacto_guardado = contexto_guardado.get("contacto_usuario")
-            if isinstance(contacto_guardado, dict):
-                candidate_names.append(contacto_guardado.get("nombre"))
-
-    for raw_name in candidate_names:
-        sanitized = _sanitize_name(raw_name)
-        if sanitized:
-            if owner_name and sanitized.lower() == str(owner_name).strip().lower():
-                continue
-            user_name = sanitized
-            break
+    user_name = None
+    if isinstance(profile_name, str) and profile_name.strip():
+        owner_name = None
+        if owner_user:
+            owner_name = getattr(owner_user, "nombre", None) or getattr(owner_user, "name", None)
+        # Avoid greeting with the admin/owner name when the session is anonymous
+        if not owner_name or profile_name.strip().lower() != str(owner_name).strip().lower():
+            user_name = profile_name.strip()
+    if not user_name and viewer_user:
+        user_name = getattr(viewer_user, "nombre", None) or getattr(viewer_user, "name", None)
 
     if welcome_message_override:
         welcome_message = welcome_message_override
     elif user_name:
         welcome_message = f"👋 ¡Hola, {user_name}!"
     else:
-        chat_context_data = context.get("chat_db_context_data")
-        if isinstance(chat_context_data, dict):
-            contexto_municipio_actual = chat_context_data.setdefault(CONTEXTO_MUNICIPIO, {})
-        else:
-            contexto_municipio_actual = context.setdefault(CONTEXTO_MUNICIPIO, {})
+        # User's name is not known, ask for it.
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NOMBRE_INICIAL.name
         return {
             "message_body": "¡Hola! Soy JUNI, tu Asistente Virtual. Para una atención más personalizada, ¿podrías decirme tu nombre?",

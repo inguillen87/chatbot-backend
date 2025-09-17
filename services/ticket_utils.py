@@ -27,20 +27,7 @@ def _remove_redundant_urls_from_message(message_body, options_list):
 
     return message_body_str
 
-def formatear_ticket_respuesta(
-    tipo,
-    nombre_usuario,
-    descripcion,
-    categoria,
-    id_ticket=None,
-    contacto_especializado=None,
-    base_chat_url=None,
-    dni=None,
-    consulta_pin=None,
-    *,
-    include_description=True,
-    descripcion_max_caracteres=160,
-):
+def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_ticket=None, contacto_especializado=None, base_chat_url=None, dni=None, consulta_pin=None):
     nombre_asesor = None
     titulo_asesor = None
     telefono_asesor = None
@@ -107,28 +94,17 @@ def formatear_ticket_respuesta(
             if nuevo != texto:
                 texto = nuevo
                 break
-        if descripcion_max_caracteres and len(texto) > descripcion_max_caracteres:
-            texto = texto[:descripcion_max_caracteres].rstrip() + "…"
         return texto
 
-    detalles_resumen = []
-    if id_ticket:
-        detalles_resumen.append(f"- *N° de Ticket:* `{id_ticket}`")
-    if categoria:
-        detalles_resumen.append(f"- *Categoría:* {categoria}")
-    if include_description:
-        descripcion_resumen = _resumir_descripcion(descripcion)
-        if descripcion_resumen:
-            detalles_resumen.append(f"- *Descripción:* {descripcion_resumen}")
+    descripcion_resumen = _resumir_descripcion(descripcion)
 
-    respuesta = f"""✅ *¡{texto_tipo} recibido, {nombre_usuario}!*"""
+    respuesta = f"""✅ *¡{texto_tipo} recibido, {nombre_usuario}!*
 
-    respuesta += "\n\n📄 *Resumen de tu {0}:*".format(texto_tipo)
-    if detalles_resumen:
-        respuesta += "\n" + "\n".join(detalles_resumen) + "\n"
-    else:
-        respuesta += "\n"
-
+📄 *Resumen de tu {texto_tipo}:*
+- *N° de Ticket:* `{id_ticket}`
+- *Categoría:* {categoria}
+- *Descripción:* {descripcion_resumen}
+"""
     if dni:
         respuesta += f"- *DNI:* `{dni}`\n"
     if consulta_pin:

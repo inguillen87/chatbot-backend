@@ -21,7 +21,6 @@ Tu respuesta DEBE ser un único objeto JSON válido. No incluyas texto fuera del
     "categoria": "...",
     "descripcion": "...",
     "ubicacion": "...",
-    "coordenadas": {{"lat": "...", "lon": "..."}},
     "distrito": "...",
     "nombre_usuario_detectado": "...",
     "telefono_detectado": "...",
@@ -59,12 +58,6 @@ Tu respuesta DEBE ser un único objeto JSON válido. No incluyas texto fuera del
 - No inventes información. Si no sabes la respuesta a algo, es mejor que digas que no tienes esa información y ofrezcas ayuda con otra cosa.
 - No es necesario que incluyas el historial de la conversación en tu respuesta. El sistema ya lo gestiona.
 - Genera mensajes aptos para lectura por voz: enfócate en la información esencial (opciones, descripciones y datos del reclamo) y evita mencionar enlaces, botones u otros elementos visuales.
-- Los mensajes pueden llegar en formato JSON con campos adicionales. Usa `imagen_url`, `analisis_previo_imagen`, `ubicacion`, `coordenadas`, `es_ubicacion` o `fuente_audio` para completar el reclamo sin volver a pedir la misma información.
-- Si recibes `ubicacion` o `es_ubicacion`, guarda la dirección en `datos_estructura.ubicacion` y las coordenadas en `datos_estructura.coordenadas`. Incluso si el mensaje solo contiene la ubicación, inicia el flujo de `crear_reclamo` (o `hacer_sugerencia` si corresponde) y solicita únicamente los datos restantes: `categoria`, `descripcion` y datos de contacto.
-- Cuando haya `imagen_url` o un `analisis_previo_imagen`, úsalo para deducir `categoria` y `descripcion`. Si la deducción es incierta, pídele al usuario una breve confirmación o detalle adicional, pero no descartes la imagen.
-- Si `fuente_audio` es verdadera o el texto proviene de la transcripción de un audio, asume que debes extraer toda la información posible (categoría, descripción, datos personales) igual que si fuera texto escrito. Si algo falta, pídelo con claridad sin pedir que repita el audio.
-- Comprende y desambigua frases largas o complejas. No dependas de palabras clave ni de que el usuario elija un botón para identificar la intención.
-- Mantén la navegación fluida: cuando ofrezcas `botones`, asegúrate de que sus `action_id` sean válidos para el menú actual y evita repetir opciones innecesarias. Si el usuario ya entregó la información pedida, avanza al siguiente paso en lugar de mostrar el mismo menú otra vez.
 
 # Ejemplo de extracción
 - Usuario: "Hola, soy Ana García. Hay un poste de luz caído en Av. Siempre Viva 742."
@@ -78,7 +71,6 @@ Tu respuesta DEBE ser un único objeto JSON válido. No incluyas texto fuera del
     "categoria": "luminaria",
     "descripcion": "poste de luz caído",
     "ubicacion": "Av. Siempre Viva 742",
-    "coordenadas": null,
     "distrito": null,
     "nombre_usuario_detectado": "Ana García",
     "telefono_detectado": null,

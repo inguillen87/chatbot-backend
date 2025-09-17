@@ -11,7 +11,6 @@ import json
 from enum import Enum, auto
 import unicodedata
 import difflib
-from typing import Any
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
 from models import (
@@ -98,96 +97,6 @@ CANCEL_KEYWORDS = {
     ]
 }
 
-
-CANCEL_RECLAMO_MESSAGE = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
-
-
-def _build_confirmation_aliases() -> dict[str, str]:
-    """Map common numeric replies to structured confirmation actions."""
-
-    alias_pairs = [
-        ("1", "reclamo_confirmar_si"),
-        ("uno", "reclamo_confirmar_si"),
-        ("opcion 1", "reclamo_confirmar_si"),
-        ("opción 1", "reclamo_confirmar_si"),
-        ("opcion uno", "reclamo_confirmar_si"),
-        ("opción uno", "reclamo_confirmar_si"),
-        ("2", "reclamo_confirmar_no"),
-        ("dos", "reclamo_confirmar_no"),
-        ("opcion 2", "reclamo_confirmar_no"),
-        ("opción 2", "reclamo_confirmar_no"),
-        ("opcion dos", "reclamo_confirmar_no"),
-        ("opción dos", "reclamo_confirmar_no"),
-        ("3", "reclamo_cancelar"),
-        ("tres", "reclamo_cancelar"),
-        ("opcion 3", "reclamo_cancelar"),
-        ("opción 3", "reclamo_cancelar"),
-        ("opcion tres", "reclamo_cancelar"),
-        ("opción tres", "reclamo_cancelar"),
-    ]
-
-    aliases: dict[str, str] = {}
-    for raw_key, action in alias_pairs:
-        normalized_key = normalizar_texto(raw_key)
-        if not normalized_key:
-            continue
-        aliases[normalized_key] = action
-    return aliases
-
-
-CONFIRMATION_ACTION_ALIASES = _build_confirmation_aliases()
-
-
-def _build_keyword_set(keywords: list[str]) -> set[str]:
-    normalized_values: set[str] = set()
-    for word in keywords:
-        normalized = normalizar_texto(word)
-        if normalized:
-            normalized_values.add(normalized)
-    return normalized_values
-
-
-AFFIRMATIVE_CONFIRMATION_KEYWORDS = _build_keyword_set([
-    "si",
-    "sí",
-    "confirmo",
-    "confirmar",
-    "ok",
-    "okay",
-    "acepto",
-    "aceptar",
-    "dale",
-    "listo",
-    "perfecto",
-    "correcto",
-])
-
-NEGATIVE_CONFIRMATION_KEYWORDS = _build_keyword_set([
-    "no",
-    "editar",
-    "modificar",
-    "cambiar",
-    "corregir",
-    "actualizar",
-    "ajustar",
-    "volver",
-    "erroneo",
-    "equivocado",
-    "mal",
-    "incorrecto",
-])
-
-CANCEL_CONFIRMATION_KEYWORDS = _build_keyword_set([
-    "cancelar",
-    "cancelá",
-    "cancelarlo",
-    "cancelalo",
-    "cancel",
-    "anular",
-    "salir",
-    "abortar",
-])
-
 # Simple cache to avoid recomputing responses for repeated municipal queries
 MUNICIPIO_RESPONSE_CACHE = TTLCache(maxsize=256, ttl=3600)
 
@@ -206,59 +115,29 @@ class ReclamoFlowHandler:
         )
         self.municipal_ctx = municipal_ctx
         self.flow_context = municipal_ctx.setdefault("reclamo_flow_v2", {})
-
-        # Clean legacy LLM flags so shortcuts like numeric answers aren't
-        # blocked after migrating to the structured flow.
-        for legacy_key in (
-            "esperando_info_llm",
-            "esperando_info_llm_reclamo",
-            "historial_llm_reclamo",
-            "datos_parciales_llm_reclamo",
-        ):
-            municipal_ctx.pop(legacy_key, None)
-
-        municipal_ctx["reclamo_flow_activo"] = True
-
         self.greeting_handler = GreetingHandler(context)
 
 
-    def check_for_cancel(self, user_input, payload, state=None):
+    def check_for_cancel(self, user_input, payload):
         normalized_input = normalizar_texto(user_input)
         action = (payload.get("action_id") or payload.get("action") or "").lower()
-
-        if state == ReclamoState.ESPERANDO_CONFIRMACION:
-            if not action:
-                alias_action = CONFIRMATION_ACTION_ALIASES.get(normalized_input)
-                if alias_action:
-                    action = alias_action
-                    payload["action"] = action
-
-            if action in {"reclamo_confirmar_si", "reclamo_confirmar_no"}:
-                return None
-
-            if (
-                action == "reclamo_cancelar"
-                or normalized_input in CANCEL_CONFIRMATION_KEYWORDS
-            ):
-                return self.end_flow(CANCEL_RECLAMO_MESSAGE, show_menu=True)
-
         if (
             normalized_input in CANCEL_KEYWORDS
             or action in {"cancelar", "menu_principal"}
         ):
-            return self.end_flow(CANCEL_RECLAMO_MESSAGE, show_menu=True)
+            return self.end_flow(
+                "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?",
+                show_menu=True,
+            )
         return None
 
     def handle(self, user_input, payload):
-        state_name = self.flow_context.get("state")
-        state = ReclamoState[state_name] if state_name else None
-
-        if state == ReclamoState.ESPERANDO_CONFIRMACION:
-            self._resolve_confirmation_inputs(user_input, payload)
-
-        cancel_response = self.check_for_cancel(user_input, payload, state)
+        cancel_response = self.check_for_cancel(user_input, payload)
         if cancel_response:
             return cancel_response
+
+        state_name = self.flow_context.get("state")
+        state = ReclamoState[state_name] if state_name else None
 
         if state == ReclamoState.ESPERANDO_CATEGORIA:
             return self.handle_categoria(user_input)
@@ -282,11 +161,16 @@ class ReclamoFlowHandler:
         self.flow_context['datos_reclamo'] = datos_iniciales or {}
         datos = self.flow_context['datos_reclamo']
 
-        default_city = (
-            (self.context.get("municipio_config_actual") or {}).get("ciudad")
-        )
-        if default_city:
-            datos.setdefault("distrito", default_city)
+        # Prefill from image analysis if available
+        if self.context.get("foto_url") and not datos.get('foto_url'):
+            datos['foto_url'] = self.context.get("foto_url")
+        if self.context.get("datos_interpretados_archivo"):
+            interpreted = self.context.get("datos_interpretados_archivo")
+            if not datos.get('categoria') and interpreted.get('categoria_sugerida'):
+                datos['categoria'] = interpreted.get('categoria_sugerida')
+            if not datos.get('descripcion') and interpreted.get('descripcion_sugerida'):
+                datos['descripcion'] = interpreted.get('descripcion_sugerida')
+                datos['origen_descripcion'] = 'imagen'
 
         def _apply_prefill(field: str, *candidates) -> None:
             """Populate ``datos`` with the first meaningful value available."""
@@ -434,20 +318,6 @@ class ReclamoFlowHandler:
         return self.ask_for_contact_details()
 
     def handle_direccion(self, user_input, payload):
-        municipio_cfg = self.context.get("municipio_config_actual") or {}
-        default_city = municipio_cfg.get("ciudad")
-
-        def _append_city(addr: str | None) -> str | None:
-            if not addr or not default_city:
-                return addr
-            ciudad_norm = normalizar_texto(default_city)
-            if not ciudad_norm:
-                return addr
-            direccion_norm = normalizar_texto(addr)
-            if ciudad_norm not in direccion_norm:
-                return f"{addr}, {default_city}"
-            return addr
-
         if payload.get("es_ubicacion") and payload.get("ubicacion_usuario"):
             location_data = payload.get("ubicacion_usuario")
             address = location_data.get("address")
@@ -459,18 +329,15 @@ class ReclamoFlowHandler:
                 )
                 if direccion_info:
                     address = direccion_info.get("formatted_address")
-            if address:
-                address = _append_city(address)
-            else:
-                address = f"Lat: {location_data.get('latitude')}, Lon: {location_data.get('longitude')}"
-            self.flow_context['datos_reclamo']['direccion'] = address
+            self.flow_context['datos_reclamo']['direccion'] = (
+                address
+                if address
+                else f"Lat: {location_data.get('latitude')}, Lon: {location_data.get('longitude')}"
+            )
         elif len(user_input) < 5:
             return {"message_body": "La dirección parece muy corta. Por favor, ingresá una dirección más completa (calle y número)."}
         else:
-            self.flow_context['datos_reclamo']['direccion'] = _append_city(user_input)
-
-        if default_city:
-            self.flow_context['datos_reclamo'].setdefault('distrito', default_city)
+            self.flow_context['datos_reclamo']['direccion'] = user_input
 
         # If a photo was already provided earlier in the flow or exists in the
         # context (e.g. the user started the claim by sending an image), skip
@@ -600,8 +467,7 @@ class ReclamoFlowHandler:
 
     def get_confirmation_message(self):
         datos = self.flow_context.get('datos_reclamo', {})
-
-        # Helper to format each line, handling empty values gracefully
+        
         def format_line(label, value, default_value='No especificado'):
             return f"*{label}:* {value or default_value}"
 
@@ -638,78 +504,22 @@ class ReclamoFlowHandler:
 
         return response
 
-    def _resolve_confirmation_inputs(self, user_input: str, payload: dict[str, Any]):
-        """Normalize text and detect explicit confirmation aliases."""
-
-        normalized_raw = user_input.strip().lower()
-        # Always derive the normalized string from the current input so stale
-        # values cached in the payload don't leak keywords from previous turns.
-        normalized_simple = normalizar_texto(user_input)
-
-        action = payload.get("action") or payload.get("action_id")
-        alias_action = (
-            CONFIRMATION_ACTION_ALIASES.get(normalized_simple)
-            or CONFIRMATION_ACTION_ALIASES.get(normalized_raw)
-        )
-        if alias_action:
-            action = alias_action
-            payload["action"] = alias_action
-            payload["action_id"] = alias_action
-
-        payload["_normalized_raw"] = normalized_raw
-        payload["_normalized_simple"] = normalized_simple
-        return action, normalized_raw, normalized_simple
-
     def handle_confirmacion(self, user_input, payload):
-        action, _, normalized_simple = self._resolve_confirmation_inputs(user_input, payload)
-        normalized = (normalized_simple or "").replace("_", " ")
-
-        def contains_keyword(text: str, keywords: set[str]) -> bool:
-            if not text:
-                return False
-            return any(re.search(rf"\b{re.escape(word)}\b", text) for word in keywords)
-
-        is_cancel = (
-            action == "reclamo_cancelar"
-            or contains_keyword(normalized, CANCEL_CONFIRMATION_KEYWORDS)
-        )
-        is_negative = (
-            action == "reclamo_confirmar_no"
-            or contains_keyword(normalized, NEGATIVE_CONFIRMATION_KEYWORDS)
-        )
-        is_affirmative = (
-            action == "reclamo_confirmar_si"
-            or contains_keyword(normalized, AFFIRMATIVE_CONFIRMATION_KEYWORDS)
-        )
-
-        if is_cancel:
-            return self.end_flow(CANCEL_RECLAMO_MESSAGE, show_menu=True)
-        elif is_negative:
-            return self.ask_for_contact_details(force_prompt=True)
-        elif is_affirmative:
+        action = payload.get("action")
+        normalized = user_input.lower()
+        affirmatives = {"si", "sí", "confirmo", "confirmar", "ok", "okay", "acepto", "aceptar", "dale"}
+        negatives = {"no", "editar", "modificar", "cambiar"}
+        if any(word in normalized for word in affirmatives) or action == "reclamo_confirmar_si":
             datos = self.flow_context.get('datos_reclamo', {})
-            municipio_cfg = self.context.get("municipio_config_actual", {}) or {}
-            default_city = municipio_cfg.get("ciudad")
-            direccion = datos.get("direccion")
-            if default_city and direccion:
-                ciudad_norm = normalizar_texto(default_city)
-                direccion_norm = normalizar_texto(direccion)
-                if ciudad_norm and ciudad_norm not in direccion_norm:
-                    direccion = f"{direccion}, {default_city}"
-                    datos['direccion'] = direccion
-
-            distrito = datos.get("distrito") or default_city
-
             action_data = {
                 "categoria": datos.get("categoria"),
                 "descripcion": datos.get("descripcion"),
-                "ubicacion": direccion,
+                "ubicacion": datos.get("direccion"),
                 "usuario": datos.get("nombre"),
                 "dni": datos.get("dni"),
                 "email": datos.get("email"),
                 "telefono": datos.get("telefono"),
                 "foto_url_adjunta": datos.get("foto_url"),
-                "distrito": distrito,
             }
             handler = CrearReclamoActionHandler(self.context)
             result = handler.execute(action_data)
@@ -723,46 +533,18 @@ class ReclamoFlowHandler:
                     f"¡Tu reclamo fue creado con éxito! ✅\n\nEl número de seguimiento es *{nro_ticket}*. Te mantendremos informado sobre el estado del mismo por este medio.",
                 )
 
-                municipio_cfg = self.context.get("municipio_config_actual", {})
-                default_promo_image = (
-                    result.get("image_url")
-                    or municipio_cfg.get("promo_image_url")
-                    or "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png"
-                )
+                # The promotional message is now handled by the image_url and the frontend
+                punto_limpio_logo = "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png"
 
-                final_payload = self.end_flow(message, show_menu=True, image_url=default_promo_image)
-
-                options_from_handler = result.get("options_list") or []
-                if options_from_handler:
-                    final_payload["options_list"] = [
-                        opt.copy() if isinstance(opt, dict) else opt
-                        for opt in options_from_handler
-                    ]
-                    final_payload["message_type"] = result.get("message_type", "interactive_buttons")
-
-                existing_urls = {
-                    opt.get("url")
-                    for opt in final_payload.get("options_list", [])
-                    if isinstance(opt, dict)
-                }
+                final_payload = self.end_flow(message, show_menu=True, image_url=punto_limpio_logo)
 
                 if nro_ticket and pin_consulta:
                     base_url = "https://www.chatboc.ar/chat/"
                     ver_ticket_url = f"{base_url}{nro_ticket.replace('M-', '')}?pin={pin_consulta}"
-                    if ver_ticket_url not in existing_urls:
-                        final_payload.setdefault("options_list", []).append(
-                            {"texto": "Ver Ticket", "url": ver_ticket_url, "type": "url"}
-                        )
-                        final_payload["message_type"] = "interactive_buttons"
-
-                for key in ("data", "audio_url"):
-                    if result.get(key) is not None:
-                        final_payload[key] = result[key]
-
-                if result.get("delayed_payload"):
-                    final_payload["delayed_payload"] = result["delayed_payload"]
-                    if result.get("delay_seconds") is not None:
-                        final_payload["delay_seconds"] = result.get("delay_seconds")
+                    final_payload.setdefault("options_list", []).append(
+                        {"texto": "Ver Ticket", "url": ver_ticket_url, "type": "url"}
+                    )
+                    final_payload["message_type"] = "interactive_buttons"
 
                 return final_payload
             error_message = result.get(
@@ -770,21 +552,17 @@ class ReclamoFlowHandler:
                 "Hubo un problema al registrar tu reclamo. Por favor, intentá de nuevo más tarde.",
             )
             return self.end_flow(error_message, show_menu=True)
-        else:
-            # Re-enviar el resumen para que la persona pueda elegir una opción válida.
-            reminder = (
-                "No entendí tu respuesta. Por favor, elegí una de las opciones disponibles para continuar.\n\n"
-            )
-            confirmation = self.get_confirmation_message()
-            confirmation["message_body"] = reminder + confirmation["message_body"]
-            return confirmation
+        elif any(word in normalized for word in negatives) or action == "reclamo_confirmar_no":
+            return self.ask_for_contact_details(force_prompt=True)
+        else:  # Cancel or any other input
+            cancel_msg = "Proceso de reclamo cancelado. ¿En qué más te puedo ayudar?"
+            return self.end_flow(cancel_msg, show_menu=True)
 
     def end_flow(self, message, show_menu=False, image_url=None):
         self.flow_context.clear()
         # Remove flow data from municipio context so subsequent turns don't
         # enter this handler unintentionally.
         self.municipal_ctx.pop("reclamo_flow_v2", None)
-        self.municipal_ctx.pop("reclamo_flow_activo", None)
 
         payload = {"message_body": message, "message_type": "text"}
         if image_url:
@@ -2097,70 +1875,6 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
 
         mensaje_completo_para_llm = {"texto": pregunta_str}
-        ubicacion_llm_fuente = context.get("ubicacion_usuario") or {}
-        if not ubicacion_llm_fuente:
-            chat_context_data = context.get("chat_db_context_data", {})
-            if isinstance(chat_context_data, dict):
-                ubicacion_llm_fuente = chat_context_data.get("ubicacion_usuario") or {}
-                if not ubicacion_llm_fuente:
-                    contexto_llm = chat_context_data.get(CONTEXTO_MUNICIPIO, {})
-                    if isinstance(contexto_llm, dict):
-                        ubicacion_llm_fuente = contexto_llm.get("ubicacion_contextual") or {}
-
-        if isinstance(ubicacion_llm_fuente, dict) and ubicacion_llm_fuente:
-            ubicacion_para_llm: dict[str, Any] = {}
-
-            lat = ubicacion_llm_fuente.get("latitude") or ubicacion_llm_fuente.get("lat")
-            lon = ubicacion_llm_fuente.get("longitude") or ubicacion_llm_fuente.get("lon")
-
-            def _convert_float(valor):
-                try:
-                    return float(valor)
-                except (TypeError, ValueError):
-                    return valor
-
-            if lat is not None or lon is not None:
-                coords_dict: dict[str, Any] = {}
-                if lat is not None:
-                    coords_dict["lat"] = _convert_float(lat)
-                if lon is not None:
-                    coords_dict["lon"] = _convert_float(lon)
-                if coords_dict:
-                    ubicacion_para_llm["coordenadas"] = coords_dict
-
-            direccion = (
-                ubicacion_llm_fuente.get("address")
-                or ubicacion_llm_fuente.get("direccion")
-                or ubicacion_llm_fuente.get("description")
-            )
-            if direccion:
-                ubicacion_para_llm["direccion"] = direccion
-
-            if ubicacion_llm_fuente.get("localidad"):
-                ubicacion_para_llm["localidad"] = ubicacion_llm_fuente.get("localidad")
-
-            if ubicacion_llm_fuente.get("accuracy") is not None:
-                ubicacion_para_llm["accuracy"] = _convert_float(ubicacion_llm_fuente.get("accuracy"))
-
-            if ubicacion_para_llm:
-                mensaje_completo_para_llm["ubicacion"] = ubicacion_para_llm
-
-        if context.get("es_ubicacion"):
-            mensaje_completo_para_llm["es_ubicacion"] = True
-
-        chat_context_data = context.get("chat_db_context_data", {})
-        source_is_audio = bool(context.get("source_is_audio"))
-        if isinstance(chat_context_data, dict):
-            if not source_is_audio:
-                source_is_audio = bool(chat_context_data.get("source_is_audio"))
-            if not source_is_audio:
-                contexto_llm = chat_context_data.get(CONTEXTO_MUNICIPIO, {})
-                if isinstance(contexto_llm, dict):
-                    source_is_audio = bool(contexto_llm.get("source_is_audio"))
-
-        if source_is_audio:
-            mensaje_completo_para_llm["fuente_audio"] = True
-
         if context.get("es_foto") and context.get("foto_url"):
             mensaje_completo_para_llm["imagen_url"] = context.get("foto_url")
             if contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw"):
@@ -3052,24 +2766,11 @@ def responder_municipio(
     # --- END DEBUG LOG ---
 
     normalized_question = None
-    cache_key = None
-    skip_cache_for_input = False
-
-    def _should_skip_cache_response(response: Any) -> bool:
-        if not isinstance(response, dict):
-            return False
-        data = response.get("data")
-        if isinstance(data, dict):
-            if any(data.get(key) for key in ("ticket_id", "nro_ticket", "consulta_pin")):
-                return True
-        if response.get("delayed_payload"):
-            return True
-        return False
 
     def _finalize_response(response):
         """Return the response unchanged; also store it in cache for repeated queries."""
-        if cache_key and not skip_cache_for_input and not _should_skip_cache_response(response):
-            MUNICIPIO_RESPONSE_CACHE[cache_key] = response
+        if normalized_question:
+            MUNICIPIO_RESPONSE_CACHE[normalized_question] = response
         return response
 
     logger_actual.info(
@@ -3139,53 +2840,16 @@ def responder_municipio(
                 "fuente": "handler_consultar_reclamo",
             }
 
+    normalized_question = normalizar_texto(pregunta_str)
+    cached_response = MUNICIPIO_RESPONSE_CACHE.get(normalized_question)
+
     if kwargs:
         for key, value in kwargs.items():
             received_payload[key] = value
 
     chat_db_context_live_data = {}
-    if chat_db_context:
-        if chat_db_context.context_data is None:
-            chat_db_context.context_data = {}
+    if chat_db_context and chat_db_context.context_data is not None:
         chat_db_context_live_data = chat_db_context.context_data
-
-    def _input_flag_is_true(value: Any) -> bool:
-        if isinstance(value, str):
-            return value.strip().lower() in {"true", "1", "yes", "si"}
-        return bool(value)
-
-    skip_cache_for_input = any(
-        _input_flag_is_true(received_payload.get(flag))
-        for flag in ("es_foto", "es_archivo", "es_ubicacion")
-    ) or _input_flag_is_true(kwargs.get("datos_interpretados_archivo")) or _input_flag_is_true(kwargs.get("archivo_id_para_asociar"))
-    if not skip_cache_for_input:
-        if kwargs.get("source_is_audio") or chat_db_context_live_data.get("source_is_audio"):
-            skip_cache_for_input = True
-        else:
-            contexto_llm_cache = chat_db_context_live_data.get(CONTEXTO_MUNICIPIO, {})
-            if isinstance(contexto_llm_cache, dict) and contexto_llm_cache.get("source_is_audio"):
-                skip_cache_for_input = True
-
-    normalized_question = normalizar_texto(pregunta_str)
-    cache_namespace = None
-    if normalized_question:
-        namespace_candidates = [
-            kwargs.get("chat_session_uuid"),
-            getattr(chat_db_context, "chat_session_id", None) if chat_db_context else None,
-            anon_id,
-        ]
-        viewer_id = getattr(viewer_user, "id", None)
-        if viewer_id:
-            namespace_candidates.append(f"viewer:{viewer_id}")
-        for candidate in namespace_candidates:
-            if candidate:
-                cache_namespace = str(candidate)
-                break
-        if not cache_namespace:
-            cache_namespace = "global"
-        cache_key = f"{cache_namespace}:{normalized_question}"
-
-    cached_response = MUNICIPIO_RESPONSE_CACHE.get(cache_key) if cache_key else None
 
     contexto_municipio_actual = chat_db_context_live_data.get(CONTEXTO_MUNICIPIO, {})
     flow_activo = False
@@ -3197,11 +2861,8 @@ def responder_municipio(
         )
 
     if cached_response and not flow_activo:
-        if skip_cache_for_input:
-            logger_actual.info("Cache hit ignored for multimedia/audio input; recalculating response.")
-        else:
-            logger_actual.info("responder_municipio: returning cached response")
-            return cached_response
+        logger_actual.info("responder_municipio: returning cached response")
+        return cached_response
 
     # Crear el diccionario de contexto principal una sola vez
     context = {
