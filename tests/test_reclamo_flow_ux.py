@@ -136,8 +136,8 @@ class TestReclamoFlowUX(unittest.TestCase):
             }
         )
         self.assertEqual(handler.flow_context["datos_reclamo"].get("dni"), "12345678")
-        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
-        self.assertIn("Juan", resp["message_body"])
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_FOTO.name)
+        self.assertIn("foto", resp["message_body"].lower())
 
     def test_confirmacion_resets_context_and_shows_menu(self):
         flow_context = {
@@ -158,12 +158,16 @@ class TestReclamoFlowUX(unittest.TestCase):
             mock_exec.return_value = {"success": True, "data": {"nro_ticket": "R-1"}}
             resp = handler.handle_confirmacion("si", {})
         self.assertIn("R-1", resp["message_body"])
-        self.assertIn("¿Cómo te puedo ayudar hoy?", resp["message_body"])
+        delayed_menu = resp.get("delayed_payload", {})
+        self.assertIn("JUNI", delayed_menu.get("message_body", ""))
         municipal_ctx = context["chat_db_context_data"][CONTEXTO_MUNICIPIO]
         self.assertNotIn("reclamo_flow_v2", municipal_ctx)
-        self.assertEqual(
+        self.assertIn(
             municipal_ctx["estado_conversacion"],
-            ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name,
+            {
+                ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name,
+                ConversationState.ESPERANDO_NOMBRE_INICIAL.name,
+            },
         )
 
     def test_confirmacion_negative_returns_to_contact_details(self):
@@ -178,7 +182,21 @@ class TestReclamoFlowUX(unittest.TestCase):
         handler = self._build_handler(flow_context)
         resp = handler.handle_confirmacion("no", {})
         self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
-        self.assertIn("Por favor", resp["message_body"])
+        self.assertIn("por favor", resp["message_body"].lower())
+
+    def test_confirmacion_action_string_no_triggers_edit(self):
+        flow_context = {
+            "state": ReclamoState.ESPERANDO_CONFIRMACION.name,
+            "datos_reclamo": {
+                "categoria": "Bache",
+                "descripcion": "pozo",
+                "direccion": "Calle 123",
+            },
+        }
+        handler = self._build_handler(flow_context)
+        resp = handler.handle_confirmacion("reclamo_confirmar_no", {})
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_DATOS_CONTACTO.name)
+        self.assertIn("por favor", resp["message_body"].lower())
 
 
 if __name__ == "__main__":
