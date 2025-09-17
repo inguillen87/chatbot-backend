@@ -67,6 +67,7 @@ from services.intent_classifier import IntentClassifier
 from services.multimodal_analyzer import analizar_imagen_con_fallback
 import json
 from services.ticket_utils import formatear_ticket_respuesta, construir_descripcion_breve
+from services.vocabulary_loader import get_name_prefix_stopwords
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
@@ -76,21 +77,7 @@ LOCATION_KEYWORD_TOKENS = {
     "distrito": {"distrito", "zona", "localidad", "ciudad"},
 }
 
-NAME_STOPWORDS = {
-    "hola",
-    "buenos",
-    "buenas",
-    "buen",
-    "quiero",
-    "quisiera",
-    "necesito",
-    "consulta",
-    "consulto",
-    "solicito",
-    "pido",
-    "deseo",
-    "me",
-}
+NAME_STOPWORDS = get_name_prefix_stopwords()
 
 PLACEHOLDER_NAMES = {"vecino", "vecina", "vecine", "vecino/a"}
 
