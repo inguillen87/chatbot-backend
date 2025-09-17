@@ -143,10 +143,21 @@ class ReclamoFlowHandler:
             )
         return None
 
+    def _return_to_main_menu(self):
+        """Clear the active flow and return the structured main menu."""
+        self.flow_context.clear()
+        self.municipal_ctx.pop("reclamo_flow_v2", None)
+        self.municipal_ctx.pop("estado_conversacion", None)
+        self.municipal_ctx.pop("menu_opciones", None)
+        return self.greeting_handler.handle({})
+
     def handle(self, user_input, payload):
         cancel_response = self.check_for_cancel(user_input, payload)
         if cancel_response:
             return cancel_response
+
+        # Ensure the municipal context reflects that we're inside the claim flow.
+        self.municipal_ctx['estado_conversacion'] = "EN_FLUJO_RECLAMO"
 
         state_name = self.flow_context.get("state")
         state = ReclamoState[state_name] if state_name else None
@@ -172,6 +183,11 @@ class ReclamoFlowHandler:
         self.flow_context.clear()
         self.flow_context['datos_reclamo'] = datos_iniciales or {}
         datos = self.flow_context['datos_reclamo']
+
+        # Mark the conversation as being inside the claim flow and discard
+        # leftover menu hints from previous states (e.g., ubicación proactiva).
+        self.municipal_ctx['estado_conversacion'] = "EN_FLUJO_RECLAMO"
+        self.municipal_ctx.pop('menu_opciones', None)
 
         # Prefill from image analysis if available
         if self.context.get("foto_url") and not datos.get('foto_url'):
@@ -325,6 +341,12 @@ class ReclamoFlowHandler:
             return self.ask_for_contact_details()
 
     def handle_categoria(self, user_input):
+        normalized_user_input = normalizar_texto(user_input or "")
+        if (user_input and user_input.strip() == "0") or (
+            normalized_user_input in RETURN_TO_MAIN_MENU_NORMALIZED
+        ):
+            return self._return_to_main_menu()
+
         reclamo_options = _get_reclamos_menu().get("options_list", [])
         plain_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
 
@@ -336,6 +358,9 @@ class ReclamoFlowHandler:
             default_provincia = municipio_config.get("provincia")
             details = extract_reclamo_details_from_text(user_input, plain_options, default_localidad=default_localidad, default_provincia=default_provincia)
             category = details.pop("categoria", None)
+
+        if category and normalizar_texto(category) in RETURN_TO_MAIN_MENU_NORMALIZED:
+            return self._return_to_main_menu()
 
         if not category:
             return {
@@ -685,6 +710,13 @@ class ReclamoFlowHandler:
         # Remove flow data from municipio context so subsequent turns don't
         # enter this handler unintentionally.
         self.municipal_ctx.pop("reclamo_flow_v2", None)
+
+        if show_menu:
+            if self.municipal_ctx.get('estado_conversacion') != ConversationState.ESPERANDO_NOMBRE_INICIAL.name:
+                self.municipal_ctx['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+        else:
+            self.municipal_ctx.pop('estado_conversacion', None)
+        self.municipal_ctx.pop('menu_opciones', None)
 
         payload: dict[str, object] = {}
         if extra_payload:
@@ -3536,6 +3568,7 @@ SIMPLE_GREETINGS = {
     "que tal", "como va", "todo bien", "buenas como va"
 }
 RETURN_TO_MAIN_MENU = {"volver al inicio", "volver al menu", "inicio", "menu", "menú principal"}
+RETURN_TO_MAIN_MENU_NORMALIZED = {normalizar_texto(value) for value in RETURN_TO_MAIN_MENU}
 
 def responder_municipio(
     pregunta_original,
