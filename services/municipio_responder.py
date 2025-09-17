@@ -4372,13 +4372,30 @@ def responder_municipio(
         if contexto_municipio_actual.get("reclamo_flow_v2", {}).get("state"):
             return None
 
-        return _try_start_reclamo_from_text(
+        payload = _try_start_reclamo_from_text(
             pregunta_str,
             context,
             chat_db_context,
             default_localidad=final_municipio_config.get("ciudad"),
             default_provincia=final_municipio_config.get("provincia"),
         )
+
+        if payload:
+            municipal_ctx = (
+                contexto_municipio_actual
+                if isinstance(contexto_municipio_actual, dict)
+                else {}
+            )
+            if municipal_ctx is not contexto_municipio_actual:
+                chat_db_context_live_data[CONTEXTO_MUNICIPIO] = municipal_ctx
+            municipal_ctx["estado_conversacion"] = "EN_FLUJO_RECLAMO"
+
+            if chat_db_context:
+                if chat_db_context.context_data is None:
+                    chat_db_context.context_data = chat_db_context_live_data
+                flag_modified(chat_db_context, "context_data")
+
+        return payload
 
     # For simple greetings, bypass LLM and show the main menu directly.
     # --- Audio Processing Logic ---

@@ -293,6 +293,63 @@ class TestProactiveFlows(unittest.TestCase):
             ConversationState.ESPERANDO_INTENCION_UBICACION.name,
         )
 
+    def test_auto_text_bootstrap_location_stays_in_direction_flow(self):
+        owner_user = User.query.get(1)
+        rubro_obj = owner_user.rubro
+        chat_context = ChatSessionContext(chat_session_id='session_auto_text_loc', user_id=1)
+        db.session.add(chat_context)
+        db.session.commit()
+
+        response = responder_municipio(
+            pregunta_original="hay un agujero en mi cuadra",
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=owner_user,
+            chat_db_context=chat_context,
+            channel="whatsapp",
+        )
+
+        self.assertIsNotNone(chat_context.context_data)
+        contexto = chat_context.context_data['contexto_municipio_v2']
+        self.assertEqual(contexto['estado_conversacion'], 'EN_FLUJO_RECLAMO')
+        self.assertEqual(
+            contexto['reclamo_flow_v2']['state'],
+            ReclamoState.ESPERANDO_DIRECCION.name,
+        )
+        self.assertIn("Reclamo por", response["message_body"])
+
+        location_payload = {
+            "pregunta": "",
+            "es_ubicacion": True,
+            "ubicacion_usuario": {
+                "address": "Plaza Independencia, Mendoza",
+                "latitude": -32.889,
+                "longitude": -68.845,
+            },
+        }
+
+        response2 = responder_municipio(
+            pregunta_original=location_payload,
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=owner_user,
+            chat_db_context=chat_context,
+            channel="whatsapp",
+        )
+
+        contexto_actualizado = chat_context.context_data['contexto_municipio_v2']
+        self.assertEqual(contexto_actualizado['estado_conversacion'], 'EN_FLUJO_RECLAMO')
+        self.assertNotEqual(response2.get('fuente'), 'proactive_location_handler')
+        self.assertNotIn('Recibí tu ubicación', response2["message_body"])
+        self.assertEqual(
+            contexto_actualizado['reclamo_flow_v2']['state'],
+            ReclamoState.ESPERANDO_FOTO.name,
+        )
+        self.assertEqual(
+            contexto_actualizado['reclamo_flow_v2']['datos_reclamo']['direccion'],
+            "Plaza Independencia, Mendoza",
+        )
+
     def test_location_link_triggers_proactive_menu(self):
         owner_user = User.query.get(1)
         rubro_obj = owner_user.rubro
