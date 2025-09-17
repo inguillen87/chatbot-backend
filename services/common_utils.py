@@ -753,7 +753,23 @@ def validar_telefono(telefono: str) -> bool:
     """Valida si un teléfono tiene formato numérico y longitud razonable (6-20 dígitos)."""
     if not isinstance(telefono, str):
         return False
-    solo_numeros = re.sub(r"\D", "", telefono)
+    telefono_limpio = telefono.strip()
+    if not telefono_limpio:
+        return False
+
+    telefono_limpio = re.sub(
+        r'^(tel\.?|teléfono|telefono|cel\.?|celular|whatsapp|wsapp|wa)[:\s-]*',
+        '',
+        telefono_limpio,
+        flags=re.IGNORECASE,
+    )
+    telefono_limpio = re.sub(r'\b(int|interno|intern)\b\.?:?', '', telefono_limpio, flags=re.IGNORECASE)
+    telefono_limpio = telefono_limpio.strip()
+
+    if re.search(r'[A-Za-z]', telefono_limpio):
+        return False
+
+    solo_numeros = re.sub(r"\D", "", telefono_limpio)
 
     return 6 <= len(solo_numeros) <= 20
 
@@ -880,6 +896,7 @@ def extract_multiple_contact_details_regex(text: str, potential_fields: list | N
         potential_fields = ["nombre", "dni", "email", "telefono", "direccion"]
 
     from utils.validators import (
+        extract_address,
         extract_email,
         extract_phone,
         extract_name,
@@ -887,6 +904,16 @@ def extract_multiple_contact_details_regex(text: str, potential_fields: list | N
     )
 
     extracted_data: dict[str, Optional[str]] = {}
+
+    nombre_prefijo = None
+    if "nombre" in potential_fields:
+        dni_pattern = re.search(r"\b\d{7,8}\b", text)
+        if dni_pattern:
+            posible_prefijo = text[:dni_pattern.start()].strip(" ,")
+            if posible_prefijo:
+                posible_nombre = extract_name(posible_prefijo)
+                if posible_nombre and len(posible_nombre.split()) >= 2:
+                    nombre_prefijo = posible_nombre
 
     remaining_text = f" {text} "
 
@@ -923,13 +950,28 @@ def extract_multiple_contact_details_regex(text: str, potential_fields: list | N
     # --- Step 2: Attempt to find name and address from the remaining text ---
     remaining_text = re.sub(r'\s+', ' ', remaining_text).strip(" ,")
 
+    if nombre_prefijo and "nombre" in potential_fields:
+        extracted_data.setdefault("nombre", nombre_prefijo)
+        _remove_from_remaining(nombre_prefijo)
+        remaining_text = re.sub(r'\s+', ' ', remaining_text).strip(" ,")
+
     dir_match = re.search(r'(?:dirección|direccion|domicilio)\s*[:\s-]\s*(.*)', remaining_text, re.IGNORECASE)
     if dir_match:
         address_candidate = dir_match.group(1).strip()
-        if "direccion" in potential_fields:
+        if "direccion" in potential_fields and address_candidate:
             extracted_data["direccion"] = address_candidate
         _remove_from_remaining(dir_match.group(0))
         remaining_text = re.sub(r'\s+', ' ', remaining_text).strip(" ,")
+
+    if "direccion" not in extracted_data and "direccion" in potential_fields and remaining_text:
+        address_candidate = extract_address(remaining_text)
+        if not address_candidate:
+            if re.search(r'\d', remaining_text) and len(remaining_text.split()) >= 2:
+                address_candidate = remaining_text.strip(" ,")
+        if address_candidate:
+            extracted_data["direccion"] = address_candidate.strip()
+            _remove_from_remaining(address_candidate)
+            remaining_text = re.sub(r'\s+', ' ', remaining_text).strip(" ,")
 
     if "nombre" in potential_fields:
         name = extract_name(remaining_text)
