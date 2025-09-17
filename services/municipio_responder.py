@@ -4357,6 +4357,29 @@ def responder_municipio(
     }
     # --- END CONTEXT INITIALIZATION ---
 
+    def _auto_bootstrap_reclamo() -> Optional[dict[str, Any]]:
+        """Return an auto-start payload when the message already looks like a claim."""
+
+        if not isinstance(pregunta_str, str):
+            return None
+
+        if not pregunta_str.strip():
+            return None
+
+        if contexto_municipio_actual.get("estado_conversacion"):
+            return None
+
+        if contexto_municipio_actual.get("reclamo_flow_v2", {}).get("state"):
+            return None
+
+        return _try_start_reclamo_from_text(
+            pregunta_str,
+            context,
+            chat_db_context,
+            default_localidad=final_municipio_config.get("ciudad"),
+            default_provincia=final_municipio_config.get("provincia"),
+        )
+
     # For simple greetings, bypass LLM and show the main menu directly.
     # --- Audio Processing Logic ---
     is_from_audio = False
@@ -4444,6 +4467,10 @@ def responder_municipio(
             if response:
                 return _finalize_response(response)
     # --- END GLOBAL MENU SHORTCUTS ---
+
+    auto_reclamo_payload = _auto_bootstrap_reclamo()
+    if auto_reclamo_payload:
+        return _finalize_response(auto_reclamo_payload)
 
     # --- START INTENT CLASSIFICATION ---
     # If it's not a simple greeting, proceed with intent classification
@@ -4919,6 +4946,14 @@ def responder_municipio(
                     "fuente": "pide_correccion_sugerencia"
                 })
 
+        if (
+            not contexto_municipio_actual.get("estado_conversacion")
+            and not contexto_municipio_actual.get("reclamo_flow_v2", {}).get("state")
+        ):
+            auto_reclamo_payload = _auto_bootstrap_reclamo()
+            if auto_reclamo_payload:
+                return _finalize_response(auto_reclamo_payload)
+
     # 2. If no state is active, then handle actions that start new flows.
     elif action:
         response = handle_main_menu_action(action, context, chat_db_context)
@@ -4948,20 +4983,9 @@ def responder_municipio(
             if response:
                 return _finalize_response(response)
 
-    if (
-        not contexto_municipio_actual.get("estado_conversacion")
-        and isinstance(pregunta_str, str)
-        and pregunta_str.strip()
-    ):
-        auto_reclamo_response = _try_start_reclamo_from_text(
-            pregunta_str,
-            context,
-            chat_db_context,
-            default_localidad=final_municipio_config.get("ciudad"),
-            default_provincia=final_municipio_config.get("provincia"),
-        )
-        if auto_reclamo_response:
-            return _finalize_response(auto_reclamo_response)
+    auto_reclamo_payload = _auto_bootstrap_reclamo()
+    if auto_reclamo_payload:
+        return _finalize_response(auto_reclamo_payload)
 
     USAR_LLM_PARA_RECLAMOS = True  # Habilita el flujo con LLM para reclamos
     respuesta_manejada_por_llm = False # Flag para indicar si el LLM ya manejó la respuesta

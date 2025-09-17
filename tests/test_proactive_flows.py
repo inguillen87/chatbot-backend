@@ -350,5 +350,37 @@ class TestProactiveFlows(unittest.TestCase):
         self.assertEqual(kwargs.get('categoria_inicial'), 'Arbolado')
         self.assertTrue(response.get("message_body"))
 
+    @patch('services.municipio_responder.extract_multiple_contact_details_llm', return_value={})
+    @patch('services.municipio_responder.extract_complaint_details_llm', return_value={})
+    @patch('services.audio_transcription_service.transcribe_audio_from_url')
+    @patch('services.municipio_responder.ReclamoFlowHandler.start_flow')
+    def test_audio_transcription_bootstrap(self, mock_start_flow, mock_transcribe, _mock_complaint, _mock_contacts):
+        mock_start_flow.return_value = {"message_body": "OK"}
+        mock_transcribe.return_value = {"transcript": "tengo un arbol caido frente a mi casa", "confidence": 0.92}
+
+        owner_user = User.query.get(1)
+        rubro_obj = owner_user.rubro
+        chat_context = ChatSessionContext(chat_session_id='test_audio_bootstrap', user_id=1, context_data={})
+        db.session.add(chat_context)
+        db.session.commit()
+
+        audio_payload = {
+            "pregunta": "",
+            "media_url": "http://example.com/audio.ogg",
+        }
+
+        response = responder_municipio(
+            pregunta_original=audio_payload,
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=owner_user,
+            chat_db_context=chat_context,
+            channel="whatsapp",
+        )
+
+        mock_transcribe.assert_called_once()
+        mock_start_flow.assert_called_once()
+        self.assertEqual(response.get("message_body"), "OK")
+
 if __name__ == '__main__':
     unittest.main()
