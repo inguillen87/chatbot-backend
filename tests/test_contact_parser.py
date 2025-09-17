@@ -43,6 +43,19 @@ class TestContactParserRegex(unittest.TestCase):
         self.assertEqual(parsed.get("telefono"), "+5492613168608")
         self.assertIsNone(parsed.get("direccion"))
 
+    def test_address_without_explicit_name(self):
+        """
+        Ensures that addresses without an explicit name are not misclassified as the name.
+        """
+        linea = "32877851 guillen.marce@gmail.com sarmiento 125 junin"
+        parsed = extract_multiple_contact_details_regex(linea)
+
+        self.assertEqual(parsed.get("dni"), "32877851")
+        self.assertEqual(parsed.get("email"), "guillen.marce@gmail.com")
+        self.assertIsNone(parsed.get("telefono"))
+        self.assertIsNone(parsed.get("nombre"))
+        self.assertEqual(parsed.get("direccion", "").lower(), "sarmiento 125 junin")
+
     def test_partial_information(self):
         """
         Tests that the parser handles incomplete information gracefully.
