@@ -298,6 +298,18 @@ def _remove_redundant_urls_from_message(message_body, options_list):
     if not button_entries:
         return message_body_str
 
+    def _normalize_label(value: str) -> str:
+        if not value:
+            return ""
+        normalized = unicodedata.normalize("NFKD", value)
+        normalized = ''.join(
+            ch for ch in normalized if unicodedata.category(ch) != "Mn"
+        )
+        normalized = re.sub(r"[\s\*]+", " ", normalized)
+        normalized = re.sub(r"[^\w\s]", " ", normalized, flags=re.UNICODE)
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized.strip().casefold()
+
     lines = message_body_str.splitlines()
     cleaned_lines: list[str] = []
     for line in lines:
@@ -314,9 +326,15 @@ def _remove_redundant_urls_from_message(message_body, options_list):
             prefix = re.sub(r"^[•\-\s]+", "", stripped)
             prefix_no_stars = prefix.lstrip("* ").strip()
             texto_cf = texto.casefold()
+            normalized_prefix = _normalize_label(prefix)
+            normalized_prefix_no_stars = _normalize_label(prefix_no_stars)
+            normalized_button = _normalize_label(texto)
 
-            if texto_cf:
-                if (prefix.casefold().startswith(texto_cf) or prefix_no_stars.casefold().startswith(texto_cf)) and not has_bullet:
+            if normalized_button:
+                if (
+                    (normalized_prefix.startswith(normalized_button) or normalized_prefix_no_stars.startswith(normalized_button))
+                    and not has_bullet
+                ):
                     remove_line = True
                     break
             if not texto_cf or stripped == url or stripped.lower() == url.lower():

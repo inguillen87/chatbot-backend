@@ -71,6 +71,24 @@ def _init_cloudinary():  # pragma: no cover - thin wrapper validated via tests
 
 
 CLOUDINARY_ENABLED, uploader, CLOUDINARY_UPLOAD_OPTIONS = _init_cloudinary()
+_CLOUDINARY_DISABLED_REASON: str | None = None
+
+
+def _disable_cloudinary(reason: str) -> None:
+    """Disable Cloudinary uploads for the remainder of the process."""
+
+    global CLOUDINARY_ENABLED, _CLOUDINARY_DISABLED_REASON
+
+    if not CLOUDINARY_ENABLED:
+        return
+
+    CLOUDINARY_ENABLED = False
+    _CLOUDINARY_DISABLED_REASON = reason
+    message = f"Cloudinary uploads disabled: {reason}"
+    if has_app_context():
+        current_app.logger.warning(message)
+    else:
+        logger.warning(message)
 
 # Google Cloud Storage can be optionally disabled (e.g., when billing is off).
 GCS_ENABLED = os.environ.get("GCS_ENABLED", "false").lower() == "true"
@@ -246,6 +264,21 @@ def _save_to_cloudinary(
             current_app.logger.error(message, original_filename, exc, **log_kwargs)
         else:
             logger.error(message, original_filename, exc, **log_kwargs)
+
+        error_message = str(exc).lower()
+        auth_errors = (
+            "unknown api key",
+            "invalid api key",
+            "must specify api key",
+            "api key is invalid",
+            "unauthorized",
+        )
+        if any(token in error_message for token in auth_errors):
+            reason = "authentication error"
+            if "unknown api key" in error_message:
+                reason = "unknown api key"
+            _disable_cloudinary(reason)
+
         return None
 
 

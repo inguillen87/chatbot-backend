@@ -90,3 +90,52 @@ class CloudinaryUploadTests(unittest.TestCase):
 
         mock_local.assert_called_once()
         self.assertEqual(res, fallback_payload)
+
+    def test_guardar_adjunto_desactiva_cloudinary_con_api_invalida(self):
+        fake_cloudinary = types.ModuleType("cloudinary")
+        fake_cloudinary.uploader = types.SimpleNamespace(upload=lambda *_, **__: {})
+        fake_cloudinary.config = lambda **kwargs: None
+
+        with patch.dict(sys.modules, {"cloudinary": fake_cloudinary}):
+            with patch.dict(
+                os.environ, {"CLOUDINARY_URL": "cloudinary://key:secret@test"}
+            ):
+                import services.gcs_service as gcs_service
+
+                importlib.reload(gcs_service)
+
+                file_storage = FileStorage(
+                    stream=BytesIO(b"img"),
+                    filename="foto.png",
+                    content_type="image/png",
+                )
+
+                fallback_payload = {
+                    "unique_name": "local_foto.png",
+                    "original_url": "/static/uploads/local_foto.png",
+                    "size": 3,
+                    "original_name": "foto.png",
+                    "mimetype": "image/png",
+                    "thumb_meta": {"width": 1, "height": 1, "url": "/static/uploads/local_foto_thumb.webp"},
+                    "thumbUrl": "/static/uploads/local_foto_thumb.webp",
+                }
+
+                with patch(
+                    "services.gcs_service.generar_thumbnail",
+                    return_value=(b"thumb", {"width": 1, "height": 1}),
+                ), patch(
+                    "services.gcs_service._save_to_local",
+                    return_value=fallback_payload,
+                ) as mock_local, patch(
+                    "services.gcs_service.uploader.upload",
+                    side_effect=Exception("Unknown API key 123"),
+                ) as mock_upload:
+                    res_primero = gcs_service.guardar_adjunto_y_thumbnail(file_storage)
+                    res_segundo = gcs_service.guardar_adjunto_y_thumbnail(file_storage)
+
+        self.assertEqual(res_primero, fallback_payload)
+        self.assertEqual(res_segundo, fallback_payload)
+        self.assertEqual(mock_upload.call_count, 1)
+        self.assertFalse(gcs_service.CLOUDINARY_ENABLED)
+        self.assertEqual(gcs_service._CLOUDINARY_DISABLED_REASON, "unknown api key")
+        self.assertEqual(mock_local.call_count, 2)

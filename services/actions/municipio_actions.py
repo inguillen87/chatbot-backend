@@ -118,26 +118,53 @@ class CrearReclamoActionHandler(BaseActionHandler):
         def _sanitize_nombre(valor: Any) -> str | None:
             if not isinstance(valor, str):
                 return None
-            cleaned = valor.strip()
+            cleaned = valor.strip().strip("\"'")
+            cleaned = re.sub(r"\s+", " ", cleaned)
+            cleaned = cleaned.strip(".,:;!¡¿?-")
             if not cleaned:
                 return None
             cleaned_lower = cleaned.lower()
             if cleaned_lower in {"vecino", "vecina", "vecine", "vecino/a"}:
                 return None
+            forbidden_tokens = {
+                "quiero",
+                "necesito",
+                "solicito",
+                "reclamo",
+                "problema",
+                "pido",
+                "favor",
+                "hola",
+                "buenas",
+                "tengo",
+                "hay",
+            }
+            if any(token in cleaned_lower for token in forbidden_tokens):
+                return None
+            if any(char.isdigit() for char in cleaned_lower):
+                return None
+            if len(cleaned.split()) > 6:
+                return None
             return cleaned
 
-        candidate_names = [
+        trusted_candidates = [
+            getattr(viewer_user, "name", None) if viewer_user else None,
+            getattr(viewer_user, "nombre", None) if viewer_user else None,
+            self.context.get("profile_name"),
+            contacto_ctx.get("nombre"),
+        ]
+
+        llm_candidates = [
             action_data.get("usuario"),
             action_data.get("nombre"),
             datos_parciales_llm.get("usuario"),
             datos_parciales_llm.get("nombre"),
             action_data.get("nombre_usuario_detectado"),
             datos_parciales_llm.get("nombre_usuario_detectado"),
-            contacto_ctx.get("nombre"),
-            getattr(viewer_user, "name", None) if viewer_user else None,
-            getattr(viewer_user, "nombre", None) if viewer_user else None,
-            self.context.get("profile_name"),
+            datos_parciales_llm.get("nombre_detectado"),
         ]
+
+        candidate_names = trusted_candidates + llm_candidates
 
         nombre_vecino_final = next(
             (clean for clean in map(_sanitize_nombre, candidate_names) if clean),

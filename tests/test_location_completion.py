@@ -1,6 +1,10 @@
 import pytest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
-from services.municipio_responder import ReclamoFlowHandler, ReclamoState
+
+from app import create_app
+from config import TestConfig
+from services.municipio_responder import ReclamoFlowHandler, ReclamoState, responder_municipio
 from services.constants import CONTEXTO_MUNICIPIO
 
 @pytest.fixture
@@ -62,3 +66,59 @@ def test_text_address_moves_to_photo_step(handler_waiting_for_address):
 
     assert handler_waiting_for_address.flow_context["state"] == ReclamoState.ESPERANDO_FOTO.name
     assert "agregar una foto" in response.get("message_body", "").lower()
+
+
+@pytest.fixture
+def app_context():
+    app = create_app(TestConfig)
+    with app.app_context():
+        yield app
+
+
+def test_responder_municipio_location_continues_flow(app_context):
+    """Sending a WhatsApp location while waiting for address should keep the flow active."""
+
+    owner_user = MagicMock()
+    owner_user.id = 1
+    owner_user.municipio_id = "default"
+
+    contexto = {
+        CONTEXTO_MUNICIPIO: {
+            "estado_conversacion": "EN_FLUJO_RECLAMO",
+            "reclamo_flow_v2": {
+                "state": ReclamoState.ESPERANDO_DIRECCION.name,
+                "datos_reclamo": {
+                    "categoria": "Arreglo de calle",
+                    "descripcion": "Bache enorme",
+                },
+            },
+        }
+    }
+
+    chat_db_context = SimpleNamespace(context_data=contexto, chat_session_id="session-123")
+
+    location_payload = {
+        "latitude": "-33.0",
+        "longitude": "-68.5",
+        "address": "Don Bosco 55, Junín",
+    }
+
+    with patch('services.municipio_responder.flag_modified', lambda *args, **kwargs: None):
+        response = responder_municipio(
+            pregunta_original="",
+            owner_user=owner_user,
+            rubro_obj=MagicMock(nombre="municipio"),
+            chat_db_context=chat_db_context,
+            anon_id="anon+123",
+            channel="whatsapp",
+            location=location_payload,
+            es_ubicacion=True,
+            ubicacion_usuario=location_payload,
+        )
+
+    message = response.get("message_body", "").lower()
+    assert "agregar una foto" in message
+
+    flow_context = chat_db_context.context_data[CONTEXTO_MUNICIPIO]["reclamo_flow_v2"]
+    assert flow_context["state"] == ReclamoState.ESPERANDO_FOTO.name
+    assert "don bosco" in flow_context["datos_reclamo"].get("direccion", "").lower()
