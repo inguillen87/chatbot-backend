@@ -15,6 +15,7 @@ from services.actions.municipio_actions import (
     HacerSugerenciaActionHandler,
 )
 from services.herramientas_municipio import direccion_es_valida
+from services.constants import CONTEXTO_MUNICIPIO
 from models import User
 from config import Config
 
@@ -258,6 +259,59 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertEqual(kwargs['ticket_data']['telefono_vecino'], "+5499988776655")
         self.assertEqual(kwargs['ticket_data']['email_vecino'], "vecino@ejemplo.com")
         self.assertEqual(kwargs['ticket_data']['consulta_pin'], "123456")
+
+    @patch('services.actions.municipio_actions.formatear_ticket_respuesta', return_value=("ok", []))
+    @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
+    @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
+    @patch('services.actions.municipio_actions.validar_email', return_value=True)
+    @patch('services.actions.municipio_actions.formatear_telefono_e164', return_value="+5492611234567")
+    @patch('services.herramientas_municipio.parse_direccion_completa', return_value={"calle": "Don Bosco", "numero": "55", "localidad": "Junin"})
+    @patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla')
+    @patch('services.location_service.geocode_address')
+    def test_crear_reclamo_prefiere_nombre_perfil(
+        self,
+        mock_geocode,
+        mock_enviar,
+        mock_parse,
+        mock_formatear_tel,
+        mock_validar_email,
+        mock_validar_tel,
+        mock_crear_ticket,
+        mock_formatear_respuesta,
+    ):
+        mock_crear_ticket.return_value = {"id": 42, "nro_ticket": "772356", "consulta_pin": "211545"}
+
+        datos_llm = {
+            "categoria": "Arreglo de calle",
+            "descripcion": "bache profundo en la calzada",
+            "ubicacion": "Don Bosco 55",
+            "usuario": "quiero pedir que",
+            "telefono": "2613168608",
+            "email": "vecino@example.com",
+        }
+
+        viewer_user = MagicMock(spec=User)
+        viewer_user.id = 77
+        viewer_user.nombre = None
+        viewer_user.name = None
+
+        context = {
+            "viewer_user_obj": viewer_user,
+            "user_obj": MagicMock(id=1, municipio_id="default"),
+            "anon_id": "+5492613168608",
+            "municipio_config_actual": {},
+            "profile_name": "Marcelo",
+            CONTEXTO_MUNICIPIO: {
+                "contacto_usuario": {"nombre": "quiero pedir que"},
+                "datos_parciales_llm_reclamo": {},
+            },
+        }
+
+        handler = CrearReclamoActionHandler(context)
+        handler.execute(datos_llm)
+
+        _, kwargs = mock_crear_ticket.call_args
+        self.assertEqual(kwargs['ticket_data']['nombre_vecino'], 'Marcelo')
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
