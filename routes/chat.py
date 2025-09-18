@@ -324,12 +324,62 @@ def _parse_request(tipo_chat_fijo: str | None = None):
             if not isinstance(attachment_info, dict) or not all(k in attachment_info for k in ['id', 'url', 'name', 'mimeType', 'size']):
                 raise ValueError("El campo 'attachmentInfo' es inválido o le faltan campos requeridos.")
 
-        if location and not (
-            isinstance(location, dict) and
-            "lat" in location and
-            "lon" in location
-        ):
-            raise ValueError("El campo 'location' es inválido.")
+        normalized_location = None
+        if location:
+            if not isinstance(location, dict):
+                raise ValueError("El campo 'location' es inválido.")
+
+            lat_value = location.get("lat")
+            lon_value = location.get("lon")
+            if lat_value is None:
+                lat_value = location.get("latitude")
+            if lon_value is None:
+                lon_value = location.get("longitude")
+            if lon_value is None:
+                lon_value = location.get("lng")
+
+            if lat_value is None or lon_value is None:
+                raise ValueError("El campo 'location' es inválido.")
+
+            try:
+                lat_float = float(lat_value)
+                lon_float = float(lon_value)
+            except (TypeError, ValueError):
+                raise ValueError("El campo 'location' es inválido.")
+
+            normalized_location = {
+                "latitude": lat_float,
+                "longitude": lon_float,
+                "lat": lat_float,
+                "lon": lon_float,
+            }
+
+            accuracy = location.get("accuracy")
+            if accuracy is not None:
+                try:
+                    normalized_location["accuracy"] = float(accuracy)
+                except (TypeError, ValueError):
+                    normalized_location["accuracy"] = accuracy
+
+            address = location.get("address") or location.get("label")
+            if address:
+                normalized_location["address"] = address
+
+            source = location.get("source")
+            if source:
+                normalized_location["source"] = source
+
+            for extra_key in ("name", "description"):
+                if location.get(extra_key):
+                    normalized_location[extra_key] = location[extra_key]
+
+            normalized_location.update({
+                key: value
+                for key, value in location.items()
+                if key not in normalized_location and value is not None
+            })
+
+            location = normalized_location
 
         return (
             pregunta,
@@ -904,6 +954,11 @@ def _procesar_chat(
                 "faq_preview": deepcopy(contexto_chat.get("demo_faq_preview") or []),
             }
 
+        responder_extra_kwargs = {}
+        if location:
+            responder_extra_kwargs["es_ubicacion"] = True
+            responder_extra_kwargs["ubicacion_usuario"] = location
+
         resultado = responder_chatboc(
             pregunta=pregunta,
             owner_user=owner_del_bot,
@@ -925,6 +980,7 @@ def _procesar_chat(
                 "telefono": actor_principal.telefono
             } if actor_principal else None,
             demo_metadata=demo_metadata,
+            **responder_extra_kwargs,
         )
 
         recursos_demo = []

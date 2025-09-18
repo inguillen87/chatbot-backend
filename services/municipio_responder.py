@@ -3679,6 +3679,31 @@ def responder_municipio(
         pregunta_str = ""
         received_payload["pregunta"] = ""
 
+    placeholder_tokens = {
+        "[ubicación compartida por el usuario]",
+        "[ubicacion compartida por el usuario]",
+    }
+    pregunta_placeholder = (
+        isinstance(pregunta_str, str)
+        and pregunta_str.strip().lower() in placeholder_tokens
+    )
+
+    if location and isinstance(location, dict):
+        existing_location = received_payload.get("ubicacion_usuario")
+        if isinstance(existing_location, dict):
+            for key, value in location.items():
+                if value is not None:
+                    existing_location[key] = value
+        else:
+            received_payload["ubicacion_usuario"] = dict(location)
+
+        if not received_payload.get("es_ubicacion"):
+            received_payload["es_ubicacion"] = True
+
+        if pregunta_placeholder:
+            pregunta_str = ""
+            received_payload["pregunta"] = ""
+
     # Detección temprana de números de ticket antes de cualquier otra lógica
     if (
         isinstance(pregunta_str, str)
