@@ -1,0 +1,39 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 420 320] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 175 >>
+stream
+BT
+/F1 16 Tf
+40 270 Td (Municipio Inteligente - Gu\303\255a de tr\303\241mites express) Tj
+0 -26 Td (Turnos de licencias digitales - confirmaci\303\263n en 60 segundos) Tj
+0 -22 Td (Reporte de luminarias con geolocalizaci\303\263n y foto) Tj
+0 -22 Td (Mesa de entradas virtual con seguimiento online 24/7) Tj
+0 -22 Td (Atenci\303\263n omnicanal con derivaci\303\263n a agentes humanos) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000010 00000 n 
+0000000051 00000 n 
+0000000102 00000 n 
+0000000215 00000 n 
+0000000410 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+471
+%%EOF
