@@ -400,6 +400,19 @@ def _procesar_chat(
         chat_session_id_header = str(uuid.uuid4())
         current_app.logger.warning(f"X-Chat-Session-Id not found. Generated new: {chat_session_id_header}")
 
+    def _emit_socket_payload(payload: object) -> None:
+        """Emite un mensaje por Socket.IO si hay una sesión web activa."""
+
+        if channel == "web" and chat_session_id_header:
+            if isinstance(payload, dict) and "options_list" in payload and "botones" not in payload:
+                payload["botones"] = payload["options_list"]
+
+            socketio.emit('message', payload, room=chat_session_id_header)
+            current_app.logger.debug(
+                "Emitting socket message (early return)",
+                extra={"room": chat_session_id_header, "payload": payload},
+            )
+
     actor_principal = owner_user or current_user
     chat_context_obj = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id_header).first()
 
@@ -693,6 +706,7 @@ def _procesar_chat(
                 selector_payload["message_body"] = (
                     "No pude reconocer esa demo. Elegí una de las opciones disponibles para continuar."
                 )
+                _emit_socket_payload(selector_payload)
                 return jsonify(selector_payload), 200
 
             owner_del_bot = User.query.get(selected_demo["owner_user_id"])
@@ -709,6 +723,7 @@ def _procesar_chat(
                 selector_payload["message_body"] = (
                     "La demo seleccionada no está disponible en este momento. Elegí otra opción para continuar."
                 )
+                _emit_socket_payload(selector_payload)
                 return jsonify(selector_payload), 200
 
             rubro_para_log = selected_demo["label"]
@@ -762,6 +777,7 @@ def _procesar_chat(
                         f"Error guardando la selección de demo para la sesión {chat_session_id_header}: {e_commit}",
                         exc_info=True,
                     )
+                _emit_socket_payload(selector_payload)
                 return jsonify(selector_payload), 200
 
         if not owner_del_bot and rubro_obj_global:
@@ -807,6 +823,7 @@ def _procesar_chat(
                         f"Error al guardar el límite de la demo para la sesión {chat_session_id_header}: {e_commit}",
                         exc_info=True,
                     )
+                _emit_socket_payload(respuesta_limite)
                 return jsonify(respuesta_limite), 403
 
         # The logic for file analysis has been moved to the upload endpoint.

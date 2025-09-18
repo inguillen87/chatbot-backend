@@ -169,6 +169,29 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 self.assertTrue(faq_preview)
                 self.assertIn("Malbec", faq_preview[0].get("respuesta", ""))
 
+    def test_unrecognized_demo_selection_emits_socket_message(self):
+        session_id = "demo-session-emit-1"
+        headers = {"X-Chat-Session-Id": session_id}
+        with self.client as client:
+            client.post("/ask/pyme", json={"pregunta": "__INIT__"}, headers=headers)
+
+            with patch("routes.chat.socketio.emit") as mock_emit:
+                response = client.post(
+                    "/ask/pyme",
+                    json={"pregunta": {"action": "demo_select_rubro:inexistente"}},
+                    headers=headers,
+                )
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload.get("fuente"), "demo_selector")
+
+            mock_emit.assert_called_once()
+            args, kwargs = mock_emit.call_args
+            self.assertEqual(args[0], "message")
+            self.assertEqual(args[1], payload)
+            self.assertEqual(kwargs.get("room"), session_id)
+
     def test_demo_message_limit_enforced(self):
         session_id = "demo-session-3"
         headers = {"X-Chat-Session-Id": session_id}
@@ -202,14 +225,23 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 )
                 self.assertEqual(resp2.status_code, 200)
 
-                resp3 = client.post(
-                    "/ask/pyme",
-                    json={"pregunta": "más vinos"},
-                    headers=headers,
-                )
+                with patch("routes.chat.socketio.emit") as mock_emit:
+                    resp3 = client.post(
+                        "/ask/pyme",
+                        json={"pregunta": "más vinos"},
+                        headers=headers,
+                    )
+
                 self.assertEqual(resp3.status_code, 403)
                 data = resp3.get_json()
                 self.assertEqual(data.get("error"), "demo_limit_reached")
+
+                mock_emit.assert_called_once()
+                args, kwargs = mock_emit.call_args
+                self.assertEqual(args[0], "message")
+                self.assertEqual(args[1], data)
+                self.assertEqual(kwargs.get("room"), session_id)
+
                 self.assertEqual(mock_responder.call_count, 3)
 
     def test_demo_selection_returns_curated_material(self):
