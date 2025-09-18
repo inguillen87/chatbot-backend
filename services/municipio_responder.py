@@ -2010,6 +2010,17 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         "datos_reclamo_actuales": datos_reclamo
     }
 
+    if demo_metadata:
+        prompt_context = demo_metadata.get("prompt_context")
+        if prompt_context:
+            usuario_info_llm["demo_contexto"] = prompt_context
+        if demo_metadata.get("key"):
+            usuario_info_llm["demo_key"] = demo_metadata.get("key")
+        if demo_metadata.get("display_name"):
+            usuario_info_llm["demo_display_name"] = demo_metadata.get("display_name")
+        if demo_metadata.get("description"):
+            usuario_info_llm["demo_description"] = demo_metadata.get("description")
+
     historial_para_llm = []
     if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
         historial_para_llm = contexto_municipio_actual.get("historial_llm_reclamo", [])
@@ -3587,6 +3598,8 @@ def responder_municipio(
     **kwargs
 ):
     logger_actual = current_app.logger if has_app_context() else logger
+
+    demo_metadata = kwargs.pop("demo_metadata", None)
 
     # --- START DEBUG LOG ---
     if chat_db_context and chat_db_context.context_data:
