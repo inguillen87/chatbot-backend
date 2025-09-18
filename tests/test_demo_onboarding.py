@@ -207,15 +207,48 @@ class DemoOnboardingTestCase(unittest.TestCase):
                     headers=headers,
                 )
 
-            self.assertEqual(response.status_code, 200)
-            payload = response.get_json()
-            self.assertEqual(payload.get("fuente"), "demo_selector")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("fuente"), "demo_selector")
 
-            mock_emit.assert_called_once()
-            args, kwargs = mock_emit.call_args
-            self.assertEqual(args[0], "message")
-            self.assertEqual(args[1], payload)
-            self.assertEqual(kwargs.get("room"), session_id)
+        mock_emit.assert_called_once()
+        args, kwargs = mock_emit.call_args
+        self.assertEqual(args[0], "message")
+        self.assertEqual(args[1], payload)
+        self.assertEqual(kwargs.get("room"), session_id)
+
+    def test_ask_pyme_response_mirrors_message_body_into_respuesta(self):
+        session_id = "demo-session-respuesta"
+        headers = {"X-Chat-Session-Id": session_id}
+        expected_text = "Hola desde el backend"
+
+        with patch("routes.chat._load_demo_rubros", return_value=[]):
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                mock_responder.return_value = {
+                    "message_body": expected_text,
+                    "options_list": [
+                        {"label": "Ver promociones", "action_id": "pyme_promociones"}
+                    ],
+                    "message_type": "interactive_buttons",
+                }
+
+                response = self.client.post(
+                    "/ask/pyme",
+                    json={"pregunta": "hola"},
+                    headers=headers,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data.get("message_body"), expected_text)
+        self.assertEqual(data.get("respuesta"), expected_text)
+
+        botones = data.get("botones", [])
+        self.assertTrue(botones)
+        boton = botones[0]
+        self.assertEqual(boton.get("texto"), "Ver promociones")
+        self.assertEqual(boton.get("action_id"), "pyme_promociones")
+        self.assertEqual(boton.get("id"), "pyme_promociones")
 
     def test_demo_message_limit_enforced(self):
         session_id = "demo-session-3"
