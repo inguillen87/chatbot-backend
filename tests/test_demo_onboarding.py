@@ -1,9 +1,12 @@
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 from app import create_app, db
 from config import Config
-from models import QA, Rubro, User
+from models import QA, Rubro, User, ChatSessionContext
+from sqlalchemy.orm.attributes import flag_modified
+from services.municipio_responder import MUNICIPIO_RESPONSE_CACHE
 
 
 class DemoConfig(Config):
@@ -81,6 +84,7 @@ class DemoOnboardingTestCase(unittest.TestCase):
             rubro=self.rubro_municipio,
             tipo_chat="municipio",
             rol="admin",
+            token="municipio-token",
         )
         self.bodega_user = User(
             name="Demo Bodega",
@@ -194,6 +198,133 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 self.assertTrue(faq_preview)
                 self.assertIn("Malbec", faq_preview[0].get("respuesta", ""))
 
+    def test_municipio_request_without_rubro_skips_demo_selector(self):
+        session_id = "municipio-session-no-rubro"
+        with self.client as client:
+            self.muni_user.rubro = None
+            self.muni_user.rubro_id = None
+            db.session.add(self.muni_user)
+            db.session.commit()
+
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                mock_responder.return_value = {
+                    "message_body": "Hola, soy el asistente municipal.",
+                    "message_type": "text",
+                    "botones": [],
+                }
+
+                response = client.post(
+                    "/ask/municipio",
+                    json={"pregunta": "__INIT__", "token": self.muni_user.token},
+                    headers={"X-Chat-Session-Id": session_id},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertNotEqual(data.get("fuente"), "demo_selector")
+        self.assertEqual(data.get("message_body"), "Hola, soy el asistente municipal.")
+
+        mock_responder.assert_called_once()
+        _, kwargs = mock_responder.call_args
+        owner = kwargs.get("owner_user")
+        self.assertIsNotNone(owner)
+        self.assertEqual(owner.id, self.muni_user.id)
+        self.assertIsNone(kwargs.get("rubro_obj"))
+        self.assertEqual(kwargs.get("tipo_chat"), "municipio")
+
+    def test_municipio_owner_token_takes_priority_over_rubro_lookup(self):
+        """If multiple admins share a rubro, prefer the authenticated owner user."""
+
+        secondary_admin = User(
+            name="Otro Municipio",
+            email="municipio-secundario@example.com",
+            password_hash="hash",
+            rubro=self.rubro_municipio,
+            tipo_chat="municipio",
+            rol="admin",
+        )
+        db.session.add(secondary_admin)
+        db.session.commit()
+
+        # Simula un municipio donde el owner tiene empresa_id y quedaría excluido del filtro
+        self.muni_user.empresa_id = self.almacen_user.id
+        db.session.add(self.muni_user)
+        db.session.commit()
+
+        headers = {"X-Chat-Session-Id": "municipio-owner-priority"}
+        with patch("routes.chat.responder_chatboc") as mock_responder:
+            mock_responder.return_value = {
+                "message_body": "ok",
+                "message_type": "text",
+                "botones": [],
+            }
+
+            response = self.client.post(
+                "/ask/municipio",
+                json={"pregunta": "hola", "token": self.muni_user.token},
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data.get("message_body"), "ok")
+
+        mock_responder.assert_called_once()
+        _, kwargs = mock_responder.call_args
+        owner = kwargs.get("owner_user")
+        rubro_obj = kwargs.get("rubro_obj")
+
+        self.assertIsNotNone(owner)
+        self.assertEqual(owner.id, self.muni_user.id)
+        self.assertIsNotNone(rubro_obj)
+        self.assertEqual(rubro_obj.id, self.rubro_municipio.id)
+
+    def test_municipio_greeting_cache_scoped_per_owner(self):
+        """Greeting cache must not leak responses between municipality owners."""
+
+        MUNICIPIO_RESPONSE_CACHE.clear()
+
+        second_muni = User(
+            name="Municipio Azul",
+            email="muni-azul@example.com",
+            password_hash="hash",
+            rubro=self.rubro_municipio,
+            tipo_chat="municipio",
+            rol="admin",
+            token="municipio-azul-token",
+        )
+        db.session.add(second_muni)
+        db.session.commit()
+
+        headers_owner_one = {"X-Chat-Session-Id": "municipio-cache-owner-one"}
+        headers_owner_two = {"X-Chat-Session-Id": "municipio-cache-owner-two"}
+
+        with patch("services.municipio_responder.GreetingHandler.handle") as mock_handle:
+            mock_handle.side_effect = [
+                {"message_body": "greeting-owner-1", "message_type": "text"},
+                {"message_body": "greeting-owner-2", "message_type": "text"},
+            ]
+
+            response_one = self.client.post(
+                "/ask/municipio",
+                json={"pregunta": "__INIT__", "token": self.muni_user.token},
+                headers=headers_owner_one,
+            )
+            self.assertEqual(response_one.status_code, 200)
+            data_one = response_one.get_json()
+            self.assertEqual(data_one.get("message_body"), "greeting-owner-1")
+
+            response_two = self.client.post(
+                "/ask/municipio",
+                json={"pregunta": "__INIT__", "token": second_muni.token},
+                headers=headers_owner_two,
+            )
+            self.assertEqual(response_two.status_code, 200)
+            data_two = response_two.get_json()
+            self.assertEqual(data_two.get("message_body"), "greeting-owner-2")
+
+        self.assertEqual(mock_handle.call_count, 2)
+
     def test_unrecognized_demo_selection_emits_socket_message(self):
         session_id = "demo-session-emit-1"
         headers = {"X-Chat-Session-Id": session_id}
@@ -207,15 +338,105 @@ class DemoOnboardingTestCase(unittest.TestCase):
                     headers=headers,
                 )
 
-            self.assertEqual(response.status_code, 200)
-            payload = response.get_json()
-            self.assertEqual(payload.get("fuente"), "demo_selector")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("fuente"), "demo_selector")
 
-            mock_emit.assert_called_once()
-            args, kwargs = mock_emit.call_args
-            self.assertEqual(args[0], "message")
-            self.assertEqual(args[1], payload)
-            self.assertEqual(kwargs.get("room"), session_id)
+        mock_emit.assert_called_once()
+        args, kwargs = mock_emit.call_args
+        self.assertEqual(args[0], "message")
+        self.assertEqual(args[1], payload)
+        self.assertEqual(kwargs.get("room"), session_id)
+
+    def test_ask_pyme_response_mirrors_message_body_into_respuesta(self):
+        session_id = "demo-session-respuesta"
+        headers = {"X-Chat-Session-Id": session_id}
+        expected_text = "Hola desde el backend"
+
+        with patch("routes.chat._load_demo_rubros", return_value=[]):
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                mock_responder.return_value = {
+                    "message_body": expected_text,
+                    "options_list": [
+                        {"label": "Ver promociones", "action_id": "pyme_promociones"}
+                    ],
+                    "message_type": "interactive_buttons",
+                }
+
+                response = self.client.post(
+                    "/ask/pyme",
+                    json={"pregunta": "hola"},
+                    headers=headers,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data.get("message_body"), expected_text)
+        self.assertEqual(data.get("respuesta"), expected_text)
+        self.assertEqual(data.get("respuesta_usuario"), expected_text)
+
+        botones = data.get("botones", [])
+        self.assertTrue(botones)
+        boton = botones[0]
+        self.assertEqual(boton.get("texto"), "Ver promociones")
+        self.assertEqual(boton.get("action_id"), "pyme_promociones")
+        self.assertEqual(boton.get("id"), "pyme_promociones")
+
+    def test_replaying_cached_response_backfills_message_text(self):
+        session_id = "demo-session-cache"
+        headers = {"X-Chat-Session-Id": session_id}
+
+        with patch("routes.chat._load_demo_rubros", return_value=[]):
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                mock_responder.return_value = {
+                    "message_body": "Respuesta almacenada",
+                    "options_list": [
+                        {"label": "Ver productos", "action_id": "pyme_productos_stock"}
+                    ],
+                    "message_type": "interactive_buttons",
+                }
+
+                first_response = self.client.post(
+                    "/ask/pyme",
+                    json={"pregunta": "hola"},
+                    headers=headers,
+                )
+
+        self.assertEqual(first_response.status_code, 200)
+
+        context = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
+        self.assertIsNotNone(context)
+
+        context.context_data["last_bot_response"] = {
+            "message_body": "Respuesta almacenada",
+            "options_list": [
+                {"label": "Ver productos", "action_id": "pyme_productos_stock"}
+            ],
+        }
+        context.context_data["last_user_message"] = "hola"
+        context.context_data["last_user_message_time"] = datetime.utcnow().isoformat()
+        flag_modified(context, "context_data")
+        db.session.commit()
+
+        with patch("routes.chat._load_demo_rubros", return_value=[]):
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                response = self.client.post(
+                    "/ask/pyme",
+                    json={"pregunta": "hola"},
+                    headers=headers,
+                )
+
+        mock_responder.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data.get("message_body"), "Respuesta almacenada")
+        self.assertEqual(data.get("respuesta"), "Respuesta almacenada")
+        self.assertEqual(data.get("respuesta_usuario"), "Respuesta almacenada")
+
+        botones = data.get("botones", [])
+        self.assertTrue(botones)
+        self.assertEqual(botones[0].get("texto"), "Ver productos")
+        self.assertEqual(botones[0].get("action_id"), "pyme_productos_stock")
 
     def test_demo_message_limit_enforced(self):
         session_id = "demo-session-3"

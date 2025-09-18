@@ -3624,12 +3624,13 @@ def responder_municipio(
         logger_actual.info(f"DEBUG: [START] responder_municipio called for session {chat_db_context.chat_session_id}. Initial state: {estado_conversacion_debug}")
     # --- END DEBUG LOG ---
 
-    normalized_question = None
+    normalized_question: Optional[str] = None
+    cache_key = None
 
     def _finalize_response(response):
         """Return the response unchanged; also store it in cache for repeated queries."""
-        if normalized_question:
-            MUNICIPIO_RESPONSE_CACHE[normalized_question] = response
+        if cache_key is not None:
+            MUNICIPIO_RESPONSE_CACHE[cache_key] = response
         return response
 
     logger_actual.info(
@@ -3725,7 +3726,41 @@ def responder_municipio(
             }
 
     normalized_question = normalizar_texto(pregunta_str)
-    cached_response = MUNICIPIO_RESPONSE_CACHE.get(normalized_question)
+
+    if normalized_question:
+        owner_cache_key = None
+        if owner_user is not None:
+            owner_cache_key = getattr(owner_user, "id", None) or getattr(owner_user, "municipio_id", None)
+
+        rubro_cache_key = None
+        if rubro_obj is not None:
+            rubro_cache_key = getattr(rubro_obj, "id", None) or getattr(rubro_obj, "clave", None)
+
+        demo_cache_key = None
+        if isinstance(demo_metadata, dict):
+            demo_cache_key = (
+                demo_metadata.get("key")
+                or demo_metadata.get("token")
+                or demo_metadata.get("slug")
+            )
+
+        channel_cache_key = channel or "web"
+
+        cache_key = (
+            normalized_question,
+            owner_cache_key,
+            rubro_cache_key,
+            demo_cache_key,
+            channel_cache_key,
+        )
+    else:
+        cache_key = None
+
+    cached_response = (
+        MUNICIPIO_RESPONSE_CACHE.get(cache_key)
+        if cache_key is not None
+        else None
+    )
 
     if kwargs:
         for key, value in kwargs.items():
