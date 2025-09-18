@@ -1,0 +1,115 @@
+{
+  "responses": [
+    {
+      "id": "welcome",
+      "keywords_any": ["__init__", "hola", "buen dia", "buenos dias", "buenas", "que tal", "saludo"],
+      "response": "🍷 ¡Hola! Soy el asistente virtual de {demo_name}. Podemos repasar etiquetas premium, combos de degustación y envíos a todo el país. Contame qué te gustaría revisar primero.",
+      "buttons": [
+        {"label": "Pedir presupuesto", "target": "presupuesto"},
+        {"label": "Ver catálogo premium", "target": "catalogo"},
+        {"label": "Consultar envíos", "target": "envios"},
+        {"label": "Reservar degustación", "target": "degustacion"}
+      ]
+    },
+    {
+      "id": "catalogo",
+      "keywords_any": ["catalogo", "lista de precios", "precios", "lista", "catalogue"],
+      "response": "Te comparto la selección destacada 2024 con notas de cata, precios por botella y combos especiales de 6 unidades.",
+      "resource_tags": ["type:pdf"],
+      "include_faq_preview": 2,
+      "buttons": [
+        {"label": "¿Y los envíos?", "target": "envios"},
+        {"label": "Pedir presupuesto", "target": "presupuesto"},
+        {"label": "Promo Gran Malbec", "target": "malbec"}
+      ]
+    },
+    {
+      "id": "presupuesto",
+      "keywords_any": [
+        "presupuesto",
+        "cotizacion",
+        "cotiza",
+        "precio mayorista",
+        "pdf",
+        "armar pedido",
+        "lista personalizada"
+      ],
+      "response": "Generamos presupuestos en PDF con selección de etiquetas, escalas por volumen y combos corporativos listos para regalar.",
+      "resource_tags": [
+        "title:Lista de precios",
+        "title:Combos"
+      ],
+      "buttons": [
+        {"label": "Ver catálogo premium", "target": "catalogo"},
+        {"label": "Opciones corporativas", "target": "corporativo"}
+      ]
+    },
+    {
+      "id": "malbec",
+      "keywords_any": ["gran malbec", "malbec reserva", "malbec"],
+      "response": "Gran Malbec Reserva 2021 combina notas a ciruela, chocolate y un final especiado. Está con 10% off en caja de 6 botellas y envío bonificado en Gran Mendoza.",
+      "resource_tags": ["title:Malbec"],
+      "buttons": [
+        {"label": "Ver lista completa", "target": "catalogo"},
+        {"label": "Opciones corporativas", "target": "corporativo"}
+      ]
+    },
+    {
+      "id": "envios",
+      "keywords_any": ["envio", "envios", "envia", "enviar", "delivery", "envio gratis"],
+      "response": "Hacemos envíos gratuitos en Gran Mendoza desde $45.000 y logística nacional con seguros especializados. El mapa boutique marca tiempos estimados y transportes refrigerados.",
+      "resource_tags": ["title:Mapa de envíos"],
+      "buttons": [
+        {"label": "Ver combos mayoristas", "target": "corporativo"},
+        {"label": "Reservar degustación", "target": "degustacion"}
+      ]
+    },
+    {
+      "id": "degustacion",
+      "keywords_any": ["degustacion", "degustaciones", "visita", "tour", "sala"],
+      "response": "La sala de degustación abre de lunes a sábado de 10 a 20 h. Los viernes y sábados tenemos guiada con el enólogo 18 h (cupos limitados). Podés revisar combos corporativos para cerrar el evento.",
+      "resource_tags": ["title:Combos"],
+      "buttons": [
+        {"label": "Quiero reservar cupo", "target": "degustacion_contacto"},
+        {"label": "Catálogo de vinos", "target": "catalogo"}
+      ]
+    },
+    {
+      "id": "degustacion_contacto",
+      "keywords_any": ["reservar degustacion", "reservar cupo", "dejo mis datos"],
+      "response": "¡Genial! Para reservar necesitás nombre, teléfono y cantidad de personas. En la demo podés dejarlos en el formulario de contacto y coordinamos por mail en minutos.",
+      "buttons": [
+        {"label": "Ver formulario de contacto", "target": "contacto"},
+        {"label": "Promos corporativas", "target": "corporativo"}
+      ]
+    },
+    {
+      "id": "corporativo",
+      "keywords_any": ["corporativo", "empresas", "eventos", "regalos"],
+      "response": "Armamos regalos corporativos, combos personalizados y degustaciones privadas. Descuentos del 15% desde $120.000 y logística a múltiples destinos.",
+      "resource_tags": ["title:Combos"],
+      "buttons": [
+        {"label": "Catálogo premium", "target": "catalogo"},
+        {"label": "Consultar envíos", "target": "envios"}
+      ]
+    },
+    {
+      "id": "contacto",
+      "keywords_any": ["contacto", "asesor", "hablar", "llamar"],
+      "response": "En la versión completa podés derivar a un asesor humano con un clic. Mientras tanto, dejá tus datos y coordinamos degustaciones, eventos o presupuestos en menos de 24 h.",
+      "buttons": [
+        {"label": "Ver combos mayoristas", "target": "corporativo"},
+        {"label": "Reservar degustación", "target": "degustacion"}
+      ]
+    }
+  ],
+  "fallback": {
+    "response": "Este es un guion de demo offline de {demo_name}. Podés explorar catálogo, envíos y propuestas corporativas desde los botones. Si querés una experiencia a medida avisame y coordinamos una reunión con el equipo.",
+    "buttons": [
+      {"label": "Pedir presupuesto", "target": "presupuesto"},
+      {"label": "Ver catálogo", "target": "catalogo"},
+      {"label": "Consultar envíos", "target": "envios"}
+    ],
+    "resource_tags": ["type:pdf"]
+  }
+}

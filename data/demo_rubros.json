@@ -11,11 +11,26 @@
     "welcome_message": "🛒 ¡Bienvenido al demo del almacén! Contame qué productos o combos necesitas hoy.",
     "resources": [
       {
-        "title": "Lista de precios actualizada",
-        "description": "Precios minoristas y mayoristas con combos listos para delivery o retiro en tienda.",
-        "type": "link",
-        "url": "https://www.chatboc.ar/",
-        "cta_text": "Ver combos disponibles"
+        "title": "Catálogo de combos digitales",
+        "description": "PDF con combos familiares, packs para bares y precios dinámicos por zona.",
+        "type": "pdf",
+        "url": "/static/demo/almacen/catalogo-combos-2024.pdf",
+        "cta_text": "Descargar combos"
+      },
+      {
+        "title": "Lista de precios mayoristas",
+        "description": "Actualización semanal con mínimos de compra y márgenes sugeridos.",
+        "type": "pdf",
+        "url": "/static/demo/almacen/lista-precios-mayoristas.pdf",
+        "cta_text": "Consultar tarifas"
+      },
+      {
+        "title": "Mapa de logística de delivery",
+        "description": "Cobertura de radios A, B y C con tiempos estimados y motos asignadas.",
+        "type": "image",
+        "url": "/static/demo/almacen/rutas-delivery.svg",
+        "thumbnail": "/static/demo/almacen/rutas-delivery.svg",
+        "cta_text": "Ver zonas de entrega"
       }
     ]
   },
@@ -51,6 +66,21 @@
         "url": "/static/demo/bodega/gran-malbec-reserva.svg",
         "thumbnail": "/static/demo/bodega/gran-malbec-reserva.svg",
         "cta_text": "Ver ficha del Malbec"
+      },
+      {
+        "title": "Combos de degustación corporativa",
+        "description": "PDF con cajas premium para regalos, degustaciones privadas y eventos empresariales.",
+        "type": "pdf",
+        "url": "/static/demo/bodega/combos-degustacion-corporativas.pdf",
+        "cta_text": "Descargar combos corporativos"
+      },
+      {
+        "title": "Mapa de envíos boutique",
+        "description": "Cobertura nacional con tiempos estimados y operadores de logística refrigerada.",
+        "type": "image",
+        "url": "/static/demo/bodega/rutas-envio-premium.svg",
+        "thumbnail": "/static/demo/bodega/rutas-envio-premium.svg",
+        "cta_text": "Ver rutas de envío"
       }
     ]
   },
@@ -66,11 +96,26 @@
     "welcome_message": "🔧 ¡Hola! Soy el asistente del corralón. ¿Qué materiales o herramientas necesitas cotizar?",
     "resources": [
       {
-        "title": "Lista de materiales para obra",
-        "description": "Cementos, áridos, perfiles y promociones vigentes por cantidad.",
-        "type": "link",
-        "url": "https://www.chatboc.ar/",
-        "cta_text": "Ver catálogo de obra"
+        "title": "Catálogo de materiales 2024",
+        "description": "Cementos, áridos y perfiles con disponibilidad inmediata.",
+        "type": "pdf",
+        "url": "/static/demo/ferreteria/catalogo-materiales-obra.pdf",
+        "cta_text": "Descargar catálogo"
+      },
+      {
+        "title": "Plan logístico para obras",
+        "description": "Entregas escalonadas con camión grúa y seguimiento GPS.",
+        "type": "pdf",
+        "url": "/static/demo/ferreteria/plan-logistica-obra.pdf",
+        "cta_text": "Ver plan logístico"
+      },
+      {
+        "title": "Camión grúa en ruta",
+        "description": "Visual del esquema de despacho y retiro de bolsones.",
+        "type": "image",
+        "url": "/static/demo/ferreteria/camion-grua.svg",
+        "thumbnail": "/static/demo/ferreteria/camion-grua.svg",
+        "cta_text": "Ver seguimiento"
       }
     ]
   },
@@ -86,11 +131,26 @@
     "welcome_message": "🛍️ ¡Bienvenido! Contame qué prenda, regalo o combo corporativo estás buscando.",
     "resources": [
       {
-        "title": "Lookbook temporada actual",
-        "description": "Colecciones destacadas con precios, talles disponibles y combos corporativos.",
-        "type": "link",
-        "url": "https://www.chatboc.ar/",
-        "cta_text": "Descubrir novedades"
+        "title": "Lookbook urbano",
+        "description": "Colecciones cápsula con talles XS a XXL y precios sugeridos.",
+        "type": "pdf",
+        "url": "/static/demo/local_comercial/lookbook-urbano.pdf",
+        "cta_text": "Ver lookbook"
+      },
+      {
+        "title": "Programa de fidelización",
+        "description": "Escalas de puntos, cupones automáticos y wallet QR integrada.",
+        "type": "pdf",
+        "url": "/static/demo/local_comercial/programa-fidelizacion.pdf",
+        "cta_text": "Descargar programa"
+      },
+      {
+        "title": "Combo corporativo premium",
+        "description": "Box regalo, giftcard y seguimiento de entregas múltiples.",
+        "type": "image",
+        "url": "/static/demo/local_comercial/combos-corporativos.svg",
+        "thumbnail": "/static/demo/local_comercial/combos-corporativos.svg",
+        "cta_text": "Ver propuesta"
       }
     ]
   },
@@ -106,11 +166,26 @@
     "welcome_message": "🩺 Hola, soy el asistente de Clínica San Dona. ¿Querés reservar un turno o consultar tu cobertura?",
     "resources": [
       {
-        "title": "Guía de especialidades y coberturas",
-        "description": "Profesionales disponibles, obras sociales aceptadas y pasos para turnos online.",
-        "type": "link",
-        "url": "https://www.chatboc.ar/",
-        "cta_text": "Ver especialidades"
+        "title": "Agenda de turnos priorizados",
+        "description": "Disponibilidad de clínica médica, pediatría y guardias programadas.",
+        "type": "pdf",
+        "url": "/static/demo/medico/agenda-turnos-prioritarios.pdf",
+        "cta_text": "Ver agenda"
+      },
+      {
+        "title": "Guía de preparación de estudios",
+        "description": "Indicaciones para laboratorio, ecografías y entrega de resultados.",
+        "type": "pdf",
+        "url": "/static/demo/medico/guia-preparacion-estudios.pdf",
+        "cta_text": "Descargar guía"
+      },
+      {
+        "title": "Flujo de teleconsulta",
+        "description": "Paso a paso desde la reserva hasta la receta digital.",
+        "type": "image",
+        "url": "/static/demo/medico/teleconsulta-flujo.svg",
+        "thumbnail": "/static/demo/medico/teleconsulta-flujo.svg",
+        "cta_text": "Ver flujo"
       }
     ]
   },
