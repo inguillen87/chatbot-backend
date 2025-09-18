@@ -5,6 +5,7 @@ from models import User, db, TicketComentario
 import jwt
 from services.ticket_service import servicio_tickets # Reutilizamos el servicio de tickets
 from services.tts_orchestrator import generar_audio
+from utils.response_utils import ensure_buttons_compatibility
 
 socketio = SocketIO(
     cors_allowed_origins=ALLOWED_ORIGINS,
@@ -58,8 +59,7 @@ def send_welcome_message(sid, auth):
             chat_session_uuid=chat_session_uuid
         )
 
-        if "options_list" in respuesta and "botones" not in respuesta:
-            respuesta["botones"] = respuesta["options_list"]
+        ensure_buttons_compatibility(respuesta)
 
         if respuesta.get("generar_audio"):
             try:
