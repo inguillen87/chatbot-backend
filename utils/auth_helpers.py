@@ -177,7 +177,7 @@ def token_requerido(f):
             resp.headers['Access-Control-Allow-Credentials'] = 'true'
             resp.headers.setdefault("X-Anon-Id", anon_id)
             resp.headers.setdefault("Anon-Id", anon_id)
-            return resp
+            return _set_anon_cookie(resp, anon_id)
 
         # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
         if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
@@ -190,6 +190,7 @@ def token_requerido(f):
             resp = jsonify({"error": "Token faltante o malformado"})
             resp.headers.setdefault("X-Anon-Id", anon_id)
             resp.headers.setdefault("Anon-Id", anon_id)
+            _set_anon_cookie(resp, anon_id)
             return resp, 401
 
         user = user_from_token(token)
@@ -198,6 +199,7 @@ def token_requerido(f):
             resp = jsonify({"error": "Token inválido o sesión expirada"})
             resp.headers.setdefault("X-Anon-Id", anon_id)
             resp.headers.setdefault("Anon-Id", anon_id)
+            _set_anon_cookie(resp, anon_id)
             return resp, 401
 
         response = f(user, *args, **kwargs)
@@ -221,12 +223,12 @@ def token_requerido(f):
             resp.set_cookie(**cookie_args)
             resp.headers.setdefault("X-Anon-Id", anon_id)
             resp.headers.setdefault("Anon-Id", anon_id)
-            return resp
+            return _set_anon_cookie(resp, anon_id)
 
         resp = make_response(response)
         resp.headers.setdefault("X-Anon-Id", anon_id)
         resp.headers.setdefault("Anon-Id", anon_id)
-        return resp
+        return _set_anon_cookie(resp, anon_id)
     return decorated
 
 def strict_token_requerido(f):
@@ -249,6 +251,32 @@ def strict_token_requerido(f):
 
         return f(user, *args, **kwargs)
     return decorated
+
+def _set_anon_cookie(resp, anon_id: str | None):
+    """Setea la cookie que identifica al visitante anónimo."""
+    if resp is None or not anon_id:
+        return resp
+
+    cookie_name = current_app.config.get("ANON_SESSION_COOKIE_NAME", "chatboc_anon_id")
+    max_age = current_app.config.get("ANON_SESSION_COOKIE_MAX_AGE", 60 * 60 * 24 * 30)
+
+    cookie_args = {
+        "key": cookie_name,
+        "value": anon_id,
+        "max_age": max_age,
+        "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
+        "httponly": False,
+        "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
+        "path": "/",
+    }
+
+    cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
+    if cookie_domain:
+        cookie_args["domain"] = cookie_domain
+
+    resp.set_cookie(**cookie_args)
+    return resp
+
 
 def admin_o_empleado_requerido(f):
     """Permite solo a admins (empresa_id None) o empleados."""
@@ -285,7 +313,7 @@ def anon_o_token_requerido(f):
             resp.headers["Access-Control-Allow-Credentials"] = "true"
             resp.headers.setdefault("X-Anon-Id", anon_id)
             resp.headers.setdefault("Anon-Id", anon_id)
-            return resp
+            return _set_anon_cookie(resp, anon_id)
 
         token = obtener_token()
         current_user = None  # El usuario final que chatea (el "viewer")
@@ -339,6 +367,6 @@ def anon_o_token_requerido(f):
         resp.headers["Access-Control-Allow-Credentials"] = "true"
         resp.headers.setdefault("X-Anon-Id", anon_id)
         resp.headers.setdefault("Anon-Id", anon_id)
-        return resp
+        return _set_anon_cookie(resp, anon_id)
 
     return decorated

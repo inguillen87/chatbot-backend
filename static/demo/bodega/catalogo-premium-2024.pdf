@@ -1,0 +1,38 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 145 >>
+stream
+BT
+/F1 18 Tf
+36 250 Td (Bodega Cuatro Fincas - Cat\303\241logo Premium 2024) Tj
+0 -28 Td (L\303\255nea Gran Malbec Reserva - $18.500 la botella) Tj
+0 -22 Td (Blend de Altura 2019 - Pack 6 botellas $89.900) Tj
+0 -22 Td (En\303\255o gratis en Gran Mendoza en pedidos desde $45.000) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000010 00000 n 
+0000000051 00000 n 
+0000000102 00000 n 
+0000000203 00000 n 
+0000000393 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+454
+%%EOF

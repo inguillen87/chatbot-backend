@@ -5,6 +5,8 @@ import json
 import httpx
 from typing import List, Dict
 
+from services.chatbot_prompts import get_system_prompt
+
 try:
     import tiktoken
     _TOKEN_ENCODER = tiktoken.encoding_for_model("gpt-4o-mini")
@@ -34,8 +36,8 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
 
     # 1. Format the history for OpenAI's chat endpoint
     # The system prompt goes first.
-    from services.chatbot_prompts import JULES_SYSTEM_PROMPT
-    messages = [{"role": "system", "content": JULES_SYSTEM_PROMPT}]
+    system_prompt = get_system_prompt(usuario)
+    messages = [{"role": "system", "content": system_prompt}]
 
     for item in historial:
         role = item.get("role")
