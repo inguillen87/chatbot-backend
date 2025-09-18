@@ -373,7 +373,9 @@ class TicketComentario(db.Model):
                 archivo_adjunto_id=self.archivo_adjunto.id,
                 tipo_analisis='thumbnail_meta'
             ).first()
-            meta = analisis.datos_estructurados if analisis else None
+            meta = analisis.datos_estructurados if analisis else {}
+            if not isinstance(meta, dict):
+                meta = {}
 
             thumb_url = meta.get("url") if meta else None
             if not thumb_url:
@@ -385,7 +387,14 @@ class TicketComentario(db.Model):
                         os.path.dirname(self.archivo_adjunto.url), thumb_filename
                     ).replace("\\", "/")
 
+            if not thumb_url:
+                thumb_url = self.archivo_adjunto.url
+
+            if thumb_url and "url" not in meta:
+                meta["url"] = thumb_url
+
             attachment_info["thumbUrl"] = thumb_url
+            attachment_info["thumbnailUrl"] = thumb_url
             attachment_info['meta'] = meta
 
             data['attachmentInfo'] = attachment_info

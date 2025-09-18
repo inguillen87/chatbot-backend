@@ -589,7 +589,9 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
         analisis = AnalisisArchivo.query.filter_by(
             archivo_adjunto_id=adjunto.id, tipo_analisis='thumbnail_meta'
         ).first()
-        meta_data = analisis.datos_estructurados if analisis else None
+        meta_data = analisis.datos_estructurados if analisis else {}
+        if not isinstance(meta_data, dict):
+            meta_data = {}
 
         # Construir la URL de la miniatura según metadatos o entorno de almacenamiento
         thumb_url = meta_data.get("url") if meta_data else None
@@ -600,12 +602,19 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
             else:
                 thumb_url = os.path.join(os.path.dirname(adjunto.url), thumb_filename).replace("\\", "/")
 
+        if not thumb_url:
+            thumb_url = adjunto.url
+
+        if thumb_url and "url" not in meta_data:
+            meta_data["url"] = thumb_url
+
         return jsonify({
             "ok": True,
             "attachmentInfo": {
                 "id": adjunto.id,
                 "url": adjunto.url,
                 "thumbUrl": thumb_url,
+                "thumbnailUrl": thumb_url,
                 "mimeType": adjunto.mime,
                 "size": adjunto.tamano,
                 "name": adjunto.nombre_original,
