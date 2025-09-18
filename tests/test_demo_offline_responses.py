@@ -226,6 +226,33 @@ class DemoOfflineResponsesTestCase(unittest.TestCase):
         options = data.get("options_list") or []
         self.assertTrue(any("corpor" in (opt.get("texto") or "").lower() for opt in options))
 
+    def test_demo_token_auto_enables_offline_flow(self):
+        session_id = "offline-demo-auto-token"
+        headers = {"X-Chat-Session-Id": session_id, "X-Token": "demo-bodega-token"}
+
+        with self.client as client:
+            init_response = client.post(
+                "/ask/pyme",
+                json={"pregunta": "__INIT__"},
+                headers=headers,
+            )
+            self.assertEqual(init_response.status_code, 200)
+
+            with patch(
+                "services.pymes.llamar_llm_con_fallback",
+                side_effect=AssertionError("LLM should not be called for auto demo token"),
+            ):
+                response = client.post(
+                    "/ask/pyme",
+                    json={"pregunta": "Necesito lista de precios"},
+                    headers=headers,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data.get("fuente"), "demo_offline")
+        self.assertIn("lista de precios", data.get("message_body", "").lower())
+
     def test_almacen_presupuesto_includes_demo_resources(self):
         session_id = "offline-demo-almacen"
         headers = {"X-Chat-Session-Id": session_id}
