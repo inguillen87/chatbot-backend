@@ -110,6 +110,20 @@ def cargar_usuarios_demo():
             "rubro_clave": "bodega"
         },
         {
+            "email": "demo+ferreteria@chatboc.ar",
+            "name": "Demo Ferretería",
+            "nombre_empresa": "Ferretería Central",
+            "password": "demo1234",
+            "rubro_clave": "ferreteria"
+        },
+        {
+            "email": "demo+local@chatboc.ar",
+            "name": "Demo Local Comercial",
+            "nombre_empresa": "Local Comercial Demo",
+            "password": "demo1234",
+            "rubro_clave": "local_comercial"
+        },
+        {
             "email": "demo+medico@chatboc.ar",
             "name": "Demo Médico",
             "nombre_empresa": "Clínica San Dona",
