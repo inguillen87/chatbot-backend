@@ -1,9 +1,11 @@
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 from app import create_app, db
 from config import Config
-from models import QA, Rubro, User
+from models import QA, Rubro, User, ChatSessionContext
+from sqlalchemy.orm.attributes import flag_modified
 
 
 class DemoConfig(Config):
@@ -242,6 +244,7 @@ class DemoOnboardingTestCase(unittest.TestCase):
         data = response.get_json()
         self.assertEqual(data.get("message_body"), expected_text)
         self.assertEqual(data.get("respuesta"), expected_text)
+        self.assertEqual(data.get("respuesta_usuario"), expected_text)
 
         botones = data.get("botones", [])
         self.assertTrue(botones)
@@ -249,6 +252,62 @@ class DemoOnboardingTestCase(unittest.TestCase):
         self.assertEqual(boton.get("texto"), "Ver promociones")
         self.assertEqual(boton.get("action_id"), "pyme_promociones")
         self.assertEqual(boton.get("id"), "pyme_promociones")
+
+    def test_replaying_cached_response_backfills_message_text(self):
+        session_id = "demo-session-cache"
+        headers = {"X-Chat-Session-Id": session_id}
+
+        with patch("routes.chat._load_demo_rubros", return_value=[]):
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                mock_responder.return_value = {
+                    "message_body": "Respuesta almacenada",
+                    "options_list": [
+                        {"label": "Ver productos", "action_id": "pyme_productos_stock"}
+                    ],
+                    "message_type": "interactive_buttons",
+                }
+
+                first_response = self.client.post(
+                    "/ask/pyme",
+                    json={"pregunta": "hola"},
+                    headers=headers,
+                )
+
+        self.assertEqual(first_response.status_code, 200)
+
+        context = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
+        self.assertIsNotNone(context)
+
+        context.context_data["last_bot_response"] = {
+            "message_body": "Respuesta almacenada",
+            "options_list": [
+                {"label": "Ver productos", "action_id": "pyme_productos_stock"}
+            ],
+        }
+        context.context_data["last_user_message"] = "hola"
+        context.context_data["last_user_message_time"] = datetime.utcnow().isoformat()
+        flag_modified(context, "context_data")
+        db.session.commit()
+
+        with patch("routes.chat._load_demo_rubros", return_value=[]):
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                response = self.client.post(
+                    "/ask/pyme",
+                    json={"pregunta": "hola"},
+                    headers=headers,
+                )
+
+        mock_responder.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data.get("message_body"), "Respuesta almacenada")
+        self.assertEqual(data.get("respuesta"), "Respuesta almacenada")
+        self.assertEqual(data.get("respuesta_usuario"), "Respuesta almacenada")
+
+        botones = data.get("botones", [])
+        self.assertTrue(botones)
+        self.assertEqual(botones[0].get("texto"), "Ver productos")
+        self.assertEqual(botones[0].get("action_id"), "pyme_productos_stock")
 
     def test_demo_message_limit_enforced(self):
         session_id = "demo-session-3"

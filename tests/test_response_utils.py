@@ -39,6 +39,34 @@ class EnsureButtonsCompatibilityTest(unittest.TestCase):
         self.assertEqual(boton["action_id"], "Contáctanos")
         self.assertEqual(boton["id"], "Contáctanos")
 
+    def test_mirrors_message_body_into_respuesta(self):
+        payload = {"message_body": "Hola desde el bot"}
+
+        result = ensure_buttons_compatibility(payload)
+
+        self.assertEqual(result.get("respuesta"), "Hola desde el bot")
+        self.assertEqual(result.get("respuesta_usuario"), "Hola desde el bot")
+        # Original value remains untouched
+        self.assertEqual(result.get("message_body"), "Hola desde el bot")
+
+    def test_mirrors_respuesta_into_message_body(self):
+        payload = {"respuesta": "Texto para mostrar"}
+
+        result = ensure_buttons_compatibility(payload)
+
+        self.assertEqual(result.get("message_body"), "Texto para mostrar")
+        self.assertEqual(result.get("respuesta"), "Texto para mostrar")
+        self.assertEqual(result.get("respuesta_usuario"), "Texto para mostrar")
+
+    def test_mirrors_respuesta_usuario_into_other_fields(self):
+        payload = {"respuesta_usuario": "Texto legado"}
+
+        result = ensure_buttons_compatibility(payload)
+
+        self.assertEqual(result.get("message_body"), "Texto legado")
+        self.assertEqual(result.get("respuesta"), "Texto legado")
+        self.assertEqual(result.get("respuesta_usuario"), "Texto legado")
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

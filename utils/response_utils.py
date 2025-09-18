@@ -6,14 +6,20 @@ from typing import Any
 
 
 def ensure_buttons_compatibility(payload: Any) -> Any:
-    """Ensure ``botones`` and ``options_list`` keys are mirrored in a payload.
+    """Normalize chatbot response payloads for web clients.
 
-    Many parts of the backend historically produced ``options_list`` while the
-    web widget expects ``botones``.  Conversely, some newer flows only set the
-    ``botones`` key.  This helper mutates the provided payload (if it is a
-    mapping) so both keys are present whenever either is available.  Nested
-    dictionaries and sequences are processed recursively to keep the structure
-    consistent across the entire response.
+    Besides mirroring ``botones``/``options_list`` collections, some responses
+    only populate ``message_body`` while others set ``respuesta`` or the legacy
+    ``respuesta_usuario`` field.  The web widget expects all of them to be
+    available.  This helper mutates the provided
+    payload (when it is a mapping) so that:
+
+    * ``message_body`` and ``respuesta`` mirror any available text.
+    * interactive options expose both ``botones`` and ``options_list`` entries
+      with normalized button fields.
+
+    Nested dictionaries and sequences are processed recursively to keep the
+    structure consistent across the entire response.
 
     Parameters
     ----------
@@ -65,9 +71,43 @@ def ensure_buttons_compatibility(payload: Any) -> Any:
         if action_id and "id" not in button:
             button["id"] = action_id
 
+    def _mirror_text_fields(container: MutableMapping) -> None:
+        """Ensure all text aliases share the same content."""
+
+        message_body = container.get("message_body")
+        respuesta = container.get("respuesta")
+        respuesta_usuario = container.get("respuesta_usuario")
+
+        def _has_content(value: Any) -> bool:
+            if value is None:
+                return False
+            if isinstance(value, str):
+                return bool(value.strip())
+            return True
+
+        def _coerce(value: Any) -> str:
+            return value if isinstance(value, str) else str(value)
+
+        canonical_text: str | None = None
+        for candidate in (message_body, respuesta, respuesta_usuario):
+            if _has_content(candidate):
+                canonical_text = _coerce(candidate)
+                break
+
+        if canonical_text is None:
+            return
+
+        if not _has_content(message_body):
+            container["message_body"] = canonical_text
+        if not _has_content(respuesta):
+            container["respuesta"] = canonical_text
+        if not _has_content(respuesta_usuario):
+            container["respuesta_usuario"] = canonical_text
+
     def _normalize(obj: Any) -> None:
         if isinstance(obj, MutableMapping):
             _normalize_button_fields(obj)
+            _mirror_text_fields(obj)
 
             opciones = obj.get("options_list")
             botones = obj.get("botones")
