@@ -983,13 +983,23 @@ def _procesar_chat(
             **responder_extra_kwargs,
         )
 
-        recursos_demo = []
+        recursos_demo: List[Dict[str, object]] = []
+        faq_preview_data: List[Dict[str, object]] = []
+        demo_description: Optional[str] = None
+        demo_welcome: Optional[str] = None
         if isinstance(contexto_chat, dict):
             recursos_demo = contexto_chat.get("demo_resources") or []
+            faq_preview_data = contexto_chat.get("demo_faq_preview") or []
+            demo_description = contexto_chat.get("demo_description")
+            demo_welcome = contexto_chat.get("demo_welcome_message")
+
+        has_intro_content = bool(
+            recursos_demo or faq_preview_data or demo_description or demo_welcome
+        )
 
         should_apply_intro = (
             demo_session_activa
-            and recursos_demo
+            and has_intro_content
             and isinstance(resultado, dict)
             and not contexto_chat.get("demo_intro_sent")
             and (is_demo_selection_event or _is_init_payload(original_user_payload))
@@ -998,7 +1008,7 @@ def _procesar_chat(
         if should_apply_intro:
             resources_text, resource_buttons, resource_attachments = _format_demo_resources(recursos_demo)
             display_name = contexto_chat.get("demo_display_name") or contexto_chat.get("demo_key") or "esta demo"
-            faq_preview_text = _format_demo_faq_preview(contexto_chat.get("demo_faq_preview"))
+            faq_preview_text = _format_demo_faq_preview(faq_preview_data)
 
             base_message = (
                 contexto_chat.get("demo_welcome_message")
@@ -1033,10 +1043,11 @@ def _procesar_chat(
                 existing_options = resultado.get("options_list") or resultado.get("botones") or []
                 resultado["options_list"] = resource_buttons + existing_options
                 total_botones = len(resultado["options_list"])
-                if total_botones <= 3:
-                    resultado["message_type"] = "interactive_buttons"
-                else:
-                    resultado["message_type"] = "interactive_list"
+                if total_botones:
+                    if total_botones <= 3:
+                        resultado["message_type"] = "interactive_buttons"
+                    else:
+                        resultado["message_type"] = "interactive_list"
                 existing_botones = resultado.get("botones") or []
                 if existing_botones:
                     resultado["botones"] = resource_buttons + existing_botones

@@ -1,5 +1,9 @@
+import json
+import logging
 import os
 import re
+from pathlib import Path
+from typing import Any, Dict, List
 from urllib.parse import urlparse
 
 # Directorio base de la aplicación
@@ -51,6 +55,150 @@ if public_root and public_root not in ("localhost", "127.0.0.1"):
 ALLOWED_ORIGINS = list(dict.fromkeys(allowed_urls))
 # Allow Vercel preview deployments (e.g. https://<project>.vercel.app)
 ALLOWED_ORIGINS.append(re.compile(r"https://.*\.vercel\.app"))
+
+# --- Demo Rubros Loader ----------------------------------------------------
+
+_DEMO_RUBRO_ENV_FIELDS = {
+    "key": "KEY",
+    "nombre": "NOMBRE",
+    "descripcion": "DESCRIPCION",
+    "token": "TOKEN",
+    "tipo_chat": "TIPO_CHAT",
+    "rubro_clave": "RUBRO",
+    "prompt_context": "PROMPT_CONTEXT",
+    "welcome_message": "WELCOME_MESSAGE",
+}
+
+
+def _coerce_demo_rubros_payload(payload: Any) -> List[Dict[str, Any]]:
+    """Return a list of demo rubros from a JSON payload."""
+
+    if isinstance(payload, dict):
+        for key in ("demo_rubros", "rubros", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                payload = value
+                break
+        else:
+            return []
+
+    if not isinstance(payload, list):
+        return []
+
+    resultados: List[Dict[str, Any]] = []
+    for item in payload:
+        if isinstance(item, dict):
+            resultados.append(item)
+    return resultados
+
+
+def _read_demo_rubros_file(path: str) -> List[Dict[str, Any]]:
+    """Load demo rubros metadata from a JSON file."""
+
+    file_path = Path(path)
+    if not file_path.is_file():
+        logging.getLogger(__name__).warning(
+            "Demo rubros file '%s' not found. The demo catalog will be empty.", path
+        )
+        return []
+
+    try:
+        raw_content = file_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        logging.getLogger(__name__).error(
+            "Unable to read demo rubros file '%s': %s", path, exc
+        )
+        return []
+
+    if not raw_content.strip():
+        return []
+
+    try:
+        payload = json.loads(raw_content)
+    except json.JSONDecodeError as exc:
+        logging.getLogger(__name__).error(
+            "Invalid JSON in demo rubros file '%s': %s", path, exc
+        )
+        return []
+
+    return _coerce_demo_rubros_payload(payload)
+
+
+def _sanitize_demo_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Clone an entry removing helper fields and copying nested values."""
+
+    sanitized: Dict[str, Any] = {}
+    for key, value in entry.items():
+        if key == "env_prefix":
+            continue
+        if key in {"resources", "faq_preview"} and isinstance(value, list):
+            sanitized[key] = [dict(item) for item in value if isinstance(item, dict)]
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
+def _apply_env_overrides(entry: Dict[str, Any], env_prefix: Any) -> Dict[str, Any]:
+    """Override demo metadata fields with environment variables when available."""
+
+    prefix: str = ""
+    if isinstance(env_prefix, str) and env_prefix.strip():
+        prefix = env_prefix.strip()
+    else:
+        raw_key = entry.get("key")
+        if isinstance(raw_key, str) and raw_key.strip():
+            normalized = re.sub(r"[^A-Z0-9]+", "_", raw_key.upper()).strip("_")
+            if normalized:
+                prefix = f"DEMO_{normalized}"
+
+    if not prefix:
+        return entry
+
+    overridden = dict(entry)
+    for field, suffix in _DEMO_RUBRO_ENV_FIELDS.items():
+        env_name = f"{prefix}_{suffix}"
+        value = os.getenv(env_name)
+        if value is None:
+            continue
+        if field == "token" and value == "":
+            value = None
+        overridden[field] = value
+
+    return overridden
+
+
+def _load_default_demo_rubros() -> List[Dict[str, Any]]:
+    """Load the curated demo catalog from JSON and apply environment overrides."""
+
+    entries: List[Dict[str, Any]] = []
+    loaded_from_env = False
+    json_override = os.getenv("DEMO_RUBROS_JSON")
+    if json_override:
+        try:
+            payload = json.loads(json_override)
+        except json.JSONDecodeError as exc:
+            logging.getLogger(__name__).error(
+                "Invalid JSON provided in DEMO_RUBROS_JSON: %s", exc
+            )
+        else:
+            entries = _coerce_demo_rubros_payload(payload)
+            loaded_from_env = True
+
+    if not entries and not loaded_from_env:
+        default_path = os.getenv("DEMO_RUBROS_FILE") or os.path.join(
+            basedir, "data", "demo_rubros.json"
+        )
+        entries = _read_demo_rubros_file(default_path)
+
+    normalized: List[Dict[str, Any]] = []
+    for raw_entry in entries:
+        if not isinstance(raw_entry, dict):
+            continue
+        env_prefix = raw_entry.get("env_prefix")
+        sanitized = _sanitize_demo_entry(raw_entry)
+        normalized.append(_apply_env_overrides(sanitized, env_prefix))
+
+    return normalized
 
 # Derive cookie domain for production if not provided explicitly
 cookie_domain_env = os.getenv("COOKIE_DOMAIN")
@@ -137,113 +285,7 @@ class Config:
         "DEMO_WELCOME_MESSAGE",
         "👋 ¡Bienvenido a la demo de Chatboc! Elegí la experiencia que querés probar:",
     )
-    DEMO_RUBROS = [
-        {
-            "key": os.getenv("DEMO_MUNICIPIO_KEY", "municipio"),
-            "nombre": os.getenv("DEMO_MUNICIPIO_NOMBRE", "Municipio Inteligente"),
-            "descripcion": os.getenv(
-                "DEMO_MUNICIPIO_DESCRIPCION",
-                "Descubrí cómo un municipio gestiona reclamos, trámites y consultas en segundos.",
-            ),
-            "token": os.getenv("DEMO_MUNICIPIO_TOKEN"),
-            "tipo_chat": os.getenv("DEMO_MUNICIPIO_TIPO_CHAT", "municipio"),
-            "rubro_clave": os.getenv("DEMO_MUNICIPIO_RUBRO", "municipio"),
-            "prompt_context": os.getenv(
-                "DEMO_MUNICIPIO_PROMPT_CONTEXT",
-                (
-                    "El Municipio de Junín en Mendoza ofrece un asistente digital para reclamos "
-                    "de luminaria, higiene urbana, arbolado, tránsito y servicios públicos. También "
-                    "acompaña trámites como licencias de conducir, tasas municipales, turnos online "
-                    "y consultas ciudadanas. Usa un tono cálido, profesional y resalta que el bot "
-                    "permite registrar reclamos con ubicación, seguir tickets existentes y derivar "
-                    "a un agente humano cuando haga falta."
-                ),
-            ),
-            "welcome_message": os.getenv(
-                "DEMO_MUNICIPIO_WELCOME_MESSAGE",
-                "🙌 ¡Bienvenido a la demo municipal! Contame qué trámite o reclamo querés gestionar.",
-            ),
-            "resources": [
-                {
-                    "title": "Guía de trámites express",
-                    "description": "Pasos clave para turnos, reclamos con foto y seguimiento 24/7 desde el panel ciudadano.",
-                    "type": "pdf",
-                    "url": "/static/demo/municipio/guia-tramites-rapidos.pdf",
-                    "cta_text": "Descargar guía de trámites",
-                },
-                {
-                    "title": "Plan de iluminación inteligente 2024",
-                    "description": "Proyecto LED con sensores IoT, tablero de monitoreo y prioridades por barrio.",
-                    "type": "pdf",
-                    "url": "/static/demo/municipio/plan-iluminacion-inteligente.pdf",
-                    "cta_text": "Ver plan de inversión",
-                },
-                {
-                    "title": "Centro de monitoreo en tiempo real",
-                    "description": "Visualización de KPIs, reclamos geolocalizados y derivación inmediata a cuadrillas.",
-                    "type": "image",
-                    "url": "/static/demo/municipio/centro-monitoreo-smart.svg",
-                    "thumbnail": "/static/demo/municipio/centro-monitoreo-smart.svg",
-                    "cta_text": "Abrir dashboard de monitoreo",
-                },
-            ],
-        },
-        {
-            "key": os.getenv("DEMO_BODEGA_KEY", "bodega"),
-            "nombre": os.getenv("DEMO_BODEGA_NOMBRE", "Bodega Cuatro Fincas"),
-            "descripcion": os.getenv(
-                "DEMO_BODEGA_DESCRIPCION",
-                "Probá la experiencia de compra de una pyme: catálogo de vinos, precios y pedidos en vivo.",
-            ),
-            "token": os.getenv("DEMO_BODEGA_TOKEN", "demo-token-bodega"),
-            "tipo_chat": os.getenv("DEMO_BODEGA_TIPO_CHAT", "pyme"),
-            "rubro_clave": os.getenv("DEMO_BODEGA_RUBRO", "bodega"),
-            "prompt_context": os.getenv(
-                "DEMO_BODEGA_PROMPT_CONTEXT",
-                (
-                    "Bodega Cuatro Fincas es una bodega boutique mendocina enfocada en vinos premium. "
-                    "Catálogo destacado: Gran Malbec Reserva 2021 ($18.500) con notas a ciruela y "
-                    "chocolate; Blend de Altura 2019 ($21.000) con Malbec, Cabernet Franc y Petit "
-                    "Verdot; Torrontés Andino 2023 ($11.500) fresco y floral; Espumante Extra Brut "
-                    "Tradicional ($16.800) método champenoise; Caja Degustación 6 botellas ($89.900) "
-                    "con selección del enólogo; Pack Regalo Malbec + Bonarda ($34.500) con estuche. "
-                    "Promos activas: 10% off en combos de 6 botellas, 15% off en compras mayores a "
-                    "$120.000 y envío gratis en Gran Mendoza para pedidos desde $45.000. Horario de "
-                    "atención en sala de degustación: lunes a sábado 10 a 20 hs; degustaciones "
-                    "guiadas viernes y sábado 18 hs con reserva previa. Ofrece asesoramiento para "
-                    "eventos, venta mayorista y armado de regalos corporativos con envío nacional."
-                ),
-            ),
-            "welcome_message": os.getenv(
-                "DEMO_BODEGA_WELCOME_MESSAGE",
-                "🍷 ¡Hola! Soy el asistente de Bodega Cuatro Fincas. ¿Querés descubrir nuestros vinos?",
-            ),
-            "resources": [
-                {
-                    "title": "Catálogo Premium 2024",
-                    "description": "Selección de etiquetas reserva, notas de cata y precios por botella y por caja.",
-                    "type": "pdf",
-                    "url": "/static/demo/bodega/catalogo-premium-2024.pdf",
-                    "cta_text": "Descargar catálogo",
-                },
-                {
-                    "title": "Lista de precios mayoristas",
-                    "description": "Bonificaciones por volumen, combos de degustación y envíos a todo el país.",
-                    "type": "pdf",
-                    "url": "/static/demo/bodega/lista-precios-mayoristas.pdf",
-                    "cta_text": "Consultar precios corporativos",
-                },
-                {
-                    "title": "Gran Malbec Reserva 2021",
-                    "description": "Ficha visual con notas de cata, maridajes sugeridos y precio promocional.",
-                    "type": "image",
-                    "url": "/static/demo/bodega/gran-malbec-reserva.svg",
-                    "thumbnail": "/static/demo/bodega/gran-malbec-reserva.svg",
-                    "cta_text": "Ver ficha del Malbec",
-                },
-            ],
-        },
-    ]
+    DEMO_RUBROS = _load_default_demo_rubros()
 
     GOOGLE_PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID", None)
     GOOGLE_DOCAI_LOCATION = os.getenv("GOOGLE_DOCAI_LOCATION", "us")

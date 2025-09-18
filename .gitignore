@@ -8,6 +8,7 @@ instance/*
 *.json
 !data/tramites.json
 !data/respuestas_municipio.json
+!data/demo_rubros.json
 !data/product_synonyms.json
 !data/vocabulary/ticket_vocabulary.json
 !data/estacionamiento/camaras.json
