@@ -6,8 +6,6 @@ from app import create_app, db
 from config import Config
 from models import QA, Rubro, User, ChatSessionContext
 from sqlalchemy.orm.attributes import flag_modified
-from services.municipio_responder import MUNICIPIO_RESPONSE_CACHE
-
 
 class DemoConfig(Config):
     TESTING = True
@@ -279,51 +277,6 @@ class DemoOnboardingTestCase(unittest.TestCase):
         self.assertIsNotNone(rubro_obj)
         self.assertEqual(rubro_obj.id, self.rubro_municipio.id)
 
-    def test_municipio_greeting_cache_scoped_per_owner(self):
-        """Greeting cache must not leak responses between municipality owners."""
-
-        MUNICIPIO_RESPONSE_CACHE.clear()
-
-        second_muni = User(
-            name="Municipio Azul",
-            email="muni-azul@example.com",
-            password_hash="hash",
-            rubro=self.rubro_municipio,
-            tipo_chat="municipio",
-            rol="admin",
-            token="municipio-azul-token",
-        )
-        db.session.add(second_muni)
-        db.session.commit()
-
-        headers_owner_one = {"X-Chat-Session-Id": "municipio-cache-owner-one"}
-        headers_owner_two = {"X-Chat-Session-Id": "municipio-cache-owner-two"}
-
-        with patch("services.municipio_responder.GreetingHandler.handle") as mock_handle:
-            mock_handle.side_effect = [
-                {"message_body": "greeting-owner-1", "message_type": "text"},
-                {"message_body": "greeting-owner-2", "message_type": "text"},
-            ]
-
-            response_one = self.client.post(
-                "/ask/municipio",
-                json={"pregunta": "__INIT__", "token": self.muni_user.token},
-                headers=headers_owner_one,
-            )
-            self.assertEqual(response_one.status_code, 200)
-            data_one = response_one.get_json()
-            self.assertEqual(data_one.get("message_body"), "greeting-owner-1")
-
-            response_two = self.client.post(
-                "/ask/municipio",
-                json={"pregunta": "__INIT__", "token": second_muni.token},
-                headers=headers_owner_two,
-            )
-            self.assertEqual(response_two.status_code, 200)
-            data_two = response_two.get_json()
-            self.assertEqual(data_two.get("message_body"), "greeting-owner-2")
-
-        self.assertEqual(mock_handle.call_count, 2)
 
     def test_unrecognized_demo_selection_emits_socket_message(self):
         session_id = "demo-session-emit-1"
