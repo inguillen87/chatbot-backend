@@ -10,6 +10,9 @@ from models import QA, Rubro, User
 from services.logic import es_rubro_publico
 
 
+_MISCONFIGURED_DEMOS_LOGGED: set[str] = set()
+
+
 @dataclass(slots=True)
 class DemoRubro:
     """Metadata used to bootstrap curated demo experiences."""
@@ -189,20 +192,28 @@ def load_demo_rubros() -> List[DemoRubro]:
             owner_user = User.query.filter_by(tipo_chat="municipio", rol="admin").first()
 
         if not owner_user:
-            current_app.logger.warning(
-                "[demo] No se pudo preparar la demo '%s' porque falta owner o rubro válido.",
-                key,
-            )
+            if key not in _MISCONFIGURED_DEMOS_LOGGED:
+                current_app.logger.warning(
+                    "[demo] No se pudo preparar la demo '%s' porque falta owner o rubro válido.",
+                    key,
+                )
+                _MISCONFIGURED_DEMOS_LOGGED.add(key)
             continue
 
         if not rubro_obj:
             rubro_obj = owner_user.rubro
 
         if not rubro_obj:
-            current_app.logger.warning(
-                "[demo] El owner '%s' no tiene rubro asociado para la demo '%s'.", owner_user.id, key
-            )
+            if key not in _MISCONFIGURED_DEMOS_LOGGED:
+                current_app.logger.warning(
+                    "[demo] El owner '%s' no tiene rubro asociado para la demo '%s'.",
+                    owner_user.id,
+                    key,
+                )
+                _MISCONFIGURED_DEMOS_LOGGED.add(key)
             continue
+
+        _MISCONFIGURED_DEMOS_LOGGED.discard(key)
 
         tipo_chat = _guess_tipo_chat(entry, rubro_obj, owner_user)
         descripcion_final = descripcion or getattr(rubro_obj, "descripcion", None) or getattr(rubro_obj, "nombre", None)

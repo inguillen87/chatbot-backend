@@ -764,6 +764,10 @@ def _procesar_chat(
             if chat_context_obj:
                 chat_context_obj.context_data = contexto_chat
 
+        demo_session_activa = bool(
+            isinstance(contexto_chat, dict) and contexto_chat.get("demo_session")
+        )
+
         tipo_chat_normalized = (tipo_chat or "").strip().lower()
         is_municipal_request = tipo_chat_normalized == "municipio"
 
@@ -989,7 +993,7 @@ def _procesar_chat(
         else:
             current_app.logger.info("No se pudo determinar un rubro/owner específico para la lógica del bot. Se usará lógica genérica si aplica (ej. para rubros públicos por defecto).")
 
-        if owner_del_bot:
+        if owner_del_bot and not demo_session_activa:
             from utils.plan_limits import limite_para_usuario
             limite = limite_para_usuario(owner_del_bot)
             if limite is not None and owner_del_bot.preguntas_usadas >= limite:
@@ -998,7 +1002,6 @@ def _procesar_chat(
                 }), 403
 
         demo_limit = current_app.config.get("DEMO_MAX_MESSAGES_PER_SESSION", 0)
-        demo_session_activa = bool(isinstance(contexto_chat, dict) and contexto_chat.get("demo_session"))
         incrementar_demo = (
             demo_session_activa
             and demo_limit
@@ -1255,7 +1258,7 @@ def _procesar_chat(
             f"[RUBROS] Rubro efectivo: '{nombre_rubro_log}' (ID: {getattr(rubro_obj_global, 'id', 'N/A')}), esPublico={es_publico}"
         )
 
-        if owner_del_bot:
+        if owner_del_bot and not demo_session_activa:
             owner_del_bot.preguntas_usadas += 1
 
         if isinstance(resultado, dict):
