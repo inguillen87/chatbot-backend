@@ -34,6 +34,11 @@ class ChatOrchestrator:
             and self.global_context.get("target_entity_type") == "municipio"
         ):
             handler_path_str = "services.actions.municipio_actions.DerivarHumanoActionHandler"
+        elif action_name == "mostrar_menu":
+            if self.global_context.get("target_entity_type") == "pyme":
+                handler_path_str = "services.actions.pyme_actions.SaludoHandler"
+            else:
+                handler_path_str = ACTION_HANDLER_MAP.get("menu_principal", handler_path_str)
 
         if not handler_path_str:
             logger.warning(f"No handler found for action: {action_name}")
