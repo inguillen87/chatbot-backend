@@ -149,6 +149,16 @@ def get_or_create_anon_id() -> str:
             anon_id = payload.get("anon_id")
 
     if not anon_id:
+        cookie_name = current_app.config.get(
+            "ANON_SESSION_COOKIE_NAME", "chatboc_anon_id"
+        )
+        cookie_value = request.cookies.get(cookie_name)
+        if isinstance(cookie_value, str):
+            cookie_value = cookie_value.strip()
+        if cookie_value:
+            anon_id = cookie_value
+
+    if not anon_id:
         anon_id = str(uuid.uuid4())
         current_app.logger.info(
             f"Generado nuevo ID anónimo para la request: {anon_id}"
