@@ -139,53 +139,37 @@ class Config:
     )
     DEMO_RUBROS = [
         {
-            "key": os.getenv("DEMO_MUNICIPIO_KEY", "municipio"),
-            "nombre": os.getenv("DEMO_MUNICIPIO_NOMBRE", "Municipio Inteligente"),
+            "key": os.getenv("DEMO_ALMACEN_KEY", "almacen"),
+            "nombre": os.getenv("DEMO_ALMACEN_NOMBRE", "Almacén Inteligente"),
             "descripcion": os.getenv(
-                "DEMO_MUNICIPIO_DESCRIPCION",
-                "Descubrí cómo un municipio gestiona reclamos, trámites y consultas en segundos.",
+                "DEMO_ALMACEN_DESCRIPCION",
+                "Catálogo minorista y mayorista con combos semanales, control de stock y entregas a domicilio en el día.",
             ),
-            "token": os.getenv("DEMO_MUNICIPIO_TOKEN"),
-            "tipo_chat": os.getenv("DEMO_MUNICIPIO_TIPO_CHAT", "municipio"),
-            "rubro_clave": os.getenv("DEMO_MUNICIPIO_RUBRO", "municipio"),
+            "token": os.getenv("DEMO_ALMACEN_TOKEN", "demo-token-almacen"),
+            "tipo_chat": os.getenv("DEMO_ALMACEN_TIPO_CHAT", "pyme"),
+            "rubro_clave": os.getenv("DEMO_ALMACEN_RUBRO", "almacen"),
             "prompt_context": os.getenv(
-                "DEMO_MUNICIPIO_PROMPT_CONTEXT",
+                "DEMO_ALMACEN_PROMPT_CONTEXT",
                 (
-                    "El Municipio de Junín en Mendoza ofrece un asistente digital para reclamos "
-                    "de luminaria, higiene urbana, arbolado, tránsito y servicios públicos. También "
-                    "acompaña trámites como licencias de conducir, tasas municipales, turnos online "
-                    "y consultas ciudadanas. Usa un tono cálido, profesional y resalta que el bot "
-                    "permite registrar reclamos con ubicación, seguir tickets existentes y derivar "
-                    "a un agente humano cuando haga falta."
+                    "ByM Almacén Digital combina góndola física con pedidos online. Ofrece combos familiares de lácteos, "
+                    "bebidas y snacks, reposiciones programadas para bares y rotiserías, precios mayoristas a partir de 6 "
+                    "unidades y seguimiento de stock en tiempo real. Gestiona delivery propio en radio cercano, logística con "
+                    "moto para urgencias y acuerdos con Mercado Pago, MODO y transferencias. Usa un tono cercano, ágil y "
+                    "orientado a resolver pedidos mixtos (retiro o envío) en el momento."
                 ),
             ),
             "welcome_message": os.getenv(
-                "DEMO_MUNICIPIO_WELCOME_MESSAGE",
-                "🙌 ¡Bienvenido a la demo municipal! Contame qué trámite o reclamo querés gestionar.",
+                "DEMO_ALMACEN_WELCOME_MESSAGE",
+                "🛒 ¡Bienvenido al demo del almacén! Contame qué productos o combos necesitas hoy.",
             ),
             "resources": [
                 {
-                    "title": "Guía de trámites express",
-                    "description": "Pasos clave para turnos, reclamos con foto y seguimiento 24/7 desde el panel ciudadano.",
-                    "type": "pdf",
-                    "url": "/static/demo/municipio/guia-tramites-rapidos.pdf",
-                    "cta_text": "Descargar guía de trámites",
-                },
-                {
-                    "title": "Plan de iluminación inteligente 2024",
-                    "description": "Proyecto LED con sensores IoT, tablero de monitoreo y prioridades por barrio.",
-                    "type": "pdf",
-                    "url": "/static/demo/municipio/plan-iluminacion-inteligente.pdf",
-                    "cta_text": "Ver plan de inversión",
-                },
-                {
-                    "title": "Centro de monitoreo en tiempo real",
-                    "description": "Visualización de KPIs, reclamos geolocalizados y derivación inmediata a cuadrillas.",
-                    "type": "image",
-                    "url": "/static/demo/municipio/centro-monitoreo-smart.svg",
-                    "thumbnail": "/static/demo/municipio/centro-monitoreo-smart.svg",
-                    "cta_text": "Abrir dashboard de monitoreo",
-                },
+                    "title": "Lista de precios actualizada",
+                    "description": "Precios minoristas y mayoristas con combos listos para delivery o retiro en tienda.",
+                    "type": "link",
+                    "url": "https://www.chatboc.ar/",
+                    "cta_text": "Ver combos disponibles",
+                }
             ],
         },
         {
@@ -240,6 +224,158 @@ class Config:
                     "url": "/static/demo/bodega/gran-malbec-reserva.svg",
                     "thumbnail": "/static/demo/bodega/gran-malbec-reserva.svg",
                     "cta_text": "Ver ficha del Malbec",
+                },
+            ],
+        },
+        {
+            "key": os.getenv("DEMO_FERRETERIA_KEY", "ferreteria"),
+            "nombre": os.getenv("DEMO_FERRETERIA_NOMBRE", "Ferretería y Corralón"),
+            "descripcion": os.getenv(
+                "DEMO_FERRETERIA_DESCRIPCION",
+                "Materiales de construcción, herramientas eléctricas y logística a obra con presupuestos al instante.",
+            ),
+            "token": os.getenv("DEMO_FERRETERIA_TOKEN", "demo-token-ferreteria"),
+            "tipo_chat": os.getenv("DEMO_FERRETERIA_TIPO_CHAT", "pyme"),
+            "rubro_clave": os.getenv("DEMO_FERRETERIA_RUBRO", "ferreteria"),
+            "prompt_context": os.getenv(
+                "DEMO_FERRETERIA_PROMPT_CONTEXT",
+                (
+                    "Ferretería Central atiende obras chicas y medianas con stock de cementos, áridos, hierros, "
+                    "herramientas eléctricas y sanitarios. Cotiza combos para refacciones, ofrece descuentos por volumen, "
+                    "planifica entregas con camión grúa y seguimiento GPS de repartos. Brinda asesoramiento técnico para "
+                    "elegir materiales, vende EPP, pinturas y artículos de jardinería. Usa un tono experto pero simple para "
+                    "ayudar a profesionales y particulares que construyen o remodelan."
+                ),
+            ),
+            "welcome_message": os.getenv(
+                "DEMO_FERRETERIA_WELCOME_MESSAGE",
+                "🔧 ¡Hola! Soy el asistente del corralón. ¿Qué materiales o herramientas necesitas cotizar?",
+            ),
+            "resources": [
+                {
+                    "title": "Lista de materiales para obra",
+                    "description": "Cementos, áridos, perfiles y promociones vigentes por cantidad.",
+                    "type": "link",
+                    "url": "https://www.chatboc.ar/",
+                    "cta_text": "Ver catálogo de obra",
+                }
+            ],
+        },
+        {
+            "key": os.getenv("DEMO_LOCAL_GENERAL_KEY", "local_comercial_general"),
+            "nombre": os.getenv("DEMO_LOCAL_GENERAL_NOMBRE", "Local Comercial General"),
+            "descripcion": os.getenv(
+                "DEMO_LOCAL_GENERAL_DESCRIPCION",
+                "Mostrador omnicanal para indumentaria, deco y regalos con stock integrado y campañas de fidelización.",
+            ),
+            "token": os.getenv("DEMO_LOCAL_GENERAL_TOKEN", "demo-token-local"),
+            "tipo_chat": os.getenv("DEMO_LOCAL_GENERAL_TIPO_CHAT", "pyme"),
+            "rubro_clave": os.getenv("DEMO_LOCAL_GENERAL_RUBRO", "local_comercial"),
+            "prompt_context": os.getenv(
+                "DEMO_LOCAL_GENERAL_PROMPT_CONTEXT",
+                (
+                    "Local Comercial Demo vende indumentaria urbana, deco y regalos corporativos. Integra catálogo en tienda "
+                    "física, Instagram Shopping y tienda online con pasarela de pagos. Ofrece combos de temporada, cupones de "
+                    "fidelización, reservas con seña digital y retiros en sucursal en 2 horas. Gestiona cambios, envíos a todo "
+                    "el país y paquetes personalizados para empresas. El bot debe destacar disponibilidad en talles, colores, "
+                    "promociones bancarias y seguimiento de pedidos."
+                ),
+            ),
+            "welcome_message": os.getenv(
+                "DEMO_LOCAL_GENERAL_WELCOME_MESSAGE",
+                "🛍️ ¡Bienvenido! Contame qué prenda, regalo o combo corporativo estás buscando.",
+            ),
+            "resources": [
+                {
+                    "title": "Lookbook temporada actual",
+                    "description": "Colecciones destacadas con precios, talles disponibles y combos corporativos.",
+                    "type": "link",
+                    "url": "https://www.chatboc.ar/",
+                    "cta_text": "Descubrir novedades",
+                }
+            ],
+        },
+        {
+            "key": os.getenv("DEMO_MEDICO_KEY", "medico_general"),
+            "nombre": os.getenv("DEMO_MEDICO_NOMBRE", "Clínica Médico General"),
+            "descripcion": os.getenv(
+                "DEMO_MEDICO_DESCRIPCION",
+                "Turnos online, guardias coordinadas y seguimiento de pacientes para medicina general y especialidades de base.",
+            ),
+            "token": os.getenv("DEMO_MEDICO_TOKEN", "demo-token-medico"),
+            "tipo_chat": os.getenv("DEMO_MEDICO_TIPO_CHAT", "pyme"),
+            "rubro_clave": os.getenv("DEMO_MEDICO_RUBRO", "medico"),
+            "prompt_context": os.getenv(
+                "DEMO_MEDICO_PROMPT_CONTEXT",
+                (
+                    "Clínica San Dona gestiona turnos para clínica médica, pediatría, ginecología, laboratorio y nutrición. "
+                    "Permite reservar guardias programadas, coordinar estudios, validar obras sociales, enviar recordatorios "
+                    "por WhatsApp y compartir resultados vía portal seguro. Atiende consultas sobre coberturas, horarios, "
+                    "preparación para estudios y teleconsultas. Mantiene tono empático, claro y orientado a resolver trámites "
+                    "rápidos para pacientes y familias."
+                ),
+            ),
+            "welcome_message": os.getenv(
+                "DEMO_MEDICO_WELCOME_MESSAGE",
+                "🩺 Hola, soy el asistente de Clínica San Dona. ¿Querés reservar un turno o consultar tu cobertura?",
+            ),
+            "resources": [
+                {
+                    "title": "Guía de especialidades y coberturas",
+                    "description": "Profesionales disponibles, obras sociales aceptadas y pasos para turnos online.",
+                    "type": "link",
+                    "url": "https://www.chatboc.ar/",
+                    "cta_text": "Ver especialidades",
+                }
+            ],
+        },
+        {
+            "key": os.getenv("DEMO_MUNICIPIO_KEY", "municipio"),
+            "nombre": os.getenv("DEMO_MUNICIPIO_NOMBRE", "Municipio Inteligente"),
+            "descripcion": os.getenv(
+                "DEMO_MUNICIPIO_DESCRIPCION",
+                "Descubrí cómo un municipio gestiona reclamos, trámites y consultas en segundos.",
+            ),
+            "token": os.getenv("DEMO_MUNICIPIO_TOKEN"),
+            "tipo_chat": os.getenv("DEMO_MUNICIPIO_TIPO_CHAT", "municipio"),
+            "rubro_clave": os.getenv("DEMO_MUNICIPIO_RUBRO", "municipio"),
+            "prompt_context": os.getenv(
+                "DEMO_MUNICIPIO_PROMPT_CONTEXT",
+                (
+                    "El Municipio de Junín en Mendoza ofrece un asistente digital para reclamos "
+                    "de luminaria, higiene urbana, arbolado, tránsito y servicios públicos. También "
+                    "acompaña trámites como licencias de conducir, tasas municipales, turnos online "
+                    "y consultas ciudadanas. Usa un tono cálido, profesional y resalta que el bot "
+                    "permite registrar reclamos con ubicación, seguir tickets existentes y derivar "
+                    "a un agente humano cuando haga falta."
+                ),
+            ),
+            "welcome_message": os.getenv(
+                "DEMO_MUNICIPIO_WELCOME_MESSAGE",
+                "🙌 ¡Bienvenido a la demo municipal! Contame qué trámite o reclamo querés gestionar.",
+            ),
+            "resources": [
+                {
+                    "title": "Guía de trámites express",
+                    "description": "Pasos clave para turnos, reclamos con foto y seguimiento 24/7 desde el panel ciudadano.",
+                    "type": "pdf",
+                    "url": "/static/demo/municipio/guia-tramites-rapidos.pdf",
+                    "cta_text": "Descargar guía de trámites",
+                },
+                {
+                    "title": "Plan de iluminación inteligente 2024",
+                    "description": "Proyecto LED con sensores IoT, tablero de monitoreo y prioridades por barrio.",
+                    "type": "pdf",
+                    "url": "/static/demo/municipio/plan-iluminacion-inteligente.pdf",
+                    "cta_text": "Ver plan de inversión",
+                },
+                {
+                    "title": "Centro de monitoreo en tiempo real",
+                    "description": "Visualización de KPIs, reclamos geolocalizados y derivación inmediata a cuadrillas.",
+                    "type": "image",
+                    "url": "/static/demo/municipio/centro-monitoreo-smart.svg",
+                    "thumbnail": "/static/demo/municipio/centro-monitoreo-smart.svg",
+                    "cta_text": "Abrir dashboard de monitoreo",
                 },
             ],
         },

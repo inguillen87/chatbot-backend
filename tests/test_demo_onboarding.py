@@ -47,6 +47,16 @@ class DemoConfig(Config):
                 },
             ],
         },
+        {
+            "key": "almacen",
+            "nombre": "Demo Almacén",
+            "tipo_chat": "pyme",
+            "rubro_clave": "almacen",
+            "token": "demo-almacen-token",
+            "prompt_context": "Almacén digital con combos familiares, envíos en el día y precios mayoristas.",
+            "welcome_message": "Bienvenido al demo del almacén. ¿Buscás algo para tu pedido?",
+            "resources": [],
+        },
     ]
 
 
@@ -60,7 +70,8 @@ class DemoOnboardingTestCase(unittest.TestCase):
 
         self.rubro_municipio = Rubro(clave="municipio", nombre="Municipio", es_publico=True)
         self.rubro_bodega = Rubro(clave="bodega", nombre="Bodega", es_publico=False)
-        db.session.add_all([self.rubro_municipio, self.rubro_bodega])
+        self.rubro_almacen = Rubro(clave="almacen", nombre="Almacén", es_publico=False)
+        db.session.add_all([self.rubro_municipio, self.rubro_bodega, self.rubro_almacen])
         db.session.commit()
 
         self.muni_user = User(
@@ -80,7 +91,16 @@ class DemoOnboardingTestCase(unittest.TestCase):
             tipo_chat="pyme",
             nombre_empresa="Bodega Demo",
         )
-        db.session.add_all([self.muni_user, self.bodega_user])
+        self.almacen_user = User(
+            name="Demo Almacén",
+            email="almacen@example.com",
+            password_hash="hash",
+            token="demo-almacen-token",
+            rubro=self.rubro_almacen,
+            tipo_chat="pyme",
+            nombre_empresa="ByM Almacén",
+        )
+        db.session.add_all([self.muni_user, self.bodega_user, self.almacen_user])
         db.session.commit()
 
         # Simula entornos donde el usuario demo pertenece a una empresa (empresa_id != None)
@@ -103,7 +123,12 @@ class DemoOnboardingTestCase(unittest.TestCase):
             answer="Envío sin cargo en Gran Mendoza para pedidos superiores a $45.000.",
             rubro_id=self.rubro_bodega.id,
         )
-        db.session.add_all([faq_muni, faq_pyme, faq_pyme_envio])
+        faq_almacen = QA(
+            question="¿Tienen combos familiares?",
+            answer="Sí, armamos combos semanales con bebidas y snacks listos para envío rápido.",
+            rubro_id=self.rubro_almacen.id,
+        )
+        db.session.add_all([faq_muni, faq_pyme, faq_pyme_envio, faq_almacen])
         db.session.commit()
 
     def tearDown(self):
@@ -280,6 +305,32 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 self.assertTrue(any(adj.get("tipo") == "image" for adj in adjuntos))
 
                 mock_responder.assert_called_once()
+
+    def test_demo_intro_without_resources_uses_faqs(self):
+        session_id = "demo-session-5"
+        headers = {"X-Chat-Session-Id": session_id}
+        with self.client as client:
+            client.post("/ask/pyme", json={"pregunta": "__INIT__"}, headers=headers)
+
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                mock_responder.return_value = {
+                    "message_body": "Base response",
+                    "options_list": [],
+                    "message_type": "text",
+                }
+
+                response = client.post(
+                    "/ask/pyme",
+                    json={"pregunta": {"action": "demo_select_rubro:almacen"}},
+                    headers=headers,
+                )
+
+            self.assertEqual(response.status_code, 200)
+            data = response.get_json()
+            message = data.get("message_body") or data.get("respuesta") or ""
+            self.assertIn("Preguntas frecuentes destacadas", message)
+            self.assertIn("combos semanales", message)
+            self.assertEqual(data.get("message_type"), "text")
 
     def test_rubros_endpoint_exposes_demo_metadata(self):
         with self.client as client:
