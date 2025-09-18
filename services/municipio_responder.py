@@ -1945,7 +1945,7 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     }, contexto_municipio_actual
 
 
-def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual):
+def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual, demo_metadata=None):
     logger_actual = app.logger if app else (current_app.logger if has_app_context() else logging.getLogger(__name__))
     datos_actuales = {} # Initialize to prevent UnboundLocalError
 
@@ -2027,6 +2027,24 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
     else:
         historial_para_llm = contexto_municipio_actual.get("historial_conversacion_general_llm", [])
 
+    historial_formateado = []
+    if (
+        historial_para_llm
+        and isinstance(historial_para_llm, list)
+        and historial_para_llm
+        and isinstance(historial_para_llm[0], dict)
+        and "pregunta_usuario" in historial_para_llm[0]
+    ):
+        for turno in historial_para_llm:
+            pregunta = turno.get("pregunta_usuario")
+            respuesta = turno.get("respuesta_ia")
+            if pregunta:
+                historial_formateado.append({"role": "user", "parts": [{"text": pregunta}]})
+            if respuesta:
+                historial_formateado.append({"role": "model", "parts": [{"text": respuesta}]})
+    else:
+        historial_formateado = historial_para_llm or []
+
     try:
         # FIX: Pre-process expected data to prevent state loss if LLM fails to return it
         campo_esperado = contexto_municipio_actual.get("esperando_info_llm_reclamo")
@@ -2070,7 +2088,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 app=app,
                 mensaje_usuario=mensaje_para_llm,
                 usuario=usuario_info_llm,
-                historial=historial_para_llm,
+                historial=historial_formateado,
                 chat_session_id=context.get("chat_session_uuid")
             )
             logger.info(f"[HANDLE_LLM] Respuesta LLM: {respuesta_llm_dict}")
@@ -5179,7 +5197,14 @@ def responder_municipio(
             contexto_municipio_actual['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
 
             response_dict, _ = handle_llm_interaction(
-                app, synthetic_prompt, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual
+                app,
+                synthetic_prompt,
+                context,
+                viewer_user,
+                owner_user,
+                chat_db_context,
+                contexto_municipio_actual,
+                demo_metadata=demo_metadata,
             )
             if response_dict:
                 return _finalize_response(response_dict)
@@ -5886,7 +5911,16 @@ def responder_municipio(
 
 
         logger_actual.info(f"[BEFORE_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
-        respuesta_manejada_por_llm, contexto_municipio_actual = handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual)
+        respuesta_manejada_por_llm, contexto_municipio_actual = handle_llm_interaction(
+            app,
+            pregunta_str,
+            context,
+            viewer_user,
+            owner_user,
+            chat_db_context,
+            contexto_municipio_actual,
+            demo_metadata=demo_metadata,
+        )
         logger_actual.info(f"[AFTER_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
         if respuesta_manejada_por_llm:
             if not isinstance(respuesta_manejada_por_llm, dict):

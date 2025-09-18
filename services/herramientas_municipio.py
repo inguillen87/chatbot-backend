@@ -2,15 +2,16 @@ import json
 import logging
 import requests
 import os
-import unicodedata # <--- ¡Importante agregar esta línea!
+import unicodedata
 import re
+from geopy.exc import GeocoderServiceError, GeocoderTimedOut
+import services.google_maps_service as google_maps_service
 from services.config_loader import cargar_configuracion_municipio
 from services.location_service import geocode_address
 from services.tts_orchestrator import generar_audio
 from models import MunicipioTicket
 from database import db
 from services.openai_bridge import client as openai_client
-from services.cohere_bridge import co as cohere_client
 from services.openai_maps_service import geocodificar_inversa_llm
 
 # ... (el resto de tus herramientas y diccionarios)
@@ -99,6 +100,123 @@ logger = logging.getLogger(__name__)
 Maps_API_KEY = os.environ.get("Maps_API_KEY")
 MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
 CONFIG_MUNICIPIO = cargar_configuracion_municipio(MUNICIPIO_ID, "config.json")
+
+
+# --- Utilidades internas para parsing sin LLM ---
+def _extract_level_info(segmento: str) -> tuple[None | str, None | str, str | None]:
+    """Extrae datos de piso/departamento de un segmento de texto."""
+
+    if not segmento:
+        return None, None, None
+
+    restante = segmento
+    piso = None
+    departamento = None
+
+    piso_match = re.search(r"(?:piso|p\.?|nivel)\s*([0-9a-zA-Z]+)", segmento, flags=re.IGNORECASE)
+    if piso_match:
+        piso = piso_match.group(1).strip().upper()
+        restante = re.sub(r"(?:piso|p\.?|nivel)\s*[0-9a-zA-Z]+", "", restante, flags=re.IGNORECASE)
+
+    depto_match = re.search(r"(?:departamento|dpto|depto)\s*([0-9a-zA-Z]+)", restante, flags=re.IGNORECASE)
+    if depto_match:
+        departamento = depto_match.group(1).strip().upper()
+        restante = re.sub(r"(?:departamento|dpto|depto)\s*[0-9a-zA-Z]+", "", restante, flags=re.IGNORECASE)
+
+    restante = restante.strip(",;.- ")
+    return piso, departamento, restante or None
+
+
+def _parse_direccion_basica(texto_direccion: str, municipio_config: dict | None = None) -> dict | None:
+    """Fallback determinístico para extraer componentes de una dirección."""
+
+    if not texto_direccion:
+        return None
+
+    municipio_config = municipio_config or {}
+    default_localidad = municipio_config.get('ciudad_default') or municipio_config.get('ciudad')
+    default_provincia = municipio_config.get('provincia_default') or municipio_config.get('provincia')
+
+    partes = [p.strip() for p in re.split(r",|\n|;", texto_direccion) if p.strip()]
+    if not partes:
+        return None
+
+    calle = None
+    numero = None
+    piso = None
+    departamento = None
+    barrio = None
+    localidad = None
+    provincia = None
+    codigo_postal = None
+    otros_detalles: list[str] = []
+
+    primera = partes[0]
+    match = re.match(r"^(?P<calle>.+?)\s+(?P<numero>\d+[0-9A-Za-z/-]*)\b(?:\s+(?P<resto>.*))?", primera)
+    if match:
+        calle = match.group('calle').strip(", ")
+        numero = match.group('numero').strip()
+        resto = match.group('resto')
+        if resto:
+            p_tmp, d_tmp, sobrante = _extract_level_info(resto)
+            piso = piso or p_tmp
+            departamento = departamento or d_tmp
+            if sobrante:
+                otros_detalles.append(sobrante)
+    else:
+        calle = primera.strip()
+
+    for segmento in partes[1:]:
+        if not segmento:
+            continue
+
+        p_tmp, d_tmp, sobrante = _extract_level_info(segmento)
+        if p_tmp and not piso:
+            piso = p_tmp
+        if d_tmp and not departamento:
+            departamento = d_tmp
+        if sobrante:
+            segmento = sobrante
+
+        lower = segmento.lower()
+        if not barrio and any(token in lower for token in ('barrio', 'b°', 'bº')):
+            barrio = re.sub(r"^(barrio|b°|bº)\s+", "", segmento, flags=re.IGNORECASE).strip()
+            continue
+        if not codigo_postal and re.fullmatch(r"\d{4}", segmento):
+            codigo_postal = segmento
+            continue
+        if not localidad:
+            localidad = segmento
+            continue
+        if not provincia:
+            provincia = segmento
+            continue
+        otros_detalles.append(segmento)
+
+    localidad = localidad or default_localidad
+    provincia = provincia or default_provincia
+
+    resultado = {
+        "calle": calle,
+        "numero": numero,
+        "piso": piso,
+        "departamento": departamento,
+        "barrio": barrio,
+        "localidad": localidad,
+        "provincia": provincia,
+        "codigo_postal": codigo_postal,
+        "otros_detalles": ", ".join(otros_detalles) if otros_detalles else None,
+    }
+
+    if not resultado["calle"] or not resultado["localidad"]:
+        return None
+
+    logger.info(
+        "[ParseDireccion][Fallback] Dirección parseada sin LLM para '%s': %s",
+        texto_direccion,
+        resultado,
+    )
+    return resultado
 
 
 # --- NUEVA FUNCIÓN DE NORMALIZACIÓN ---
@@ -216,31 +334,15 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
             f"Error al parsear dirección con LLM (OpenAI): {e}. Respuesta cruda: '{locals().get('respuesta_llm', 'N/A')}'"
         )
 
-    # Fallback to Cohere if OpenAI fails or returns incomplete data
-    if not cohere_client:
-        logger.error("Cohere client is not initialized.")
-        return None
+    # Fallback determinístico si el LLM no entrega datos útiles
+    parsed_fallback = _parse_direccion_basica(texto_direccion, municipio_config)
+    if parsed_fallback:
+        return parsed_fallback
 
-    try:
-        cohere_response = cohere_client.generate(
-            model="command-r-plus",
-            prompt=prompt + "\nResponde únicamente con el objeto JSON.",
-            max_tokens=300,
-        )
-        respuesta_llm = cohere_response.generations[0].text
-        parsed_data = json.loads(respuesta_llm)
-        if not isinstance(parsed_data, dict) or not parsed_data.get("calle") or not parsed_data.get("localidad"):
-            logger.warning(
-                f"Cohere no pudo extraer datos clave de la dirección: '{texto_direccion}'. Respuesta: {respuesta_llm}"
-            )
-            return None
-        logger.info(f"Dirección parseada con Cohere para '{texto_direccion}': {parsed_data}")
-        return parsed_data
-    except (json.JSONDecodeError, Exception) as e:
-        logger.error(
-            f"Error al parsear dirección con Cohere: {e}. Respuesta cruda: '{locals().get('respuesta_llm', 'N/A')}'"
-        )
-        return None
+    logger.warning(
+        f"[ParseDireccion] No se pudo extraer dirección de forma automática para '{texto_direccion}'."
+    )
+    return None
 
 # --- HERRAMIENTA 1: CONSULTA DE RECOLECCIÓN ---
 def consultar_recoleccion_por_direccion(direccion: str, context: dict | None = None) -> str:
@@ -707,10 +809,10 @@ def validar_y_formatear_direccion(direccion: str, municipio_config: dict | None 
 def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
     """Obtiene una dirección formateada y sus componentes a partir de coordenadas.
 
-    El orden de preferencia es:
-    1. OpenAI (geocodificación inversa por LLM)
-    2. Cohere (fallback si falla OpenAI)
-    3. Google Geocoding API como último recurso
+    Orden de resolución:
+    1. OpenAI (geocodificación inversa vía LLM).
+    2. Fallback determinístico usando geopy (Google, MapTiler o Nominatim).
+    3. Google Geocoding API como último recurso.
     """
 
     # --- Intento con OpenAI ---
@@ -725,31 +827,10 @@ def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
     except Exception as e:
         logger.error(f"OpenAI inverse geocoding failed: {e}", exc_info=True)
 
-    # --- Fallback a Cohere ---
-    if cohere_client:
-        try:
-            prompt = (
-                "Convierte las coordenadas en una dirección humana. "
-                f"Latitud: {lat}, Longitud: {lon}. "
-                "Responde únicamente con un objeto JSON con el campo 'formatted_address'."
-            )
-            co_resp = cohere_client.generate(
-                model="command-r-plus",
-                prompt=prompt,
-                max_tokens=100,
-            )
-            text = co_resp.generations[0].text
-            data = json.loads(text)
-            formatted = data.get("formatted_address")
-            if formatted:
-                parsed = parse_direccion_completa(formatted)
-                if parsed:
-                    parsed["formatted_address"] = formatted
-                    return parsed
-        except Exception as e:
-            logger.error(f"Cohere inverse geocoding failed: {e}", exc_info=True)
-    else:
-        logger.error("Cohere client is not initialized.")
+    # --- Fallback determinístico usando geolocalizadores tradicionales ---
+    fallback_structured = _reverse_geocode_with_geopy(lat, lon)
+    if fallback_structured:
+        return fallback_structured
 
     # --- Último recurso: Google Geocoding ---
     if not Maps_API_KEY:
@@ -830,6 +911,98 @@ def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
             exc_info=True,
         )
         return None
+
+
+def _reverse_geocode_with_geopy(lat: float, lon: float, municipio_config: dict | None = None) -> dict | None:
+    """Utiliza geopy (Google, MapTiler o Nominatim) para obtener una dirección estructurada."""
+
+    municipio_config = municipio_config or CONFIG_MUNICIPIO or {}
+    try:
+        geolocators = google_maps_service._get_geolocators()
+    except AttributeError:  # pragma: no cover - defensive guard
+        geolocators = []
+
+    for geolocator in geolocators:
+        try:
+            location = geolocator.reverse((lat, lon), exactly_one=True, language="es")
+            if not location:
+                continue
+
+            formatted = getattr(location, "address", None)
+            raw_address = getattr(location, "raw", {}).get("address", {}) if hasattr(location, "raw") else {}
+
+            calle = (
+                raw_address.get("road")
+                or raw_address.get("pedestrian")
+                or raw_address.get("path")
+                or raw_address.get("residential")
+                or raw_address.get("cycleway")
+            )
+            numero = raw_address.get("house_number")
+            barrio = (
+                raw_address.get("neighbourhood")
+                or raw_address.get("suburb")
+                or raw_address.get("quarter")
+            )
+            localidad = (
+                raw_address.get("city")
+                or raw_address.get("town")
+                or raw_address.get("village")
+                or raw_address.get("municipality")
+                or raw_address.get("city_district")
+                or raw_address.get("county")
+            )
+            provincia = (
+                raw_address.get("state")
+                or raw_address.get("region")
+                or raw_address.get("province")
+                or raw_address.get("state_district")
+            )
+            codigo_postal = raw_address.get("postcode")
+
+            resultado = {
+                "formatted_address": formatted or f"{lat}, {lon}",
+                "calle": calle or None,
+                "numero": numero or None,
+                "barrio": barrio or None,
+                "localidad": localidad
+                or municipio_config.get("ciudad")
+                or municipio_config.get("ciudad_default"),
+                "provincia": provincia
+                or municipio_config.get("provincia")
+                or municipio_config.get("provincia_default"),
+                "codigo_postal": codigo_postal or None,
+                "otros_detalles": None,
+            }
+
+            logger.info(
+                "[GeoFallback] Dirección obtenida vía geopy para (%s,%s): %s",
+                lat,
+                lon,
+                resultado,
+            )
+            return resultado
+
+        except (GeocoderTimedOut, GeocoderServiceError) as e:
+            logger.warning(
+                "[GeoFallback] Error en geolocalizador %s: %s",
+                getattr(geolocator, "__class__", type(geolocator)).__name__,
+                e,
+            )
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error(
+                "[GeoFallback] Error inesperado en geolocalizador %s: %s",
+                getattr(geolocator, "__class__", type(geolocator)).__name__,
+                e,
+                exc_info=True,
+            )
+
+    logger.warning(
+        "[GeoFallback] No se pudo determinar la dirección para las coordenadas (%s,%s) con geopy.",
+        lat,
+        lon,
+    )
+    return None
 # --- ACTUALIZA TU TOOL_REGISTRY ASÍ ---
 
 TOOL_REGISTRY = {
