@@ -24,7 +24,7 @@ from services.logic import (
     normalizar_rubro,
     es_rubro_publico,
 )
-from services.demo_registry import load_demo_rubros
+from services.demo_registry import load_demo_rubros, demo_rubro_for_token
 from utils.auth_helpers import (
     anon_o_token_requerido,
     obtener_token,
@@ -111,6 +111,85 @@ def _build_demo_selector_payload(opciones: List[Dict[str, Optional[str]]]) -> Di
         "fuente": "demo_selector",
         "generar_audio": True,
     }
+
+
+def _activate_demo_session(
+    contexto_chat: Dict[str, object],
+    demo_payload: Dict[str, object],
+    *,
+    owner_user: Optional[User] = None,
+    rubro_obj: Optional[Rubro] = None,
+    reset_counter: bool = False,
+) -> bool:
+    """Populate the session context with the selected demo metadata."""
+
+    if not isinstance(contexto_chat, dict) or not isinstance(demo_payload, dict):
+        return False
+
+    changed = False
+    existing_key = contexto_chat.get("demo_key")
+
+    def _set(key: str, value: object) -> None:
+        nonlocal changed
+        if value is None:
+            if key in contexto_chat:
+                if contexto_chat.get(key) is not None:
+                    changed = True
+                contexto_chat.pop(key, None)
+        else:
+            if contexto_chat.get(key) != value:
+                contexto_chat[key] = value
+                changed = True
+
+    _set("demo_session", True)
+
+    owner_id = getattr(owner_user, "id", None) or demo_payload.get("owner_user_id")
+    _set("demo_owner_user_id", owner_id)
+
+    resolved_rubro = rubro_obj or None
+    if not resolved_rubro and demo_payload.get("rubro_id"):
+        try:
+            resolved_rubro = Rubro.query.get(demo_payload["rubro_id"])
+        except Exception:
+            resolved_rubro = None
+
+    rubro_id_value = getattr(resolved_rubro, "id", None) or demo_payload.get("rubro_id")
+    _set("demo_rubro_id", rubro_id_value)
+
+    rubro_clave_value = (
+        getattr(resolved_rubro, "clave", None)
+        or demo_payload.get("rubro_clave")
+    )
+    _set("demo_rubro_clave", rubro_clave_value)
+
+    demo_key = demo_payload.get("key")
+    _set("demo_key", demo_key)
+
+    prompt_context = demo_payload.get("prompt_context") or demo_payload.get("descripcion")
+    _set("demo_prompt_context", prompt_context)
+
+    _set("demo_display_name", demo_payload.get("label"))
+    _set("demo_description", demo_payload.get("descripcion"))
+    _set("demo_welcome_message", demo_payload.get("welcome_message"))
+    _set("demo_tipo_chat", demo_payload.get("tipo_chat"))
+
+    resources = deepcopy(demo_payload.get("resources") or [])
+    if contexto_chat.get("demo_resources") != resources:
+        contexto_chat["demo_resources"] = resources
+        changed = True
+
+    faq_preview = deepcopy(demo_payload.get("faq_preview") or [])
+    if contexto_chat.get("demo_faq_preview") != faq_preview:
+        contexto_chat["demo_faq_preview"] = faq_preview
+        changed = True
+
+    should_reset_counter = reset_counter or existing_key != demo_key
+    if should_reset_counter or "demo_message_count" not in contexto_chat:
+        _set("demo_message_count", 0)
+    if should_reset_counter:
+        _set("demo_intro_sent", False)
+
+    return changed
 
 
 def _build_demo_limit_response(limite: int) -> Dict[str, object]:
@@ -685,6 +764,10 @@ def _procesar_chat(
             if chat_context_obj:
                 chat_context_obj.context_data = contexto_chat
 
+        demo_session_activa = bool(
+            isinstance(contexto_chat, dict) and contexto_chat.get("demo_session")
+        )
+
         tipo_chat_normalized = (tipo_chat or "").strip().lower()
         is_municipal_request = tipo_chat_normalized == "municipio"
 
@@ -780,6 +863,29 @@ def _procesar_chat(
                             rubro_clave = rubro_obj_global.clave
                     tipo_chat = contexto_chat.get("demo_tipo_chat", tipo_chat)
 
+        if owner_del_bot and getattr(owner_del_bot, "token", None):
+            demo_match = demo_rubro_for_token(owner_del_bot.token)
+            if demo_match:
+                demo_payload = demo_match.to_internal_dict()
+                if not rubro_obj_global and demo_match.rubro_id:
+                    rubro_obj_global = Rubro.query.get(demo_match.rubro_id) or rubro_obj_global
+                if rubro_obj_global and not rubro_para_log:
+                    rubro_para_log = getattr(rubro_obj_global, "nombre", None) or getattr(rubro_obj_global, "clave", None)
+                rubro_id = getattr(rubro_obj_global, "id", rubro_id)
+                if demo_payload.get("rubro_clave") and not rubro_clave:
+                    rubro_clave = demo_payload.get("rubro_clave")
+                if demo_payload.get("tipo_chat"):
+                    tipo_chat = demo_payload.get("tipo_chat")
+                changed = _activate_demo_session(
+                    contexto_chat,
+                    demo_payload,
+                    owner_user=owner_del_bot,
+                    rubro_obj=rubro_obj_global,
+                    reset_counter=False,
+                )
+                if changed and chat_context_obj:
+                    flag_modified(chat_context_obj, "context_data")
+
         if not is_municipal_request:
             demo_key = _extract_demo_key(action_id)
             if not demo_key and isinstance(original_user_payload, dict):
@@ -833,20 +939,15 @@ def _procesar_chat(
                 if getattr(rubro_obj_global, "clave", None):
                     rubro_clave = rubro_obj_global.clave
 
-                contexto_chat["demo_session"] = True
-                contexto_chat["demo_owner_user_id"] = owner_del_bot.id
-                contexto_chat["demo_rubro_id"] = rubro_obj_global.id if rubro_obj_global else None
-                contexto_chat["demo_tipo_chat"] = tipo_chat
-                contexto_chat["demo_key"] = selected_demo["key"]
-                contexto_chat["demo_prompt_context"] = selected_demo.get("prompt_context") or selected_demo.get("descripcion")
-                contexto_chat["demo_display_name"] = selected_demo.get("label")
-                contexto_chat["demo_description"] = selected_demo.get("descripcion")
-                contexto_chat["demo_welcome_message"] = selected_demo.get("welcome_message")
-                contexto_chat["demo_message_count"] = 0
-                contexto_chat["demo_resources"] = deepcopy(selected_demo.get("resources") or [])
-                contexto_chat["demo_faq_preview"] = deepcopy(selected_demo.get("faq_preview") or [])
-                contexto_chat["demo_intro_sent"] = False
-                flag_modified(chat_context_obj, "context_data")
+                changed = _activate_demo_session(
+                    contexto_chat,
+                    selected_demo,
+                    owner_user=owner_del_bot,
+                    rubro_obj=rubro_obj_global,
+                    reset_counter=True,
+                )
+                if changed and chat_context_obj:
+                    flag_modified(chat_context_obj, "context_data")
 
                 pregunta = "__INIT__"
                 original_user_payload = "__INIT__"
@@ -892,7 +993,7 @@ def _procesar_chat(
         else:
             current_app.logger.info("No se pudo determinar un rubro/owner específico para la lógica del bot. Se usará lógica genérica si aplica (ej. para rubros públicos por defecto).")
 
-        if owner_del_bot:
+        if owner_del_bot and not demo_session_activa:
             from utils.plan_limits import limite_para_usuario
             limite = limite_para_usuario(owner_del_bot)
             if limite is not None and owner_del_bot.preguntas_usadas >= limite:
@@ -901,7 +1002,6 @@ def _procesar_chat(
                 }), 403
 
         demo_limit = current_app.config.get("DEMO_MAX_MESSAGES_PER_SESSION", 0)
-        demo_session_activa = bool(isinstance(contexto_chat, dict) and contexto_chat.get("demo_session"))
         incrementar_demo = (
             demo_session_activa
             and demo_limit
@@ -1158,7 +1258,7 @@ def _procesar_chat(
             f"[RUBROS] Rubro efectivo: '{nombre_rubro_log}' (ID: {getattr(rubro_obj_global, 'id', 'N/A')}), esPublico={es_publico}"
         )
 
-        if owner_del_bot:
+        if owner_del_bot and not demo_session_activa:
             owner_del_bot.preguntas_usadas += 1
 
         if isinstance(resultado, dict):

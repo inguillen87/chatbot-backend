@@ -5510,37 +5510,48 @@ def responder_municipio(
     # --- FIN: Manejo de selección de menú de reclamos ---
 
     elif estado_conversacion == ConversationState.ESPERANDO_NOMBRE_INICIAL.name:
-            nombre_usuario = pregunta_str.strip()
-            if len(nombre_usuario) > 2:
-                # Save the name
-                if viewer_user:
-                    viewer_user.name = nombre_usuario
-                    db.session.add(viewer_user)
-                    db.session.commit()
+        nombre_usuario = (pregunta_str or "").strip()
+        if len(nombre_usuario) > 2:
+            # Save the name
+            if viewer_user:
+                viewer_user.name = nombre_usuario
+                db.session.add(viewer_user)
+                db.session.commit()
 
-                context["profile_name"] = nombre_usuario
-                chat_data = context.get("chat_db_context_data", {})
-                chat_data["profile_name"] = nombre_usuario
-                contexto_municipio_actual = chat_data.setdefault(CONTEXTO_MUNICIPIO, {})
-                if 'contacto_usuario' not in contexto_municipio_actual:
-                    contexto_municipio_actual['contacto_usuario'] = {}
-                contexto_municipio_actual['contacto_usuario']['nombre'] = nombre_usuario
-                contexto_municipio_actual['estado_conversacion'] = None # Reset state
-                if chat_db_context and isinstance(chat_db_context.context_data, dict):
-                    chat_db_context.context_data["profile_name"] = nombre_usuario
-                    flag_modified(chat_db_context, "context_data")
+            context["profile_name"] = nombre_usuario
+            chat_data = context.get("chat_db_context_data")
+            if not isinstance(chat_data, dict):
+                chat_data = {}
+                context["chat_db_context_data"] = chat_data
+            chat_data["profile_name"] = nombre_usuario
+            contexto_municipio_actual = chat_data.setdefault(CONTEXTO_MUNICIPIO, {})
+            contacto = contexto_municipio_actual.setdefault("contacto_usuario", {})
+            contacto['nombre'] = nombre_usuario
+            contexto_municipio_actual['estado_conversacion'] = (
+                ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+            )
+            if chat_db_context and isinstance(chat_db_context.context_data, dict):
+                chat_db_context.context_data["profile_name"] = nombre_usuario
+                contexto_db = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+                contacto_db = contexto_db.setdefault("contacto_usuario", {})
+                contacto_db['nombre'] = nombre_usuario
+                contexto_db['estado_conversacion'] = (
+                    ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+                )
+                flag_modified(chat_db_context, "context_data")
 
-                # Now call the greeting handler again to show the main menu
-                handler = GreetingHandler(context)
-                response = handler.handle({})
-                # Prepend a confirmation message
-                response['message_body'] = f"¡Gracias, {nombre_usuario}! " + response['message_body'].split('!')[1]
-                return _finalize_response(response)
-            else:
-                return _finalize_response({
-                    "message_body": "No entendí tu nombre. Por favor, ¿podrías repetirlo?",
-                    "fuente": "nombre_no_entendido"
-                })
+            mensaje_bienvenida = f"¡Gracias, {nombre_usuario}!"
+            menu_payload = _get_main_menu_payload(
+                context,
+                welcome_message_override=mensaje_bienvenida,
+                reduced=True,
+            )
+            return _finalize_response(menu_payload)
+        else:
+            return _finalize_response({
+                "message_body": "No entendí tu nombre. Por favor, ¿podrías repetirlo?",
+                "fuente": "nombre_no_entendido"
+            })
     elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_CONTACTO_CATEGORIA.name:
         selected_category_action = received_payload.get('action')
         pregunta_str_norm = normalizar_texto(pregunta_str or '')

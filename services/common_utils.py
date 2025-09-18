@@ -608,7 +608,11 @@ if __name__ == '__main__':
     logger = logging.getLogger(__name__)
     logger.info("Common utils placeholder script executed.")
 
-def _get_main_menu_payload(context: dict, welcome_message_override: Optional[str] = None, reduced: bool = False) -> Dict[str, Any]:
+def _get_main_menu_payload(
+    context: dict,
+    welcome_message_override: Optional[str] = None,
+    reduced: bool = False,
+) -> Dict[str, Any]:
     """
     Generates the main menu payload with the new, structured layout.
     """
@@ -641,12 +645,18 @@ def _get_main_menu_payload(context: dict, welcome_message_override: Optional[str
             "fuente": "pedir_nombre_inicial"
         }
 
-    main_text_body = (
-        "Soy *JUNI*, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
-        "*Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz* con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más. Este servicio es accesible y está listo para ayudarte.\n\n"
-        "También podés usar emojis para realizar acciones rápidas.\n\n"
-        "¿Cómo te puedo ayudar hoy?"
-    )
+    if reduced:
+        main_text_body = (
+            "Estas son las opciones principales del municipio.\n\n"
+            "Elegí una o contame qué necesitás y te ayudo al instante."
+        )
+    else:
+        main_text_body = (
+            "Soy *JUNI*, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
+            "*Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz* con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más. Este servicio es accesible y está listo para ayudarte.\n\n"
+            "También podés usar emojis para realizar acciones rápidas.\n\n"
+            "¿Cómo te puedo ayudar hoy?"
+        )
 
     channel = context.get("channel", "web")
     if channel == "whatsapp":

@@ -1,0 +1,88 @@
+{
+  "responses": [
+    {
+      "id": "welcome",
+      "keywords_any": ["__init__", "hola", "buen dia", "buenas", "que tal", "saludo"],
+      "response": "🔧 ¡Hola! {demo_name} cotiza materiales de obra, herramientas eléctricas y sanitarios en un solo lugar. ¿Necesitás un presupuesto, stock o coordinar entrega a obra?",
+      "buttons": [
+        {"label": "Pedir presupuesto", "target": "presupuesto"},
+        {"label": "Materiales de obra", "target": "materiales"},
+        {"label": "Logística a obra", "target": "entrega"}
+      ]
+    },
+    {
+      "id": "presupuesto",
+      "keywords_any": ["presupuesto", "cotizar", "cotizacion", "cotiza", "precio", "pdf", "lista"],
+      "response": "Armamos cotizaciones por rubro con combos de cemento, áridos, hierros y placas. En minutos generamos PDF con precios actualizados y alternativas por marca.",
+      "resource_tags": ["title:Catálogo de materiales"],
+      "buttons": [
+        {"label": "Ver materiales", "target": "materiales"},
+        {"label": "Enviar a logística", "target": "entrega"}
+      ]
+    },
+    {
+      "id": "materiales",
+      "keywords_any": ["material", "cemento", "hierro", "placa", "sanitario", "obra"],
+      "response": "Tenemos Holcim, Loma Negra, hierro del 8 al 20, perfiles galvanizados, sanitarios y pinturas. También EPP, herramientas manuales y jardinería.",
+      "resource_tags": ["title:Catálogo de materiales"],
+      "buttons": [
+        {"label": "Cotizar ahora", "target": "presupuesto"},
+        {"label": "Entrega a obra", "target": "entrega"}
+      ]
+    },
+    {
+      "id": "entrega",
+      "keywords_any": ["entrega", "camion", "camion grua", "logistica", "plan logistica", "pdf logistica", "seguimiento", "tracking", "envio", "obra"],
+      "response": "Coordinamos camión grúa, seguimiento GPS y entregas escalonadas por frente de obra. También retiramos escombros y traemos bolsas de retorno.",
+      "resource_tags": ["title:Plan logístico", "title:Camión grúa"],
+      "buttons": [
+        {"label": "Herramientas eléctricas", "target": "herramientas"},
+        {"label": "Solicitar asesor", "target": "contacto"}
+      ]
+    },
+    {
+      "id": "herramientas",
+      "keywords_any": ["herramienta", "taladro", "amoladora", "electrica", "dewalt", "makita"],
+      "response": "Contamos con taladros, percutores, sierras y soldadoras de primeras marcas. Podés sumar mantenimiento preventivo y calibración anual.",
+      "buttons": [
+        {"label": "Pedir presupuesto", "target": "presupuesto"},
+        {"label": "Ver EPP", "target": "seguridad"}
+      ]
+    },
+    {
+      "id": "planillas",
+      "keywords_any": ["planilla", "excel", "checklist", "lista materiales", "descargar lista"],
+      "response": "Descargá planillas de materiales listas para compartir con arquitectos o jefes de obra. El bot las completa con precios y disponibilidad en minutos.",
+      "resource_tags": ["title:Catálogo de materiales"],
+      "buttons": [
+        {"label": "Pedir presupuesto", "target": "presupuesto"},
+        {"label": "Ver logística", "target": "entrega"}
+      ]
+    },
+    {
+      "id": "seguridad",
+      "keywords_any": ["epp", "seguridad", "casco", "guante", "arnes"],
+      "response": "Disponemos de EPP certificados: cascos, arneses, guantes dieléctricos y señalización. También kits para altura y espacios confinados.",
+      "buttons": [
+        {"label": "Materiales de obra", "target": "materiales"},
+        {"label": "Coordinar entrega", "target": "entrega"}
+      ]
+    },
+    {
+      "id": "contacto",
+      "keywords_any": ["contacto", "asesor", "llamar", "hablar"],
+      "response": "Podés derivar a un asesor técnico para validar planos o listas de materiales. En producción duplicamos este flujo en tu municipio, pyme o corralón real.",
+      "buttons": [
+        {"label": "Pedir presupuesto", "target": "presupuesto"},
+        {"label": "Ver logística", "target": "entrega"}
+      ]
+    }
+  ],
+  "fallback": {
+    "response": "Esta demo offline resume los flujos más pedidos: presupuestos, logística a obra y stock crítico. Elegí una opción para verlo sin llamar al LLM.",
+    "buttons": [
+      {"label": "Pedir presupuesto", "target": "presupuesto"},
+      {"label": "Logística a obra", "target": "entrega"}
+    ]
+  }
+}

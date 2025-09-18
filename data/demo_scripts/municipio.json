@@ -1,0 +1,97 @@
+{
+  "responses": [
+    {
+      "id": "welcome",
+      "keywords_any": ["__init__", "hola", "buen dia", "buenas", "saludo"],
+      "response": "🙌 ¡Bienvenido! {demo_name} gestiona reclamos urbanos, turnos municipales y consultas ciudadanas en segundos. ¿Querés iniciar un reclamo o conocer trámites express?",
+      "buttons": [
+        {"label": "Iniciar reclamo", "target": "reclamo"},
+        {"label": "Guía de trámites", "target": "tramites"},
+        {"label": "Plan de iluminación", "target": "iluminacion"}
+      ]
+    },
+    {
+      "id": "reclamo",
+      "keywords_any": ["reclamo", "denuncia", "reportar", "reclamar"],
+      "response": "Podés registrar reclamos de luminaria, higiene, tránsito o arbolado con ubicación y fotos. El bot genera ticket y envía seguimiento en el panel ciudadano.",
+      "buttons": [
+        {"label": "Reclamo de luminaria", "target": "iluminacion"},
+        {"label": "Ver plan de monitoreo", "target": "monitoreo"}
+      ]
+    },
+    {
+      "id": "iluminacion",
+      "keywords_any": ["luz", "iluminacion", "lampara", "poste", "led"],
+      "response": "El municipio reemplaza luminarias por LED y prioriza corredores seguros. Cada reclamo queda geolocalizado y las cuadrillas reciben aviso automático.",
+      "resource_tags": ["title:Plan de iluminación"],
+      "buttons": [
+        {"label": "Iniciar reclamo", "target": "reclamo"},
+        {"label": "Estado de ticket", "target": "seguimiento"}
+      ]
+    },
+    {
+      "id": "higiene",
+      "keywords_any": ["basura", "residuo", "higiene", "limpieza"],
+      "response": "Programamos limpiezas especiales, retiro de podas y voluminosos. También podés solicitar contenedores comunitarios y seguimiento fotográfico.",
+      "buttons": [
+        {"label": "Iniciar reclamo", "target": "reclamo"},
+        {"label": "Guía de trámites", "target": "tramites"}
+      ]
+    },
+    {
+      "id": "arbolado",
+      "keywords_any": ["arbol", "poda", "raiz", "arbolado"],
+      "response": "Las podas se coordinan según temporada y prioridad por seguridad. Podés adjuntar foto y ubicación; el bot agenda visita de inspección.",
+      "buttons": [
+        {"label": "Seguimiento", "target": "seguimiento"},
+        {"label": "Más trámites", "target": "tramites"}
+      ]
+    },
+    {
+      "id": "tramites",
+      "keywords_any": ["tramite", "turno", "licencia", "tasas", "tributo", "impuesto"],
+      "response": "Gestionamos turnos para licencias de conducir, tasas municipales, habilitaciones y certificados digitales. También podemos derivar a humano desde el panel.",
+      "resource_tags": ["title:Guía de trámites"],
+      "buttons": [
+        {"label": "Iniciar reclamo", "target": "reclamo"},
+        {"label": "Plan de iluminación", "target": "iluminacion"}
+      ]
+    },
+    {
+      "id": "seguimiento",
+      "keywords_any": ["seguimiento", "estado", "ticket", "numero"],
+      "response": "Ingresá el número de ticket y el bot muestra estado, cuadrilla asignada y fecha estimada. Podés sumar notas o fotos adicionales.",
+      "buttons": [
+        {"label": "Guía de trámites", "target": "tramites"},
+        {"label": "Centro de monitoreo", "target": "monitoreo"}
+      ]
+    },
+    {
+      "id": "monitoreo",
+      "keywords_any": ["monitoreo", "dashboard", "panel"],
+      "response": "El centro de monitoreo integra reclamos geolocalizados, KPIs y derivación inmediata a cuadrillas. Podés verlo en pantallas públicas o en la app de inspectores.",
+      "resource_tags": ["title:Centro de monitoreo"],
+      "buttons": [
+        {"label": "Iniciar reclamo", "target": "reclamo"},
+        {"label": "Plan de iluminación", "target": "iluminacion"}
+      ]
+    },
+    {
+      "id": "contacto",
+      "keywords_any": ["contacto", "asesor", "llamar", "hablar"],
+      "response": "Si necesitás derivar a una persona, el bot captura tus datos y envía aviso a la mesa de ayuda. En la demo podemos simular ese flujo sin costo de IA.",
+      "buttons": [
+        {"label": "Iniciar reclamo", "target": "reclamo"},
+        {"label": "Guía de trámites", "target": "tramites"}
+      ]
+    }
+  ],
+  "fallback": {
+    "response": "Este es un recorrido guiado sin llamadas al LLM. Elegí el tema que quieras mostrar en la demo: reclamos, trámites o monitoreo en vivo.",
+    "buttons": [
+      {"label": "Iniciar reclamo", "target": "reclamo"},
+      {"label": "Guía de trámites", "target": "tramites"}
+    ],
+    "resource_tags": ["type:pdf"]
+  }
+}

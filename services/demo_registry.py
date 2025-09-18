@@ -10,6 +10,9 @@ from models import QA, Rubro, User
 from services.logic import es_rubro_publico
 
 
+_MISCONFIGURED_DEMOS_LOGGED: set[str] = set()
+
+
 @dataclass(slots=True)
 class DemoRubro:
     """Metadata used to bootstrap curated demo experiences."""
@@ -18,9 +21,10 @@ class DemoRubro:
     label: str
     descripcion: Optional[str]
     tipo_chat: str
-    owner_user_id: int
-    rubro_id: int
+    owner_user_id: Optional[int]
+    rubro_id: Optional[int]
     rubro_clave: Optional[str]
+    token: Optional[str] = None
     prompt_context: Optional[str] = None
     welcome_message: Optional[str] = None
     resources: List[Dict[str, object]] = field(default_factory=list)
@@ -29,7 +33,7 @@ class DemoRubro:
     def to_internal_dict(self) -> Dict[str, object]:
         """Return a dict representation used by the chat routes."""
 
-        return {
+        payload = {
             "key": self.key,
             "label": self.label,
             "descripcion": self.descripcion,
@@ -42,6 +46,9 @@ class DemoRubro:
             "resources": [dict(item) for item in self.resources],
             "faq_preview": [dict(item) for item in self.faq_preview],
         }
+        if self.token:
+            payload["token"] = self.token
+        return payload
 
     def to_public_dict(self) -> Dict[str, object]:
         """Sanitized payload exposed via the /rubros endpoint."""
@@ -185,20 +192,28 @@ def load_demo_rubros() -> List[DemoRubro]:
             owner_user = User.query.filter_by(tipo_chat="municipio", rol="admin").first()
 
         if not owner_user:
-            current_app.logger.warning(
-                "[demo] No se pudo preparar la demo '%s' porque falta owner o rubro válido.",
-                key,
-            )
+            if key not in _MISCONFIGURED_DEMOS_LOGGED:
+                current_app.logger.warning(
+                    "[demo] No se pudo preparar la demo '%s' porque falta owner o rubro válido.",
+                    key,
+                )
+                _MISCONFIGURED_DEMOS_LOGGED.add(key)
             continue
 
         if not rubro_obj:
             rubro_obj = owner_user.rubro
 
         if not rubro_obj:
-            current_app.logger.warning(
-                "[demo] El owner '%s' no tiene rubro asociado para la demo '%s'.", owner_user.id, key
-            )
+            if key not in _MISCONFIGURED_DEMOS_LOGGED:
+                current_app.logger.warning(
+                    "[demo] El owner '%s' no tiene rubro asociado para la demo '%s'.",
+                    owner_user.id,
+                    key,
+                )
+                _MISCONFIGURED_DEMOS_LOGGED.add(key)
             continue
+
+        _MISCONFIGURED_DEMOS_LOGGED.discard(key)
 
         tipo_chat = _guess_tipo_chat(entry, rubro_obj, owner_user)
         descripcion_final = descripcion or getattr(rubro_obj, "descripcion", None) or getattr(rubro_obj, "nombre", None)
@@ -215,6 +230,7 @@ def load_demo_rubros() -> List[DemoRubro]:
             owner_user_id=owner_user.id,
             rubro_id=rubro_obj.id,
             rubro_clave=getattr(rubro_obj, "clave", None),
+            token=entry.get("token"),
             prompt_context=prompt_context,
             welcome_message=welcome_message,
             resources=[dict(item) for item in resources if isinstance(item, dict)],
@@ -241,3 +257,20 @@ def demo_rubros_for_rubros(ids: Iterable[int]) -> Dict[int, DemoRubro]:
         if demo.rubro_id in id_set:
             lookup[demo.rubro_id] = demo
     return lookup
+
+
+def demo_rubro_for_token(token: Optional[str]) -> Optional[DemoRubro]:
+    """Return the configured demo associated with an entity token, if any."""
+
+    if not token:
+        return None
+
+    normalized = str(token).strip().lower()
+    if not normalized:
+        return None
+
+    for demo in load_demo_rubros():
+        if demo.token and demo.token.strip().lower() == normalized:
+            return demo
+
+    return None

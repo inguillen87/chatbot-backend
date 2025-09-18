@@ -71,3 +71,16 @@ def test_main_menu_asks_for_name_if_unknown(base_context):
     assert payload["fuente"] == "pedir_nombre_inicial"
     assert "¿podrías decirme tu nombre?" in payload["message_body"]
     assert payload["message_type"] == "text"
+
+
+def test_main_menu_reduced_does_not_repeat_intro(base_context):
+    """Reduced menus should avoid repetir la introducción extensa."""
+    payload = _get_main_menu_payload(
+        base_context,
+        welcome_message_override="¡Gracias, Test!",
+        reduced=True,
+    )
+
+    assert payload["message_type"] == "interactive_list"
+    assert "¡Gracias, Test!" in payload["message_body"]
+    assert "Soy *JUNI*" not in payload["message_body"]

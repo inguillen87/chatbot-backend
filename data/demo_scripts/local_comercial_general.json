@@ -1,0 +1,88 @@
+{
+  "responses": [
+    {
+      "id": "welcome",
+      "keywords_any": ["__init__", "hola", "buen dia", "buenas", "saludo", "que tal"],
+      "response": "🛍️ ¡Hola! {demo_name} integra tienda física, Instagram Shopping y e-commerce. ¿Buscás colecciones, stock por talle o programas de fidelización?",
+      "buttons": [
+        {"label": "Lookbook actual", "target": "catalogo"},
+        {"label": "Promos y puntos", "target": "fidelizacion"},
+        {"label": "Opciones de entrega", "target": "envios"}
+      ]
+    },
+    {
+      "id": "catalogo",
+      "keywords_any": ["lookbook", "catalogo", "coleccion", "temporada", "novedad", "pdf", "descargar"],
+      "response": "La colección actual combina prendas urbanas y deco corporativa. Podés filtrar por talles, colores y disponibilidad en sucursal.",
+      "resource_tags": ["title:Lookbook urbano"],
+      "buttons": [
+        {"label": "Ver stock", "target": "stock"},
+        {"label": "Programas de fidelización", "target": "fidelizacion"}
+      ]
+    },
+    {
+      "id": "stock",
+      "keywords_any": ["stock", "talle", "talles", "color", "inventario"],
+      "response": "El panel sincroniza stock de tienda, depósito y online. Permite reservar prendas por talle, programar reposiciones y mostrar equivalencias entre talles internacionales.",
+      "buttons": [
+        {"label": "Opciones de entrega", "target": "envios"},
+        {"label": "Fidelización", "target": "fidelizacion"}
+      ]
+    },
+    {
+      "id": "fidelizacion",
+      "keywords_any": ["fidelizacion", "fidelización", "puntos", "club", "cupon", "beneficio"],
+      "response": "Podés lanzar cupones segmentados, campañas por aniversario y códigos QR en tienda. El CRM detecta clientes frecuentes y propone combos corporativos.",
+      "resource_tags": ["title:Programa de fidelización"],
+      "buttons": [
+        {"label": "Lookbook", "target": "catalogo"},
+        {"label": "Opciones corporativas", "target": "corporativo"}
+      ]
+    },
+    {
+      "id": "envios",
+      "keywords_any": ["envio", "envios", "envia", "retiro", "sucursal", "delivery"],
+      "response": "Ofrecemos retiro en 2 h, envíos metropolitanos en el día y logística nacional. El bot confirma pagos, imprime etiquetas y avisa cuando llega a sucursal.",
+      "buttons": [
+        {"label": "Consultar stock", "target": "stock"},
+        {"label": "Quiero un asesor", "target": "contacto"}
+      ]
+    },
+    {
+      "id": "corporativo",
+      "keywords_any": ["corporativo", "empresa", "regalo", "kits"],
+      "response": "Diseñamos kits corporativos con branding, tarjetas personalizadas y seguimiento de envíos múltiples. Ideal para fin de año o eventos internos.",
+      "resource_tags": ["title:Combo corporativo"],
+      "buttons": [
+        {"label": "Lookbook de regalos", "target": "catalogo"},
+        {"label": "Hablar con asesor", "target": "contacto"}
+      ]
+    },
+    {
+      "id": "presupuesto",
+      "keywords_any": ["presupuesto", "cotizar", "lista de precios", "armar pedido"],
+      "response": "Generamos presupuestos con talles confirmados, foto de producto y beneficios del programa de puntos para cerrar la venta sin llamar al LLM.",
+      "resource_tags": ["title:Lookbook urbano", "title:Programa de fidelización"],
+      "buttons": [
+        {"label": "Ver colecciones", "target": "catalogo"},
+        {"label": "Opciones corporativas", "target": "corporativo"}
+      ]
+    },
+    {
+      "id": "contacto",
+      "keywords_any": ["contacto", "asesor", "llamar", "hablar"],
+      "response": "Podés derivar a un ejecutivo comercial desde el bot. En la demo recopilamos tus datos y coordinamos onboarding gratuito con el equipo de Chatboc.",
+      "buttons": [
+        {"label": "Promos y puntos", "target": "fidelizacion"},
+        {"label": "Opciones de entrega", "target": "envios"}
+      ]
+    }
+  ],
+  "fallback": {
+    "response": "Este flujo de demo no llama a IA. Elegí un botón para explorar colecciones, stock o programas de fidelización. Si querés una demo personalizada podemos agendarla enseguida.",
+    "buttons": [
+      {"label": "Lookbook actual", "target": "catalogo"},
+      {"label": "Promos y puntos", "target": "fidelizacion"}
+    ]
+  }
+}

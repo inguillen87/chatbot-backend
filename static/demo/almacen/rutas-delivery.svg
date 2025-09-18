@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180">
+  <rect width="320" height="180" fill="#f4f0ff" />
+  <path d="M40 140 L90 70 L150 110 L220 60 L280 120" stroke="#6c5ce7" stroke-width="6" fill="none" stroke-linecap="round" />
+  <circle cx="40" cy="140" r="12" fill="#00b894" />
+  <circle cx="90" cy="70" r="12" fill="#00b894" />
+  <circle cx="150" cy="110" r="12" fill="#00b894" />
+  <circle cx="220" cy="60" r="12" fill="#00b894" />
+  <circle cx="280" cy="120" r="12" fill="#00b894" />
+  <text x="20" y="30" font-size="18" font-family="Arial" fill="#2d3436">Zonas de entrega en 90 minutos</text>
+  <text x="20" y="55" font-size="14" font-family="Arial" fill="#2d3436">Radio A</text>
+  <text x="130" y="95" font-size="14" font-family="Arial" fill="#2d3436">Radio B</text>
+  <text x="230" y="50" font-size="14" font-family="Arial" fill="#2d3436">Radio C</text>
+</svg>
