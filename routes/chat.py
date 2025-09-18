@@ -1110,6 +1110,13 @@ def _procesar_chat(
             owner_del_bot.preguntas_usadas += 1
 
         if isinstance(resultado, dict):
+            message_body = resultado.get("message_body")
+            respuesta = resultado.get("respuesta")
+            if message_body and not respuesta:
+                resultado["respuesta"] = message_body
+            elif respuesta and not message_body:
+                resultado["message_body"] = respuesta
+
             resultado["es_publico"] = es_publico
             if owner_del_bot:
                 from utils.plan_limits import limite_para_usuario
@@ -1154,6 +1161,13 @@ def _procesar_chat(
 
 
         # Add metadata to the response
+        message_body = resultado.get("message_body") if isinstance(resultado, dict) else None
+        respuesta = resultado.get("respuesta") if isinstance(resultado, dict) else None
+        if message_body and not respuesta:
+            resultado["respuesta"] = message_body
+        elif respuesta and not message_body:
+            resultado["message_body"] = respuesta
+
         resultado["es_publico"] = es_publico
         if owner_del_bot:
             from utils.plan_limits import limite_para_usuario
