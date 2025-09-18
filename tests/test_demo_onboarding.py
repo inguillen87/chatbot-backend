@@ -7,7 +7,6 @@ from config import Config
 from models import QA, Rubro, User, ChatSessionContext
 from sqlalchemy.orm.attributes import flag_modified
 
-
 class DemoConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
@@ -277,6 +276,7 @@ class DemoOnboardingTestCase(unittest.TestCase):
         self.assertEqual(owner.id, self.muni_user.id)
         self.assertIsNotNone(rubro_obj)
         self.assertEqual(rubro_obj.id, self.rubro_municipio.id)
+
 
     def test_unrecognized_demo_selection_emits_socket_message(self):
         session_id = "demo-session-emit-1"
