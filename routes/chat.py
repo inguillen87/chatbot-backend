@@ -463,7 +463,7 @@ def _procesar_chat(
                 extra={"room": chat_session_id_header, "payload": payload},
             )
 
-    actor_principal = owner_user or current_user
+    actor_principal = current_user
     chat_context_obj = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id_header).first()
 
     if not chat_context_obj:
@@ -715,20 +715,28 @@ def _procesar_chat(
         is_demo_selection_event = False
         demo_options: Optional[List[Dict[str, Optional[str]]]] = None
 
+        owner_user_rubro_id = getattr(owner_user, "rubro_id", None)
+
         if rubro_id:
             rubro_obj_global = Rubro.query.get(rubro_id)
             if rubro_obj_global:
                 rubro_para_log = rubro_obj_global.nombre or rubro_obj_global.clave
-                owner_del_bot = User.query.filter_by(rubro_id=rubro_obj_global.id, empresa_id=None).first()
-                if not owner_del_bot:
-                    owner_del_bot = User.query.filter_by(rubro_id=rubro_obj_global.id, rol='admin').first()
+                if owner_user and owner_user_rubro_id == rubro_obj_global.id:
+                    owner_del_bot = owner_user
+                else:
+                    owner_del_bot = User.query.filter_by(rubro_id=rubro_obj_global.id, empresa_id=None).first()
+                    if not owner_del_bot:
+                        owner_del_bot = User.query.filter_by(rubro_id=rubro_obj_global.id, rol='admin').first()
         elif rubro_clave:
             rubro_obj_global = Rubro.query.filter(func.lower(Rubro.clave) == func.lower(rubro_clave)).first()
             if rubro_obj_global:
                 rubro_para_log = rubro_obj_global.nombre or rubro_obj_global.clave
-                owner_del_bot = User.query.filter_by(rubro_id=rubro_obj_global.id, empresa_id=None).first()
-                if not owner_del_bot:
-                    owner_del_bot = User.query.filter_by(rubro_id=rubro_obj_global.id, rol='admin').first()
+                if owner_user and owner_user_rubro_id == rubro_obj_global.id:
+                    owner_del_bot = owner_user
+                else:
+                    owner_del_bot = User.query.filter_by(rubro_id=rubro_obj_global.id, empresa_id=None).first()
+                    if not owner_del_bot:
+                        owner_del_bot = User.query.filter_by(rubro_id=rubro_obj_global.id, rol='admin').first()
         elif actor_principal and actor_principal.rubro_id:
             rubro_obj_global = Rubro.query.get(actor_principal.rubro_id)
             if rubro_obj_global:
