@@ -60,6 +60,8 @@ class ChatAttachmentUploadTests(unittest.TestCase):
         self.assertEqual(info["url"], adjunto_mock.url)
         self.assertIn("thumbUrl", info)
         self.assertEqual(info["thumbUrl"], "/static/uploads/foto_thumb.webp")
+        self.assertEqual(info["thumbnailUrl"], info["thumbUrl"])
+        self.assertEqual(info["meta"]["url"], info["thumbUrl"])
 
     def test_upload_chat_attachment_uses_meta_thumbUrl(self):
         data = {"file": (BytesIO(b"fake"), "foto.png")}
@@ -97,6 +99,8 @@ class ChatAttachmentUploadTests(unittest.TestCase):
         self.assertEqual(resp[1], 200)
         info = resp[0].get_json()["attachmentInfo"]
         self.assertEqual(info["thumbUrl"], "https://cdn.example.com/foto_thumb.webp")
+        self.assertEqual(info["thumbnailUrl"], info["thumbUrl"])
+        self.assertEqual(info["meta"]["url"], info["thumbUrl"])
 
     def test_ticket_comentario_to_dict_contains_thumbUrl(self):
         """Ensure model serialization uses local storage path when GCS is disabled."""
@@ -124,6 +128,14 @@ class ChatAttachmentUploadTests(unittest.TestCase):
         self.assertEqual(
             data["attachmentInfo"]["thumbUrl"],
             "/static/uploads/foto_thumb.webp",
+        )
+        self.assertEqual(
+            data["attachmentInfo"]["thumbnailUrl"],
+            data["attachmentInfo"]["thumbUrl"],
+        )
+        self.assertEqual(
+            data["attachmentInfo"]["meta"]["url"],
+            data["attachmentInfo"]["thumbUrl"],
         )
 
     def test_ticket_comentario_to_dict_uses_meta_thumbUrl(self):
@@ -155,6 +167,14 @@ class ChatAttachmentUploadTests(unittest.TestCase):
         self.assertEqual(
             data["attachmentInfo"]["thumbUrl"],
             "https://cdn.example.com/foto_thumb.webp",
+        )
+        self.assertEqual(
+            data["attachmentInfo"]["thumbnailUrl"],
+            data["attachmentInfo"]["thumbUrl"],
+        )
+        self.assertEqual(
+            data["attachmentInfo"]["meta"]["url"],
+            data["attachmentInfo"]["thumbUrl"],
         )
 
 
