@@ -83,6 +83,7 @@ class DemoOnboardingTestCase(unittest.TestCase):
             rubro=self.rubro_municipio,
             tipo_chat="municipio",
             rol="admin",
+            token="municipio-token",
         )
         self.bodega_user = User(
             name="Demo Bodega",
@@ -195,6 +196,40 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 faq_preview = demo_metadata.get("faq_preview")
                 self.assertTrue(faq_preview)
                 self.assertIn("Malbec", faq_preview[0].get("respuesta", ""))
+
+    def test_municipio_request_without_rubro_skips_demo_selector(self):
+        session_id = "municipio-session-no-rubro"
+        with self.client as client:
+            self.muni_user.rubro = None
+            self.muni_user.rubro_id = None
+            db.session.add(self.muni_user)
+            db.session.commit()
+
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                mock_responder.return_value = {
+                    "message_body": "Hola, soy el asistente municipal.",
+                    "message_type": "text",
+                    "botones": [],
+                }
+
+                response = client.post(
+                    "/ask/municipio",
+                    json={"pregunta": "__INIT__", "token": self.muni_user.token},
+                    headers={"X-Chat-Session-Id": session_id},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertNotEqual(data.get("fuente"), "demo_selector")
+        self.assertEqual(data.get("message_body"), "Hola, soy el asistente municipal.")
+
+        mock_responder.assert_called_once()
+        _, kwargs = mock_responder.call_args
+        owner = kwargs.get("owner_user")
+        self.assertIsNotNone(owner)
+        self.assertEqual(owner.id, self.muni_user.id)
+        self.assertIsNone(kwargs.get("rubro_obj"))
+        self.assertEqual(kwargs.get("tipo_chat"), "municipio")
 
     def test_unrecognized_demo_selection_emits_socket_message(self):
         session_id = "demo-session-emit-1"
