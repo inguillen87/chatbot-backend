@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
+  <defs>
+    <linearGradient id="panel" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#003d5b" />
+      <stop offset="100%" stop-color="#00798c" />
+    </linearGradient>
+  </defs>
+  <rect width="960" height="540" fill="url(#panel)" />
+  <text x="50%" y="38%" fill="#e4f1ff" font-family="'Montserrat', Arial, sans-serif" font-size="46" text-anchor="middle">Centro de Monitoreo 24/7</text>
+  <text x="50%" y="53%" fill="#e4f1ff" font-family="'Montserrat', Arial, sans-serif" font-size="24" text-anchor="middle">Dashboards con reclamos geolocalizados, KPIs en tiempo real y alertas IoT</text>
+  <text x="50%" y="68%" fill="#e4f1ff" font-family="'Montserrat', Arial, sans-serif" font-size="26" text-anchor="middle">Derivaci\303\263n inmediata a cuadrillas y agentes humanos</text>
+</svg>
