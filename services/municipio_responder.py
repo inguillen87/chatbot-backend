@@ -2030,22 +2030,19 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         historial_para_llm = contexto_municipio_actual.get("historial_conversacion_general_llm", [])
 
     historial_formateado = []
-    if (
-        historial_para_llm
-        and isinstance(historial_para_llm, list)
-        and historial_para_llm
-        and isinstance(historial_para_llm[0], dict)
-        and "pregunta_usuario" in historial_para_llm[0]
-    ):
-        for turno in historial_para_llm:
-            pregunta = turno.get("pregunta_usuario")
-            respuesta = turno.get("respuesta_ia")
-            if pregunta:
-                historial_formateado.append({"role": "user", "parts": [{"text": pregunta}]})
-            if respuesta:
-                historial_formateado.append({"role": "model", "parts": [{"text": respuesta}]})
-    else:
-        historial_formateado = historial_para_llm or []
+    if isinstance(historial_para_llm, list) and historial_para_llm:
+        primer_turno = historial_para_llm[0]
+        if isinstance(primer_turno, dict) and "pregunta_usuario" in primer_turno:
+            for turno in historial_para_llm:
+                pregunta = turno.get("pregunta_usuario")
+                if pregunta:
+                    historial_formateado.append({"role": "user", "parts": [{"text": pregunta}]})
+                respuesta = turno.get("respuesta_ia")
+                if respuesta:
+                    historial_formateado.append({"role": "model", "parts": [{"text": respuesta}]})
+        else:
+            historial_formateado = historial_para_llm
+
 
     try:
         # FIX: Pre-process expected data to prevent state loss if LLM fails to return it
