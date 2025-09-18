@@ -795,6 +795,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     request_id = str(uuid.uuid4())
     logger_actual = current_app.logger if current_app else logger
 
+    demo_metadata = kwargs.pop("demo_metadata", None)
+
     if not owner_user:
         logger.error("[responder_pyme] Critical error: owner_user is None. Cannot proceed.")
         return {
@@ -836,6 +838,18 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         "tipo_entidad": "pyme",
         "pyme_info": {"nombre_pyme": nombre_pyme_display, "rubro": getattr(owner_user.rubro, "nombre", "general") if owner_user and hasattr(owner_user, "rubro") else "general"}
     }
+
+    if demo_metadata:
+        prompt_context = demo_metadata.get("prompt_context")
+        if prompt_context:
+            usuario_info_for_llm["demo_contexto"] = prompt_context
+        if demo_metadata.get("key"):
+            usuario_info_for_llm["demo_key"] = demo_metadata.get("key")
+        if demo_metadata.get("display_name"):
+            usuario_info_for_llm["demo_display_name"] = demo_metadata.get("display_name")
+        if demo_metadata.get("description"):
+            usuario_info_for_llm["demo_description"] = demo_metadata.get("description")
+
     loc_usuario_texto = getattr(viewer_user, "direccion", None) or pyme_ctx_actual.get("direccion_cliente")
     if loc_usuario_texto:
         usuario_info_for_llm["ubicacion_conocida"] = loc_usuario_texto

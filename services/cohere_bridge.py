@@ -3,6 +3,8 @@ import cohere
 import logging
 import json
 
+from services.chatbot_prompts import get_system_prompt
+
 logger = logging.getLogger(__name__)
 
 # It's a good practice to have the client instantiated once and reused if possible,
@@ -34,8 +36,6 @@ def llamar_cohere(app, mensaje_usuario: str, usuario: dict, historial: list, cha
     # 2. Construct the prompt for Cohere
     # We will use a simplified prompt for now. The full system prompt might need adaptation.
     # For Cohere, the "preamble" is similar to a system prompt.
-    from services.chatbot_prompts import JULES_SYSTEM_PROMPT # Re-using the same system prompt
-
     # The message from the user
     message = ""
     try:
@@ -51,7 +51,7 @@ def llamar_cohere(app, mensaje_usuario: str, usuario: dict, historial: list, cha
         response = co.chat(
             message=message,
             chat_history=chat_history,
-            preamble=JULES_SYSTEM_PROMPT,
+            preamble=get_system_prompt(usuario),
             model="command-r",  # A good default model
             temperature=0.3,
         )
