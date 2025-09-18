@@ -18,6 +18,7 @@ class DemoConfig(Config):
             "nombre": "Municipio Demo",
             "tipo_chat": "municipio",
             "rubro_clave": "municipio",
+            "prompt_context": "Municipio demo que atiende reclamos y trámites digitales.",
         },
         {
             "key": "bodega",
@@ -25,6 +26,7 @@ class DemoConfig(Config):
             "tipo_chat": "pyme",
             "rubro_clave": "bodega",
             "token": "demo-bodega-token",
+            "prompt_context": "Catálogo destacado: Malbec Reserva ($18000) y Torrontés Fresco ($11500).",
         },
     ]
 
@@ -110,12 +112,16 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 _, kwargs = mock_responder.call_args
                 owner = kwargs.get("owner_user")
                 rubro_obj = kwargs.get("rubro_obj")
+                demo_metadata = kwargs.get("demo_metadata")
 
                 self.assertIsNotNone(owner)
                 self.assertEqual(owner.id, self.bodega_user.id)
                 self.assertEqual(kwargs.get("tipo_chat"), "pyme")
                 self.assertIsNotNone(rubro_obj)
                 self.assertEqual(rubro_obj.id, self.rubro_bodega.id)
+                self.assertIsNotNone(demo_metadata)
+                self.assertEqual(demo_metadata.get("key"), "bodega")
+                self.assertIn("Malbec", demo_metadata.get("prompt_context", ""))
 
     def test_demo_message_limit_enforced(self):
         session_id = "demo-session-3"
