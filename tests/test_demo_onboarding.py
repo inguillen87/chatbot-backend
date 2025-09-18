@@ -231,6 +231,53 @@ class DemoOnboardingTestCase(unittest.TestCase):
         self.assertIsNone(kwargs.get("rubro_obj"))
         self.assertEqual(kwargs.get("tipo_chat"), "municipio")
 
+    def test_municipio_owner_token_takes_priority_over_rubro_lookup(self):
+        """If multiple admins share a rubro, prefer the authenticated owner user."""
+
+        secondary_admin = User(
+            name="Otro Municipio",
+            email="municipio-secundario@example.com",
+            password_hash="hash",
+            rubro=self.rubro_municipio,
+            tipo_chat="municipio",
+            rol="admin",
+        )
+        db.session.add(secondary_admin)
+        db.session.commit()
+
+        # Simula un municipio donde el owner tiene empresa_id y quedaría excluido del filtro
+        self.muni_user.empresa_id = self.almacen_user.id
+        db.session.add(self.muni_user)
+        db.session.commit()
+
+        headers = {"X-Chat-Session-Id": "municipio-owner-priority"}
+        with patch("routes.chat.responder_chatboc") as mock_responder:
+            mock_responder.return_value = {
+                "message_body": "ok",
+                "message_type": "text",
+                "botones": [],
+            }
+
+            response = self.client.post(
+                "/ask/municipio",
+                json={"pregunta": "hola", "token": self.muni_user.token},
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data.get("message_body"), "ok")
+
+        mock_responder.assert_called_once()
+        _, kwargs = mock_responder.call_args
+        owner = kwargs.get("owner_user")
+        rubro_obj = kwargs.get("rubro_obj")
+
+        self.assertIsNotNone(owner)
+        self.assertEqual(owner.id, self.muni_user.id)
+        self.assertIsNotNone(rubro_obj)
+        self.assertEqual(rubro_obj.id, self.rubro_municipio.id)
+
     def test_unrecognized_demo_selection_emits_socket_message(self):
         session_id = "demo-session-emit-1"
         headers = {"X-Chat-Session-Id": session_id}
