@@ -1,5 +1,9 @@
+import json
+import logging
 import os
 import re
+from pathlib import Path
+from typing import Any, Dict, List
 from urllib.parse import urlparse
 
 # Directorio base de la aplicación
@@ -51,6 +55,150 @@ if public_root and public_root not in ("localhost", "127.0.0.1"):
 ALLOWED_ORIGINS = list(dict.fromkeys(allowed_urls))
 # Allow Vercel preview deployments (e.g. https://<project>.vercel.app)
 ALLOWED_ORIGINS.append(re.compile(r"https://.*\.vercel\.app"))
+
+# --- Demo Rubros Loader ----------------------------------------------------
+
+_DEMO_RUBRO_ENV_FIELDS = {
+    "key": "KEY",
+    "nombre": "NOMBRE",
+    "descripcion": "DESCRIPCION",
+    "token": "TOKEN",
+    "tipo_chat": "TIPO_CHAT",
+    "rubro_clave": "RUBRO",
+    "prompt_context": "PROMPT_CONTEXT",
+    "welcome_message": "WELCOME_MESSAGE",
+}
+
+
+def _coerce_demo_rubros_payload(payload: Any) -> List[Dict[str, Any]]:
+    """Return a list of demo rubros from a JSON payload."""
+
+    if isinstance(payload, dict):
+        for key in ("demo_rubros", "rubros", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                payload = value
+                break
+        else:
+            return []
+
+    if not isinstance(payload, list):
+        return []
+
+    resultados: List[Dict[str, Any]] = []
+    for item in payload:
+        if isinstance(item, dict):
+            resultados.append(item)
+    return resultados
+
+
+def _read_demo_rubros_file(path: str) -> List[Dict[str, Any]]:
+    """Load demo rubros metadata from a JSON file."""
+
+    file_path = Path(path)
+    if not file_path.is_file():
+        logging.getLogger(__name__).warning(
+            "Demo rubros file '%s' not found. The demo catalog will be empty.", path
+        )
+        return []
+
+    try:
+        raw_content = file_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        logging.getLogger(__name__).error(
+            "Unable to read demo rubros file '%s': %s", path, exc
+        )
+        return []
+
+    if not raw_content.strip():
+        return []
+
+    try:
+        payload = json.loads(raw_content)
+    except json.JSONDecodeError as exc:
+        logging.getLogger(__name__).error(
+            "Invalid JSON in demo rubros file '%s': %s", path, exc
+        )
+        return []
+
+    return _coerce_demo_rubros_payload(payload)
+
+
+def _sanitize_demo_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Clone an entry removing helper fields and copying nested values."""
+
+    sanitized: Dict[str, Any] = {}
+    for key, value in entry.items():
+        if key == "env_prefix":
+            continue
+        if key in {"resources", "faq_preview"} and isinstance(value, list):
+            sanitized[key] = [dict(item) for item in value if isinstance(item, dict)]
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
+def _apply_env_overrides(entry: Dict[str, Any], env_prefix: Any) -> Dict[str, Any]:
+    """Override demo metadata fields with environment variables when available."""
+
+    prefix: str = ""
+    if isinstance(env_prefix, str) and env_prefix.strip():
+        prefix = env_prefix.strip()
+    else:
+        raw_key = entry.get("key")
+        if isinstance(raw_key, str) and raw_key.strip():
+            normalized = re.sub(r"[^A-Z0-9]+", "_", raw_key.upper()).strip("_")
+            if normalized:
+                prefix = f"DEMO_{normalized}"
+
+    if not prefix:
+        return entry
+
+    overridden = dict(entry)
+    for field, suffix in _DEMO_RUBRO_ENV_FIELDS.items():
+        env_name = f"{prefix}_{suffix}"
+        value = os.getenv(env_name)
+        if value is None:
+            continue
+        if field == "token" and value == "":
+            value = None
+        overridden[field] = value
+
+    return overridden
+
+
+def _load_default_demo_rubros() -> List[Dict[str, Any]]:
+    """Load the curated demo catalog from JSON and apply environment overrides."""
+
+    entries: List[Dict[str, Any]] = []
+    loaded_from_env = False
+    json_override = os.getenv("DEMO_RUBROS_JSON")
+    if json_override:
+        try:
+            payload = json.loads(json_override)
+        except json.JSONDecodeError as exc:
+            logging.getLogger(__name__).error(
+                "Invalid JSON provided in DEMO_RUBROS_JSON: %s", exc
+            )
+        else:
+            entries = _coerce_demo_rubros_payload(payload)
+            loaded_from_env = True
+
+    if not entries and not loaded_from_env:
+        default_path = os.getenv("DEMO_RUBROS_FILE") or os.path.join(
+            basedir, "data", "demo_rubros.json"
+        )
+        entries = _read_demo_rubros_file(default_path)
+
+    normalized: List[Dict[str, Any]] = []
+    for raw_entry in entries:
+        if not isinstance(raw_entry, dict):
+            continue
+        env_prefix = raw_entry.get("env_prefix")
+        sanitized = _sanitize_demo_entry(raw_entry)
+        normalized.append(_apply_env_overrides(sanitized, env_prefix))
+
+    return normalized
 
 # Derive cookie domain for production if not provided explicitly
 cookie_domain_env = os.getenv("COOKIE_DOMAIN")
@@ -137,249 +285,7 @@ class Config:
         "DEMO_WELCOME_MESSAGE",
         "👋 ¡Bienvenido a la demo de Chatboc! Elegí la experiencia que querés probar:",
     )
-    DEMO_RUBROS = [
-        {
-            "key": os.getenv("DEMO_ALMACEN_KEY", "almacen"),
-            "nombre": os.getenv("DEMO_ALMACEN_NOMBRE", "Almacén Inteligente"),
-            "descripcion": os.getenv(
-                "DEMO_ALMACEN_DESCRIPCION",
-                "Catálogo minorista y mayorista con combos semanales, control de stock y entregas a domicilio en el día.",
-            ),
-            "token": os.getenv("DEMO_ALMACEN_TOKEN", "demo-token-almacen"),
-            "tipo_chat": os.getenv("DEMO_ALMACEN_TIPO_CHAT", "pyme"),
-            "rubro_clave": os.getenv("DEMO_ALMACEN_RUBRO", "almacen"),
-            "prompt_context": os.getenv(
-                "DEMO_ALMACEN_PROMPT_CONTEXT",
-                (
-                    "ByM Almacén Digital combina góndola física con pedidos online. Ofrece combos familiares de lácteos, "
-                    "bebidas y snacks, reposiciones programadas para bares y rotiserías, precios mayoristas a partir de 6 "
-                    "unidades y seguimiento de stock en tiempo real. Gestiona delivery propio en radio cercano, logística con "
-                    "moto para urgencias y acuerdos con Mercado Pago, MODO y transferencias. Usa un tono cercano, ágil y "
-                    "orientado a resolver pedidos mixtos (retiro o envío) en el momento."
-                ),
-            ),
-            "welcome_message": os.getenv(
-                "DEMO_ALMACEN_WELCOME_MESSAGE",
-                "🛒 ¡Bienvenido al demo del almacén! Contame qué productos o combos necesitas hoy.",
-            ),
-            "resources": [
-                {
-                    "title": "Lista de precios actualizada",
-                    "description": "Precios minoristas y mayoristas con combos listos para delivery o retiro en tienda.",
-                    "type": "link",
-                    "url": "https://www.chatboc.ar/",
-                    "cta_text": "Ver combos disponibles",
-                }
-            ],
-        },
-        {
-            "key": os.getenv("DEMO_BODEGA_KEY", "bodega"),
-            "nombre": os.getenv("DEMO_BODEGA_NOMBRE", "Bodega Cuatro Fincas"),
-            "descripcion": os.getenv(
-                "DEMO_BODEGA_DESCRIPCION",
-                "Probá la experiencia de compra de una pyme: catálogo de vinos, precios y pedidos en vivo.",
-            ),
-            "token": os.getenv("DEMO_BODEGA_TOKEN", "demo-token-bodega"),
-            "tipo_chat": os.getenv("DEMO_BODEGA_TIPO_CHAT", "pyme"),
-            "rubro_clave": os.getenv("DEMO_BODEGA_RUBRO", "bodega"),
-            "prompt_context": os.getenv(
-                "DEMO_BODEGA_PROMPT_CONTEXT",
-                (
-                    "Bodega Cuatro Fincas es una bodega boutique mendocina enfocada en vinos premium. "
-                    "Catálogo destacado: Gran Malbec Reserva 2021 ($18.500) con notas a ciruela y "
-                    "chocolate; Blend de Altura 2019 ($21.000) con Malbec, Cabernet Franc y Petit "
-                    "Verdot; Torrontés Andino 2023 ($11.500) fresco y floral; Espumante Extra Brut "
-                    "Tradicional ($16.800) método champenoise; Caja Degustación 6 botellas ($89.900) "
-                    "con selección del enólogo; Pack Regalo Malbec + Bonarda ($34.500) con estuche. "
-                    "Promos activas: 10% off en combos de 6 botellas, 15% off en compras mayores a "
-                    "$120.000 y envío gratis en Gran Mendoza para pedidos desde $45.000. Horario de "
-                    "atención en sala de degustación: lunes a sábado 10 a 20 hs; degustaciones "
-                    "guiadas viernes y sábado 18 hs con reserva previa. Ofrece asesoramiento para "
-                    "eventos, venta mayorista y armado de regalos corporativos con envío nacional."
-                ),
-            ),
-            "welcome_message": os.getenv(
-                "DEMO_BODEGA_WELCOME_MESSAGE",
-                "🍷 ¡Hola! Soy el asistente de Bodega Cuatro Fincas. ¿Querés descubrir nuestros vinos?",
-            ),
-            "resources": [
-                {
-                    "title": "Catálogo Premium 2024",
-                    "description": "Selección de etiquetas reserva, notas de cata y precios por botella y por caja.",
-                    "type": "pdf",
-                    "url": "/static/demo/bodega/catalogo-premium-2024.pdf",
-                    "cta_text": "Descargar catálogo",
-                },
-                {
-                    "title": "Lista de precios mayoristas",
-                    "description": "Bonificaciones por volumen, combos de degustación y envíos a todo el país.",
-                    "type": "pdf",
-                    "url": "/static/demo/bodega/lista-precios-mayoristas.pdf",
-                    "cta_text": "Consultar precios corporativos",
-                },
-                {
-                    "title": "Gran Malbec Reserva 2021",
-                    "description": "Ficha visual con notas de cata, maridajes sugeridos y precio promocional.",
-                    "type": "image",
-                    "url": "/static/demo/bodega/gran-malbec-reserva.svg",
-                    "thumbnail": "/static/demo/bodega/gran-malbec-reserva.svg",
-                    "cta_text": "Ver ficha del Malbec",
-                },
-            ],
-        },
-        {
-            "key": os.getenv("DEMO_FERRETERIA_KEY", "ferreteria"),
-            "nombre": os.getenv("DEMO_FERRETERIA_NOMBRE", "Ferretería y Corralón"),
-            "descripcion": os.getenv(
-                "DEMO_FERRETERIA_DESCRIPCION",
-                "Materiales de construcción, herramientas eléctricas y logística a obra con presupuestos al instante.",
-            ),
-            "token": os.getenv("DEMO_FERRETERIA_TOKEN", "demo-token-ferreteria"),
-            "tipo_chat": os.getenv("DEMO_FERRETERIA_TIPO_CHAT", "pyme"),
-            "rubro_clave": os.getenv("DEMO_FERRETERIA_RUBRO", "ferreteria"),
-            "prompt_context": os.getenv(
-                "DEMO_FERRETERIA_PROMPT_CONTEXT",
-                (
-                    "Ferretería Central atiende obras chicas y medianas con stock de cementos, áridos, hierros, "
-                    "herramientas eléctricas y sanitarios. Cotiza combos para refacciones, ofrece descuentos por volumen, "
-                    "planifica entregas con camión grúa y seguimiento GPS de repartos. Brinda asesoramiento técnico para "
-                    "elegir materiales, vende EPP, pinturas y artículos de jardinería. Usa un tono experto pero simple para "
-                    "ayudar a profesionales y particulares que construyen o remodelan."
-                ),
-            ),
-            "welcome_message": os.getenv(
-                "DEMO_FERRETERIA_WELCOME_MESSAGE",
-                "🔧 ¡Hola! Soy el asistente del corralón. ¿Qué materiales o herramientas necesitas cotizar?",
-            ),
-            "resources": [
-                {
-                    "title": "Lista de materiales para obra",
-                    "description": "Cementos, áridos, perfiles y promociones vigentes por cantidad.",
-                    "type": "link",
-                    "url": "https://www.chatboc.ar/",
-                    "cta_text": "Ver catálogo de obra",
-                }
-            ],
-        },
-        {
-            "key": os.getenv("DEMO_LOCAL_GENERAL_KEY", "local_comercial_general"),
-            "nombre": os.getenv("DEMO_LOCAL_GENERAL_NOMBRE", "Local Comercial General"),
-            "descripcion": os.getenv(
-                "DEMO_LOCAL_GENERAL_DESCRIPCION",
-                "Mostrador omnicanal para indumentaria, deco y regalos con stock integrado y campañas de fidelización.",
-            ),
-            "token": os.getenv("DEMO_LOCAL_GENERAL_TOKEN", "demo-token-local"),
-            "tipo_chat": os.getenv("DEMO_LOCAL_GENERAL_TIPO_CHAT", "pyme"),
-            "rubro_clave": os.getenv("DEMO_LOCAL_GENERAL_RUBRO", "local_comercial"),
-            "prompt_context": os.getenv(
-                "DEMO_LOCAL_GENERAL_PROMPT_CONTEXT",
-                (
-                    "Local Comercial Demo vende indumentaria urbana, deco y regalos corporativos. Integra catálogo en tienda "
-                    "física, Instagram Shopping y tienda online con pasarela de pagos. Ofrece combos de temporada, cupones de "
-                    "fidelización, reservas con seña digital y retiros en sucursal en 2 horas. Gestiona cambios, envíos a todo "
-                    "el país y paquetes personalizados para empresas. El bot debe destacar disponibilidad en talles, colores, "
-                    "promociones bancarias y seguimiento de pedidos."
-                ),
-            ),
-            "welcome_message": os.getenv(
-                "DEMO_LOCAL_GENERAL_WELCOME_MESSAGE",
-                "🛍️ ¡Bienvenido! Contame qué prenda, regalo o combo corporativo estás buscando.",
-            ),
-            "resources": [
-                {
-                    "title": "Lookbook temporada actual",
-                    "description": "Colecciones destacadas con precios, talles disponibles y combos corporativos.",
-                    "type": "link",
-                    "url": "https://www.chatboc.ar/",
-                    "cta_text": "Descubrir novedades",
-                }
-            ],
-        },
-        {
-            "key": os.getenv("DEMO_MEDICO_KEY", "medico_general"),
-            "nombre": os.getenv("DEMO_MEDICO_NOMBRE", "Clínica Médico General"),
-            "descripcion": os.getenv(
-                "DEMO_MEDICO_DESCRIPCION",
-                "Turnos online, guardias coordinadas y seguimiento de pacientes para medicina general y especialidades de base.",
-            ),
-            "token": os.getenv("DEMO_MEDICO_TOKEN", "demo-token-medico"),
-            "tipo_chat": os.getenv("DEMO_MEDICO_TIPO_CHAT", "pyme"),
-            "rubro_clave": os.getenv("DEMO_MEDICO_RUBRO", "medico"),
-            "prompt_context": os.getenv(
-                "DEMO_MEDICO_PROMPT_CONTEXT",
-                (
-                    "Clínica San Dona gestiona turnos para clínica médica, pediatría, ginecología, laboratorio y nutrición. "
-                    "Permite reservar guardias programadas, coordinar estudios, validar obras sociales, enviar recordatorios "
-                    "por WhatsApp y compartir resultados vía portal seguro. Atiende consultas sobre coberturas, horarios, "
-                    "preparación para estudios y teleconsultas. Mantiene tono empático, claro y orientado a resolver trámites "
-                    "rápidos para pacientes y familias."
-                ),
-            ),
-            "welcome_message": os.getenv(
-                "DEMO_MEDICO_WELCOME_MESSAGE",
-                "🩺 Hola, soy el asistente de Clínica San Dona. ¿Querés reservar un turno o consultar tu cobertura?",
-            ),
-            "resources": [
-                {
-                    "title": "Guía de especialidades y coberturas",
-                    "description": "Profesionales disponibles, obras sociales aceptadas y pasos para turnos online.",
-                    "type": "link",
-                    "url": "https://www.chatboc.ar/",
-                    "cta_text": "Ver especialidades",
-                }
-            ],
-        },
-        {
-            "key": os.getenv("DEMO_MUNICIPIO_KEY", "municipio"),
-            "nombre": os.getenv("DEMO_MUNICIPIO_NOMBRE", "Municipio Inteligente"),
-            "descripcion": os.getenv(
-                "DEMO_MUNICIPIO_DESCRIPCION",
-                "Descubrí cómo un municipio gestiona reclamos, trámites y consultas en segundos.",
-            ),
-            "token": os.getenv("DEMO_MUNICIPIO_TOKEN"),
-            "tipo_chat": os.getenv("DEMO_MUNICIPIO_TIPO_CHAT", "municipio"),
-            "rubro_clave": os.getenv("DEMO_MUNICIPIO_RUBRO", "municipio"),
-            "prompt_context": os.getenv(
-                "DEMO_MUNICIPIO_PROMPT_CONTEXT",
-                (
-                    "El Municipio de Junín en Mendoza ofrece un asistente digital para reclamos "
-                    "de luminaria, higiene urbana, arbolado, tránsito y servicios públicos. También "
-                    "acompaña trámites como licencias de conducir, tasas municipales, turnos online "
-                    "y consultas ciudadanas. Usa un tono cálido, profesional y resalta que el bot "
-                    "permite registrar reclamos con ubicación, seguir tickets existentes y derivar "
-                    "a un agente humano cuando haga falta."
-                ),
-            ),
-            "welcome_message": os.getenv(
-                "DEMO_MUNICIPIO_WELCOME_MESSAGE",
-                "🙌 ¡Bienvenido a la demo municipal! Contame qué trámite o reclamo querés gestionar.",
-            ),
-            "resources": [
-                {
-                    "title": "Guía de trámites express",
-                    "description": "Pasos clave para turnos, reclamos con foto y seguimiento 24/7 desde el panel ciudadano.",
-                    "type": "pdf",
-                    "url": "/static/demo/municipio/guia-tramites-rapidos.pdf",
-                    "cta_text": "Descargar guía de trámites",
-                },
-                {
-                    "title": "Plan de iluminación inteligente 2024",
-                    "description": "Proyecto LED con sensores IoT, tablero de monitoreo y prioridades por barrio.",
-                    "type": "pdf",
-                    "url": "/static/demo/municipio/plan-iluminacion-inteligente.pdf",
-                    "cta_text": "Ver plan de inversión",
-                },
-                {
-                    "title": "Centro de monitoreo en tiempo real",
-                    "description": "Visualización de KPIs, reclamos geolocalizados y derivación inmediata a cuadrillas.",
-                    "type": "image",
-                    "url": "/static/demo/municipio/centro-monitoreo-smart.svg",
-                    "thumbnail": "/static/demo/municipio/centro-monitoreo-smart.svg",
-                    "cta_text": "Abrir dashboard de monitoreo",
-                },
-            ],
-        },
-    ]
+    DEMO_RUBROS = _load_default_demo_rubros()
 
     GOOGLE_PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID", None)
     GOOGLE_DOCAI_LOCATION = os.getenv("GOOGLE_DOCAI_LOCATION", "us")
