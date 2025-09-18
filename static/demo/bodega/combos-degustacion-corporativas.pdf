@@ -1,0 +1,39 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 255 >>
+stream
+BT
+/F1 18 Tf
+36 260 Td (Combos de Degustacion Corporativa) Tj
+0 -24 Td (Cajas premium seleccionadas por el enologo) Tj
+0 -24 Td (Incluye Gran Malbec Reserva y Torrontes Andino) Tj
+0 -24 Td (Opciones de 6, 12 y 24 botellas con envio) Tj
+0 -24 Td (Personalizacion con grabado y tarjetas gourmet) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000571 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+640
+%%EOF
