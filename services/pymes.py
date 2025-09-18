@@ -849,6 +849,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             usuario_info_for_llm["demo_display_name"] = demo_metadata.get("display_name")
         if demo_metadata.get("description"):
             usuario_info_for_llm["demo_description"] = demo_metadata.get("description")
+        if demo_metadata.get("faq_preview"):
+            usuario_info_for_llm["demo_faq_preview"] = demo_metadata.get("faq_preview")
 
     loc_usuario_texto = getattr(viewer_user, "direccion", None) or pyme_ctx_actual.get("direccion_cliente")
     if loc_usuario_texto:

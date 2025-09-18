@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from app import create_app, db
 from config import Config
-from models import User, Rubro
+from models import QA, Rubro, User
 
 
 class DemoConfig(Config):
@@ -83,6 +83,29 @@ class DemoOnboardingTestCase(unittest.TestCase):
         db.session.add_all([self.muni_user, self.bodega_user])
         db.session.commit()
 
+        # Simula entornos donde el usuario demo pertenece a una empresa (empresa_id != None)
+        self.bodega_user.empresa_id = self.muni_user.id
+        db.session.add(self.bodega_user)
+        db.session.commit()
+
+        faq_muni = QA(
+            question="¿Cómo registro un reclamo?",
+            answer="Ingresá al portal y completá los datos con ubicación y contacto.",
+            rubro_id=self.rubro_municipio.id,
+        )
+        faq_pyme = QA(
+            question="¿Tienen Gran Malbec Reserva?",
+            answer="Sí, contamos con Gran Malbec Reserva 2021 a $18.500 la botella.",
+            rubro_id=self.rubro_bodega.id,
+        )
+        faq_pyme_envio = QA(
+            question="¿Hacen envíos en Mendoza?",
+            answer="Envío sin cargo en Gran Mendoza para pedidos superiores a $45.000.",
+            rubro_id=self.rubro_bodega.id,
+        )
+        db.session.add_all([faq_muni, faq_pyme, faq_pyme_envio])
+        db.session.commit()
+
     def tearDown(self):
         db.session.remove()
         db.drop_all()
@@ -142,6 +165,9 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 self.assertEqual(demo_metadata.get("key"), "bodega")
                 self.assertIn("Malbec", demo_metadata.get("prompt_context", ""))
                 self.assertIsInstance(demo_metadata.get("resources"), list)
+                faq_preview = demo_metadata.get("faq_preview")
+                self.assertTrue(faq_preview)
+                self.assertIn("Malbec", faq_preview[0].get("respuesta", ""))
 
     def test_demo_message_limit_enforced(self):
         session_id = "demo-session-3"
@@ -211,6 +237,8 @@ class DemoOnboardingTestCase(unittest.TestCase):
 
                 message = data.get("message_body") or data.get("respuesta")
                 self.assertIn("Catálogo Premium", message)
+                self.assertIn("Preguntas frecuentes destacadas", message)
+                self.assertIn("Envío sin cargo", message)
 
                 botones = data.get("botones", [])
                 self.assertTrue(any(btn.get("url", "").endswith(".pdf") for btn in botones))
@@ -220,6 +248,21 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 self.assertTrue(any(adj.get("tipo") == "image" for adj in adjuntos))
 
                 mock_responder.assert_called_once()
+
+    def test_rubros_endpoint_exposes_demo_metadata(self):
+        with self.client as client:
+            response = client.get("/rubros/")
+
+        self.assertEqual(response.status_code, 200)
+        rubros = response.get_json()
+        bodega_entry = next((r for r in rubros if r.get("clave") == "bodega"), None)
+        self.assertIsNotNone(bodega_entry)
+        demo = bodega_entry.get("demo")
+        self.assertIsNotNone(demo)
+        self.assertEqual(demo.get("key"), "bodega")
+        self.assertTrue(demo.get("resources"))
+        self.assertTrue(demo.get("faq_preview"))
+        self.assertIn("Malbec", demo["faq_preview"][0].get("respuesta", ""))
 
 
 if __name__ == "__main__":

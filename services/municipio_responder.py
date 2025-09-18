@@ -2020,6 +2020,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             usuario_info_llm["demo_display_name"] = demo_metadata.get("display_name")
         if demo_metadata.get("description"):
             usuario_info_llm["demo_description"] = demo_metadata.get("description")
+        if demo_metadata.get("faq_preview"):
+            usuario_info_llm["demo_faq_preview"] = demo_metadata.get("faq_preview")
 
     historial_para_llm = []
     if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:

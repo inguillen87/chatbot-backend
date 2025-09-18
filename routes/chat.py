@@ -24,6 +24,7 @@ from services.logic import (
     normalizar_rubro,
     es_rubro_publico,
 )
+from services.demo_registry import load_demo_rubros
 from utils.auth_helpers import (
     anon_o_token_requerido,
     obtener_token,
@@ -38,129 +39,10 @@ DEMO_ACTION_PREFIX = "demo_select_rubro"
 
 def _load_demo_rubros() -> List[Dict[str, Optional[str]]]:
     """Recupera la configuración de demos y la enriquece con datos reales."""
-    demo_config = current_app.config.get("DEMO_RUBROS") or []
+
     opciones: List[Dict[str, Optional[str]]] = []
-    seen_keys: set[str] = set()
-
-    for entry in demo_config:
-        if not isinstance(entry, dict):
-            continue
-
-        raw_key = entry.get("key") or entry.get("rubro_clave") or entry.get("nombre")
-        if not raw_key:
-            continue
-
-        key = str(raw_key).strip().lower().replace(" ", "_")
-        if not key or key in seen_keys:
-            continue
-
-        nombre = entry.get("nombre") or entry.get("display_name") or str(raw_key)
-        descripcion = entry.get("descripcion") or entry.get("description")
-        rubro_id_conf = entry.get("rubro_id")
-        rubro_clave_conf = entry.get("rubro_clave")
-        token_conf = entry.get("token")
-        user_id_conf = entry.get("user_id")
-        tipo_chat_conf_raw = entry.get("tipo_chat")
-        if isinstance(tipo_chat_conf_raw, str):
-            tipo_chat_conf = tipo_chat_conf_raw.strip().lower() or None
-        else:
-            tipo_chat_conf = None
-
-        owner_user = None
-        rubro_obj = None
-        fallback_owner_used = False
-
-        if user_id_conf:
-            owner_user = User.query.get(user_id_conf)
-
-        if not owner_user and token_conf:
-            owner_user = User.query.filter_by(token=token_conf).first()
-
-        if not owner_user and rubro_id_conf:
-            rubro_obj = Rubro.query.get(rubro_id_conf)
-            if rubro_obj:
-                owner_user = User.query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
-                if not owner_user:
-                    owner_user = User.query.filter_by(rubro_id=rubro_obj.id, rol='admin').first()
-
-        if not owner_user and rubro_clave_conf:
-            rubro_obj = Rubro.query.filter(func.lower(Rubro.clave) == func.lower(str(rubro_clave_conf))).first()
-            if rubro_obj:
-                owner_user = User.query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
-                if not owner_user:
-                    owner_user = User.query.filter_by(rubro_id=rubro_obj.id, rol='admin').first()
-
-        if not owner_user and tipo_chat_conf == "municipio":
-            owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
-            if owner_user and not rubro_obj:
-                rubro_obj = owner_user.rubro
-            if owner_user:
-                fallback_owner_used = True
-
-        if owner_user and not rubro_obj:
-            rubro_obj = owner_user.rubro
-
-        if rubro_obj and not owner_user:
-            owner_user = User.query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
-            if not owner_user:
-                owner_user = User.query.filter_by(rubro_id=rubro_obj.id, rol='admin').first()
-            if owner_user:
-                fallback_owner_used = True
-
-        tipo_chat_guess = tipo_chat_conf
-        if not tipo_chat_guess and rubro_obj and es_rubro_publico(rubro_obj):
-            tipo_chat_guess = "municipio"
-        if not tipo_chat_guess and owner_user and getattr(owner_user, "tipo_chat", None):
-            tipo_chat_guess = owner_user.tipo_chat
-
-        if not owner_user:
-            if tipo_chat_guess == "municipio":
-                owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
-                if owner_user and not rubro_obj:
-                    rubro_obj = owner_user.rubro
-            else:
-                owner_user = User.query.filter_by(tipo_chat='pyme', rol='admin').first()
-                if owner_user and not rubro_obj:
-                    rubro_obj = owner_user.rubro
-            if owner_user:
-                fallback_owner_used = True
-
-        if owner_user and not tipo_chat_guess:
-            tipo_chat_guess = getattr(owner_user, "tipo_chat", None)
-        if not tipo_chat_guess:
-            tipo_chat_guess = "municipio" if (rubro_obj and es_rubro_publico(rubro_obj)) else "pyme"
-
-        if not owner_user or not rubro_obj:
-            current_app.logger.warning(
-                f"[demo] No se pudo preparar la demo '{key}' porque falta owner o rubro válido."
-            )
-            continue
-
-        if fallback_owner_used:
-            current_app.logger.info(
-                f"[demo] Usando owner '{getattr(owner_user, 'id', 'N/A')}' y rubro '{getattr(rubro_obj, 'id', 'N/A')}' como fallback para la demo '{key}'."
-            )
-
-        tipo_chat = tipo_chat_guess or (
-            "municipio" if es_rubro_publico(rubro_obj) else getattr(owner_user, "tipo_chat", "pyme")
-        )
-
-        opciones.append(
-            {
-                "key": key,
-                "label": nombre,
-                "descripcion": descripcion,
-                "tipo_chat": tipo_chat,
-                "owner_user_id": owner_user.id,
-                "rubro_id": rubro_obj.id,
-                "rubro_clave": getattr(rubro_obj, "clave", None),
-                "prompt_context": entry.get("prompt_context"),
-                "welcome_message": entry.get("welcome_message"),
-                "resources": deepcopy(entry.get("resources") or []),
-            }
-        )
-        seen_keys.add(key)
-
+    for demo in load_demo_rubros():
+        opciones.append(demo.to_internal_dict())
     return opciones
 
 
@@ -353,6 +235,27 @@ def _format_demo_resources(
 
     formatted_text = "\n".join(lines) if lines else ""
     return formatted_text, buttons, attachments
+
+
+def _format_demo_faq_preview(faq_preview: List[Dict[str, object]] | None) -> str:
+    if not faq_preview:
+        return ""
+
+    lines: List[str] = []
+    for raw in faq_preview:
+        if not isinstance(raw, dict):
+            continue
+
+        question = str(raw.get("pregunta") or raw.get("question") or "").strip()
+        if not question:
+            continue
+        answer = str(raw.get("respuesta") or raw.get("answer") or "").strip()
+        line = f"• ❓ {question}"
+        if answer:
+            line += f" → {answer}"
+        lines.append(line)
+
+    return "\n".join(lines)
 
 def _parse_request(tipo_chat_fijo: str | None = None):
     def _normalizar_tipo_chat(valor: str | None) -> str | None:
@@ -825,6 +728,7 @@ def _procesar_chat(
             contexto_chat["demo_welcome_message"] = selected_demo.get("welcome_message")
             contexto_chat["demo_message_count"] = 0
             contexto_chat["demo_resources"] = deepcopy(selected_demo.get("resources") or [])
+            contexto_chat["demo_faq_preview"] = deepcopy(selected_demo.get("faq_preview") or [])
             contexto_chat["demo_intro_sent"] = False
             flag_modified(chat_context_obj, "context_data")
 
@@ -846,6 +750,7 @@ def _procesar_chat(
                 contexto_chat.pop("demo_description", None)
                 contexto_chat.pop("demo_welcome_message", None)
                 contexto_chat.pop("demo_resources", None)
+                contexto_chat.pop("demo_faq_preview", None)
                 contexto_chat.pop("demo_intro_sent", None)
                 flag_modified(chat_context_obj, "context_data")
                 selector_payload = _build_demo_selector_payload(demo_options)
@@ -979,6 +884,7 @@ def _procesar_chat(
                 "description": contexto_chat.get("demo_description"),
                 "welcome_message": contexto_chat.get("demo_welcome_message"),
                 "resources": deepcopy(contexto_chat.get("demo_resources") or []),
+                "faq_preview": deepcopy(contexto_chat.get("demo_faq_preview") or []),
             }
 
         resultado = responder_chatboc(
@@ -1019,6 +925,7 @@ def _procesar_chat(
         if should_apply_intro:
             resources_text, resource_buttons, resource_attachments = _format_demo_resources(recursos_demo)
             display_name = contexto_chat.get("demo_display_name") or contexto_chat.get("demo_key") or "esta demo"
+            faq_preview_text = _format_demo_faq_preview(contexto_chat.get("demo_faq_preview"))
 
             base_message = (
                 contexto_chat.get("demo_welcome_message")
@@ -1035,6 +942,8 @@ def _procesar_chat(
                 description_text = str(description).strip()
                 if description_text and description_text not in segments:
                     segments.append(description_text)
+            if faq_preview_text:
+                segments.append(f"❓ Preguntas frecuentes destacadas:\n{faq_preview_text}")
             if resources_text:
                 segments.append(f"📎 Material destacado de {display_name}:\n{resources_text}")
             if original_message:

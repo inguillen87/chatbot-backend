@@ -102,6 +102,22 @@ def _build_pyme_prompt(usuario: dict | None) -> str:
     demo_context = usuario.get("demo_contexto")
     if demo_context:
         context_pieces.append(demo_context.strip())
+    faq_preview = usuario.get("demo_faq_preview") or []
+    if faq_preview:
+        faq_lines: list[str] = []
+        for faq in faq_preview:
+            if not isinstance(faq, dict):
+                continue
+            question = str(faq.get("pregunta") or faq.get("question") or "").strip()
+            if not question:
+                continue
+            answer = str(faq.get("respuesta") or faq.get("answer") or "").strip()
+            line = f"- {question}"
+            if answer:
+                line += f": {answer}"
+            faq_lines.append(line)
+        if faq_lines:
+            context_pieces.append("Preguntas frecuentes clave:\n" + "\n".join(faq_lines))
     knowledge_block = "\n\n".join(context_pieces) if context_pieces else (
         "Describe los productos, servicios y promociones del negocio con información concreta cuando esté disponible. Si faltan datos específicos, ofrece alternativas y sé transparente."
     )
