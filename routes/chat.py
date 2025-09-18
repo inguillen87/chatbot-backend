@@ -30,6 +30,7 @@ from utils.auth_helpers import (
     obtener_token,
     user_from_token,
 )
+from utils.response_utils import ensure_buttons_compatibility
 from datetime import datetime, timedelta
 
 chat_bp = Blueprint("chat_bp", __name__)
@@ -404,8 +405,7 @@ def _procesar_chat(
         """Emite un mensaje por Socket.IO si hay una sesión web activa."""
 
         if channel == "web" and chat_session_id_header:
-            if isinstance(payload, dict) and "options_list" in payload and "botones" not in payload:
-                payload["botones"] = payload["options_list"]
+            ensure_buttons_compatibility(payload)
 
             socketio.emit('message', payload, room=chat_session_id_header)
             current_app.logger.debug(
@@ -1101,6 +1101,8 @@ def _procesar_chat(
             if audio_url and channel == "web" and "audio" not in resultado:
                 resultado["audio"] = {"link": audio_url}
 
+        ensure_buttons_compatibility(resultado)
+
         # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
         if is_anonymous and resultado and resultado.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"] and not (resultado.get("datos_estructura", {}).get("nombre_usuario_detectado") and resultado.get("datos_estructura", {}).get("telefono_detectado") and resultado.get("datos_estructura", {}).get("email_detectado")):
             resultado['pedir_info'] = ["nombre", "telefono", "email"]
@@ -1122,11 +1124,7 @@ def _procesar_chat(
 
         # Emit the result via Socket.IO if the channel is web
         if channel == "web" and chat_session_id_header:
-            # FIX: Ensure 'botones' key is present for the frontend if 'options_list' exists.
-            # The frontend widget expects 'botones', but many backend handlers generate 'options_list'.
-            if resultado and isinstance(resultado, dict) and 'options_list' in resultado and 'botones' not in resultado:
-                resultado['botones'] = resultado['options_list']
-                current_app.logger.info("Copiando 'options_list' a 'botones' para compatibilidad con el frontend.")
+            ensure_buttons_compatibility(resultado)
 
             socketio.emit('message', resultado, room=chat_session_id_header)
             current_app.logger.debug(
