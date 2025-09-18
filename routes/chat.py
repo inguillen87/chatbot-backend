@@ -938,6 +938,7 @@ def _procesar_chat(
                     current_app.logger.info("Mensaje duplicado detectado; reenviando última respuesta.")
                     last_resp = chat_context_obj.context_data.get("last_bot_response")
                     if last_resp:
+                        ensure_buttons_compatibility(last_resp)
                         return jsonify(last_resp), 200
             except Exception:
                 pass
