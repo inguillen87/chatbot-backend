@@ -226,6 +226,36 @@ class DemoOfflineResponsesTestCase(unittest.TestCase):
         options = data.get("options_list") or []
         self.assertTrue(any("corpor" in (opt.get("texto") or "").lower() for opt in options))
 
+    def test_demo_session_does_not_consume_plan_limit(self):
+        session_id = "offline-demo-plan-limit"
+        headers = {"X-Chat-Session-Id": session_id}
+
+        self.bodega_user.limite_preguntas = 1
+        self.bodega_user.preguntas_usadas = 1
+        db.session.commit()
+
+        with self.client as client:
+            client.post("/ask/pyme", json={"pregunta": "__INIT__"}, headers=headers)
+            client.post(
+                "/ask/pyme",
+                json={"pregunta": {"action": "demo_select_rubro:bodega"}},
+                headers=headers,
+            )
+
+            with patch(
+                "services.pymes.llamar_llm_con_fallback",
+                side_effect=AssertionError("LLM should not be called for demo plan limit"),
+            ):
+                response = client.post(
+                    "/ask/pyme",
+                    json={"pregunta": "Necesito un presupuesto rápido"},
+                    headers=headers,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        db.session.refresh(self.bodega_user)
+        self.assertEqual(self.bodega_user.preguntas_usadas, 1)
+
     def test_demo_token_auto_enables_offline_flow(self):
         session_id = "offline-demo-auto-token"
         headers = {"X-Chat-Session-Id": session_id, "X-Token": "demo-bodega-token"}
