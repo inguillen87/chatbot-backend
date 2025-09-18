@@ -163,6 +163,30 @@ class Config:
                 "DEMO_MUNICIPIO_WELCOME_MESSAGE",
                 "🙌 ¡Bienvenido a la demo municipal! Contame qué trámite o reclamo querés gestionar.",
             ),
+            "resources": [
+                {
+                    "title": "Guía de trámites express",
+                    "description": "Pasos clave para turnos, reclamos con foto y seguimiento 24/7 desde el panel ciudadano.",
+                    "type": "pdf",
+                    "url": "/static/demo/municipio/guia-tramites-rapidos.pdf",
+                    "cta_text": "Descargar guía de trámites",
+                },
+                {
+                    "title": "Plan de iluminación inteligente 2024",
+                    "description": "Proyecto LED con sensores IoT, tablero de monitoreo y prioridades por barrio.",
+                    "type": "pdf",
+                    "url": "/static/demo/municipio/plan-iluminacion-inteligente.pdf",
+                    "cta_text": "Ver plan de inversión",
+                },
+                {
+                    "title": "Centro de monitoreo en tiempo real",
+                    "description": "Visualización de KPIs, reclamos geolocalizados y derivación inmediata a cuadrillas.",
+                    "type": "image",
+                    "url": "/static/demo/municipio/centro-monitoreo-smart.svg",
+                    "thumbnail": "/static/demo/municipio/centro-monitoreo-smart.svg",
+                    "cta_text": "Abrir dashboard de monitoreo",
+                },
+            ],
         },
         {
             "key": os.getenv("DEMO_BODEGA_KEY", "bodega"),
@@ -194,6 +218,30 @@ class Config:
                 "DEMO_BODEGA_WELCOME_MESSAGE",
                 "🍷 ¡Hola! Soy el asistente de Bodega Cuatro Fincas. ¿Querés descubrir nuestros vinos?",
             ),
+            "resources": [
+                {
+                    "title": "Catálogo Premium 2024",
+                    "description": "Selección de etiquetas reserva, notas de cata y precios por botella y por caja.",
+                    "type": "pdf",
+                    "url": "/static/demo/bodega/catalogo-premium-2024.pdf",
+                    "cta_text": "Descargar catálogo",
+                },
+                {
+                    "title": "Lista de precios mayoristas",
+                    "description": "Bonificaciones por volumen, combos de degustación y envíos a todo el país.",
+                    "type": "pdf",
+                    "url": "/static/demo/bodega/lista-precios-mayoristas.pdf",
+                    "cta_text": "Consultar precios corporativos",
+                },
+                {
+                    "title": "Gran Malbec Reserva 2021",
+                    "description": "Ficha visual con notas de cata, maridajes sugeridos y precio promocional.",
+                    "type": "image",
+                    "url": "/static/demo/bodega/gran-malbec-reserva.svg",
+                    "thumbnail": "/static/demo/bodega/gran-malbec-reserva.svg",
+                    "cta_text": "Ver ficha del Malbec",
+                },
+            ],
         },
     ]
 

@@ -3,8 +3,9 @@ import os
 import logging
 import random
 import uuid  # Added for chat_session_id generation
+from copy import deepcopy
 from urllib.parse import urljoin
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # Add project root to sys.path for this routes file
 project_root_chat_routes = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -59,10 +60,15 @@ def _load_demo_rubros() -> List[Dict[str, Optional[str]]]:
         rubro_clave_conf = entry.get("rubro_clave")
         token_conf = entry.get("token")
         user_id_conf = entry.get("user_id")
-        tipo_chat_conf = entry.get("tipo_chat")
+        tipo_chat_conf_raw = entry.get("tipo_chat")
+        if isinstance(tipo_chat_conf_raw, str):
+            tipo_chat_conf = tipo_chat_conf_raw.strip().lower() or None
+        else:
+            tipo_chat_conf = None
 
         owner_user = None
         rubro_obj = None
+        fallback_owner_used = False
 
         if user_id_conf:
             owner_user = User.query.get(user_id_conf)
@@ -88,9 +94,41 @@ def _load_demo_rubros() -> List[Dict[str, Optional[str]]]:
             owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
             if owner_user and not rubro_obj:
                 rubro_obj = owner_user.rubro
+            if owner_user:
+                fallback_owner_used = True
 
         if owner_user and not rubro_obj:
             rubro_obj = owner_user.rubro
+
+        if rubro_obj and not owner_user:
+            owner_user = User.query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
+            if not owner_user:
+                owner_user = User.query.filter_by(rubro_id=rubro_obj.id, rol='admin').first()
+            if owner_user:
+                fallback_owner_used = True
+
+        tipo_chat_guess = tipo_chat_conf
+        if not tipo_chat_guess and rubro_obj and es_rubro_publico(rubro_obj):
+            tipo_chat_guess = "municipio"
+        if not tipo_chat_guess and owner_user and getattr(owner_user, "tipo_chat", None):
+            tipo_chat_guess = owner_user.tipo_chat
+
+        if not owner_user:
+            if tipo_chat_guess == "municipio":
+                owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
+                if owner_user and not rubro_obj:
+                    rubro_obj = owner_user.rubro
+            else:
+                owner_user = User.query.filter_by(tipo_chat='pyme', rol='admin').first()
+                if owner_user and not rubro_obj:
+                    rubro_obj = owner_user.rubro
+            if owner_user:
+                fallback_owner_used = True
+
+        if owner_user and not tipo_chat_guess:
+            tipo_chat_guess = getattr(owner_user, "tipo_chat", None)
+        if not tipo_chat_guess:
+            tipo_chat_guess = "municipio" if (rubro_obj and es_rubro_publico(rubro_obj)) else "pyme"
 
         if not owner_user or not rubro_obj:
             current_app.logger.warning(
@@ -98,7 +136,12 @@ def _load_demo_rubros() -> List[Dict[str, Optional[str]]]:
             )
             continue
 
-        tipo_chat = tipo_chat_conf or (
+        if fallback_owner_used:
+            current_app.logger.info(
+                f"[demo] Usando owner '{getattr(owner_user, 'id', 'N/A')}' y rubro '{getattr(rubro_obj, 'id', 'N/A')}' como fallback para la demo '{key}'."
+            )
+
+        tipo_chat = tipo_chat_guess or (
             "municipio" if es_rubro_publico(rubro_obj) else getattr(owner_user, "tipo_chat", "pyme")
         )
 
@@ -113,6 +156,7 @@ def _load_demo_rubros() -> List[Dict[str, Optional[str]]]:
                 "rubro_clave": getattr(rubro_obj, "clave", None),
                 "prompt_context": entry.get("prompt_context"),
                 "welcome_message": entry.get("welcome_message"),
+                "resources": deepcopy(entry.get("resources") or []),
             }
         )
         seen_keys.add(key)
@@ -217,6 +261,98 @@ def _build_demo_limit_response(limite: int) -> Dict[str, object]:
         "fuente": "demo_limit",
         "generar_audio": True,
     }
+
+
+def _absolute_demo_url(path: Optional[str]) -> Optional[str]:
+    """Devuelve una URL absoluta para recursos de la demo."""
+    if not path:
+        return None
+
+    value = str(path).strip()
+    if not value:
+        return None
+
+    if value.startswith(("http://", "https://", "data:")):
+        return value
+
+    base_url = current_app.config.get("BACKEND_URL") or request.host_url
+    if not base_url.endswith("/"):
+        base_url = f"{base_url}/"
+
+    return urljoin(base_url, value.lstrip("/"))
+
+
+def _format_demo_resources(
+    resources: List[Dict[str, object]] | None,
+) -> Tuple[str, List[Dict[str, object]], List[Dict[str, object]]]:
+    """Genera texto, botones y adjuntos a partir de la configuración de recursos."""
+
+    if not resources:
+        return "", [], []
+
+    icon_map = {
+        "pdf": "📄",
+        "document": "📄",
+        "image": "🖼️",
+        "video": "🎬",
+        "spreadsheet": "📊",
+        "pricing": "💰",
+        "link": "🔗",
+    }
+
+    lines: List[str] = []
+    buttons: List[Dict[str, object]] = []
+    attachments: List[Dict[str, object]] = []
+
+    for idx, raw in enumerate(resources):
+        if not isinstance(raw, dict):
+            continue
+
+        title_raw = raw.get("title") or raw.get("nombre") or raw.get("label")
+        description_raw = raw.get("description") or raw.get("descripcion")
+        resource_type = str(raw.get("type") or raw.get("tipo") or "document").strip().lower() or "document"
+        icon = icon_map.get(resource_type, "📎")
+
+        title = str(title_raw).strip() if title_raw else None
+        description = str(description_raw).strip() if description_raw else None
+        cta_text = str(raw.get("cta_text") or title or "Ver recurso").strip()
+
+        absolute_url = _absolute_demo_url(raw.get("url") or raw.get("href"))
+        thumbnail_url = _absolute_demo_url(raw.get("thumbnail") or raw.get("image"))
+
+        label_for_text = title or cta_text or f"Recurso {idx + 1}"
+
+        line = f"• {icon} {label_for_text}"
+        if description:
+            line += f" – {description}"
+        if absolute_url:
+            line += f" → {absolute_url}"
+        lines.append(line)
+
+        if absolute_url:
+            buttons.append(
+                {
+                    "id": f"demo_resource_{idx}",
+                    "texto": f"{icon} {cta_text}",
+                    "type": "url",
+                    "url": absolute_url,
+                    "description": description,
+                }
+            )
+
+        attachment_entry: Dict[str, object] = {
+            "titulo": label_for_text,
+            "descripcion": description,
+            "tipo": resource_type,
+        }
+        if absolute_url:
+            attachment_entry["url"] = absolute_url
+        if thumbnail_url:
+            attachment_entry["thumbnail"] = thumbnail_url
+        attachments.append(attachment_entry)
+
+    formatted_text = "\n".join(lines) if lines else ""
+    return formatted_text, buttons, attachments
 
 def _parse_request(tipo_chat_fijo: str | None = None):
     def _normalizar_tipo_chat(valor: str | None) -> str | None:
@@ -688,6 +824,8 @@ def _procesar_chat(
             contexto_chat["demo_description"] = selected_demo.get("descripcion")
             contexto_chat["demo_welcome_message"] = selected_demo.get("welcome_message")
             contexto_chat["demo_message_count"] = 0
+            contexto_chat["demo_resources"] = deepcopy(selected_demo.get("resources") or [])
+            contexto_chat["demo_intro_sent"] = False
             flag_modified(chat_context_obj, "context_data")
 
             pregunta = "__INIT__"
@@ -707,6 +845,8 @@ def _procesar_chat(
                 contexto_chat.pop("demo_display_name", None)
                 contexto_chat.pop("demo_description", None)
                 contexto_chat.pop("demo_welcome_message", None)
+                contexto_chat.pop("demo_resources", None)
+                contexto_chat.pop("demo_intro_sent", None)
                 flag_modified(chat_context_obj, "context_data")
                 selector_payload = _build_demo_selector_payload(demo_options)
                 try:
@@ -838,6 +978,7 @@ def _procesar_chat(
                 "display_name": contexto_chat.get("demo_display_name"),
                 "description": contexto_chat.get("demo_description"),
                 "welcome_message": contexto_chat.get("demo_welcome_message"),
+                "resources": deepcopy(contexto_chat.get("demo_resources") or []),
             }
 
         resultado = responder_chatboc(
@@ -862,6 +1003,70 @@ def _procesar_chat(
             } if actor_principal else None,
             demo_metadata=demo_metadata,
         )
+
+        recursos_demo = []
+        if isinstance(contexto_chat, dict):
+            recursos_demo = contexto_chat.get("demo_resources") or []
+
+        should_apply_intro = (
+            demo_session_activa
+            and recursos_demo
+            and isinstance(resultado, dict)
+            and not contexto_chat.get("demo_intro_sent")
+            and (is_demo_selection_event or _is_init_payload(original_user_payload))
+        )
+
+        if should_apply_intro:
+            resources_text, resource_buttons, resource_attachments = _format_demo_resources(recursos_demo)
+            display_name = contexto_chat.get("demo_display_name") or contexto_chat.get("demo_key") or "esta demo"
+
+            base_message = (
+                contexto_chat.get("demo_welcome_message")
+                or resultado.get("message_body")
+                or resultado.get("respuesta")
+            )
+            description = contexto_chat.get("demo_description")
+            original_message = resultado.get("message_body")
+
+            segments: List[str] = []
+            if base_message:
+                segments.append(str(base_message).strip())
+            if description:
+                description_text = str(description).strip()
+                if description_text and description_text not in segments:
+                    segments.append(description_text)
+            if resources_text:
+                segments.append(f"📎 Material destacado de {display_name}:\n{resources_text}")
+            if original_message:
+                original_text = str(original_message).strip()
+                if original_text and original_text not in segments:
+                    segments.append(original_text)
+
+            message_text = "\n\n".join([seg for seg in segments if seg])
+            if message_text:
+                resultado["message_body"] = message_text
+                resultado["respuesta"] = message_text
+
+            if resource_buttons:
+                existing_options = resultado.get("options_list") or resultado.get("botones") or []
+                resultado["options_list"] = resource_buttons + existing_options
+                total_botones = len(resultado["options_list"])
+                if total_botones <= 3:
+                    resultado["message_type"] = "interactive_buttons"
+                else:
+                    resultado["message_type"] = "interactive_list"
+                existing_botones = resultado.get("botones") or []
+                if existing_botones:
+                    resultado["botones"] = resource_buttons + existing_botones
+                else:
+                    resultado["botones"] = resultado["options_list"]
+
+            if resource_attachments:
+                existing_adjuntos = resultado.get("adjuntos") or []
+                resultado["adjuntos"] = existing_adjuntos + resource_attachments
+
+            contexto_chat["demo_intro_sent"] = True
+            flag_modified(chat_context_obj, "context_data")
 
         # Después de que responder_chatboc y sus sub-funciones hayan modificado chat_context_obj.context_data,
         # lo persistimos.

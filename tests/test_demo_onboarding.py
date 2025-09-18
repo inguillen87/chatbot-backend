@@ -19,6 +19,13 @@ class DemoConfig(Config):
             "tipo_chat": "municipio",
             "rubro_clave": "municipio",
             "prompt_context": "Municipio demo que atiende reclamos y trámites digitales.",
+            "resources": [
+                {
+                    "title": "Guía express",
+                    "type": "pdf",
+                    "url": "/static/demo/municipio/guia-tramites-rapidos.pdf",
+                }
+            ],
         },
         {
             "key": "bodega",
@@ -27,6 +34,18 @@ class DemoConfig(Config):
             "rubro_clave": "bodega",
             "token": "demo-bodega-token",
             "prompt_context": "Catálogo destacado: Malbec Reserva ($18000) y Torrontés Fresco ($11500).",
+            "resources": [
+                {
+                    "title": "Catálogo Premium 2024",
+                    "type": "pdf",
+                    "url": "/static/demo/bodega/catalogo-premium-2024.pdf",
+                },
+                {
+                    "title": "Gran Malbec Reserva",
+                    "type": "image",
+                    "url": "/static/demo/bodega/gran-malbec-reserva.svg",
+                },
+            ],
         },
     ]
 
@@ -122,6 +141,7 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 self.assertIsNotNone(demo_metadata)
                 self.assertEqual(demo_metadata.get("key"), "bodega")
                 self.assertIn("Malbec", demo_metadata.get("prompt_context", ""))
+                self.assertIsInstance(demo_metadata.get("resources"), list)
 
     def test_demo_message_limit_enforced(self):
         session_id = "demo-session-3"
@@ -165,6 +185,41 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 data = resp3.get_json()
                 self.assertEqual(data.get("error"), "demo_limit_reached")
                 self.assertEqual(mock_responder.call_count, 3)
+
+    def test_demo_selection_returns_curated_material(self):
+        session_id = "demo-session-4"
+        headers = {"X-Chat-Session-Id": session_id}
+        with self.client as client:
+            client.post("/ask/pyme", json={"pregunta": "__INIT__"}, headers=headers)
+
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                mock_responder.return_value = {
+                    "message_body": "Bienvenido",
+                    "options_list": [],
+                    "message_type": "text",
+                    "adjuntos": [],
+                }
+
+                response = client.post(
+                    "/ask/pyme",
+                    json={"pregunta": {"action": "demo_select_rubro:bodega"}},
+                    headers=headers,
+                )
+
+                self.assertEqual(response.status_code, 200)
+                data = response.get_json()
+
+                message = data.get("message_body") or data.get("respuesta")
+                self.assertIn("Catálogo Premium", message)
+
+                botones = data.get("botones", [])
+                self.assertTrue(any(btn.get("url", "").endswith(".pdf") for btn in botones))
+
+                adjuntos = data.get("adjuntos", [])
+                self.assertTrue(any(adj.get("tipo") == "pdf" for adj in adjuntos))
+                self.assertTrue(any(adj.get("tipo") == "image" for adj in adjuntos))
+
+                mock_responder.assert_called_once()
 
 
 if __name__ == "__main__":
