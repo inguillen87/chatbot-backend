@@ -101,5 +101,14 @@ class TestContactParserRegex(unittest.TestCase):
         parsed = extract_multiple_contact_details_regex(texto)
         self.assertNotIn("nombre", parsed)
 
+    def test_nombre_label_does_not_become_address(self):
+        """Avoid capturing the word 'nombre' as the address when editing data."""
+
+        texto = "nombre Marcelo Guillen"
+        parsed = extract_multiple_contact_details_regex(texto)
+
+        self.assertEqual(parsed.get("nombre"), "Marcelo Guillen")
+        self.assertNotIn("direccion", parsed)
+
 if __name__ == "__main__":
     unittest.main()

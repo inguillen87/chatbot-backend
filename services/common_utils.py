@@ -1,5 +1,6 @@
 # services/common_utils.py
 import re
+import unicodedata
 import pandas as pd
 from typing import Dict, Any, Tuple, Optional, List
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
@@ -10,6 +11,41 @@ from .constants import ConversationState, CONTEXTO_MUNICIPIO
 # The user MUST review and provide the original or correct implementations.
 
 logger = None # Needs proper logger setup if used within these utils
+
+# Tokens that correspond to labels for contact fields. Used to avoid treating
+# leftover words such as "nombre" or "dni" as an address when parsing a
+# free-form contact message.
+CONTACT_LABEL_TOKENS = {
+    "nombre",
+    "nombrecompleto",
+    "completo",
+    "apellido",
+    "dni",
+    "documento",
+    "doc",
+    "documentonacionaldeidentidad",
+    "email",
+    "correo",
+    "correoelectronico",
+    "mail",
+    "telefono",
+    "tel",
+    "celular",
+    "cel",
+    "whatsapp",
+    "contacto",
+}
+
+
+def _normalize_contact_token(value: str) -> str:
+    """Return a simplified token for matching contact-field labels."""
+
+    if not value:
+        return ""
+
+    normalized = unicodedata.normalize("NFKD", value)
+    stripped = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]", "", stripped.lower())
 
 def get_logger():
     global logger
@@ -981,6 +1017,27 @@ def extract_multiple_contact_details_regex(text: str, potential_fields: list | N
             remaining_text = re.sub(r'\s+', ' ', remaining_text).strip(" ,")
 
     if "direccion" not in extracted_data and "direccion" in potential_fields and remaining_text:
-        extracted_data["direccion"] = remaining_text
+        cleaned_remaining = remaining_text.strip(" ,")
+        if cleaned_remaining:
+            normalized_joined = _normalize_contact_token(cleaned_remaining)
+            normalized_tokens = [
+                token
+                for token in (
+                    _normalize_contact_token(part)
+                    for part in cleaned_remaining.split()
+                )
+                if token
+            ]
+
+            tokens_are_labels = (
+                bool(normalized_tokens)
+                and all(token in CONTACT_LABEL_TOKENS for token in normalized_tokens)
+            )
+
+            if normalized_joined in CONTACT_LABEL_TOKENS or tokens_are_labels:
+                cleaned_remaining = ""
+
+        if cleaned_remaining:
+            extracted_data["direccion"] = cleaned_remaining
 
     return {k: v for k, v in extracted_data.items() if v}
