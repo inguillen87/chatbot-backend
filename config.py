@@ -148,6 +148,21 @@ class Config:
             "token": os.getenv("DEMO_MUNICIPIO_TOKEN"),
             "tipo_chat": os.getenv("DEMO_MUNICIPIO_TIPO_CHAT", "municipio"),
             "rubro_clave": os.getenv("DEMO_MUNICIPIO_RUBRO", "municipio"),
+            "prompt_context": os.getenv(
+                "DEMO_MUNICIPIO_PROMPT_CONTEXT",
+                (
+                    "El Municipio de Junín en Mendoza ofrece un asistente digital para reclamos "
+                    "de luminaria, higiene urbana, arbolado, tránsito y servicios públicos. También "
+                    "acompaña trámites como licencias de conducir, tasas municipales, turnos online "
+                    "y consultas ciudadanas. Usa un tono cálido, profesional y resalta que el bot "
+                    "permite registrar reclamos con ubicación, seguir tickets existentes y derivar "
+                    "a un agente humano cuando haga falta."
+                ),
+            ),
+            "welcome_message": os.getenv(
+                "DEMO_MUNICIPIO_WELCOME_MESSAGE",
+                "🙌 ¡Bienvenido a la demo municipal! Contame qué trámite o reclamo querés gestionar.",
+            ),
         },
         {
             "key": os.getenv("DEMO_BODEGA_KEY", "bodega"),
@@ -159,6 +174,26 @@ class Config:
             "token": os.getenv("DEMO_BODEGA_TOKEN", "demo-token-bodega"),
             "tipo_chat": os.getenv("DEMO_BODEGA_TIPO_CHAT", "pyme"),
             "rubro_clave": os.getenv("DEMO_BODEGA_RUBRO", "bodega"),
+            "prompt_context": os.getenv(
+                "DEMO_BODEGA_PROMPT_CONTEXT",
+                (
+                    "Bodega Cuatro Fincas es una bodega boutique mendocina enfocada en vinos premium. "
+                    "Catálogo destacado: Gran Malbec Reserva 2021 ($18.500) con notas a ciruela y "
+                    "chocolate; Blend de Altura 2019 ($21.000) con Malbec, Cabernet Franc y Petit "
+                    "Verdot; Torrontés Andino 2023 ($11.500) fresco y floral; Espumante Extra Brut "
+                    "Tradicional ($16.800) método champenoise; Caja Degustación 6 botellas ($89.900) "
+                    "con selección del enólogo; Pack Regalo Malbec + Bonarda ($34.500) con estuche. "
+                    "Promos activas: 10% off en combos de 6 botellas, 15% off en compras mayores a "
+                    "$120.000 y envío gratis en Gran Mendoza para pedidos desde $45.000. Horario de "
+                    "atención en sala de degustación: lunes a sábado 10 a 20 hs; degustaciones "
+                    "guiadas viernes y sábado 18 hs con reserva previa. Ofrece asesoramiento para "
+                    "eventos, venta mayorista y armado de regalos corporativos con envío nacional."
+                ),
+            ),
+            "welcome_message": os.getenv(
+                "DEMO_BODEGA_WELCOME_MESSAGE",
+                "🍷 ¡Hola! Soy el asistente de Bodega Cuatro Fincas. ¿Querés descubrir nuestros vinos?",
+            ),
         },
     ]
 

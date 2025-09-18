@@ -111,6 +111,8 @@ def _load_demo_rubros() -> List[Dict[str, Optional[str]]]:
                 "owner_user_id": owner_user.id,
                 "rubro_id": rubro_obj.id,
                 "rubro_clave": getattr(rubro_obj, "clave", None),
+                "prompt_context": entry.get("prompt_context"),
+                "welcome_message": entry.get("welcome_message"),
             }
         )
         seen_keys.add(key)
@@ -681,6 +683,10 @@ def _procesar_chat(
             contexto_chat["demo_rubro_id"] = rubro_obj_global.id if rubro_obj_global else None
             contexto_chat["demo_tipo_chat"] = tipo_chat
             contexto_chat["demo_key"] = selected_demo["key"]
+            contexto_chat["demo_prompt_context"] = selected_demo.get("prompt_context") or selected_demo.get("descripcion")
+            contexto_chat["demo_display_name"] = selected_demo.get("label")
+            contexto_chat["demo_description"] = selected_demo.get("descripcion")
+            contexto_chat["demo_welcome_message"] = selected_demo.get("welcome_message")
             contexto_chat["demo_message_count"] = 0
             flag_modified(chat_context_obj, "context_data")
 
@@ -697,6 +703,10 @@ def _procesar_chat(
                 contexto_chat.pop("demo_rubro_id", None)
                 contexto_chat.pop("demo_tipo_chat", None)
                 contexto_chat.pop("demo_key", None)
+                contexto_chat.pop("demo_prompt_context", None)
+                contexto_chat.pop("demo_display_name", None)
+                contexto_chat.pop("demo_description", None)
+                contexto_chat.pop("demo_welcome_message", None)
                 flag_modified(chat_context_obj, "context_data")
                 selector_payload = _build_demo_selector_payload(demo_options)
                 try:
@@ -820,6 +830,16 @@ def _procesar_chat(
             except Exception:
                 pass
 
+        demo_metadata = None
+        if isinstance(contexto_chat, dict) and contexto_chat.get("demo_session"):
+            demo_metadata = {
+                "key": contexto_chat.get("demo_key"),
+                "prompt_context": contexto_chat.get("demo_prompt_context") or contexto_chat.get("demo_description"),
+                "display_name": contexto_chat.get("demo_display_name"),
+                "description": contexto_chat.get("demo_description"),
+                "welcome_message": contexto_chat.get("demo_welcome_message"),
+            }
+
         resultado = responder_chatboc(
             pregunta=pregunta,
             owner_user=owner_del_bot,
@@ -839,7 +859,8 @@ def _procesar_chat(
                 "name": actor_principal.name,
                 "email": actor_principal.email,
                 "telefono": actor_principal.telefono
-            } if actor_principal else None
+            } if actor_principal else None,
+            demo_metadata=demo_metadata,
         )
 
         # Después de que responder_chatboc y sus sub-funciones hayan modificado chat_context_obj.context_data,
