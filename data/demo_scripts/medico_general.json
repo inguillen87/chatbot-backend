@@ -1,0 +1,78 @@
+{
+  "responses": [
+    {
+      "id": "welcome",
+      "keywords_any": ["__init__", "hola", "buen dia", "buenas", "saludo", "turno"],
+      "response": "🩺 Hola, soy el asistente de {demo_name}. Puedo ayudarte con turnos, coberturas y preparación de estudios. ¿Qué te gustaría resolver?",
+      "buttons": [
+        {"label": "Reservar turno", "target": "turno"},
+        {"label": "Coberturas y obras sociales", "target": "cobertura"},
+        {"label": "Guardias y urgencias", "target": "guardia"}
+      ]
+    },
+    {
+      "id": "turno",
+      "keywords_any": ["turno", "reservar", "sacar", "agenda", "prioritario", "pdf", "descargar"],
+      "response": "Podés reservar turnos online para clínica médica, pediatría, ginecología, laboratorio y nutrición. Confirmamos por WhatsApp y enviamos recordatorio automático.",
+      "resource_tags": ["title:Agenda de turnos"],
+      "buttons": [
+        {"label": "Ver coberturas", "target": "cobertura"},
+        {"label": "Teleconsulta", "target": "teleconsulta"}
+      ]
+    },
+    {
+      "id": "cobertura",
+      "keywords_any": ["cobertura", "obra social", "prepaga", "plan"],
+      "response": "Trabajamos con OSDE, Swiss Medical, Galeno, OSEP y planes provinciales. El bot valida números de afiliado y envía autorizaciones por correo seguro.",
+      "buttons": [
+        {"label": "Reservar turno", "target": "turno"},
+        {"label": "Requisitos de estudios", "target": "estudios"}
+      ]
+    },
+    {
+      "id": "guardia",
+      "keywords_any": ["guardia", "urgencia", "emergencia"],
+      "response": "Coordinamos guardias programadas y teletriage. Si es una emergencia real, siempre recomendamos llamar al servicio médico correspondiente o acudir al centro más cercano.",
+      "buttons": [
+        {"label": "Teleconsulta", "target": "teleconsulta"},
+        {"label": "Reservar turno", "target": "turno"}
+      ]
+    },
+    {
+      "id": "estudios",
+      "keywords_any": ["estudio", "laboratorio", "analisis", "preparacion", "pdf", "instrucciones"],
+      "response": "Compartimos preparación para laboratorio, turnos para ecografías y coordinación de resultados. Podés adjuntar órdenes para que el equipo las valide.",
+      "resource_tags": ["title:Guía de preparación"],
+      "buttons": [
+        {"label": "Coberturas", "target": "cobertura"},
+        {"label": "Teleconsulta", "target": "teleconsulta"}
+      ]
+    },
+    {
+      "id": "teleconsulta",
+      "keywords_any": ["teleconsulta", "virtual", "videollamada", "online"],
+      "response": "La clínica ofrece teleconsultas seguras con firma digital. Enviamos link por WhatsApp, receta electrónica y recordatorio minutos antes.",
+      "resource_tags": ["title:Flujo de teleconsulta"],
+      "buttons": [
+        {"label": "Reservar turno", "target": "turno"},
+        {"label": "Ver estudios", "target": "estudios"}
+      ]
+    },
+    {
+      "id": "contacto",
+      "keywords_any": ["contacto", "asesor", "hablar", "llamar"],
+      "response": "Para derivar a un humano, dejá tus datos y derivamos a la central de turnos o al coordinador de pacientes crónicos en minutos.",
+      "buttons": [
+        {"label": "Reservar turno", "target": "turno"},
+        {"label": "Coberturas", "target": "cobertura"}
+      ]
+    }
+  ],
+  "fallback": {
+    "response": "Esta demo usa respuestas predefinidas para mostrar turnos, coberturas y guardias. Tocá un botón para seguir sin gastar tokens de IA.",
+    "buttons": [
+      {"label": "Reservar turno", "target": "turno"},
+      {"label": "Coberturas", "target": "cobertura"}
+    ]
+  }
+}

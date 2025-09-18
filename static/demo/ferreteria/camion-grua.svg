@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180">
+  <rect width="320" height="180" fill="#ebf5fb" />
+  <rect x="40" y="110" width="200" height="40" fill="#2c3e50" rx="8" />
+  <rect x="70" y="80" width="80" height="30" fill="#3498db" rx="6" />
+  <rect x="150" y="70" width="20" height="70" fill="#f39c12" />
+  <line x1="160" y1="70" x2="240" y2="40" stroke="#f39c12" stroke-width="8" stroke-linecap="round" />
+  <circle cx="80" cy="152" r="18" fill="#1abc9c" />
+  <circle cx="200" cy="152" r="18" fill="#1abc9c" />
+  <text x="20" y="32" font-size="18" font-family="Arial" fill="#2c3e50">Camión grúa con seguimiento GPS</text>
+  <text x="20" y="56" font-size="14" font-family="Arial" fill="#2c3e50">Coordinación por turnos y cargas parciales</text>
+</svg>

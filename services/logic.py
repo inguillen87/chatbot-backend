@@ -49,6 +49,7 @@ def es_rubro_publico(rubro) -> bool:
     return normalizar_rubro(rubro) in RUBROS_PUBLICOS
 
 
+from services.demo_response_engine import maybe_handle_demo_interaction
 from services.llm_utils import clasificar_entidad_con_llm
 from services.municipio_responder import responder_municipio
 from services.pymes import responder_pyme
@@ -283,31 +284,51 @@ def responder_chatboc(
     # Los handlers (responder_municipio, responder_pyme) son responsables de cargar/guardar
     # su propio contexto desde/hacia chat_db_context.context_data usando chat_session_uuid como posible sub-key si es necesario.
 
+    demo_metadata = kwargs.get("demo_metadata") if isinstance(kwargs.get("demo_metadata"), dict) else None
+
     response_data = None
+    if demo_metadata:
+        action_from_payload = None
+        if isinstance(pregunta, dict):
+            action_from_payload = pregunta.get("action") or pregunta.get("action_id")
+
+        response_data = maybe_handle_demo_interaction(
+            pregunta=pregunta,
+            tipo_chat=tipo_chat,
+            demo_metadata=demo_metadata,
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            channel=channel,
+            chat_db_context=chat_db_context,
+            action_id=action_from_payload,
+        )
+
     if tipo_chat == "municipio":
-        response_data = responder_municipio(
-            pregunta_original=pregunta, # La pregunta original del usuario
-            owner_user=owner_user,
-            rubro_obj=rubro_obj,
-            viewer_user=current_user,
-            chat_db_context=chat_db_context, # Pasar el contexto de DB
-            anon_id=anon_id,
-            chat_session_uuid=chat_session_uuid,
-            channel=channel, # Pass channel
-            **kwargs, # Contiene datos_interpretados_archivo y archivo_id_para_asociar
-        )
+        if response_data is None:
+            response_data = responder_municipio(
+                pregunta_original=pregunta, # La pregunta original del usuario
+                owner_user=owner_user,
+                rubro_obj=rubro_obj,
+                viewer_user=current_user,
+                chat_db_context=chat_db_context, # Pasar el contexto de DB
+                anon_id=anon_id,
+                chat_session_uuid=chat_session_uuid,
+                channel=channel, # Pass channel
+                **kwargs, # Contiene datos_interpretados_archivo y archivo_id_para_asociar
+            )
     elif tipo_chat == "pyme":
-        response_data = responder_pyme(
-            pregunta_original=pregunta,
-            owner_user=owner_user,
-            rubro_obj=rubro_obj,
-            viewer_user=current_user,
-            chat_db_context=chat_db_context, # Pasar el contexto de DB
-            anon_id=anon_id,
-            chat_session_uuid=chat_session_uuid,
-            channel=channel, # Pass channel
-            **kwargs,
-        )
+        if response_data is None:
+            response_data = responder_pyme(
+                pregunta_original=pregunta,
+                owner_user=owner_user,
+                rubro_obj=rubro_obj,
+                viewer_user=current_user,
+                chat_db_context=chat_db_context, # Pasar el contexto de DB
+                anon_id=anon_id,
+                chat_session_uuid=chat_session_uuid,
+                channel=channel, # Pass channel
+                **kwargs,
+            )
     else:
         # Esto no debería ocurrir debido a las validaciones previas de tipo_chat
         logger.error(f"Error crítico: tipo_chat '{tipo_chat}' no es ni 'municipio' ni 'pyme' en la parte final de responder_chatboc.")
@@ -315,11 +336,20 @@ def responder_chatboc(
 
     # Always enable audio responses for accessibility
     context_data = chat_db_context.context_data if chat_db_context else {}
-    if isinstance(response_data, dict) and not response_data.get('generar_audio'):
+    if (
+        isinstance(response_data, dict)
+        and not response_data.get('generar_audio')
+        and not response_data.get('skip_audio_generation')
+    ):
         response_data['generar_audio'] = True
 
     # --- Audio Response Generation ---
-    if response_data and response_data.get('generar_audio') and not response_data.get('audio_url'):
+    if (
+        response_data
+        and response_data.get('generar_audio')
+        and not response_data.get('audio_url')
+        and not response_data.get('skip_audio_generation')
+    ):
         text_to_speak = response_data.get('audio_text')
         if not text_to_speak:
             text_to_speak = render_audio_text(
@@ -338,5 +368,6 @@ def responder_chatboc(
         chat_db_context.context_data.pop('source_is_audio', None)
     if response_data:
         response_data.pop('generar_audio', None)
+        response_data.pop('skip_audio_generation', None)
 
     return response_data

@@ -1,0 +1,88 @@
+{
+  "responses": [
+    {
+      "id": "welcome",
+      "keywords_any": ["__init__", "hola", "buen dia", "buenas", "que tal", "saludo"],
+      "response": "🛒 ¡Bienvenido! {demo_name} prepara pedidos minoristas y mayoristas con combos semanales listos para delivery. ¿Querés ver precios, promos o coordinar envíos?",
+      "buttons": [
+        {"label": "Combos familiares", "target": "combos"},
+        {"label": "Lista de precios", "target": "precios"},
+        {"label": "Consultar delivery", "target": "delivery"}
+      ]
+    },
+    {
+      "id": "combos",
+      "keywords_any": ["combo", "combos", "promocion", "promo", "pack"],
+      "response": "Tenemos combos familiares de lácteos, bebidas y snacks listos para envío en el día. Podés combinarlos con frescos, rotisería o productos para bares.",
+      "resource_tags": ["title:Catálogo de combos"],
+      "buttons": [
+        {"label": "Lista mayorista", "target": "precios"},
+        {"label": "Coordinar entrega", "target": "delivery"}
+      ]
+    },
+    {
+      "id": "presupuesto",
+      "keywords_any": ["presupuesto", "cotizacion", "cotiza", "armar pedido", "armar presupuesto", "lista personalizada"],
+      "response": "Podemos armar presupuestos mixtos para bares, rotiserías o franquicias con precios mayoristas, mínimos por rubro y combos sugeridos.",
+      "resource_tags": ["title:Lista de precios"],
+      "buttons": [
+        {"label": "Combos listos", "target": "combos"},
+        {"label": "Coordinar entrega", "target": "delivery"}
+      ]
+    },
+    {
+      "id": "precios",
+      "keywords_any": ["precio", "precios", "lista", "mayorista", "tarifas", "catalogo", "pdf", "descargar"],
+      "response": "La lista se actualiza a diario con precios minoristas y mayoristas desde 6 unidades. Podemos exportar PDF o integrarlo a tu ERP.",
+      "resource_tags": ["title:Lista de precios"],
+      "buttons": [
+        {"label": "Combos destacados", "target": "combos"},
+        {"label": "Medios de pago", "target": "pagos"}
+      ]
+    },
+    {
+      "id": "delivery",
+      "keywords_any": ["delivery", "envio", "envios", "envia", "domicilio", "reparto"],
+      "response": "El delivery propio cubre radio cercano en menos de 90 minutos. Para volumen mayor coordinamos logística con camión o moto tercerizada.",
+      "resource_tags": ["title:Mapa de logística"],
+      "buttons": [
+        {"label": "Reposiciones programadas", "target": "stock"},
+        {"label": "Medios de pago", "target": "pagos"}
+      ]
+    },
+    {
+      "id": "stock",
+      "keywords_any": ["stock", "inventario", "reposicion", "control"],
+      "response": "El panel muestra stock en tiempo real y alerta bajas automáticas para reposiciones. Podés integrarlo con scanners o planillas existentes.",
+      "buttons": [
+        {"label": "Lista de precios", "target": "precios"},
+        {"label": "Solicitar asesor", "target": "contacto"}
+      ]
+    },
+    {
+      "id": "pagos",
+      "keywords_any": ["pago", "pagos", "mercado pago", "modo", "transferencia", "cobro"],
+      "response": "Aceptamos Mercado Pago, MODO, transferencias y billeteras corporativas. Podemos configurar links de pago recurrentes o suscripciones.",
+      "buttons": [
+        {"label": "Ver combos", "target": "combos"},
+        {"label": "Hablar con asesor", "target": "contacto"}
+      ]
+    },
+    {
+      "id": "contacto",
+      "keywords_any": ["contacto", "asesor", "llamar", "hablar"],
+      "response": "Dejanos nombre, teléfono y rubro y coordinamos onboarding en minutos. El equipo puede duplicar esta demo en tu cuenta gratuita.",
+      "buttons": [
+        {"label": "Lista de precios", "target": "precios"},
+        {"label": "Consultar delivery", "target": "delivery"}
+      ]
+    }
+  ],
+  "fallback": {
+    "response": "Esta demo usa guiones prearmados sin llamar a IA generativa. Probá los botones para conocer combos, logística y métodos de pago. Si querés seguir, agendamos una demo personalizada.",
+    "buttons": [
+      {"label": "Combos familiares", "target": "combos"},
+      {"label": "Lista de precios", "target": "precios"}
+    ]
+  }
+}
