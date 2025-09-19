@@ -336,7 +336,7 @@ def extract_complaint_details_llm(text: str, default_localidad: str | None = Non
             if cleaned_response:
                 extracted_details = json.loads(cleaned_response)
                 # Ensure all potential fields are considered valid
-                valid_keys = ["tipo_problema", "ubicacion_problema", "descripcion_problema", "nombre_cliente", "email_cliente", "telefono_cliente", "dni_cliente"]
+                valid_keys = ["tipo_problema", "ubicacion_problema", "descripcion_problema", "descripcion_corta", "nombre_cliente", "email_cliente", "telefono_cliente", "dni_cliente"]
                 extracted_details = {k: v for k, v in extracted_details.items() if k in valid_keys and v}
             else:
                  logger.info(f"[LLM_COMPLAINT_EXTRACT] LLM response was empty after cleaning for text: {text}")
