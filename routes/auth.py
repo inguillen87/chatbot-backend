@@ -35,7 +35,9 @@ def _conf(k, d):
 
 
 def _sign(payload, minutes, renew_days=None):
-    payload = dict(payload, iat=_now(), exp=_now() + minutes * 60)
+    payload = dict(payload)
+    payload.setdefault("session_kind", "widget")
+    payload.update({"iat": _now(), "exp": _now() + minutes * 60})
     if renew_days:
         payload["renew_until"] = _now() + renew_days * 86400
     tok = jwt.encode(payload, current_app.config["SECRET_KEY"], algorithm="HS256")

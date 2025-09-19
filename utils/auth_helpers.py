@@ -5,6 +5,7 @@ from flask_login import current_user
 from models import User
 import jwt
 from datetime import datetime, timedelta, timezone
+from services.demo_registry import demo_rubro_for_token
 
 def generar_token(user_id, rol, tipo_chat, municipio_id, pyme_id):
     """Genera un token de autenticación para un usuario."""
@@ -69,6 +70,16 @@ def obtener_token():
             f"[obtener_token] Found token in cookie '{cookie_name}': '{token_cookie[:10]}...'"
         )
         return token_cookie
+
+    widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME")
+    if widget_cookie_name:
+        widget_cookie = request.cookies.get(widget_cookie_name)
+        if widget_cookie:
+            widget_cookie = widget_cookie.strip()
+            current_app.logger.debug(
+                f"[obtener_token] Found token in widget cookie '{widget_cookie_name}': '{widget_cookie[:10]}...'"
+            )
+            return widget_cookie
 
     token_args = request.args.get("token")
     if token_args:
@@ -216,11 +227,29 @@ def token_requerido(f):
 
         # Si el token vino por header/query y no hay cookie, establecerla para
         # futuras solicitudes (especialmente útil en iframes cross-domain).
-        cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
-        if not request.cookies.get(cookie_name) and token:
+        default_cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
+        widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+        target_cookie = default_cookie_name
+
+        token_payload = {}
+        if token:
+            try:
+                token_payload = jwt.decode(
+                    token,
+                    current_app.config["SECRET_KEY"],
+                    algorithms=["HS256"],
+                    options={"verify_exp": False},
+                )
+            except Exception:
+                token_payload = {}
+
+        if token_payload.get("session_kind") == "widget" or token_payload.get("renew_until"):
+            target_cookie = widget_cookie_name
+
+        if token and not request.cookies.get(target_cookie):
             resp = make_response(response)
             cookie_args = {
-                "key": cookie_name,
+                "key": target_cookie,
                 "value": token,
                 "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
                 "httponly": True,
@@ -329,6 +358,8 @@ def anon_o_token_requerido(f):
         current_user = None  # El usuario final que chatea (el "viewer")
         owner_user = None    # El dueño del bot (la "entidad", ej: municipio)
 
+        demo_token_detected = False
+
         if token:
             # Primero, intentar decodificar como JWT. Esto es para usuarios logueados.
             jwt_user = user_from_token(token)
@@ -351,10 +382,14 @@ def anon_o_token_requerido(f):
                     # El current_user sigue siendo None porque es una sesión anónima del widget.
                 else:
                     current_app.logger.warning(f"Token '{token[:10]}...' provided but is not a valid JWT or a known entity token.")
+                    try:
+                        demo_token_detected = demo_rubro_for_token(token) is not None
+                    except Exception:
+                        demo_token_detected = False
 
         # Si después de todo no hay owner (ej. request anónima sin token),
         # cargar el owner por defecto para el municipio.
-        if not owner_user and 'municipio' in request.path:
+        if not owner_user and 'municipio' in request.path and not demo_token_detected:
             owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
             if owner_user:
                 current_app.logger.info(f"Anonymous request to '{request.path}', loaded DEFAULT municipality owner user ID: {owner_user.id}")

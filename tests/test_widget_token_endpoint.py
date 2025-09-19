@@ -51,6 +51,8 @@ class WidgetTokenEndpointTests(unittest.TestCase):
             data["token"], self.app.config["SECRET_KEY"], algorithms=["HS256"]
         )
         self.assertEqual(decoded["user_id"], self.user.id)
+        self.assertEqual(decoded.get("session_kind"), "widget")
+        self.assertIn("renew_until", decoded)
         self.assertIn(
             resp.headers.get("Access-Control-Allow-Origin"),
             {"*", origin},
@@ -106,6 +108,12 @@ class WidgetTokenEndpointTests(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertIn("token", resp.get_json())
+        refreshed = jwt.decode(
+            resp.get_json()["token"],
+            self.app.config["SECRET_KEY"],
+            algorithms=["HS256"],
+        )
+        self.assertEqual(refreshed.get("session_kind"), "widget")
         self.assertEqual(
             resp.headers.get("Access-Control-Allow-Origin"), "https://example.com"
         )
