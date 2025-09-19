@@ -499,12 +499,12 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 self.assertIn("Catálogo Premium", message)
                 self.assertIn("Preguntas frecuentes destacadas", message)
                 self.assertIn("Envío sin cargo", message)
-                self.assertIn("⚡ Atajos rápidos", message)
+                self.assertIn("Menú principal", message)
+                self.assertIn("Probá decir", message)
                 self.assertNotIn("http", message)
 
                 botones = data.get("botones", [])
                 self.assertTrue(any(btn.get("type") == "quick_reply" for btn in botones))
-                self.assertTrue(any(btn.get("url", "").endswith(".pdf") for btn in botones))
 
                 adjuntos = data.get("adjuntos", [])
                 self.assertTrue(any(adj.get("tipo") == "pdf" for adj in adjuntos))
@@ -536,7 +536,8 @@ class DemoOnboardingTestCase(unittest.TestCase):
             message = data.get("message_body") or data.get("respuesta") or ""
             self.assertIn("Preguntas frecuentes destacadas", message)
             self.assertIn("combos semanales", message)
-            self.assertIn("⚡ Atajos rápidos", message)
+            self.assertIn("Menú principal", message)
+            self.assertIn("Probá decir", message)
             self.assertNotIn("http", message)
             self.assertEqual(data.get("message_type"), "interactive_buttons")
             self.assertTrue(any(btn.get("type") == "quick_reply" for btn in data.get("botones", [])))

@@ -61,6 +61,18 @@
         "prompt": "¿Qué radios de entrega tienen y tiempos estimados?",
         "description": "Ventanas express, estándar y programadas"
       }
+    ],
+    "capabilities": [
+      "🗺️ Compartí tu ubicación y confirmo cobertura y tiempos de entrega.",
+      "📄 Adjuntá un PDF o Excel con tu lista y te armo el pedido listo para enviar.",
+      "🖼️ Enviá una foto de tu góndola o depósito y sugiero reposiciones.",
+      "🔁 Pedime \"Armá un pedido mixto\" para combinar retiro y delivery en una sola orden."
+    ],
+    "keywords": [
+      "combos express",
+      "lista mayorista",
+      "delivery en 90 minutos",
+      "reposiciones bares"
     ]
   },
   {
@@ -152,6 +164,18 @@
         "prompt": "Detallame la logística boutique, ventanas y operadores.",
         "description": "Gran Mendoza 24 h, AMBA viernes, export LATAM"
       }
+    ],
+    "capabilities": [
+      "🗺️ Compartí tu ubicación o zona y confirmo ventanas de entrega y export.",
+      "📄 Adjuntá un PDF o Excel con tu pedido y te devuelvo el presupuesto con bonificaciones.",
+      "🖼️ Enviá una foto de tu carta actual y propongo maridajes y upsells.",
+      "🥂 Decime cuántas cajas necesitás y simulo descuentos trade y obsequios."
+    ],
+    "keywords": [
+      "catálogo íconos",
+      "tarifario mayorista",
+      "degustaciones corporativas",
+      "logística boutique"
     ]
   },
   {
@@ -215,6 +239,18 @@
         "prompt": "Mostrame herramientas eléctricas en promoción.",
         "description": "Taladros, esmeriladoras y EPP"
       }
+    ],
+    "capabilities": [
+      "🗺️ Mandá la ubicación de la obra y calculo tiempos de camión grúa.",
+      "📄 Subí planos o presupuestos en PDF y armo la cotización por rubro.",
+      "🖼️ Compartí una foto del ambiente y recomiendo materiales y terminaciones.",
+      "🔁 Pedí \"Seguimiento camión\" para ver último despacho y devolución de bolsones."
+    ],
+    "keywords": [
+      "cotización obra",
+      "plan logístico",
+      "herramientas profesionales",
+      "seguimiento camión"
     ]
   },
   {
@@ -278,6 +314,18 @@
         "prompt": "Explicame cómo funciona el programa de fidelización y promociones.",
         "description": "Wallet QR, puntos y cupones"
       }
+    ],
+    "capabilities": [
+      "🗺️ Compartí tu ubicación y muestro la sucursal o pick up más cercano.",
+      "📄 Adjuntá el listado de talles o SKUs y verifico stock al instante.",
+      "🖼️ Enviá fotos de tu vidriera y diseño propuestas de styling y cross selling.",
+      "🎯 Pedime \"Campaña fidelización\" y armo combos con cupones y segmentos."
+    ],
+    "keywords": [
+      "lookbook urbano",
+      "regalos corporativos",
+      "programa fidelización",
+      "cambios express"
     ]
   },
   {
@@ -340,6 +388,18 @@
         "prompt": "Cómo funciona la teleconsulta y la receta digital en la clínica?",
         "description": "Paso a paso y envío por mail"
       }
+    ],
+    "capabilities": [
+      "📍 Compartí tu ubicación y te indico guardias y centros más cercanos.",
+      "📄 Adjuntá la orden médica en PDF o imagen y verifico cobertura y preparación.",
+      "🖼️ Enviá una foto de resultados y te explico los pasos para seguimiento.",
+      "📆 Pedí \"Recordame turno\" y programo recordatorios automáticos."
+    ],
+    "keywords": [
+      "turno clínica médica",
+      "preparación estudios",
+      "teleconsulta",
+      "receta digital"
     ]
   },
   {
@@ -402,6 +462,18 @@
         "prompt": "¿Cómo puedo consultar y pagar las tasas municipales en línea?",
         "description": "Portal de pagos y medios habilitados"
       }
+    ],
+    "capabilities": [
+      "📍 Enviá tu ubicación y geolocalizo el reclamo o trámite en segundos.",
+      "📸 Adjuntá una foto o video del problema y genero el ticket con la cuadrilla correspondiente.",
+      "📄 Subí tu boleta en PDF y te indico medios de pago, planes o vencimientos.",
+      "🔁 Escribí \"Seguimiento reclamo\" y consulto el estado actualizado al instante."
+    ],
+    "keywords": [
+      "reclamo luminaria",
+      "licencia conducir",
+      "tasas municipales",
+      "portal ciudadano"
     ]
   }
 ]

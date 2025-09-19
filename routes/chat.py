@@ -189,6 +189,16 @@ def _activate_demo_session(
         contexto_chat["demo_quick_actions"] = quick_actions
         changed = True
 
+    capabilities = deepcopy(demo_payload.get("capabilities") or [])
+    if contexto_chat.get("demo_capabilities") != capabilities:
+        contexto_chat["demo_capabilities"] = capabilities
+        changed = True
+
+    keywords = deepcopy(demo_payload.get("keywords") or [])
+    if contexto_chat.get("demo_keywords") != keywords:
+        contexto_chat["demo_keywords"] = keywords
+        changed = True
+
     should_reset_counter = reset_counter or existing_key != demo_key
     if should_reset_counter or "demo_message_count" not in contexto_chat:
         _set("demo_message_count", 0)
@@ -358,13 +368,15 @@ def _format_demo_resources(
 
 def _format_demo_quick_actions(
     quick_actions: List[Dict[str, object]] | None,
-) -> Tuple[str, List[Dict[str, object]]]:
+) -> Tuple[str, str, List[Dict[str, object]]]:
     """Render quick access suggestions for the intro message."""
 
     if not quick_actions:
-        return "", []
+        return "", "", []
 
-    lines: List[str] = []
+    menu_lines: List[str] = []
+    prompt_lines: List[str] = []
+    prompt_seen: set[str] = set()
     buttons: List[Dict[str, object]] = []
 
     for idx, raw in enumerate(quick_actions):
@@ -384,11 +396,16 @@ def _format_demo_quick_actions(
         description_text = str(description).strip() if description else None
 
         if description_text:
-            lines.append(f"• {display_text} – {description_text}")
+            menu_lines.append(f"• {display_text} – {description_text}")
         else:
-            lines.append(f"• {display_text}")
+            menu_lines.append(f"• {display_text}")
 
         prompt = raw.get("prompt") or raw.get("question") or raw.get("payload")
+        prompt_text = str(prompt).strip() if prompt else ""
+        if prompt_text and prompt_text not in prompt_seen:
+            prompt_lines.append(f'• "{prompt_text}"')
+            prompt_seen.add(prompt_text)
+
         action_payload = prompt or raw.get("action") or texto
 
         action_id_raw = raw.get("action_id") or raw.get("id") or raw.get("key")
@@ -418,8 +435,50 @@ def _format_demo_quick_actions(
 
         buttons.append(button)
 
-    text_block = "\n".join(lines) if lines else ""
-    return text_block, buttons
+    menu_text = "\n".join(menu_lines) if menu_lines else ""
+    prompts_text = "\n".join(prompt_lines) if prompt_lines else ""
+    return menu_text, prompts_text, buttons
+
+
+def _format_demo_keywords(keywords: List[object] | None) -> str:
+    if not keywords:
+        return ""
+
+    lines: List[str] = []
+    seen: set[str] = set()
+    for raw in keywords:
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if not text or text.lower() in seen:
+            continue
+        seen.add(text.lower())
+        bullet = text if text.startswith("•") else f"• {text}"
+        lines.append(bullet)
+
+    return "\n".join(lines)
+
+
+def _format_demo_capabilities(capabilities: List[object] | None) -> str:
+    if not capabilities:
+        return ""
+
+    lines: List[str] = []
+    seen: set[str] = set()
+    for raw in capabilities:
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if not text:
+            continue
+        normalized = text.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        bullet = text if text.startswith("•") else f"• {text}"
+        lines.append(bullet)
+
+    return "\n".join(lines)
 
 
 def _format_demo_faq_preview(faq_preview: List[Dict[str, object]] | None) -> str:
@@ -1328,12 +1387,16 @@ def _procesar_chat(
         demo_description: Optional[str] = None
         demo_welcome: Optional[str] = None
         quick_actions_raw: List[Dict[str, object]] = []
+        capabilities_raw: List[object] = []
+        keywords_raw: List[object] = []
         if isinstance(contexto_chat, dict):
             recursos_demo = contexto_chat.get("demo_resources") or []
             faq_preview_data = contexto_chat.get("demo_faq_preview") or []
             demo_description = contexto_chat.get("demo_description")
             demo_welcome = contexto_chat.get("demo_welcome_message")
             quick_actions_raw = contexto_chat.get("demo_quick_actions") or []
+            capabilities_raw = contexto_chat.get("demo_capabilities") or []
+            keywords_raw = contexto_chat.get("demo_keywords") or []
 
         has_intro_content = bool(
             recursos_demo
@@ -1341,6 +1404,8 @@ def _procesar_chat(
             or demo_description
             or demo_welcome
             or quick_actions_raw
+            or capabilities_raw
+            or keywords_raw
         )
 
         should_apply_intro = (
@@ -1352,10 +1417,12 @@ def _procesar_chat(
         )
 
         if should_apply_intro:
-            resources_text, resource_buttons, resource_attachments = _format_demo_resources(recursos_demo)
-            quick_actions_text, quick_action_buttons = _format_demo_quick_actions(quick_actions_raw)
+            resources_text, _, resource_attachments = _format_demo_resources(recursos_demo)
+            menu_text, prompt_examples_text, quick_action_buttons = _format_demo_quick_actions(quick_actions_raw)
             display_name = contexto_chat.get("demo_display_name") or contexto_chat.get("demo_key") or "esta demo"
             faq_preview_text = _format_demo_faq_preview(faq_preview_data)
+            keywords_text = _format_demo_keywords(keywords_raw)
+            capabilities_text = _format_demo_capabilities(capabilities_raw)
 
             base_message = (
                 contexto_chat.get("demo_welcome_message")
@@ -1372,10 +1439,16 @@ def _procesar_chat(
                 description_text = str(description).strip()
                 if description_text and description_text not in segments:
                     segments.append(description_text)
+            if menu_text:
+                segments.append(f"📋 Menú principal:\n{menu_text}")
+            if prompt_examples_text:
+                segments.append(f"💬 Probá decir:\n{prompt_examples_text}")
+            if keywords_text:
+                segments.append(f"🔑 Palabras clave sugeridas:\n{keywords_text}")
+            if capabilities_text:
+                segments.append(f"🧪 Herramientas disponibles:\n{capabilities_text}")
             if faq_preview_text:
                 segments.append(f"❓ Preguntas frecuentes destacadas:\n{faq_preview_text}")
-            if quick_actions_text:
-                segments.append(f"⚡ Atajos rápidos:\n{quick_actions_text}")
             if resources_text:
                 segments.append(f"📎 Material destacado de {display_name}:\n{resources_text}")
             if original_message:
@@ -1391,8 +1464,6 @@ def _procesar_chat(
             combined_buttons: List[Dict[str, object]] = []
             if quick_action_buttons:
                 combined_buttons.extend(quick_action_buttons)
-            if resource_buttons:
-                combined_buttons.extend(resource_buttons)
 
             if combined_buttons:
                 existing_options = resultado.get("options_list") or resultado.get("botones") or []
