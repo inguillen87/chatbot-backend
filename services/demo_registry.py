@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional
@@ -76,6 +77,43 @@ def _normalize_key(value: object) -> Optional[str]:
     if not text:
         return None
     return text.replace(" ", "_")
+
+
+def _normalize_alias_value(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+
+    decomposed = unicodedata.normalize("NFKD", text)
+    sanitized = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    sanitized = re.sub(r"[^a-z0-9]+", "_", sanitized)
+    sanitized = sanitized.strip("_")
+    return sanitized or None
+
+
+def _alias_variants(*values: object) -> set[str]:
+    variants: set[str] = set()
+    for value in values:
+        normalized = _normalize_alias_value(value)
+        if not normalized:
+            continue
+        variants.add(normalized)
+        collapsed = normalized.replace("_", "")
+        if collapsed:
+            variants.add(collapsed)
+        parts = [part for part in normalized.split("_") if part]
+        if len(parts) > 1:
+            for start in range(len(parts)):
+                for end in range(start + 1, len(parts) + 1):
+                    fragment = "_".join(parts[start:end])
+                    if fragment:
+                        variants.add(fragment)
+                        collapsed_fragment = fragment.replace("_", "")
+                        if collapsed_fragment:
+                            variants.add(collapsed_fragment)
+    return variants
 
 
 def _guess_tipo_chat(entry: Dict[str, object], rubro: Optional[Rubro], owner: Optional[User]) -> str:
@@ -288,16 +326,26 @@ def demo_rubro_for_token(token: Optional[str]) -> Optional[DemoRubro]:
         if not match:
             continue
 
-        candidate_key = match.group(1).strip("-_ ")
-        if not candidate_key:
+        candidate_key = match.group(1)
+        slug = _normalize_alias_value(candidate_key)
+        if not slug:
             continue
 
-        slug = candidate_key.replace("-", "_")
-
         for demo in demos:
-            if demo.key == slug:
+            alias_candidates = _alias_variants(
+                demo.key,
+                demo.rubro_clave,
+                demo.label,
+            )
+            if slug in alias_candidates:
                 return demo
-            if demo.rubro_clave and demo.rubro_clave.strip().lower() == slug:
-                return demo
+
+            slug_tokens = {token for token in slug.split("_") if token}
+            if slug_tokens:
+                alias_token_pool: set[str] = set()
+                for candidate in alias_candidates:
+                    alias_token_pool.update(part for part in candidate.split("_") if part)
+                if slug_tokens.issubset(alias_token_pool):
+                    return demo
 
     return None
