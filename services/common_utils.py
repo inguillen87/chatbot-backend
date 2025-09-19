@@ -631,6 +631,18 @@ def _get_main_menu_payload(
     if not user_name and viewer_user:
         user_name = getattr(viewer_user, "nombre", None) or getattr(viewer_user, "name", None)
 
+    if not user_name:
+        municipal_context = (
+            context.get("chat_db_context_data", {}).get(CONTEXTO_MUNICIPIO, {})
+            if isinstance(context.get("chat_db_context_data"), dict)
+            else {}
+        )
+        contacto_usuario = municipal_context.get("contacto_usuario", {})
+        if isinstance(contacto_usuario, dict):
+            nombre_contacto = contacto_usuario.get("nombre")
+            if isinstance(nombre_contacto, str) and nombre_contacto.strip():
+                user_name = nombre_contacto.strip()
+
     if welcome_message_override:
         welcome_message = welcome_message_override
     elif user_name:
