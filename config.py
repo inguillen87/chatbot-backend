@@ -261,6 +261,9 @@ class Config:
     # Nombre del cookie adicional que almacena el token de acceso como
     # respaldo en caso de que la sesión basada en cookies falle
     AUTH_TOKEN_COOKIE_NAME = os.getenv("AUTH_TOKEN_COOKIE_NAME", "auth_token")
+    # Cookie aislada para los tokens emitidos al widget embebido.  Evita que
+    # los tokens de corta duración del widget reemplacen la sesión del panel.
+    WIDGET_TOKEN_COOKIE_NAME = os.getenv("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
 
     # 4. RESTO DE LA CONFIGURACIÓN...
     ATTENTION_BUBBLE_TEXT = os.getenv("ATTENTION_BUBBLE_TEXT", "¡Hola! ¿Necesitas ayuda?")

@@ -1,20 +1,18 @@
 import unittest
-import sys
-import os
+from flask import Flask
 
-# Añadir el directorio raíz del proyecto al sys.path
-project_root_token_utils = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root_token_utils not in sys.path:
-    sys.path.insert(0, project_root_token_utils)
-
-from app import create_app
 from routes.auth import obtener_token
 
 class TokenExtractionTests(unittest.TestCase):
-    def setUp(self):
-        app = create_app()
-        app.config['TESTING'] = True
-        self.app = app
+    @classmethod
+    def setUpClass(cls):
+        cls.app = Flask(__name__)
+        cls.app.config.update(
+            TESTING=True,
+            SECRET_KEY="testing-secret",
+            AUTH_TOKEN_COOKIE_NAME="auth_token",
+            WIDGET_TOKEN_COOKIE_NAME="widget_token",
+        )
 
     def test_authorization_without_bearer(self):
         with self.app.test_request_context('/', headers={'Authorization': 'abc123'}):
@@ -29,6 +27,12 @@ class TokenExtractionTests(unittest.TestCase):
         headers = {'Cookie': f'{cookie_name}=abc123'}
         with self.app.test_request_context('/', headers=headers):
             self.assertEqual(obtener_token(), 'abc123')
+
+    def test_token_from_widget_cookie(self):
+        widget_cookie = self.app.config.get('WIDGET_TOKEN_COOKIE_NAME', 'widget_token')
+        headers = {'Cookie': f'{widget_cookie}=widget123'}
+        with self.app.test_request_context('/', headers=headers):
+            self.assertEqual(obtener_token(), 'widget123')
 
 if __name__ == '__main__':
     unittest.main()
