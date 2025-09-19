@@ -122,7 +122,11 @@
         "url": "/static/demo/bodega/rutas-envio-premium.svg",
         "thumbnail": "/static/demo/bodega/rutas-envio-premium.svg",
         "cta_text": "Ver rutas de envío",
+        "highlight": "Seguimiento post entrega",
         "availability": "Gran Mendoza sin cargo desde $45.000"
+      }
+    ],
+    "quick_actions": [
       {
         "emoji": "📘",
         "texto": "Catálogo premium actualizado",
