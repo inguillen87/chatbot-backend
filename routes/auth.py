@@ -939,7 +939,6 @@ def me_perfil(user):
         # Construir el perfil del usuario a partir del objeto User
         profile_data = {
             "id": user.id,
-            "token": user.token,
             "name": user.name,
             "email": user.email,
             "rol": user.rol,
@@ -959,6 +958,17 @@ def me_perfil(user):
             "horario": user.horario,
             # Asegurarse de no exponer datos sensibles como el hash de la contraseña
         }
+
+        auth_token = getattr(g, "auth_token", None)
+        if auth_token:
+            profile_data["token"] = auth_token
+            profile_data["auth_token"] = auth_token
+        else:
+            profile_data["token"] = user.token
+
+        if user.token:
+            profile_data["entity_token"] = user.token
+
         return jsonify(profile_data)
 
     elif request.method == 'PUT':

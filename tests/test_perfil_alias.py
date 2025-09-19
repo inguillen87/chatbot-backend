@@ -32,3 +32,7 @@ def test_perfil_alias_works(client):
     assert response.status_code == 200
     json_data = response.get_json()
     assert json_data["email"] == "perfil_alias@test.com"
+    normalized_token = jwt_token.decode("utf-8") if isinstance(jwt_token, bytes) else jwt_token
+    assert json_data["token"] == normalized_token
+    assert json_data["auth_token"] == normalized_token
+    assert json_data["entity_token"] == "perfil-alias-token"
