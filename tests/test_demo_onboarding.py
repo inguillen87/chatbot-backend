@@ -30,10 +30,11 @@ class DemoConfig(Config):
         },
         {
             "key": "bodega",
-            "nombre": "Demo Bodega",
+            "nombre": "Bodega Cuatro Fincas",
             "tipo_chat": "pyme",
             "rubro_clave": "bodega",
             "token": "demo-bodega-token",
+            "aliases": ["demo-bodega", "cuatro-fincas"],
             "prompt_context": "Catálogo destacado: Malbec Reserva ($18000) y Torrontés Fresco ($11500).",
             "resources": [
                 {
@@ -47,6 +48,18 @@ class DemoConfig(Config):
                     "url": "/static/demo/bodega/gran-malbec-reserva.svg",
                 },
             ],
+            "quick_actions": [
+                {
+                    "emoji": "📘",
+                    "texto": "Ver catálogo premium",
+                    "prompt": "Compartime el catálogo premium actualizado de Cuatro Fincas.",
+                },
+                {
+                    "emoji": "💸",
+                    "texto": "Lista mayorista",
+                    "prompt": "Necesito la lista mayorista vigente con descuentos por volumen.",
+                },
+            ],
         },
         {
             "key": "almacen",
@@ -56,6 +69,19 @@ class DemoConfig(Config):
             "token": "demo-almacen-token",
             "prompt_context": "Almacén digital con combos familiares, envíos en el día y precios mayoristas.",
             "welcome_message": "Bienvenido al demo del almacén. ¿Buscás algo para tu pedido?",
+            "aliases": ["demo-almacen", "almacen-inteligente"],
+            "quick_actions": [
+                {
+                    "emoji": "🧺",
+                    "texto": "Combos listos",
+                    "prompt": "Mostrame los combos familiares disponibles.",
+                },
+                {
+                    "emoji": "🛵",
+                    "texto": "Zonas de delivery",
+                    "prompt": "¿Qué radios de entrega manejan?",
+                },
+            ],
             "resources": [],
         },
     ]
@@ -195,6 +221,9 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 faq_preview = demo_metadata.get("faq_preview")
                 self.assertTrue(faq_preview)
                 self.assertIn("Malbec", faq_preview[0].get("respuesta", ""))
+                quick_actions = demo_metadata.get("quick_actions")
+                self.assertTrue(quick_actions)
+                self.assertTrue(any(action.get("texto") for action in quick_actions))
 
     def test_municipio_request_without_rubro_skips_demo_selector(self):
         session_id = "municipio-session-no-rubro"
@@ -470,8 +499,11 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 self.assertIn("Catálogo Premium", message)
                 self.assertIn("Preguntas frecuentes destacadas", message)
                 self.assertIn("Envío sin cargo", message)
+                self.assertIn("⚡ Atajos rápidos", message)
+                self.assertNotIn("http", message)
 
                 botones = data.get("botones", [])
+                self.assertTrue(any(btn.get("type") == "quick_reply" for btn in botones))
                 self.assertTrue(any(btn.get("url", "").endswith(".pdf") for btn in botones))
 
                 adjuntos = data.get("adjuntos", [])
@@ -504,7 +536,151 @@ class DemoOnboardingTestCase(unittest.TestCase):
             message = data.get("message_body") or data.get("respuesta") or ""
             self.assertIn("Preguntas frecuentes destacadas", message)
             self.assertIn("combos semanales", message)
-            self.assertEqual(data.get("message_type"), "text")
+            self.assertIn("⚡ Atajos rápidos", message)
+            self.assertNotIn("http", message)
+            self.assertEqual(data.get("message_type"), "interactive_buttons")
+            self.assertTrue(any(btn.get("type") == "quick_reply" for btn in data.get("botones", [])))
+
+    def test_demo_alias_token_bootstraps_session(self):
+        session_id = "demo-session-alias"
+        headers = {"X-Chat-Session-Id": session_id}
+
+        self.bodega_user.plan = "pro"
+        self.bodega_user.preguntas_usadas = 200
+        db.session.add(self.bodega_user)
+        db.session.commit()
+
+        from services.demo_registry import demo_rubro_for_token
+
+        demo_entry = demo_rubro_for_token("demo-anon-bodega")
+        self.assertIsNotNone(demo_entry)
+        self.assertEqual(demo_entry.owner_user_id, self.bodega_user.id)
+        alias_entry = demo_rubro_for_token("cuatro-fincas")
+        self.assertIsNotNone(alias_entry)
+        self.assertEqual(alias_entry.key, "bodega")
+
+        with self.client as client:
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                mock_responder.return_value = {
+                    "message_body": "Hola",
+                    "options_list": [],
+                    "message_type": "text",
+                }
+
+                response = client.post(
+                    "/ask/pyme",
+                    json={"pregunta": "__INIT__", "token": "demo-anon-bodega"},
+                    headers=headers,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        mock_responder.assert_called_once()
+        _, kwargs = mock_responder.call_args
+        owner = kwargs.get("owner_user")
+        rubro_obj = kwargs.get("rubro_obj")
+        demo_metadata = kwargs.get("demo_metadata")
+
+        self.assertIsNotNone(owner)
+        self.assertEqual(owner.id, self.bodega_user.id)
+        self.assertIsNotNone(rubro_obj)
+        self.assertEqual(rubro_obj.id, self.rubro_bodega.id)
+        self.assertIsNotNone(demo_metadata)
+        self.assertEqual(demo_metadata.get("key"), "bodega")
+
+        db.session.refresh(self.bodega_user)
+        self.assertEqual(self.bodega_user.preguntas_usadas, 200)
+
+    def test_existing_demo_context_without_session_flag_still_bypasses_limit(self):
+        session_id = "demo-session-resume"
+        headers = {"X-Chat-Session-Id": session_id}
+
+        context = ChatSessionContext(
+            chat_session_id=session_id,
+            context_data={
+                "demo_key": "bodega",
+                "demo_owner_user_id": self.bodega_user.id,
+                "demo_rubro_id": self.rubro_bodega.id,
+                "demo_prompt_context": "cached",
+                "demo_message_count": 1,
+            },
+        )
+        db.session.add(context)
+        db.session.commit()
+
+        self.bodega_user.plan = "pro"
+        self.bodega_user.preguntas_usadas = 200
+        db.session.add(self.bodega_user)
+        db.session.commit()
+
+        with self.client as client:
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                mock_responder.return_value = {
+                    "message_body": "Bienvenido nuevamente",
+                    "options_list": [],
+                    "message_type": "text",
+                }
+
+                response = client.post(
+                    "/ask/pyme",
+                    json={"pregunta": "quiero cotizar un evento"},
+                    headers=headers,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        mock_responder.assert_called_once()
+        _, kwargs = mock_responder.call_args
+        owner = kwargs.get("owner_user")
+        rubro_obj = kwargs.get("rubro_obj")
+
+        self.assertIsNotNone(owner)
+        self.assertEqual(owner.id, self.bodega_user.id)
+        self.assertIsNotNone(rubro_obj)
+        self.assertEqual(rubro_obj.id, self.rubro_bodega.id)
+
+        db.session.refresh(self.bodega_user)
+        self.assertEqual(self.bodega_user.preguntas_usadas, 200)
+
+    def test_alias_resolution_accepts_label_variants(self):
+        from services.demo_registry import demo_rubro_for_token
+
+        variants = [
+            "demo-anon-bodega-cuatro-fincas",
+            "demo-anon-cuatro-fincas",
+            "demoAnonCuatroFincas",
+            "demo-token-cuatrofincas",
+        ]
+
+        for token in variants:
+            with self.subTest(token=token):
+                entry = demo_rubro_for_token(token)
+                self.assertIsNotNone(entry)
+                self.assertEqual(entry.key, "bodega")
+
+    def test_demo_owner_token_skips_plan_limit(self):
+        session_id = "demo-session-owner-token"
+        headers = {"X-Chat-Session-Id": session_id, "X-Token": "demo-bodega-token"}
+
+        self.bodega_user.limite_preguntas = 0
+        self.bodega_user.preguntas_usadas = 0
+        db.session.add(self.bodega_user)
+        db.session.commit()
+
+        with self.client as client:
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                mock_responder.return_value = {
+                    "message_body": "Hola",
+                    "options_list": [],
+                    "message_type": "text",
+                }
+
+                response = client.post(
+                    "/ask/pyme",
+                    json={"pregunta": "__INIT__"},
+                    headers=headers,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        mock_responder.assert_called_once()
 
     def test_rubros_endpoint_exposes_demo_metadata(self):
         with self.client as client:
