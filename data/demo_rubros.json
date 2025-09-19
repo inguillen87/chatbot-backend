@@ -38,45 +38,45 @@
     "env_prefix": "DEMO_BODEGA",
     "key": "bodega",
     "nombre": "Bodega Cuatro Fincas",
-    "descripcion": "Probá la experiencia de compra de una pyme: catálogo de vinos, precios y pedidos en vivo.",
+    "descripcion": "Portfolio premium, listas mayoristas actualizadas y experiencias corporativas con logística boutique.",
     "token": "demo-token-bodega",
     "tipo_chat": "pyme",
     "rubro_clave": "bodega",
-    "prompt_context": "Bodega Cuatro Fincas es una bodega boutique mendocina enfocada en vinos premium. Catálogo destacado: Gran Malbec Reserva 2021 ($18.500) con notas a ciruela y chocolate; Blend de Altura 2019 ($21.000) con Malbec, Cabernet Franc y Petit Verdot; Torrontés Andino 2023 ($11.500) fresco y floral; Espumante Extra Brut Tradicional ($16.800) método champenoise; Caja Degustación 6 botellas ($89.900) con selección del enólogo; Pack Regalo Malbec + Bonarda ($34.500) con estuche. Promos activas: 10% off en combos de 6 botellas, 15% off en compras mayores a $120.000 y envío gratis en Gran Mendoza para pedidos desde $45.000. Horario de atención en sala de degustación: lunes a sábado 10 a 20 hs; degustaciones guiadas viernes y sábado 18 hs con reserva previa. Ofrece asesoramiento para eventos, venta mayorista y armado de regalos corporativos con envío nacional.",
-    "welcome_message": "🍷 ¡Hola! Soy el asistente de Bodega Cuatro Fincas. ¿Querés descubrir nuestros vinos?",
+    "prompt_context": "Cuatro Fincas Winery de Salvador Patti trabaja microvinificaciones en Perdriel con viñedos propios en Vistalba, Agrelo y Valle de Uco. Portfolio 2024: Gran Malbec Reserva ($18.900) 14 meses roble francés, Cabernet Franc Single Vineyard ($20.500), Bonarda Orgánica Don Salvador ($13.200), Chardonnay Reserva ($15.800) batonage sobre lías y Extra Brut Pinot Noir-Chardonnay ($16.800) método tradicional. Programas corporativos: Discovery Pack 6 botellas ($93.900), Caja Regalo Premier ($36.200) y degustaciones guiadas con maridaje $18.000 por persona. Beneficios vigentes: 10% off en 5 cajas, 15% off desde $120.000, envío sin cargo en Gran Mendoza desde $45.000 y logística refrigerada nacional (Andreani Wine, Cargo Services). Público objetivo: vinotecas boutique, hoteles, restaurantes con carta de vino y experiencias para equipos.",
+    "welcome_message": "🍷 ¡Hola! Soy el sommelier digital de Cuatro Fincas. Tengo catálogos, listas mayoristas y combos corporativos listos para enviar. ¿Qué necesitás cotizar?",
     "resources": [
       {
         "title": "Catálogo Premium 2024",
-        "description": "Selección de etiquetas reserva, notas de cata y precios por botella y por caja.",
+        "description": "Portfolio signature, línea Vincent y experiencias enoturísticas con notas de cata detalladas.",
         "type": "pdf",
         "url": "/static/demo/bodega/catalogo-premium-2024.pdf",
         "cta_text": "Descargar catálogo"
       },
       {
         "title": "Lista de precios mayoristas",
-        "description": "Bonificaciones por volumen, combos de degustación y envíos a todo el país.",
-        "type": "pdf",
+        "description": "Tarifas septiembre 2024 con escalas por canal, condiciones de pago y cobertura logística.",
+        "type": "pricing",
         "url": "/static/demo/bodega/lista-precios-mayoristas.pdf",
         "cta_text": "Consultar precios corporativos"
       },
       {
-        "title": "Gran Malbec Reserva 2021",
-        "description": "Ficha visual con notas de cata, maridajes sugeridos y precio promocional.",
+        "title": "Gran Malbec Reserva Finca La Perseverancia",
+        "description": "Ficha visual con origen, vinificación y premios 2024 del ícono de la casa.",
         "type": "image",
         "url": "/static/demo/bodega/gran-malbec-reserva.svg",
         "thumbnail": "/static/demo/bodega/gran-malbec-reserva.svg",
         "cta_text": "Ver ficha del Malbec"
       },
       {
-        "title": "Combos de degustación corporativa",
-        "description": "PDF con cajas premium para regalos, degustaciones privadas y eventos empresariales.",
+        "title": "Experiencias y degustaciones",
+        "description": "Combos corporativos, degustaciones guiadas y kits streaming diseñados por Salvador Patti.",
         "type": "pdf",
         "url": "/static/demo/bodega/combos-degustacion-corporativas.pdf",
         "cta_text": "Descargar combos corporativos"
       },
       {
         "title": "Mapa de envíos boutique",
-        "description": "Cobertura nacional con tiempos estimados y operadores de logística refrigerada.",
+        "description": "Tabla logística 24/48/72 h con operadores premium y seguimiento post entrega.",
         "type": "image",
         "url": "/static/demo/bodega/rutas-envio-premium.svg",
         "thumbnail": "/static/demo/bodega/rutas-envio-premium.svg",
