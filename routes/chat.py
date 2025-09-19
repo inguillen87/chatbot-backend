@@ -807,53 +807,53 @@ def _procesar_chat(
         is_demo_selection_event = False
         demo_options: Optional[List[Dict[str, Optional[str]]]] = None
 
+        token_from_request = obtener_token()
+        demo_match_from_token = demo_rubro_for_token(token_from_request)
         demo_payload_from_token: Optional[Dict[str, object]] = None
-        if not owner_user:
-            token_from_request = obtener_token()
-            demo_match_from_token = demo_rubro_for_token(token_from_request)
-            if demo_match_from_token:
-                demo_payload_from_token = demo_match_from_token.to_internal_dict()
 
-                owner_candidate = None
-                if demo_match_from_token.owner_user_id:
-                    owner_candidate = User.query.get(demo_match_from_token.owner_user_id)
+        if not owner_user and demo_match_from_token:
+            demo_payload_from_token = demo_match_from_token.to_internal_dict()
 
-                rubro_candidate = None
-                if demo_match_from_token.rubro_id:
-                    rubro_candidate = Rubro.query.get(demo_match_from_token.rubro_id)
+            owner_candidate = None
+            if demo_match_from_token.owner_user_id:
+                owner_candidate = User.query.get(demo_match_from_token.owner_user_id)
 
-                if not rubro_candidate and owner_candidate:
-                    rubro_candidate = getattr(owner_candidate, "rubro", None)
+            rubro_candidate = None
+            if demo_match_from_token.rubro_id:
+                rubro_candidate = Rubro.query.get(demo_match_from_token.rubro_id)
 
-                if owner_candidate:
-                    owner_user = owner_candidate
-                    owner_del_bot = owner_candidate
+            if not rubro_candidate and owner_candidate:
+                rubro_candidate = getattr(owner_candidate, "rubro", None)
 
-                if rubro_candidate:
-                    rubro_obj_global = rubro_candidate
-                    rubro_para_log = (
-                        getattr(rubro_candidate, "nombre", None)
-                        or getattr(rubro_candidate, "clave", None)
-                        or rubro_para_log
-                    )
-                    rubro_id = rubro_candidate.id
-                    if getattr(rubro_candidate, "clave", None):
-                        rubro_clave = rubro_candidate.clave
+            if owner_candidate:
+                owner_user = owner_candidate
+                owner_del_bot = owner_candidate
 
-                if demo_match_from_token.tipo_chat:
-                    tipo_chat = demo_match_from_token.tipo_chat
+            if rubro_candidate:
+                rubro_obj_global = rubro_candidate
+                rubro_para_log = (
+                    getattr(rubro_candidate, "nombre", None)
+                    or getattr(rubro_candidate, "clave", None)
+                    or rubro_para_log
+                )
+                rubro_id = rubro_candidate.id
+                if getattr(rubro_candidate, "clave", None):
+                    rubro_clave = rubro_candidate.clave
 
-                if demo_payload_from_token:
-                    changed = _activate_demo_session(
-                        contexto_chat,
-                        demo_payload_from_token,
-                        owner_user=owner_candidate,
-                        rubro_obj=rubro_candidate,
-                        reset_counter=False,
-                    )
-                    if changed and chat_context_obj:
-                        flag_modified(chat_context_obj, "context_data")
-                _sync_demo_session_flag()
+            if demo_match_from_token.tipo_chat:
+                tipo_chat = demo_match_from_token.tipo_chat
+
+            if demo_payload_from_token:
+                changed = _activate_demo_session(
+                    contexto_chat,
+                    demo_payload_from_token,
+                    owner_user=owner_candidate,
+                    rubro_obj=rubro_candidate,
+                    reset_counter=False,
+                )
+                if changed and chat_context_obj:
+                    flag_modified(chat_context_obj, "context_data")
+            _sync_demo_session_flag()
 
         owner_user_rubro_id = getattr(owner_user, "rubro_id", None)
 
@@ -1053,7 +1053,29 @@ def _procesar_chat(
         else:
             current_app.logger.info("No se pudo determinar un rubro/owner específico para la lógica del bot. Se usará lógica genérica si aplica (ej. para rubros públicos por defecto).")
 
-        if owner_del_bot and not demo_session_activa:
+        if isinstance(contexto_chat, dict) and contexto_chat.get("demo_key") and not contexto_chat.get("demo_session"):
+            contexto_chat["demo_session"] = True
+            _sync_demo_session_flag()
+            if chat_context_obj:
+                flag_modified(chat_context_obj, "context_data")
+
+        demo_flow_active = bool(
+            demo_session_activa
+            or (isinstance(contexto_chat, dict) and contexto_chat.get("demo_session"))
+            or (isinstance(contexto_chat, dict) and contexto_chat.get("demo_key"))
+            or demo_payload_from_token
+            or demo_match_from_token
+        )
+
+        if (
+            not demo_flow_active
+            and owner_del_bot
+            and getattr(owner_del_bot, "token", None)
+            and demo_rubro_for_token(owner_del_bot.token)
+        ):
+            demo_flow_active = True
+
+        if owner_del_bot and not demo_flow_active:
             from utils.plan_limits import limite_para_usuario
             limite = limite_para_usuario(owner_del_bot)
             if limite is not None and owner_del_bot.preguntas_usadas >= limite:
@@ -1063,7 +1085,7 @@ def _procesar_chat(
 
         demo_limit = current_app.config.get("DEMO_MAX_MESSAGES_PER_SESSION", 0)
         incrementar_demo = (
-            demo_session_activa
+            demo_flow_active
             and demo_limit
             and demo_limit > 0
             and not is_demo_selection_event
@@ -1318,7 +1340,7 @@ def _procesar_chat(
             f"[RUBROS] Rubro efectivo: '{nombre_rubro_log}' (ID: {getattr(rubro_obj_global, 'id', 'N/A')}), esPublico={es_publico}"
         )
 
-        if owner_del_bot and not demo_session_activa:
+        if owner_del_bot and not demo_flow_active:
             owner_del_bot.preguntas_usadas += 1
 
         if isinstance(resultado, dict):
