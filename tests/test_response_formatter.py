@@ -73,6 +73,43 @@ class TestResponseFormatter(unittest.TestCase):
         self.assertEqual(response["interactive"]["type"], "list")
         self.assertEqual(len(response["interactive"]["action"]["sections"][0]["rows"]), 4)
 
+    def test_whatsapp_interactive_list_with_sections_override(self):
+        options = [
+            {"id": "qa1", "texto": "Opción 1"},
+            {"id": "qa2", "texto": "Opción 2"},
+            {"id": "qa3", "texto": "Opción 3"},
+            {"id": "qa4", "texto": "Opción 4"},
+        ]
+        override = {
+            "interactive_list_sections": [
+                {
+                    "title": "Atajos",
+                    "rows": [
+                        {"id": "qa1", "title": "Opción 1", "description": "Descripción 1"},
+                        {"id": "qa2", "title": "Opción 2", "description": "Descripción 2"},
+                        {"id": "qa3", "title": "Opción 3", "description": "Descripción 3"},
+                        {"id": "qa4", "title": "Opción 4", "description": "Descripción 4"},
+                    ],
+                }
+            ],
+            "interactive_list_button_text": "Abrir demo",
+        }
+
+        response = build_interactive_response(
+            options=options,
+            body_text="Elegí:",
+            channel="whatsapp",
+            message_type='interactive_list',
+            original_bot_response=override,
+        )
+
+        action = response["interactive"]["action"]
+        self.assertEqual(action["button"], "Abrir demo")
+        self.assertEqual(len(action["sections"]), 1)
+        self.assertEqual(action["sections"][0]["title"], "Atajos")
+        self.assertEqual(len(action["sections"][0]["rows"]), 4)
+        self.assertEqual(action["sections"][0]["rows"][0]["description"], "Descripción 1")
+
     def test_whatsapp_interactive_list_10_options(self):
         options = [{"id": f"li{i}", "texto": f"Lista Item {i}"} for i in range(10)]
         response = build_interactive_response(

@@ -276,17 +276,49 @@ def build_interactive_response(options: list,
         elif message_type == 'interactive_list':
             interactive_data["type"] = "list"
             interactive_data["action"]["button"] = original_bot_response.get("interactive_list_button_text", "Ver opciones")
-            interactive_data["action"]["sections"] = [{
-                "title": original_bot_response.get("interactive_list_section_title", "Opciones"),
-                "rows": [
-                    {
-                        "id": o.get("id", o.get("action_id", str(i))),
-                        "title": o.get("texto", "")[:24],
-                        "description": f"{o.get('url', '')}\n{o.get('description', '')}".strip()[:72]
-                    }
-                    for i, o in enumerate(options)
-                ]
-            }]
+
+            sections_override = original_bot_response.get("interactive_list_sections")
+            sections_payload = []
+            if isinstance(sections_override, list):
+                for section in sections_override:
+                    if not isinstance(section, dict):
+                        continue
+                    title_value = section.get("title") or original_bot_response.get("interactive_list_section_title", "Opciones")
+                    rows_value = section.get("rows") or []
+                    rows_payload = []
+                    for idx, row in enumerate(rows_value):
+                        if not isinstance(row, dict):
+                            continue
+                        row_id = str(row.get("id") or row.get("action_id") or idx)
+                        row_title = str(row.get("title") or row.get("texto") or "").strip()
+                        if not row_title:
+                            continue
+                        row_desc = str(row.get("description") or "").strip()
+                        rows_payload.append({
+                            "id": row_id[:200],
+                            "title": row_title[:24],
+                            "description": row_desc[:72],
+                        })
+                    if rows_payload:
+                        sections_payload.append({
+                            "title": str(title_value or "Opciones")[:24],
+                            "rows": rows_payload,
+                        })
+
+            if not sections_payload:
+                sections_payload = [{
+                    "title": original_bot_response.get("interactive_list_section_title", "Opciones"),
+                    "rows": [
+                        {
+                            "id": o.get("id", o.get("action_id", str(i))),
+                            "title": o.get("texto", "")[:24],
+                            "description": f"{o.get('url', '')}\n{o.get('description', '')}".strip()[:72]
+                        }
+                        for i, o in enumerate(options)
+                    ]
+                }]
+
+            interactive_data["action"]["sections"] = sections_payload
 
         # This is the start of the corrected block
         payload = {
