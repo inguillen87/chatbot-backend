@@ -30,7 +30,7 @@ class DemoConfig(Config):
         },
         {
             "key": "bodega",
-            "nombre": "Demo Bodega",
+            "nombre": "Bodega Cuatro Fincas",
             "tipo_chat": "pyme",
             "rubro_clave": "bodega",
             "token": "demo-bodega-token",
@@ -505,6 +505,91 @@ class DemoOnboardingTestCase(unittest.TestCase):
             self.assertIn("Preguntas frecuentes destacadas", message)
             self.assertIn("combos semanales", message)
             self.assertEqual(data.get("message_type"), "text")
+
+    def test_demo_alias_token_bootstraps_session(self):
+        session_id = "demo-session-alias"
+        headers = {"X-Chat-Session-Id": session_id}
+
+        self.bodega_user.plan = "pro"
+        self.bodega_user.preguntas_usadas = 200
+        db.session.add(self.bodega_user)
+        db.session.commit()
+
+        from services.demo_registry import demo_rubro_for_token
+
+        demo_entry = demo_rubro_for_token("demo-anon-bodega")
+        self.assertIsNotNone(demo_entry)
+        self.assertEqual(demo_entry.owner_user_id, self.bodega_user.id)
+
+        with self.client as client:
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                mock_responder.return_value = {
+                    "message_body": "Hola",
+                    "options_list": [],
+                    "message_type": "text",
+                }
+
+                response = client.post(
+                    "/ask/pyme",
+                    json={"pregunta": "__INIT__", "token": "demo-anon-bodega"},
+                    headers=headers,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        mock_responder.assert_called_once()
+        _, kwargs = mock_responder.call_args
+        owner = kwargs.get("owner_user")
+        rubro_obj = kwargs.get("rubro_obj")
+        demo_metadata = kwargs.get("demo_metadata")
+
+        self.assertIsNotNone(owner)
+        self.assertEqual(owner.id, self.bodega_user.id)
+        self.assertIsNotNone(rubro_obj)
+        self.assertEqual(rubro_obj.id, self.rubro_bodega.id)
+        self.assertIsNotNone(demo_metadata)
+        self.assertEqual(demo_metadata.get("key"), "bodega")
+
+    def test_alias_resolution_accepts_label_variants(self):
+        from services.demo_registry import demo_rubro_for_token
+
+        variants = [
+            "demo-anon-bodega-cuatro-fincas",
+            "demo-anon-cuatro-fincas",
+            "demoAnonCuatroFincas",
+            "demo-token-cuatrofincas",
+        ]
+
+        for token in variants:
+            with self.subTest(token=token):
+                entry = demo_rubro_for_token(token)
+                self.assertIsNotNone(entry)
+                self.assertEqual(entry.key, "bodega")
+
+    def test_demo_owner_token_skips_plan_limit(self):
+        session_id = "demo-session-owner-token"
+        headers = {"X-Chat-Session-Id": session_id, "X-Token": "demo-bodega-token"}
+
+        self.bodega_user.limite_preguntas = 0
+        self.bodega_user.preguntas_usadas = 0
+        db.session.add(self.bodega_user)
+        db.session.commit()
+
+        with self.client as client:
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                mock_responder.return_value = {
+                    "message_body": "Hola",
+                    "options_list": [],
+                    "message_type": "text",
+                }
+
+                response = client.post(
+                    "/ask/pyme",
+                    json={"pregunta": "__INIT__"},
+                    headers=headers,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        mock_responder.assert_called_once()
 
     def test_rubros_endpoint_exposes_demo_metadata(self):
         with self.client as client:
