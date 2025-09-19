@@ -32,6 +32,8 @@ class DemoRubro:
     welcome_message: Optional[str] = None
     resources: List[Dict[str, object]] = field(default_factory=list)
     faq_preview: List[Dict[str, str]] = field(default_factory=list)
+    aliases: List[str] = field(default_factory=list)
+    quick_actions: List[Dict[str, object]] = field(default_factory=list)
 
     def to_internal_dict(self) -> Dict[str, object]:
         """Return a dict representation used by the chat routes."""
@@ -48,9 +50,12 @@ class DemoRubro:
             "welcome_message": self.welcome_message,
             "resources": [dict(item) for item in self.resources],
             "faq_preview": [dict(item) for item in self.faq_preview],
+            "quick_actions": [dict(item) for item in self.quick_actions],
         }
         if self.token:
             payload["token"] = self.token
+        if self.aliases:
+            payload["aliases"] = list(self.aliases)
         return payload
 
     def to_public_dict(self) -> Dict[str, object]:
@@ -67,6 +72,7 @@ class DemoRubro:
             "welcome_message": self.welcome_message,
             "resources": [dict(item) for item in self.resources],
             "faq_preview": [dict(item) for item in self.faq_preview],
+            "quick_actions": [dict(item) for item in self.quick_actions],
         }
 
 
@@ -261,6 +267,22 @@ def load_demo_rubros() -> List[DemoRubro]:
         prompt_context = entry.get("prompt_context") or entry.get("prompt")
         welcome_message = entry.get("welcome_message")
         resources = entry.get("resources") or []
+        raw_aliases = entry.get("aliases") or entry.get("alias") or entry.get("alias_tokens")
+        aliases: List[str] = []
+        if isinstance(raw_aliases, (list, tuple, set)):
+            for alias in raw_aliases:
+                if alias is None:
+                    continue
+                alias_text = str(alias).strip()
+                if alias_text:
+                    aliases.append(alias_text)
+        elif isinstance(raw_aliases, str):
+            alias_text = raw_aliases.strip()
+            if alias_text:
+                aliases.append(alias_text)
+
+        quick_actions_raw = entry.get("quick_actions") or []
+        quick_actions = [dict(item) for item in quick_actions_raw if isinstance(item, dict)]
 
         demo_rubro = DemoRubro(
             key=key,
@@ -275,6 +297,8 @@ def load_demo_rubros() -> List[DemoRubro]:
             welcome_message=welcome_message,
             resources=[dict(item) for item in resources if isinstance(item, dict)],
             faq_preview=_faq_preview_for_rubro(rubro_obj),
+            aliases=aliases,
+            quick_actions=quick_actions,
         )
 
         opciones.append(demo_rubro)
@@ -314,6 +338,42 @@ def demo_rubro_for_token(token: Optional[str]) -> Optional[DemoRubro]:
     for demo in demos:
         if demo.token and demo.token.strip().lower() == normalized:
             return demo
+        if any(str(alias).strip().lower() == normalized for alias in demo.aliases):
+            return demo
+
+    alias_patterns = (
+        r"^demo[-_]?anon[-_]?(.+)$",
+        r"^demo[-_]?token[-_]?(.+)$",
+        r"^demo[-_]?(.+)$",
+    )
+
+    for pattern in alias_patterns:
+        match = re.match(pattern, normalized)
+        if not match:
+            continue
+
+        candidate_key = match.group(1)
+        slug = _normalize_alias_value(candidate_key)
+        if not slug:
+            continue
+
+        for demo in demos:
+            alias_candidates = _alias_variants(
+                demo.key,
+                demo.rubro_clave,
+                demo.label,
+                *demo.aliases,
+            )
+            if slug in alias_candidates:
+                return demo
+
+            slug_tokens = {token for token in slug.split("_") if token}
+            if slug_tokens:
+                alias_token_pool: set[str] = set()
+                for candidate in alias_candidates:
+                    alias_token_pool.update(part for part in candidate.split("_") if part)
+                if slug_tokens.issubset(alias_token_pool):
+                    return demo
 
     alias_patterns = (
         r"^demo[-_]?anon[-_]?(.+)$",
