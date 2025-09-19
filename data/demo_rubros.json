@@ -67,83 +67,90 @@
     "env_prefix": "DEMO_BODEGA",
     "key": "bodega",
     "nombre": "Bodega Cuatro Fincas",
-    "descripcion": "Portfolio premium, listas mayoristas actualizadas y experiencias corporativas con logística boutique.",
+    "descripcion": "Sommelier digital que centraliza portfolio ícono, tarifas mayoristas y logística boutique en un solo flujo.",
     "token": "demo-token-bodega",
     "tipo_chat": "pyme",
     "rubro_clave": "bodega",
     "aliases": ["demo-bodega", "cuatro-fincas", "cuatrofincas", "demo-cuatro-fincas"],
-    "prompt_context": "Cuatro Fincas Winery de Salvador Patti trabaja microvinificaciones en Perdriel con viñedos en Vistalba, Agrelo y Valle de Uco. Portfolio 2024: Gran Malbec Reserva ($18.900) 14 meses roble francés, Cabernet Franc Single Vineyard ($20.500), Bonarda Orgánica Don Salvador ($13.200), Chardonnay Reserva ($15.800) y Extra Brut Pinot Noir-Chardonnay ($16.800). Programas corporativos: Discovery Pack 6 botellas ($93.900), Caja Regalo Premier ($36.200) y degustaciones guiadas con maridaje $18.000 por persona. Beneficios: 10% off en 5 cajas, 15% off desde $120.000, envío sin cargo en Gran Mendoza desde $45.000 y logística refrigerada nacional (Andreani Wine, Cargo Services). Público objetivo: vinotecas boutique, hoteles, restaurantes y eventos corporativos.",
-    "welcome_message": "🍷 Hola, soy el sommelier digital de Cuatro Fincas. Tengo fichas técnicas, tarifas corporativas y experiencias premium listas para enviar.",
+    "prompt_context": "Cuatro Fincas Winery (Perdriel, Mendoza) produce microvinificaciones lideradas por Salvador Patti con viñedos en Altamira, Agrelo, Vistalba y Gualtallary. Portfolio 2024/2025: Gran Malbec Reserva 2021 ($18.900, 14 meses roble francés), Cabernet Franc Single Vineyard 2022 ($20.500), Chardonnay Finca Don Matías 2022 ($15.800), Bonarda Orgánica Don Salvador 2023 ($13.200) y Extra Brut Método Tradicional 2021 ($16.800). Línea HoReCa Vincent Malbec/Chardonnay ($8.900/$9.200) y Blend Andino ($14.500). Logística boutique: envío bonificado Gran Mendoza, salidas semanales AMBA, 48 h Córdoba/Rosario, control de temperatura Patagonia y export LATAM con partners. Experiencias corporativas: Discovery Pack 6 botellas ($93.900), Caja Regalo Premier ($36.200), Barrel Room Experience ($24.000 por persona) y Vendimia Corporativa. Beneficios trade: 10% desde 5 cajas, 15% sobre $120.000, training staff, copas Riedel y soporte de sommelier.",
+    "welcome_message": "🍷 Hola, soy el concierge digital de Cuatro Fincas. Elegí Catálogo íconos, Tarifario mayorista, Degustaciones corporativas o Logística boutique y te lo envío al instante.",
     "resources": [
       {
-        "title": "Catálogo Premium 2024",
-        "description": "Gran Malbec Reserva, Cabernet Franc Single Vineyard y espumosos signature.",
+        "title": "Catálogo premium 2024/2025",
+        "description": "Gran Malbec Reserva, Cabernet Franc Single Vineyard, Chardonnay Finca Don Matías y Bonarda Orgánica.",
         "type": "pdf",
         "url": "/static/demo/bodega/catalogo-premium-2024.pdf",
-        "cta_text": "Ver catálogo premium",
+        "cta_text": "Abrir catálogo íconos",
         "price": "Gran Malbec Reserva desde $18.900",
-        "highlight": "Actualizado septiembre 2024",
-        "availability": "Stock en bodega + vinotecas aliadas"
+        "highlight": "Viñedos Altamira · Agrelo",
+        "availability": "Stock asignado 2024/2025"
       },
       {
         "title": "Lista de precios mayoristas",
-        "description": "Escalas por canal, condiciones de pago y beneficios por volumen.",
+        "description": "Escalas combinadas, mínimos por línea y programas HoReCa/Duty Free.",
         "type": "pricing",
         "url": "/static/demo/bodega/lista-precios-mayoristas.pdf",
-        "cta_text": "Consultar precios corporativos",
-        "price": "Bonarda Orgánica desde $13.200",
-        "highlight": "Escalas 6/15/30 cajas",
-        "availability": "Descuentos hasta 15% + financiación 30/60 días"
+        "cta_text": "Descargar tarifa mayorista",
+        "price": "Bonarda Orgánica $13.200",
+        "highlight": "Bonificaciones 10% / 15%",
+        "availability": "Programas HoReCa + duty free"
       },
       {
         "title": "Gran Malbec Reserva Finca La Perseverancia",
-        "description": "Ficha con origen, vinificación y puntajes internacionales 2024.",
+        "description": "Ficha técnica con origen Altamira + Agrelo, datos analíticos y puntajes internacionales.",
         "type": "image",
         "url": "/static/demo/bodega/gran-malbec-reserva.svg",
         "thumbnail": "/static/demo/bodega/gran-malbec-reserva.svg",
         "cta_text": "Ver ficha del Malbec",
-        "price": "$18.900 botella / $105.000 caja",
-        "highlight": "94 pts Tim Atkin | 14 meses roble francés"
+        "price": "$18.900 botella · $107.400 caja",
+        "highlight": "Altamira + Agrelo · 14 meses roble",
+        "availability": "Lote limitado 4.800 botellas"
       },
       {
         "title": "Experiencias y degustaciones",
-        "description": "Discovery Pack, kits streaming, maridajes corporativos y propuestas para RRHH.",
+        "description": "Discovery Pack, Barrel Room Experience, kits streaming y vendimia corporativa.",
         "type": "pdf",
         "url": "/static/demo/bodega/combos-degustacion-corporativas.pdf",
         "cta_text": "Descargar combos corporativos",
-        "price": "Degustaciones guiadas desde $18.000 por persona",
-        "highlight": "Diseñadas por Salvador Patti",
+        "price": "Degustaciones desde $18.000 por persona",
+        "highlight": "Diseñado por Salvador Patti",
         "availability": "On-site, híbridas y virtuales"
       },
       {
         "title": "Mapa de envíos boutique",
-        "description": "Cobertura 24/48/72 h con Andreani Wine, Cargo Services y logística refrigerada propia.",
+        "description": "Ventanas 24/48/72 h, SLA 98,6%, export LATAM y control de temperatura.",
         "type": "image",
         "url": "/static/demo/bodega/rutas-envio-premium.svg",
         "thumbnail": "/static/demo/bodega/rutas-envio-premium.svg",
         "cta_text": "Ver rutas de envío",
-        "highlight": "Seguimiento post entrega",
-        "availability": "Gran Mendoza sin cargo desde $45.000"
+        "highlight": "Tracking en vivo + reporte 48 h",
+        "availability": "Gran Mendoza, AMBA, interior y LATAM"
       }
     ],
     "quick_actions": [
       {
         "emoji": "📘",
-        "texto": "Catálogo premium actualizado",
-        "prompt": "Compartime el catálogo premium 2024 con notas de cata.",
-        "description": "Malbec Reserva, Cabernet Franc y Chardonnay"
+        "texto": "Catálogo íconos 2024/25",
+        "prompt": "Compartime el catálogo premium con fichas y notas de cata.",
+        "description": "Gran Malbec, Cabernet Franc, Chardonnay"
       },
       {
         "emoji": "💸",
-        "texto": "Lista mayorista vigente",
-        "prompt": "Necesito la lista mayorista con escalas y mínimos de cajas.",
-        "description": "Beneficios 10% y 15% según volumen"
+        "texto": "Tarifario mayorista",
+        "prompt": "Mostrame la lista mayorista con bonificaciones y mínimos.",
+        "description": "Escalas 5/12 cajas y programas HoReCa"
       },
       {
         "emoji": "🥂",
         "texto": "Degustaciones corporativas",
-        "prompt": "Quiero organizar una degustación corporativa o Discovery Pack.",
-        "description": "On-site, virtuales y cajas regalo"
+        "prompt": "Quiero propuestas de degustaciones y combos corporativos.",
+        "description": "Discovery Pack, Barrel Room, streaming"
+      },
+      {
+        "emoji": "🚚",
+        "texto": "Logística boutique & SLA",
+        "prompt": "Detallame la logística boutique, ventanas y operadores.",
+        "description": "Gran Mendoza 24 h, AMBA viernes, export LATAM"
       }
     ]
   },
