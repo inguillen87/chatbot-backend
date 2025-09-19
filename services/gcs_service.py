@@ -2,12 +2,29 @@ import logging
 import os
 import uuid
 import io
+from urllib.parse import urlparse
+
 import requests
 from flask import current_app, has_app_context, request
 from werkzeug.utils import secure_filename
 from services.thumbnail_service import generar_thumbnail
 
 logger = logging.getLogger(__name__)
+
+
+def _mask_sensitive_value(value: str) -> str:
+    """Return a masked representation of a sensitive token for logging."""
+
+    if not value:
+        return ""
+
+    text = str(value)
+    if len(text) <= 4:
+        return "*" * len(text)
+
+    prefix = text[:2]
+    suffix = text[-2:]
+    return f"{prefix}{'*' * (len(text) - 4)}{suffix}"
 
 
 def _init_cloudinary():  # pragma: no cover - thin wrapper validated via tests
@@ -66,6 +83,35 @@ def _init_cloudinary():  # pragma: no cover - thin wrapper validated via tests
         sanitized = upload_folder.strip().strip("/")
         if sanitized:
             extra_options["folder"] = sanitized
+
+    # Log a diagnostic summary so environments like Render can confirm the
+    # credentials detected by the backend without exposing full secrets.
+    try:
+        display_cloud_name = config_kwargs.get("cloud_name")
+        display_api_key = config_kwargs.get("api_key")
+
+        if (not display_cloud_name or not display_api_key) and cloudinary_url:
+            parsed = urlparse(cloudinary_url)
+            if not display_cloud_name and parsed.hostname:
+                display_cloud_name = parsed.hostname
+            if not display_api_key and parsed.username:
+                display_api_key = parsed.username
+
+        log_segments: list[str] = []
+        if display_cloud_name:
+            log_segments.append(f"cloud_name='{display_cloud_name}'")
+        if display_api_key:
+            masked = _mask_sensitive_value(display_api_key)
+            log_segments.append(f"api_key='{masked}'")
+        if extra_options.get("folder"):
+            log_segments.append(f"folder='{extra_options['folder']}'")
+
+        if log_segments:
+            logger.info("Cloudinary uploads enabled (%s).", ", ".join(log_segments))
+        else:
+            logger.info("Cloudinary uploads enabled.")
+    except Exception:  # pragma: no cover - logging helpers should not fail init
+        logger.debug("Unable to log Cloudinary diagnostic summary", exc_info=True)
 
     return True, cloudinary_uploader, extra_options
 

@@ -34,6 +34,8 @@ class DemoRubro:
     faq_preview: List[Dict[str, str]] = field(default_factory=list)
     aliases: List[str] = field(default_factory=list)
     quick_actions: List[Dict[str, object]] = field(default_factory=list)
+    capabilities: List[str] = field(default_factory=list)
+    keywords: List[str] = field(default_factory=list)
 
     def to_internal_dict(self) -> Dict[str, object]:
         """Return a dict representation used by the chat routes."""
@@ -51,6 +53,8 @@ class DemoRubro:
             "resources": [dict(item) for item in self.resources],
             "faq_preview": [dict(item) for item in self.faq_preview],
             "quick_actions": [dict(item) for item in self.quick_actions],
+            "capabilities": list(self.capabilities),
+            "keywords": list(self.keywords),
         }
         if self.token:
             payload["token"] = self.token
@@ -73,6 +77,8 @@ class DemoRubro:
             "resources": [dict(item) for item in self.resources],
             "faq_preview": [dict(item) for item in self.faq_preview],
             "quick_actions": [dict(item) for item in self.quick_actions],
+            "capabilities": list(self.capabilities),
+            "keywords": list(self.keywords),
         }
 
 
@@ -284,6 +290,40 @@ def load_demo_rubros() -> List[DemoRubro]:
         quick_actions_raw = entry.get("quick_actions") or []
         quick_actions = [dict(item) for item in quick_actions_raw if isinstance(item, dict)]
 
+        capabilities_raw = (
+            entry.get("capabilities")
+            or entry.get("demo_capabilities")
+            or entry.get("features")
+            or []
+        )
+        capabilities: List[str] = []
+        if isinstance(capabilities_raw, (list, tuple, set)):
+            for item in capabilities_raw:
+                text = str(item).strip() if item is not None else ""
+                if text:
+                    capabilities.append(text)
+        elif isinstance(capabilities_raw, str):
+            text = capabilities_raw.strip()
+            if text:
+                capabilities.append(text)
+
+        keywords_raw = (
+            entry.get("keywords")
+            or entry.get("palabras_clave")
+            or entry.get("keyword_list")
+            or []
+        )
+        keywords: List[str] = []
+        if isinstance(keywords_raw, (list, tuple, set)):
+            for item in keywords_raw:
+                text = str(item).strip() if item is not None else ""
+                if text:
+                    keywords.append(text)
+        elif isinstance(keywords_raw, str):
+            text = keywords_raw.strip()
+            if text:
+                keywords.append(text)
+
         demo_rubro = DemoRubro(
             key=key,
             label=str(nombre),
@@ -299,6 +339,8 @@ def load_demo_rubros() -> List[DemoRubro]:
             faq_preview=_faq_preview_for_rubro(rubro_obj),
             aliases=aliases,
             quick_actions=quick_actions,
+            capabilities=capabilities,
+            keywords=keywords,
         )
 
         opciones.append(demo_rubro)
