@@ -31,3 +31,19 @@ def test_greeting_handler_preserves_profile_name():
     response = handler.handle({})
     assert "Mauricio" in response.get("message_body", "")
     assert ctx_data.get("profile_name") == "Mauricio"
+
+
+def test_greeting_handler_uses_contacto_usuario_name():
+    ctx_data = {
+        CONTEXTO_MUNICIPIO: {
+            "contacto_usuario": {"nombre": "Marcelo"},
+            "estado_conversacion": "ESPERANDO_SELECCION_MENU_PRINCIPAL",
+        }
+    }
+    context = {"chat_db_context_data": ctx_data}
+    handler = GreetingHandler(context)
+    response = handler.handle({})
+
+    # The greeting should incorporate the stored contact name instead of asking for it again.
+    assert "Marcelo" in response.get("message_body", "")
+    assert response.get("fuente") != "pedir_nombre_inicial"
