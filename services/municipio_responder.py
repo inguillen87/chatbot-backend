@@ -3767,6 +3767,42 @@ def responder_municipio(
 
     normalized_question = normalizar_texto(pregunta_str)
 
+    context_state_token = None
+    identity_components: list[str] = []
+
+    if chat_db_context and isinstance(getattr(chat_db_context, "context_data", None), dict):
+        chat_ctx_data = chat_db_context.context_data
+        municipal_ctx = chat_ctx_data.get(CONTEXTO_MUNICIPIO, {})
+        if isinstance(municipal_ctx, dict):
+            state_value = municipal_ctx.get("estado_conversacion")
+            if isinstance(state_value, str) and state_value.strip():
+                context_state_token = state_value.strip()
+
+            contacto_usuario = municipal_ctx.get("contacto_usuario", {})
+            if isinstance(contacto_usuario, dict):
+                nombre_contacto = contacto_usuario.get("nombre")
+                if isinstance(nombre_contacto, str) and nombre_contacto.strip():
+                    identity_components.append(nombre_contacto.strip().lower())
+
+        profile_name_ctx = chat_ctx_data.get("profile_name")
+        if isinstance(profile_name_ctx, str) and profile_name_ctx.strip():
+            identity_components.append(profile_name_ctx.strip().lower())
+
+    if viewer_user:
+        viewer_name = getattr(viewer_user, "nombre", None) or getattr(viewer_user, "name", None)
+        if isinstance(viewer_name, str) and viewer_name.strip():
+            identity_components.append(viewer_name.strip().lower())
+
+    profile_name_kwarg = kwargs.get("profile_name")
+    if isinstance(profile_name_kwarg, str) and profile_name_kwarg.strip():
+        identity_components.append(profile_name_kwarg.strip().lower())
+
+    if identity_components:
+        # Preserve order while removing duplicates to keep the cache key stable.
+        identity_token = tuple(dict.fromkeys(identity_components))
+    else:
+        identity_token = None
+
     if normalized_question:
         owner_cache_key = None
         if owner_user is not None:
@@ -3792,6 +3828,8 @@ def responder_municipio(
             rubro_cache_key,
             demo_cache_key,
             channel_cache_key,
+            context_state_token,
+            identity_token,
         )
     else:
         cache_key = None
