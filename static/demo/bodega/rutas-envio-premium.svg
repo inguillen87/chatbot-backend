@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 280" width="480" height="280">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#111a2b" />
+      <stop offset="100%" stop-color="#1f2d46" />
+    </linearGradient>
+  </defs>
+  <rect width="480" height="280" rx="22" fill="url(#bg)" />
+  <text x="32" y="48" fill="#f0f4ff" font-family="Helvetica, Arial, sans-serif" font-size="22" font-weight="bold">Logistica boutique 2024</text>
+
+  <g font-family="Helvetica, Arial, sans-serif" font-size="13" fill="#dbe4ff">
+    <text x="32" y="84">Zona</text>
+    <text x="172" y="84">Servicio</text>
+    <text x="332" y="84">Operador</text>
+
+    <line x1="32" y1="92" x2="432" y2="92" stroke="#4d5a7a" stroke-width="1" />
+
+    <text x="32" y="118">Gran Mendoza &amp; Valle de Uco</text>
+    <text x="172" y="118">Entrega 24 h · flota refrigerada</text>
+    <text x="332" y="118">Flota propia Cuatro Fincas</text>
+
+    <text x="32" y="146">Cordoba &amp; Rosario</text>
+    <text x="172" y="146">48 h puerta a puerta</text>
+    <text x="332" y="146">Andreani Wine Express</text>
+
+    <text x="32" y="174">Ciudad de Buenos Aires</text>
+    <text x="172" y="174">Ventana fija viernes · packing premium</text>
+    <text x="332" y="174">Cargo Services Aereo</text>
+
+    <text x="32" y="202">Patagonia Norte / Sur</text>
+    <text x="172" y="202">Consolidado semanal · control de temperatura</text>
+    <text x="332" y="202">Frio Tec Patagonia</text>
+  </g>
+
+  <rect x="32" y="218" width="416" height="42" rx="12" fill="rgba(255,255,255,0.08)" />
+  <text x="48" y="244" fill="#ffce80" font-family="Helvetica, Arial, sans-serif" font-size="13">Tracking en vivo, seguro de rotura y reporte de satisfaccion 48 h post entrega.</text>
+</svg>
