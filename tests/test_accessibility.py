@@ -84,3 +84,15 @@ def test_main_menu_reduced_does_not_repeat_intro(base_context):
     assert payload["message_type"] == "interactive_list"
     assert "¡Gracias, Test!" in payload["message_body"]
     assert "Soy *JUNI*" not in payload["message_body"]
+
+
+def test_main_menu_uses_contact_name_if_available(base_context):
+    base_context["profile_name"] = None
+    chat_ctx = base_context.setdefault("chat_db_context_data", {})
+    municipal_ctx = chat_ctx.setdefault(CONTEXTO_MUNICIPIO, {})
+    municipal_ctx["contacto_usuario"] = {"nombre": "Marcelo"}
+
+    payload = _get_main_menu_payload(base_context)
+
+    assert "Marcelo" in payload["message_body"]
+    assert payload.get("fuente") != "pedir_nombre_inicial"
