@@ -3,34 +3,63 @@
     "env_prefix": "DEMO_ALMACEN",
     "key": "almacen",
     "nombre": "Almacén Inteligente",
-    "descripcion": "Catálogo minorista y mayorista con combos semanales, control de stock y entregas a domicilio en el día.",
+    "descripcion": "Catálogo minorista y mayorista con combos semanales, control de stock y entregas coordinadas en el día.",
     "token": "demo-token-almacen",
     "tipo_chat": "pyme",
     "rubro_clave": "almacen",
-    "prompt_context": "ByM Almacén Digital combina góndola física con pedidos online. Ofrece combos familiares de lácteos, bebidas y snacks, reposiciones programadas para bares y rotiserías, precios mayoristas a partir de 6 unidades y seguimiento de stock en tiempo real. Gestiona delivery propio en radio cercano, logística con moto para urgencias y acuerdos con Mercado Pago, MODO y transferencias. Usa un tono cercano, ágil y orientado a resolver pedidos mixtos (retiro o envío) en el momento.",
-    "welcome_message": "🛒 ¡Bienvenido al demo del almacén! Contame qué productos o combos necesitas hoy.",
+    "aliases": ["demo-almacen", "almacen-inteligente", "bym-almacen"],
+    "prompt_context": "ByM Almacén digitaliza la góndola de proximidad con reposiciones programadas para bares, combos familiares de frescos y bebidas, seguimiento de stock en tiempo real y entregas express. Opera delivery propio en radio de 4 km, logística con moto para urgencias y acuerdos de cobro con QR, Mercado Pago y transferencias. Usa un tono cercano, ágil y orientado a resolver pedidos mixtos (retiro o envío) en el momento.",
+    "welcome_message": "🛒 ¡Bienvenido a ByM Almacén! Puedo compartirte combos listos, precios mayoristas y radios de entrega en segundos.",
     "resources": [
       {
         "title": "Catálogo de combos digitales",
-        "description": "PDF con combos familiares, packs para bares y precios dinámicos por zona.",
+        "description": "Packs familiares, reposiciones para bares y kits healthy listos para armado.",
         "type": "pdf",
         "url": "/static/demo/almacen/catalogo-combos-2024.pdf",
-        "cta_text": "Descargar combos"
+        "cta_text": "Descargar combos",
+        "price": "Combos familiares desde $17.900",
+        "highlight": "Actualizado septiembre 2024",
+        "availability": "Entrega en 90 minutos Gran Mendoza"
       },
       {
         "title": "Lista de precios mayoristas",
-        "description": "Actualización semanal con mínimos de compra y márgenes sugeridos.",
+        "description": "Escalas por categoría, mínimos sugeridos y márgenes para revendedores.",
         "type": "pdf",
         "url": "/static/demo/almacen/lista-precios-mayoristas.pdf",
-        "cta_text": "Consultar tarifas"
+        "cta_text": "Consultar tarifas",
+        "price": "Volumen a partir de 6 unidades",
+        "highlight": "Financiación 15/30 días",
+        "availability": "Retiro en depósito o envío programado"
       },
       {
         "title": "Mapa de logística de delivery",
-        "description": "Cobertura de radios A, B y C con tiempos estimados y motos asignadas.",
+        "description": "Cobertura A, B y C con ventanas de entrega, vehículos asignados y KPIs.",
         "type": "image",
         "url": "/static/demo/almacen/rutas-delivery.svg",
         "thumbnail": "/static/demo/almacen/rutas-delivery.svg",
-        "cta_text": "Ver zonas de entrega"
+        "cta_text": "Ver zonas de entrega",
+        "highlight": "Seguimiento GPS en vivo",
+        "availability": "Radio propio + mensajería aliada"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "🧺",
+        "texto": "Combos familiares listos",
+        "prompt": "Mostrame los combos familiares vigentes con precios.",
+        "description": "Incluye desayunos, reuniones y after office"
+      },
+      {
+        "emoji": "💰",
+        "texto": "Lista mayorista actual",
+        "prompt": "Necesito la lista mayorista actualizada con mínimos de compra.",
+        "description": "Márgenes sugeridos y medios de pago"
+      },
+      {
+        "emoji": "🛵",
+        "texto": "Cobertura de delivery",
+        "prompt": "¿Qué radios de entrega tienen y tiempos estimados?",
+        "description": "Ventanas express, estándar y programadas"
       }
     ]
   },
@@ -38,49 +67,79 @@
     "env_prefix": "DEMO_BODEGA",
     "key": "bodega",
     "nombre": "Bodega Cuatro Fincas",
-    "descripcion": "Probá la experiencia de compra de una pyme: catálogo de vinos, precios y pedidos en vivo.",
+    "descripcion": "Portfolio premium, listas mayoristas actualizadas y experiencias corporativas con logística boutique.",
     "token": "demo-token-bodega",
     "tipo_chat": "pyme",
     "rubro_clave": "bodega",
-    "prompt_context": "Bodega Cuatro Fincas es una bodega boutique mendocina enfocada en vinos premium. Catálogo destacado: Gran Malbec Reserva 2021 ($18.500) con notas a ciruela y chocolate; Blend de Altura 2019 ($21.000) con Malbec, Cabernet Franc y Petit Verdot; Torrontés Andino 2023 ($11.500) fresco y floral; Espumante Extra Brut Tradicional ($16.800) método champenoise; Caja Degustación 6 botellas ($89.900) con selección del enólogo; Pack Regalo Malbec + Bonarda ($34.500) con estuche. Promos activas: 10% off en combos de 6 botellas, 15% off en compras mayores a $120.000 y envío gratis en Gran Mendoza para pedidos desde $45.000. Horario de atención en sala de degustación: lunes a sábado 10 a 20 hs; degustaciones guiadas viernes y sábado 18 hs con reserva previa. Ofrece asesoramiento para eventos, venta mayorista y armado de regalos corporativos con envío nacional.",
-    "welcome_message": "🍷 ¡Hola! Soy el asistente de Bodega Cuatro Fincas. ¿Querés descubrir nuestros vinos?",
+    "aliases": ["demo-bodega", "cuatro-fincas", "cuatrofincas", "demo-cuatro-fincas"],
+    "prompt_context": "Cuatro Fincas Winery de Salvador Patti trabaja microvinificaciones en Perdriel con viñedos en Vistalba, Agrelo y Valle de Uco. Portfolio 2024: Gran Malbec Reserva ($18.900) 14 meses roble francés, Cabernet Franc Single Vineyard ($20.500), Bonarda Orgánica Don Salvador ($13.200), Chardonnay Reserva ($15.800) y Extra Brut Pinot Noir-Chardonnay ($16.800). Programas corporativos: Discovery Pack 6 botellas ($93.900), Caja Regalo Premier ($36.200) y degustaciones guiadas con maridaje $18.000 por persona. Beneficios: 10% off en 5 cajas, 15% off desde $120.000, envío sin cargo en Gran Mendoza desde $45.000 y logística refrigerada nacional (Andreani Wine, Cargo Services). Público objetivo: vinotecas boutique, hoteles, restaurantes y eventos corporativos.",
+    "welcome_message": "🍷 Hola, soy el sommelier digital de Cuatro Fincas. Tengo fichas técnicas, tarifas corporativas y experiencias premium listas para enviar.",
     "resources": [
       {
         "title": "Catálogo Premium 2024",
-        "description": "Selección de etiquetas reserva, notas de cata y precios por botella y por caja.",
+        "description": "Gran Malbec Reserva, Cabernet Franc Single Vineyard y espumosos signature.",
         "type": "pdf",
         "url": "/static/demo/bodega/catalogo-premium-2024.pdf",
-        "cta_text": "Descargar catálogo"
+        "cta_text": "Ver catálogo premium",
+        "price": "Gran Malbec Reserva desde $18.900",
+        "highlight": "Actualizado septiembre 2024",
+        "availability": "Stock en bodega + vinotecas aliadas"
       },
       {
         "title": "Lista de precios mayoristas",
-        "description": "Bonificaciones por volumen, combos de degustación y envíos a todo el país.",
-        "type": "pdf",
+        "description": "Escalas por canal, condiciones de pago y beneficios por volumen.",
+        "type": "pricing",
         "url": "/static/demo/bodega/lista-precios-mayoristas.pdf",
-        "cta_text": "Consultar precios corporativos"
+        "cta_text": "Consultar precios corporativos",
+        "price": "Bonarda Orgánica desde $13.200",
+        "highlight": "Escalas 6/15/30 cajas",
+        "availability": "Descuentos hasta 15% + financiación 30/60 días"
       },
       {
-        "title": "Gran Malbec Reserva 2021",
-        "description": "Ficha visual con notas de cata, maridajes sugeridos y precio promocional.",
+        "title": "Gran Malbec Reserva Finca La Perseverancia",
+        "description": "Ficha con origen, vinificación y puntajes internacionales 2024.",
         "type": "image",
         "url": "/static/demo/bodega/gran-malbec-reserva.svg",
         "thumbnail": "/static/demo/bodega/gran-malbec-reserva.svg",
-        "cta_text": "Ver ficha del Malbec"
+        "cta_text": "Ver ficha del Malbec",
+        "price": "$18.900 botella / $105.000 caja",
+        "highlight": "94 pts Tim Atkin | 14 meses roble francés"
       },
       {
-        "title": "Combos de degustación corporativa",
-        "description": "PDF con cajas premium para regalos, degustaciones privadas y eventos empresariales.",
+        "title": "Experiencias y degustaciones",
+        "description": "Discovery Pack, kits streaming, maridajes corporativos y propuestas para RRHH.",
         "type": "pdf",
         "url": "/static/demo/bodega/combos-degustacion-corporativas.pdf",
-        "cta_text": "Descargar combos corporativos"
+        "cta_text": "Descargar combos corporativos",
+        "price": "Degustaciones guiadas desde $18.000 por persona",
+        "highlight": "Diseñadas por Salvador Patti",
+        "availability": "On-site, híbridas y virtuales"
       },
       {
         "title": "Mapa de envíos boutique",
-        "description": "Cobertura nacional con tiempos estimados y operadores de logística refrigerada.",
+        "description": "Cobertura 24/48/72 h con Andreani Wine, Cargo Services y logística refrigerada propia.",
         "type": "image",
         "url": "/static/demo/bodega/rutas-envio-premium.svg",
         "thumbnail": "/static/demo/bodega/rutas-envio-premium.svg",
-        "cta_text": "Ver rutas de envío"
+        "cta_text": "Ver rutas de envío",
+        "availability": "Gran Mendoza sin cargo desde $45.000"
+      {
+        "emoji": "📘",
+        "texto": "Catálogo premium actualizado",
+        "prompt": "Compartime el catálogo premium 2024 con notas de cata.",
+        "description": "Malbec Reserva, Cabernet Franc y Chardonnay"
+      },
+      {
+        "emoji": "💸",
+        "texto": "Lista mayorista vigente",
+        "prompt": "Necesito la lista mayorista con escalas y mínimos de cajas.",
+        "description": "Beneficios 10% y 15% según volumen"
+      },
+      {
+        "emoji": "🥂",
+        "texto": "Degustaciones corporativas",
+        "prompt": "Quiero organizar una degustación corporativa o Discovery Pack.",
+        "description": "On-site, virtuales y cajas regalo"
       }
     ]
   },
@@ -92,57 +151,91 @@
     "token": "demo-token-ferreteria",
     "tipo_chat": "pyme",
     "rubro_clave": "ferreteria",
-    "prompt_context": "Ferretería Central atiende obras chicas y medianas con stock de cementos, áridos, hierros, herramientas eléctricas y sanitarios. Cotiza combos para refacciones, ofrece descuentos por volumen, planifica entregas con camión grúa y seguimiento GPS de repartos. Brinda asesoramiento técnico para elegir materiales, vende EPP, pinturas y artículos de jardinería. Usa un tono experto pero simple para ayudar a profesionales y particulares que construyen o remodelan.",
-    "welcome_message": "🔧 ¡Hola! Soy el asistente del corralón. ¿Qué materiales o herramientas necesitas cotizar?",
+    "aliases": ["demo-ferreteria", "corralon-demo", "ferreteria-central"],
+    "prompt_context": "Ferretería Central atiende obras chicas y medianas con stock de cementos, áridos, hierros, sanitarios y herramientas eléctricas. Cotiza combos para refacciones, ofrece descuentos por volumen, planifica entregas con camión grúa y seguimiento GPS. Brinda asesoramiento técnico para elegir materiales, vende EPP, pinturas y artículos de jardinería. Usa un tono experto pero simple para profesionales y particulares que construyen o remodelan.",
+    "welcome_message": "🔧 ¡Hola! Soy el asistente del corralón. Tengo listos materiales, combos de obra y cronogramas de entrega con camión grúa.",
     "resources": [
       {
         "title": "Catálogo de materiales 2024",
-        "description": "Cementos, áridos y perfiles con disponibilidad inmediata.",
+        "description": "Cementos, áridos, hierros, placas y aislaciones con stock disponible.",
         "type": "pdf",
         "url": "/static/demo/ferreteria/catalogo-materiales-obra.pdf",
-        "cta_text": "Descargar catálogo"
+        "cta_text": "Descargar catálogo",
+        "price": "Hormigón H21 desde $167.000/m³",
+        "highlight": "Disponibilidad inmediata",
+        "availability": "Retiro en depósito o envío 24 h"
       },
       {
         "title": "Plan logístico para obras",
-        "description": "Entregas escalonadas con camión grúa y seguimiento GPS.",
+        "description": "Cronograma de entregas escalonadas, seguimiento GPS y políticas de devolución.",
         "type": "pdf",
         "url": "/static/demo/ferreteria/plan-logistica-obra.pdf",
-        "cta_text": "Ver plan logístico"
+        "cta_text": "Ver plan logístico",
+        "highlight": "Camión grúa + retiro de bolsones",
+        "availability": "Cobertura Gran Mendoza y Valle de Uco"
       },
       {
-        "title": "Camión grúa en ruta",
-        "description": "Visual del esquema de despacho y retiro de bolsones.",
+        "title": "Seguimiento de camión grúa",
+        "description": "Visual de despacho, retiro de bolsones y contacto de operador.",
         "type": "image",
         "url": "/static/demo/ferreteria/camion-grua.svg",
         "thumbnail": "/static/demo/ferreteria/camion-grua.svg",
-        "cta_text": "Ver seguimiento"
+        "cta_text": "Ver seguimiento",
+        "highlight": "Check-in digital en obra",
+        "availability": "Turnos en franjas de 2 horas"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "🧱",
+        "texto": "Cotizar materiales de obra",
+        "prompt": "Necesito cotizar materiales para una obra chica con entrega.",
+        "description": "Incluye cementos, hierros y placas"
+      },
+      {
+        "emoji": "🚚",
+        "texto": "Plan de entregas",
+        "prompt": "¿Cómo funciona el plan logístico con camión grúa?",
+        "description": "Turnos, seguimiento y retiro de bolsones"
+      },
+      {
+        "emoji": "⚙️",
+        "texto": "Herramientas profesionales",
+        "prompt": "Mostrame herramientas eléctricas en promoción.",
+        "description": "Taladros, esmeriladoras y EPP"
       }
     ]
   },
   {
     "env_prefix": "DEMO_LOCAL_GENERAL",
     "key": "local_comercial_general",
-    "nombre": "Local Comercial General",
+    "nombre": "Local Comercial Omnicanal",
     "descripcion": "Mostrador omnicanal para indumentaria, deco y regalos con stock integrado y campañas de fidelización.",
     "token": "demo-token-local",
     "tipo_chat": "pyme",
     "rubro_clave": "local_comercial",
-    "prompt_context": "Local Comercial Demo vende indumentaria urbana, deco y regalos corporativos. Integra catálogo en tienda física, Instagram Shopping y tienda online con pasarela de pagos. Ofrece combos de temporada, cupones de fidelización, reservas con seña digital y retiros en sucursal en 2 horas. Gestiona cambios, envíos a todo el país y paquetes personalizados para empresas. El bot debe destacar disponibilidad en talles, colores, promociones bancarias y seguimiento de pedidos.",
-    "welcome_message": "🛍️ ¡Bienvenido! Contame qué prenda, regalo o combo corporativo estás buscando.",
+    "aliases": ["demo-local", "local-omnicanal", "local-comercial"],
+    "prompt_context": "Local Comercial Demo vende indumentaria urbana, deco y regalos corporativos. Integra catálogo en tienda física, Instagram Shopping y e-commerce con pasarela de pagos. Ofrece combos de temporada, cupones de fidelización, reservas con seña digital y retiros en sucursal en 2 horas. Gestiona cambios, envíos a todo el país y paquetes personalizados para empresas. El bot destaca disponibilidad en talles, colores, promociones bancarias y seguimiento de pedidos.",
+    "welcome_message": "🛍️ Bienvenido al showroom omnicanal. Puedo compartirte lookbooks, promos bancarias, combos corporativos y políticas de cambio.",
     "resources": [
       {
-        "title": "Lookbook urbano",
-        "description": "Colecciones cápsula con talles XS a XXL y precios sugeridos.",
+        "title": "Lookbook urbano otoño-invierno",
+        "description": "Colecciones cápsula con talles XS-XXL, curvas y precios sugeridos.",
         "type": "pdf",
         "url": "/static/demo/local_comercial/lookbook-urbano.pdf",
-        "cta_text": "Ver lookbook"
+        "cta_text": "Ver lookbook",
+        "highlight": "Tendencias 2024",
+        "availability": "Stock en tienda y online"
       },
       {
         "title": "Programa de fidelización",
         "description": "Escalas de puntos, cupones automáticos y wallet QR integrada.",
         "type": "pdf",
         "url": "/static/demo/local_comercial/programa-fidelizacion.pdf",
-        "cta_text": "Descargar programa"
+        "cta_text": "Descargar programa",
+        "price": "Cashback 8% promedio",
+        "highlight": "Integrado a CRM",
+        "availability": "Activa en tienda, web y WhatsApp"
       },
       {
         "title": "Combo corporativo premium",
@@ -150,7 +243,29 @@
         "type": "image",
         "url": "/static/demo/local_comercial/combos-corporativos.svg",
         "thumbnail": "/static/demo/local_comercial/combos-corporativos.svg",
-        "cta_text": "Ver propuesta"
+        "cta_text": "Ver propuesta",
+        "price": "Packs desde $48.000",
+        "highlight": "Personalización con logo"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "👗",
+        "texto": "Nueva colección urbana",
+        "prompt": "Quiero ver la nueva colección urbana con talles disponibles.",
+        "description": "Incluye looks y precios"
+      },
+      {
+        "emoji": "🎁",
+        "texto": "Regalos corporativos",
+        "prompt": "Mostrame las opciones de combos corporativos para empresas.",
+        "description": "Boxes, giftcards y envíos múltiples"
+      },
+      {
+        "emoji": "💳",
+        "texto": "Programa de fidelización",
+        "prompt": "Explicame cómo funciona el programa de fidelización y promociones.",
+        "description": "Wallet QR, puntos y cupones"
       }
     ]
   },
@@ -162,30 +277,57 @@
     "token": "demo-token-medico",
     "tipo_chat": "pyme",
     "rubro_clave": "medico",
+    "aliases": ["demo-medico", "clinica-san-dona", "medico-general"],
     "prompt_context": "Clínica San Dona gestiona turnos para clínica médica, pediatría, ginecología, laboratorio y nutrición. Permite reservar guardias programadas, coordinar estudios, validar obras sociales, enviar recordatorios por WhatsApp y compartir resultados vía portal seguro. Atiende consultas sobre coberturas, horarios, preparación para estudios y teleconsultas. Mantiene tono empático, claro y orientado a resolver trámites rápidos para pacientes y familias.",
-    "welcome_message": "🩺 Hola, soy el asistente de Clínica San Dona. ¿Querés reservar un turno o consultar tu cobertura?",
+    "welcome_message": "🩺 Hola, soy el asistente de Clínica San Dona. Puedo reservar turnos, confirmar coberturas y enviarte guías pre estudio en segundos.",
     "resources": [
       {
         "title": "Agenda de turnos priorizados",
-        "description": "Disponibilidad de clínica médica, pediatría y guardias programadas.",
+        "description": "Disponibilidad de clínica médica, pediatría, gineco, laboratorio y guardias.",
         "type": "pdf",
         "url": "/static/demo/medico/agenda-turnos-prioritarios.pdf",
-        "cta_text": "Ver agenda"
+        "cta_text": "Ver agenda",
+        "highlight": "Turnos 48 h",
+        "availability": "Reservá online o por WhatsApp"
       },
       {
         "title": "Guía de preparación de estudios",
-        "description": "Indicaciones para laboratorio, ecografías y entrega de resultados.",
+        "description": "Indicaciones para laboratorio, ecografías, radiografías y entrega de resultados.",
         "type": "pdf",
         "url": "/static/demo/medico/guia-preparacion-estudios.pdf",
-        "cta_text": "Descargar guía"
+        "cta_text": "Descargar guía",
+        "highlight": "Checklist descargable",
+        "availability": "Recordatorios automáticos 24 h"
       },
       {
         "title": "Flujo de teleconsulta",
-        "description": "Paso a paso desde la reserva hasta la receta digital.",
+        "description": "Paso a paso desde la reserva hasta la receta digital y seguimiento.",
         "type": "image",
         "url": "/static/demo/medico/teleconsulta-flujo.svg",
         "thumbnail": "/static/demo/medico/teleconsulta-flujo.svg",
-        "cta_text": "Ver flujo"
+        "cta_text": "Ver flujo",
+        "highlight": "Integrado con receta electrónica",
+        "availability": "Atención adultos y pediatría"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "📅",
+        "texto": "Reservar turno clínico",
+        "prompt": "Quiero reservar un turno de clínica médica y saber las coberturas.",
+        "description": "Disponibilidad por obra social"
+      },
+      {
+        "emoji": "🧪",
+        "texto": "Preparación de estudios",
+        "prompt": "Necesito la preparación para análisis de laboratorio y tiempos de entrega.",
+        "description": "Incluye ayuno y retiro de resultados"
+      },
+      {
+        "emoji": "💬",
+        "texto": "Teleconsulta y receta",
+        "prompt": "Cómo funciona la teleconsulta y la receta digital en la clínica?",
+        "description": "Paso a paso y envío por mail"
       }
     ]
   },
@@ -197,30 +339,57 @@
     "token": null,
     "tipo_chat": "municipio",
     "rubro_clave": "municipio",
+    "aliases": ["demo-municipio", "junin", "municipio-inteligente"],
     "prompt_context": "El Municipio de Junín en Mendoza ofrece un asistente digital para reclamos de luminaria, higiene urbana, arbolado, tránsito y servicios públicos. También acompaña trámites como licencias de conducir, tasas municipales, turnos online y consultas ciudadanas. Usa un tono cálido, profesional y resalta que el bot permite registrar reclamos con ubicación, seguir tickets existentes y derivar a un agente humano cuando haga falta.",
-    "welcome_message": "🙌 ¡Bienvenido a la demo municipal! Contame qué trámite o reclamo querés gestionar.",
+    "welcome_message": "🙌 ¡Bienvenido a la demo municipal! Contame qué trámite o reclamo querés gestionar y te guío paso a paso.",
     "resources": [
       {
         "title": "Guía de trámites express",
-        "description": "Pasos clave para turnos, reclamos con foto y seguimiento 24/7 desde el panel ciudadano.",
+        "description": "Turnos, reclamos con foto y seguimiento 24/7 desde el portal ciudadano.",
         "type": "pdf",
         "url": "/static/demo/municipio/guia-tramites-rapidos.pdf",
-        "cta_text": "Descargar guía de trámites"
+        "cta_text": "Descargar guía de trámites",
+        "highlight": "Disponible 24/7",
+        "availability": "Portal ciudadano + WhatsApp"
       },
       {
         "title": "Plan de iluminación inteligente 2024",
-        "description": "Proyecto LED con sensores IoT, tablero de monitoreo y prioridades por barrio.",
+        "description": "Proyecto LED, sensórica IoT y prioridades por barrio.",
         "type": "pdf",
         "url": "/static/demo/municipio/plan-iluminacion-inteligente.pdf",
-        "cta_text": "Ver plan de inversión"
+        "cta_text": "Ver plan de inversión",
+        "highlight": "75% de luminarias LED",
+        "availability": "Fases Q4 2024"
       },
       {
-        "title": "Centro de monitoreo en tiempo real",
-        "description": "Visualización de KPIs, reclamos geolocalizados y derivación inmediata a cuadrillas.",
+        "title": "Centro de monitoreo smart",
+        "description": "KPIs en vivo, reclamos geolocalizados y derivación a cuadrillas.",
         "type": "image",
         "url": "/static/demo/municipio/centro-monitoreo-smart.svg",
         "thumbnail": "/static/demo/municipio/centro-monitoreo-smart.svg",
-        "cta_text": "Abrir dashboard de monitoreo"
+        "cta_text": "Abrir dashboard de monitoreo",
+        "highlight": "Integrado a cuadrillas y WhatsApp",
+        "availability": "Actualización cada 15 minutos"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "💡",
+        "texto": "Reclamo de luminaria",
+        "prompt": "Quiero cargar un reclamo de luminaria apagada en mi barrio.",
+        "description": "Indicá dirección y foto"
+      },
+      {
+        "emoji": "🚗",
+        "texto": "Licencia de conducir",
+        "prompt": "Necesito requisitos y turnos para renovar la licencia de conducir.",
+        "description": "Documentación, horarios y tasas"
+      },
+      {
+        "emoji": "💳",
+        "texto": "Tasas municipales",
+        "prompt": "¿Cómo puedo consultar y pagar las tasas municipales en línea?",
+        "description": "Portal de pagos y medios habilitados"
       }
     ]
   }
