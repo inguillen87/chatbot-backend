@@ -948,6 +948,7 @@ def _procesar_chat(
                 "demo_session",
                 "demo_owner_user_id",
                 "demo_rubro_id",
+                "demo_rubro_clave",
                 "demo_tipo_chat",
                 "demo_key",
                 "demo_prompt_context",
@@ -956,6 +957,7 @@ def _procesar_chat(
                 "demo_welcome_message",
                 "demo_resources",
                 "demo_faq_preview",
+                "demo_quick_actions",
                 "demo_capabilities",
                 "demo_keywords",
                 "demo_intro_sent",
@@ -1193,6 +1195,7 @@ def _procesar_chat(
                     contexto_chat.pop("demo_welcome_message", None)
                     contexto_chat.pop("demo_resources", None)
                     contexto_chat.pop("demo_faq_preview", None)
+                    contexto_chat.pop("demo_quick_actions", None)
                     contexto_chat.pop("demo_capabilities", None)
                     contexto_chat.pop("demo_keywords", None)
                     contexto_chat.pop("demo_intro_sent", None)
@@ -1355,6 +1358,8 @@ def _procesar_chat(
                 "resources": deepcopy(contexto_chat.get("demo_resources") or []),
                 "faq_preview": deepcopy(contexto_chat.get("demo_faq_preview") or []),
                 "quick_actions": deepcopy(contexto_chat.get("demo_quick_actions") or []),
+                "capabilities": deepcopy(contexto_chat.get("demo_capabilities") or []),
+                "keywords": deepcopy(contexto_chat.get("demo_keywords") or []),
             }
 
         responder_extra_kwargs = {}

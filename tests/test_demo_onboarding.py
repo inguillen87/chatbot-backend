@@ -60,6 +60,15 @@ class DemoConfig(Config):
                     "prompt": "Necesito la lista mayorista vigente con descuentos por volumen.",
                 },
             ],
+            "capabilities": [
+                "📍 Compartí tu ubicación y confirmo ventanas de entrega.",
+                "📄 Adjuntá un PDF con tu carta y preparo una propuesta.",
+            ],
+            "keywords": [
+                "catálogo premium",
+                "lista mayorista",
+                "degustaciones corporativas",
+            ],
         },
         {
             "key": "almacen",
@@ -224,6 +233,12 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 quick_actions = demo_metadata.get("quick_actions")
                 self.assertTrue(quick_actions)
                 self.assertTrue(any(action.get("texto") for action in quick_actions))
+                capabilities = demo_metadata.get("capabilities")
+                self.assertTrue(capabilities)
+                self.assertTrue(any("ubicación" in cap for cap in capabilities))
+                keywords = demo_metadata.get("keywords")
+                self.assertTrue(keywords)
+                self.assertIn("lista mayorista", ", ".join(keywords))
 
     def test_municipio_request_without_rubro_skips_demo_selector(self):
         session_id = "municipio-session-no-rubro"
@@ -305,6 +320,53 @@ class DemoOnboardingTestCase(unittest.TestCase):
         self.assertEqual(owner.id, self.muni_user.id)
         self.assertIsNotNone(rubro_obj)
         self.assertEqual(rubro_obj.id, self.rubro_municipio.id)
+
+
+    def test_municipio_flow_clears_demo_capability_metadata(self):
+        session_id = "demo-session-clear"
+        headers = {"X-Chat-Session-Id": session_id}
+
+        with self.client as client:
+            client.post("/ask/pyme", json={"pregunta": "__INIT__"}, headers=headers)
+
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                mock_responder.return_value = {
+                    "message_body": "ok",
+                    "options_list": [],
+                    "message_type": "text",
+                }
+
+                client.post(
+                    "/ask/pyme",
+                    json={"pregunta": {"action": "demo_select_rubro:bodega"}},
+                    headers=headers,
+                )
+
+        context = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
+        self.assertIsNotNone(context)
+        self.assertIn("demo_capabilities", context.context_data)
+        self.assertIn("demo_keywords", context.context_data)
+
+        with patch("routes.chat.responder_chatboc") as mock_responder:
+            mock_responder.return_value = {
+                "message_body": "Hola municipio",
+                "message_type": "text",
+                "botones": [],
+            }
+
+            response = self.client.post(
+                "/ask/municipio",
+                json={"pregunta": "__INIT__", "token": self.muni_user.token},
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+
+        context = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
+        self.assertIsNotNone(context)
+        for key in ("demo_capabilities", "demo_keywords", "demo_quick_actions"):
+            self.assertNotIn(key, context.context_data)
+        self.assertFalse(context.context_data.get("demo_session"))
 
 
     def test_unrecognized_demo_selection_emits_socket_message(self):
@@ -501,6 +563,8 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 self.assertIn("Envío sin cargo", message)
                 self.assertIn("Menú principal", message)
                 self.assertIn("Probá decir", message)
+                self.assertIn("Palabras clave sugeridas", message)
+                self.assertIn("Herramientas disponibles", message)
                 self.assertNotIn("http", message)
 
                 botones = data.get("botones", [])
