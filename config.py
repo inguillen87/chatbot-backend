@@ -286,7 +286,7 @@ class Config:
     DEMO_MAX_MESSAGES_PER_SESSION = int(os.getenv("DEMO_MAX_MESSAGES_PER_SESSION", "5"))
     DEMO_WELCOME_MESSAGE = os.getenv(
         "DEMO_WELCOME_MESSAGE",
-        "👋 ¡Bienvenido a la demo de Chatboc! Elegí la experiencia que querés probar:",
+        "🎯 Bienvenido al showroom interactivo de Chatboc. Elegí el rubro que querés explorar y descubrí catálogos, pedidos y herramientas inteligentes en segundos.",
     )
     DEMO_RUBROS = _load_default_demo_rubros()
 

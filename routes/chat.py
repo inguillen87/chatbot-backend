@@ -337,7 +337,19 @@ def _format_demo_resources(
                 "action_id": action_id,
                 "action": absolute_url,
             }
-            if description:
+            detail_for_button = [
+                part
+                for part in (
+                    highlight_text,
+                    description,
+                    availability_text,
+                    price_text,
+                )
+                if part
+            ]
+            if detail_for_button:
+                button_entry["description"] = " · ".join(detail_for_button)
+            elif description:
                 button_entry["description"] = description
             if highlight_text:
                 button_entry["badge"] = highlight_text
@@ -1426,8 +1438,9 @@ def _procesar_chat(
         )
 
         if should_apply_intro:
-            resources_text, _, resource_attachments = _format_demo_resources(recursos_demo)
+            resources_text, resource_buttons, resource_attachments = _format_demo_resources(recursos_demo)
             menu_text, prompt_examples_text, quick_action_buttons = _format_demo_quick_actions(quick_actions_raw)
+            quick_actions_list = quick_actions_raw if isinstance(quick_actions_raw, list) else list(quick_actions_raw or [])
             display_name = contexto_chat.get("demo_display_name") or contexto_chat.get("demo_key") or "esta demo"
             faq_preview_text = _format_demo_faq_preview(faq_preview_data)
             keywords_text = _format_demo_keywords(keywords_raw)
@@ -1442,28 +1455,40 @@ def _procesar_chat(
             original_message = resultado.get("message_body")
 
             segments: List[str] = []
-            if base_message:
-                segments.append(str(base_message).strip())
+
+            def _clean_text(value: object) -> str:
+                return str(value).strip() if value is not None else ""
+
+            def _append_section(title: str, body: str) -> None:
+                body_text = _clean_text(body)
+                if body_text:
+                    segments.append(f"━━━━━━━━━━━━\n{title}\n{body_text}")
+
+            base_text = _clean_text(base_message)
+            if base_text:
+                segments.append(base_text)
+
             if description:
-                description_text = str(description).strip()
+                description_text = _clean_text(description)
                 if description_text and description_text not in segments:
                     segments.append(description_text)
-            if menu_text:
-                segments.append(f"📋 Menú principal:\n{menu_text}")
-            if prompt_examples_text:
-                segments.append(f"💬 Probá decir:\n{prompt_examples_text}")
-            if keywords_text:
-                segments.append(f"🔑 Palabras clave sugeridas:\n{keywords_text}")
-            if capabilities_text:
-                segments.append(f"🧪 Herramientas disponibles:\n{capabilities_text}")
-            if faq_preview_text:
-                segments.append(f"❓ Preguntas frecuentes destacadas:\n{faq_preview_text}")
+
+            _append_section("📋 Menú principal", menu_text)
+            _append_section("💬 Probá decir", prompt_examples_text)
+            _append_section("🔑 Palabras clave sugeridas", keywords_text)
+            _append_section("🧪 Herramientas disponibles", capabilities_text)
+            _append_section("❓ Preguntas frecuentes destacadas", faq_preview_text)
             if resources_text:
-                segments.append(f"📎 Material destacado de {display_name}:\n{resources_text}")
+                _append_section(f"📎 Material destacado de {display_name}", resources_text)
+
             if original_message:
-                original_text = str(original_message).strip()
+                original_text = _clean_text(original_message)
                 if original_text and original_text not in segments:
                     segments.append(original_text)
+
+            closing_line = "🟢 Elegí una opción del menú o contame qué necesitás y te muestro la demo en acción."
+            if closing_line not in segments:
+                segments.append(closing_line)
 
             message_text = "\n\n".join([seg for seg in segments if seg])
             if message_text:
@@ -1471,27 +1496,204 @@ def _procesar_chat(
                 resultado["respuesta"] = message_text
 
             combined_buttons: List[Dict[str, object]] = []
-            if quick_action_buttons:
-                combined_buttons.extend(quick_action_buttons)
+            seen_button_ids: set[str] = set()
+
+            def _append_buttons(buttons: List[Dict[str, object]] | None) -> None:
+                if not buttons:
+                    return
+                for button in buttons:
+                    if not isinstance(button, dict):
+                        continue
+                    candidate = deepcopy(button)
+                    candidate_id = str(
+                        candidate.get("id")
+                        or candidate.get("action_id")
+                        or candidate.get("texto")
+                        or len(combined_buttons)
+                    )
+                    if candidate_id in seen_button_ids:
+                        continue
+                    seen_button_ids.add(candidate_id)
+                    combined_buttons.append(candidate)
+
+            _append_buttons(quick_action_buttons)
+            existing_options = resultado.get("options_list") or resultado.get("botones") or []
+            _append_buttons(existing_options)
+            if not combined_buttons and resource_buttons:
+                _append_buttons(resource_buttons)
 
             if combined_buttons:
-                existing_options = resultado.get("options_list") or resultado.get("botones") or []
-                resultado["options_list"] = combined_buttons + existing_options
-                total_botones = len(resultado["options_list"])
-                if total_botones:
-                    if total_botones <= 3:
-                        resultado["message_type"] = "interactive_buttons"
-                    else:
-                        resultado["message_type"] = "interactive_list"
-                existing_botones = resultado.get("botones") or []
-                if existing_botones:
-                    resultado["botones"] = combined_buttons + existing_botones
+                resultado["options_list"] = combined_buttons
+                resultado["botones"] = combined_buttons
+                non_url_buttons = [btn for btn in combined_buttons if btn.get("type") != "url"]
+                if len(non_url_buttons) > 3:
+                    resultado["message_type"] = "interactive_list"
                 else:
-                    resultado["botones"] = resultado["options_list"]
+                    resultado["message_type"] = "interactive_buttons"
+            else:
+                resultado.setdefault("message_type", resultado.get("message_type") or "text")
 
             if resource_attachments:
                 existing_adjuntos = resultado.get("adjuntos") or []
                 resultado["adjuntos"] = existing_adjuntos + resource_attachments
+
+            menu_sections: List[Dict[str, object]] = []
+
+            quick_items: List[Dict[str, object]] = []
+            for idx, button in enumerate(quick_action_buttons or []):
+                texto_btn = _clean_text(button.get("texto"))
+                if not texto_btn:
+                    continue
+                item: Dict[str, object] = {
+                    "id": button.get("id") or button.get("action_id") or f"quick_{idx}",
+                    "texto": texto_btn,
+                    "description": _clean_text(button.get("description")) or None,
+                    "action": button.get("action"),
+                    "type": button.get("type"),
+                }
+                raw_item = quick_actions_list[idx] if idx < len(quick_actions_list) else None
+                if isinstance(raw_item, dict):
+                    prompt_val = raw_item.get("prompt") or raw_item.get("question") or raw_item.get("payload")
+                    prompt_text = _clean_text(prompt_val)
+                    if prompt_text:
+                        item["prompt"] = prompt_text
+                    emoji_val = raw_item.get("emoji") or raw_item.get("icon")
+                    if emoji_val:
+                        item["emoji"] = emoji_val
+                quick_items.append({k: v for k, v in item.items() if v})
+            if quick_items:
+                menu_sections.append({
+                    "title": "Menú principal",
+                    "type": "quick_actions",
+                    "items": quick_items,
+                })
+
+            prompt_items: List[str] = []
+            for raw in quick_actions_list:
+                if not isinstance(raw, dict):
+                    continue
+                prompt_val = raw.get("prompt") or raw.get("question") or raw.get("payload")
+                prompt_text = _clean_text(prompt_val)
+                if prompt_text:
+                    prompt_items.append(prompt_text)
+            if prompt_items:
+                menu_sections.append({
+                    "title": "Probá decir",
+                    "type": "prompt_examples",
+                    "items": prompt_items,
+                })
+
+            keyword_items: List[str] = []
+            seen_keywords: set[str] = set()
+            for raw in keywords_raw or []:
+                text = _clean_text(raw)
+                if not text:
+                    continue
+                key = text.lower()
+                if key in seen_keywords:
+                    continue
+                seen_keywords.add(key)
+                keyword_items.append(text)
+            if keyword_items:
+                menu_sections.append({
+                    "title": "Palabras clave sugeridas",
+                    "type": "keywords",
+                    "items": keyword_items,
+                })
+
+            capability_items: List[str] = []
+            seen_capabilities: set[str] = set()
+            for raw in capabilities_raw or []:
+                text = _clean_text(raw)
+                if not text:
+                    continue
+                key = text.lower()
+                if key in seen_capabilities:
+                    continue
+                seen_capabilities.add(key)
+                capability_items.append(text)
+            if capability_items:
+                menu_sections.append({
+                    "title": "Herramientas disponibles",
+                    "type": "capabilities",
+                    "items": capability_items,
+                })
+
+            faq_items: List[Dict[str, str]] = []
+            for faq in faq_preview_data or []:
+                if not isinstance(faq, dict):
+                    continue
+                pregunta_text = _clean_text(faq.get("pregunta"))
+                respuesta_text = _clean_text(faq.get("respuesta"))
+                if not pregunta_text and not respuesta_text:
+                    continue
+                faq_items.append({
+                    "question": pregunta_text,
+                    "answer": respuesta_text,
+                })
+            if faq_items:
+                menu_sections.append({
+                    "title": "Preguntas frecuentes destacadas",
+                    "type": "faqs",
+                    "items": faq_items,
+                })
+
+            resource_items: List[Dict[str, object]] = []
+            for idx, attachment in enumerate(resource_attachments or []):
+                if not isinstance(attachment, dict):
+                    continue
+                item = {
+                    "id": attachment.get("url") or f"resource_{idx}",
+                    "title": attachment.get("titulo"),
+                    "description": attachment.get("descripcion"),
+                    "cta": attachment.get("cta"),
+                    "price": attachment.get("precio"),
+                    "badge": attachment.get("badge"),
+                    "availability": attachment.get("disponibilidad"),
+                    "url": attachment.get("url"),
+                    "thumbnail": attachment.get("thumbnail"),
+                    "type": attachment.get("tipo"),
+                }
+                resource_items.append({k: v for k, v in item.items() if v})
+            if resource_items:
+                menu_sections.append({
+                    "title": f"Material destacado de {display_name}",
+                    "type": "resources",
+                    "items": resource_items,
+                })
+
+            if menu_sections:
+                resultado["menu_sections"] = menu_sections
+
+            if quick_items:
+                quick_rows: List[Dict[str, str]] = []
+                seen_rows: set[str] = set()
+                for item in quick_items:
+                    row_id = item.get("id")
+                    title = item.get("texto")
+                    if not row_id or not title or row_id in seen_rows:
+                        continue
+                    seen_rows.add(row_id)
+                    desc_parts = []
+                    if item.get("description"):
+                        desc_parts.append(str(item["description"]))
+                    if item.get("prompt"):
+                        prompt_text = str(item["prompt"])
+                        if prompt_text and prompt_text not in desc_parts:
+                            desc_parts.append(prompt_text)
+                    quick_rows.append({
+                        "id": row_id,
+                        "title": str(title),
+                        "description": " · ".join(desc_parts) if desc_parts else "",
+                    })
+                if quick_rows:
+                    resultado["interactive_list_sections"] = [{
+                        "title": "Menú principal",
+                        "rows": quick_rows,
+                    }]
+                    if resultado.get("message_type") == "interactive_list":
+                        resultado.setdefault("interactive_list_button_text", "Ver menú")
+                        resultado.setdefault("interactive_list_section_title", "Menú principal")
 
             contexto_chat["demo_intro_sent"] = True
             flag_modified(chat_context_obj, "context_data")

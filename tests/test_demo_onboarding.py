@@ -567,8 +567,24 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 self.assertIn("Herramientas disponibles", message)
                 self.assertNotIn("http", message)
 
+                self.assertEqual(data.get("message_type"), "interactive_buttons")
+
                 botones = data.get("botones", [])
                 self.assertTrue(any(btn.get("type") == "quick_reply" for btn in botones))
+
+                list_sections = data.get("interactive_list_sections") or []
+                self.assertTrue(list_sections)
+                self.assertEqual(list_sections[0].get("title"), "Menú principal")
+                self.assertTrue(list_sections[0].get("rows"))
+
+                menu_sections = data.get("menu_sections") or []
+                self.assertTrue(menu_sections)
+                quick_section = next((sec for sec in menu_sections if sec.get("type") == "quick_actions"), None)
+                self.assertIsNotNone(quick_section)
+                self.assertTrue(any(item.get("prompt") for item in quick_section.get("items", [])))
+                resource_section = next((sec for sec in menu_sections if sec.get("type") == "resources"), None)
+                self.assertIsNotNone(resource_section)
+                self.assertTrue(any(item.get("url") for item in resource_section.get("items", [])))
 
                 adjuntos = data.get("adjuntos", [])
                 self.assertTrue(any(adj.get("tipo") == "pdf" for adj in adjuntos))
@@ -605,6 +621,11 @@ class DemoOnboardingTestCase(unittest.TestCase):
             self.assertNotIn("http", message)
             self.assertEqual(data.get("message_type"), "interactive_buttons")
             self.assertTrue(any(btn.get("type") == "quick_reply" for btn in data.get("botones", [])))
+
+            menu_sections = data.get("menu_sections") or []
+            self.assertTrue(menu_sections)
+            self.assertTrue(any(sec.get("type") == "quick_actions" for sec in menu_sections))
+            self.assertFalse(any(sec.get("type") == "resources" for sec in menu_sections))
 
     def test_demo_alias_token_bootstraps_session(self):
         session_id = "demo-session-alias"
