@@ -1,45 +1,77 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" width="960" height="540">
   <defs>
-    <linearGradient id="night" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#12090f" />
-      <stop offset="60%" stop-color="#2f1220" />
-      <stop offset="100%" stop-color="#4c2135" />
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0d0914" />
+      <stop offset="55%" stop-color="#1f1122" />
+      <stop offset="100%" stop-color="#351c30" />
     </linearGradient>
-    <linearGradient id="accent" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#f2d6a2" />
-      <stop offset="100%" stop-color="#b98f5f" />
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f6e4b8" />
+      <stop offset="100%" stop-color="#c99b63" />
     </linearGradient>
   </defs>
-  <rect fill="url(#night)" width="960" height="540" rx="24" />
+  <rect width="960" height="540" rx="28" fill="url(#bg)" />
+  <rect x="24" y="24" width="912" height="492" rx="24" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
 
-  <text x="80" y="120" fill="#f8e9d0" font-family="'Playfair Display', Georgia, serif" font-size="56">Gran Malbec Reserva 2021</text>
-  <text x="80" y="170" fill="#f8e9d0" font-family="'Playfair Display', Georgia, serif" font-size="26">Cuatro Fincas Winery · Perdriel, Lujan de Cuyo</text>
+  <text x="72" y="110" fill="#f8ecd4" font-family="'Playfair Display', Georgia, serif" font-size="54">Gran Malbec Reserva 2021</text>
+  <text x="72" y="154" fill="#f8ecd4" font-family="Helvetica, Arial, sans-serif" font-size="22">IG Paraje Altamira · Perdriel · Mendoza · Cuatro Fincas Winery</text>
 
-  <rect x="80" y="210" width="360" height="230" fill="rgba(255,255,255,0.05)" stroke="#b98f5f" stroke-width="1" rx="18" />
-  <text x="110" y="250" fill="#f7e3be" font-family="Helvetica, Arial, sans-serif" font-size="20" font-weight="bold">Origen y vinificacion</text>
-  <text x="110" y="282" fill="#f7e3be" font-family="Helvetica, Arial, sans-serif" font-size="16">
-    <tspan x="110" dy="0">• Parcelas de Vistalba y Agrelo · 1.050 m.s.n.m.</tspan>
-    <tspan x="110" dy="24">• Vendimia manual en cajas de 12 kg · selecciones en cinta.</tspan>
-    <tspan x="110" dy="24">• Maceracion fria 5 dias · 14 meses en barricas francesas 1er y 2do uso.</tspan>
-    <tspan x="110" dy="24">• Embotellado sin clarificar · guarda minima 6 meses.</tspan>
-  </text>
+  <g transform="translate(72,190)">
+    <rect width="255" height="250" rx="18" fill="rgba(255,255,255,0.06)" stroke="rgba(201,155,99,0.4)" />
+    <text x="24" y="38" fill="#f6e4b8" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="bold">Origen &amp; viñedos</text>
+    <text x="24" y="72" fill="#f6e4b8" font-family="Helvetica, Arial, sans-serif" font-size="15">
+      <tspan x="24" dy="0">• Parcelas: Altamira (Valle de Uco) &amp; Agrelo</tspan>
+      <tspan x="24" dy="22">• Altitud: 1.050 m s. n. m. · Suelos calcáreos</tspan>
+      <tspan x="24" dy="22">• Vendimia manual nocturna en cajas de 12 kg</tspan>
+      <tspan x="24" dy="22">• Selección grano a grano y uso de levaduras nativas</tspan>
+      <tspan x="24" dy="22">• Producción limitada: 4.800 botellas</tspan>
+    </text>
 
-  <rect x="480" y="210" width="360" height="230" fill="rgba(255,255,255,0.05)" stroke="#b98f5f" stroke-width="1" rx="18" />
-  <text x="510" y="250" fill="#f7e3be" font-family="Helvetica, Arial, sans-serif" font-size="20" font-weight="bold">Notas de cata</text>
-  <text x="510" y="282" fill="#f7e3be" font-family="Helvetica, Arial, sans-serif" font-size="16">
-    <tspan x="510" dy="0">• Aroma: moras silvestres, ciruela negra, cascara de naranja.</tspan>
-    <tspan x="510" dy="24">• Boca: entrada voluptuosa, taninos satinados, notas de cacao y tabaco dulce.</tspan>
-    <tspan x="510" dy="24">• Final: largo y vertical con recuerdos a tomillo andino.</tspan>
-    <tspan x="510" dy="24">• Maridajes: ojo de bife, cordero braseado, quesos estacionados.</tspan>
-  </text>
-
-  <text x="80" y="470" fill="#f8e9d0" font-family="Helvetica, Arial, sans-serif" font-size="18">Servicio 16 °C · Decantar 45 minutos · Produccion limitada 4.800 botellas</text>
-
-  <g transform="translate(620,430)">
-    <rect x="0" y="-42" width="260" height="74" rx="14" fill="rgba(255,255,255,0.08)" stroke="#f2d6a2" stroke-width="1" />
-    <text x="20" y="-10" fill="#f7e3be" font-family="Helvetica, Arial, sans-serif" font-size="14">Premios 2024</text>
-    <text x="20" y="14" fill="#f7e3be" font-family="Helvetica, Arial, sans-serif" font-size="16">94 pts Tim Atkin · 93 pts Descorchados</text>
+    <line x1="24" y1="202" x2="231" y2="202" stroke="rgba(201,155,99,0.35)" stroke-width="1" />
+    <text x="24" y="228" fill="#f6e4b8" font-family="Helvetica, Arial, sans-serif" font-size="14">Certificación sustentable · Riego por goteo inteligente</text>
   </g>
 
-  <text x="80" y="510" fill="#f7e3be" font-family="Helvetica, Arial, sans-serif" font-size="16">Contacto Trade: ventas@cuatrofincas.com · +54 9 261 555 0000</text>
+  <g transform="translate(347,190)">
+    <rect width="255" height="250" rx="18" fill="rgba(255,255,255,0.06)" stroke="rgba(201,155,99,0.4)" />
+    <text x="24" y="38" fill="#f6e4b8" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="bold">Vinificación</text>
+    <text x="24" y="72" fill="#f6e4b8" font-family="Helvetica, Arial, sans-serif" font-size="15">
+      <tspan x="24" dy="0">• Maceración prefermentativa en frío 5 días</tspan>
+      <tspan x="24" dy="22">• Fermentación en vasijas de hormigón troncocónicas</tspan>
+      <tspan x="24" dy="22">• Remontajes suaves + délestage controlado</tspan>
+      <tspan x="24" dy="22">• Crianza 14 meses en barricas francesas 1er/2do uso</tspan>
+      <tspan x="24" dy="22">• Estabilización natural · embotellado sin filtrar</tspan>
+    </text>
+
+    <line x1="24" y1="202" x2="231" y2="202" stroke="rgba(201,155,99,0.35)" stroke-width="1" />
+    <text x="24" y="228" fill="#f6e4b8" font-family="Helvetica, Arial, sans-serif" font-size="14">Guardado mínimo en botella: 6 meses antes de release</text>
+  </g>
+
+  <g transform="translate(622,190)">
+    <rect width="255" height="250" rx="18" fill="rgba(255,255,255,0.06)" stroke="rgba(201,155,99,0.4)" />
+    <text x="24" y="38" fill="#f6e4b8" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="bold">Notas de cata</text>
+    <text x="24" y="72" fill="#f6e4b8" font-family="Helvetica, Arial, sans-serif" font-size="15">
+      <tspan x="24" dy="0">• Nariz: mora silvestre, ciruela negra y flores azules</tspan>
+      <tspan x="24" dy="22">• Boca: entrada envolvente, taninos satinados, cacao</tspan>
+      <tspan x="24" dy="22">• Final: largo, herbal (tomillo andino) y mineralidad</tspan>
+      <tspan x="24" dy="22">• Maridajes: ojo de bife, cordero braseado, provoleta</tspan>
+      <tspan x="24" dy="22">• Servicio: 16 °C · decantar 45 minutos</tspan>
+    </text>
+
+    <line x1="24" y1="202" x2="231" y2="202" stroke="rgba(201,155,99,0.35)" stroke-width="1" />
+    <text x="24" y="228" fill="#f6e4b8" font-family="Helvetica, Arial, sans-serif" font-size="14">Consumo óptimo 2024 – 2030</text>
+  </g>
+
+  <g transform="translate(72,470)">
+    <rect width="805" height="58" rx="18" fill="rgba(255,255,255,0.05)" />
+    <text x="24" y="32" fill="#f6e4b8" font-family="Helvetica, Arial, sans-serif" font-size="16">
+      Datos analíticos: Alc 14,2% · Acidez total 5,7 g/l · Azúcar < 2 g/l · pH 3,6 · Sulfitos totales 90 mg/l
+    </text>
+  </g>
+
+  <g transform="translate(640,120)">
+    <rect width="212" height="48" rx="16" fill="rgba(255,255,255,0.08)" stroke="url(#gold)" stroke-width="1" />
+    <text x="24" y="30" fill="#f6e4b8" font-family="Helvetica, Arial, sans-serif" font-size="16">94 pts Tim Atkin · 93 pts Descorchados</text>
+  </g>
+
+  <text x="72" y="520" fill="#f6e4b8" font-family="Helvetica, Arial, sans-serif" font-size="16">Contacto trade: ventas@cuatrofincas.com · +54 9 261 555 0000 · www.cuatrofincas.com</text>
 </svg>
