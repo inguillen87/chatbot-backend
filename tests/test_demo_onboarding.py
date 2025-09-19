@@ -549,6 +549,59 @@ class DemoOnboardingTestCase(unittest.TestCase):
         self.assertIsNotNone(demo_metadata)
         self.assertEqual(demo_metadata.get("key"), "bodega")
 
+        db.session.refresh(self.bodega_user)
+        self.assertEqual(self.bodega_user.preguntas_usadas, 200)
+
+    def test_existing_demo_context_without_session_flag_still_bypasses_limit(self):
+        session_id = "demo-session-resume"
+        headers = {"X-Chat-Session-Id": session_id}
+
+        context = ChatSessionContext(
+            chat_session_id=session_id,
+            context_data={
+                "demo_key": "bodega",
+                "demo_owner_user_id": self.bodega_user.id,
+                "demo_rubro_id": self.rubro_bodega.id,
+                "demo_prompt_context": "cached",
+                "demo_message_count": 1,
+            },
+        )
+        db.session.add(context)
+        db.session.commit()
+
+        self.bodega_user.plan = "pro"
+        self.bodega_user.preguntas_usadas = 200
+        db.session.add(self.bodega_user)
+        db.session.commit()
+
+        with self.client as client:
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                mock_responder.return_value = {
+                    "message_body": "Bienvenido nuevamente",
+                    "options_list": [],
+                    "message_type": "text",
+                }
+
+                response = client.post(
+                    "/ask/pyme",
+                    json={"pregunta": "quiero cotizar un evento"},
+                    headers=headers,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        mock_responder.assert_called_once()
+        _, kwargs = mock_responder.call_args
+        owner = kwargs.get("owner_user")
+        rubro_obj = kwargs.get("rubro_obj")
+
+        self.assertIsNotNone(owner)
+        self.assertEqual(owner.id, self.bodega_user.id)
+        self.assertIsNotNone(rubro_obj)
+        self.assertEqual(rubro_obj.id, self.rubro_bodega.id)
+
+        db.session.refresh(self.bodega_user)
+        self.assertEqual(self.bodega_user.preguntas_usadas, 200)
+
     def test_alias_resolution_accepts_label_variants(self):
         from services.demo_registry import demo_rubro_for_token
 
