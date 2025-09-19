@@ -81,6 +81,35 @@ NAME_STOPWORDS = get_name_prefix_stopwords()
 
 PLACEHOLDER_NAMES = {"vecino", "vecina", "vecine", "vecino/a"}
 
+_PLACEHOLDER_DESCRIPTION_CANDIDATES = [
+    "iniciar_reclamo",
+    "iniciar reclamo",
+    "iniciar reclamo con ubicacion",
+    "iniciar reclamo con ubicación",
+    "iniciar un reclamo",
+    "hacer un reclamo",
+    "hacer reclamo",
+    "nuevo reclamo",
+    "realizar reclamo",
+    "presentar reclamo",
+    "registrar queja",
+    "reclamo",
+]
+
+PLACEHOLDER_DESCRIPTIONS_NORMALIZED = {
+    normalized
+    for normalized in (
+        normalizar_texto(value) for value in _PLACEHOLDER_DESCRIPTION_CANDIDATES
+    )
+    if normalized
+}
+
+
+def _is_placeholder_description(value: Any) -> bool:
+    if not value or not isinstance(value, str):
+        return False
+    return normalizar_texto(value) in PLACEHOLDER_DESCRIPTIONS_NORMALIZED
+
 class ReclamoState(Enum):
     ESPERANDO_CATEGORIA = auto()
     ESPERANDO_DIRECCION = auto()
@@ -183,6 +212,12 @@ class ReclamoFlowHandler:
         self.flow_context.clear()
         self.flow_context['datos_reclamo'] = datos_iniciales or {}
         datos = self.flow_context['datos_reclamo']
+
+        if _is_placeholder_description(datos.get('descripcion')):
+            datos.pop('descripcion', None)
+            datos.pop('descripcion_resumida', None)
+        if _is_placeholder_description(datos.get('descripcion_sugerida')):
+            datos.pop('descripcion_sugerida', None)
 
         # Mark the conversation as being inside the claim flow and discard
         # leftover menu hints from previous states (e.g., ubicación proactiva).
@@ -310,7 +345,7 @@ class ReclamoFlowHandler:
             # This case is less likely if categoria is present, but good to have
             self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
             categoria = self.flow_context['datos_reclamo']['categoria']
-            return {"message_body": f"Entendido, el reclamo es por *{categoria}*. Ahora, por favor, describí brevemente el problema."}
+            return {"message_body": f"Entendemos que el reclamo es por *{categoria}*. Para poder ayudarte mejor, por favor describí brevemente qué está pasando."}
         elif not self.flow_context['datos_reclamo'].get('direccion'):
             self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
             # Construct a message confirming the data we have
@@ -375,6 +410,10 @@ class ReclamoFlowHandler:
             if value:
                 datos[key] = value
 
+        if _is_placeholder_description(datos.get('descripcion')):
+            datos.pop('descripcion', None)
+            datos.pop('descripcion_resumida', None)
+
         if (
             not datos.get('descripcion')
             and isinstance(user_input, str)
@@ -388,7 +427,7 @@ class ReclamoFlowHandler:
         if not datos.get('descripcion'):
             self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
             return {
-                "message_body": f"Perfecto. Iniciemos tu reclamo por *{category}*.\n\nPor favor, describí brevemente el problema."
+                "message_body": f"Perfecto, el reclamo es por *{category}*.\n\nPara poder ayudarte mejor, por favor describí brevemente qué está pasando."
             }
 
         if not datos.get('direccion'):
@@ -2960,7 +2999,8 @@ def extract_reclamo_details_from_text(
     cleaned_description = _strip_trailing_phrases(_strip_leading_phrases(user_input))
     if cleaned_description:
         cleaned_description = re.sub(r"\s{2,}", " ", cleaned_description).strip()
-        details["descripcion_sugerida"] = cleaned_description
+        if not _is_placeholder_description(cleaned_description):
+            details["descripcion_sugerida"] = cleaned_description
 
     category = find_reclamo_category_by_input(user_input, reclamo_options)
     if category:

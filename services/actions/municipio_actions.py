@@ -9,7 +9,7 @@ import random
 from services.ticket_service import servicio_tickets
 from services.notifications import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
 from services.herramientas_municipio import parse_direccion_completa as parse_direccion, direccion_es_valida
-from services.ticket_utils import formatear_ticket_respuesta
+from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.config_loader import cargar_configuracion_municipio
 from models import MunicipioTicket
@@ -525,6 +525,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
                 if not promo_image_url and promo_section.get("image_url"):
                     promo_image_url = promo_section.get("image_url")
+
+            botones_finales = remove_buttons_with_urls_in_message(
+                mensaje_respuesta,
+                botones_finales,
+            )
 
             # Delayed menu
             menu_payload = _get_main_menu_payload(self.context)
