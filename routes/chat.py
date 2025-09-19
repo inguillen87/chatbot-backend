@@ -798,6 +798,55 @@ def _procesar_chat(
         is_demo_selection_event = False
         demo_options: Optional[List[Dict[str, Optional[str]]]] = None
 
+        demo_payload_from_token: Optional[Dict[str, object]] = None
+        if not owner_user:
+            token_from_request = obtener_token()
+            demo_match_from_token = demo_rubro_for_token(token_from_request)
+            if demo_match_from_token:
+                demo_payload_from_token = demo_match_from_token.to_internal_dict()
+
+                owner_candidate = None
+                if demo_match_from_token.owner_user_id:
+                    owner_candidate = User.query.get(demo_match_from_token.owner_user_id)
+
+                rubro_candidate = None
+                if demo_match_from_token.rubro_id:
+                    rubro_candidate = Rubro.query.get(demo_match_from_token.rubro_id)
+
+                if not rubro_candidate and owner_candidate:
+                    rubro_candidate = getattr(owner_candidate, "rubro", None)
+
+                if owner_candidate:
+                    owner_user = owner_candidate
+                    owner_del_bot = owner_candidate
+
+                if rubro_candidate:
+                    rubro_obj_global = rubro_candidate
+                    rubro_para_log = (
+                        getattr(rubro_candidate, "nombre", None)
+                        or getattr(rubro_candidate, "clave", None)
+                        or rubro_para_log
+                    )
+                    rubro_id = rubro_candidate.id
+                    if getattr(rubro_candidate, "clave", None):
+                        rubro_clave = rubro_candidate.clave
+
+                if demo_match_from_token.tipo_chat:
+                    tipo_chat = demo_match_from_token.tipo_chat
+
+                if demo_payload_from_token:
+                    changed = _activate_demo_session(
+                        contexto_chat,
+                        demo_payload_from_token,
+                        owner_user=owner_candidate,
+                        rubro_obj=rubro_candidate,
+                        reset_counter=False,
+                    )
+                    if changed and chat_context_obj:
+                        flag_modified(chat_context_obj, "context_data")
+
+                demo_session_activa = True
+
         owner_user_rubro_id = getattr(owner_user, "rubro_id", None)
 
         if rubro_id:
