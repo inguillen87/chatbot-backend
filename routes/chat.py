@@ -956,6 +956,8 @@ def _procesar_chat(
                 "demo_welcome_message",
                 "demo_resources",
                 "demo_faq_preview",
+                "demo_capabilities",
+                "demo_keywords",
                 "demo_intro_sent",
                 "demo_message_count",
             )
@@ -1191,6 +1193,8 @@ def _procesar_chat(
                     contexto_chat.pop("demo_welcome_message", None)
                     contexto_chat.pop("demo_resources", None)
                     contexto_chat.pop("demo_faq_preview", None)
+                    contexto_chat.pop("demo_capabilities", None)
+                    contexto_chat.pop("demo_keywords", None)
                     contexto_chat.pop("demo_intro_sent", None)
                     flag_modified(chat_context_obj, "context_data")
                     _sync_demo_session_flag()
