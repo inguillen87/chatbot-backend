@@ -2,6 +2,7 @@ import sys
 import os
 import logging
 import random
+import re
 import uuid  # Added for chat_session_id generation
 from copy import deepcopy
 from urllib.parse import urljoin
@@ -183,6 +184,11 @@ def _activate_demo_session(
         contexto_chat["demo_faq_preview"] = faq_preview
         changed = True
 
+    quick_actions = deepcopy(demo_payload.get("quick_actions") or [])
+    if contexto_chat.get("demo_quick_actions") != quick_actions:
+        contexto_chat["demo_quick_actions"] = quick_actions
+        changed = True
+
     should_reset_counter = reset_counter or existing_key != demo_key
     if should_reset_counter or "demo_message_count" not in contexto_chat:
         _set("demo_message_count", 0)
@@ -260,6 +266,8 @@ def _format_demo_resources(
         "spreadsheet": "📊",
         "pricing": "💰",
         "link": "🔗",
+        "audio": "🎧",
+        "presentation": "🗂️",
     }
 
     lines: List[str] = []
@@ -277,36 +285,67 @@ def _format_demo_resources(
 
         title = str(title_raw).strip() if title_raw else None
         description = str(description_raw).strip() if description_raw else None
-        cta_text = str(raw.get("cta_text") or title or "Ver recurso").strip()
+        cta_text_raw = raw.get("cta_text") or raw.get("cta") or title or "Ver recurso"
+        cta_text = str(cta_text_raw).strip() if cta_text_raw else "Ver recurso"
 
         absolute_url = _absolute_demo_url(raw.get("url") or raw.get("href"))
         thumbnail_url = _absolute_demo_url(raw.get("thumbnail") or raw.get("image"))
 
+        price_raw = raw.get("price") or raw.get("precio") or raw.get("price_text")
+        price_text = str(price_raw).strip() if price_raw else None
+        highlight_raw = raw.get("highlight") or raw.get("badge") or raw.get("tagline")
+        highlight_text = str(highlight_raw).strip() if highlight_raw else None
+        availability_raw = raw.get("availability") or raw.get("service_level")
+        availability_text = str(availability_raw).strip() if availability_raw else None
+
         label_for_text = title or cta_text or f"Recurso {idx + 1}"
+        detail_parts = [
+            part
+            for part in (price_text, highlight_text, description, availability_text)
+            if part
+        ]
 
         line = f"• {icon} {label_for_text}"
-        if description:
-            line += f" – {description}"
-        if absolute_url:
-            line += f" → {absolute_url}"
+        if detail_parts:
+            line += " – " + " | ".join(detail_parts)
         lines.append(line)
 
+        action_id_raw = raw.get("action_id") or raw.get("id")
+        if isinstance(action_id_raw, str) and action_id_raw.strip():
+            action_id = action_id_raw.strip()
+        else:
+            slug_source = f"{label_for_text}-{idx}"
+            slug = re.sub(r"[^a-z0-9]+", "_", slug_source.lower()).strip("_")
+            action_id = slug or f"demo_resource_{idx}"
+
         if absolute_url:
-            buttons.append(
-                {
-                    "id": f"demo_resource_{idx}",
-                    "texto": f"{icon} {cta_text}",
-                    "type": "url",
-                    "url": absolute_url,
-                    "description": description,
-                }
-            )
+            button_entry = {
+                "id": action_id,
+                "texto": f"{icon} {cta_text}",
+                "type": raw.get("button_type") or "url",
+                "url": absolute_url,
+                "action_id": action_id,
+                "action": absolute_url,
+            }
+            if description:
+                button_entry["description"] = description
+            if highlight_text:
+                button_entry["badge"] = highlight_text
+            buttons.append(button_entry)
 
         attachment_entry: Dict[str, object] = {
             "titulo": label_for_text,
             "descripcion": description,
             "tipo": resource_type,
         }
+        if cta_text:
+            attachment_entry["cta"] = cta_text
+        if price_text:
+            attachment_entry["precio"] = price_text
+        if highlight_text:
+            attachment_entry["badge"] = highlight_text
+        if availability_text:
+            attachment_entry["disponibilidad"] = availability_text
         if absolute_url:
             attachment_entry["url"] = absolute_url
         if thumbnail_url:
@@ -315,6 +354,72 @@ def _format_demo_resources(
 
     formatted_text = "\n".join(lines) if lines else ""
     return formatted_text, buttons, attachments
+
+
+def _format_demo_quick_actions(
+    quick_actions: List[Dict[str, object]] | None,
+) -> Tuple[str, List[Dict[str, object]]]:
+    """Render quick access suggestions for the intro message."""
+
+    if not quick_actions:
+        return "", []
+
+    lines: List[str] = []
+    buttons: List[Dict[str, object]] = []
+
+    for idx, raw in enumerate(quick_actions):
+        if not isinstance(raw, dict):
+            continue
+
+        emoji = raw.get("emoji") or raw.get("icon") or "💬"
+        texto_base = raw.get("texto") or raw.get("label") or raw.get("title")
+        if not texto_base:
+            continue
+        texto = str(texto_base).strip()
+        if not texto:
+            continue
+
+        display_text = f"{emoji} {texto}" if emoji and not texto.startswith(str(emoji)) else texto
+        description = raw.get("description") or raw.get("descripcion")
+        description_text = str(description).strip() if description else None
+
+        if description_text:
+            lines.append(f"• {display_text} – {description_text}")
+        else:
+            lines.append(f"• {display_text}")
+
+        prompt = raw.get("prompt") or raw.get("question") or raw.get("payload")
+        action_payload = prompt or raw.get("action") or texto
+
+        action_id_raw = raw.get("action_id") or raw.get("id") or raw.get("key")
+        if isinstance(action_id_raw, str) and action_id_raw.strip():
+            action_id = action_id_raw.strip()
+        else:
+            slug_source = f"{texto}-{idx}"
+            slug = re.sub(r"[^a-z0-9]+", "_", slug_source.lower()).strip("_")
+            action_id = slug or f"demo_quick_action_{idx}"
+
+        button: Dict[str, object] = {
+            "texto": display_text,
+            "action": action_payload,
+            "action_id": action_id,
+            "id": action_id,
+            "type": raw.get("type") or "quick_reply",
+        }
+
+        url = raw.get("url") or raw.get("href")
+        if url:
+            absolute_url = _absolute_demo_url(url)
+            if absolute_url:
+                button["url"] = absolute_url
+
+        if description_text:
+            button["description"] = description_text
+
+        buttons.append(button)
+
+    text_block = "\n".join(lines) if lines else ""
+    return text_block, buttons
 
 
 def _format_demo_faq_preview(faq_preview: List[Dict[str, object]] | None) -> str:
@@ -768,6 +873,14 @@ def _procesar_chat(
             isinstance(contexto_chat, dict) and contexto_chat.get("demo_session")
         )
 
+        def _sync_demo_session_flag() -> None:
+            """Refresh the local flag after mutating the demo state."""
+
+            nonlocal demo_session_activa
+            demo_session_activa = bool(
+                isinstance(contexto_chat, dict) and contexto_chat.get("demo_session")
+            )
+
         tipo_chat_normalized = (tipo_chat or "").strip().lower()
         is_municipal_request = tipo_chat_normalized == "municipio"
 
@@ -794,9 +907,58 @@ def _procesar_chat(
                     cleared_demo_state = True
             if cleared_demo_state and chat_context_obj:
                 flag_modified(chat_context_obj, "context_data")
+                _sync_demo_session_flag()
 
         is_demo_selection_event = False
         demo_options: Optional[List[Dict[str, Optional[str]]]] = None
+
+        token_from_request = obtener_token()
+        demo_match_from_token = demo_rubro_for_token(token_from_request)
+        demo_payload_from_token: Optional[Dict[str, object]] = None
+
+        if not owner_user and demo_match_from_token:
+            demo_payload_from_token = demo_match_from_token.to_internal_dict()
+
+            owner_candidate = None
+            if demo_match_from_token.owner_user_id:
+                owner_candidate = User.query.get(demo_match_from_token.owner_user_id)
+
+            rubro_candidate = None
+            if demo_match_from_token.rubro_id:
+                rubro_candidate = Rubro.query.get(demo_match_from_token.rubro_id)
+
+            if not rubro_candidate and owner_candidate:
+                rubro_candidate = getattr(owner_candidate, "rubro", None)
+
+            if owner_candidate:
+                owner_user = owner_candidate
+                owner_del_bot = owner_candidate
+
+            if rubro_candidate:
+                rubro_obj_global = rubro_candidate
+                rubro_para_log = (
+                    getattr(rubro_candidate, "nombre", None)
+                    or getattr(rubro_candidate, "clave", None)
+                    or rubro_para_log
+                )
+                rubro_id = rubro_candidate.id
+                if getattr(rubro_candidate, "clave", None):
+                    rubro_clave = rubro_candidate.clave
+
+            if demo_match_from_token.tipo_chat:
+                tipo_chat = demo_match_from_token.tipo_chat
+
+            if demo_payload_from_token:
+                changed = _activate_demo_session(
+                    contexto_chat,
+                    demo_payload_from_token,
+                    owner_user=owner_candidate,
+                    rubro_obj=rubro_candidate,
+                    reset_counter=False,
+                )
+                if changed and chat_context_obj:
+                    flag_modified(chat_context_obj, "context_data")
+            _sync_demo_session_flag()
 
         owner_user_rubro_id = getattr(owner_user, "rubro_id", None)
 
@@ -885,6 +1047,7 @@ def _procesar_chat(
                 )
                 if changed and chat_context_obj:
                     flag_modified(chat_context_obj, "context_data")
+                _sync_demo_session_flag()
 
         if not is_municipal_request:
             demo_key = _extract_demo_key(action_id)
@@ -948,6 +1111,7 @@ def _procesar_chat(
                 )
                 if changed and chat_context_obj:
                     flag_modified(chat_context_obj, "context_data")
+                _sync_demo_session_flag()
 
                 pregunta = "__INIT__"
                 original_user_payload = "__INIT__"
@@ -970,6 +1134,7 @@ def _procesar_chat(
                     contexto_chat.pop("demo_faq_preview", None)
                     contexto_chat.pop("demo_intro_sent", None)
                     flag_modified(chat_context_obj, "context_data")
+                    _sync_demo_session_flag()
                     selector_payload = _build_demo_selector_payload(demo_options)
                     try:
                         commit_with_retry(db.session)
@@ -993,7 +1158,29 @@ def _procesar_chat(
         else:
             current_app.logger.info("No se pudo determinar un rubro/owner específico para la lógica del bot. Se usará lógica genérica si aplica (ej. para rubros públicos por defecto).")
 
-        if owner_del_bot and not demo_session_activa:
+        if isinstance(contexto_chat, dict) and contexto_chat.get("demo_key") and not contexto_chat.get("demo_session"):
+            contexto_chat["demo_session"] = True
+            _sync_demo_session_flag()
+            if chat_context_obj:
+                flag_modified(chat_context_obj, "context_data")
+
+        demo_flow_active = bool(
+            demo_session_activa
+            or (isinstance(contexto_chat, dict) and contexto_chat.get("demo_session"))
+            or (isinstance(contexto_chat, dict) and contexto_chat.get("demo_key"))
+            or demo_payload_from_token
+            or demo_match_from_token
+        )
+
+        if (
+            not demo_flow_active
+            and owner_del_bot
+            and getattr(owner_del_bot, "token", None)
+            and demo_rubro_for_token(owner_del_bot.token)
+        ):
+            demo_flow_active = True
+
+        if owner_del_bot and not demo_flow_active:
             from utils.plan_limits import limite_para_usuario
             limite = limite_para_usuario(owner_del_bot)
             if limite is not None and owner_del_bot.preguntas_usadas >= limite:
@@ -1003,7 +1190,7 @@ def _procesar_chat(
 
         demo_limit = current_app.config.get("DEMO_MAX_MESSAGES_PER_SESSION", 0)
         incrementar_demo = (
-            demo_session_activa
+            demo_flow_active
             and demo_limit
             and demo_limit > 0
             and not is_demo_selection_event
@@ -1104,6 +1291,7 @@ def _procesar_chat(
                 "welcome_message": contexto_chat.get("demo_welcome_message"),
                 "resources": deepcopy(contexto_chat.get("demo_resources") or []),
                 "faq_preview": deepcopy(contexto_chat.get("demo_faq_preview") or []),
+                "quick_actions": deepcopy(contexto_chat.get("demo_quick_actions") or []),
             }
 
         responder_extra_kwargs = {}
@@ -1139,14 +1327,20 @@ def _procesar_chat(
         faq_preview_data: List[Dict[str, object]] = []
         demo_description: Optional[str] = None
         demo_welcome: Optional[str] = None
+        quick_actions_raw: List[Dict[str, object]] = []
         if isinstance(contexto_chat, dict):
             recursos_demo = contexto_chat.get("demo_resources") or []
             faq_preview_data = contexto_chat.get("demo_faq_preview") or []
             demo_description = contexto_chat.get("demo_description")
             demo_welcome = contexto_chat.get("demo_welcome_message")
+            quick_actions_raw = contexto_chat.get("demo_quick_actions") or []
 
         has_intro_content = bool(
-            recursos_demo or faq_preview_data or demo_description or demo_welcome
+            recursos_demo
+            or faq_preview_data
+            or demo_description
+            or demo_welcome
+            or quick_actions_raw
         )
 
         should_apply_intro = (
@@ -1159,6 +1353,7 @@ def _procesar_chat(
 
         if should_apply_intro:
             resources_text, resource_buttons, resource_attachments = _format_demo_resources(recursos_demo)
+            quick_actions_text, quick_action_buttons = _format_demo_quick_actions(quick_actions_raw)
             display_name = contexto_chat.get("demo_display_name") or contexto_chat.get("demo_key") or "esta demo"
             faq_preview_text = _format_demo_faq_preview(faq_preview_data)
 
@@ -1179,6 +1374,8 @@ def _procesar_chat(
                     segments.append(description_text)
             if faq_preview_text:
                 segments.append(f"❓ Preguntas frecuentes destacadas:\n{faq_preview_text}")
+            if quick_actions_text:
+                segments.append(f"⚡ Atajos rápidos:\n{quick_actions_text}")
             if resources_text:
                 segments.append(f"📎 Material destacado de {display_name}:\n{resources_text}")
             if original_message:
@@ -1191,9 +1388,15 @@ def _procesar_chat(
                 resultado["message_body"] = message_text
                 resultado["respuesta"] = message_text
 
+            combined_buttons: List[Dict[str, object]] = []
+            if quick_action_buttons:
+                combined_buttons.extend(quick_action_buttons)
             if resource_buttons:
+                combined_buttons.extend(resource_buttons)
+
+            if combined_buttons:
                 existing_options = resultado.get("options_list") or resultado.get("botones") or []
-                resultado["options_list"] = resource_buttons + existing_options
+                resultado["options_list"] = combined_buttons + existing_options
                 total_botones = len(resultado["options_list"])
                 if total_botones:
                     if total_botones <= 3:
@@ -1202,7 +1405,7 @@ def _procesar_chat(
                         resultado["message_type"] = "interactive_list"
                 existing_botones = resultado.get("botones") or []
                 if existing_botones:
-                    resultado["botones"] = resource_buttons + existing_botones
+                    resultado["botones"] = combined_buttons + existing_botones
                 else:
                     resultado["botones"] = resultado["options_list"]
 
@@ -1258,7 +1461,7 @@ def _procesar_chat(
             f"[RUBROS] Rubro efectivo: '{nombre_rubro_log}' (ID: {getattr(rubro_obj_global, 'id', 'N/A')}), esPublico={es_publico}"
         )
 
-        if owner_del_bot and not demo_session_activa:
+        if owner_del_bot and not demo_flow_active:
             owner_del_bot.preguntas_usadas += 1
 
         if isinstance(resultado, dict):
