@@ -549,6 +549,32 @@ class DemoOnboardingTestCase(unittest.TestCase):
         self.assertIsNotNone(demo_metadata)
         self.assertEqual(demo_metadata.get("key"), "bodega")
 
+    def test_demo_owner_token_skips_plan_limit(self):
+        session_id = "demo-session-owner-token"
+        headers = {"X-Chat-Session-Id": session_id, "X-Token": "demo-bodega-token"}
+
+        self.bodega_user.limite_preguntas = 0
+        self.bodega_user.preguntas_usadas = 0
+        db.session.add(self.bodega_user)
+        db.session.commit()
+
+        with self.client as client:
+            with patch("routes.chat.responder_chatboc") as mock_responder:
+                mock_responder.return_value = {
+                    "message_body": "Hola",
+                    "options_list": [],
+                    "message_type": "text",
+                }
+
+                response = client.post(
+                    "/ask/pyme",
+                    json={"pregunta": "__INIT__"},
+                    headers=headers,
+                )
+
+        self.assertEqual(response.status_code, 200)
+        mock_responder.assert_called_once()
+
     def test_rubros_endpoint_exposes_demo_metadata(self):
         with self.client as client:
             response = client.get("/rubros/")

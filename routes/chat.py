@@ -768,6 +768,14 @@ def _procesar_chat(
             isinstance(contexto_chat, dict) and contexto_chat.get("demo_session")
         )
 
+        def _sync_demo_session_flag() -> None:
+            """Refresh the local flag after mutating the demo state."""
+
+            nonlocal demo_session_activa
+            demo_session_activa = bool(
+                isinstance(contexto_chat, dict) and contexto_chat.get("demo_session")
+            )
+
         tipo_chat_normalized = (tipo_chat or "").strip().lower()
         is_municipal_request = tipo_chat_normalized == "municipio"
 
@@ -794,6 +802,7 @@ def _procesar_chat(
                     cleared_demo_state = True
             if cleared_demo_state and chat_context_obj:
                 flag_modified(chat_context_obj, "context_data")
+                _sync_demo_session_flag()
 
         is_demo_selection_event = False
         demo_options: Optional[List[Dict[str, Optional[str]]]] = None
@@ -844,8 +853,7 @@ def _procesar_chat(
                     )
                     if changed and chat_context_obj:
                         flag_modified(chat_context_obj, "context_data")
-
-                demo_session_activa = True
+                _sync_demo_session_flag()
 
         owner_user_rubro_id = getattr(owner_user, "rubro_id", None)
 
@@ -934,6 +942,7 @@ def _procesar_chat(
                 )
                 if changed and chat_context_obj:
                     flag_modified(chat_context_obj, "context_data")
+                _sync_demo_session_flag()
 
         if not is_municipal_request:
             demo_key = _extract_demo_key(action_id)
@@ -997,6 +1006,7 @@ def _procesar_chat(
                 )
                 if changed and chat_context_obj:
                     flag_modified(chat_context_obj, "context_data")
+                _sync_demo_session_flag()
 
                 pregunta = "__INIT__"
                 original_user_payload = "__INIT__"
@@ -1019,6 +1029,7 @@ def _procesar_chat(
                     contexto_chat.pop("demo_faq_preview", None)
                     contexto_chat.pop("demo_intro_sent", None)
                     flag_modified(chat_context_obj, "context_data")
+                    _sync_demo_session_flag()
                     selector_payload = _build_demo_selector_payload(demo_options)
                     try:
                         commit_with_retry(db.session)
