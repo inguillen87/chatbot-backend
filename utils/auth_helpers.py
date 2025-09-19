@@ -200,12 +200,15 @@ def token_requerido(f):
             resp.headers.setdefault("Anon-Id", anon_id)
             return _set_anon_cookie(resp, anon_id)
 
+        # Siempre intentar recuperar el token para exponerlo a las vistas que lo necesiten.
+        token = obtener_token()
+        g.auth_token = token
+
         # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
         if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
             return f(current_user, *args, **kwargs)
 
         # Si no, buscar el token como se hacía antes
-        token = obtener_token()
 
         if not token:
             resp = jsonify({"error": "Token faltante o malformado"})
