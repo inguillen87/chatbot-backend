@@ -368,6 +368,31 @@ def _remove_redundant_urls_from_message(message_body, options_list):
 
     return message_body_str
 
+
+def remove_buttons_with_urls_in_message(message_body, options_list):
+    """Return a copy of ``options_list`` without buttons whose URL is already present in the message body."""
+
+    if not options_list:
+        return options_list
+
+    message_text = str(message_body or "")
+    if not message_text:
+        return options_list
+
+    filtered_options: list[dict] = []
+    for option in options_list:
+        if not isinstance(option, dict):
+            filtered_options.append(option)
+            continue
+
+        url = option.get('url')
+        if url and str(url) and str(url) in message_text:
+            continue
+
+        filtered_options.append(option)
+
+    return filtered_options
+
 def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_ticket=None, contacto_especializado=None, base_chat_url=None, dni=None, consulta_pin=None):
     nombre_asesor = None
     titulo_asesor = None

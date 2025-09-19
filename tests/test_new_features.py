@@ -12,6 +12,7 @@ from services.ticket_utils import (
     formatear_ticket_respuesta,
     construir_descripcion_breve,
     _remove_redundant_urls_from_message,
+    remove_buttons_with_urls_in_message,
 )
 from services.municipio_responder import GreetingHandler
 from services.municipio_responder import responder_municipio
@@ -103,6 +104,24 @@ class TestNewFeatures(unittest.TestCase):
         self.assertNotIn("Visitar Punto Limpio:", cleaned)
         self.assertNotIn("💬 Ver mi Ticket:", cleaned)
         self.assertIn("• *Ver mi Ticket:* https://www.chatboc.ar/chat/799928?pin=768114", cleaned)
+
+    def test_remove_buttons_with_urls_in_message(self):
+        message = (
+            "✅ ¡Reclamo recibido!\n"
+            "🔗 Seguimiento:\n"
+            "• *Ver mi Ticket:* https://www.chatboc.ar/chat/123?pin=456\n"
+            "🔗 Más info: https://www.juninmendoza.gov.ar/punto-limpio"
+        )
+        buttons = [
+            {"texto": "💬 Ver mi Ticket", "url": "https://www.chatboc.ar/chat/123?pin=456"},
+            {"texto": "Visitar Punto Limpio", "url": "https://www.juninmendoza.gov.ar/punto-limpio"},
+            {"texto": "Editar", "action_id": "editar"},
+        ]
+
+        filtered = remove_buttons_with_urls_in_message(message, buttons)
+
+        self.assertEqual(len(filtered), 1)
+        self.assertTrue(any(btn.get("action_id") == "editar" for btn in filtered))
 
     def test_greeting_handler_final_menu(self):
         """
