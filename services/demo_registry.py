@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional
 
@@ -269,8 +271,33 @@ def demo_rubro_for_token(token: Optional[str]) -> Optional[DemoRubro]:
     if not normalized:
         return None
 
-    for demo in load_demo_rubros():
+    demos = load_demo_rubros()
+
+    for demo in demos:
         if demo.token and demo.token.strip().lower() == normalized:
             return demo
+
+    alias_patterns = (
+        r"^demo[-_]?anon[-_]?(.+)$",
+        r"^demo[-_]?token[-_]?(.+)$",
+        r"^demo[-_]?(.+)$",
+    )
+
+    for pattern in alias_patterns:
+        match = re.match(pattern, normalized)
+        if not match:
+            continue
+
+        candidate_key = match.group(1).strip("-_ ")
+        if not candidate_key:
+            continue
+
+        slug = candidate_key.replace("-", "_")
+
+        for demo in demos:
+            if demo.key == slug:
+                return demo
+            if demo.rubro_clave and demo.rubro_clave.strip().lower() == slug:
+                return demo
 
     return None
