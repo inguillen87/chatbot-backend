@@ -375,37 +375,4 @@ def demo_rubro_for_token(token: Optional[str]) -> Optional[DemoRubro]:
                 if slug_tokens.issubset(alias_token_pool):
                     return demo
 
-    alias_patterns = (
-        r"^demo[-_]?anon[-_]?(.+)$",
-        r"^demo[-_]?token[-_]?(.+)$",
-        r"^demo[-_]?(.+)$",
-    )
-
-    for pattern in alias_patterns:
-        match = re.match(pattern, normalized)
-        if not match:
-            continue
-
-        candidate_key = match.group(1)
-        slug = _normalize_alias_value(candidate_key)
-        if not slug:
-            continue
-
-        for demo in demos:
-            alias_candidates = _alias_variants(
-                demo.key,
-                demo.rubro_clave,
-                demo.label,
-            )
-            if slug in alias_candidates:
-                return demo
-
-            slug_tokens = {token for token in slug.split("_") if token}
-            if slug_tokens:
-                alias_token_pool: set[str] = set()
-                for candidate in alias_candidates:
-                    alias_token_pool.update(part for part in candidate.split("_") if part)
-                if slug_tokens.issubset(alias_token_pool):
-                    return demo
-
     return None
