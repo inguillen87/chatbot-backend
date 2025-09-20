@@ -1,21 +1,21 @@
 # Contenido COMPLETO para: routes/auth.py
 
-from flask import Blueprint, request, jsonify, current_app, g, make_response
+from flask import Blueprint, current_app, g, jsonify, make_response, request
 from flask_cors import cross_origin
 from services.logic import es_rubro_publico, normalizar_rubro
 import os
 from sqlalchemy import func
 from sqlalchemy.orm.attributes import flag_modified
-from models import User, Rubro, MunicipioTicket, PymeTicket, TicketComentario, ChatSessionContext, generate_token
+from models import ChatSessionContext, MunicipioTicket, PymeTicket, Rubro, TicketComentario, User, generate_token
 from extensions import db
 from functools import wraps
 import uuid
 import json
 from datetime import datetime, timedelta
 import jwt
-from flask_cors import cross_origin
 from services.google_auth import login_o_crear_usuario
 from services.pymes import get_or_create_pyme_user_by_token
+from typing import Any, Callable, Dict, Optional
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 
@@ -28,6 +28,189 @@ from utils.auth_helpers import (
     get_or_create_owner_entity_token,
 )
 from flask_login import current_user
+from utils.plan_limits import limite_para_usuario
+
+
+_OWNER_TOKEN_RESOLVER: Optional[Callable[[User], Optional[str]]] = None
+
+
+def _resolve_owner_token(user: User) -> Optional[str]:
+    """Return the persistent entity token for the given user without crashing."""
+
+    global _OWNER_TOKEN_RESOLVER
+
+    resolver = _OWNER_TOKEN_RESOLVER
+    if resolver is None:
+        candidate = globals().get("get_or_create_owner_entity_token")
+        if not callable(candidate):
+            try:
+                from utils.auth_helpers import get_or_create_owner_entity_token as helper
+            except Exception:
+                helper = None
+            else:
+                candidate = helper
+        if not callable(candidate):
+            try:
+                from utils.response_utils import (
+                    get_or_create_owner_entity_token as response_helper,
+                )
+            except Exception:
+                response_helper = None
+            else:
+                candidate = response_helper
+
+        if callable(candidate):
+            _OWNER_TOKEN_RESOLVER = resolver = candidate  # type: ignore[assignment]
+
+    if callable(resolver):
+        try:
+            return resolver(user)
+        except Exception:
+            current_app.logger.exception(
+                "[auth] Owner token helper failed for user %s", getattr(user, "id", None)
+            )
+
+    owner_user = getattr(g, "owner_user", None) or user
+
+    empresa_id = getattr(owner_user, "empresa_id", None)
+    if empresa_id:
+        try:
+            looked_up = User.query.get(empresa_id)
+        except Exception:
+            looked_up = None
+        else:
+            if looked_up:
+                owner_user = looked_up
+
+    token_value = getattr(owner_user, "token", None)
+    if token_value:
+        return token_value
+
+    if not owner_user:
+        return None
+
+    try:
+        owner_user.token = generate_token()
+        db.session.add(owner_user)
+        db.session.commit()
+        return owner_user.token
+    except Exception:
+        current_app.logger.exception(
+            "[auth] Failed to generate fallback owner token for user %s",
+            getattr(owner_user, "id", None),
+        )
+        db.session.rollback()
+        return None
+
+
+def _timestamp_to_iso(value: Optional[object]) -> Optional[str]:
+    """Convert a timestamp-like value to an ISO8601 string."""
+
+    if value in (None, ""):
+        return None
+
+    try:
+        ts_int = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+    try:
+        return datetime.utcfromtimestamp(ts_int).replace(microsecond=0).isoformat() + "Z"
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def build_profile_payload(user: User) -> Dict[str, Any]:
+    """Assemble the profile payload shared by the legacy and new endpoints."""
+
+    rubro_obj = getattr(user, "rubro", None)
+    rubro_nombre = getattr(rubro_obj, "nombre", None) or "General"
+
+    try:
+        rubro_es_publico = es_rubro_publico(rubro_obj or rubro_nombre)
+    except Exception:
+        rubro_es_publico = False
+
+    tipo_chat = getattr(user, "tipo_chat", None) or ("municipio" if rubro_es_publico else "pyme")
+    catalogo_label = (
+        "Cargar Catálogo de Trámites" if tipo_chat == "municipio" else "Cargar Catálogo de Productos"
+    )
+
+    profile_data: Dict[str, Any] = {
+        "id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "rol": user.rol,
+        "empresa_id": user.empresa_id,
+        "rubro": rubro_nombre,
+        "tipo_chat": tipo_chat,
+        "categorias": user.ticket_categorias or "",
+        "nombre_empresa": getattr(user, "nombre_empresa", None),
+        "badge_tipo": getattr(user, "badge_tipo", None),
+        "catalogo_label": catalogo_label,
+        "ciudad": getattr(user, "ciudad", None),
+        "color_primario": getattr(user, "color_primario", None),
+        "color_secundario": getattr(user, "color_secundario", None),
+        "plan": getattr(user, "plan", None),
+        "limite_preguntas": limite_para_usuario(user),
+        "acepta_marketing": getattr(user, "acepta_marketing", None),
+        "tags": getattr(user, "tags", None),
+        "horario": getattr(user, "horario", None),
+        "horario_json": getattr(user, "horario_json", None),
+        "telefono": getattr(user, "telefono", None),
+        "direccion": getattr(user, "direccion", None),
+        "provincia": getattr(user, "provincia", None),
+        "pais": getattr(user, "pais", None),
+        "latitud": getattr(user, "latitud", None),
+        "longitud": getattr(user, "longitud", None),
+        "link_web": getattr(user, "link_web", None),
+        "logo_url": getattr(user, "logo_url", None),
+        "preguntas_usadas": getattr(user, "preguntas_usadas", None),
+    }
+
+    owner_token = _resolve_owner_token(user)
+    widget_session_active = bool(getattr(g, "widget_session", False))
+    widget_owner = getattr(g, "widget_owner_user", None)
+    auth_token = getattr(g, "auth_token", None)
+    token_payload = getattr(g, "token_payload", {}) or {}
+
+    if auth_token:
+        profile_data["token"] = auth_token
+        profile_data["auth_token"] = auth_token
+    else:
+        fallback_token = owner_token or getattr(user, "token", None)
+        if fallback_token:
+            profile_data["token"] = fallback_token
+
+    profile_data["auth_token"] = auth_token
+
+    session_kind = token_payload.get("session_kind")
+    if not session_kind:
+        session_kind = "widget" if widget_session_active else ("panel" if auth_token else "none")
+
+    profile_data["session_token"] = auth_token
+    profile_data["session_kind"] = session_kind
+    profile_data["session_expires_at"] = _timestamp_to_iso(token_payload.get("exp"))
+    profile_data["session_renew_until"] = _timestamp_to_iso(token_payload.get("renew_until"))
+    profile_data["widget_session_active"] = widget_session_active
+    profile_data["widget_session_owner_id"] = getattr(widget_owner, "id", None)
+
+    if owner_token:
+        profile_data["entity_token"] = owner_token
+        profile_data["owner_token"] = owner_token
+        profile_data["widget_embed_token"] = owner_token
+        profile_data["widget_embed_token_kind"] = "entity"
+    elif getattr(user, "token", None):
+        profile_data["entity_token"] = user.token
+        profile_data.setdefault("widget_embed_token", user.token)
+        profile_data.setdefault("widget_embed_token_kind", "legacy")
+
+    widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    profile_data["widget_token_cookie_name"] = widget_cookie_name
+    profile_data["widget_access_minutes"] = current_app.config.get("WIDGET_ACCESS_MINUTES", 45)
+    profile_data["widget_renew_days"] = current_app.config.get("WIDGET_RENEW_DAYS", 7)
+
+    return profile_data
 
 
 def _now():
@@ -181,7 +364,7 @@ def login():
     login_user(user) # Establecer la sesión para el usuario
     current_app.logger.info(f"Usuario {user.email} logueado y sesión Flask-Login establecida.")
 
-    owner_token = get_or_create_owner_entity_token(user)
+    owner_token = _resolve_owner_token(user)
 
     # Generar el token JWT
     jwt_payload = {
@@ -256,7 +439,7 @@ def google_login():
         user = login_o_crear_usuario(token_id, rol=rol, tipo_chat=tipo_chat)
         current_app.logger.info(f"Login Google para: {user.email}")
 
-        owner_token = get_or_create_owner_entity_token(user)
+        owner_token = _resolve_owner_token(user)
 
         if not getattr(user, "rubro_id", None):
             # Aún si falta el rubro, generamos un token para que pueda continuar
@@ -949,48 +1132,8 @@ def me_perfil(user):
     Obtiene (GET) o actualiza (PUT) el perfil del usuario.
     """
     if request.method == 'GET':
-        rubro_nombre = user.rubro.nombre if user.rubro else "General"
-        tipo_chat = getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(user.rubro) else "pyme")
-
-        if tipo_chat == 'municipio':
-            catalogo_label = 'Cargar Catálogo de Trámites'
-        else:
-            catalogo_label = 'Cargar Catálogo de Productos'
-
-        # Construir el perfil del usuario a partir del objeto User
-        profile_data = {
-            "id": user.id,
-            "name": user.name,
-            "email": user.email,
-            "rol": user.rol,
-            "empresa_id": user.empresa_id,
-            "rubro": rubro_nombre,
-            "tipo_chat": tipo_chat,
-            "categorias": user.ticket_categorias or "",
-            "nombre_empresa": user.nombre_empresa,
-            "badge_tipo": user.badge_tipo,
-            "catalogo_label": catalogo_label,
-            "ciudad": user.ciudad,
-            "color_primario": user.color_primario,
-            "plan": user.plan,
-            "limite_preguntas": user.limite_preguntas,
-            "acepta_marketing": user.acepta_marketing,
-            "tags": user.tags,
-            "horario": user.horario,
-            # Asegurarse de no exponer datos sensibles como el hash de la contraseña
-        }
-
-        auth_token = getattr(g, "auth_token", None)
-        if auth_token:
-            profile_data["token"] = auth_token
-            profile_data["auth_token"] = auth_token
-        else:
-            profile_data["token"] = user.token
-
-        if user.token:
-            profile_data["entity_token"] = user.token
-
-        return jsonify(profile_data)
+        profile_data = build_profile_payload(user)
+        return jsonify({k: v for k, v in profile_data.items() if v is not None})
 
     elif request.method == 'PUT':
         from services.user_service import update_user_profile

@@ -38,6 +38,66 @@ def test_perfil_alias_works(client):
     assert json_data["token"] == normalized_token
     assert json_data["auth_token"] == normalized_token
     assert json_data["entity_token"] == "perfil-alias-token"
+    assert json_data["session_token"] == normalized_token
+    assert json_data["session_kind"] == "panel"
+    assert json_data["widget_session_active"] is False
+    assert json_data["widget_embed_token"] == "perfil-alias-token"
+    assert json_data["owner_token"] == "perfil-alias-token"
+    assert json_data["widget_token_cookie_name"] == client.application.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    assert json_data["session_expires_at"]
+    assert "session_renew_until" not in json_data
+
+
+def test_perfil_returns_owner_token_for_employee(client):
+    """Employees should receive the owner's static token for integrations."""
+
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    owner = User(
+        email="owner-employee@test.com",
+        name="Owner", token="owner-employee-static-token",
+        rol="admin", rubro_id=rubro.id, tipo_chat="pyme",
+    )
+    owner.set_password("pw")
+    db.session.add(owner)
+    db.session.commit()
+
+    employee = User(
+        email="employee@test.com",
+        name="Employee",
+        rol="empleado",
+        empresa_id=owner.id,
+        rubro_id=rubro.id,
+        tipo_chat="pyme",
+    )
+    employee.set_password("pw")
+    db.session.add(employee)
+    db.session.commit()
+
+    jwt_payload = {
+        'user_id': employee.id,
+        'exp': datetime.utcnow() + timedelta(days=1)
+    }
+    jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode('utf-8')
+
+    response = client.get(
+        '/auth/perfil',
+        headers={"Authorization": f"Bearer {jwt_token}"}
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["session_token"] == jwt_token
+    assert data["session_kind"] == "panel"
+    assert data["entity_token"] == owner.token
+    assert data["widget_embed_token"] == owner.token
+    assert data["owner_token"] == owner.token
 
 
 def test_perfil_accepts_static_entity_token_and_sets_widget_session(client):
@@ -68,6 +128,14 @@ def test_perfil_accepts_static_entity_token_and_sets_widget_session(client):
     auth_token = data["auth_token"]
     assert auth_token and auth_token != owner.token
     assert auth_token.count('.') == 2
+    assert data["widget_embed_token"] == owner.token
+    assert data["owner_token"] == owner.token
+    assert data["session_token"] == auth_token
+    assert data["session_kind"] == "widget"
+    assert data["widget_session_active"] is True
+    assert data["session_expires_at"]
+    assert data["session_renew_until"]
+    assert data["widget_token_cookie_name"] == client.application.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
 
     widget_cookie_name = client.application.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
     cookie_headers = response.headers.getlist("Set-Cookie")
@@ -81,6 +149,9 @@ def test_perfil_accepts_static_entity_token_and_sets_widget_session(client):
     assert response_2.status_code == 200
     data_2 = response_2.get_json()
     assert data_2["auth_token"] == auth_token
+    assert data_2["session_kind"] == "widget"
+    assert data_2["session_token"] == auth_token
+    assert data_2["widget_session_active"] is True
 
     # El token de widget no debe permitir acceder a rutas administrativas como /pedidos.
     forbidden = client.get('/pedidos', headers={'Authorization': f'Bearer {auth_token}'})
@@ -181,6 +252,156 @@ def test_static_entity_token_overrides_authorization_jwt(client):
         for cookie_header in cookie_headers
     )
 
+
+def test_perfil_accepts_demo_anon_token(client):
+    """The legacy 'demo-anon' token should resolve to the default municipio owner."""
+
+    rubro = Rubro.query.filter_by(clave="municipio").first()
+    if not rubro:
+        rubro = Rubro(nombre="municipio", clave="municipio", es_publico=True)
+        db.session.add(rubro)
+        db.session.commit()
+
+    owner = User(
+        email="demo-anon-owner@test.com",
+        name="Demo Owner",
+        rol="admin",
+        token="demo-municipio-owner-token",
+        rubro_id=rubro.id,
+        tipo_chat="municipio",
+    )
+    owner.set_password("pw")
+    db.session.add(owner)
+    db.session.commit()
+
+    response = client.get('/auth/perfil', query_string={'token': 'demo-anon'})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["entity_token"] == owner.token
+    assert data["widget_embed_token"] == owner.token
+    assert data["owner_token"] == owner.token
+    assert data["session_kind"] == "widget"
+    assert data["widget_session_active"] is True
+    assert data["session_token"] and data["session_token"].count('.') == 2
+
+
+def test_demo_anon_token_still_works_without_registry(monkeypatch, client):
+    """If the demo registry is empty, fallback heuristics must still resolve demo-anon."""
+
+    rubro = Rubro.query.filter_by(clave="municipio").first()
+    if not rubro:
+        rubro = Rubro(nombre="Municipalidad", clave="municipio", es_publico=True)
+        db.session.add(rubro)
+        db.session.commit()
+
+    owner = User(
+        email="fallback-demo-owner@test.com",
+        name="Fallback Demo Owner",
+        rol="admin",
+        token="fallback-demo-owner-token",
+        rubro_id=rubro.id,
+        tipo_chat="municipio",
+    )
+    owner.set_password("pw")
+    db.session.add(owner)
+    db.session.commit()
+
+    monkeypatch.setattr("utils.auth_helpers.demo_rubro_for_token", lambda *_: None)
+
+    response = client.get('/auth/perfil', query_string={'token': 'demo-anon'})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["entity_token"] == owner.token
+    assert data["widget_session_active"] is True
+    assert data["session_kind"] == "widget"
+
+
+def test_demo_slug_token_fallback_uses_rubro(monkeypatch, client):
+    """Tokens like demo-ferreteria should resolve via rubro aliases even without registry."""
+
+    rubro = Rubro.query.filter_by(clave="ferreteria").first()
+    if not rubro:
+        rubro = Rubro(nombre="Ferretería", clave="ferreteria", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    owner = User(
+        email="fallback-ferreteria-owner@test.com",
+        name="Ferretería Demo Owner",
+        rol="admin",
+        token="ferreteria-demo-token",
+        rubro_id=rubro.id,
+        tipo_chat="pyme",
+    )
+    owner.set_password("pw")
+    db.session.add(owner)
+    db.session.commit()
+
+    monkeypatch.setattr("utils.auth_helpers.demo_rubro_for_token", lambda *_: None)
+
+    response = client.get('/auth/perfil', query_string={'token': 'demo-ferreteria'})
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["entity_token"] == owner.token
+    assert data["widget_session_active"] is True
+    assert data["session_kind"] == "widget"
+
+
+def test_legacy_perfil_accepts_demo_token(client, monkeypatch):
+    """Legacy /perfil route should also resolve demo tokens and expose legacy fields."""
+
+    monkeypatch.setattr("utils.auth_helpers.demo_rubro_for_token", lambda *_: None)
+
+    rubro = Rubro.query.filter_by(clave="municipio").first()
+    if not rubro:
+        rubro = Rubro(nombre="Municipal", clave="municipio", es_publico=True)
+        db.session.add(rubro)
+        db.session.commit()
+
+    owner = User(
+        email="legacy-demo-owner@test.com",
+        name="Legacy Demo Owner",
+        rol="admin",
+        token="legacy-demo-owner-token",
+        rubro_id=rubro.id,
+        tipo_chat="municipio",
+        telefono="123456",
+        direccion="Av. Principal 123",
+        ciudad="Junín",
+        provincia="Buenos Aires",
+        pais="Argentina",
+        preguntas_usadas=5,
+        plan="pro",
+    )
+    owner.set_password("pw")
+    db.session.add(owner)
+    db.session.commit()
+
+    response = client.get('/perfil', query_string={'token': 'demo-anon'})
+
+    assert response.status_code == 200
+    data = response.get_json()
+
+    assert data["entity_token"] == owner.token
+    assert data["widget_embed_token"] == owner.token
+    assert data["owner_token"] == owner.token
+    assert data["widget_embed_token_kind"] == "entity"
+    assert data["widget_session_active"] is True
+    assert data["session_kind"] == "widget"
+    assert data["session_token"] and data["session_token"].count('.') == 2
+    assert data["auth_token"] == data["session_token"]
+    assert data["token"] == data["session_token"]
+    assert data["telefono"] == "123456"
+    assert data["direccion"] == "Av. Principal 123"
+    assert data["ciudad"] == "Junín"
+    assert data["provincia"] == "Buenos Aires"
+    assert data["pais"] == "Argentina"
+    assert data["preguntas_usadas"] == 5
+    assert data["limite_preguntas"] == 200  # plan pro via limite_para_usuario
+    assert data["catalogo_label"] == "Cargar Catálogo de Trámites"
 
 def test_login_jwt_wins_over_entity_token_header(client):
     """Panel requests must keep using the login JWT even if they also send the entity token."""
