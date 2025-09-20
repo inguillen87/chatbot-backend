@@ -2,11 +2,14 @@ import uuid
 from functools import wraps
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+import re
+import unicodedata
+from datetime import datetime, timedelta, timezone
+
 from flask import current_app, g, jsonify, make_response, request
 from flask_login import current_user
 from models import User
 import jwt
-from datetime import datetime, timedelta, timezone
 
 from extensions import db
 from models import Rubro, User, generate_token
@@ -20,6 +23,8 @@ _WIDGET_ALLOWED_GET_PATHS: Set[str] = {
     "/auth/profile",
     "/auth/token-info",
 }
+
+_DEMO_TOKEN_WARNED: Set[str] = set()
 
 
 def _normalize_path(path: Optional[str]) -> str:
@@ -66,6 +71,149 @@ def _widget_session_allowed(path: Optional[str], method: Optional[str]) -> bool:
         return True
 
     return False
+
+
+def _normalize_alias_value(value: Optional[object]) -> Optional[str]:
+    """Normalize a string value into a slug-ish token."""
+
+    if value is None:
+        return None
+
+    text = str(value).strip().lower()
+    if not text:
+        return None
+
+    decomposed = unicodedata.normalize("NFKD", text)
+    sanitized = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    sanitized = re.sub(r"[^a-z0-9]+", "_", sanitized)
+    sanitized = sanitized.strip("_")
+    return sanitized or None
+
+
+def _rubro_aliases(rubro: Rubro) -> Set[str]:
+    """Return the normalized aliases associated with a Rubro."""
+
+    aliases: Set[str] = set()
+
+    for value in (getattr(rubro, "clave", None), getattr(rubro, "nombre", None)):
+        normalized = _normalize_alias_value(value)
+        if not normalized:
+            continue
+        aliases.add(normalized)
+        collapsed = normalized.replace("_", "")
+        if collapsed:
+            aliases.add(collapsed)
+        parts = [part for part in normalized.split("_") if part]
+        aliases.update(parts)
+
+    return {alias for alias in aliases if alias}
+
+
+def _demo_token_fallback_owner(token: str) -> Optional[User]:
+    """Attempt to resolve demo tokens even if the registry is misconfigured."""
+
+    normalized_token = _normalize_alias_value(token)
+    if not normalized_token or not normalized_token.startswith("demo"):
+        return None
+
+    slug = normalized_token
+    for prefix in (
+        "demo_token_",
+        "demoanon_",
+        "demo_anon_",
+        "demo_anon",
+        "demo_",
+        "demo",
+    ):
+        if slug.startswith(prefix):
+            slug = slug[len(prefix) :].strip("_")
+            break
+
+    tokens = [part for part in slug.split("_") if part] if slug else []
+    slug_variants: Set[str] = set(tokens)
+    if slug:
+        slug_variants.add(slug)
+        collapsed = slug.replace("_", "")
+        if collapsed:
+            slug_variants.add(collapsed)
+
+    tipo_hints: List[str] = []
+
+    request_path = (getattr(request, "path", "") or "").lower()
+    if "municipio" in request_path:
+        tipo_hints.append("municipio")
+    if any(keyword in request_path for keyword in ("pyme", "comercio", "empresa")):
+        tipo_hints.append("pyme")
+
+    if not tokens or tokens == ["anon"]:
+        if "municipio" not in tipo_hints:
+            tipo_hints.append("municipio")
+
+    for part in tokens:
+        if part in {"muni", "municipio", "ciudad", "vecino", "gobierno", "anon"}:
+            if "municipio" not in tipo_hints:
+                tipo_hints.append("municipio")
+        if part in {"pyme", "comercio", "tienda", "negocio", "empresa"}:
+            if "pyme" not in tipo_hints:
+                tipo_hints.append("pyme")
+
+    for tipo in tipo_hints:
+        owner = (
+            User.query.filter_by(tipo_chat=tipo, rol="admin").order_by(User.id.asc()).first()
+            or User.query.filter_by(tipo_chat=tipo).order_by(User.id.asc()).first()
+        )
+        if owner:
+            current_app.logger.info(
+                "[auth] Resolved demo token '%s' to owner %s using tipo hint '%s'",
+                token,
+                owner.id,
+                tipo,
+            )
+            return owner
+
+    if slug_variants:
+        try:
+            rubros = Rubro.query.all()
+        except Exception:
+            rubros = []
+
+        for rubro in rubros:
+            aliases = _rubro_aliases(rubro)
+            if not aliases:
+                continue
+            if slug_variants.intersection(aliases):
+                owner = (
+                    User.query.filter_by(rubro_id=rubro.id, rol="admin")
+                    .order_by(User.id.asc())
+                    .first()
+                    or User.query.filter_by(rubro_id=rubro.id)
+                    .order_by(User.id.asc())
+                    .first()
+                )
+                if owner:
+                    current_app.logger.info(
+                        "[auth] Resolved demo token '%s' to owner %s via rubro %s",
+                        token,
+                        owner.id,
+                        rubro.id,
+                    )
+                    return owner
+
+    generic_owner = (
+        User.query.filter_by(tipo_chat="municipio", rol="admin").order_by(User.id.asc()).first()
+        or User.query.filter_by(tipo_chat="municipio").order_by(User.id.asc()).first()
+        or User.query.filter_by(rol="admin").order_by(User.id.asc()).first()
+    )
+
+    if generic_owner and token not in _DEMO_TOKEN_WARNED:
+        _DEMO_TOKEN_WARNED.add(token)
+        current_app.logger.warning(
+            "[auth] Using generic owner %s for demo token '%s' due to missing registry data.",
+            generic_owner.id,
+            token,
+        )
+
+    return generic_owner
 
 
 def _lookup_owner_for_static_token(token: Optional[str]) -> Optional[User]:
@@ -123,6 +271,10 @@ def _lookup_owner_for_static_token(token: Optional[str]) -> Optional[User]:
 
         if owner_candidate:
             return owner_candidate
+
+    fallback_owner = _demo_token_fallback_owner(token)
+    if fallback_owner:
+        return fallback_owner
 
     return None
 
