@@ -2,9 +2,11 @@ import uuid
 from functools import wraps
 from flask import request, jsonify, current_app, g, make_response
 from flask_login import current_user
-from models import User
 import jwt
 from datetime import datetime, timedelta, timezone
+
+from extensions import db
+from models import User, generate_token
 from services.demo_registry import demo_rubro_for_token
 
 
@@ -82,6 +84,30 @@ def _lookup_owner_for_static_token(token: str | None) -> User | None:
         return User.query.get(demo_entry.owner_user_id)
 
     return None
+
+
+def _ensure_entity_token(owner_user: User | None) -> None:
+    """Ensure the given owner has a persistent entity token assigned."""
+
+    if not owner_user:
+        return
+
+    token_value = getattr(owner_user, "token", None)
+    if token_value:
+        return
+
+    try:
+        owner_user.token = generate_token()
+        db.session.add(owner_user)
+        db.session.commit()
+        current_app.logger.info(
+            "[auth] Generated new entity token for owner %s", owner_user.id
+        )
+    except Exception:
+        current_app.logger.exception(
+            "[auth] Failed to ensure entity token for owner %s", owner_user.id
+        )
+        db.session.rollback()
 
 
 def _generate_widget_session_token(owner_user: User) -> tuple[str, dict]:
@@ -443,6 +469,7 @@ def token_requerido(f):
             g.auth_token = raw_token
             g.current_user = current_user
             g.owner_user = _resolve_owner_user(current_user)
+            _ensure_entity_token(g.owner_user)
             return f(current_user, *args, **kwargs)
 
         if not raw_token:
@@ -468,6 +495,7 @@ def token_requerido(f):
                 owner_user = _lookup_owner_for_static_token(raw_token)
 
             if owner_user:
+                _ensure_entity_token(owner_user)
                 if not _widget_session_allowed(request.path, request.method):
                     resp = jsonify({"error": "Token inválido o sesión expirada"})
                     resp.headers.setdefault("X-Anon-Id", anon_id)
@@ -501,6 +529,12 @@ def token_requerido(f):
         g.auth_token = token
         g.current_user = user
         g.owner_user = _resolve_owner_user(user)
+        _ensure_entity_token(g.owner_user)
+
+        if token_payload.get("session_kind") == "widget":
+            g.widget_session = True
+            if g.widget_owner_user is None:
+                g.widget_owner_user = g.owner_user
 
         if token_payload.get("session_kind") == "widget":
             g.widget_session = True
@@ -630,18 +664,68 @@ def anon_o_token_requerido(f):
             resp.headers.setdefault("Anon-Id", anon_id)
             return _set_anon_cookie(resp, anon_id)
 
+        g.widget_session = False
+        g.widget_owner_user = None
+
         token = obtener_token()
         current_user = None  # El usuario final que chatea (el "viewer")
         preloaded_owner = getattr(g, "_obtener_token_owner", None)
         owner_user = preloaded_owner    # El dueño del bot (la "entidad", ej: municipio)
 
         demo_token_detected = False
+        token_payload: dict = {}
+        is_widget_token = False
 
         if token:
-            # Primero, intentar decodificar como JWT. Esto es para usuarios logueados.
-            jwt_user = user_from_token(token)
+            token_payload = _decode_token_payload(token)
+            is_widget_token = token_payload.get("session_kind") == "widget"
+
+        now_ts = int(datetime.utcnow().timestamp())
+
+        if token and is_widget_token:
+            try:
+                widget_exp = int(token_payload.get("exp", 0))
+            except (TypeError, ValueError):
+                widget_exp = 0
+
+            if widget_exp and widget_exp <= now_ts:
+                current_app.logger.info(
+                    "[anon_o_token_requerido] Widget token expired for owner %s",
+                    token_payload.get("user_id"),
+                )
+                resp = jsonify({"error": "Token inválido o sesión expirada"})
+                resp.headers.setdefault("X-Anon-Id", anon_id)
+                resp.headers.setdefault("Anon-Id", anon_id)
+                _set_anon_cookie(resp, anon_id)
+                return resp, 401
+
+            widget_owner_id = token_payload.get("user_id")
+            if owner_user and widget_owner_id and getattr(owner_user, "id", None) != widget_owner_id:
+                owner_user = None
+
+            if owner_user is None and widget_owner_id:
+                owner_user = User.query.get(widget_owner_id)
+
+            if not owner_user:
+                current_app.logger.warning(
+                    "[anon_o_token_requerido] Widget token references missing owner: %s",
+                    widget_owner_id,
+                )
+                resp = jsonify({"error": "Token inválido o sesión expirada"})
+                resp.headers.setdefault("X-Anon-Id", anon_id)
+                resp.headers.setdefault("Anon-Id", anon_id)
+                _set_anon_cookie(resp, anon_id)
+                return resp, 401
+
+            g.widget_session = True
+            g.widget_owner_user = owner_user
+
+        elif token:
+            jwt_user = user_from_token(token) if not is_widget_token else None
             if jwt_user:
-                current_app.logger.info(f"Request authenticated via JWT. User ID: {jwt_user.id}")
+                current_app.logger.info(
+                    "Request authenticated via JWT. User ID: %s", jwt_user.id
+                )
                 current_user = jwt_user
                 # Si un usuario logueado tiene un `empresa_id`, el owner es esa empresa.
                 if jwt_user.empresa_id:
@@ -657,11 +741,19 @@ def anon_o_token_requerido(f):
 
                 entity_user = owner_user or User.query.filter_by(token=token).first()
                 if entity_user:
-                    current_app.logger.info(f"Request authenticated via static entity token. Owner User ID: {entity_user.id}")
+                    current_app.logger.info(
+                        "Request authenticated via static entity token. Owner User ID: %s",
+                        entity_user.id,
+                    )
                     owner_user = entity_user
+                    g.widget_session = True
+                    g.widget_owner_user = owner_user
                     # El current_user sigue siendo None porque es una sesión anónima del widget.
                 else:
-                    current_app.logger.warning(f"Token '{token[:10]}...' provided but is not a valid JWT or a known entity token.")
+                    current_app.logger.warning(
+                        "Token '%s...' provided but is not a valid JWT or a known entity token.",
+                        token[:10],
+                    )
                     try:
                         demo_token_detected = demo_rubro_for_token(token) is not None
                     except Exception:
@@ -679,6 +771,9 @@ def anon_o_token_requerido(f):
         g.auth_token = token
         g.current_user = current_user
         g.owner_user = owner_user
+        if g.widget_session and g.widget_owner_user is None and owner_user:
+            g.widget_owner_user = owner_user
+        _ensure_entity_token(owner_user)
 
         # Llamar a la función de la ruta con los usuarios identificados
         response = f(

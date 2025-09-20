@@ -3,6 +3,8 @@ import jwt
 from datetime import datetime, timedelta
 from flask import current_app
 
+from utils.auth_helpers import anon_o_token_requerido
+
 def test_perfil_alias_works(client):
     """Verifica que el alias /perfil funciona correctamente."""
     # Asegúrate de que exista un Rubro para asociar al usuario
@@ -293,3 +295,100 @@ def test_expired_widget_cookie_does_not_block_renewal(client):
     renewed_token = data["auth_token"]
     assert renewed_token and renewed_token != expired_token
     assert renewed_token.count('.') == 2
+
+
+def test_me_generates_entity_token_for_admin_when_missing(client):
+    """Admins without a stored entity token should receive one automatically."""
+
+    rubro = Rubro.query.filter_by(clave="municipio").first()
+    if not rubro:
+        rubro = Rubro(nombre="Municipalidad", clave="municipio", es_publico=True)
+        db.session.add(rubro)
+        db.session.commit()
+
+    admin = User(
+        email="entity-mint-admin@test.com",
+        name="Entity Mint Admin",
+        rol="admin",
+        rubro_id=rubro.id,
+        tipo_chat="municipio",
+    )
+    admin.set_password("pw")
+    admin.token = None
+    db.session.add(admin)
+    db.session.commit()
+
+    jwt_payload = {
+        "user_id": admin.id,
+        "exp": datetime.utcnow() + timedelta(days=1),
+    }
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    headers = {"Authorization": f"Bearer {jwt_token}"}
+
+    first_response = client.get("/auth/me", headers=headers)
+    assert first_response.status_code == 200
+    first_data = first_response.get_json()
+    assert first_data["entity_token"]
+    stored = User.query.get(admin.id)
+    assert stored.token == first_data["entity_token"]
+
+    second_response = client.get("/auth/me", headers=headers)
+    assert second_response.status_code == 200
+    second_data = second_response.get_json()
+    assert second_data["entity_token"] == first_data["entity_token"]
+
+
+def test_widget_jwt_stays_anonymous_in_anon_decorator(app, client):
+    """Widget session JWTs must not authenticate as the owner when using anon endpoints."""
+
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    owner = User(
+        email="widget-session-owner@test.com",
+        name="Widget Session Owner",
+        token="widget-session-static-token",
+        rubro_id=rubro.id,
+        tipo_chat="pyme",
+    )
+    owner.set_password("pw")
+    db.session.add(owner)
+    db.session.commit()
+
+    from flask import jsonify, g
+
+    @anon_o_token_requerido
+    def widget_view(current_user=None, owner_user=None, anon_id=None):
+        return jsonify(
+            {
+                "current_user_id": getattr(current_user, "id", None) if current_user else None,
+                "owner_user_id": getattr(owner_user, "id", None) if owner_user else None,
+                "widget_session": getattr(g, "widget_session", False),
+                "anon_id": anon_id,
+            }
+        )
+
+    perfil = client.get("/auth/perfil", query_string={"token": owner.token})
+    assert perfil.status_code == 200
+    widget_token = perfil.get_json()["auth_token"]
+    assert widget_token and widget_token.count(".") == 2
+
+    with app.test_request_context(
+        "/test/widget-view",
+        method="GET",
+        headers={"Authorization": f"Bearer {widget_token}"},
+    ):
+        response = widget_view()
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["current_user_id"] is None
+    assert payload["owner_user_id"] == owner.id
+    assert payload["widget_session"] is True
+    assert payload["anon_id"]
