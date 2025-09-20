@@ -121,6 +121,65 @@ def test_perfil_prefers_entity_header_over_placeholder_authorization(client):
     assert auth_token.count('.') == 2
 
 
+def test_static_entity_token_overrides_authorization_jwt(client):
+    """A fresh entity token should override a stale Authorization JWT from another owner."""
+
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    owner_a = User(
+        email="auth-jwt-a@test.com",
+        name="Owner A",
+        token="static-owner-a", 
+        rubro_id=rubro.id,
+        tipo_chat="pyme",
+    )
+    owner_a.set_password("pw")
+
+    owner_b = User(
+        email="auth-jwt-b@test.com",
+        name="Owner B",
+        token="static-owner-b",
+        rubro_id=rubro.id,
+        tipo_chat="pyme",
+    )
+    owner_b.set_password("pw")
+
+    db.session.add_all([owner_a, owner_b])
+    db.session.commit()
+
+    first = client.get('/auth/perfil', query_string={'token': owner_a.token})
+    assert first.status_code == 200
+    first_data = first.get_json()
+    jwt_owner_a = first_data["auth_token"]
+    assert jwt_owner_a and jwt_owner_a.count('.') == 2
+
+    second = client.get(
+        '/auth/perfil',
+        headers={
+            'Authorization': f'Bearer {jwt_owner_a}',
+            'X-Entity-Token': owner_b.token,
+        },
+    )
+
+    assert second.status_code == 200
+    second_data = second.get_json()
+    assert second_data["entity_token"] == owner_b.token
+    jwt_owner_b = second_data["auth_token"]
+    assert jwt_owner_b and jwt_owner_b.count('.') == 2
+    assert jwt_owner_b != jwt_owner_a
+
+    widget_cookie_name = client.application.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    cookie_headers = second.headers.getlist("Set-Cookie")
+    assert any(
+        cookie_header.startswith(f"{widget_cookie_name}=") and jwt_owner_b in cookie_header
+        for cookie_header in cookie_headers
+    )
+
+
 def test_widget_cookie_is_scoped_to_owner_token(client):
     """A widget cookie from owner A must not be reused when owner B supplies its token."""
 

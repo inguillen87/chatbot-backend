@@ -322,6 +322,7 @@ def obtener_token():
             _register_candidate(widget_cookie, f"Cookie '{widget_cookie_name}'")
 
     widget_cookie_candidate: tuple[str, str] | None = None
+    auth_header_jwt_candidate: tuple[str, str] | None = None
     fallback_token: str | None = None
     fallback_source: str | None = None
 
@@ -339,16 +340,29 @@ def obtener_token():
                     widget_cookie_candidate = (candidate, source)
                 continue
 
+            if "authorization" in source_lower:
+                if auth_header_jwt_candidate is None:
+                    auth_header_jwt_candidate = (candidate, source)
+                continue
+
             current_app.logger.debug(
                 f"[obtener_token] Using token from {source}: '{candidate[:10]}...'"
             )
             return candidate
+
         if fallback_token is None:
             fallback_token = candidate
             fallback_source = source
 
     if widget_cookie_candidate:
         candidate, source = widget_cookie_candidate
+        current_app.logger.debug(
+            f"[obtener_token] Using token from {source}: '{candidate[:10]}...'"
+        )
+        return candidate
+
+    if auth_header_jwt_candidate:
+        candidate, source = auth_header_jwt_candidate
         current_app.logger.debug(
             f"[obtener_token] Using token from {source}: '{candidate[:10]}...'"
         )
