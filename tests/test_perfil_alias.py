@@ -3,8 +3,6 @@ import jwt
 from datetime import datetime, timedelta
 from flask import current_app
 
-from utils.auth_helpers import anon_o_token_requerido
-
 def test_perfil_alias_works(client):
     """Verifica que el alias /perfil funciona correctamente."""
     # Asegúrate de que exista un Rubro para asociar al usuario
@@ -286,69 +284,6 @@ def test_perfil_accepts_demo_anon_token(client):
     assert data["session_token"] and data["session_token"].count('.') == 2
 
 
-def test_demo_anon_token_still_works_without_registry(monkeypatch, client):
-    """If the demo registry is empty, fallback heuristics must still resolve demo-anon."""
-
-    rubro = Rubro.query.filter_by(clave="municipio").first()
-    if not rubro:
-        rubro = Rubro(nombre="Municipalidad", clave="municipio", es_publico=True)
-        db.session.add(rubro)
-        db.session.commit()
-
-    owner = User(
-        email="fallback-demo-owner@test.com",
-        name="Fallback Demo Owner",
-        rol="admin",
-        token="fallback-demo-owner-token",
-        rubro_id=rubro.id,
-        tipo_chat="municipio",
-    )
-    owner.set_password("pw")
-    db.session.add(owner)
-    db.session.commit()
-
-    monkeypatch.setattr("utils.auth_helpers.demo_rubro_for_token", lambda *_: None)
-
-    response = client.get('/auth/perfil', query_string={'token': 'demo-anon'})
-
-    assert response.status_code == 200
-    data = response.get_json()
-    assert data["entity_token"] == owner.token
-    assert data["widget_session_active"] is True
-    assert data["session_kind"] == "widget"
-
-
-def test_demo_slug_token_fallback_uses_rubro(monkeypatch, client):
-    """Tokens like demo-ferreteria should resolve via rubro aliases even without registry."""
-
-    rubro = Rubro.query.filter_by(clave="ferreteria").first()
-    if not rubro:
-        rubro = Rubro(nombre="Ferretería", clave="ferreteria", es_publico=False)
-        db.session.add(rubro)
-        db.session.commit()
-
-    owner = User(
-        email="fallback-ferreteria-owner@test.com",
-        name="Ferretería Demo Owner",
-        rol="admin",
-        token="ferreteria-demo-token",
-        rubro_id=rubro.id,
-        tipo_chat="pyme",
-    )
-    owner.set_password("pw")
-    db.session.add(owner)
-    db.session.commit()
-
-    monkeypatch.setattr("utils.auth_helpers.demo_rubro_for_token", lambda *_: None)
-
-    response = client.get('/auth/perfil', query_string={'token': 'demo-ferreteria'})
-
-    assert response.status_code == 200
-    data = response.get_json()
-    assert data["entity_token"] == owner.token
-    assert data["widget_session_active"] is True
-    assert data["session_kind"] == "widget"
-
 
 def test_login_jwt_wins_over_entity_token_header(client):
     """Panel requests must keep using the login JWT even if they also send the entity token."""
@@ -367,15 +302,12 @@ def test_login_jwt_wins_over_entity_token_header(client):
         rubro_id=rubro.id,
         tipo_chat="municipio",
     )
-    admin.set_password("pw")
-    db.session.add(admin)
+    admin.set_password("pw") db.session.add(admin)
     db.session.commit()
 
     jwt_payload = {
         "user_id": admin.id,
-        "exp": datetime.utcnow() + timedelta(days=1),
-    }
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+        "exp": datetime.utcnow() + timedelta(days=1),  jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
     if isinstance(jwt_token, bytes):
         jwt_token = jwt_token.decode("utf-8")
 

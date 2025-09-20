@@ -11,7 +11,6 @@ from models import (
     TicketComentario,
     TicketSatisfaccion,
     ArchivoAdjunto,
-    Rubro,
     db,
 )
 from datetime import datetime, timedelta
@@ -774,39 +773,6 @@ def test_login_accepts_legacy_anon_id(client):
     )
     assert response.status_code == 200
     assert response.headers.get("X-Anon-Id") == "legacy-anon"
-
-
-def test_login_returns_entity_token(client):
-    rubro = Rubro(nombre="Municipalidad", clave="municipio", es_publico=True)
-    db.session.add(rubro)
-    db.session.commit()
-
-    admin = User(
-        email="entity-login@test.com",
-        name="Entity Login",
-        rol="admin",
-        tipo_chat="municipio",
-        rubro_id=rubro.id,
-    )
-    admin.set_password("pw")
-    admin.token = None
-    db.session.add(admin)
-    db.session.commit()
-
-    response = client.post(
-        '/auth/login',
-        json={"email": "entity-login@test.com", "password": "pw"},
-    )
-
-    assert response.status_code == 200
-    data = response.get_json()
-    assert data["token"]
-    assert data["auth_token"] == data["token"]
-    assert data["entity_token"]
-    assert data["owner_token"] == data["entity_token"]
-
-    stored = User.query.get(admin.id)
-    assert stored.token == data["entity_token"]
 
 
 def test_login_echoes_anon_id(client):

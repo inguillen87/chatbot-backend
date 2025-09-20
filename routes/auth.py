@@ -19,14 +19,7 @@ from typing import Callable, Optional
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 
-from utils.auth_helpers import (
-    token_requerido,
-    obtener_token,
-    get_or_create_anon_id,
-    generar_token,
-    user_from_token,
-    get_or_create_owner_entity_token,
-)
+from utils.auth_helpers import token_requerido, obtener_token, get_or_create_anon_id, generar_token, user_from_token
 from flask_login import current_user
 
 
@@ -266,7 +259,6 @@ def login():
         "mensaje": "Login exitoso",
         "id": user.id,
         "token": jwt_token,
-        "auth_token": jwt_token,
         "email": user.email,
         "name": user.name,
         "rol": user.rol,
@@ -274,8 +266,6 @@ def login():
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
         "categorias": user.ticket_categorias or "",
-        "entity_token": owner_token,
-        "owner_token": owner_token,
     })
 
     cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
@@ -340,10 +330,7 @@ def google_login():
             resp = jsonify({
                 "status": "falta_rubro",
                 "token": jwt_token,
-                "auth_token": jwt_token,
                 "email": user.email,
-                "entity_token": owner_token,
-                "owner_token": owner_token,
             })
             return resp
 
@@ -364,7 +351,6 @@ def google_login():
         response = jsonify({
             "id": user.id,
             "token": jwt_token,
-            "auth_token": jwt_token,
             "name": user.name,
             "email": user.email,
             "rol": user.rol,
@@ -372,8 +358,6 @@ def google_login():
             "rubro": rubro_nombre,
             "tipo_chat": tipo_chat,
             "categorias": user.ticket_categorias or "",
-            "entity_token": owner_token,
-            "owner_token": owner_token,
         })
 
         cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
