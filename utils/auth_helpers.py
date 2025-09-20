@@ -36,6 +36,27 @@ def user_from_token(token: str) -> User | None:
         current_app.logger.warning(f"Error al decodificar token JWT: {e}")
         return None
 
+
+def _resolve_owner_user(user: User | None) -> User | None:
+    """Return the owner entity for a given authenticated user.
+
+    Employees store the company owner ID in ``empresa_id``. Administrators (for
+    both pymes and municipios) have ``empresa_id`` set to ``None`` so the owner
+    is the user itself. This helper centralises the lookup so other modules can
+    rely on ``g.owner_user`` being populated consistently.
+    """
+
+    if not user:
+        return None
+
+    empresa_id = getattr(user, "empresa_id", None)
+    if empresa_id:
+        owner = User.query.get(empresa_id)
+        if owner:
+            return owner
+
+    return user
+
 def obtener_token():
     """Extrae el token desde header, query string o payload."""
     current_app.logger.debug(f"[obtener_token] Checking for token. Path: {request.path}")
@@ -206,6 +227,8 @@ def token_requerido(f):
 
         # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
         if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
+            g.current_user = current_user
+            g.owner_user = _resolve_owner_user(current_user)
             return f(current_user, *args, **kwargs)
 
         # Si no, buscar el token como se hacía antes
@@ -225,6 +248,9 @@ def token_requerido(f):
             resp.headers.setdefault("Anon-Id", anon_id)
             _set_anon_cookie(resp, anon_id)
             return resp, 401
+
+        g.current_user = user
+        g.owner_user = _resolve_owner_user(user)
 
         response = f(user, *args, **kwargs)
 
@@ -398,6 +424,10 @@ def anon_o_token_requerido(f):
                 current_app.logger.info(f"Anonymous request to '{request.path}', loaded DEFAULT municipality owner user ID: {owner_user.id}")
             else:
                 current_app.logger.error(f"CRITICAL: Anonymous request to '{request.path}' but no default municipality user found.")
+
+        g.auth_token = token
+        g.current_user = current_user
+        g.owner_user = owner_user
 
         # Llamar a la función de la ruta con los usuarios identificados
         response = f(

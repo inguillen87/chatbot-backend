@@ -2,14 +2,112 @@ import logging
 import os
 import uuid
 import io
+import re
+from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
 import requests
-from flask import current_app, has_app_context, request
+from flask import current_app, has_app_context, has_request_context, request, g
 from werkzeug.utils import secure_filename
 from services.thumbnail_service import generar_thumbnail
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_path_segment(segment: str | None) -> str | None:
+    """Return a filesystem-friendly representation of ``segment``."""
+
+    if segment is None:
+        return None
+
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "-", str(segment).strip())
+    sanitized = sanitized.strip("-_.")
+    return sanitized or None
+
+
+def _entity_subdir_from_owner(owner_user) -> str | None:
+    """Infer a descriptive folder name for the entity handling the request."""
+
+    if not owner_user:
+        return None
+
+    tipo_chat = getattr(owner_user, "tipo_chat", None)
+    prefix = None
+    if tipo_chat == "municipio":
+        prefix = "municipio"
+    elif tipo_chat == "pyme":
+        prefix = "empresa"
+
+    for attr in ("municipio_id", "pyme_id", "empresa_id", "id"):
+        value = getattr(owner_user, attr, None)
+        if value is None or value == "":
+            continue
+        identifier = _sanitize_path_segment(value)
+        if not identifier:
+            continue
+        if not prefix:
+            if attr == "municipio_id":
+                prefix = "municipio"
+            elif attr in {"pyme_id", "empresa_id"}:
+                prefix = "empresa"
+            else:
+                prefix = "usuario"
+        return f"{prefix}_{identifier}"
+
+    if prefix and hasattr(owner_user, "id"):
+        identifier = _sanitize_path_segment(getattr(owner_user, "id", None))
+        if identifier:
+            return f"{prefix}_{identifier}"
+
+    return None
+
+
+def _determine_fallback_subdir(explicit: str | None = None) -> str | None:
+    """Determine which directory should store local fallback uploads."""
+
+    candidate = _sanitize_path_segment(explicit)
+    if candidate:
+        return candidate
+
+    if has_request_context():
+        header_override = request.headers.get("X-Upload-Entity")
+        header_candidate = _sanitize_path_segment(header_override)
+        if header_candidate:
+            return header_candidate
+
+        owner = getattr(g, "owner_user", None)
+        entity_subdir = _entity_subdir_from_owner(owner)
+        if entity_subdir:
+            return entity_subdir
+
+    return None
+
+
+def _purge_old_files(upload_dir: str, retention_days: int) -> None:
+    """Delete files older than ``retention_days`` inside ``upload_dir``."""
+
+    if retention_days <= 0:
+        return
+
+    cutoff = datetime.utcnow() - timedelta(days=retention_days)
+    try:
+        for entry in os.scandir(upload_dir):
+            if not entry.is_file():
+                continue
+            entry_mtime = datetime.utcfromtimestamp(entry.stat().st_mtime)
+            if entry_mtime < cutoff:
+                try:
+                    os.remove(entry.path)
+                except OSError:
+                    logger.warning(
+                        "Failed to remove expired local upload '%s'", entry.path, exc_info=True
+                    )
+    except FileNotFoundError:
+        return
+    except Exception:  # pragma: no cover - best-effort clean-up
+        logger.warning(
+            "Unable to purge old files in '%s'", upload_dir, exc_info=True
+        )
 
 
 def _mask_sensitive_value(value: str) -> str:
@@ -169,13 +267,28 @@ def _save_to_local(
     mimetype: str,
     thumbnail_bytes: bytes | None,
     thumb_meta: dict | None,
+    *,
+    entity_subdir: str | None = None,
 ) -> dict:
     """Save files to the local filesystem when GCS is unavailable."""
-    upload_dir = current_app.config.get(
+    base_dir = current_app.config.get(
         "LOCAL_UPLOAD_FOLDER",
         os.path.join(current_app.root_path, "static", "uploads"),
     )
+    entity_dir = _determine_fallback_subdir(entity_subdir)
+    upload_dir = os.path.join(base_dir, entity_dir) if entity_dir else base_dir
+    if entity_dir:
+        logger.info(
+            "Local storage fallback active for entity folder '%s'", entity_dir
+        )
     os.makedirs(upload_dir, exist_ok=True)
+
+    retention_days = current_app.config.get("LOCAL_UPLOAD_RETENTION_DAYS", 15)
+    try:
+        retention_days = int(retention_days)
+    except (TypeError, ValueError):
+        retention_days = 15
+    _purge_old_files(upload_dir, retention_days)
 
     original_path = os.path.join(upload_dir, unique_name)
     with open(original_path, "wb") as f:
@@ -211,6 +324,7 @@ def _save_to_local(
         "mimetype": mimetype,
         "thumb_meta": thumb_meta,
         "thumbUrl": thumb_url,
+        "path": original_path,
     }
 
 
@@ -389,6 +503,7 @@ def upload_to_gcs(file_storage) -> dict | None:
             "size": local["size"],
             "original_name": local["original_name"],
             "mimetype": local["mimetype"],
+            "path": local.get("path"),
         }
 
     try:
