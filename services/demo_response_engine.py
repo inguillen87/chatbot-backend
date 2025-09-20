@@ -223,13 +223,20 @@ def _render_resources(resources: Sequence[Dict[str, Any]]) -> Tuple[str, List[Di
         description = str(resource.get("description") or resource.get("descripcion") or "").strip()
         url = resource.get("url") or resource.get("href")
         thumbnail = resource.get("thumbnail") or resource.get("image")
+        highlight = str(resource.get("highlight") or resource.get("badge") or "").strip()
+        price = str(resource.get("price") or resource.get("precio") or "").strip()
+        availability = str(resource.get("availability") or resource.get("service_level") or "").strip()
 
-        line = f"• {icon} {title}"
-        if description:
-            line += f" – {description}"
-        if url:
-            line += f" → {url}"
-        lines.append(line)
+        detail_badges: List[str] = [value for value in (highlight, price) if value]
+        header_line = f"{icon} {title}"
+        if detail_badges:
+            header_line += " · " + " · ".join(detail_badges)
+        lines.append(header_line)
+
+        for extra in (description, availability):
+            if extra:
+                lines.append(f"   {extra}")
+        lines.append("")
 
         if url:
             buttons.append(
@@ -252,7 +259,7 @@ def _render_resources(resources: Sequence[Dict[str, Any]]) -> Tuple[str, List[Di
             attachment["thumbnail"] = thumbnail
         attachments.append(attachment)
 
-    return "\n".join(lines), buttons, attachments
+    return "\n".join(line for line in lines if line), buttons, attachments
 
 
 def _render_faq_preview(faq_preview: Sequence[Dict[str, Any]], limit: Optional[int]) -> str:

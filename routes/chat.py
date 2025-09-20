@@ -7,6 +7,7 @@ import uuid  # Added for chat_session_id generation
 from copy import deepcopy
 from urllib.parse import urljoin
 from typing import Dict, List, Optional, Tuple
+from collections import OrderedDict
 
 # Add project root to sys.path for this routes file
 project_root_chat_routes = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -37,6 +38,10 @@ from datetime import datetime, timedelta
 chat_bp = Blueprint("chat_bp", __name__)
 
 DEMO_ACTION_PREFIX = "demo_select_rubro"
+DEMO_MENU_PREFIX = "demo_menu"
+DEMO_MENU_BACK_ACTION = f"{DEMO_MENU_PREFIX}:back"
+DEMO_MENU_HOME_ACTION = f"{DEMO_MENU_PREFIX}:home"
+DEMO_MENU_ROOT_ID = "demo_menu_root"
 
 
 def _load_demo_rubros() -> List[Dict[str, Optional[str]]]:
@@ -309,16 +314,16 @@ def _format_demo_resources(
         availability_text = str(availability_raw).strip() if availability_raw else None
 
         label_for_text = title or cta_text or f"Recurso {idx + 1}"
-        detail_parts = [
-            part
-            for part in (price_text, highlight_text, description, availability_text)
-            if part
-        ]
+        detail_badges = [part for part in (highlight_text, price_text) if part]
+        header_line = f"{icon} {label_for_text}"
+        if detail_badges:
+            header_line += " · " + " · ".join(detail_badges)
+        lines.append(header_line)
 
-        line = f"• {icon} {label_for_text}"
-        if detail_parts:
-            line += " – " + " | ".join(detail_parts)
-        lines.append(line)
+        for detail_line in (description, availability_text):
+            if detail_line:
+                lines.append(f"   {detail_line}")
+        lines.append("")
 
         action_id_raw = raw.get("action_id") or raw.get("id")
         if isinstance(action_id_raw, str) and action_id_raw.strip():
@@ -374,82 +379,560 @@ def _format_demo_resources(
             attachment_entry["thumbnail"] = thumbnail_url
         attachments.append(attachment_entry)
 
-    formatted_text = "\n".join(lines) if lines else ""
+    formatted_text = "\n".join(line for line in lines if line) if lines else ""
     return formatted_text, buttons, attachments
 
 
+def _build_demo_menu_registry(
+    quick_actions: List[Dict[str, object]] | None,
+) -> Tuple[Dict[str, Dict[str, object]], str, List[str]]:
+    """Crea una estructura de menús navegables basada en las quick actions configuradas."""
+
+    if not quick_actions:
+        return {}, DEMO_MENU_ROOT_ID, []
+
+    registry: Dict[str, Dict[str, object]] = {}
+    prompt_examples: List[str] = []
+    used_ids: set[str] = set()
+
+    def _next_id(base: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "_", base.lower()).strip("_") or "menu"
+        candidate = slug
+        counter = 1
+        while candidate in used_ids or candidate in registry:
+            counter += 1
+            candidate = f"{slug}_{counter}"
+        used_ids.add(candidate)
+        return candidate
+
+    def _process_entries(
+        entries: List[Dict[str, object]] | None,
+        menu_id: str,
+        title: Optional[str],
+        description: Optional[str],
+        parent: Optional[str],
+    ) -> Dict[str, object]:
+        groups: "OrderedDict[Optional[str], List[Dict[str, object]]]" = OrderedDict()
+        category_order: List[Optional[str]] = []
+        items: List[Dict[str, object]] = []
+
+        if not entries:
+            return {
+                "id": menu_id,
+                "title": title or "Menú",
+                "description": description,
+                "items": items,
+                "groups": groups,
+                "category_order": category_order,
+                "parent": parent,
+            }
+
+        for idx, raw in enumerate(entries):
+            if not isinstance(raw, dict):
+                continue
+
+            emoji = raw.get("emoji") or raw.get("icon")
+            label_raw = raw.get("texto") or raw.get("label") or raw.get("title") or raw.get("name")
+            if not label_raw:
+                label_raw = f"Opción {idx + 1}"
+            label = str(label_raw).strip()
+            if not label:
+                continue
+
+            display_text = f"{emoji} {label}" if emoji and not label.startswith(str(emoji)) else label
+            description_raw = raw.get("description") or raw.get("descripcion")
+            description_text = str(description_raw).strip() if description_raw else None
+
+            category_raw = raw.get("category") or raw.get("grupo") or raw.get("section")
+            category_text = str(category_raw).strip() if category_raw else None
+            if category_text not in groups:
+                groups[category_text] = []
+                category_order.append(category_text)
+
+            prompt_raw = raw.get("prompt") or raw.get("question") or raw.get("payload")
+            prompt_text = str(prompt_raw).strip() if prompt_raw else None
+            if prompt_text:
+                normalized_prompt = prompt_text
+                if normalized_prompt not in prompt_examples:
+                    prompt_examples.append(normalized_prompt)
+
+            base_id = raw.get("id") or raw.get("action_id") or raw.get("key") or f"{menu_id}_{idx + 1}"
+            candidate = str(base_id)
+            candidate_id = re.sub(r"[^a-z0-9]+", "_", candidate.lower()).strip("_")
+            if not candidate_id:
+                candidate_id = f"{menu_id}_{idx + 1}"
+            if candidate_id in used_ids:
+                candidate_id = _next_id(candidate_id)
+            else:
+                used_ids.add(candidate_id)
+
+            item_entry: Dict[str, object] = {
+                "id": candidate_id,
+                "label": label,
+                "texto": display_text,
+                "description": description_text,
+                "category": category_text,
+                "emoji": emoji,
+            }
+
+            submenu_entries = raw.get("submenu") or raw.get("children") or raw.get("items")
+            submenu_title = raw.get("submenu_title")
+            submenu_description = raw.get("submenu_description")
+
+            if submenu_entries:
+                child_base_id = raw.get("menu_id") or f"{candidate_id}_menu"
+                child_slug = re.sub(r"[^a-z0-9]+", "_", str(child_base_id).lower()).strip("_")
+                if not child_slug:
+                    child_slug = f"{candidate_id}_submenu"
+                if child_slug in used_ids or child_slug in registry:
+                    child_slug = _next_id(child_slug)
+                else:
+                    used_ids.add(child_slug)
+
+                child_title = submenu_title or display_text
+                child_desc = submenu_description or description_text
+                child_menu = _process_entries(submenu_entries, child_slug, child_title, child_desc, menu_id)
+                registry[child_slug] = child_menu
+
+                item_entry["type"] = "menu"
+                item_entry["menu_id"] = child_slug
+                item_entry["action"] = f"{DEMO_MENU_PREFIX}:{child_slug}"
+            else:
+                action_raw = raw.get("action")
+                action_text = str(action_raw).strip() if isinstance(action_raw, str) else None
+                if action_text:
+                    resolved_action = action_text
+                elif prompt_text:
+                    resolved_action = prompt_text
+                else:
+                    resolved_action = label
+                item_entry["action"] = resolved_action
+                item_entry["type"] = raw.get("type") or "quick_reply"
+                if prompt_text:
+                    item_entry["prompt"] = prompt_text
+
+            groups[category_text].append(item_entry)
+            items.append(item_entry)
+
+        return {
+            "id": menu_id,
+            "title": title or "Menú",
+            "description": description,
+            "items": items,
+            "groups": groups,
+            "category_order": category_order,
+            "parent": parent,
+        }
+
+    root_menu = _process_entries(quick_actions, DEMO_MENU_ROOT_ID, "Menú principal", None, None)
+    registry[DEMO_MENU_ROOT_ID] = root_menu
+
+    return registry, DEMO_MENU_ROOT_ID, prompt_examples
+
+
+def _format_menu_items(
+    menu_entry: Optional[Dict[str, object]],
+) -> Tuple[str, str, List[str], List[Dict[str, object]], List[Dict[str, object]], List[Dict[str, object]]]:
+    """Genera texto y botones para un menú navegable."""
+
+    if not menu_entry:
+        return "", "", [], [], []
+
+    groups: "OrderedDict[Optional[str], List[Dict[str, object]]]" = menu_entry.get("groups") or OrderedDict()
+    category_order: List[Optional[str]] = menu_entry.get("category_order") or []
+
+    lines: List[str] = []
+    for category in category_order:
+        items = groups.get(category) or []
+        if not items:
+            continue
+        if category:
+            lines.append(str(category))
+        for item in items:
+            label = str(item.get("texto") or item.get("label") or "").strip()
+            if not label:
+                continue
+            description = str(item.get("description") or "").strip()
+            indicator = " ⮕" if str(item.get("type") or "").lower() == "menu" else ""
+            lines.append(f"   ◾ {label}{indicator}")
+            if description:
+                lines.append(f"      {description}")
+        lines.append("")
+
+    menu_text = "\n".join(line for line in lines if line).strip()
+
+    prompt_lines: List[str] = []
+    seen_prompts: set[str] = set()
+    for item in menu_entry.get("items", []):
+        prompt = item.get("prompt")
+        if prompt and prompt not in seen_prompts:
+            prompt_lines.append(f'• "{prompt}"')
+            seen_prompts.add(prompt)
+    prompt_text = "\n".join(prompt_lines)
+
+    buttons: List[Dict[str, object]] = []
+    quick_items: List[Dict[str, object]] = []
+    grouped_sections: List[Dict[str, object]] = []
+
+    for idx, item in enumerate(menu_entry.get("items", [])):
+        item_id = item.get("id") or f"menu_item_{idx}"
+        action_value = item.get("action") or item.get("prompt") or item.get("label")
+        button: Dict[str, object] = {
+            "texto": item.get("texto") or item.get("label") or "Opción",
+            "action": action_value,
+            "id": item_id,
+            "type": item.get("type") or "quick_reply",
+        }
+        if item.get("type") == "menu":
+            button["action_id"] = action_value
+            button["id"] = action_value
+        else:
+            button["action_id"] = item_id
+        description = item.get("description")
+        if description:
+            button["description"] = description
+        buttons.append(button)
+
+        quick_item: Dict[str, object] = {
+            "id": item_id,
+            "texto": item.get("texto") or item.get("label") or "Opción",
+            "description": description,
+            "action": action_value,
+            "type": item.get("type") or "quick_reply",
+        }
+        if item.get("prompt"):
+            quick_item["prompt"] = item.get("prompt")
+        if item.get("emoji"):
+            quick_item["emoji"] = item.get("emoji")
+        if item.get("category"):
+            quick_item["category"] = item.get("category")
+        if item.get("type") == "menu" and item.get("menu_id"):
+            quick_item["menu_id"] = item.get("menu_id")
+        quick_items.append({k: v for k, v in quick_item.items() if v})
+
+    for category in category_order:
+        items = groups.get(category) or []
+        if not items:
+            continue
+        group_entry: Dict[str, object] = {
+            "title": category or "Opciones disponibles",
+            "category": category,
+            "items": [],
+        }
+        for item in items:
+            group_item: Dict[str, object] = {
+                "id": item.get("id"),
+                "texto": item.get("texto") or item.get("label") or "Opción",
+                "description": item.get("description"),
+                "action": item.get("action") or item.get("prompt") or item.get("label"),
+                "type": item.get("type") or "quick_reply",
+            }
+            if item.get("prompt"):
+                group_item["prompt"] = item.get("prompt")
+            if item.get("emoji"):
+                group_item["emoji"] = item.get("emoji")
+            if item.get("category"):
+                group_item["category"] = item.get("category")
+            if item.get("type") == "menu" and item.get("menu_id"):
+                group_item["menu_id"] = item.get("menu_id")
+            group_entry["items"].append({k: v for k, v in group_item.items() if v})
+        grouped_sections.append(group_entry)
+
+    return menu_text, prompt_text, prompt_lines, buttons, quick_items, grouped_sections
+
+
+def _interactive_sections_from_quick_items(
+    quick_items: List[Dict[str, object]] | None,
+) -> List[Dict[str, object]]:
+    if not quick_items:
+        return []
+
+    rows_by_category: "OrderedDict[str, List[Dict[str, str]]]" = OrderedDict()
+
+    for item in quick_items:
+        row_id = item.get("id") or item.get("action")
+        title = item.get("texto")
+        if not row_id or not title:
+            continue
+        category = item.get("category") or "Menú principal"
+        if category not in rows_by_category:
+            rows_by_category[category] = []
+        desc_parts: List[str] = []
+        if item.get("description"):
+            desc_parts.append(str(item["description"]))
+        if item.get("prompt"):
+            prompt_text = str(item["prompt"])
+            if prompt_text and prompt_text not in desc_parts:
+                desc_parts.append(prompt_text)
+        rows_by_category[category].append({
+            "id": row_id,
+            "title": str(title),
+            "description": " · ".join(desc_parts) if desc_parts else "",
+        })
+
+    sections: List[Dict[str, object]] = []
+    for category, rows in rows_by_category.items():
+        if not rows:
+            continue
+        sections.append({
+            "title": str(category) if category else "Menú principal",
+            "rows": rows,
+        })
+
+    return sections
+
+
+def _build_menu_navigation_payload(
+    menu_entry: Dict[str, object],
+    *,
+    menu_registry: Dict[str, Dict[str, object]],
+    root_id: str,
+    stack: List[str],
+) -> Dict[str, object]:
+    (
+        menu_text,
+        prompt_text,
+        _prompt_lines,
+        buttons,
+        quick_items,
+        grouped_sections,
+    ) = _format_menu_items(menu_entry)
+
+    breadcrumbs: List[str] = []
+    for menu_id in stack:
+        entry = menu_registry.get(menu_id)
+        if not entry:
+            continue
+        title = str(entry.get("title") or entry.get("id") or "").strip()
+        if title:
+            breadcrumbs.append(title)
+    breadcrumb_text = " > ".join(breadcrumbs)
+
+    title_line = str(menu_entry.get("title") or "Menú").strip()
+    description_line = str(menu_entry.get("description") or "").strip()
+
+    segments: List[str] = []
+    if breadcrumb_text and breadcrumb_text.lower() != title_line.lower():
+        segments.append(f"{title_line}\nRuta: {breadcrumb_text}")
+    else:
+        segments.append(title_line)
+    if description_line:
+        segments.append(description_line)
+    if menu_text:
+        segments.append(f"━━━━━━━━━━━━\nOpciones disponibles\n{menu_text}")
+    if prompt_text:
+        segments.append(f"💬 Probá decir\n{prompt_text}")
+    segments.append("Elegí una opción o usá los botones para navegar.")
+
+    message_text = "\n\n".join(seg for seg in segments if seg)
+
+    payload: Dict[str, object] = {
+        "message_body": message_text,
+        "respuesta": message_text,
+        "fuente": "demo_menu",
+    }
+
+    menu_buttons: List[Dict[str, object]] = []
+    seen_ids: set[str] = set()
+    for button in buttons:
+        if not isinstance(button, dict):
+            continue
+        candidate = deepcopy(button)
+        candidate_id = str(
+            candidate.get("id")
+            or candidate.get("action_id")
+            or candidate.get("action")
+            or len(menu_buttons)
+        )
+        if candidate_id in seen_ids:
+            continue
+        seen_ids.add(candidate_id)
+        menu_buttons.append(candidate)
+
+    current_menu_id = str(menu_entry.get("id") or "")
+    if current_menu_id and current_menu_id != root_id:
+        back_button = {
+            "texto": "⬅️ Volver al menú anterior",
+            "action": DEMO_MENU_BACK_ACTION,
+            "action_id": DEMO_MENU_BACK_ACTION,
+            "id": DEMO_MENU_BACK_ACTION,
+            "type": "menu",
+        }
+        home_button = {
+            "texto": "🏠 Menú principal",
+            "action": f"{DEMO_MENU_PREFIX}:{root_id}",
+            "action_id": f"{DEMO_MENU_PREFIX}:{root_id}",
+            "id": f"{DEMO_MENU_PREFIX}:{root_id}",
+            "type": "menu",
+        }
+        for nav_button in (back_button, home_button):
+            nav_id = nav_button["id"]
+            if nav_id not in seen_ids:
+                menu_buttons.append(nav_button)
+                seen_ids.add(nav_id)
+
+    payload["options_list"] = menu_buttons
+    payload["botones"] = menu_buttons
+
+    non_url_buttons = [btn for btn in menu_buttons if btn.get("type") != "url"]
+    payload["message_type"] = "interactive_list" if len(non_url_buttons) > 3 else "interactive_buttons"
+
+    menu_sections_payload: List[Dict[str, object]] = []
+    if quick_items:
+        section_payload: Dict[str, object] = {
+            "title": menu_entry.get("title") or "Menú",
+            "type": "quick_actions",
+            "items": quick_items,
+        }
+        if grouped_sections:
+            section_payload["groups"] = grouped_sections
+        menu_sections_payload.append(section_payload)
+    if menu_sections_payload:
+        payload["menu_sections"] = menu_sections_payload
+
+    if quick_items:
+        interactive_sections = _interactive_sections_from_quick_items(quick_items)
+        if interactive_sections:
+            payload["interactive_list_sections"] = interactive_sections
+            if payload.get("message_type") == "interactive_list":
+                payload.setdefault("interactive_list_button_text", "Ver opciones")
+                if len(interactive_sections) == 1:
+                    payload.setdefault(
+                        "interactive_list_section_title",
+                        interactive_sections[0].get("title") or (menu_entry.get("title") or "Menú"),
+                    )
+                else:
+                    payload.setdefault("interactive_list_section_title", menu_entry.get("title") or "Menú")
+
+    payload["generar_audio"] = True
+    return payload
+
+
+def _handle_demo_menu_action(
+    contexto_chat: Dict[str, object],
+    action_value: Optional[str],
+) -> Optional[Dict[str, object]]:
+    if not isinstance(action_value, str):
+        return None
+
+    normalized = action_value.strip()
+    if not normalized:
+        return None
+
+    menu_registry = contexto_chat.get("demo_menu_registry")
+    if not isinstance(menu_registry, dict) or not menu_registry:
+        return None
+
+    root_id = str(contexto_chat.get("demo_menu_root_id") or DEMO_MENU_ROOT_ID)
+
+    stack_raw = contexto_chat.get("demo_menu_stack")
+    if isinstance(stack_raw, list) and stack_raw:
+        stack = [str(item).strip() for item in stack_raw if str(item).strip()]
+    else:
+        stack = []
+    if not stack:
+        stack = [root_id]
+
+    target_id = None
+
+    if normalized == DEMO_MENU_BACK_ACTION:
+        if len(stack) > 1:
+            stack.pop()
+        target_id = stack[-1]
+    elif normalized in {DEMO_MENU_HOME_ACTION, f"{DEMO_MENU_PREFIX}:{root_id}"}:
+        stack = [root_id]
+        target_id = root_id
+    elif normalized.startswith(f"{DEMO_MENU_PREFIX}:"):
+        candidate = normalized.split(":", 1)[1].strip()
+        if not candidate:
+            candidate = root_id
+        if candidate not in menu_registry:
+            return None
+        path: List[str] = []
+        current = candidate
+        guard = 0
+        while current and guard < 50:
+            path.insert(0, current)
+            parent_id = menu_registry.get(current, {}).get("parent")
+            if not parent_id:
+                break
+            current = str(parent_id)
+            guard += 1
+        if not path or path[0] != root_id:
+            path.insert(0, root_id)
+        stack = path
+        target_id = candidate
+    else:
+        return None
+
+    if target_id not in menu_registry:
+        target_id = root_id
+        if target_id not in menu_registry:
+            return None
+
+    contexto_chat["demo_menu_stack"] = stack
+    menu_entry = menu_registry[target_id]
+    return _build_menu_navigation_payload(
+        menu_entry,
+        menu_registry=menu_registry,
+        root_id=root_id,
+        stack=stack,
+    )
+
 def _format_demo_quick_actions(
     quick_actions: List[Dict[str, object]] | None,
-) -> Tuple[str, str, List[Dict[str, object]]]:
+) -> Tuple[
+    str,
+    str,
+    List[Dict[str, object]],
+    Dict[str, Dict[str, object]],
+    str,
+    List[Dict[str, object]],
+    List[Dict[str, object]],
+]:
     """Render quick access suggestions for the intro message."""
 
     if not quick_actions:
-        return "", "", []
+        return "", "", [], {}, DEMO_MENU_ROOT_ID, [], []
 
-    menu_lines: List[str] = []
-    prompt_lines: List[str] = []
-    prompt_seen: set[str] = set()
-    buttons: List[Dict[str, object]] = []
+    menu_registry, root_menu_id, prompt_examples = _build_demo_menu_registry(quick_actions)
+    root_menu = menu_registry.get(root_menu_id)
 
-    for idx, raw in enumerate(quick_actions):
-        if not isinstance(raw, dict):
-            continue
+    (
+        menu_text,
+        prompt_text_root,
+        prompt_lines_root,
+        buttons,
+        quick_items,
+        grouped_sections,
+    ) = _format_menu_items(root_menu)
 
-        emoji = raw.get("emoji") or raw.get("icon") or "💬"
-        texto_base = raw.get("texto") or raw.get("label") or raw.get("title")
-        if not texto_base:
-            continue
-        texto = str(texto_base).strip()
-        if not texto:
-            continue
+    combined_prompts: List[str] = []
+    seen_prompts: set[str] = set()
 
-        display_text = f"{emoji} {texto}" if emoji and not texto.startswith(str(emoji)) else texto
-        description = raw.get("description") or raw.get("descripcion")
-        description_text = str(description).strip() if description else None
+    if root_menu:
+        for item in root_menu.get("items", []):
+            prompt_val = item.get("prompt")
+            if prompt_val and prompt_val not in seen_prompts:
+                combined_prompts.append(prompt_val)
+                seen_prompts.add(prompt_val)
 
-        if description_text:
-            menu_lines.append(f"• {display_text} – {description_text}")
-        else:
-            menu_lines.append(f"• {display_text}")
+    for prompt in prompt_examples:
+        if prompt and prompt not in seen_prompts:
+            combined_prompts.append(prompt)
+            seen_prompts.add(prompt)
 
-        prompt = raw.get("prompt") or raw.get("question") or raw.get("payload")
-        prompt_text = str(prompt).strip() if prompt else ""
-        if prompt_text and prompt_text not in prompt_seen:
-            prompt_lines.append(f'• "{prompt_text}"')
-            prompt_seen.add(prompt_text)
+    prompt_examples_text = "\n".join(f'• "{prompt}"' for prompt in combined_prompts) or prompt_text_root
 
-        action_payload = prompt or raw.get("action") or texto
-
-        action_id_raw = raw.get("action_id") or raw.get("id") or raw.get("key")
-        if isinstance(action_id_raw, str) and action_id_raw.strip():
-            action_id = action_id_raw.strip()
-        else:
-            slug_source = f"{texto}-{idx}"
-            slug = re.sub(r"[^a-z0-9]+", "_", slug_source.lower()).strip("_")
-            action_id = slug or f"demo_quick_action_{idx}"
-
-        button: Dict[str, object] = {
-            "texto": display_text,
-            "action": action_payload,
-            "action_id": action_id,
-            "id": action_id,
-            "type": raw.get("type") or "quick_reply",
-        }
-
-        url = raw.get("url") or raw.get("href")
-        if url:
-            absolute_url = _absolute_demo_url(url)
-            if absolute_url:
-                button["url"] = absolute_url
-
-        if description_text:
-            button["description"] = description_text
-
-        buttons.append(button)
-
-    menu_text = "\n".join(menu_lines) if menu_lines else ""
-    prompts_text = "\n".join(prompt_lines) if prompt_lines else ""
-    return menu_text, prompts_text, buttons
+    return (
+        menu_text,
+        prompt_examples_text,
+        buttons,
+        menu_registry,
+        root_menu_id,
+        quick_items,
+        grouped_sections,
+    )
 
 
 def _format_demo_keywords(keywords: List[object] | None) -> str:
@@ -1374,6 +1857,47 @@ def _procesar_chat(
                 "keywords": deepcopy(contexto_chat.get("demo_keywords") or []),
             }
 
+        menu_action_payload: Optional[Dict[str, object]] = None
+        if isinstance(contexto_chat, dict) and contexto_chat.get("demo_session"):
+            menu_command: Optional[str] = None
+            if isinstance(action_id, str):
+                candidate = action_id.strip()
+                if candidate:
+                    menu_command = candidate
+            if not menu_command and isinstance(original_user_payload, dict):
+                raw_action = original_user_payload.get("action") or original_user_payload.get("action_id")
+                if isinstance(raw_action, str) and raw_action.strip():
+                    menu_command = raw_action.strip()
+            if not menu_command and isinstance(pregunta, str):
+                stripped_question = pregunta.strip()
+                if stripped_question.startswith(f"{DEMO_MENU_PREFIX}:") or stripped_question in {
+                    DEMO_MENU_BACK_ACTION,
+                    DEMO_MENU_HOME_ACTION,
+                }:
+                    menu_command = stripped_question
+
+            if menu_command and (
+                menu_command.startswith(f"{DEMO_MENU_PREFIX}:")
+                or menu_command in {DEMO_MENU_BACK_ACTION, DEMO_MENU_HOME_ACTION}
+            ):
+                menu_action_payload = _handle_demo_menu_action(contexto_chat, menu_command)
+
+        if menu_action_payload:
+            contexto_chat.setdefault("demo_intro_sent", True)
+            if chat_context_obj:
+                flag_modified(chat_context_obj, "context_data")
+            try:
+                commit_with_retry(db.session)
+            except Exception as e_commit:
+                db.session.rollback()
+                current_app.logger.error(
+                    f"Error al guardar el estado del menú demo para la sesión {chat_session_id_header}: {e_commit}",
+                    exc_info=True,
+                )
+            ensure_buttons_compatibility(menu_action_payload)
+            _emit_socket_payload(menu_action_payload)
+            return jsonify(menu_action_payload), 200
+
         responder_extra_kwargs = {}
         if location:
             responder_extra_kwargs["es_ubicacion"] = True
@@ -1439,7 +1963,19 @@ def _procesar_chat(
 
         if should_apply_intro:
             resources_text, resource_buttons, resource_attachments = _format_demo_resources(recursos_demo)
-            menu_text, prompt_examples_text, quick_action_buttons = _format_demo_quick_actions(quick_actions_raw)
+            (
+                menu_text,
+                prompt_examples_text,
+                quick_action_buttons,
+                menu_registry,
+                menu_root_id,
+                quick_items_struct,
+                grouped_quick_sections,
+            ) = _format_demo_quick_actions(quick_actions_raw)
+            if menu_registry:
+                contexto_chat["demo_menu_registry"] = menu_registry
+                contexto_chat["demo_menu_root_id"] = menu_root_id
+                contexto_chat["demo_menu_stack"] = [menu_root_id]
             quick_actions_list = quick_actions_raw if isinstance(quick_actions_raw, list) else list(quick_actions_raw or [])
             display_name = contexto_chat.get("demo_display_name") or contexto_chat.get("demo_key") or "esta demo"
             faq_preview_text = _format_demo_faq_preview(faq_preview_data)
@@ -1540,33 +2076,55 @@ def _procesar_chat(
             menu_sections: List[Dict[str, object]] = []
 
             quick_items: List[Dict[str, object]] = []
-            for idx, button in enumerate(quick_action_buttons or []):
-                texto_btn = _clean_text(button.get("texto"))
-                if not texto_btn:
-                    continue
-                item: Dict[str, object] = {
-                    "id": button.get("id") or button.get("action_id") or f"quick_{idx}",
-                    "texto": texto_btn,
-                    "description": _clean_text(button.get("description")) or None,
-                    "action": button.get("action"),
-                    "type": button.get("type"),
-                }
-                raw_item = quick_actions_list[idx] if idx < len(quick_actions_list) else None
-                if isinstance(raw_item, dict):
-                    prompt_val = raw_item.get("prompt") or raw_item.get("question") or raw_item.get("payload")
-                    prompt_text = _clean_text(prompt_val)
-                    if prompt_text:
-                        item["prompt"] = prompt_text
-                    emoji_val = raw_item.get("emoji") or raw_item.get("icon")
-                    if emoji_val:
-                        item["emoji"] = emoji_val
-                quick_items.append({k: v for k, v in item.items() if v})
+            if quick_items_struct:
+                for entry in quick_items_struct:
+                    item = {
+                        "id": entry.get("id") or entry.get("action") or entry.get("texto"),
+                        "texto": entry.get("texto"),
+                        "description": entry.get("description"),
+                        "action": entry.get("action"),
+                        "type": entry.get("type"),
+                    }
+                    if entry.get("prompt"):
+                        item["prompt"] = entry.get("prompt")
+                    if entry.get("emoji"):
+                        item["emoji"] = entry.get("emoji")
+                    if entry.get("category"):
+                        item["category"] = entry.get("category")
+                    if entry.get("menu_id"):
+                        item["menu_id"] = entry.get("menu_id")
+                    quick_items.append({k: v for k, v in item.items() if v})
+            else:
+                for idx, button in enumerate(quick_action_buttons or []):
+                    texto_btn = _clean_text(button.get("texto"))
+                    if not texto_btn:
+                        continue
+                    item: Dict[str, object] = {
+                        "id": button.get("id") or button.get("action_id") or f"quick_{idx}",
+                        "texto": texto_btn,
+                        "description": _clean_text(button.get("description")) or None,
+                        "action": button.get("action"),
+                        "type": button.get("type"),
+                    }
+                    raw_item = quick_actions_list[idx] if idx < len(quick_actions_list) else None
+                    if isinstance(raw_item, dict):
+                        prompt_val = raw_item.get("prompt") or raw_item.get("question") or raw_item.get("payload")
+                        prompt_text = _clean_text(prompt_val)
+                        if prompt_text:
+                            item["prompt"] = prompt_text
+                        emoji_val = raw_item.get("emoji") or raw_item.get("icon")
+                        if emoji_val:
+                            item["emoji"] = emoji_val
+                    quick_items.append({k: v for k, v in item.items() if v})
             if quick_items:
-                menu_sections.append({
+                section_payload: Dict[str, object] = {
                     "title": "Menú principal",
                     "type": "quick_actions",
                     "items": quick_items,
-                })
+                }
+                if grouped_quick_sections:
+                    section_payload["groups"] = grouped_quick_sections
+                menu_sections.append(section_payload)
 
             prompt_items: List[str] = []
             for raw in quick_actions_list:
@@ -1666,34 +2224,18 @@ def _procesar_chat(
                 resultado["menu_sections"] = menu_sections
 
             if quick_items:
-                quick_rows: List[Dict[str, str]] = []
-                seen_rows: set[str] = set()
-                for item in quick_items:
-                    row_id = item.get("id")
-                    title = item.get("texto")
-                    if not row_id or not title or row_id in seen_rows:
-                        continue
-                    seen_rows.add(row_id)
-                    desc_parts = []
-                    if item.get("description"):
-                        desc_parts.append(str(item["description"]))
-                    if item.get("prompt"):
-                        prompt_text = str(item["prompt"])
-                        if prompt_text and prompt_text not in desc_parts:
-                            desc_parts.append(prompt_text)
-                    quick_rows.append({
-                        "id": row_id,
-                        "title": str(title),
-                        "description": " · ".join(desc_parts) if desc_parts else "",
-                    })
-                if quick_rows:
-                    resultado["interactive_list_sections"] = [{
-                        "title": "Menú principal",
-                        "rows": quick_rows,
-                    }]
+                quick_sections_payload = _interactive_sections_from_quick_items(quick_items)
+                if quick_sections_payload:
+                    resultado["interactive_list_sections"] = quick_sections_payload
                     if resultado.get("message_type") == "interactive_list":
                         resultado.setdefault("interactive_list_button_text", "Ver menú")
-                        resultado.setdefault("interactive_list_section_title", "Menú principal")
+                        if len(quick_sections_payload) == 1:
+                            resultado.setdefault(
+                                "interactive_list_section_title",
+                                quick_sections_payload[0].get("title") or "Menú principal",
+                            )
+                        else:
+                            resultado.setdefault("interactive_list_section_title", "Menú principal")
 
             contexto_chat["demo_intro_sent"] = True
             flag_modified(chat_context_obj, "context_data")
