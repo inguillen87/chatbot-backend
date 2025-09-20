@@ -1,18 +1,20 @@
 import uuid
 from functools import wraps
-from flask import request, jsonify, current_app, g, make_response
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from flask import current_app, g, jsonify, make_response, request
 from flask_login import current_user
 from models import User
 import jwt
 from datetime import datetime, timedelta, timezone
 
 from extensions import db
-from models import User, generate_token, Rubro
+from models import Rubro, User, generate_token
 from services.demo_registry import demo_rubro_for_token
 
 
-_WIDGET_ALLOWED_PREFIXES: tuple[str, ...] = ("/auth/widget/",)
-_WIDGET_ALLOWED_GET_PATHS: set[str] = {
+_WIDGET_ALLOWED_PREFIXES: Tuple[str, ...] = ("/auth/widget/",)
+_WIDGET_ALLOWED_GET_PATHS: Set[str] = {
     "/auth/me",
     "/auth/perfil",
     "/auth/profile",
@@ -20,7 +22,7 @@ _WIDGET_ALLOWED_GET_PATHS: set[str] = {
 }
 
 
-def _normalize_path(path: str | None) -> str:
+def _normalize_path(path: Optional[str]) -> str:
     """Return a normalized absolute path used for widget access checks."""
 
     if not path:
@@ -39,7 +41,7 @@ def _normalize_path(path: str | None) -> str:
     return normalized
 
 
-def _is_jwt_token(token: str | None) -> bool:
+def _is_jwt_token(token: Optional[str]) -> bool:
     """Return True if the token string looks like a JWT."""
 
     if not token or not isinstance(token, str):
@@ -47,7 +49,7 @@ def _is_jwt_token(token: str | None) -> bool:
     return token.count(".") == 2
 
 
-def _widget_session_allowed(path: str | None, method: str | None) -> bool:
+def _widget_session_allowed(path: Optional[str], method: Optional[str]) -> bool:
     """Return True if a widget session token can access the given request."""
 
     normalized_path = _normalize_path(path)
@@ -66,7 +68,7 @@ def _widget_session_allowed(path: str | None, method: str | None) -> bool:
     return False
 
 
-def _lookup_owner_for_static_token(token: str | None) -> User | None:
+def _lookup_owner_for_static_token(token: Optional[str]) -> Optional[User]:
     """Return the owner user associated with a static/demo token."""
 
     if not token:
@@ -87,7 +89,7 @@ def _lookup_owner_for_static_token(token: str | None) -> User | None:
             if owner:
                 return owner
 
-        owner_candidate: User | None = None
+        owner_candidate: Optional[User] = None
 
         if demo_entry.rubro_id:
             owner_candidate = (
@@ -125,7 +127,42 @@ def _lookup_owner_for_static_token(token: str | None) -> User | None:
     return None
 
 
-def _generate_widget_session_token(owner_user: User) -> tuple[str, dict]:
+def _ensure_entity_token(owner_user: Optional[User]) -> None:
+    """Ensure the given owner has a persistent entity token assigned."""
+
+    if not owner_user:
+        return
+
+    token_value = getattr(owner_user, "token", None)
+    if token_value:
+        return
+
+        if demo_entry.rubro_id:
+            owner_candidate = (
+                User.query.filter_by(rubro_id=demo_entry.rubro_id, rol="admin")
+                .order_by(User.id.asc())
+                .first()
+            )
+
+        if not owner_candidate and demo_entry.rubro_clave:
+            rubro = Rubro.query.filter_by(clave=demo_entry.rubro_clave).first()
+            if rubro:
+                owner_candidate = (
+                    User.query.filter_by(rubro_id=rubro.id, rol="admin")
+                    .order_by(User.id.asc())
+                    .first()
+                )
+
+def get_or_create_owner_entity_token(user: Optional[User]) -> Optional[str]:
+    """Return the persistent entity token for the owner's account.
+
+        if owner_candidate:
+            return owner_candidate
+
+    return None
+
+
+def _generate_widget_session_token(owner_user: User) -> Tuple[str, Dict[str, Any]]:
     """Issue a short-lived widget session token for the given owner."""
 
     now = int(datetime.utcnow().timestamp())
@@ -150,7 +187,7 @@ def _generate_widget_session_token(owner_user: User) -> tuple[str, dict]:
     return token, payload
 
 
-def _decode_token_payload(token: str | None) -> dict:
+def _decode_token_payload(token: Optional[str]) -> dict:
     """Decode a JWT payload ignoring expiration errors."""
 
     if not _is_jwt_token(token):
@@ -167,8 +204,15 @@ def _decode_token_payload(token: str | None) -> dict:
         return {}
 
 
-def _finalize_token_candidate(token_candidate: str | None) -> str | None:
-    """Prefer the widget session cookie over a raw static token when available."""
+def _finalize_token_candidate(
+    token_candidate: Optional[str], static_owner: Optional[User] = None
+) -> Optional[str]:
+    """Return the preferred token candidate for the current request.
+
+    When a static entity token is provided alongside an existing widget cookie,
+    prefer the cookie only if it belongs to the same owner and is still valid so
+    stale cookies do not leak between entities or prevent renewals.
+    """
 
     if not token_candidate:
         return None
@@ -196,7 +240,7 @@ def generar_token(user_id, rol, tipo_chat, municipio_id, pyme_id):
     }
     return jwt.encode(payload, current_app.config['SECRET_KEY'], algorithm="HS256")
 
-def user_from_token(token: str) -> User | None:
+def user_from_token(token: str) -> Optional[User]:
     """
     Busca un usuario a partir de un token de autenticación JWT.
     """
@@ -213,7 +257,7 @@ def user_from_token(token: str) -> User | None:
         return None
 
 
-def _resolve_owner_user(user: User | None) -> User | None:
+def _resolve_owner_user(user: Optional[User]) -> Optional[User]:
     """Return the owner entity for a given authenticated user.
 
     Employees store the company owner ID in ``empresa_id``. Administrators (for
@@ -236,6 +280,40 @@ def _resolve_owner_user(user: User | None) -> User | None:
 def obtener_token():
     """Extrae el token desde header, query string o payload."""
     current_app.logger.debug(f"[obtener_token] Checking for token. Path: {request.path}")
+
+    checked_static_tokens: Dict[str, Optional[User]] = {}
+
+    def _resolve_static_owner(token: str) -> Optional[User]:
+        if token not in checked_static_tokens:
+            checked_static_tokens[token] = _lookup_owner_for_static_token(token)
+        owner = checked_static_tokens[token]
+        if owner and getattr(g, "_obtener_token_owner", None) is None:
+            g._obtener_token_owner = owner
+        return owner
+
+    candidates: List[Tuple[str, Optional[User], str]] = []
+
+    def _register_candidate(raw_token: Optional[str], source: str):
+        if not raw_token:
+            return
+        token_value = raw_token.strip()
+        if not token_value:
+            return
+        owner: Optional[User] = None
+        if not _is_jwt_token(token_value):
+            owner = _resolve_static_owner(token_value)
+
+        candidate = _finalize_token_candidate(token_value, owner)
+        if not candidate:
+            return
+
+        if not _is_jwt_token(candidate):
+            owner = owner or _resolve_static_owner(candidate)
+        candidates.append((candidate, owner, source))
+        current_app.logger.debug(
+            f"[obtener_token] Candidate from {source}: '{candidate[:10]}...'"
+        )
+
     auth_header = request.headers.get("Authorization", "").strip()
     if auth_header:
         current_app.logger.debug(f"[obtener_token] Found Authorization header: '{auth_header[:30]}...'")
@@ -335,9 +413,94 @@ def obtener_token():
     # Fallback to 'empresa_token' in form data (no longer path-restricted)
     empresa_token_form = request.form.get("empresa_token")
     if empresa_token_form:
-        empresa_token_form = empresa_token_form.strip()
-        current_app.logger.debug(f"[obtener_token] Found 'empresa_token' in form data: '{empresa_token_form[:10]}...'")
-        return _finalize_token_candidate(empresa_token_form)
+        _register_candidate(empresa_token_form, "form field 'empresa_token'")
+
+    widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME")
+    if widget_cookie_name:
+        widget_cookie = request.cookies.get(widget_cookie_name)
+        if widget_cookie:
+            _register_candidate(widget_cookie, f"Cookie '{widget_cookie_name}'")
+
+    widget_cookie_candidate: Optional[Tuple[str, str]] = None
+    auth_header_widget_candidate: Optional[Tuple[str, str]] = None
+    preferred_jwt_candidate: Optional[Tuple[str, str]] = None
+    static_candidate: Optional[Tuple[str, User, str]] = None
+    fallback_token: Optional[str] = None
+    fallback_source: Optional[str] = None
+
+    for candidate, owner, source in candidates:
+        source_lower = source.lower()
+
+        if owner:
+            if static_candidate is None:
+                static_candidate = (candidate, owner, source)
+            continue
+
+        if _is_jwt_token(candidate):
+            payload = _decode_token_payload(candidate)
+            if not payload:
+                if fallback_token is None:
+                    fallback_token = candidate
+                    fallback_source = source
+                continue
+
+            if payload.get("session_kind") != "widget":
+                if preferred_jwt_candidate is None:
+                    preferred_jwt_candidate = (candidate, source)
+                continue
+
+            if "widget" in source_lower and "cookie" in source_lower:
+                if widget_cookie_candidate is None:
+                    widget_cookie_candidate = (candidate, source)
+                continue
+
+            if "authorization" in source_lower:
+                if auth_header_widget_candidate is None:
+                    auth_header_widget_candidate = (candidate, source)
+                continue
+
+            if fallback_token is None:
+                fallback_token = candidate
+                fallback_source = source
+            continue
+
+        if fallback_token is None:
+            fallback_token = candidate
+            fallback_source = source
+
+    if preferred_jwt_candidate:
+        candidate, source = preferred_jwt_candidate
+        current_app.logger.debug(
+            f"[obtener_token] Using token from {source}: '{candidate[:10]}...'"
+        )
+        return candidate
+
+    if static_candidate:
+        candidate, owner, source = static_candidate
+        current_app.logger.debug(
+            f"[obtener_token] Using token from {source}: '{candidate[:10]}...'"
+        )
+        return candidate
+
+    if widget_cookie_candidate:
+        candidate, source = widget_cookie_candidate
+        current_app.logger.debug(
+            f"[obtener_token] Using token from {source}: '{candidate[:10]}...'"
+        )
+        return candidate
+
+    if auth_header_widget_candidate:
+        candidate, source = auth_header_widget_candidate
+        current_app.logger.debug(
+            f"[obtener_token] Using token from {source}: '{candidate[:10]}...'"
+        )
+        return candidate
+
+    if fallback_token:
+        current_app.logger.debug(
+            f"[obtener_token] Returning fallback token from {fallback_source}: '{fallback_token[:10]}...'"
+        )
+        return fallback_token
 
     current_app.logger.debug("[obtener_token] No token found in any common location.")
     return None
@@ -408,7 +571,7 @@ def token_requerido(f):
             return resp, 401
 
         token = raw_token
-        token_payload: dict = {}
+        token_payload: Dict[str, Any] = {}
         user = user_from_token(token)
 
         if user:
@@ -513,7 +676,7 @@ def strict_token_requerido(f):
         return f(user, *args, **kwargs)
     return decorated
 
-def _set_anon_cookie(resp, anon_id: str | None):
+def _set_anon_cookie(resp, anon_id: Optional[str]):
     """Ensure the anonymous visitor cookie is persisted in the response."""
 
     if resp is None or not anon_id:
@@ -582,6 +745,8 @@ def anon_o_token_requerido(f):
         owner_user = None    # El dueño del bot (la "entidad", ej: municipio)
 
         demo_token_detected = False
+        token_payload: Dict[str, Any] = {}
+        is_widget_token = False
 
         if token:
             # Primero, intentar decodificar como JWT. Esto es para usuarios logueados.
