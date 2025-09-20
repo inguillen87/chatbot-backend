@@ -182,6 +182,55 @@ def test_static_entity_token_overrides_authorization_jwt(client):
     )
 
 
+def test_login_jwt_wins_over_entity_token_header(client):
+    """Panel requests must keep using the login JWT even if they also send the entity token."""
+
+    rubro = Rubro.query.filter_by(clave="municipio").first()
+    if not rubro:
+        rubro = Rubro(nombre="Municipalidad", clave="municipio", es_publico=True)
+        db.session.add(rubro)
+        db.session.commit()
+
+    admin = User(
+        email="admin-entity-header@test.com",
+        name="Panel Admin",
+        rol="admin",
+        token="admin-entity-token",
+        rubro_id=rubro.id,
+        tipo_chat="municipio",
+    )
+    admin.set_password("pw")
+    db.session.add(admin)
+    db.session.commit()
+
+    jwt_payload = {
+        "user_id": admin.id,
+        "exp": datetime.utcnow() + timedelta(days=1),
+    }
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    response = client.get(
+        "/auth/me",
+        headers={
+            "Authorization": f"Bearer {jwt_token}",
+            "X-Entity-Token": admin.token,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["auth_token"] == jwt_token
+    assert data["entity_token"] == admin.token
+
+    widget_cookie_name = client.application.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    assert all(
+        not cookie_header.startswith(f"{widget_cookie_name}=")
+        for cookie_header in response.headers.getlist("Set-Cookie")
+    )
+
+
 def test_widget_cookie_is_scoped_to_owner_token(client):
     """A widget cookie from owner A must not be reused when owner B supplies its token."""
 

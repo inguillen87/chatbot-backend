@@ -1,805 +1,443 @@
-import uuid
-from functools import wraps
-from flask import request, jsonify, current_app, g, make_response
-from flask_login import current_user
+from models import User, Rubro, db
 import jwt
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+from flask import current_app
 
-from extensions import db
-from models import User, generate_token
-from services.demo_registry import demo_rubro_for_token
+from utils.auth_helpers import anon_o_token_requerido
 
-
-_WIDGET_ALLOWED_PREFIXES: tuple[str, ...] = ("/auth/widget/",)
-_WIDGET_ALLOWED_GET_PATHS: set[str] = {
-    "/auth/me",
-    "/auth/perfil",
-    "/auth/profile",
-    "/auth/token-info",
-}
-
-
-def _normalize_path(path: str | None) -> str:
-    """Return a normalized absolute path used for widget access checks."""
-
-    if not path:
-        return "/"
-
-    normalized = path.strip()
-    if not normalized.startswith("/"):
-        normalized = f"/{normalized}"
-
-    if "?" in normalized:
-        normalized = normalized.split("?", 1)[0]
-
-    if normalized != "/":
-        normalized = normalized.rstrip("/") or "/"
-
-    return normalized
-
-
-def _is_jwt_token(token: str | None) -> bool:
-    """Return True if the token string looks like a JWT."""
-
-    if not token or not isinstance(token, str):
-        return False
-    return token.count(".") == 2
-
-
-def _widget_session_allowed(path: str | None, method: str | None) -> bool:
-    """Return True if a widget session token can access the given request."""
-
-    normalized_path = _normalize_path(path)
-    method = (method or "GET").upper()
-
-    if method == "OPTIONS":
-        return True
-
-    for prefix in _WIDGET_ALLOWED_PREFIXES:
-        if normalized_path.startswith(prefix.rstrip("/")):
-            return True
-
-    if method == "GET" and normalized_path in _WIDGET_ALLOWED_GET_PATHS:
-        return True
-
-    return False
-
-
-def _lookup_owner_for_static_token(token: str | None) -> User | None:
-    """Return the owner user associated with a static/demo token."""
-
-    if not token:
-        return None
-
-    owner = User.query.filter_by(token=token).first()
-    if owner:
-        return owner
-
-    try:
-        demo_entry = demo_rubro_for_token(token)
-    except Exception:
-        demo_entry = None
-
-    if demo_entry and demo_entry.owner_user_id:
-        return User.query.get(demo_entry.owner_user_id)
-
-    return None
-
-
-def _ensure_entity_token(owner_user: User | None) -> None:
-    """Ensure the given owner has a persistent entity token assigned."""
-
-    if not owner_user:
-        return
-
-    token_value = getattr(owner_user, "token", None)
-    if token_value:
-        return
-
-    try:
-        owner_user.token = generate_token()
-        db.session.add(owner_user)
+def test_perfil_alias_works(client):
+    """Verifica que el alias /perfil funciona correctamente."""
+    # Asegúrate de que exista un Rubro para asociar al usuario
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
         db.session.commit()
-        current_app.logger.info(
-            "[auth] Generated new entity token for owner %s", owner_user.id
-        )
-    except Exception:
-        current_app.logger.exception(
-            "[auth] Failed to ensure entity token for owner %s", owner_user.id
-        )
-        db.session.rollback()
 
+    user = User(email="perfil_alias@test.com", name="Perfil Alias", token="perfil-alias-token", rubro_id=rubro.id)
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
 
-def get_or_create_owner_entity_token(user: User | None) -> str | None:
-    """Return the persistent entity token for the owner's account.
-
-    This helper resolves the owning admin for a given user (employees inherit
-    their company's owner) and ensures that account has a stable integration
-    token assigned. It returns the token so callers can surface it to clients
-    without having to duplicate the owner resolution logic.
-    """
-
-    owner_user = _resolve_owner_user(user)
-    _ensure_entity_token(owner_user)
-    return getattr(owner_user, "token", None) if owner_user else None
-
-
-def _generate_widget_session_token(owner_user: User) -> tuple[str, dict]:
-    """Issue a short-lived widget session token for the given owner."""
-
-    now = int(datetime.utcnow().timestamp())
-    minutes = int(current_app.config.get("WIDGET_ACCESS_MINUTES", 45))
-    renew_days = int(current_app.config.get("WIDGET_RENEW_DAYS", 7))
-
-    payload = {
-        "user_id": owner_user.id,
-        "rol": owner_user.rol,
-        "tipo_chat": getattr(owner_user, "tipo_chat", None),
-        "municipio_id": getattr(owner_user, "municipio_id", None),
-        "pyme_id": getattr(owner_user, "pyme_id", None),
-        "session_kind": "widget",
-        "iat": now,
-        "exp": now + minutes * 60,
+    # Generate a JWT token for the user
+    jwt_payload = {
+        'user_id': user.id,
+        'exp': datetime.utcnow() + timedelta(days=1)
     }
+    jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
 
-    if renew_days:
-        payload["renew_until"] = now + renew_days * 86400
-
-    token = jwt.encode(payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    return token, payload
-
-
-def _decode_token_payload(token: str | None) -> dict:
-    """Decode a JWT payload ignoring expiration errors."""
-
-    if not _is_jwt_token(token):
-        return {}
-
-    try:
-        return jwt.decode(
-            token,
-            current_app.config["SECRET_KEY"],
-            algorithms=["HS256"],
-            options={"verify_exp": False},
-        )
-    except Exception:
-        return {}
-
-
-def _finalize_token_candidate(
-    token_candidate: str | None, static_owner: User | None = None
-) -> str | None:
-    """Return the preferred token candidate for the current request.
-
-    When a static entity token is provided alongside an existing widget cookie,
-    prefer the cookie only if it belongs to the same owner and is still valid so
-    stale cookies do not leak between entities or prevent renewals.
-    """
-
-    if not token_candidate:
-        return None
-
-    token_candidate = token_candidate.strip()
-    if not token_candidate:
-        return None
-
-    if static_owner and not _is_jwt_token(token_candidate):
-        widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME")
-        if widget_cookie_name:
-            cookie_value = request.cookies.get(widget_cookie_name)
-            if _is_jwt_token(cookie_value):
-                cookie_value = cookie_value.strip()
-                payload = _decode_token_payload(cookie_value)
-                cookie_user_id = payload.get("user_id")
-                cookie_kind = payload.get("session_kind")
-                try:
-                    cookie_exp = int(payload.get("exp", 0))
-                except (TypeError, ValueError):
-                    cookie_exp = 0
-                now_ts = int(datetime.utcnow().timestamp())
-
-                if (
-                    cookie_kind == "widget"
-                    and cookie_user_id == static_owner.id
-                    and cookie_exp > now_ts
-                ):
-                    return cookie_value
-
-    return token_candidate
-
-def generar_token(user_id, rol, tipo_chat, municipio_id, pyme_id):
-    """Genera un token de autenticación para un usuario."""
-    payload = {
-        'exp': datetime.now(timezone.utc) + timedelta(days=1),
-        'iat': datetime.now(timezone.utc),
-        'user_id': user_id,
-        'rol': rol,
-        'tipo_chat': tipo_chat,
-        'municipio_id': municipio_id,
-        'pyme_id': pyme_id,
-    }
-    return jwt.encode(payload, current_app.config['SECRET_KEY'], algorithm="HS256")
-
-def user_from_token(token: str) -> User | None:
-    """
-    Busca un usuario a partir de un token de autenticación JWT.
-    """
-    if not token or not _is_jwt_token(token):
-        return None
-    try:
-        payload = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
-        user_id = payload.get('user_id')
-        if not user_id:
-            return None
-        return User.query.get(user_id)
-    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as e:
-        current_app.logger.warning(f"Error al decodificar token JWT: {e}")
-        return None
-
-
-def _resolve_owner_user(user: User | None) -> User | None:
-    """Return the owner entity for a given authenticated user.
-
-    Employees store the company owner ID in ``empresa_id``. Administrators (for
-    both pymes and municipios) have ``empresa_id`` set to ``None`` so the owner
-    is the user itself. This helper centralises the lookup so other modules can
-    rely on ``g.owner_user`` being populated consistently.
-    """
-
-    if not user:
-        return None
-
-    empresa_id = getattr(user, "empresa_id", None)
-    if empresa_id:
-        owner = User.query.get(empresa_id)
-        if owner:
-            return owner
-
-    return user
-
-def obtener_token():
-    """Extrae el token desde header, query string o payload."""
-    current_app.logger.debug(f"[obtener_token] Checking for token. Path: {request.path}")
-
-    checked_static_tokens: dict[str, User | None] = {}
-
-    def _resolve_static_owner(token: str) -> User | None:
-        if token not in checked_static_tokens:
-            checked_static_tokens[token] = _lookup_owner_for_static_token(token)
-        owner = checked_static_tokens[token]
-        if owner and getattr(g, "_obtener_token_owner", None) is None:
-            g._obtener_token_owner = owner
-        return owner
-
-    candidates: list[tuple[str, User | None, str]] = []
-
-    def _register_candidate(raw_token: str | None, source: str):
-        if not raw_token:
-            return
-        token_value = raw_token.strip()
-        if not token_value:
-            return
-        owner: User | None = None
-        if not _is_jwt_token(token_value):
-            owner = _resolve_static_owner(token_value)
-
-        candidate = _finalize_token_candidate(token_value, owner)
-        if not candidate:
-            return
-
-        if not _is_jwt_token(candidate):
-            owner = owner or _resolve_static_owner(candidate)
-        candidates.append((candidate, owner, source))
-        current_app.logger.debug(
-            f"[obtener_token] Candidate from {source}: '{candidate[:10]}...'"
-        )
-
-    auth_header = request.headers.get("Authorization", "").strip()
-    if auth_header:
-        current_app.logger.debug(
-            f"[obtener_token] Found Authorization header: '{auth_header[:30]}...'"
-        )
-        if auth_header.lower().startswith("bearer "):
-            _register_candidate(auth_header.split(" ", 1)[1], "Authorization/Bearer")
-        else:
-            _register_candidate(auth_header, "Authorization")
-
-    token_x_token = request.headers.get("X-Token")
-    if token_x_token:
-        _register_candidate(token_x_token, "X-Token header")
-
-    token_x_entity_token = request.headers.get("X-Entity-Token")
-    if token_x_entity_token:
-        _register_candidate(token_x_entity_token, "X-Entity-Token header")
-
-    cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
-    token_cookie = request.cookies.get(cookie_name)
-    if token_cookie:
-        _register_candidate(token_cookie, f"Cookie '{cookie_name}'")
-
-    token_args = request.args.get("token")
-    if token_args:
-        _register_candidate(token_args, "query parameter 'token'")
-
-    entity_token_arg = request.args.get("entityToken") or request.args.get("entity_token")
-    if entity_token_arg:
-        _register_candidate(entity_token_arg, "query parameter 'entityToken'")
-
-    empresa_token_arg = request.args.get("empresa_token")
-    if empresa_token_arg:
-        _register_candidate(empresa_token_arg, "query parameter 'empresa_token'")
-
-    if request.is_json:
-        json_data = request.get_json(silent=True) or {}
-        token_json = json_data.get("token")
-        if token_json:
-            _register_candidate(token_json, "JSON field 'token'")
-
-        entity_token_json = json_data.get("entityToken") or json_data.get("entity_token")
-        if entity_token_json:
-            _register_candidate(entity_token_json, "JSON field 'entityToken'")
-
-        empresa_token_json = json_data.get("empresa_token")
-        if empresa_token_json:
-            _register_candidate(empresa_token_json, "JSON field 'empresa_token'")
-
-    token_form = request.form.get("token")
-    if token_form:
-        _register_candidate(token_form, "form field 'token'")
-
-    entity_token_form = request.form.get("entityToken") or request.form.get("entity_token")
-    if entity_token_form:
-        _register_candidate(entity_token_form, "form field 'entityToken'")
-
-    empresa_token_form = request.form.get("empresa_token")
-    if empresa_token_form:
-        _register_candidate(empresa_token_form, "form field 'empresa_token'")
-
-    widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME")
-    if widget_cookie_name:
-        widget_cookie = request.cookies.get(widget_cookie_name)
-        if widget_cookie:
-            _register_candidate(widget_cookie, f"Cookie '{widget_cookie_name}'")
-
-    widget_cookie_candidate: tuple[str, str] | None = None
-    auth_header_jwt_candidate: tuple[str, str] | None = None
-    fallback_token: str | None = None
-    fallback_source: str | None = None
-
-    for candidate, owner, source in candidates:
-        if owner:
-            current_app.logger.debug(
-                f"[obtener_token] Using token from {source}: '{candidate[:10]}...'"
-            )
-            return candidate
-
-        if _is_jwt_token(candidate):
-            source_lower = source.lower()
-            if "widget" in source_lower and "cookie" in source_lower:
-                if widget_cookie_candidate is None:
-                    widget_cookie_candidate = (candidate, source)
-                continue
-
-            if "authorization" in source_lower:
-                if auth_header_jwt_candidate is None:
-                    auth_header_jwt_candidate = (candidate, source)
-                continue
-
-            current_app.logger.debug(
-                f"[obtener_token] Using token from {source}: '{candidate[:10]}...'"
-            )
-            return candidate
-
-        if fallback_token is None:
-            fallback_token = candidate
-            fallback_source = source
-
-    if widget_cookie_candidate:
-        candidate, source = widget_cookie_candidate
-        current_app.logger.debug(
-            f"[obtener_token] Using token from {source}: '{candidate[:10]}...'"
-        )
-        return candidate
-
-    if auth_header_jwt_candidate:
-        candidate, source = auth_header_jwt_candidate
-        current_app.logger.debug(
-            f"[obtener_token] Using token from {source}: '{candidate[:10]}...'"
-        )
-        return candidate
-
-    if fallback_token:
-        current_app.logger.debug(
-            f"[obtener_token] Returning fallback token from {fallback_source}: '{fallback_token[:10]}...'"
-        )
-        return fallback_token
-
-    current_app.logger.debug("[obtener_token] No token found in any common location.")
-    return None
-
-
-def get_or_create_anon_id() -> str:
-    """Obtiene el ID anónimo de la request o genera uno nuevo."""
-    anon_id = (
-        request.headers.get("X-Anon-Id")
-        or request.headers.get("Anon-Id")
-        or request.args.get("anon_id")
+    response = client.get(
+        '/perfil',
+        headers={"Authorization": f"Bearer {jwt_token}"}
     )
 
-    if not anon_id:
-        payload = request.get_json(silent=True)
-        if isinstance(payload, dict):
-            anon_id = payload.get("anon_id")
+    assert response.status_code == 200
+    json_data = response.get_json()
+    assert json_data["email"] == "perfil_alias@test.com"
+    normalized_token = jwt_token.decode("utf-8") if isinstance(jwt_token, bytes) else jwt_token
+    assert json_data["token"] == normalized_token
+    assert json_data["auth_token"] == normalized_token
+    assert json_data["entity_token"] == "perfil-alias-token"
 
-    if not anon_id:
-        cookie_name = current_app.config.get(
-            "ANON_SESSION_COOKIE_NAME", "chatboc_anon_id"
-        )
-        cookie_value = request.cookies.get(cookie_name)
-        if isinstance(cookie_value, str):
-            cookie_value = cookie_value.strip()
-        if cookie_value:
-            anon_id = cookie_value
 
-    if not anon_id:
-        anon_id = str(uuid.uuid4())
-        current_app.logger.info(
-            f"Generado nuevo ID anónimo para la request: {anon_id}"
-        )
+def test_perfil_accepts_static_entity_token_and_sets_widget_session(client):
+    """Static entity tokens should bootstrap a widget session without manual renewal."""
 
-    g.anon_id = anon_id
-    return anon_id
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
 
-def token_requerido(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        anon_id = get_or_create_anon_id()
-        if request.method == 'OPTIONS':
-            resp = make_response('', 204)
-            origin = request.headers.get('Origin')
-            if origin:
-                resp.headers['Access-Control-Allow-Origin'] = origin
-                resp.headers['Vary'] = 'Origin'
-            else:
-                resp.headers['Access-Control-Allow-Origin'] = '*'
-            resp.headers['Access-Control-Allow-Headers'] = (
-                'Authorization, Content-Type, Origin, Accept, '
-                'X-Entity-Token, X-Chat-Session-Id, X-Anon-Id, Anon-Id'
-            )
-            resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-            resp.headers['Access-Control-Allow-Credentials'] = 'true'
-            resp.headers.setdefault("X-Anon-Id", anon_id)
-            resp.headers.setdefault("Anon-Id", anon_id)
-            return _set_anon_cookie(resp, anon_id)
+    owner = User(
+        email="static-token@test.com",
+        name="Widget Owner",
+        token="static-owner-token",
+        rubro_id=rubro.id,
+        tipo_chat="pyme",
+    )
+    owner.set_password("pw")
+    db.session.add(owner)
+    db.session.commit()
 
-        # Siempre intentar recuperar el token para exponerlo a las vistas que lo necesiten.
-        raw_token = obtener_token()
-        g.widget_session = False
-        g.widget_owner_user = None
-        preloaded_owner = getattr(g, "_obtener_token_owner", None)
+    # Primer llamado con el token estático: debe emitir un JWT de sesión de widget.
+    response = client.get('/auth/perfil', query_string={'token': owner.token})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["entity_token"] == owner.token
+    auth_token = data["auth_token"]
+    assert auth_token and auth_token != owner.token
+    assert auth_token.count('.') == 2
 
-        # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
-        if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
-            g.auth_token = raw_token
-            g.current_user = current_user
-            g.owner_user = _resolve_owner_user(current_user)
-            _ensure_entity_token(g.owner_user)
-            return f(current_user, *args, **kwargs)
+    widget_cookie_name = client.application.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    cookie_headers = response.headers.getlist("Set-Cookie")
+    assert any(
+        cookie_header.startswith(f"{widget_cookie_name}=") and auth_token in cookie_header
+        for cookie_header in cookie_headers
+    )
 
-        if not raw_token:
-            resp = jsonify({"error": "Token faltante o malformado"})
-            resp.headers.setdefault("X-Anon-Id", anon_id)
-            resp.headers.setdefault("Anon-Id", anon_id)
-            _set_anon_cookie(resp, anon_id)
-            return resp, 401
+    # Segundo llamado: el backend debe reutilizar el token de la cookie en lugar de emitir uno nuevo.
+    response_2 = client.get('/auth/perfil', query_string={'token': owner.token})
+    assert response_2.status_code == 200
+    data_2 = response_2.get_json()
+    assert data_2["auth_token"] == auth_token
 
-        token = raw_token
-        token_payload: dict = {}
-        user = user_from_token(token)
+    # El token de widget no debe permitir acceder a rutas administrativas como /pedidos.
+    forbidden = client.get('/pedidos', headers={'Authorization': f'Bearer {auth_token}'})
+    assert forbidden.status_code == 403
 
-        if user:
-            token_payload = _decode_token_payload(token)
-        else:
-            owner_user = preloaded_owner
-            if owner_user and raw_token and not _is_jwt_token(raw_token):
-                if getattr(owner_user, "token", None) != raw_token:
-                    owner_user = None
 
-            if owner_user is None:
-                owner_user = _lookup_owner_for_static_token(raw_token)
+def test_perfil_prefers_entity_header_over_placeholder_authorization(client):
+    """If the widget sends a placeholder Authorization header, prefer the entity token header."""
 
-            if owner_user:
-                _ensure_entity_token(owner_user)
-                if not _widget_session_allowed(request.path, request.method):
-                    resp = jsonify({"error": "Token inválido o sesión expirada"})
-                    resp.headers.setdefault("X-Anon-Id", anon_id)
-                    resp.headers.setdefault("Anon-Id", anon_id)
-                    _set_anon_cookie(resp, anon_id)
-                    return resp, 403
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
 
-                token, token_payload = _generate_widget_session_token(owner_user)
-                g.widget_session = True
-                g.widget_owner_user = owner_user
-                user = owner_user
-                current_app.logger.info(
-                    "[token_requerido] Issued widget session token for owner %s via %s",
-                    owner_user.id,
-                    request.path,
-                )
-            else:
-                resp = jsonify({"error": "Token inválido o sesión expirada"})
-                resp.headers.setdefault("X-Anon-Id", anon_id)
-                resp.headers.setdefault("Anon-Id", anon_id)
-                _set_anon_cookie(resp, anon_id)
-                return resp, 401
+    owner = User(
+        email="placeholder-auth@test.com",
+        name="Placeholder Owner",
+        token="static-owner-from-header",
+        rubro_id=rubro.id,
+        tipo_chat="pyme",
+    )
+    owner.set_password("pw")
+    db.session.add(owner)
+    db.session.commit()
 
-        if token_payload.get("session_kind") == "widget" and not _widget_session_allowed(request.path, request.method):
-            resp = jsonify({"error": "Token inválido o sesión expirada"})
-            resp.headers.setdefault("X-Anon-Id", anon_id)
-            resp.headers.setdefault("Anon-Id", anon_id)
-            _set_anon_cookie(resp, anon_id)
-            return resp, 403
+    response = client.get(
+        '/auth/perfil',
+        headers={
+            'Authorization': 'Bearer demo-anon',
+            'X-Entity-Token': owner.token,
+        }
+    )
 
-        g.auth_token = token
-        g.current_user = user
-        g.owner_user = _resolve_owner_user(user)
-        _ensure_entity_token(g.owner_user)
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["entity_token"] == owner.token
+    auth_token = data["auth_token"]
+    assert auth_token and auth_token != owner.token
+    assert auth_token.count('.') == 2
 
-        if token_payload.get("session_kind") == "widget":
-            g.widget_session = True
-            if g.widget_owner_user is None:
-                g.widget_owner_user = g.owner_user
 
-        response = f(user, *args, **kwargs)
+def test_static_entity_token_overrides_authorization_jwt(client):
+    """A fresh entity token should override a stale Authorization JWT from another owner."""
 
-        # Si el token vino por header/query y no hay cookie, establecerla para
-        # futuras solicitudes (especialmente útil en iframes cross-domain).
-        default_cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
-        widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
-        target_cookie = default_cookie_name
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
 
-        if token_payload.get("session_kind") == "widget" or token_payload.get("renew_until"):
-            target_cookie = widget_cookie_name
+    owner_a = User(
+        email="auth-jwt-a@test.com",
+        name="Owner A",
+        token="static-owner-a", 
+        rubro_id=rubro.id,
+        tipo_chat="pyme",
+    )
+    owner_a.set_password("pw")
 
-        existing_cookie_value = request.cookies.get(target_cookie)
-        if existing_cookie_value and isinstance(existing_cookie_value, str):
-            existing_cookie_value = existing_cookie_value.strip()
+    owner_b = User(
+        email="auth-jwt-b@test.com",
+        name="Owner B",
+        token="static-owner-b",
+        rubro_id=rubro.id,
+        tipo_chat="pyme",
+    )
+    owner_b.set_password("pw")
 
-        if token and (not existing_cookie_value or existing_cookie_value != token):
-            resp = make_response(response)
-            cookie_args = {
-                "key": target_cookie,
-                "value": token,
-                "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
-                "httponly": True,
-                "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
-            }
-            cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
-            if cookie_domain:
-                cookie_args["domain"] = cookie_domain
+    db.session.add_all([owner_a, owner_b])
+    db.session.commit()
 
-            resp.set_cookie(**cookie_args)
-            resp.headers.setdefault("X-Anon-Id", anon_id)
-            resp.headers.setdefault("Anon-Id", anon_id)
-            return _set_anon_cookie(resp, anon_id)
+    first = client.get('/auth/perfil', query_string={'token': owner_a.token})
+    assert first.status_code == 200
+    first_data = first.get_json()
+    jwt_owner_a = first_data["auth_token"]
+    assert jwt_owner_a and jwt_owner_a.count('.') == 2
 
-        resp = make_response(response)
-        resp.headers.setdefault("X-Anon-Id", anon_id)
-        resp.headers.setdefault("Anon-Id", anon_id)
-        return _set_anon_cookie(resp, anon_id)
-    return decorated
+    second = client.get(
+        '/auth/perfil',
+        headers={
+            'Authorization': f'Bearer {jwt_owner_a}',
+            'X-Entity-Token': owner_b.token,
+        },
+    )
 
-def strict_token_requerido(f):
-    """
-    Decorador que requiere un token de autenticación, ignorando la sesión de Flask-Login.
-    Usado para endpoints de API que deben ser estrictamente stateless.
-    """
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if request.method == 'OPTIONS':
-            return '', 200
+    assert second.status_code == 200
+    second_data = second.get_json()
+    assert second_data["entity_token"] == owner_b.token
+    jwt_owner_b = second_data["auth_token"]
+    assert jwt_owner_b and jwt_owner_b.count('.') == 2
+    assert jwt_owner_b != jwt_owner_a
 
-        token = obtener_token()
-        if not token:
-            return jsonify({"error": "Token de autenticación es requerido."}), 401
+    widget_cookie_name = client.application.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    cookie_headers = second.headers.getlist("Set-Cookie")
+    assert any(
+        cookie_header.startswith(f"{widget_cookie_name}=") and jwt_owner_b in cookie_header
+        for cookie_header in cookie_headers
+    )
 
-        user = user_from_token(token)
-        if not user:
-            return jsonify({"error": "Token inválido o la sesión ha expirado."}), 401
 
-        return f(user, *args, **kwargs)
-    return decorated
+def test_login_jwt_wins_over_entity_token_header(client):
+    """Panel requests must keep using the login JWT even if they also send the entity token."""
 
-def _set_anon_cookie(resp, anon_id: str | None):
-    """Setea la cookie que identifica al visitante anónimo."""
-    if resp is None or not anon_id:
-        return resp
+    rubro = Rubro.query.filter_by(clave="municipio").first()
+    if not rubro:
+        rubro = Rubro(nombre="Municipalidad", clave="municipio", es_publico=True)
+        db.session.add(rubro)
+        db.session.commit()
 
-    cookie_name = current_app.config.get("ANON_SESSION_COOKIE_NAME", "chatboc_anon_id")
-    max_age = current_app.config.get("ANON_SESSION_COOKIE_MAX_AGE", 60 * 60 * 24 * 30)
+    admin = User(
+        email="admin-entity-header@test.com",
+        name="Panel Admin",
+        rol="admin",
+        token="admin-entity-token",
+        rubro_id=rubro.id,
+        tipo_chat="municipio",
+    )
+    admin.set_password("pw")
+    db.session.add(admin)
+    db.session.commit()
 
-    cookie_args = {
-        "key": cookie_name,
-        "value": anon_id,
-        "max_age": max_age,
-        "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
-        "httponly": False,
-        "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
-        "path": "/",
+    jwt_payload = {
+        "user_id": admin.id,
+        "exp": datetime.utcnow() + timedelta(days=1),
     }
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
 
-    cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
-    if cookie_domain:
-        cookie_args["domain"] = cookie_domain
+    response = client.get(
+        "/auth/me",
+        headers={
+            "Authorization": f"Bearer {jwt_token}",
+            "X-Entity-Token": admin.token,
+        },
+    )
 
-    resp.set_cookie(**cookie_args)
-    return resp
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["auth_token"] == jwt_token
+    assert data["entity_token"] == admin.token
+
+    widget_cookie_name = client.application.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    assert all(
+        not cookie_header.startswith(f"{widget_cookie_name}=")
+        for cookie_header in response.headers.getlist("Set-Cookie")
+    )
 
 
-def admin_o_empleado_requerido(f):
-    """Permite solo a admins (empresa_id None) o empleados."""
-    @wraps(f)
-    def decorated(user: User, *args, **kwargs):
-        if user.empresa_id is not None and user.rol != "empleado":
-            return jsonify({"error": "Permisos insuficientes"}), 403
-        return f(user, *args, **kwargs)
+def test_widget_cookie_is_scoped_to_owner_token(client):
+    """A widget cookie from owner A must not be reused when owner B supplies its token."""
 
-    return decorated
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
 
-def anon_o_token_requerido(f):
-    """
-    Decorador que maneja la autenticación para endpoints que aceptan
-    tanto usuarios autenticados (JWT) como anónimos (con un token de entidad estático).
-    """
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        anon_id = get_or_create_anon_id()
-        if request.method == "OPTIONS":
-            # Pre-flight request. Reply successfully.
-            resp = make_response("", 204)
-            origin = request.headers.get("Origin")
-            if origin:
-                resp.headers["Access-Control-Allow-Origin"] = origin
-                resp.headers["Vary"] = "Origin"
-            else:
-                resp.headers["Access-Control-Allow-Origin"] = "*"
-            resp.headers["Access-Control-Allow-Headers"] = (
-                "Authorization, Content-Type, Origin, Accept, "
-                "X-Entity-Token, X-Chat-Session-Id, X-Anon-Id, Anon-Id"
-            )
-            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-            resp.headers["Access-Control-Allow-Credentials"] = "true"
-            resp.headers.setdefault("X-Anon-Id", anon_id)
-            resp.headers.setdefault("Anon-Id", anon_id)
-            return _set_anon_cookie(resp, anon_id)
+    owner_a = User(
+        email="widget-cookie-a@test.com",
+        name="Owner A",
+        token="owner-a-static-token",
+        rubro_id=rubro.id,
+        tipo_chat="pyme",
+    )
+    owner_a.set_password("pw")
 
-        g.widget_session = False
-        g.widget_owner_user = None
+    owner_b = User(
+        email="widget-cookie-b@test.com",
+        name="Owner B",
+        token="owner-b-static-token",
+        rubro_id=rubro.id,
+        tipo_chat="pyme",
+    )
+    owner_b.set_password("pw")
 
-        token = obtener_token()
-        current_user = None  # El usuario final que chatea (el "viewer")
-        preloaded_owner = getattr(g, "_obtener_token_owner", None)
-        owner_user = preloaded_owner    # El dueño del bot (la "entidad", ej: municipio)
+    db.session.add_all([owner_a, owner_b])
+    db.session.commit()
 
-        demo_token_detected = False
-        token_payload: dict = {}
-        is_widget_token = False
+    assert owner_a.id != owner_b.id
 
-        if token:
-            token_payload = _decode_token_payload(token)
-            is_widget_token = token_payload.get("session_kind") == "widget"
+    db_owner_a = User.query.filter_by(token=owner_a.token).first()
+    db_owner_b = User.query.filter_by(token=owner_b.token).first()
+    assert db_owner_a is not None and db_owner_a.id == owner_a.id
+    assert db_owner_b is not None and db_owner_b.id == owner_b.id
 
-        now_ts = int(datetime.utcnow().timestamp())
+    from utils.auth_helpers import _lookup_owner_for_static_token
 
-        if token and is_widget_token:
-            try:
-                widget_exp = int(token_payload.get("exp", 0))
-            except (TypeError, ValueError):
-                widget_exp = 0
+    assert _lookup_owner_for_static_token(owner_b.token).id == owner_b.id
 
-            if widget_exp and widget_exp <= now_ts:
-                current_app.logger.info(
-                    "[anon_o_token_requerido] Widget token expired for owner %s",
-                    token_payload.get("user_id"),
-                )
-                resp = jsonify({"error": "Token inválido o sesión expirada"})
-                resp.headers.setdefault("X-Anon-Id", anon_id)
-                resp.headers.setdefault("Anon-Id", anon_id)
-                _set_anon_cookie(resp, anon_id)
-                return resp, 401
+    first = client.get('/auth/perfil', query_string={'token': owner_a.token})
+    assert first.status_code == 200
+    first_data = first.get_json()
+    token_a = first_data["auth_token"]
+    assert token_a and token_a.count('.') == 2
 
-            widget_owner_id = token_payload.get("user_id")
-            if owner_user and widget_owner_id and getattr(owner_user, "id", None) != widget_owner_id:
-                owner_user = None
+    second = client.get('/auth/perfil', query_string={'token': owner_b.token})
+    assert second.status_code == 200
+    second_data = second.get_json()
+    assert second_data["entity_token"] == owner_b.token
+    token_b = second_data["auth_token"]
+    assert token_b and token_b.count('.') == 2
+    assert token_b != token_a
 
-            if owner_user is None and widget_owner_id:
-                owner_user = User.query.get(widget_owner_id)
+    widget_cookie_name = client.application.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    cookie_headers = second.headers.getlist("Set-Cookie")
+    assert any(
+        cookie_header.startswith(f"{widget_cookie_name}=") and token_b in cookie_header
+        for cookie_header in cookie_headers
+    )
 
-            if not owner_user:
-                current_app.logger.warning(
-                    "[anon_o_token_requerido] Widget token references missing owner: %s",
-                    widget_owner_id,
-                )
-                resp = jsonify({"error": "Token inválido o sesión expirada"})
-                resp.headers.setdefault("X-Anon-Id", anon_id)
-                resp.headers.setdefault("Anon-Id", anon_id)
-                _set_anon_cookie(resp, anon_id)
-                return resp, 401
 
-            g.widget_session = True
-            g.widget_owner_user = owner_user
+def test_expired_widget_cookie_does_not_block_renewal(client):
+    """If the widget cookie expired, the static token should trigger a fresh session."""
 
-        elif token:
-            jwt_user = user_from_token(token) if not is_widget_token else None
-            if jwt_user:
-                current_app.logger.info(
-                    "Request authenticated via JWT. User ID: %s", jwt_user.id
-                )
-                current_user = jwt_user
-                # Si un usuario logueado tiene un `empresa_id`, el owner es esa empresa.
-                if jwt_user.empresa_id:
-                    owner_user = User.query.get(jwt_user.empresa_id)
-                else:
-                    # Si no, el owner es el propio usuario (ej, el admin del municipio)
-                    owner_user = jwt_user
-            else:
-                # Si falla el JWT, tratar el token como un token de entidad estático (API Key/UUID).
-                # Esto es para el widget anónimo.
-                if owner_user and getattr(owner_user, "token", None) != token:
-                    owner_user = None
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
 
-                entity_user = owner_user or User.query.filter_by(token=token).first()
-                if entity_user:
-                    current_app.logger.info(
-                        "Request authenticated via static entity token. Owner User ID: %s",
-                        entity_user.id,
-                    )
-                    owner_user = entity_user
-                    g.widget_session = True
-                    g.widget_owner_user = owner_user
-                    # El current_user sigue siendo None porque es una sesión anónima del widget.
-                else:
-                    current_app.logger.warning(
-                        "Token '%s...' provided but is not a valid JWT or a known entity token.",
-                        token[:10],
-                    )
-                    try:
-                        demo_token_detected = demo_rubro_for_token(token) is not None
-                    except Exception:
-                        demo_token_detected = False
+    owner = User(
+        email="widget-cookie-expired@test.com",
+        name="Widget Owner Expired",
+        token="static-owner-expired",
+        rubro_id=rubro.id,
+        tipo_chat="pyme",
+    )
+    owner.set_password("pw")
+    db.session.add(owner)
+    db.session.commit()
 
-        # Si después de todo no hay owner (ej. request anónima sin token),
-        # cargar el owner por defecto para el municipio.
-        if not owner_user and 'municipio' in request.path and not demo_token_detected:
-            owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
-            if owner_user:
-                current_app.logger.info(f"Anonymous request to '{request.path}', loaded DEFAULT municipality owner user ID: {owner_user.id}")
-            else:
-                current_app.logger.error(f"CRITICAL: Anonymous request to '{request.path}' but no default municipality user found.")
+    now = datetime.utcnow()
+    expired_payload = {
+        "user_id": owner.id,
+        "rol": getattr(owner, "rol", None),
+        "tipo_chat": owner.tipo_chat,
+        "municipio_id": getattr(owner, "municipio_id", None),
+        "pyme_id": getattr(owner, "pyme_id", None),
+        "session_kind": "widget",
+        "iat": int((now - timedelta(minutes=30)).timestamp()),
+        "exp": int((now - timedelta(minutes=5)).timestamp()),
+        "renew_until": int((now + timedelta(days=1)).timestamp()),
+    }
+    expired_token = jwt.encode(
+        expired_payload,
+        current_app.config["SECRET_KEY"],
+        algorithm="HS256",
+    )
+    if isinstance(expired_token, bytes):
+        expired_token = expired_token.decode("utf-8")
 
-        g.auth_token = token
-        g.current_user = current_user
-        g.owner_user = owner_user
-        if g.widget_session and g.widget_owner_user is None and owner_user:
-            g.widget_owner_user = owner_user
-        _ensure_entity_token(owner_user)
+    widget_cookie_name = client.application.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    client.set_cookie(key=widget_cookie_name, value=expired_token)
 
-        # Llamar a la función de la ruta con los usuarios identificados
-        response = f(
-            current_user=current_user, owner_user=owner_user, anon_id=anon_id, *args, **kwargs
+    response = client.get('/auth/perfil', query_string={'token': owner.token})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["entity_token"] == owner.token
+    renewed_token = data["auth_token"]
+    assert renewed_token and renewed_token != expired_token
+    assert renewed_token.count('.') == 2
+
+
+def test_me_generates_entity_token_for_admin_when_missing(client):
+    """Admins without a stored entity token should receive one automatically."""
+
+    rubro = Rubro.query.filter_by(clave="municipio").first()
+    if not rubro:
+        rubro = Rubro(nombre="Municipalidad", clave="municipio", es_publico=True)
+        db.session.add(rubro)
+        db.session.commit()
+
+    admin = User(
+        email="entity-mint-admin@test.com",
+        name="Entity Mint Admin",
+        rol="admin",
+        rubro_id=rubro.id,
+        tipo_chat="municipio",
+    )
+    admin.set_password("pw")
+    admin.token = None
+    db.session.add(admin)
+    db.session.commit()
+
+    jwt_payload = {
+        "user_id": admin.id,
+        "exp": datetime.utcnow() + timedelta(days=1),
+    }
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    headers = {"Authorization": f"Bearer {jwt_token}"}
+
+    first_response = client.get("/auth/me", headers=headers)
+    assert first_response.status_code == 200
+    first_data = first_response.get_json()
+    assert first_data["entity_token"]
+    stored = User.query.get(admin.id)
+    assert stored.token == first_data["entity_token"]
+
+    second_response = client.get("/auth/me", headers=headers)
+    assert second_response.status_code == 200
+    second_data = second_response.get_json()
+    assert second_data["entity_token"] == first_data["entity_token"]
+
+
+def test_widget_jwt_stays_anonymous_in_anon_decorator(app, client):
+    """Widget session JWTs must not authenticate as the owner when using anon endpoints."""
+
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    owner = User(
+        email="widget-session-owner@test.com",
+        name="Widget Session Owner",
+        token="widget-session-static-token",
+        rubro_id=rubro.id,
+        tipo_chat="pyme",
+    )
+    owner.set_password("pw")
+    db.session.add(owner)
+    db.session.commit()
+
+    from flask import jsonify, g
+
+    @anon_o_token_requerido
+    def widget_view(current_user=None, owner_user=None, anon_id=None):
+        return jsonify(
+            {
+                "current_user_id": getattr(current_user, "id", None) if current_user else None,
+                "owner_user_id": getattr(owner_user, "id", None) if owner_user else None,
+                "widget_session": getattr(g, "widget_session", False),
+                "anon_id": anon_id,
+            }
         )
 
-        # Adjuntar el anon_id a la respuesta para que el cliente lo pueda usar
-        resp = make_response(response)
-        origin = request.headers.get("Origin")
-        if origin:
-            resp.headers["Access-Control-Allow-Origin"] = origin
-            resp.headers["Vary"] = "Origin"
-        else:
-            resp.headers["Access-Control-Allow-Origin"] = "*"
-        resp.headers["Access-Control-Allow-Credentials"] = "true"
-        resp.headers.setdefault("X-Anon-Id", anon_id)
-        resp.headers.setdefault("Anon-Id", anon_id)
-        return _set_anon_cookie(resp, anon_id)
+    perfil = client.get("/auth/perfil", query_string={"token": owner.token})
+    assert perfil.status_code == 200
+    widget_token = perfil.get_json()["auth_token"]
+    assert widget_token and widget_token.count(".") == 2
 
-    return decorated
+    with app.test_request_context(
+        "/test/widget-view",
+        method="GET",
+        headers={"Authorization": f"Bearer {widget_token}"},
+    ):
+        response = widget_view()
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["current_user_id"] is None
+    assert payload["owner_user_id"] == owner.id
+    assert payload["widget_session"] is True
+    assert payload["anon_id"]
