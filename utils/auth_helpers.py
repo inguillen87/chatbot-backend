@@ -29,6 +29,7 @@ _WIDGET_ALLOWED_GET_PATHS: Set[str] = {
 
 _DEMO_TOKEN_WARNED: Set[str] = set()
 
+
 def _normalize_path(path: Optional[str]) -> str:
     """Return a normalized absolute path used for widget access checks."""
 
@@ -960,11 +961,6 @@ def anon_o_token_requerido(f):
             widget_cookie_name
             if token_payload.get("session_kind") == "widget" or token_payload.get("renew_until")
             else default_cookie_name
-        )
-        should_set_cookie = (
-            _is_jwt_token(token)
-            and token
-            and (not existing_cookie_value or existing_cookie_value != token)
         )
 
         if should_set_cookie:
