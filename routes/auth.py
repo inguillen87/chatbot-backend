@@ -19,14 +19,7 @@ from services.pymes import get_or_create_pyme_user_by_token
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 
-from utils.auth_helpers import (
-    token_requerido,
-    obtener_token,
-    get_or_create_anon_id,
-    generar_token,
-    user_from_token,
-    get_or_create_owner_entity_token,
-)
+from utils.auth_helpers import token_requerido, obtener_token, get_or_create_anon_id, generar_token, user_from_token
 from flask_login import current_user
 
 
@@ -180,9 +173,6 @@ def login():
     from flask_login import login_user
     login_user(user) # Establecer la sesión para el usuario
     current_app.logger.info(f"Usuario {user.email} logueado y sesión Flask-Login establecida.")
-
-    owner_token = get_or_create_owner_entity_token(user)
-
     # Generar el token JWT
     jwt_payload = {
         'user_id': user.id,
@@ -194,7 +184,6 @@ def login():
         "mensaje": "Login exitoso",
         "id": user.id,
         "token": jwt_token,
-        "auth_token": jwt_token,
         "email": user.email,
         "name": user.name,
         "rol": user.rol,
@@ -202,8 +191,6 @@ def login():
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
         "categorias": user.ticket_categorias or "",
-        "entity_token": owner_token,
-        "owner_token": owner_token,
     })
 
     cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
@@ -256,8 +243,6 @@ def google_login():
         user = login_o_crear_usuario(token_id, rol=rol, tipo_chat=tipo_chat)
         current_app.logger.info(f"Login Google para: {user.email}")
 
-        owner_token = get_or_create_owner_entity_token(user)
-
         if not getattr(user, "rubro_id", None):
             # Aún si falta el rubro, generamos un token para que pueda continuar
             jwt_payload = {
@@ -268,10 +253,7 @@ def google_login():
             resp = jsonify({
                 "status": "falta_rubro",
                 "token": jwt_token,
-                "auth_token": jwt_token,
                 "email": user.email,
-                "entity_token": owner_token,
-                "owner_token": owner_token,
             })
             return resp
 
@@ -292,7 +274,6 @@ def google_login():
         response = jsonify({
             "id": user.id,
             "token": jwt_token,
-            "auth_token": jwt_token,
             "name": user.name,
             "email": user.email,
             "rol": user.rol,
@@ -300,8 +281,6 @@ def google_login():
             "rubro": rubro_nombre,
             "tipo_chat": tipo_chat,
             "categorias": user.ticket_categorias or "",
-            "entity_token": owner_token,
-            "owner_token": owner_token,
         })
 
         cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
