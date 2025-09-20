@@ -22,6 +22,9 @@ _WIDGET_ALLOWED_GET_PATHS: Set[str] = {
     "/auth/perfil",
     "/auth/profile",
     "/auth/token-info",
+    "/me",
+    "/perfil",
+    "/profile",
 }
 
 _DEMO_TOKEN_WARNED: Set[str] = set()
@@ -915,7 +918,13 @@ def anon_o_token_requerido(f):
             else:
                 # Si falla el JWT, tratar el token como un token de entidad estático (API Key/UUID).
                 # Esto es para el widget anónimo.
-                entity_user = User.query.filter_by(token=token).first()
+                if owner_user and getattr(owner_user, "token", None) != token:
+                    owner_user = None
+
+                entity_user = owner_user or User.query.filter_by(token=token).first()
+                if not entity_user:
+                    entity_user = _lookup_owner_for_static_token(token)
+
                 if entity_user:
                     current_app.logger.info(f"Request authenticated via static entity token. Owner User ID: {entity_user.id}")
                     owner_user = entity_user
@@ -953,6 +962,10 @@ def anon_o_token_requerido(f):
             if token_payload.get("session_kind") == "widget" or token_payload.get("renew_until")
             else default_cookie_name
         )
+
+        existing_cookie_value = request.cookies.get(target_cookie)
+        if existing_cookie_value and isinstance(existing_cookie_value, str):
+            existing_cookie_value = existing_cookie_value.strip()
 
         should_set_cookie = (
             _is_jwt_token(token)
