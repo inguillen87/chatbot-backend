@@ -809,6 +809,7 @@ def anon_o_token_requerido(f):
                 current_app.logger.info(
                     "Request authenticated via JWT. User ID: %s", jwt_user.id
                 )
+
                 # Si un usuario logueado tiene un `empresa_id`, el owner es esa empresa.
                 if jwt_user.empresa_id:
                     owner_lookup = User.query.get(jwt_user.empresa_id)
