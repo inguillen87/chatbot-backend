@@ -441,3 +441,57 @@ def test_widget_jwt_stays_anonymous_in_anon_decorator(app, client):
     assert payload["owner_user_id"] == owner.id
     assert payload["widget_session"] is True
     assert payload["anon_id"]
+
+def test_panel_jwt_behaves_like_widget_in_anon_decorator(app, client):
+    """Panel JWTs should behave like anonymous widget viewers on anon endpoints."""
+
+    rubro = Rubro.query.filter_by(clave="municipio").first()
+    if not rubro:
+        rubro = Rubro(nombre="municipio", clave="municipio", es_publico=True)
+        db.session.add(rubro)
+        db.session.commit()
+
+    owner = User(
+        email="panel-owner@test.com",
+        name="Panel Owner",
+        rubro_id=rubro.id,
+        tipo_chat="municipio",
+    )
+    owner.set_password("pw")
+    db.session.add(owner)
+    db.session.commit()
+
+    jwt_payload = {
+        "user_id": owner.id,
+        "exp": datetime.utcnow() + timedelta(days=1),
+    }
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    from flask import jsonify, g
+
+    @anon_o_token_requerido
+    def widget_view(current_user=None, owner_user=None, anon_id=None):
+        return jsonify(
+            {
+                "current_user_id": getattr(current_user, "id", None) if current_user else None,
+                "owner_user_id": getattr(owner_user, "id", None) if owner_user else None,
+                "widget_session": getattr(g, "widget_session", False),
+                "anon_id": anon_id,
+            }
+        )
+
+    with app.test_request_context(
+        "/test/widget-view",
+        method="GET",
+        headers={"Authorization": f"Bearer {jwt_token}"},
+    ):
+        response = widget_view()
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["current_user_id"] is None
+    assert payload["owner_user_id"] == owner.id
+    assert payload["widget_session"] is True
+    assert payload["anon_id"]
