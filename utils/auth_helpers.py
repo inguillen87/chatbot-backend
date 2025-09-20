@@ -5,6 +5,9 @@ from flask_login import current_user
 from models import User
 import jwt
 from datetime import datetime, timedelta, timezone
+
+from extensions import db
+from models import User, generate_token, Rubro
 from services.demo_registry import demo_rubro_for_token
 
 
@@ -78,8 +81,46 @@ def _lookup_owner_for_static_token(token: str | None) -> User | None:
     except Exception:
         demo_entry = None
 
-    if demo_entry and demo_entry.owner_user_id:
-        return User.query.get(demo_entry.owner_user_id)
+    if demo_entry:
+        if demo_entry.owner_user_id:
+            owner = User.query.get(demo_entry.owner_user_id)
+            if owner:
+                return owner
+
+        owner_candidate: User | None = None
+
+        if demo_entry.rubro_id:
+            owner_candidate = (
+                User.query.filter_by(rubro_id=demo_entry.rubro_id, rol="admin")
+                .order_by(User.id.asc())
+                .first()
+            )
+
+        if not owner_candidate and demo_entry.rubro_clave:
+            rubro = Rubro.query.filter_by(clave=demo_entry.rubro_clave).first()
+            if rubro:
+                owner_candidate = (
+                    User.query.filter_by(rubro_id=rubro.id, rol="admin")
+                    .order_by(User.id.asc())
+                    .first()
+                )
+
+        tipo_chat = (demo_entry.tipo_chat or "").strip().lower()
+        if not owner_candidate and tipo_chat:
+            owner_candidate = (
+                User.query.filter_by(tipo_chat=tipo_chat, rol="admin")
+                .order_by(User.id.asc())
+                .first()
+            )
+            if not owner_candidate:
+                owner_candidate = (
+                    User.query.filter_by(tipo_chat=tipo_chat)
+                    .order_by(User.id.asc())
+                    .first()
+                )
+
+        if owner_candidate:
+            return owner_candidate
 
     return None
 
@@ -303,37 +344,24 @@ def obtener_token():
 
 
 def get_or_create_anon_id() -> str:
-    """Obtiene el ID anónimo de la request o genera uno nuevo."""
+    """Return the anonymous visitor identifier associated with the request."""
+
     anon_id = (
         request.headers.get("X-Anon-Id")
         or request.headers.get("Anon-Id")
         or request.args.get("anon_id")
+        or getattr(g, "anon_id", None)
     )
 
     if not anon_id:
-        payload = request.get_json(silent=True)
-        if isinstance(payload, dict):
-            anon_id = payload.get("anon_id")
+        cookie_name = current_app.config.get("ANON_SESSION_COOKIE_NAME", "chatboc_anon_id")
+        anon_id = request.cookies.get(cookie_name)
 
     if not anon_id:
-        cookie_name = current_app.config.get(
-            "ANON_SESSION_COOKIE_NAME", "chatboc_anon_id"
-        )
-        cookie_value = request.cookies.get(cookie_name)
-        if isinstance(cookie_value, str):
-            cookie_value = cookie_value.strip()
-        if cookie_value:
-            anon_id = cookie_value
-
-    if not anon_id:
-        anon_id = str(uuid.uuid4())
-        current_app.logger.info(
-            f"Generado nuevo ID anónimo para la request: {anon_id}"
-        )
+        anon_id = uuid.uuid4().hex
 
     g.anon_id = anon_id
     return anon_id
-
 def token_requerido(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -358,6 +386,7 @@ def token_requerido(f):
 
         # Siempre intentar recuperar el token para exponerlo a las vistas que lo necesiten.
         raw_token = obtener_token()
+        g.token_payload = _decode_token_payload(raw_token) if raw_token else {}
         g.widget_session = False
         g.widget_owner_user = None
 
@@ -366,6 +395,9 @@ def token_requerido(f):
             g.auth_token = raw_token
             g.current_user = current_user
             g.owner_user = _resolve_owner_user(current_user)
+            _ensure_entity_token(g.owner_user)
+            if raw_token:
+                g.token_payload = _decode_token_payload(raw_token) or {}
             return f(current_user, *args, **kwargs)
 
         if not raw_token:
@@ -414,6 +446,7 @@ def token_requerido(f):
             _set_anon_cookie(resp, anon_id)
             return resp, 403
 
+        g.token_payload = dict(token_payload) if token_payload else {}
         g.auth_token = token
         g.current_user = user
         g.owner_user = _resolve_owner_user(user)
@@ -456,6 +489,7 @@ def token_requerido(f):
         resp.headers.setdefault("X-Anon-Id", anon_id)
         resp.headers.setdefault("Anon-Id", anon_id)
         return _set_anon_cookie(resp, anon_id)
+
     return decorated
 
 def strict_token_requerido(f):
@@ -480,7 +514,8 @@ def strict_token_requerido(f):
     return decorated
 
 def _set_anon_cookie(resp, anon_id: str | None):
-    """Setea la cookie que identifica al visitante anónimo."""
+    """Ensure the anonymous visitor cookie is persisted in the response."""
+
     if resp is None or not anon_id:
         return resp
 
@@ -584,6 +619,7 @@ def anon_o_token_requerido(f):
             else:
                 current_app.logger.error(f"CRITICAL: Anonymous request to '{request.path}' but no default municipality user found.")
 
+        g.token_payload = dict(token_payload) if token_payload else {}
         g.auth_token = token
         g.current_user = current_user
         g.owner_user = owner_user
@@ -593,15 +629,43 @@ def anon_o_token_requerido(f):
             current_user=current_user, owner_user=owner_user, anon_id=anon_id, *args, **kwargs
         )
 
-        # Adjuntar el anon_id a la respuesta para que el cliente lo pueda usar
+        default_cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
+        widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+        target_cookie = (
+            widget_cookie_name
+            if token_payload.get("session_kind") == "widget" or token_payload.get("renew_until")
+            else default_cookie_name
+        )
+
+        existing_cookie_value = request.cookies.get(target_cookie)
+        if existing_cookie_value and isinstance(existing_cookie_value, str):
+            existing_cookie_value = existing_cookie_value.strip()
+
+        should_set_cookie = (
+            _is_jwt_token(token)
+            and token
+            and (not existing_cookie_value or existing_cookie_value != token)
+        )
+
+        if should_set_cookie:
+            resp = make_response(response)
+            cookie_args = {
+                "key": target_cookie,
+                "value": token,
+                "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
+                "httponly": True,
+                "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
+            }
+            cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
+            if cookie_domain:
+                cookie_args["domain"] = cookie_domain
+
+            resp.set_cookie(**cookie_args)
+            resp.headers.setdefault("X-Anon-Id", anon_id)
+            resp.headers.setdefault("Anon-Id", anon_id)
+            return _set_anon_cookie(resp, anon_id)
+
         resp = make_response(response)
-        origin = request.headers.get("Origin")
-        if origin:
-            resp.headers["Access-Control-Allow-Origin"] = origin
-            resp.headers["Vary"] = "Origin"
-        else:
-            resp.headers["Access-Control-Allow-Origin"] = "*"
-        resp.headers["Access-Control-Allow-Credentials"] = "true"
         resp.headers.setdefault("X-Anon-Id", anon_id)
         resp.headers.setdefault("Anon-Id", anon_id)
         return _set_anon_cookie(resp, anon_id)
