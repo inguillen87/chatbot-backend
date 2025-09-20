@@ -289,29 +289,34 @@ def _ensure_entity_token(owner_user: Optional[User]) -> None:
     if token_value:
         return
 
-        if demo_entry.rubro_id:
-            owner_candidate = (
-                User.query.filter_by(rubro_id=demo_entry.rubro_id, rol="admin")
-                .order_by(User.id.asc())
-                .first()
-            )
+    try:
+        owner_user.token = generate_token()
+        db.session.add(owner_user)
+        db.session.commit()
+    except Exception:
+        current_app.logger.exception(
+            "[auth_helpers] Failed to ensure entity token for owner %s",
+            getattr(owner_user, "id", None),
+        )
+        db.session.rollback()
 
-        if not owner_candidate and demo_entry.rubro_clave:
-            rubro = Rubro.query.filter_by(clave=demo_entry.rubro_clave).first()
-            if rubro:
-                owner_candidate = (
-                    User.query.filter_by(rubro_id=rubro.id, rol="admin")
-                    .order_by(User.id.asc())
-                    .first()
-                )
 
 def get_or_create_owner_entity_token(user: Optional[User]) -> Optional[str]:
-    """Return the persistent entity token for the owner's account.
+    """Return the persistent entity token for the owner's account."""
 
-        if owner_candidate:
-            return owner_candidate
+    if not user:
+        return None
 
-    return None
+    owner_user = _resolve_owner_user(user)
+    if not owner_user:
+        return None
+
+    token_value = getattr(owner_user, "token", None)
+    if token_value:
+        return token_value
+
+    _ensure_entity_token(owner_user)
+    return getattr(owner_user, "token", None)
 
 
 def _generate_widget_session_token(owner_user: User) -> Tuple[str, Dict[str, Any]]:
@@ -953,6 +958,8 @@ def anon_o_token_requerido(f):
             if token_payload.get("session_kind") == "widget" or token_payload.get("renew_until")
             else default_cookie_name
         )
+
+        existing_cookie_value = request.cookies.get(target_cookie)
 
         should_set_cookie = (
             _is_jwt_token(token)
