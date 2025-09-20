@@ -3,8 +3,6 @@ import jwt
 from datetime import datetime, timedelta
 from flask import current_app
 
-from utils.auth_helpers import anon_o_token_requerido
-
 def test_perfil_alias_works(client):
     """Verifica que el alias /perfil funciona correctamente."""
     # Asegúrate de que exista un Rubro para asociar al usuario
@@ -420,15 +418,12 @@ def test_login_jwt_wins_over_entity_token_header(client):
         rubro_id=rubro.id,
         tipo_chat="municipio",
     )
-    admin.set_password("pw")
-    db.session.add(admin)
+    admin.set_password("pw") db.session.add(admin)
     db.session.commit()
 
     jwt_payload = {
         "user_id": admin.id,
-        "exp": datetime.utcnow() + timedelta(days=1),
-    }
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+        "exp": datetime.utcnow() + timedelta(days=1),  jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
     if isinstance(jwt_token, bytes):
         jwt_token = jwt_token.decode("utf-8")
 
