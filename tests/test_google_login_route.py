@@ -34,6 +34,9 @@ class GoogleLoginRouteTests(unittest.TestCase):
         self.assertIn('token', data)
         self.assertIsInstance(data['token'], str)
         self.assertTrue(len(data['token']) > 20) # JWTs are long
+        self.assertIn('entity_token', data)
+        self.assertIn('auth_token', data)
+        self.assertEqual(data['auth_token'], data['token'])
 
     def test_login_normal(self):
         rubro = Rubro(nombre='IT', clave='it')
@@ -47,6 +50,9 @@ class GoogleLoginRouteTests(unittest.TestCase):
         self.assertEqual(data['id'], 2)
         self.assertNotIn('status', data)
         self.assertEqual(data['rubro'], 'IT')
+        self.assertEqual(data['entity_token'], 't2')
+        self.assertEqual(data['owner_token'], 't2')
+        self.assertEqual(data['auth_token'], data['token'])
 
 if __name__ == '__main__':
     unittest.main()
