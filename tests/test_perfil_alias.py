@@ -284,6 +284,7 @@ def test_perfil_accepts_demo_anon_token(client):
     assert data["session_token"] and data["session_token"].count('.') == 2
 
 
+
 def test_login_jwt_wins_over_entity_token_header(client):
     """Panel requests must keep using the login JWT even if they also send the entity token."""
 
@@ -301,15 +302,12 @@ def test_login_jwt_wins_over_entity_token_header(client):
         rubro_id=rubro.id,
         tipo_chat="municipio",
     )
-    admin.set_password("pw")
-    db.session.add(admin)
+    admin.set_password("pw") db.session.add(admin)
     db.session.commit()
 
     jwt_payload = {
         "user_id": admin.id,
-        "exp": datetime.utcnow() + timedelta(days=1),
-    }
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+        "exp": datetime.utcnow() + timedelta(days=1),  jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
     if isinstance(jwt_token, bytes):
         jwt_token = jwt_token.decode("utf-8")
 

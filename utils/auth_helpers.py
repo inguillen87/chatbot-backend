@@ -954,10 +954,6 @@ def anon_o_token_requerido(f):
             else default_cookie_name
         )
 
-        existing_cookie_value = request.cookies.get(target_cookie)
-        if existing_cookie_value and isinstance(existing_cookie_value, str):
-            existing_cookie_value = existing_cookie_value.strip()
-
         should_set_cookie = (
             _is_jwt_token(token)
             and token
