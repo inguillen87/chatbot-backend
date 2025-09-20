@@ -7,6 +7,141 @@ import jwt
 from datetime import datetime, timedelta, timezone
 from services.demo_registry import demo_rubro_for_token
 
+
+_WIDGET_ALLOWED_PREFIXES: tuple[str, ...] = ("/auth/widget/",)
+_WIDGET_ALLOWED_GET_PATHS: set[str] = {
+    "/auth/me",
+    "/auth/perfil",
+    "/auth/profile",
+    "/auth/token-info",
+}
+
+
+def _normalize_path(path: str | None) -> str:
+    """Return a normalized absolute path used for widget access checks."""
+
+    if not path:
+        return "/"
+
+    normalized = path.strip()
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+
+    if "?" in normalized:
+        normalized = normalized.split("?", 1)[0]
+
+    if normalized != "/":
+        normalized = normalized.rstrip("/") or "/"
+
+    return normalized
+
+
+def _is_jwt_token(token: str | None) -> bool:
+    """Return True if the token string looks like a JWT."""
+
+    if not token or not isinstance(token, str):
+        return False
+    return token.count(".") == 2
+
+
+def _widget_session_allowed(path: str | None, method: str | None) -> bool:
+    """Return True if a widget session token can access the given request."""
+
+    normalized_path = _normalize_path(path)
+    method = (method or "GET").upper()
+
+    if method == "OPTIONS":
+        return True
+
+    for prefix in _WIDGET_ALLOWED_PREFIXES:
+        if normalized_path.startswith(prefix.rstrip("/")):
+            return True
+
+    if method == "GET" and normalized_path in _WIDGET_ALLOWED_GET_PATHS:
+        return True
+
+    return False
+
+
+def _lookup_owner_for_static_token(token: str | None) -> User | None:
+    """Return the owner user associated with a static/demo token."""
+
+    if not token:
+        return None
+
+    owner = User.query.filter_by(token=token).first()
+    if owner:
+        return owner
+
+    try:
+        demo_entry = demo_rubro_for_token(token)
+    except Exception:
+        demo_entry = None
+
+    if demo_entry and demo_entry.owner_user_id:
+        return User.query.get(demo_entry.owner_user_id)
+
+    return None
+
+
+def _generate_widget_session_token(owner_user: User) -> tuple[str, dict]:
+    """Issue a short-lived widget session token for the given owner."""
+
+    now = int(datetime.utcnow().timestamp())
+    minutes = int(current_app.config.get("WIDGET_ACCESS_MINUTES", 45))
+    renew_days = int(current_app.config.get("WIDGET_RENEW_DAYS", 7))
+
+    payload = {
+        "user_id": owner_user.id,
+        "rol": owner_user.rol,
+        "tipo_chat": getattr(owner_user, "tipo_chat", None),
+        "municipio_id": getattr(owner_user, "municipio_id", None),
+        "pyme_id": getattr(owner_user, "pyme_id", None),
+        "session_kind": "widget",
+        "iat": now,
+        "exp": now + minutes * 60,
+    }
+
+    if renew_days:
+        payload["renew_until"] = now + renew_days * 86400
+
+    token = jwt.encode(payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    return token, payload
+
+
+def _decode_token_payload(token: str | None) -> dict:
+    """Decode a JWT payload ignoring expiration errors."""
+
+    if not _is_jwt_token(token):
+        return {}
+
+    try:
+        return jwt.decode(
+            token,
+            current_app.config["SECRET_KEY"],
+            algorithms=["HS256"],
+            options={"verify_exp": False},
+        )
+    except Exception:
+        return {}
+
+
+def _finalize_token_candidate(token_candidate: str | None) -> str | None:
+    """Prefer the widget session cookie over a raw static token when available."""
+
+    if not token_candidate:
+        return None
+
+    token_candidate = token_candidate.strip()
+    if token_candidate and not _is_jwt_token(token_candidate):
+        widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME")
+        if widget_cookie_name:
+            cookie_value = request.cookies.get(widget_cookie_name)
+            if _is_jwt_token(cookie_value):
+                return cookie_value.strip()
+
+    return token_candidate or None
+
 def generar_token(user_id, rol, tipo_chat, municipio_id, pyme_id):
     """Genera un token de autenticación para un usuario."""
     payload = {
@@ -24,7 +159,7 @@ def user_from_token(token: str) -> User | None:
     """
     Busca un usuario a partir de un token de autenticación JWT.
     """
-    if not token:
+    if not token or not _is_jwt_token(token):
         return None
     try:
         payload = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
@@ -60,108 +195,120 @@ def _resolve_owner_user(user: User | None) -> User | None:
 def obtener_token():
     """Extrae el token desde header, query string o payload."""
     current_app.logger.debug(f"[obtener_token] Checking for token. Path: {request.path}")
+
+    checked_static_tokens: dict[str, User | None] = {}
+
+    def _resolve_static_owner(token: str) -> User | None:
+        if token not in checked_static_tokens:
+            checked_static_tokens[token] = _lookup_owner_for_static_token(token)
+        owner = checked_static_tokens[token]
+        if owner and getattr(g, "_obtener_token_owner", None) is None:
+            g._obtener_token_owner = owner
+        return owner
+
+    candidates: list[tuple[str, User | None, str]] = []
+
+    def _register_candidate(raw_token: str | None, source: str):
+        if not raw_token:
+            return
+        token_value = raw_token.strip()
+        if not token_value:
+            return
+        candidate = _finalize_token_candidate(token_value)
+        if not candidate:
+            return
+        owner: User | None = None
+        if not _is_jwt_token(candidate):
+            owner = _resolve_static_owner(candidate)
+        candidates.append((candidate, owner, source))
+        current_app.logger.debug(
+            f"[obtener_token] Candidate from {source}: '{candidate[:10]}...'"
+        )
+
     auth_header = request.headers.get("Authorization", "").strip()
     if auth_header:
-        current_app.logger.debug(f"[obtener_token] Found Authorization header: '{auth_header[:30]}...'")
+        current_app.logger.debug(
+            f"[obtener_token] Found Authorization header: '{auth_header[:30]}...'"
+        )
         if auth_header.lower().startswith("bearer "):
-            token = auth_header.split(" ", 1)[1]
-            current_app.logger.debug(f"[obtener_token] Extracted Bearer token: '{token[:10]}...'")
-            return token
-        current_app.logger.debug(f"[obtener_token] Returning raw Authorization header as token: '{auth_header[:10]}...'")
-        return auth_header
+            _register_candidate(auth_header.split(" ", 1)[1], "Authorization/Bearer")
+        else:
+            _register_candidate(auth_header, "Authorization")
 
     token_x_token = request.headers.get("X-Token")
     if token_x_token:
-        token_x_token = token_x_token.strip()
-        current_app.logger.debug(f"[obtener_token] Found X-Token header: '{token_x_token[:10]}...'")
-        return token_x_token
+        _register_candidate(token_x_token, "X-Token header")
 
     token_x_entity_token = request.headers.get("X-Entity-Token")
     if token_x_entity_token:
-        token_x_entity_token = token_x_entity_token.strip()
-        current_app.logger.debug(f"[obtener_token] Found X-Entity-Token header: '{token_x_entity_token[:10]}...'")
-        return token_x_entity_token
+        _register_candidate(token_x_entity_token, "X-Entity-Token header")
 
-    # Fallback: intentar recuperar el token desde una cookie específica
     cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
     token_cookie = request.cookies.get(cookie_name)
     if token_cookie:
-        token_cookie = token_cookie.strip()
-        current_app.logger.debug(
-            f"[obtener_token] Found token in cookie '{cookie_name}': '{token_cookie[:10]}...'"
-        )
-        return token_cookie
+        _register_candidate(token_cookie, f"Cookie '{cookie_name}'")
 
     widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME")
     if widget_cookie_name:
         widget_cookie = request.cookies.get(widget_cookie_name)
         if widget_cookie:
-            widget_cookie = widget_cookie.strip()
-            current_app.logger.debug(
-                f"[obtener_token] Found token in widget cookie '{widget_cookie_name}': '{widget_cookie[:10]}...'"
-            )
-            return widget_cookie
+            _register_candidate(widget_cookie, f"Cookie '{widget_cookie_name}'")
 
     token_args = request.args.get("token")
     if token_args:
-        token_args = token_args.strip()
-        current_app.logger.debug(f"[obtener_token] Found token in query args: '{token_args[:10]}...'")
-        return token_args
+        _register_candidate(token_args, "query parameter 'token'")
 
-    # Algunas integraciones envían el token como ``entityToken`` en la query
     entity_token_arg = request.args.get("entityToken") or request.args.get("entity_token")
     if entity_token_arg:
-        entity_token_arg = entity_token_arg.strip()
-        current_app.logger.debug(f"[obtener_token] Found entityToken in query args: '{entity_token_arg[:10]}...'")
-        return entity_token_arg
+        _register_candidate(entity_token_arg, "query parameter 'entityToken'")
 
-    # Fallback to 'empresa_token' in query args
     empresa_token_arg = request.args.get("empresa_token")
     if empresa_token_arg:
-        empresa_token_arg = empresa_token_arg.strip()
-        current_app.logger.debug(f"[obtener_token] Found 'empresa_token' in query args: '{empresa_token_arg[:10]}...'")
-        return empresa_token_arg
+        _register_candidate(empresa_token_arg, "query parameter 'empresa_token'")
 
     if request.is_json:
         json_data = request.get_json(silent=True) or {}
         token_json = json_data.get("token")
         if token_json:
-            token_json = token_json.strip()
-            current_app.logger.debug(f"[obtener_token] Found token in JSON payload: '{token_json[:10]}...'")
-            return token_json
+            _register_candidate(token_json, "JSON field 'token'")
 
         entity_token_json = json_data.get("entityToken") or json_data.get("entity_token")
         if entity_token_json:
-            entity_token_json = entity_token_json.strip()
-            current_app.logger.debug(f"[obtener_token] Found entityToken in JSON payload: '{entity_token_json[:10]}...'")
-            return entity_token_json
+            _register_candidate(entity_token_json, "JSON field 'entityToken'")
 
-        # Fallback to 'empresa_token' in JSON payload (no longer path-restricted)
         empresa_token_json = json_data.get("empresa_token")
         if empresa_token_json:
-            empresa_token_json = empresa_token_json.strip()
-            current_app.logger.debug(f"[obtener_token] Found 'empresa_token' in JSON payload: '{empresa_token_json[:10]}...'")
-            return empresa_token_json
-
+            _register_candidate(empresa_token_json, "JSON field 'empresa_token'")
 
     token_form = request.form.get("token")
     if token_form:
-        token_form = token_form.strip()
-        current_app.logger.debug(f"[obtener_token] Found token in form data: '{token_form[:10]}...'")
-        return token_form
+        _register_candidate(token_form, "form field 'token'")
 
     entity_token_form = request.form.get("entityToken") or request.form.get("entity_token")
     if entity_token_form:
-        entity_token_form = entity_token_form.strip()
-        current_app.logger.debug(f"[obtener_token] Found entityToken in form data: '{entity_token_form[:10]}...'")
-        return entity_token_form
+        _register_candidate(entity_token_form, "form field 'entityToken'")
 
-    # Fallback to 'empresa_token' in form data (no longer path-restricted)
     empresa_token_form = request.form.get("empresa_token")
     if empresa_token_form:
-        empresa_token_form = empresa_token_form.strip()
-        current_app.logger.debug(f"[obtener_token] Found 'empresa_token' in form data: '{empresa_token_form[:10]}...'")
-        return empresa_token_form
+        _register_candidate(empresa_token_form, "form field 'empresa_token'")
+
+    fallback_token: str | None = None
+    fallback_source: str | None = None
+    for candidate, owner, source in candidates:
+        if _is_jwt_token(candidate) or owner:
+            current_app.logger.debug(
+                f"[obtener_token] Using token from {source}: '{candidate[:10]}...'"
+            )
+            return candidate
+        if fallback_token is None:
+            fallback_token = candidate
+            fallback_source = source
+
+    if fallback_token:
+        current_app.logger.debug(
+            f"[obtener_token] Returning fallback token from {fallback_source}: '{fallback_token[:10]}...'"
+        )
+        return fallback_token
 
     current_app.logger.debug("[obtener_token] No token found in any common location.")
     return None
@@ -222,35 +369,72 @@ def token_requerido(f):
             return _set_anon_cookie(resp, anon_id)
 
         # Siempre intentar recuperar el token para exponerlo a las vistas que lo necesiten.
-        token = obtener_token()
-        g.auth_token = token
+        raw_token = obtener_token()
+        g.widget_session = False
+        g.widget_owner_user = None
+        preloaded_owner = getattr(g, "_obtener_token_owner", None)
 
         # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
         if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
+            g.auth_token = raw_token
             g.current_user = current_user
             g.owner_user = _resolve_owner_user(current_user)
             return f(current_user, *args, **kwargs)
 
-        # Si no, buscar el token como se hacía antes
-
-        if not token:
+        if not raw_token:
             resp = jsonify({"error": "Token faltante o malformado"})
             resp.headers.setdefault("X-Anon-Id", anon_id)
             resp.headers.setdefault("Anon-Id", anon_id)
             _set_anon_cookie(resp, anon_id)
             return resp, 401
 
+        token = raw_token
+        token_payload: dict = {}
         user = user_from_token(token)
 
-        if not user:
+        if user:
+            token_payload = _decode_token_payload(token)
+        else:
+            owner_user = preloaded_owner or _lookup_owner_for_static_token(raw_token)
+            if owner_user:
+                if not _widget_session_allowed(request.path, request.method):
+                    resp = jsonify({"error": "Token inválido o sesión expirada"})
+                    resp.headers.setdefault("X-Anon-Id", anon_id)
+                    resp.headers.setdefault("Anon-Id", anon_id)
+                    _set_anon_cookie(resp, anon_id)
+                    return resp, 403
+
+                token, token_payload = _generate_widget_session_token(owner_user)
+                g.widget_session = True
+                g.widget_owner_user = owner_user
+                user = owner_user
+                current_app.logger.info(
+                    "[token_requerido] Issued widget session token for owner %s via %s",
+                    owner_user.id,
+                    request.path,
+                )
+            else:
+                resp = jsonify({"error": "Token inválido o sesión expirada"})
+                resp.headers.setdefault("X-Anon-Id", anon_id)
+                resp.headers.setdefault("Anon-Id", anon_id)
+                _set_anon_cookie(resp, anon_id)
+                return resp, 401
+
+        if token_payload.get("session_kind") == "widget" and not _widget_session_allowed(request.path, request.method):
             resp = jsonify({"error": "Token inválido o sesión expirada"})
             resp.headers.setdefault("X-Anon-Id", anon_id)
             resp.headers.setdefault("Anon-Id", anon_id)
             _set_anon_cookie(resp, anon_id)
-            return resp, 401
+            return resp, 403
 
+        g.auth_token = token
         g.current_user = user
         g.owner_user = _resolve_owner_user(user)
+
+        if token_payload.get("session_kind") == "widget":
+            g.widget_session = True
+            if g.widget_owner_user is None:
+                g.widget_owner_user = g.owner_user
 
         response = f(user, *args, **kwargs)
 
@@ -259,18 +443,6 @@ def token_requerido(f):
         default_cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
         widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
         target_cookie = default_cookie_name
-
-        token_payload = {}
-        if token:
-            try:
-                token_payload = jwt.decode(
-                    token,
-                    current_app.config["SECRET_KEY"],
-                    algorithms=["HS256"],
-                    options={"verify_exp": False},
-                )
-            except Exception:
-                token_payload = {}
 
         if token_payload.get("session_kind") == "widget" or token_payload.get("renew_until"):
             target_cookie = widget_cookie_name
@@ -385,7 +557,8 @@ def anon_o_token_requerido(f):
 
         token = obtener_token()
         current_user = None  # El usuario final que chatea (el "viewer")
-        owner_user = None    # El dueño del bot (la "entidad", ej: municipio)
+        preloaded_owner = getattr(g, "_obtener_token_owner", None)
+        owner_user = preloaded_owner    # El dueño del bot (la "entidad", ej: municipio)
 
         demo_token_detected = False
 
@@ -404,7 +577,7 @@ def anon_o_token_requerido(f):
             else:
                 # Si falla el JWT, tratar el token como un token de entidad estático (API Key/UUID).
                 # Esto es para el widget anónimo.
-                entity_user = User.query.filter_by(token=token).first()
+                entity_user = owner_user or User.query.filter_by(token=token).first()
                 if entity_user:
                     current_app.logger.info(f"Request authenticated via static entity token. Owner User ID: {entity_user.id}")
                     owner_user = entity_user
