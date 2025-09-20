@@ -1,5 +1,7 @@
 import uuid
 from functools import wraps
+from typing import Any, Dict, List, Optional, Tuple
+
 from flask import request, jsonify, current_app, g, make_response
 from flask_login import current_user
 import jwt
@@ -7,7 +9,6 @@ from datetime import datetime, timedelta, timezone
 
 from extensions import db
 from models import User, generate_token
-from services.demo_registry import demo_rubro_for_token
 
 
 _WIDGET_ALLOWED_PREFIXES: tuple[str, ...] = ("/auth/widget/",)
@@ -17,6 +18,133 @@ _WIDGET_ALLOWED_GET_PATHS: set[str] = {
     "/auth/profile",
     "/auth/token-info",
 }
+
+
+def ensure_buttons_compatibility(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Normalize legacy button structures to keep API responses consistent."""
+
+    if payload is None:
+        return {}
+
+    if not isinstance(payload, dict):
+        return payload
+
+    def _normalize_entry_keys(text: str | None, action_id: str | None) -> Tuple[str, str]:
+        texto = (text or "").strip()
+        action = (action_id or texto)
+        if not texto:
+            texto = action
+        if not action:
+            action = texto
+        return texto, action
+
+    def _normalize_option(option: Dict[str, Any]) -> Optional[Tuple[str, str, str]]:
+        texto = option.get("texto") or option.get("label") or option.get("title")
+        action_id = option.get("action_id") or option.get("id") or texto
+        if texto is None and action_id is None:
+            return None
+
+        texto_norm, action_norm = _normalize_entry_keys(texto, action_id)
+        option["texto"] = texto_norm
+        option["action_id"] = action_norm
+        option.setdefault("id", option.get("id") or action_norm)
+        option.setdefault("label", texto_norm)
+        return texto_norm, action_norm, option.get("id") or action_norm
+
+    def _ensure_button(
+        button: Dict[str, Any], texto: str, action_id: str, entry_id: str
+    ) -> Dict[str, Any]:
+        button["texto"] = texto
+        button["action_id"] = action_id
+        button.setdefault("id", entry_id or action_id)
+        return button
+
+    # Mirror user-facing message fields so every consumer can rely on them.
+    message_value: Optional[str] = None
+    for key in ("message_body", "respuesta", "respuesta_usuario"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            message_value = value
+            break
+        if isinstance(value, str) and message_value is None:
+            message_value = value
+
+    if message_value is not None:
+        payload["message_body"] = message_value
+        payload["respuesta"] = message_value
+        payload["respuesta_usuario"] = message_value
+
+    options_raw = payload.get("options_list")
+    buttons_raw = payload.get("botones")
+
+    normalized_options: List[Dict[str, Any]] = []
+    normalized_buttons: List[Dict[str, Any]] = []
+
+    if isinstance(options_raw, list) and options_raw:
+        button_candidates: Dict[str, List[Dict[str, Any]]] = {}
+        if isinstance(buttons_raw, list):
+            for button in buttons_raw:
+                if not isinstance(button, dict):
+                    continue
+                key = (
+                    button.get("id")
+                    or button.get("action_id")
+                    or button.get("texto")
+                    or button.get("label")
+                )
+                if key:
+                    button_candidates.setdefault(key, []).append(button)
+
+        for option in options_raw:
+            if not isinstance(option, dict):
+                continue
+            normalized = _normalize_option(option)
+            if not normalized:
+                continue
+
+            texto_norm, action_norm, entry_id = normalized
+            normalized_options.append(option)
+
+            candidate_list = (
+                button_candidates.get(entry_id)
+                or button_candidates.get(action_norm)
+                or button_candidates.get(texto_norm)
+            )
+            candidate_button = candidate_list.pop(0) if candidate_list else {}
+            normalized_buttons.append(
+                _ensure_button(candidate_button, texto_norm, action_norm, entry_id)
+            )
+
+        payload["options_list"] = normalized_options
+        payload["botones"] = normalized_buttons
+        return payload
+
+    if isinstance(buttons_raw, list) and buttons_raw:
+        for button in buttons_raw:
+            if not isinstance(button, dict):
+                continue
+
+            texto = button.get("texto") or button.get("label") or button.get("title")
+            action_id = button.get("action_id") or button.get("id") or texto
+            if texto is None and action_id is None:
+                continue
+
+            texto_norm, action_norm = _normalize_entry_keys(texto, action_id)
+            entry_id = button.get("id") or action_norm
+            normalized_buttons.append(
+                _ensure_button(button, texto_norm, action_norm, entry_id)
+            )
+            normalized_options.append(
+                {"texto": texto_norm, "action_id": action_norm, "id": entry_id}
+            )
+
+        payload["botones"] = normalized_buttons
+        payload.setdefault("options_list", normalized_options)
+        return payload
+
+    payload.setdefault("options_list", [])
+    payload.setdefault("botones", [])
+    return payload
 
 
 def _normalize_path(path: str | None) -> str:
@@ -74,6 +202,8 @@ def _lookup_owner_for_static_token(token: str | None) -> User | None:
     owner = User.query.filter_by(token=token).first()
     if owner:
         return owner
+
+    from services.demo_registry import demo_rubro_for_token
 
     try:
         demo_entry = demo_rubro_for_token(token)
@@ -727,6 +857,8 @@ def anon_o_token_requerido(f):
     """
     @wraps(f)
     def decorated(*args, **kwargs):
+        from services.demo_registry import demo_rubro_for_token
+
         anon_id = get_or_create_anon_id()
         if request.method == "OPTIONS":
             # Pre-flight request. Reply successfully.
