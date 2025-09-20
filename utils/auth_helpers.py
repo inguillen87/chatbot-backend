@@ -343,6 +343,7 @@ def obtener_token():
                 f"[obtener_token] Using token from {source}: '{candidate[:10]}...'"
             )
             return candidate
+
         if fallback_token is None:
             fallback_token = candidate
             fallback_source = source
