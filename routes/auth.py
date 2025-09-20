@@ -959,17 +959,60 @@ def me_perfil(user):
             # Asegurarse de no exponer datos sensibles como el hash de la contraseña
         }
 
+        owner_token = get_or_create_owner_entity_token(user)
+        widget_session_active = bool(getattr(g, "widget_session", False))
+        widget_owner = getattr(g, "widget_owner_user", None)
         auth_token = getattr(g, "auth_token", None)
+        token_payload = getattr(g, "token_payload", {}) or {}
+
         if auth_token:
             profile_data["token"] = auth_token
             profile_data["auth_token"] = auth_token
         else:
-            profile_data["token"] = user.token
+            fallback_token = owner_token or getattr(user, "token", None)
+            if fallback_token:
+                profile_data["token"] = fallback_token
 
-        if user.token:
+        session_kind = token_payload.get("session_kind")
+        if not session_kind:
+            session_kind = "widget" if widget_session_active else ("panel" if auth_token else "none")
+
+        def _ts_to_iso(value):
+            if not value:
+                return None
+            try:
+                ts_int = int(value)
+            except (TypeError, ValueError):
+                return None
+            try:
+                return datetime.utcfromtimestamp(ts_int).replace(microsecond=0).isoformat() + "Z"
+            except (OverflowError, OSError, ValueError):
+                return None
+
+        session_expires_at = _ts_to_iso(token_payload.get("exp"))
+        session_renew_until = _ts_to_iso(token_payload.get("renew_until"))
+
+        profile_data["session_token"] = auth_token
+        profile_data["session_kind"] = session_kind
+        profile_data["session_expires_at"] = session_expires_at
+        profile_data["session_renew_until"] = session_renew_until
+        profile_data["widget_session_active"] = widget_session_active
+        profile_data["widget_session_owner_id"] = getattr(widget_owner, "id", None)
+
+        if owner_token:
+            profile_data["entity_token"] = owner_token
+            profile_data["owner_token"] = owner_token
+            profile_data["widget_embed_token"] = owner_token
+            profile_data["widget_embed_token_kind"] = "entity"
+        elif getattr(user, "token", None):
             profile_data["entity_token"] = user.token
 
-        return jsonify(profile_data)
+        widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+        profile_data["widget_token_cookie_name"] = widget_cookie_name
+        profile_data["widget_access_minutes"] = current_app.config.get("WIDGET_ACCESS_MINUTES", 45)
+        profile_data["widget_renew_days"] = current_app.config.get("WIDGET_RENEW_DAYS", 7)
+
+        return jsonify({k: v for k, v in profile_data.items() if v is not None})
 
     elif request.method == 'PUT':
         from services.user_service import update_user_profile
