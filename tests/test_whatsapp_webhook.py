@@ -4,6 +4,8 @@ import os
 import sys
 import json
 
+from flask import g
+
 # Añadir el directorio raíz del proyecto al sys.path
 project_root_whatsapp = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root_whatsapp not in sys.path:
@@ -349,7 +351,14 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             mock_adjunto.url = 'http://fake.storage/test.pdf'
             mock_adjunto.mime = 'application/pdf'
             mock_adjunto.nombre_original = 'test.pdf'
-            mock_create_attachment.return_value = mock_adjunto
+
+            def _assert_owner(file_storage, user_id=None, session_id=None):
+                owner_user = getattr(g, "owner_user", None)
+                self.assertIsNotNone(owner_user)
+                self.assertEqual(getattr(owner_user, "id", None), self.mock_client_user.id)
+                return mock_adjunto
+
+            mock_create_attachment.side_effect = _assert_owner
             mock_classifier.return_value = {"categoria_sugerida": "documentacion"}
 
             payload = {

@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, abort, current_app  # Basic Flask components
+from flask import Blueprint, request, jsonify, abort, current_app, g  # Basic Flask components
 from twilio.request_validator import RequestValidator  # For validating Twilio requests
 from twilio.rest import Client  # For sending messages via Twilio
 import os  # For accessing environment variables
@@ -151,6 +151,10 @@ def whatsapp_webhook():
     if not client_user:
         print(f"Error: No user associated with WhatsappNumero id {whatsapp_mapping.id} for number {to_number_cleaned}.")
         return "Internal configuration error: WhatsApp number mapped to non-existent user.", 500
+
+    # Store the owner entity on ``flask.g`` so downstream helpers (like the
+    # storage fallback) know which empresa/municipio owns this conversation.
+    g.owner_user = client_user
 
     empresa_id = client_user.id
     from services.pymes import get_or_create_user_by_phone
