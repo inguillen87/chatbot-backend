@@ -809,13 +809,23 @@ def anon_o_token_requerido(f):
                 current_app.logger.info(
                     "Request authenticated via JWT. User ID: %s", jwt_user.id
                 )
-                current_user = jwt_user
                 # Si un usuario logueado tiene un `empresa_id`, el owner es esa empresa.
                 if jwt_user.empresa_id:
-                    owner_user = User.query.get(jwt_user.empresa_id)
+                    owner_lookup = User.query.get(jwt_user.empresa_id)
+                    owner_user = owner_lookup or jwt_user
                 else:
                     # Si no, el owner es el propio usuario (ej, el admin del municipio)
                     owner_user = jwt_user
+
+                # Las rutas anónimas deben comportarse como el widget público incluso
+                # si el frontend envía un JWT de panel (por ejemplo, vistas previas del
+                # administrador). En lugar de autenticar al viewer como el dueño,
+                # marcamos la request como sesión de widget y preservamos únicamente el
+                # contexto del owner. Así se evita que el widget renderice datos
+                # "pre-cargados" del administrador.
+                g.widget_session = True
+                g.widget_owner_user = owner_user
+                current_user = None
             else:
                 # Si falla el JWT, tratar el token como un token de entidad estático (API Key/UUID).
                 # Esto es para el widget anónimo.
