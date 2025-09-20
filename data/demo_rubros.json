@@ -2,429 +2,860 @@
   {
     "env_prefix": "DEMO_ALMACEN",
     "key": "almacen",
-    "nombre": "Almacén Inteligente",
-    "descripcion": "Catálogo minorista y mayorista con combos semanales, control de stock y entregas coordinadas en el día.",
+    "nombre": "ByM Almacén Inteligente",
+    "descripcion": "Reposiciones programadas para bares, combos familiares listos y logística express con control de stock en vivo.",
     "token": "demo-token-almacen",
     "tipo_chat": "pyme",
     "rubro_clave": "almacen",
-    "aliases": ["demo-almacen", "almacen-inteligente", "bym-almacen"],
-    "prompt_context": "ByM Almacén digitaliza la góndola de proximidad con reposiciones programadas para bares, combos familiares de frescos y bebidas, seguimiento de stock en tiempo real y entregas express. Opera delivery propio en radio de 4 km, logística con moto para urgencias y acuerdos de cobro con QR, Mercado Pago y transferencias. Usa un tono cercano, ágil y orientado a resolver pedidos mixtos (retiro o envío) en el momento.",
-    "welcome_message": "🛒 ¡Bienvenido a ByM Almacén! Puedo compartirte combos listos, precios mayoristas y radios de entrega en segundos.",
+    "aliases": [
+      "demo-almacen",
+      "almacen-inteligente",
+      "bym-almacen"
+    ],
+    "prompt_context": "ByM Almacén opera dark stores de proximidad con catálogo digital integrado a ERP, logística propia en 90 minutos y acuerdos mayoristas para bares y oficinas. Gestiona combos ready-to-go, reposiciones proyectadas y conciliación de medios de pago.",
+    "welcome_message": "🛒 Hola, soy el asesor digital de ByM Almacén. Elegí pedidos express, reposiciones mayoristas, logística o integraciones y te comparto la información en segundos.",
     "resources": [
       {
-        "title": "Catálogo de combos digitales",
-        "description": "Packs familiares, reposiciones para bares y kits healthy listos para armado.",
+        "title": "Catálogo express 2024/2025",
+        "description": "Combos familiares, coffee break y bandejas ready-to-go con stock actualizado.",
         "type": "pdf",
         "url": "/static/demo/almacen/catalogo-combos-2024.pdf",
-        "cta_text": "Descargar combos",
-        "price": "Combos familiares desde $17.900",
-        "highlight": "Actualizado septiembre 2024",
+        "cta_text": "Ver catálogo express",
+        "price": "Packs desde $17.900",
+        "highlight": "Actualización semanal",
         "availability": "Entrega en 90 minutos Gran Mendoza"
       },
       {
-        "title": "Lista de precios mayoristas",
-        "description": "Escalas por categoría, mínimos sugeridos y márgenes para revendedores.",
+        "title": "Lista mayorista segmentada",
+        "description": "Escalas por categoría, mínimos sugeridos y acuerdos de financiación 15/30 días.",
         "type": "pdf",
         "url": "/static/demo/almacen/lista-precios-mayoristas.pdf",
-        "cta_text": "Consultar tarifas",
-        "price": "Volumen a partir de 6 unidades",
-        "highlight": "Financiación 15/30 días",
-        "availability": "Retiro en depósito o envío programado"
+        "cta_text": "Descargar tarifa mayorista",
+        "price": "Volumen desde 6 unidades",
+        "highlight": "Bonificaciones 12% · 18%",
+        "availability": "Retiro en depósito o envío coordinado"
       },
       {
-        "title": "Mapa de logística de delivery",
-        "description": "Cobertura A, B y C con ventanas de entrega, vehículos asignados y KPIs.",
+        "title": "Mapa de cobertura y SLA",
+        "description": "Rutas express, ventanas programadas y monitoreo GPS con control de frío.",
         "type": "image",
         "url": "/static/demo/almacen/rutas-delivery.svg",
         "thumbnail": "/static/demo/almacen/rutas-delivery.svg",
         "cta_text": "Ver zonas de entrega",
-        "highlight": "Seguimiento GPS en vivo",
+        "highlight": "Seguimiento en tiempo real",
         "availability": "Radio propio + mensajería aliada"
       }
     ],
     "quick_actions": [
       {
-        "emoji": "🧺",
-        "texto": "Combos familiares listos",
-        "prompt": "Mostrame los combos familiares vigentes con precios.",
-        "description": "Incluye desayunos, reuniones y after office"
+        "emoji": "🛍️",
+        "texto": "Pedidos express & combos",
+        "description": "Combos familiares, coffee breaks y bandejas ready-to-go",
+        "category": "🛍️ Catálogo y promos",
+        "submenu": [
+          {
+            "emoji": "🍱",
+            "texto": "Combos familiares",
+            "prompt": "Mostrame el catálogo completo de combos familiares con precios y stock actualizado.",
+            "description": "Packs para 4/6 personas con frescos y bebidas"
+          },
+          {
+            "emoji": "☕",
+            "texto": "Coffee break corporativo",
+            "prompt": "Necesito opciones de coffee break corporativo para 20 personas con entrega hoy.",
+            "description": "Set dulce y salado con termos y descartables"
+          },
+          {
+            "emoji": "🍹",
+            "texto": "After office y bares",
+            "prompt": "Mostrame los combos express para bares y after office con márgenes sugeridos.",
+            "description": "Bandejas finger food + cócteles ready"
+          }
+        ]
       },
       {
-        "emoji": "💰",
-        "texto": "Lista mayorista actual",
-        "prompt": "Necesito la lista mayorista actualizada con mínimos de compra.",
-        "description": "Márgenes sugeridos y medios de pago"
+        "emoji": "📦",
+        "texto": "Reposiciones mayoristas",
+        "description": "Escalas por categoría, proyección y acuerdos de financiación",
+        "category": "📦 Operación mayorista",
+        "submenu": [
+          {
+            "emoji": "💰",
+            "texto": "Tarifario mayorista",
+            "prompt": "Enviame la lista mayorista con escalas, mínimos de compra y bonificaciones.",
+            "description": "Bonos 12% / 18% según volumen"
+          },
+          {
+            "emoji": "📊",
+            "texto": "Forecast de reposición",
+            "prompt": "Quiero simular reposiciones semanales para un bar con consumo medio.",
+            "description": "Proyección de rotación por categoría"
+          },
+          {
+            "emoji": "🤝",
+            "texto": "Integración con ERP",
+            "prompt": "¿Cómo conecto el catálogo del almacén con mi ERP y los medios de pago?",
+            "description": "APIs, stock en vivo y conciliación"
+          }
+        ]
       },
       {
         "emoji": "🛵",
-        "texto": "Cobertura de delivery",
-        "prompt": "¿Qué radios de entrega tienen y tiempos estimados?",
-        "description": "Ventanas express, estándar y programadas"
+        "texto": "Logística y cobertura",
+        "description": "Zonas, ventanas express y control de frío",
+        "category": "🛵 Logística inteligente",
+        "submenu": [
+          {
+            "emoji": "🗺️",
+            "texto": "Mapa de cobertura",
+            "prompt": "Mostrame el mapa de cobertura y tiempos de entrega para Gran Mendoza.",
+            "description": "Entrega express 90' y rutas programadas"
+          },
+          {
+            "emoji": "🚚",
+            "texto": "Pedidos mixtos",
+            "prompt": "Armá un pedido mixto con retiro en depósito y envío a dos direcciones.",
+            "description": "Flujo combinado retiro + delivery"
+          },
+          {
+            "emoji": "🥶",
+            "texto": "Control de frescos",
+            "prompt": "¿Qué protocolos de frío tienen para lácteos y frescos en las rutas express?",
+            "description": "Checklists y monitoreo en vivo"
+          }
+        ]
+      },
+      {
+        "emoji": "🛠️",
+        "texto": "Integraciones & soporte",
+        "description": "Medios de pago, analítica y onboarding",
+        "category": "🛠️ Integraciones y soporte",
+        "submenu": [
+          {
+            "emoji": "💳",
+            "texto": "Medios de pago & QR",
+            "prompt": "Quiero conocer los medios de pago disponibles y cómo emitir QR propios.",
+            "description": "Links recurrentes, QR dinámicos y conciliación"
+          },
+          {
+            "emoji": "📈",
+            "texto": "Panel de analítica",
+            "prompt": "Mostrame el dashboard con KPIs de venta, frecuencia y stock crítico.",
+            "description": "Actualización en tiempo real"
+          },
+          {
+            "emoji": "👨‍🏫",
+            "texto": "Onboarding y training",
+            "prompt": "¿Cómo es el onboarding del equipo y qué soporte brindan en temporada alta?",
+            "description": "Sprints de capacitación y soporte 24/7"
+          }
+        ]
       }
     ],
     "capabilities": [
-      "🗺️ Compartí tu ubicación y confirmo cobertura y tiempos de entrega.",
-      "📄 Adjuntá un PDF o Excel con tu lista y te armo el pedido listo para enviar.",
-      "🖼️ Enviá una foto de tu góndola o depósito y sugiero reposiciones.",
-      "🔁 Pedime \"Armá un pedido mixto\" para combinar retiro y delivery en una sola orden."
+      "🧾 Genero presupuestos y listas en PDF personalizados con tu logo y condiciones comerciales.",
+      "📍 Geolocalizo envíos y asigno cuadrillas según ventanas express o programadas.",
+      "🔁 Configuro pedidos mixtos combinando retiro en depósito y delivery en una sola orden.",
+      "🧠 Analizo tus ventas históricas para sugerir reposiciones y alertas de stock crítico."
     ],
     "keywords": [
       "combos express",
       "lista mayorista",
-      "delivery en 90 minutos",
-      "reposiciones bares"
+      "logística 90 minutos",
+      "integración ERP",
+      "medios de pago"
     ]
   },
   {
     "env_prefix": "DEMO_BODEGA",
     "key": "bodega",
     "nombre": "Bodega Cuatro Fincas",
-    "descripcion": "Sommelier digital que centraliza portfolio ícono, tarifas mayoristas y logística boutique en un solo flujo.",
+    "descripcion": "Sommelier digital que concentra portfolio ícono, programas trade y logística boutique con foco en exportación.",
     "token": "demo-token-bodega",
     "tipo_chat": "pyme",
     "rubro_clave": "bodega",
-    "aliases": ["demo-bodega", "cuatro-fincas", "cuatrofincas", "demo-cuatro-fincas"],
-    "prompt_context": "Cuatro Fincas Winery (Perdriel, Mendoza) produce microvinificaciones lideradas por Salvador Patti con viñedos en Altamira, Agrelo, Vistalba y Gualtallary. Portfolio 2024/2025: Gran Malbec Reserva 2021 ($18.900, 14 meses roble francés), Cabernet Franc Single Vineyard 2022 ($20.500), Chardonnay Finca Don Matías 2022 ($15.800), Bonarda Orgánica Don Salvador 2023 ($13.200) y Extra Brut Método Tradicional 2021 ($16.800). Línea HoReCa Vincent Malbec/Chardonnay ($8.900/$9.200) y Blend Andino ($14.500). Logística boutique: envío bonificado Gran Mendoza, salidas semanales AMBA, 48 h Córdoba/Rosario, control de temperatura Patagonia y export LATAM con partners. Experiencias corporativas: Discovery Pack 6 botellas ($93.900), Caja Regalo Premier ($36.200), Barrel Room Experience ($24.000 por persona) y Vendimia Corporativa. Beneficios trade: 10% desde 5 cajas, 15% sobre $120.000, training staff, copas Riedel y soporte de sommelier.",
-    "welcome_message": "🍷 Hola, soy el concierge digital de Cuatro Fincas. Elegí Catálogo íconos, Tarifario mayorista, Degustaciones corporativas o Logística boutique y te lo envío al instante.",
+    "aliases": [
+      "demo-bodega",
+      "cuatro-fincas",
+      "cuatrofincas",
+      "demo-cuatro-fincas"
+    ],
+    "prompt_context": "Cuatro Fincas Winery produce microvinificaciones en Altamira, Agrelo, Vistalba y Gualtallary. Portfolio 2024/2025: Gran Malbec Reserva, Cabernet Franc Single Vineyard, Chardonnay Finca Don Matías, Bonarda Orgánica y Extra Brut Método Tradicional. Programas HoReCa, duty free y export LATAM con logística boutique, training de sommeliers y experiencias corporativas premium.",
+    "welcome_message": "🍷 Bienvenido al concierge digital de Cuatro Fincas. Elegí portfolio ícono, programas trade, experiencias o logística boutique y te comparto la información al instante.",
     "resources": [
       {
-        "title": "Catálogo premium 2024/2025",
-        "description": "Gran Malbec Reserva, Cabernet Franc Single Vineyard, Chardonnay Finca Don Matías y Bonarda Orgánica.",
+        "title": "Catálogo íconos 2024/2025",
+        "description": "Gran Malbec Reserva, Cabernet Franc Single Vineyard y ediciones limitadas HoReCa.",
         "type": "pdf",
         "url": "/static/demo/bodega/catalogo-premium-2024.pdf",
-        "cta_text": "Abrir catálogo íconos",
+        "cta_text": "Abrir portfolio premium",
         "price": "Gran Malbec Reserva desde $18.900",
-        "highlight": "Viñedos Altamira · Agrelo",
-        "availability": "Stock asignado 2024/2025"
+        "highlight": "Asignación limitada",
+        "availability": "Stock 2024/2025"
       },
       {
-        "title": "Lista de precios mayoristas",
-        "description": "Escalas combinadas, mínimos por línea y programas HoReCa/Duty Free.",
-        "type": "pricing",
+        "title": "Tarifario mayorista & duty free",
+        "description": "Escalas combinadas, mínimos por línea y programas de incentivos para trade.",
+        "type": "pdf",
         "url": "/static/demo/bodega/lista-precios-mayoristas.pdf",
-        "cta_text": "Descargar tarifa mayorista",
+        "cta_text": "Descargar tarifa trade",
         "price": "Bonarda Orgánica $13.200",
-        "highlight": "Bonificaciones 10% / 15%",
-        "availability": "Programas HoReCa + duty free"
+        "highlight": "Bonos 10% · 15%",
+        "availability": "HoReCa + duty free"
       },
       {
-        "title": "Gran Malbec Reserva Finca La Perseverancia",
-        "description": "Ficha técnica con origen Altamira + Agrelo, datos analíticos y puntajes internacionales.",
-        "type": "image",
-        "url": "/static/demo/bodega/gran-malbec-reserva.svg",
-        "thumbnail": "/static/demo/bodega/gran-malbec-reserva.svg",
-        "cta_text": "Ver ficha del Malbec",
-        "price": "$18.900 botella · $107.400 caja",
-        "highlight": "Altamira + Agrelo · 14 meses roble",
-        "availability": "Lote limitado 4.800 botellas"
-      },
-      {
-        "title": "Experiencias y degustaciones",
-        "description": "Discovery Pack, Barrel Room Experience, kits streaming y vendimia corporativa.",
+        "title": "Experiencias corporativas",
+        "description": "Discovery Pack, Barrel Room Experience y Vendimia Corporativa para equipos.",
         "type": "pdf",
         "url": "/static/demo/bodega/combos-degustacion-corporativas.pdf",
-        "cta_text": "Descargar combos corporativos",
-        "price": "Degustaciones desde $18.000 por persona",
-        "highlight": "Diseñado por Salvador Patti",
-        "availability": "On-site, híbridas y virtuales"
-      },
-      {
-        "title": "Mapa de envíos boutique",
-        "description": "Ventanas 24/48/72 h, SLA 98,6%, export LATAM y control de temperatura.",
-        "type": "image",
-        "url": "/static/demo/bodega/rutas-envio-premium.svg",
-        "thumbnail": "/static/demo/bodega/rutas-envio-premium.svg",
-        "cta_text": "Ver rutas de envío",
-        "highlight": "Tracking en vivo + reporte 48 h",
-        "availability": "Gran Mendoza, AMBA, interior y LATAM"
+        "cta_text": "Ver experiencias",
+        "highlight": "Reservas 2024 abiertas",
+        "availability": "Eventos in winery & on-site"
       }
     ],
     "quick_actions": [
       {
-        "emoji": "📘",
-        "texto": "Catálogo íconos 2024/25",
-        "prompt": "Compartime el catálogo premium con fichas y notas de cata.",
-        "description": "Gran Malbec, Cabernet Franc, Chardonnay"
+        "emoji": "🍇",
+        "texto": "Portfolio ícono & reservas",
+        "description": "Grandes vinos de guarda, vinos de finca y ediciones limitadas",
+        "category": "🍇 Portfolio & storytelling",
+        "submenu": [
+          {
+            "emoji": "🥇",
+            "texto": "Gran Malbec Reserva",
+            "prompt": "Quiero conocer notas de cata, puntuaciones y asignación del Gran Malbec Reserva 2021.",
+            "description": "14 meses roble francés · 96 pts"
+          },
+          {
+            "emoji": "🌿",
+            "texto": "Bonarda Orgánica",
+            "prompt": "Mostrame la ficha técnica de la Bonarda Orgánica Don Salvador y stock disponible.",
+            "description": "Certificación orgánica + vegan friendly"
+          },
+          {
+            "emoji": "✨",
+            "texto": "Línea Vincent HoReCa",
+            "prompt": "Necesito precios y condiciones de la línea Vincent para restaurantes.",
+            "description": "Malbec/Chardonnay exclusivos HoReCa"
+          }
+        ]
       },
       {
-        "emoji": "💸",
-        "texto": "Tarifario mayorista",
-        "prompt": "Mostrame la lista mayorista con bonificaciones y mínimos.",
-        "description": "Escalas 5/12 cajas y programas HoReCa"
-      },
-      {
-        "emoji": "🥂",
-        "texto": "Degustaciones corporativas",
-        "prompt": "Quiero propuestas de degustaciones y combos corporativos.",
-        "description": "Discovery Pack, Barrel Room, streaming"
+        "emoji": "🤝",
+        "texto": "Programas trade & incentivos",
+        "description": "Escalas, bonificaciones y soporte a cuentas clave",
+        "category": "🤝 Trade & partners",
+        "submenu": [
+          {
+            "emoji": "📦",
+            "texto": "Escalas mayoristas",
+            "prompt": "Enviame las escalas de compra para distribuidores con bonificaciones y mínimos.",
+            "description": "Bonos 10% · 15% + copas Riedel"
+          },
+          {
+            "emoji": "🎓",
+            "texto": "Training de sommeliers",
+            "prompt": "¿Qué incluye el training y soporte al staff para lanzamientos HoReCa?",
+            "description": "Capacitaciones presenciales y virtuales"
+          },
+          {
+            "emoji": "🎁",
+            "texto": "Kits corporativos",
+            "prompt": "Busco propuestas de kits corporativos personalizados con envío en AMBA.",
+            "description": "Discovery Pack + nota dedicada"
+          }
+        ]
       },
       {
         "emoji": "🚚",
-        "texto": "Logística boutique & SLA",
-        "prompt": "Detallame la logística boutique, ventanas y operadores.",
-        "description": "Gran Mendoza 24 h, AMBA viernes, export LATAM"
+        "texto": "Logística & export boutique",
+        "description": "Cobertura nacional, cadena de frío y partners LATAM",
+        "category": "🚚 Logística premium",
+        "submenu": [
+          {
+            "emoji": "🧊",
+            "texto": "Cadena de frío",
+            "prompt": "¿Cómo mantienen la cadena de frío y seguimiento para envíos premium?",
+            "description": "Sensórica y monitoreo en tránsito"
+          },
+          {
+            "emoji": "✈️",
+            "texto": "Export LATAM",
+            "prompt": "Quiero saber condiciones de exportación a LATAM y partners disponibles.",
+            "description": "Operamos Brasil, Paraguay y Perú"
+          },
+          {
+            "emoji": "📆",
+            "texto": "Calendario de despachos",
+            "prompt": "Mostrame el calendario de despachos semanales para AMBA y interior.",
+            "description": "Salidas lunes, miércoles y viernes"
+          }
+        ]
+      },
+      {
+        "emoji": "🥂",
+        "texto": "Experiencias & hospitality",
+        "description": "Degustaciones, eventos privados y turismo corporativo",
+        "category": "🥂 Experiencias",
+        "submenu": [
+          {
+            "emoji": "🪵",
+            "texto": "Barrel Room Experience",
+            "prompt": "Quiero detalles de la Barrel Room Experience para 15 personas.",
+            "description": "Maridaje 5 pasos + tour privado"
+          },
+          {
+            "emoji": "🌅",
+            "texto": "Vendimia corporativa",
+            "prompt": "¿Cómo funciona la vendimia corporativa y qué incluye el servicio?",
+            "description": "Team building + blend personalizado"
+          },
+          {
+            "emoji": "🏨",
+            "texto": "Hospitality en bodega",
+            "prompt": "Necesito propuestas de hospitality en bodega para clientes top.",
+            "description": "Menús maridaje y salas exclusivas"
+          }
+        ]
       }
     ],
     "capabilities": [
-      "🗺️ Compartí tu ubicación o zona y confirmo ventanas de entrega y export.",
-      "📄 Adjuntá un PDF o Excel con tu pedido y te devuelvo el presupuesto con bonificaciones.",
-      "🖼️ Enviá una foto de tu carta actual y propongo maridajes y upsells.",
-      "🥂 Decime cuántas cajas necesitás y simulo descuentos trade y obsequios."
+      "🍷 Armo listas de precios personalizadas según canal (HoReCa, retail, duty free).",
+      "🧾 Genero propuestas con storytelling, fichas técnicas y pairing sugerido.",
+      "📦 Coordino logística boutique con sensores de temperatura y seguro door-to-door.",
+      "👩‍🏫 Agendo trainings y catas guiadas con el equipo de sommelier."
     ],
     "keywords": [
-      "catálogo íconos",
-      "tarifario mayorista",
+      "catálogo premium",
+      "lista mayorista",
       "degustaciones corporativas",
-      "logística boutique"
+      "export LATAM",
+      "bonificaciones trade"
     ]
   },
   {
     "env_prefix": "DEMO_FERRETERIA",
     "key": "ferreteria",
-    "nombre": "Ferretería y Corralón",
-    "descripcion": "Materiales de construcción, herramientas eléctricas y logística a obra con presupuestos al instante.",
+    "nombre": "ProObra Ferretería Técnica",
+    "descripcion": "Centro logístico que integra catálogo de obra gruesa, planes de entrega y financiamiento a medida para constructoras.",
     "token": "demo-token-ferreteria",
     "tipo_chat": "pyme",
     "rubro_clave": "ferreteria",
-    "aliases": ["demo-ferreteria", "corralon-demo", "ferreteria-central"],
-    "prompt_context": "Ferretería Central atiende obras chicas y medianas con stock de cementos, áridos, hierros, sanitarios y herramientas eléctricas. Cotiza combos para refacciones, ofrece descuentos por volumen, planifica entregas con camión grúa y seguimiento GPS. Brinda asesoramiento técnico para elegir materiales, vende EPP, pinturas y artículos de jardinería. Usa un tono experto pero simple para profesionales y particulares que construyen o remodelan.",
-    "welcome_message": "🔧 ¡Hola! Soy el asistente del corralón. Tengo listos materiales, combos de obra y cronogramas de entrega con camión grúa.",
+    "aliases": [
+      "demo-ferreteria",
+      "ferreteria-proobra",
+      "proobra"
+    ],
+    "prompt_context": "ProObra abastece desarrollos residenciales e industriales con catálogo técnico de acero, madera laminada, herramientas y seguridad industrial. Ofrece planes logísticos por etapa, control de inventario y financiamiento con acuerdos bancarios.",
+    "welcome_message": "🏗️ Hola, soy ProObra. Elegí materiales estructurales, logística de obra, servicios técnicos o financiamiento y armamos la propuesta.",
     "resources": [
       {
-        "title": "Catálogo de materiales 2024",
-        "description": "Cementos, áridos, hierros, placas y aislaciones con stock disponible.",
+        "title": "Catálogo estructural 2024",
+        "description": "Acero, madera laminada, panelería térmica y herramientas pesadas.",
         "type": "pdf",
         "url": "/static/demo/ferreteria/catalogo-materiales-obra.pdf",
-        "cta_text": "Descargar catálogo",
-        "price": "Hormigón H21 desde $167.000/m³",
-        "highlight": "Disponibilidad inmediata",
-        "availability": "Retiro en depósito o envío 24 h"
+        "cta_text": "Ver catálogo técnico",
+        "price": "Precios indexados por etapa",
+        "highlight": "Stock asegurado",
+        "availability": "Cobertura nacional"
       },
       {
-        "title": "Plan logístico para obras",
-        "description": "Cronograma de entregas escalonadas, seguimiento GPS y políticas de devolución.",
+        "title": "Plan logístico por etapa",
+        "description": "Cronograma de entregas, seguimiento GPS y coordinación con subcontratos.",
         "type": "pdf",
         "url": "/static/demo/ferreteria/plan-logistica-obra.pdf",
-        "cta_text": "Ver plan logístico",
-        "highlight": "Camión grúa + retiro de bolsones",
-        "availability": "Cobertura Gran Mendoza y Valle de Uco"
+        "cta_text": "Descargar plan logístico",
+        "highlight": "Just in time",
+        "availability": "Plantas Mendoza · Córdoba"
       },
       {
-        "title": "Seguimiento de camión grúa",
-        "description": "Visual de despacho, retiro de bolsones y contacto de operador.",
+        "title": "Flota y grúas certificadas",
+        "description": "Equipos telescópicos, camiones grúa y operadores habilitados.",
         "type": "image",
         "url": "/static/demo/ferreteria/camion-grua.svg",
         "thumbnail": "/static/demo/ferreteria/camion-grua.svg",
-        "cta_text": "Ver seguimiento",
-        "highlight": "Check-in digital en obra",
-        "availability": "Turnos en franjas de 2 horas"
+        "cta_text": "Ver flota operativa",
+        "highlight": "Cobertura 24/7",
+        "availability": "Zona Cuyo + NOA"
       }
     ],
     "quick_actions": [
       {
         "emoji": "🧱",
-        "texto": "Cotizar materiales de obra",
-        "prompt": "Necesito cotizar materiales para una obra chica con entrega.",
-        "description": "Incluye cementos, hierros y placas"
+        "texto": "Materiales estructurales",
+        "description": "Acero, hormigón premoldeado y panelería aislante",
+        "category": "🧱 Catálogo técnico",
+        "submenu": [
+          {
+            "emoji": "🏗️",
+            "texto": "Acero y perfiles",
+            "prompt": "Necesito la tabla de acero laminado y perfiles UPN con entrega semanal.",
+            "description": "Perfiles UPN · IPN · galvanizado"
+          },
+          {
+            "emoji": "🧊",
+            "texto": "Paneles térmicos",
+            "prompt": "Mostrame panelería térmica con ficha técnica y R-value para cámara frigorífica.",
+            "description": "Panel PUR/PIR de 40/60 mm"
+          },
+          {
+            "emoji": "🪚",
+            "texto": "Madera laminada",
+            "prompt": "¿Qué soluciones de madera laminada estructural ofrecen y en qué dimensiones?",
+            "description": "Tramos de 6 a 12 m certificados"
+          }
+        ]
       },
       {
-        "emoji": "🚚",
-        "texto": "Plan de entregas",
-        "prompt": "¿Cómo funciona el plan logístico con camión grúa?",
-        "description": "Turnos, seguimiento y retiro de bolsones"
+        "emoji": "🚛",
+        "texto": "Logística de obra",
+        "description": "Planificación de entregas y montaje en sitio",
+        "category": "🚛 Logística & montaje",
+        "submenu": [
+          {
+            "emoji": "📅",
+            "texto": "Cronograma por etapa",
+            "prompt": "Armá un plan de entregas por etapas para un edificio de 12 pisos.",
+            "description": "Just in time + controles de recepción"
+          },
+          {
+            "emoji": "🪜",
+            "texto": "Montaje con grúa",
+            "prompt": "¿Cómo coordinan grúas y operadores certificados para montaje de paneles?",
+            "description": "Camiones grúa + operadores habilitados"
+          },
+          {
+            "emoji": "🔒",
+            "texto": "Seguridad industrial",
+            "prompt": "Necesito el checklist de EPP obligatorio y capacitaciones en obra.",
+            "description": "Cursos SST y auditorías in situ"
+          }
+        ]
       },
       {
-        "emoji": "⚙️",
-        "texto": "Herramientas profesionales",
-        "prompt": "Mostrame herramientas eléctricas en promoción.",
-        "description": "Taladros, esmeriladoras y EPP"
+        "emoji": "🧮",
+        "texto": "Servicios técnicos",
+        "description": "Ingeniería de valor y soporte BIM",
+        "category": "🧮 Ingeniería",
+        "submenu": [
+          {
+            "emoji": "📐",
+            "texto": "Cálculo de estructuras",
+            "prompt": "Quiero un cálculo preliminar para estructura metálica de 1.200 m².",
+            "description": "Ingeniería básica + memoria descriptiva"
+          },
+          {
+            "emoji": "🖥️",
+            "texto": "Integración BIM",
+            "prompt": "¿Cómo integran el catálogo a nuestro modelo BIM y control de avance?",
+            "description": "Familias REVIT + seguimiento"
+          },
+          {
+            "emoji": "🧯",
+            "texto": "Plan HSEQ",
+            "prompt": "Necesito la matriz HSEQ para presentar ante el comitente.",
+            "description": "Procedimientos, permisos y auditorías"
+          }
+        ]
+      },
+      {
+        "emoji": "💳",
+        "texto": "Financiación & integraciones",
+        "description": "Líneas bancarias, acuerdos fintech y APIs",
+        "category": "💳 Financiación",
+        "submenu": [
+          {
+            "emoji": "🏦",
+            "texto": "Líneas bancarias",
+            "prompt": "¿Qué líneas bancarias y plazos ofrecen para constructoras?",
+            "description": "Hasta 120 días con avales"
+          },
+          {
+            "emoji": "💻",
+            "texto": "API de pedidos",
+            "prompt": "Necesito integrar pedidos y stock al ERP de la constructora.",
+            "description": "APIs REST + webhooks"
+          },
+          {
+            "emoji": "📊",
+            "texto": "Dashboard de consumos",
+            "prompt": "Mostrame el dashboard con consumo por obra y desvíos.",
+            "description": "Alertas de sobreconsumo y reposición"
+          }
+        ]
       }
     ],
     "capabilities": [
-      "🗺️ Mandá la ubicación de la obra y calculo tiempos de camión grúa.",
-      "📄 Subí planos o presupuestos en PDF y armo la cotización por rubro.",
-      "🖼️ Compartí una foto del ambiente y recomiendo materiales y terminaciones.",
-      "🔁 Pedí \"Seguimiento camión\" para ver último despacho y devolución de bolsones."
+      "📦 Gestiono inventarios por obra con alertas de reposición automáticas.",
+      "📝 Emite órdenes de compra y contratos marco listos para firma digital.",
+      "🧾 Presento certificaciones de calidad y trazabilidad por lote.",
+      "🚨 Coordino protocolos HSEQ con auditorías y capacitaciones obligatorias."
     ],
     "keywords": [
-      "cotización obra",
-      "plan logístico",
-      "herramientas profesionales",
-      "seguimiento camión"
+      "materiales estructurales",
+      "logística de obra",
+      "montaje con grúa",
+      "integración BIM",
+      "financiación constructora"
     ]
   },
   {
-    "env_prefix": "DEMO_LOCAL_GENERAL",
+    "env_prefix": "DEMO_RETAIL",
     "key": "local_comercial_general",
-    "nombre": "Local Comercial Omnicanal",
-    "descripcion": "Mostrador omnicanal para indumentaria, deco y regalos con stock integrado y campañas de fidelización.",
-    "token": "demo-token-local",
+    "nombre": "Showroom Moda Urbana",
+    "descripcion": "Retail inteligente con lookbooks digitales, programas de fidelización y analítica omnicanal.",
+    "token": "demo-token-retail",
     "tipo_chat": "pyme",
-    "rubro_clave": "local_comercial",
-    "aliases": ["demo-local", "local-omnicanal", "local-comercial"],
-    "prompt_context": "Local Comercial Demo vende indumentaria urbana, deco y regalos corporativos. Integra catálogo en tienda física, Instagram Shopping y e-commerce con pasarela de pagos. Ofrece combos de temporada, cupones de fidelización, reservas con seña digital y retiros en sucursal en 2 horas. Gestiona cambios, envíos a todo el país y paquetes personalizados para empresas. El bot destaca disponibilidad en talles, colores, promociones bancarias y seguimiento de pedidos.",
-    "welcome_message": "🛍️ Bienvenido al showroom omnicanal. Puedo compartirte lookbooks, promos bancarias, combos corporativos y políticas de cambio.",
+    "rubro_clave": "local_comercial_general",
+    "aliases": [
+      "demo-retail",
+      "moda-urbana",
+      "showroom-moda"
+    ],
+    "prompt_context": "Moda Urbana opera tiendas físicas y e-commerce integrado, con lookbooks digitales, CRM de fidelización, eventos VIP y reportes de métricas omnicanal. Implementa probadores inteligentes, campañas personalizadas y logística ship-from-store.",
+    "welcome_message": "👗 Hola, soy tu planner de Moda Urbana. Elegí lookbooks, fidelización, eventos B2B o integraciones y te muestro cómo funciona.",
     "resources": [
       {
-        "title": "Lookbook urbano otoño-invierno",
-        "description": "Colecciones cápsula con talles XS-XXL, curvas y precios sugeridos.",
+        "title": "Lookbook colección AW24",
+        "description": "Outfits por segmento, talles extendidos y storytelling de campaña.",
         "type": "pdf",
         "url": "/static/demo/local_comercial/lookbook-urbano.pdf",
-        "cta_text": "Ver lookbook",
-        "highlight": "Tendencias 2024",
-        "availability": "Stock en tienda y online"
+        "cta_text": "Ver lookbook digital",
+        "highlight": "Colección AW24",
+        "availability": "Stock en tiendas & online"
       },
       {
-        "title": "Programa de fidelización",
-        "description": "Escalas de puntos, cupones automáticos y wallet QR integrada.",
+        "title": "Programa de fidelización 360",
+        "description": "Niveles VIP, cashback y automatización de campañas omnicanal.",
         "type": "pdf",
         "url": "/static/demo/local_comercial/programa-fidelizacion.pdf",
-        "cta_text": "Descargar programa",
-        "price": "Cashback 8% promedio",
-        "highlight": "Integrado a CRM",
-        "availability": "Activa en tienda, web y WhatsApp"
+        "cta_text": "Descargar programa loyalty",
+        "highlight": "Segmentación avanzada",
+        "availability": "Integrable a CRM"
       },
       {
-        "title": "Combo corporativo premium",
-        "description": "Box regalo, giftcard y seguimiento de entregas múltiples.",
+        "title": "Propuestas corporativas",
+        "description": "Bundles para equipos, uniformes y regalos empresariales personalizados.",
         "type": "image",
         "url": "/static/demo/local_comercial/combos-corporativos.svg",
         "thumbnail": "/static/demo/local_comercial/combos-corporativos.svg",
-        "cta_text": "Ver propuesta",
-        "price": "Packs desde $48.000",
-        "highlight": "Personalización con logo"
+        "cta_text": "Ver catálogo B2B",
+        "highlight": "Producción bajo demanda",
+        "availability": "Entrega nacional"
       }
     ],
     "quick_actions": [
       {
-        "emoji": "👗",
-        "texto": "Nueva colección urbana",
-        "prompt": "Quiero ver la nueva colección urbana con talles disponibles.",
-        "description": "Incluye looks y precios"
+        "emoji": "🧥",
+        "texto": "Visual & colecciones",
+        "description": "Lookbooks digitales, guías de estilo y drops exclusivos",
+        "category": "🧥 Colecciones",
+        "submenu": [
+          {
+            "emoji": "📸",
+            "texto": "Lookbook interactivo",
+            "prompt": "Mostrame el lookbook digital con mix & match y recomendaciones por ocasión.",
+            "description": "Outfits cápsula + talles extendidos"
+          },
+          {
+            "emoji": "🎯",
+            "texto": "Drops hipersegmentados",
+            "prompt": "Quiero crear un drop exclusivo para clientes premium con notificación push.",
+            "description": "Reservas anticipadas y prueba en tienda"
+          },
+          {
+            "emoji": "🪞",
+            "texto": "Probadores inteligentes",
+            "prompt": "¿Cómo funcionan los probadores inteligentes y qué métricas entregan?",
+            "description": "RFID + recomendaciones automáticas"
+          }
+        ]
       },
       {
         "emoji": "🎁",
-        "texto": "Regalos corporativos",
-        "prompt": "Mostrame las opciones de combos corporativos para empresas.",
-        "description": "Boxes, giftcards y envíos múltiples"
+        "texto": "Fidelización & CRM",
+        "description": "Niveles VIP, cashback y campañas automatizadas",
+        "category": "🎁 Loyalty",
+        "submenu": [
+          {
+            "emoji": "⭐",
+            "texto": "Programa loyalty",
+            "prompt": "Necesito la estructura del programa de fidelización y beneficios por nivel.",
+            "description": "Cashback, early access y styling"
+          },
+          {
+            "emoji": "📧",
+            "texto": "Campañas omnicanal",
+            "prompt": "Mostrame ejemplos de journeys automatizados por temporada y comportamiento.",
+            "description": "Email, SMS y push coordinados"
+          },
+          {
+            "emoji": "📊",
+            "texto": "Dashboard de clientes",
+            "prompt": "Quiero ver el dashboard con RFM, ticket promedio y frecuencia.",
+            "description": "KPIs retail en tiempo real"
+          }
+        ]
       },
       {
-        "emoji": "💳",
-        "texto": "Programa de fidelización",
-        "prompt": "Explicame cómo funciona el programa de fidelización y promociones.",
-        "description": "Wallet QR, puntos y cupones"
+        "emoji": "🤝",
+        "texto": "Eventos & B2B",
+        "description": "Styling corporativo, giftcards y alianzas",
+        "category": "🤝 Eventos",
+        "submenu": [
+          {
+            "emoji": "🥂",
+            "texto": "Eventos VIP",
+            "prompt": "Armá un calendario de eventos VIP en tienda con experiencias personalizadas.",
+            "description": "After office + styling en vivo"
+          },
+          {
+            "emoji": "🎟️",
+            "texto": "Giftcards corporativas",
+            "prompt": "¿Qué opciones de giftcards digitales ofrecen para empresas?",
+            "description": "Integración con beneficios corporativos"
+          },
+          {
+            "emoji": "🧵",
+            "texto": "Uniformes y cápsulas",
+            "prompt": "Necesito una propuesta de uniformes personalizados para un equipo comercial.",
+            "description": "Diseño + producción bajo demanda"
+          }
+        ]
+      },
+      {
+        "emoji": "🔗",
+        "texto": "Integración omnicanal",
+        "description": "ERP, ecommerce y ship-from-store",
+        "category": "🔗 Integraciones",
+        "submenu": [
+          {
+            "emoji": "🛒",
+            "texto": "Ecommerce + tienda",
+            "prompt": "¿Cómo sincronizan stock online con tienda y envíos ship-from-store?",
+            "description": "OMS integrado + SLA por tienda"
+          },
+          {
+            "emoji": "💡",
+            "texto": "Customer data platform",
+            "prompt": "Quiero saber cómo centralizan datos y eventos para personalizar campañas.",
+            "description": "CDP con tracking en tiempo real"
+          },
+          {
+            "emoji": "📦",
+            "texto": "Logística inversa",
+            "prompt": "Mostrame el flujo de logística inversa y cambios en tienda vs online.",
+            "description": "Gestión integrada de devoluciones"
+          }
+        ]
       }
     ],
     "capabilities": [
-      "🗺️ Compartí tu ubicación y muestro la sucursal o pick up más cercano.",
-      "📄 Adjuntá el listado de talles o SKUs y verifico stock al instante.",
-      "🖼️ Enviá fotos de tu vidriera y diseño propuestas de styling y cross selling.",
-      "🎯 Pedime \"Campaña fidelización\" y armo combos con cupones y segmentos."
+      "🛍️ Creo lookbooks personalizados con precios, talles y disponibilidad por tienda.",
+      "📲 Lanzo campañas automatizadas segmentadas según comportamiento y preferencias.",
+      "🚚 Coordino ship-from-store y pick up in store con inventario sincronizado.",
+      "📈 Entrego reportes omnicanal con métricas de conversión, tráfico y ROI."
     ],
     "keywords": [
-      "lookbook urbano",
-      "regalos corporativos",
-      "programa fidelización",
-      "cambios express"
+      "lookbook digital",
+      "programa loyalty",
+      "ship from store",
+      "eventos VIP",
+      "customer data platform"
     ]
   },
   {
     "env_prefix": "DEMO_MEDICO",
     "key": "medico_general",
-    "nombre": "Clínica Médico General",
-    "descripcion": "Turnos online, guardias coordinadas y seguimiento de pacientes para medicina general y especialidades de base.",
+    "nombre": "Clínica Horizonte",
+    "descripcion": "Clínica polivalente con turnos inteligentes, teleconsulta, seguimiento remoto y convenios corporativos.",
     "token": "demo-token-medico",
     "tipo_chat": "pyme",
-    "rubro_clave": "medico",
-    "aliases": ["demo-medico", "clinica-san-dona", "medico-general"],
-    "prompt_context": "Clínica San Dona gestiona turnos para clínica médica, pediatría, ginecología, laboratorio y nutrición. Permite reservar guardias programadas, coordinar estudios, validar obras sociales, enviar recordatorios por WhatsApp y compartir resultados vía portal seguro. Atiende consultas sobre coberturas, horarios, preparación para estudios y teleconsultas. Mantiene tono empático, claro y orientado a resolver trámites rápidos para pacientes y familias.",
-    "welcome_message": "🩺 Hola, soy el asistente de Clínica San Dona. Puedo reservar turnos, confirmar coberturas y enviarte guías pre estudio en segundos.",
+    "rubro_clave": "medico_general",
+    "aliases": [
+      "demo-medico",
+      "clinica-horizonte",
+      "horizonte-salud"
+    ],
+    "prompt_context": "Clínica Horizonte ofrece turnos médicos inteligentes, teleconsulta con receta digital, gestión de estudios y seguimiento remoto de pacientes crónicos. Integra cobertura con obras sociales, reporting para empresas y analítica de ocupación.",
+    "welcome_message": "🏥 Bienvenido a Clínica Horizonte. Elegí turnos, estudios, telemedicina o convenios corporativos y te ayudo al instante.",
     "resources": [
       {
-        "title": "Agenda de turnos priorizados",
-        "description": "Disponibilidad de clínica médica, pediatría, gineco, laboratorio y guardias.",
+        "title": "Agenda de turnos prioritarios",
+        "description": "Bloques de guardia, disponibilidad de especialidades y cobertura.",
         "type": "pdf",
         "url": "/static/demo/medico/agenda-turnos-prioritarios.pdf",
-        "cta_text": "Ver agenda",
-        "highlight": "Turnos 48 h",
-        "availability": "Reservá online o por WhatsApp"
+        "cta_text": "Ver agenda inteligente",
+        "highlight": "Actualización diaria",
+        "availability": "Clínica central y sedes"
       },
       {
-        "title": "Guía de preparación de estudios",
-        "description": "Indicaciones para laboratorio, ecografías, radiografías y entrega de resultados.",
+        "title": "Guía de estudios y preparación",
+        "description": "Instrucciones por tipo de estudio, ayuno y tiempos de entrega de resultados.",
         "type": "pdf",
         "url": "/static/demo/medico/guia-preparacion-estudios.pdf",
-        "cta_text": "Descargar guía",
-        "highlight": "Checklist descargable",
-        "availability": "Recordatorios automáticos 24 h"
+        "cta_text": "Descargar guía de estudios",
+        "highlight": "Chequeos adultos y pediátricos",
+        "availability": "Laboratorio propio"
       },
       {
         "title": "Flujo de teleconsulta",
-        "description": "Paso a paso desde la reserva hasta la receta digital y seguimiento.",
+        "description": "Reserva, videollamada, receta digital y seguimiento de tratamiento.",
         "type": "image",
         "url": "/static/demo/medico/teleconsulta-flujo.svg",
         "thumbnail": "/static/demo/medico/teleconsulta-flujo.svg",
-        "cta_text": "Ver flujo",
-        "highlight": "Integrado con receta electrónica",
-        "availability": "Atención adultos y pediatría"
+        "cta_text": "Ver flujo completo",
+        "highlight": "Receta electrónica",
+        "availability": "Adultos y pediatría"
       }
     ],
     "quick_actions": [
       {
         "emoji": "📅",
-        "texto": "Reservar turno clínico",
-        "prompt": "Quiero reservar un turno de clínica médica y saber las coberturas.",
-        "description": "Disponibilidad por obra social"
+        "texto": "Turnos y especialidades",
+        "description": "Disponibilidad por sede, coberturas y derivaciones",
+        "category": "📅 Turnos",
+        "submenu": [
+          {
+            "emoji": "🩺",
+            "texto": "Clínica médica",
+            "prompt": "Quiero turnos de clínica médica esta semana y saber si aceptan OSDE 410.",
+            "description": "Consultorios mañana y tarde"
+          },
+          {
+            "emoji": "👶",
+            "texto": "Pediatría",
+            "prompt": "Necesito un turno pediátrico con prioridad para control de 2 años.",
+            "description": "Guardia pediátrica 24/7"
+          },
+          {
+            "emoji": "🧾",
+            "texto": "Turnos derivados",
+            "prompt": "¿Cómo gestiono turnos derivados por mi obra social y autorizaciones?",
+            "description": "Gestión automática con autorizaciones"
+          }
+        ]
       },
       {
         "emoji": "🧪",
-        "texto": "Preparación de estudios",
-        "prompt": "Necesito la preparación para análisis de laboratorio y tiempos de entrega.",
-        "description": "Incluye ayuno y retiro de resultados"
+        "texto": "Estudios y laboratorio",
+        "description": "Preparación, tiempos y resultados online",
+        "category": "🧪 Estudios",
+        "submenu": [
+          {
+            "emoji": "🩸",
+            "texto": "Laboratorio general",
+            "prompt": "¿Qué preparación necesito para análisis de laboratorio completo y cuándo entregan resultados?",
+            "description": "Resultados en 24/48 h"
+          },
+          {
+            "emoji": "🧬",
+            "texto": "Diagnóstico por imágenes",
+            "prompt": "Necesito saber disponibilidad para resonancia y requisitos de autorización.",
+            "description": "Resonancia 1.5T · sedes Centro y Norte"
+          },
+          {
+            "emoji": "📤",
+            "texto": "Entrega digital",
+            "prompt": "¿Cómo accedo a resultados digitalizados y los comparto con mi médico?",
+            "description": "Portal seguro + firma electrónica"
+          }
+        ]
       },
       {
         "emoji": "💬",
-        "texto": "Teleconsulta y receta",
-        "prompt": "Cómo funciona la teleconsulta y la receta digital en la clínica?",
-        "description": "Paso a paso y envío por mail"
+        "texto": "Telemedicina & seguimiento",
+        "description": "Videoconsultas, receta digital y monitoreo remoto",
+        "category": "💬 Telemedicina",
+        "submenu": [
+          {
+            "emoji": "🖥️",
+            "texto": "Teleconsulta",
+            "prompt": "Quiero entender cómo funciona la teleconsulta y cómo recibir la receta digital.",
+            "description": "Video HD + receta electrónica"
+          },
+          {
+            "emoji": "📈",
+            "texto": "Seguimiento crónicos",
+            "prompt": "¿Qué herramientas tienen para monitoreo remoto de pacientes crónicos?",
+            "description": "Dispositivos conectados + alertas"
+          },
+          {
+            "emoji": "📞",
+            "texto": "Acompañamiento post alta",
+            "prompt": "Necesito saber cómo es el acompañamiento post alta y coordinación con mi prepaga.",
+            "description": "Contact center médico + reportes"
+          }
+        ]
+      },
+      {
+        "emoji": "🏢",
+        "texto": "Convenios corporativos",
+        "description": "Planes preventivos, informes y gestión de beneficios",
+        "category": "🏢 Corporate",
+        "submenu": [
+          {
+            "emoji": "🧾",
+            "texto": "Planes preventivos",
+            "prompt": "Enviame propuestas de chequeos preventivos corporativos por segmento.",
+            "description": "Programas anualizados y on site"
+          },
+          {
+            "emoji": "📊",
+            "texto": "Reporting ejecutivo",
+            "prompt": "Necesito un ejemplo de reporte ejecutivo con métricas de utilización y NPS.",
+            "description": "Dashboards mensuales personalizados"
+          },
+          {
+            "emoji": "🤝",
+            "texto": "Beneficios empresas",
+            "prompt": "¿Qué beneficios adicionales ofrecen para empresas (guardería, wellness, charlas)?",
+            "description": "Charlas de wellness y salud mental"
+          }
+        ]
       }
     ],
     "capabilities": [
-      "📍 Compartí tu ubicación y te indico guardias y centros más cercanos.",
-      "📄 Adjuntá la orden médica en PDF o imagen y verifico cobertura y preparación.",
-      "🖼️ Enviá una foto de resultados y te explico los pasos para seguimiento.",
-      "📆 Pedí \"Recordame turno\" y programo recordatorios automáticos."
+      "📲 Agenda turnos inteligentes con recordatorios por WhatsApp, SMS y email.",
+      "🧑‍⚕️ Gestiono teleconsultas, receta digital y envío automático a farmacias adheridas.",
+      "🧪 Integro resultados de laboratorio e imágenes en el portal paciente con permisos por rol.",
+      "📊 Armo tableros para convenios corporativos con métricas de uso y satisfacción."
     ],
     "keywords": [
-      "turno clínica médica",
-      "preparación estudios",
+      "turno médico",
       "teleconsulta",
-      "receta digital"
+      "preparación estudios",
+      "seguimiento crónicos",
+      "convenios corporativos"
     ]
   },
   {
     "env_prefix": "DEMO_MUNICIPIO",
     "key": "municipio",
     "nombre": "Municipio Inteligente",
-    "descripcion": "Descubrí cómo un municipio gestiona reclamos, trámites y consultas en segundos.",
+    "descripcion": "Asistente ciudadano para reclamos, trámites digitales, pagos y monitoreo urbano en tiempo real.",
     "token": null,
     "tipo_chat": "municipio",
     "rubro_clave": "municipio",
-    "aliases": ["demo-municipio", "junin", "municipio-inteligente"],
-    "prompt_context": "El Municipio de Junín en Mendoza ofrece un asistente digital para reclamos de luminaria, higiene urbana, arbolado, tránsito y servicios públicos. También acompaña trámites como licencias de conducir, tasas municipales, turnos online y consultas ciudadanas. Usa un tono cálido, profesional y resalta que el bot permite registrar reclamos con ubicación, seguir tickets existentes y derivar a un agente humano cuando haga falta.",
-    "welcome_message": "🙌 ¡Bienvenido a la demo municipal! Contame qué trámite o reclamo querés gestionar y te guío paso a paso.",
+    "aliases": [
+      "demo-municipio",
+      "junin",
+      "municipio-inteligente"
+    ],
+    "prompt_context": "El Municipio de Junín ofrece un asistente digital para reclamos (luminaria, higiene urbana, arbolado, tránsito), trámites online, pagos y seguimiento ciudadano. Integra geolocalización, cuadrillas, tableros de control y derivación a agentes humanos.",
+    "welcome_message": "🏛️ Bienvenido al asistente del Municipio Inteligente. Elegí reclamos, trámites, pagos o datos de gestión y te acompaño paso a paso.",
     "resources": [
       {
         "title": "Guía de trámites express",
         "description": "Turnos, reclamos con foto y seguimiento 24/7 desde el portal ciudadano.",
         "type": "pdf",
         "url": "/static/demo/municipio/guia-tramites-rapidos.pdf",
-        "cta_text": "Descargar guía de trámites",
+        "cta_text": "Descargar guía express",
         "highlight": "Disponible 24/7",
         "availability": "Portal ciudadano + WhatsApp"
       },
       {
-        "title": "Plan de iluminación inteligente 2024",
+        "title": "Plan de iluminación inteligente",
         "description": "Proyecto LED, sensórica IoT y prioridades por barrio.",
         "type": "pdf",
         "url": "/static/demo/municipio/plan-iluminacion-inteligente.pdf",
@@ -438,7 +869,7 @@
         "type": "image",
         "url": "/static/demo/municipio/centro-monitoreo-smart.svg",
         "thumbnail": "/static/demo/municipio/centro-monitoreo-smart.svg",
-        "cta_text": "Abrir dashboard de monitoreo",
+        "cta_text": "Abrir dashboard",
         "highlight": "Integrado a cuadrillas y WhatsApp",
         "availability": "Actualización cada 15 minutos"
       }
@@ -446,34 +877,947 @@
     "quick_actions": [
       {
         "emoji": "💡",
-        "texto": "Reclamo de luminaria",
-        "prompt": "Quiero cargar un reclamo de luminaria apagada en mi barrio.",
-        "description": "Indicá dirección y foto"
+        "texto": "Reclamos y cuadrillas",
+        "description": "Luminarias, higiene, arbolado y bacheo",
+        "category": "💡 Servicios urbanos",
+        "submenu": [
+          {
+            "emoji": "🔦",
+            "texto": "Luminaria",
+            "prompt": "Quiero cargar un reclamo de luminaria apagada con foto y ubicación.",
+            "description": "Asignación automática a cuadrilla"
+          },
+          {
+            "emoji": "🧹",
+            "texto": "Higiene urbana",
+            "prompt": "Necesito denunciar un microbasural con geolocalización y seguimiento.",
+            "description": "Registro con evidencia y SLA"
+          },
+          {
+            "emoji": "🌳",
+            "texto": "Arbolado y poda",
+            "prompt": "¿Cómo gestiono una solicitud de poda y seguimiento del expediente?",
+            "description": "Planificación por distrito"
+          }
+        ]
       },
       {
-        "emoji": "🚗",
-        "texto": "Licencia de conducir",
-        "prompt": "Necesito requisitos y turnos para renovar la licencia de conducir.",
-        "description": "Documentación, horarios y tasas"
+        "emoji": "📜",
+        "texto": "Trámites digitales",
+        "description": "Licencias, habilitaciones y turnos",
+        "category": "📜 Trámites",
+        "submenu": [
+          {
+            "emoji": "🚗",
+            "texto": "Licencia de conducir",
+            "prompt": "Necesito requisitos y turnos para renovar mi licencia de conducir.",
+            "description": "Checklists + turnos disponibles"
+          },
+          {
+            "emoji": "🏠",
+            "texto": "Habilitaciones comerciales",
+            "prompt": "¿Cómo inicio una habilitación comercial y seguimiento online?",
+            "description": "Portal con notificaciones"
+          },
+          {
+            "emoji": "🧾",
+            "texto": "Certificados digitales",
+            "prompt": "Quiero solicitar un certificado de libre deuda y descargarlo en PDF.",
+            "description": "Entrega inmediata desde el bot"
+          }
+        ]
       },
       {
         "emoji": "💳",
-        "texto": "Tasas municipales",
-        "prompt": "¿Cómo puedo consultar y pagar las tasas municipales en línea?",
-        "description": "Portal de pagos y medios habilitados"
+        "texto": "Pagos y tributos",
+        "description": "Tasas, planes de pago y recordatorios",
+        "category": "💳 Pagos",
+        "submenu": [
+          {
+            "emoji": "🏠",
+            "texto": "Tasas municipales",
+            "prompt": "¿Cómo consulto y pago las tasas municipales en línea?",
+            "description": "Portal de pagos y medios habilitados"
+          },
+          {
+            "emoji": "📅",
+            "texto": "Planes de pago",
+            "prompt": "Quiero saber qué planes de pago y financiamiento están disponibles.",
+            "description": "Planes 6/12 cuotas y condonaciones"
+          },
+          {
+            "emoji": "🔔",
+            "texto": "Recordatorios",
+            "prompt": "Configurar recordatorios automáticos para vencimientos trimestrales.",
+            "description": "Alertas por WhatsApp y email"
+          }
+        ]
+      },
+      {
+        "emoji": "📊",
+        "texto": "Gestión interna & datos",
+        "description": "KPIs, tableros y participación ciudadana",
+        "category": "📊 Gestión",
+        "submenu": [
+          {
+            "emoji": "🛰️",
+            "texto": "Tablero de control",
+            "prompt": "Mostrame el tablero de control con KPIs de reclamos y tiempos de respuesta.",
+            "description": "Datos actualizados cada 15 minutos"
+          },
+          {
+            "emoji": "🗳️",
+            "texto": "Participación ciudadana",
+            "prompt": "¿Cómo funcionan las consultas públicas y votaciones dentro del bot?",
+            "description": "Encuestas y presupuestos participativos"
+          },
+          {
+            "emoji": "👥",
+            "texto": "Derivación a agentes",
+            "prompt": "Necesito derivar este caso a un agente humano con seguimiento.",
+            "description": "Escalamiento y SLA definido"
+          }
+        ]
       }
     ],
     "capabilities": [
-      "📍 Enviá tu ubicación y geolocalizo el reclamo o trámite en segundos.",
-      "📸 Adjuntá una foto o video del problema y genero el ticket con la cuadrilla correspondiente.",
-      "📄 Subí tu boleta en PDF y te indico medios de pago, planes o vencimientos.",
-      "🔁 Escribí \"Seguimiento reclamo\" y consulto el estado actualizado al instante."
+      "📍 Geolocalizo reclamos y asigno cuadrillas automáticamente.",
+      "📸 Recibo fotos o videos y genero expediente con estado en vivo.",
+      "🧾 Subo boletas, calculo planes de pago y genero comprobantes electrónicos.",
+      "📈 Entrego tableros para gabinete con métricas y alertas tempranas."
     ],
     "keywords": [
       "reclamo luminaria",
       "licencia conducir",
       "tasas municipales",
-      "portal ciudadano"
+      "portal ciudadano",
+      "participación ciudadana"
+    ]
+  },
+  {
+    "env_prefix": "DEMO_ENERGIA",
+    "key": "energia",
+    "nombre": "Operador Energético Andino",
+    "descripcion": "Operador petrolero con monitoreo upstream, gestión de contratos y programas de transición energética.",
+    "token": "demo-token-energia",
+    "tipo_chat": "pyme",
+    "rubro_clave": "energia",
+    "aliases": [
+      "demo-energia",
+      "operador-andino",
+      "energia-andes"
+    ],
+    "prompt_context": "Operador Energético Andino gestiona campos en Vaca Muerta y refinería regional. Integra monitoreo en tiempo real, planes de perforación, contratos de suministro y reportes HSEQ. Implementa proyectos de hidrógeno, biocombustibles y compensación de emisiones.",
+    "welcome_message": "⚡ Hola, soy el hub digital de Operador Energético Andino. Elegí upstream, operaciones, comercial o sostenibilidad y te comparto dashboards y planes.",
+    "resources": [
+      {
+        "title": "Plan upstream 2025",
+        "description": "Perforación, workovers y presupuesto por bloque con indicadores claves.",
+        "type": "pdf",
+        "url": "/static/demo/energia/plan-upstream-2025.pdf",
+        "cta_text": "Descargar plan upstream",
+        "highlight": "Actualizado Q1 2025",
+        "availability": "Bloques Vaca Muerta"
+      },
+      {
+        "title": "Tablero operativo refinación",
+        "description": "Utilización de planta, blend crudo y cumplimiento de especificaciones.",
+        "type": "pdf",
+        "url": "/static/demo/energia/tablero-operativo-downstream.pdf",
+        "cta_text": "Ver tablero downstream",
+        "highlight": "Integrado a SCADA",
+        "availability": "Refinería Neuquén"
+      },
+      {
+        "title": "Matriz HSEQ & licencias",
+        "description": "Checklist normativo, auditorías ISO y permisos ambientales por proyecto.",
+        "type": "pdf",
+        "url": "/static/demo/energia/matriz-hseq-licencias.pdf",
+        "cta_text": "Descargar matriz HSEQ",
+        "highlight": "Auditoría 2024",
+        "availability": "Operaciones upstream y downstream"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "🛢️",
+        "texto": "Upstream & drilling",
+        "description": "Planes de perforación, workovers y monitoreo de pozos",
+        "category": "🛢️ Upstream",
+        "submenu": [
+          {
+            "emoji": "📍",
+            "texto": "Plan de perforación",
+            "prompt": "Mostrame el plan de perforación 2025 con inversiones y producción esperada.",
+            "description": "18 pozos horizontales · 9 workovers"
+          },
+          {
+            "emoji": "📈",
+            "texto": "KPIs de pozos",
+            "prompt": "Necesito el dashboard con KPIs de producción y eficiencia por pozo.",
+            "description": "Producción, GOR y uptime"
+          },
+          {
+            "emoji": "🛠️",
+            "texto": "Planes de workover",
+            "prompt": "¿Qué intervenciones están programadas para workover en Q3?",
+            "description": "Workovers priorizados por declinación"
+          }
+        ]
+      },
+      {
+        "emoji": "⚙️",
+        "texto": "Operaciones & mantenimiento",
+        "description": "Refinería, pipelines y confiabilidad",
+        "category": "⚙️ Operaciones",
+        "submenu": [
+          {
+            "emoji": "🏭",
+            "texto": "Utilización planta",
+            "prompt": "Mostrame el reporte de utilización de refinería y cumplimiento de especificaciones.",
+            "description": "Utilización 92% · blend crudo"
+          },
+          {
+            "emoji": "🧰",
+            "texto": "Mantenimiento predictivo",
+            "prompt": "¿Cómo gestionan mantenimiento predictivo en bombas y compresores?",
+            "description": "Modelos predictivos + alertas"
+          },
+          {
+            "emoji": "🛤️",
+            "texto": "Oleoductos",
+            "prompt": "Necesito el estado de integridad de oleoductos y próximas inspecciones.",
+            "description": "Pigging y monitoreo de corrosión"
+          }
+        ]
+      },
+      {
+        "emoji": "💼",
+        "texto": "Comercial & trading",
+        "description": "Contratos, precios y supply chain",
+        "category": "💼 Comercial",
+        "submenu": [
+          {
+            "emoji": "📑",
+            "texto": "Contratos de suministro",
+            "prompt": "Quiero revisar los contratos de suministro vigentes y condiciones de pricing.",
+            "description": "Clientes industriales y estaciones"
+          },
+          {
+            "emoji": "⛽",
+            "texto": "Logística combustibles",
+            "prompt": "Mostrame la planificación logística de combustibles y despacho semanal.",
+            "description": "Distribución multi-terminal"
+          },
+          {
+            "emoji": "📊",
+            "texto": "Análisis de precios",
+            "prompt": "¿Qué estrategia de pricing dinámico aplican para estaciones propias?",
+            "description": "Modelos indexados a Brent"
+          }
+        ]
+      },
+      {
+        "emoji": "🌱",
+        "texto": "Sostenibilidad & licencias",
+        "description": "HSEQ, transición energética y compensaciones",
+        "category": "🌱 Sostenibilidad",
+        "submenu": [
+          {
+            "emoji": "🧾",
+            "texto": "Licencias ambientales",
+            "prompt": "Necesito el estado de licencias ambientales y auditorías en curso.",
+            "description": "Permisos 2024 actualizados"
+          },
+          {
+            "emoji": "🔋",
+            "texto": "Proyectos de transición",
+            "prompt": "¿Qué proyectos de hidrógeno verde y biocombustibles están en desarrollo?",
+            "description": "Pilotos 5 MW H2 + B100"
+          },
+          {
+            "emoji": "📉",
+            "texto": "Compensaciones de CO₂",
+            "prompt": "Mostrame el plan de compensaciones y créditos de carbono adquiridos.",
+            "description": "Roadmap Net Zero 2040"
+          }
+        ]
+      }
+    ],
+    "capabilities": [
+      "🛰️ Integro SCADA, historian y modelos predictivos para alertas tempranas.",
+      "📑 Genero reportes regulatorios HSEQ y licencias listos para auditoría.",
+      "📦 Coordino supply chain de combustibles con seguimiento en ruta.",
+      "📈 Simulo escenarios de pricing y sensibilidad a Brent/WTI."
+    ],
+    "keywords": [
+      "upstream",
+      "refinería",
+      "contratos de suministro",
+      "transición energética",
+      "licencias ambientales"
+    ]
+  },
+  {
+    "env_prefix": "DEMO_INMOBILIARIA",
+    "key": "inmobiliaria",
+    "nombre": "Portfolio Prime Realty",
+    "descripcion": "Broker inmobiliario premium con inventario dinámico, análisis de mercado y operaciones digitales end-to-end.",
+    "token": "demo-token-inmobiliaria",
+    "tipo_chat": "pyme",
+    "rubro_clave": "inmobiliaria",
+    "aliases": [
+      "demo-realestate",
+      "prime-realty",
+      "inmobiliaria-prime"
+    ],
+    "prompt_context": "Portfolio Prime Realty gestiona desarrollos premium, unidades de renta y landbanking. Integra CRM inmobiliario, tours virtuales, calificadores crediticios y legal tech para reservas y firmas digitales.",
+    "welcome_message": "🏙️ Hola, soy el advisor digital de Portfolio Prime Realty. Elegí proyectos, inversiones, operaciones digitales o posventa y avanzo con vos.",
+    "resources": [
+      {
+        "title": "Portfolio proyectos prime",
+        "description": "Torres en pozo, oficinas AAA y barrios cerrados con métricas clave.",
+        "type": "pdf",
+        "url": "/static/demo/inmobiliaria/portfolio-proyectos-prime.pdf",
+        "cta_text": "Ver portfolio prime",
+        "highlight": "Actualización trimestral",
+        "availability": "Buenos Aires · Córdoba · Rosario"
+      },
+      {
+        "title": "Market insights Q4",
+        "description": "Indicadores de absorción, rentas y proyecciones de capital gain.",
+        "type": "pdf",
+        "url": "/static/demo/inmobiliaria/market-insights-q4.pdf",
+        "cta_text": "Descargar market insights",
+        "highlight": "Fuente: Observatorio Prime",
+        "availability": "Q4 2024"
+      },
+      {
+        "title": "Playbook legal & onboarding",
+        "description": "Reservas, contratos digitales y compliance para inversores extranjeros.",
+        "type": "pdf",
+        "url": "/static/demo/inmobiliaria/playbook-legal-onboarding.pdf",
+        "cta_text": "Ver playbook legal",
+        "highlight": "Documentos bilingües",
+        "availability": "Firma digital incluida"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "🏗️",
+        "texto": "Proyectos en preventa",
+        "description": "Torres residenciales, oficinas AAA y barrios cerrados",
+        "category": "🏗️ Desarrollos",
+        "submenu": [
+          {
+            "emoji": "🏢",
+            "texto": "Torres premium",
+            "prompt": "Mostrame las torres en preventa con valores, amenities y plan de pagos.",
+            "description": "Departamentos de 2 a 4 ambientes"
+          },
+          {
+            "emoji": "🌳",
+            "texto": "Barrios cerrados",
+            "prompt": "Quiero opciones de barrios cerrados con lotes disponibles y financiación.",
+            "description": "Lotes 800-1200 m² + clubhouse"
+          },
+          {
+            "emoji": "🏬",
+            "texto": "Oficinas AAA",
+            "prompt": "Necesito oficinas AAA en CABA con flexibilidad y cowork integrado.",
+            "description": "Oficinas 500-2000 m²"
+          }
+        ]
+      },
+      {
+        "emoji": "💼",
+        "texto": "Inversiones & renta",
+        "description": "Unidades de renta, landbanking y fondos inmobiliarios",
+        "category": "💼 Inversiones",
+        "submenu": [
+          {
+            "emoji": "💵",
+            "texto": "Renta temporaria",
+            "prompt": "Mostrame unidades llave en mano con renta temporaria proyectada.",
+            "description": "ROI esperado 7,5% anual"
+          },
+          {
+            "emoji": "🌐",
+            "texto": "Inversor extranjero",
+            "prompt": "¿Cómo acompañan a inversores extranjeros con apertura de cuentas y legal?",
+            "description": "Onboarding integral + compliance"
+          },
+          {
+            "emoji": "📈",
+            "texto": "Fondos inmobiliarios",
+            "prompt": "Necesito la ficha de fondos inmobiliarios disponibles y capital mínimo.",
+            "description": "Fondos renta y desarrollo"
+          }
+        ]
+      },
+      {
+        "emoji": "🖥️",
+        "texto": "Operaciones digitales",
+        "description": "Reservas online, firma digital y seguimiento documental",
+        "category": "🖥️ Operaciones",
+        "submenu": [
+          {
+            "emoji": "📝",
+            "texto": "Reserva digital",
+            "prompt": "¿Cómo gestiono una reserva digital con pago en criptomonedas o transferencia?",
+            "description": "Workflow 100% online"
+          },
+          {
+            "emoji": "🔍",
+            "texto": "Due diligence",
+            "prompt": "Quiero saber qué incluye el due diligence legal y tiempos promedio.",
+            "description": "Cheklist legal + certificaciones"
+          },
+          {
+            "emoji": "🔐",
+            "texto": "Firma y escrituración",
+            "prompt": "Mostrame el proceso de firma digital, escribanía y entrega de documentación.",
+            "description": "Integración con escribanía digital"
+          }
+        ]
+      },
+      {
+        "emoji": "🤝",
+        "texto": "Postventa & fidelización",
+        "description": "Conserjería, amenities y gestión de alquileres",
+        "category": "🤝 Postventa",
+        "submenu": [
+          {
+            "emoji": "🏊",
+            "texto": "Amenities y consorcios",
+            "prompt": "¿Qué servicios de administración y amenities ofrecen post entrega?",
+            "description": "Amenities premium + app consorcio"
+          },
+          {
+            "emoji": "🛠️",
+            "texto": "Mantenimiento",
+            "prompt": "Necesito conocer los servicios de mantenimiento y garantía postventa.",
+            "description": "Mantenimiento programado + emergencias"
+          },
+          {
+            "emoji": "📞",
+            "texto": "Gestión de alquiler",
+            "prompt": "¿Ofrecen gestión integral de alquiler y seguimiento de cobranzas?",
+            "description": "Administración + reporting mensual"
+          }
+        ]
+      }
+    ],
+    "capabilities": [
+      "📊 Entrego comparativas de mercado y proyecciones de capital gain.",
+      "🗺️ Creo tours virtuales y recorridos interactivos con agenda de visitas.",
+      "🧾 Genero reservas digitales, contratos bilingües y certificaciones online.",
+      "🤝 Coordino onboarding integral de inversores con mesas legales y fiscales."
+    ],
+    "keywords": [
+      "proyectos en preventa",
+      "renta temporaria",
+      "reserva digital",
+      "fondos inmobiliarios",
+      "postventa premium"
+    ]
+  },
+  {
+    "env_prefix": "DEMO_FINTECH",
+    "key": "fintech",
+    "nombre": "Aurora Fintech Hub",
+    "descripcion": "Plataforma modular para banca digital, cobranzas omnicanal y analítica de riesgo en tiempo real.",
+    "token": "demo-token-fintech",
+    "tipo_chat": "pyme",
+    "rubro_clave": "fintech",
+    "aliases": [
+      "demo-fintech",
+      "aurora-fintech",
+      "fintech-hub"
+    ],
+    "prompt_context": "Aurora Fintech Hub orquesta onboarding digital, core de pagos, scoring de crédito y open banking con integraciones plug-and-play para bancos, retailers y fintechs regionales.",
+    "welcome_message": "💳 Bienvenido a Aurora Fintech Hub. Elegí onboarding digital, cobranzas, riesgo o APIs y te comparto dashboards y próximos pasos.",
+    "resources": [
+      {
+        "title": "Playbook onboarding digital",
+        "description": "Kits KYC, biometría facial y journeys automatizados por segmento.",
+        "type": "pdf",
+        "url": "/static/demo/fintech/onboarding-digital-2024.pdf",
+        "cta_text": "Descargar playbook onboarding",
+        "price": "Costo por alta desde USD 1,20",
+        "highlight": "Aprobación en 3 minutos",
+        "availability": "Operativo en LATAM + España"
+      },
+      {
+        "title": "Suite de cobranzas omnicanal",
+        "description": "Débitos, billeteras, links dinámicos y conciliación automática en un solo panel.",
+        "type": "pdf",
+        "url": "/static/demo/fintech/suite-cobranzas-omnicanal.pdf",
+        "cta_text": "Ver suite de cobranzas",
+        "price": "Recupero +30% en 90 días",
+        "highlight": "Plug-ins Magento · VTEX",
+        "availability": "Integración API + Webhooks"
+      },
+      {
+        "title": "Mapa de APIs Aurora",
+        "description": "Open banking, scoring, pagos y loyalty en un gateway escalable.",
+        "type": "image",
+        "url": "/static/demo/fintech/mapa-apis.svg",
+        "thumbnail": "/static/demo/fintech/mapa-apis.svg",
+        "cta_text": "Explorar mapa de APIs",
+        "highlight": "+60 endpoints disponibles",
+        "availability": "Sandbox y producción"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "🚀",
+        "texto": "Onboarding & producto",
+        "description": "Journeys digitales, upgrades y bundles premium",
+        "category": "🚀 Crecimiento & producto",
+        "submenu": [
+          {
+            "emoji": "🆔",
+            "texto": "Onboarding express",
+            "prompt": "Mostrame el journey de onboarding digital con KYC biométrico y aprobación en minutos.",
+            "description": "Workflow 100% paperless"
+          },
+          {
+            "emoji": "💳",
+            "texto": "Upsell tarjetas",
+            "prompt": "¿Qué campañas de upsell aplican para tarjeta premium y créditos preaprobados?",
+            "description": "Ofertas en tiempo real"
+          },
+          {
+            "emoji": "📱",
+            "texto": "App modular",
+            "prompt": "Necesito ver módulos white-label para app y banca web.",
+            "description": "Componentes UX listos"
+          }
+        ]
+      },
+      {
+        "emoji": "💰",
+        "texto": "Cobranzas & pagos",
+        "description": "Armonización de medios, links y recaudos empresariales",
+        "category": "💰 Cobranzas omnicanal",
+        "submenu": [
+          {
+            "emoji": "🔗",
+            "texto": "Links dinámicos",
+            "prompt": "Mostrame cómo se generan links de pago dinámicos con vencimiento y recordatorios.",
+            "description": "Expiración y recordatorios automáticos"
+          },
+          {
+            "emoji": "🏦",
+            "texto": "Arqueo y conciliación",
+            "prompt": "¿Cómo concilian cobros de POS, QR y transferencias en un dashboard único?",
+            "description": "Motor de conciliación inteligente"
+          },
+          {
+            "emoji": "📉",
+            "texto": "Recupero inteligente",
+            "prompt": "Necesito flujos de cobranzas preventivas con campañas multicanal.",
+            "description": "Automatización con IA conversacional"
+          }
+        ]
+      },
+      {
+        "emoji": "🛡️",
+        "texto": "Riesgo & compliance",
+        "description": "Scoring, antifraude y monitoreo regulatorio",
+        "category": "🛡️ Gestión de riesgo",
+        "submenu": [
+          {
+            "emoji": "📊",
+            "texto": "Panel de riesgo",
+            "prompt": "Mostrame el dashboard de riesgo con alertas tempranas y controles AML.",
+            "description": "Alertas configurables por umbral"
+          },
+          {
+            "emoji": "🧮",
+            "texto": "Scoring crediticio",
+            "prompt": "¿Qué variables usan para el scoring crediticio y cómo se integran al core bancario?",
+            "description": "Modelos híbridos + open data"
+          },
+          {
+            "emoji": "🧾",
+            "texto": "Reporting regulatorio",
+            "prompt": "Necesito los reportes regulatorios automáticos para BCRA y CNV.",
+            "description": "Salida en XBRL y PDF"
+          }
+        ]
+      },
+      {
+        "emoji": "🤝",
+        "texto": "Partners & open banking",
+        "description": "Ecosistema de aliados, marketplace y revenue share",
+        "category": "🤝 Partners & APIs",
+        "submenu": [
+          {
+            "emoji": "🔌",
+            "texto": "API marketplace",
+            "prompt": "Quiero conocer el marketplace de APIs y cómo habilitar sandbox para partners.",
+            "description": "Portal developers con analytics"
+          },
+          {
+            "emoji": "🌍",
+            "texto": "Cross border",
+            "prompt": "¿Cómo operan pagos cross border y liquidez multimoneda?",
+            "description": "Liquidación USD/EUR instantánea"
+          },
+          {
+            "emoji": "🎯",
+            "texto": "Programas aliados",
+            "prompt": "Mostrame los programas de revenue share para retailers y telcos.",
+            "description": "Planes silver · gold · platinum"
+          }
+        ]
+      }
+    ],
+    "capabilities": [
+      "⚙️ Orquesto onboarding digital con biometría, listas negras y scoring adaptativo.",
+      "💳 Administro cobranzas omnicanal con conciliación automática y recordatorios inteligentes.",
+      "📈 Expondo tableros de riesgo, cohortes y cohortes de monetización en tiempo real.",
+      "🔗 Gestiono APIs open banking con sandbox, keys rotativas y monitoreo 24/7."
+    ],
+    "keywords": [
+      "onboarding digital",
+      "cobranzas omnicanal",
+      "scoring crediticio",
+      "open banking",
+      "compliance fintech"
+    ]
+  },
+  {
+    "env_prefix": "DEMO_SEGUROS",
+    "key": "seguros",
+    "nombre": "ShieldOne Seguros Corporativos",
+    "descripcion": "Gestión integral de programas corporativos, autogestión de siniestros y analítica de riesgos.",
+    "token": "demo-token-seguros",
+    "tipo_chat": "pyme",
+    "rubro_clave": "seguros",
+    "aliases": [
+      "demo-seguros",
+      "shieldone",
+      "seguros-corporativos"
+    ],
+    "prompt_context": "ShieldOne Seguros administra pólizas colectivas, beneficios para colaboradores y asistencia regional con monitoreo de siniestros en tiempo real, compliance SOX y reporting a aseguradoras globales.",
+    "welcome_message": "🛡️ Bienvenido a ShieldOne. Elegí programas corporativos, siniestros, analítica o partners y te preparo propuestas inmediatas.",
+    "resources": [
+      {
+        "title": "Catálogo coberturas enterprise",
+        "description": "Planes combinados para flotas, property, cyber y beneficios ejecutivos.",
+        "type": "pdf",
+        "url": "/static/demo/seguros/coberturas-enterprise-2024.pdf",
+        "cta_text": "Ver catálogo corporate",
+        "price": "Primas anuales desde USD 4M",
+        "highlight": "Planes multinacionales",
+        "availability": "Cobertura LATAM + USA"
+      },
+      {
+        "title": "Dashboard siniestros Q3",
+        "description": "KPIs de frecuencia, severidad y tiempos de indemnización con benchmarks.",
+        "type": "pdf",
+        "url": "/static/demo/seguros/dashboard-siniestros-q3.pdf",
+        "cta_text": "Descargar dashboard ejecutivo",
+        "highlight": "Actualizado septiembre 2024",
+        "availability": "Data lake + PowerBI"
+      },
+      {
+        "title": "Red de asistencia ShieldOne",
+        "description": "Mapa de prestadores, talleres y clínicas con SLA por región.",
+        "type": "image",
+        "url": "/static/demo/seguros/red-asistencia.svg",
+        "thumbnail": "/static/demo/seguros/red-asistencia.svg",
+        "cta_text": "Ver red de asistencia",
+        "highlight": "+320 nodos certificados",
+        "availability": "Response 24/7"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "🏢",
+        "texto": "Programas corporativos",
+        "description": "Planes combinados, beneficios ejecutivos y compliance",
+        "category": "🏢 Portafolio corporate",
+        "submenu": [
+          {
+            "emoji": "🚗",
+            "texto": "Flotas inteligentes",
+            "prompt": "Quiero conocer coberturas para flotas con telemetría y gestión de choferes.",
+            "description": "Políticas adaptadas por perfil"
+          },
+          {
+            "emoji": "🏢",
+            "texto": "Property & BI",
+            "prompt": "Mostrame planes property + business interruption con sumas aseguradas y deducibles.",
+            "description": "Cobertura global con auditoría"
+          },
+          {
+            "emoji": "🧑‍💼",
+            "texto": "Beneficios ejecutivos",
+            "prompt": "Necesito propuestas para beneficios ejecutivos y coberturas internacionales.",
+            "description": "Plan premium con asistencia worldwide"
+          }
+        ]
+      },
+      {
+        "emoji": "🚑",
+        "texto": "Siniestros & asistencia",
+        "description": "Onboarding digital, triage y seguimiento en vivo",
+        "category": "🚑 Gestión de siniestros",
+        "submenu": [
+          {
+            "emoji": "📲",
+            "texto": "Denuncia mobile",
+            "prompt": "¿Cómo funciona la denuncia mobile con carga de fotos y geolocalización?",
+            "description": "App branded + bots asistidos"
+          },
+          {
+            "emoji": "🛠️",
+            "texto": "Red de talleres",
+            "prompt": "Mostrame tiempos promedio y SLA de talleres certificados en AMBA.",
+            "description": "SLA 48 h con seguimiento"
+          },
+          {
+            "emoji": "📞",
+            "texto": "Mesa ejecutiva",
+            "prompt": "Necesito contacto de mesa ejecutiva para siniestros críticos.",
+            "description": "Escalamiento 24/7"
+          }
+        ]
+      },
+      {
+        "emoji": "📊",
+        "texto": "Analítica & compliance",
+        "description": "Tableros, reportes SOX y auditorías",
+        "category": "📊 Data & compliance",
+        "submenu": [
+          {
+            "emoji": "📈",
+            "texto": "KPIs ejecutivos",
+            "prompt": "Quiero los KPIs ejecutivos de siniestralidad, severidad y forecast.",
+            "description": "Dashboards en tiempo real"
+          },
+          {
+            "emoji": "🧾",
+            "texto": "Compliance regulatorio",
+            "prompt": "¿Qué entregables generan para auditorías y compliance internacional?",
+            "description": "SOX · GDPR · IFRS 17"
+          },
+          {
+            "emoji": "🧮",
+            "texto": "Pricing actuarial",
+            "prompt": "Mostrame modelos actuariales y supuestos para renovar pólizas.",
+            "description": "Modelos propios + benchmark"
+          }
+        ]
+      },
+      {
+        "emoji": "🤝",
+        "texto": "Brokers & partnerships",
+        "description": "Marketplace de partners, revenue share y APIs",
+        "category": "🤝 Ecosistema",
+        "submenu": [
+          {
+            "emoji": "🌐",
+            "texto": "Brokers aliados",
+            "prompt": "Necesito listado de brokers aliados y condiciones de revenue share.",
+            "description": "Programas regionales certificados"
+          },
+          {
+            "emoji": "🔗",
+            "texto": "APIs de pólizas",
+            "prompt": "¿Cómo integro emisión de pólizas y certificados vía API?",
+            "description": "REST + Webhooks + SSO"
+          },
+          {
+            "emoji": "🎓",
+            "texto": "Academia risk",
+            "prompt": "Mostrame workshops y entrenamientos para áreas de risk management.",
+            "description": "Capacitaciones presenciales y virtuales"
+          }
+        ]
+      }
+    ],
+    "capabilities": [
+      "🛡️ Diseño programas multinacionales con matrices de retención y cláusulas tailor-made.",
+      "📲 Opero siniestros con bots y gestores humanos coordinando talleres y asistencias.",
+      "📊 Entrego tableros ejecutivos con KPIs, forecasts y benchmarks sectoriales.",
+      "🤝 Integro brokers, HR y finanzas con APIs seguras y portales white-label."
+    ],
+    "keywords": [
+      "seguros corporativos",
+      "siniestros digitales",
+      "dashboards de riesgo",
+      "compliance internacional",
+      "brokers aliados"
+    ]
+  },
+  {
+    "env_prefix": "DEMO_LOGISTICA",
+    "key": "logistica",
+    "nombre": "Axis Logistics 3PL",
+    "descripcion": "Operador logístico 3PL con fulfillment omnicanal, última milla orquestada y control torre de comando.",
+    "token": "demo-token-logistica",
+    "tipo_chat": "pyme",
+    "rubro_clave": "logistica",
+    "aliases": [
+      "demo-logistica",
+      "axis-logistics",
+      "3pl-axis"
+    ],
+    "prompt_context": "Axis Logistics 3PL gestiona fulfillment B2C/B2B, control torre con visibilidad end-to-end, hubs regionales y capacidad crossborder con partners aéreos y terrestres.",
+    "welcome_message": "🚚 Bienvenido a Axis Logistics 3PL. Elegí operaciones, fulfillment, crossborder o analítica y te muestro capacidades y SLA.",
+    "resources": [
+      {
+        "title": "Blueprint operaciones omnicanal",
+        "description": "Diseño de nodos, slots de preparación y flujos WMS/TMS integrados.",
+        "type": "pdf",
+        "url": "/static/demo/logistica/blueprint-operaciones-omnicanal.pdf",
+        "cta_text": "Descargar blueprint",
+        "highlight": "Lead time <24 h",
+        "availability": "Centros Buenos Aires · Córdoba"
+      },
+      {
+        "title": "Matriz SLA retail & ecommerce",
+        "description": "KPIs por vertical, carrier y ventana de entrega con benchmarking regional.",
+        "type": "pdf",
+        "url": "/static/demo/logistica/matriz-sla-retail.pdf",
+        "cta_text": "Ver matriz SLA",
+        "highlight": "Actualizado octubre 2024",
+        "availability": "Industria moda · beauty · tech"
+      },
+      {
+        "title": "Red de hubs Axis",
+        "description": "Mapa de hubs, cross-dock y última milla con orígenes y destinos.",
+        "type": "image",
+        "url": "/static/demo/logistica/red-hubs.svg",
+        "thumbnail": "/static/demo/logistica/red-hubs.svg",
+        "cta_text": "Explorar red logística",
+        "highlight": "+18 hubs integrados",
+        "availability": "Cobertura nacional"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "🏭",
+        "texto": "Operaciones 3PL",
+        "description": "Inbound, inventario y cross-docking con torre de control",
+        "category": "🏭 Operaciones",
+        "submenu": [
+          {
+            "emoji": "🚛",
+            "texto": "Slots y turnos",
+            "prompt": "¿Cómo gestionan turnos de carga, control de pallets y monitoreo en tiempo real?",
+            "description": "Torre con visibilidad 360°"
+          },
+          {
+            "emoji": "🧾",
+            "texto": "Control documental",
+            "prompt": "Necesito ver cómo automatizan checklists de ingreso y documentación.",
+            "description": "Escaneo OCR + RPA"
+          },
+          {
+            "emoji": "🛠️",
+            "texto": "Mantenimiento flota",
+            "prompt": "Mostrame planes de mantenimiento y telemetría para flota propia.",
+            "description": "KPIs MTTR y fuel savings"
+          }
+        ]
+      },
+      {
+        "emoji": "📦",
+        "texto": "Fulfillment & inventario",
+        "description": "WMS, picking inteligente y embalajes sustentables",
+        "category": "📦 Fulfillment",
+        "submenu": [
+          {
+            "emoji": "🤖",
+            "texto": "Picking inteligente",
+            "prompt": "Mostrame layout de picking por olas y robots AMR disponibles.",
+            "description": "Batch picking + AMR híbrido"
+          },
+          {
+            "emoji": "📦",
+            "texto": "Kitting y personalización",
+            "prompt": "¿Qué capacidades de kitting y packaging personalizado manejan?",
+            "description": "Kitting 24/7 con QA"
+          },
+          {
+            "emoji": "♻️",
+            "texto": "Packaging verde",
+            "prompt": "Necesito opciones de packaging sustentable y medición de huella.",
+            "description": "Materiales reciclados + offset"
+          }
+        ]
+      },
+      {
+        "emoji": "🌐",
+        "texto": "Crossborder & última milla",
+        "description": "Operación internacional, couriers y lockers inteligentes",
+        "category": "🌐 Crossborder",
+        "submenu": [
+          {
+            "emoji": "✈️",
+            "texto": "Export flash",
+            "prompt": "¿Cómo gestionan exportaciones express a Chile y Uruguay?",
+            "description": "Partners aéreos + aduana simplificada"
+          },
+          {
+            "emoji": "📍",
+            "texto": "Lockers y pick up",
+            "prompt": "Mostrame red de lockers y puntos pick-up integrados.",
+            "description": "+420 puntos omnicanal"
+          },
+          {
+            "emoji": "⚡",
+            "texto": "Ventanas same-day",
+            "prompt": "Necesito SLA para entregas same-day y cobertura por barrios.",
+            "description": "Same-day AMBA · next-day interior"
+          }
+        ]
+      },
+      {
+        "emoji": "📈",
+        "texto": "Innovación & BI",
+        "description": "Gemelos digitales, analítica predictiva y CO2 dashboard",
+        "category": "📈 Innovación",
+        "submenu": [
+          {
+            "emoji": "🛰️",
+            "texto": "Gemelo digital",
+            "prompt": "Quiero ver el gemelo digital del centro de distribución y simulaciones.",
+            "description": "Simulación de slots y rutas"
+          },
+          {
+            "emoji": "📊",
+            "texto": "KPIs en vivo",
+            "prompt": "Mostrame KPIs en vivo de fill rate, OTIF y desvíos.",
+            "description": "Dashboard torre comando"
+          },
+          {
+            "emoji": "🌱",
+            "texto": "Huella de carbono",
+            "prompt": "¿Cómo calculan y compensan la huella de carbono de la operación?",
+            "description": "Calculadora CO₂ + programas offset"
+          }
+        ]
+      }
+    ],
+    "capabilities": [
+      "🚚 Orquesto inbound, almacenaje y última milla con torre de control y alertas proactivas.",
+      "📦 Integro WMS/TMS con marketplaces, ERPs y OMS para inventario en tiempo real.",
+      "🌐 Gestiono crossborder con documentación digital, tracking y partners certificados.",
+      "📊 Entrego tableros predictivos de demanda, SLA y sustentabilidad."
+    ],
+    "keywords": [
+      "fulfillment 3pl",
+      "logística omnicanal",
+      "última milla",
+      "crossborder",
+      "torre de control"
     ]
   }
 ]
