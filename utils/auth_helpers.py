@@ -454,26 +454,56 @@ def get_or_create_anon_id() -> str:
         or request.args.get("anon_id")
     )
 
-    if not anon_id:
-        payload = request.get_json(silent=True)
-        if isinstance(payload, dict):
-            anon_id = payload.get("anon_id")
+    assert response.status_code == 200
+    json_data = response.get_json()
+    assert json_data["email"] == "perfil_alias@test.com"
+    normalized_token = jwt_token.decode("utf-8") if isinstance(jwt_token, bytes) else jwt_token
+    assert json_data["token"] == normalized_token
+    assert json_data["auth_token"] == normalized_token
+    assert json_data["entity_token"] == "perfil-alias-token"
 
-    if not anon_id:
-        cookie_name = current_app.config.get(
-            "ANON_SESSION_COOKIE_NAME", "chatboc_anon_id"
-        )
-        cookie_value = request.cookies.get(cookie_name)
-        if isinstance(cookie_value, str):
-            cookie_value = cookie_value.strip()
-        if cookie_value:
-            anon_id = cookie_value
 
-    if not anon_id:
-        anon_id = str(uuid.uuid4())
-        current_app.logger.info(
-            f"Generado nuevo ID anónimo para la request: {anon_id}"
-        )
+def test_perfil_accepts_static_entity_token_and_sets_widget_session(client):
+    """Static entity tokens should bootstrap a widget session without manual renewal."""
+
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    owner = User(
+        email="static-token@test.com",
+        name="Widget Owner",
+        token="static-owner-token",
+        rubro_id=rubro.id,
+        tipo_chat="pyme",
+    )
+    owner.set_password("pw")
+    db.session.add(owner)
+    db.session.commit()
+
+    # Primer llamado con el token estático: debe emitir un JWT de sesión de widget.
+    response = client.get('/auth/perfil', query_string={'token': owner.token})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["entity_token"] == owner.token
+    auth_token = data["auth_token"]
+    assert auth_token and auth_token != owner.token
+    assert auth_token.count('.') == 2
+
+    widget_cookie_name = client.application.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    cookie_headers = response.headers.getlist("Set-Cookie")
+    assert any(
+        cookie_header.startswith(f"{widget_cookie_name}=") and auth_token in cookie_header
+        for cookie_header in cookie_headers
+    )
+
+    # Segundo llamado: el backend debe reutilizar el token de la cookie en lugar de emitir uno nuevo.
+    response_2 = client.get('/auth/perfil', query_string={'token': owner.token})
+    assert response_2.status_code == 200
+    data_2 = response_2.get_json()
+    assert data_2["auth_token"] == auth_token
 
     g.anon_id = anon_id
     return anon_id
@@ -655,6 +685,22 @@ def _set_anon_cookie(resp, anon_id: str | None):
         "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
         "path": "/",
     }
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    response = client.get(
+        "/auth/me",
+        headers={
+            "Authorization": f"Bearer {jwt_token}",
+            "X-Entity-Token": admin.token,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["auth_token"] == jwt_token
+    assert data["entity_token"] == admin.token
 
     cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
     if cookie_domain:
@@ -828,17 +874,21 @@ def anon_o_token_requerido(f):
             current_user=current_user, owner_user=owner_user, anon_id=anon_id, *args, **kwargs
         )
 
-        # Adjuntar el anon_id a la respuesta para que el cliente lo pueda usar
-        resp = make_response(response)
-        origin = request.headers.get("Origin")
-        if origin:
-            resp.headers["Access-Control-Allow-Origin"] = origin
-            resp.headers["Vary"] = "Origin"
-        else:
-            resp.headers["Access-Control-Allow-Origin"] = "*"
-        resp.headers["Access-Control-Allow-Credentials"] = "true"
-        resp.headers.setdefault("X-Anon-Id", anon_id)
-        resp.headers.setdefault("Anon-Id", anon_id)
-        return _set_anon_cookie(resp, anon_id)
+    perfil = client.get("/auth/perfil", query_string={"token": owner.token})
+    assert perfil.status_code == 200
+    widget_token = perfil.get_json()["auth_token"]
+    assert widget_token and widget_token.count(".") == 2
 
-    return decorated
+    with app.test_request_context(
+        "/test/widget-view",
+        method="GET",
+        headers={"Authorization": f"Bearer {widget_token}"},
+    ):
+        response = widget_view()
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["current_user_id"] is None
+    assert payload["owner_user_id"] == owner.id
+    assert payload["widget_session"] is True
+    assert payload["anon_id"]
