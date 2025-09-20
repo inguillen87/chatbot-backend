@@ -110,6 +110,20 @@ def _ensure_entity_token(owner_user: User | None) -> None:
         db.session.rollback()
 
 
+def get_or_create_owner_entity_token(user: User | None) -> str | None:
+    """Return the persistent entity token for the owner's account.
+
+    This helper resolves the owning admin for a given user (employees inherit
+    their company's owner) and ensures that account has a stable integration
+    token assigned. It returns the token so callers can surface it to clients
+    without having to duplicate the owner resolution logic.
+    """
+
+    owner_user = _resolve_owner_user(user)
+    _ensure_entity_token(owner_user)
+    return getattr(owner_user, "token", None) if owner_user else None
+
+
 def _generate_widget_session_token(owner_user: User) -> tuple[str, dict]:
     """Issue a short-lived widget session token for the given owner."""
 
