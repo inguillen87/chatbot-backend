@@ -377,6 +377,17 @@ def demo_rubro_for_token(token: Optional[str]) -> Optional[DemoRubro]:
 
     demos = load_demo_rubros()
 
+    normalized_plain = normalized.replace("-", "_")
+    if normalized_plain in {"demo", "demoanon", "demo_anon"}:
+        for demo in demos:
+            if demo.key == "municipio":
+                return demo
+        for demo in demos:
+            if (demo.tipo_chat or "").strip().lower() == "municipio":
+                return demo
+        if demos:
+            return demos[0]
+
     for demo in demos:
         if demo.token and demo.token.strip().lower() == normalized:
             return demo
