@@ -536,11 +536,6 @@ def token_requerido(f):
             if g.widget_owner_user is None:
                 g.widget_owner_user = g.owner_user
 
-        if token_payload.get("session_kind") == "widget":
-            g.widget_session = True
-            if g.widget_owner_user is None:
-                g.widget_owner_user = g.owner_user
-
         response = f(user, *args, **kwargs)
 
         # Si el token vino por header/query y no hay cookie, establecerla para
