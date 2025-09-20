@@ -4209,7 +4209,11 @@ def responder_municipio(
                 "telefono": getattr(viewer_user_obj, "telefono", None) or contacto_prev.get("telefono"),
             }
 
-            campos_faltantes = [c for c in ["nombre", "dni", "email", "direccion"] if not datos_sugerencia.get(c)]
+            campos_faltantes = [
+                c
+                for c in ["nombre", "dni", "email", "direccion", "telefono"]
+                if not datos_sugerencia.get(c)
+            ]
             contexto_municipio_actual['datos_sugerencia'] = datos_sugerencia
             contacto_actualizado = {}
             for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
@@ -4236,6 +4240,7 @@ def responder_municipio(
                 f"- **DNI**: {datos_sugerencia.get('dni')}\n"
                 f"- **Email**: {datos_sugerencia.get('email')}\n"
                 f"- **Dirección**: {datos_sugerencia.get('direccion')}\n"
+                f"- **Teléfono**: {datos_sugerencia.get('telefono') or 'No informado'}\n"
                 f"- **Sugerencia**: {sugerencia_texto}"
             )
             botones = [
@@ -4256,7 +4261,7 @@ def responder_municipio(
             if switch_response:
                 return _finalize_response(switch_response)
             datos_guardados = contexto_municipio_actual.get('datos_sugerencia', {})
-            campos_requeridos = ["nombre", "dni", "email", "direccion"]
+            campos_requeridos = ["nombre", "dni", "email", "direccion", "telefono"]
 
             # Primero intentamos extraer con regex para los campos aún faltantes.
             nuevos_datos = extract_multiple_contact_details_regex(
@@ -4329,6 +4334,7 @@ def responder_municipio(
                 f"- **DNI**: {datos_guardados.get('dni')}\n"
                 f"- **Email**: {datos_guardados.get('email')}\n"
                 f"- **Dirección**: {datos_guardados.get('direccion')}\n"
+                f"- **Teléfono**: {datos_guardados.get('telefono') or 'No informado'}\n"
                 f"- **Sugerencia**: {datos_guardados.get('descripcion')}"
             )
             botones = [
@@ -4365,6 +4371,9 @@ def responder_municipio(
                     final_payload = _message_with_menu(response["message_to_user"], context)
                     final_payload['success'] = True
                     return _finalize_response(final_payload)
+                contexto_municipio_actual['datos_sugerencia'] = datos_confirmados
+                if response.get("pedir_info"):
+                    contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return _finalize_response(response)
             else:
@@ -5066,7 +5075,11 @@ def responder_municipio(
                 "telefono": getattr(viewer_user_obj, "telefono", None) or contacto_prev.get("telefono"),
             }
 
-            campos_faltantes = [c for c in ["nombre", "dni", "email", "direccion"] if not datos_sugerencia.get(c)]
+            campos_faltantes = [
+                c
+                for c in ["nombre", "dni", "email", "direccion", "telefono"]
+                if not datos_sugerencia.get(c)
+            ]
             contexto_municipio_actual['datos_sugerencia'] = datos_sugerencia
             contacto_actualizado = {}
             for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
@@ -5093,6 +5106,7 @@ def responder_municipio(
                 f"- **DNI**: {datos_sugerencia.get('dni')}\n"
                 f"- **Email**: {datos_sugerencia.get('email')}\n"
                 f"- **Dirección**: {datos_sugerencia.get('direccion')}\n"
+                f"- **Teléfono**: {datos_sugerencia.get('telefono') or 'No informado'}\n"
                 f"- **Sugerencia**: {sugerencia_texto}"
             )
             botones = [
@@ -5113,7 +5127,7 @@ def responder_municipio(
             if switch_response:
                 return _finalize_response(switch_response)
             datos_guardados = contexto_municipio_actual.get('datos_sugerencia', {})
-            campos_requeridos = ["nombre", "dni", "email", "direccion"]
+            campos_requeridos = ["nombre", "dni", "email", "direccion", "telefono"]
 
             # Primero intentamos extraer con regex para los campos aún faltantes.
             nuevos_datos = extract_multiple_contact_details_regex(
@@ -5186,6 +5200,7 @@ def responder_municipio(
                 f"- **DNI**: {datos_guardados.get('dni')}\n"
                 f"- **Email**: {datos_guardados.get('email')}\n"
                 f"- **Dirección**: {datos_guardados.get('direccion')}\n"
+                f"- **Teléfono**: {datos_guardados.get('telefono') or 'No informado'}\n"
                 f"- **Sugerencia**: {datos_guardados.get('descripcion')}"
             )
             botones = [
@@ -5222,6 +5237,9 @@ def responder_municipio(
                     final_payload = _message_with_menu(response["message_to_user"], context)
                     final_payload['success'] = True
                     return _finalize_response(final_payload)
+                contexto_municipio_actual['datos_sugerencia'] = datos_confirmados
+                if response.get("pedir_info"):
+                    contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return _finalize_response(response)
             else:
