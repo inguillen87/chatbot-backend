@@ -4101,6 +4101,7 @@ def responder_municipio(
             }
 
             selected_category_name = None
+            details: dict[str, object] = {}
             if action in reclamo_categories:
                 selected_category_name = reclamo_categories[action]
             else:
@@ -4901,6 +4902,7 @@ def responder_municipio(
             }
 
             selected_category_name = None
+            details: dict[str, object] = {}
             if action in reclamo_categories:
                 selected_category_name = reclamo_categories[action]
             else:
