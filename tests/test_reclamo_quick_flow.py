@@ -150,6 +150,46 @@ def test_emoji_selection_maps_to_category(owner_user):
     assert flow["datos_reclamo"]["categoria"] == "Arbolado"
 
 
+def test_reclamo_menu_action_with_explicit_action(owner_user):
+    existing = ChatSessionContext.query.get("test_session")
+    if existing:
+        db.session.delete(existing)
+        db.session.commit()
+
+    ctx = ChatSessionContext(chat_session_id="test_session", anon_id="anon")
+    ctx.context_data = {
+        CONTEXTO_MUNICIPIO: {
+            "estado_conversacion": "ESPERANDO_SELECCION_MENU_RECLAMOS",
+        }
+    }
+    db.session.add(ctx)
+    db.session.commit()
+
+    payload = {"pregunta": "🚮", "action": "reclamo_limpieza_riego"}
+    clear_municipio_cache()
+    response = responder_municipio(
+        pregunta_original=payload,
+        owner_user=owner_user,
+        viewer_user=None,
+        rubro_obj=owner_user.rubro,
+        chat_db_context=ctx,
+        anon_id="anon",
+        channel="whatsapp",
+    )
+    db.session.commit()
+
+    updated_ctx = ChatSessionContext.query.get("test_session").context_data[CONTEXTO_MUNICIPIO]
+    assert updated_ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
+    flow = updated_ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Limpieza y riego"
+    assert "Limpieza y riego" in response.get("message_body", "")
+
+    ctx_to_delete = ChatSessionContext.query.get("test_session")
+    if ctx_to_delete:
+        db.session.delete(ctx_to_delete)
+        db.session.commit()
+
+
 def test_free_text_in_category_state(owner_user):
     result = run_turn(
         "hay un agujero en mi cuadra",
