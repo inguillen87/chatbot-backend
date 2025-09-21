@@ -4,7 +4,7 @@ import uuid
 import io
 import re
 from datetime import datetime, timedelta
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import requests
 from flask import current_app, has_app_context, has_request_context, request, g
@@ -81,6 +81,41 @@ def _determine_fallback_subdir(explicit: str | None = None) -> str | None:
             return entity_subdir
 
     return None
+
+
+def _get_request_base_url() -> str | None:
+    """Return the preferred absolute base URL for the current request."""
+
+    if not has_request_context():
+        return None
+
+    headers = request.headers
+    forwarded_proto = headers.get("X-Forwarded-Proto", "").split(",")[0].strip()
+    forwarded_host = headers.get("X-Forwarded-Host", "").split(",")[0].strip()
+    forwarded_port = headers.get("X-Forwarded-Port", "").split(",")[0].strip()
+
+    scheme = forwarded_proto or getattr(request, "scheme", None) or "https"
+
+    host = (
+        forwarded_host
+        or headers.get("Host")
+        or getattr(request, "host", None)
+        or ""
+    ).split(",")[0].strip()
+
+    if not host:
+        return None
+
+    if forwarded_port:
+        normalized_port = forwarded_port
+        if scheme.lower() == "https" and normalized_port == "443":
+            normalized_port = ""
+        elif scheme.lower() == "http" and normalized_port == "80":
+            normalized_port = ""
+        if normalized_port and ":" not in host:
+            host = f"{host}:{normalized_port}"
+
+    return f"{scheme}://{host}".rstrip("/")
 
 
 def _purge_old_files(upload_dir: str, retention_days: int) -> None:
@@ -294,25 +329,33 @@ def _save_to_local(
     with open(original_path, "wb") as f:
         f.write(file_bytes)
     thumb_url = None
+    thumb_relative_url = None
     if thumbnail_bytes and thumb_meta:
         thumb_filename = get_thumb_filename(unique_name)
         thumb_path = os.path.join(upload_dir, thumb_filename)
         with open(thumb_path, "wb") as f:
             f.write(thumbnail_bytes)
         rel_thumb = os.path.relpath(thumb_path, current_app.root_path)
-        thumb_url = "/" + rel_thumb.replace(os.sep, "/")
+        thumb_relative_url = "/" + rel_thumb.replace(os.sep, "/")
+        thumb_url = thumb_relative_url
         thumb_meta["url"] = thumb_url
 
     rel_path = os.path.relpath(original_path, current_app.root_path)
     relative_url = "/" + rel_path.replace(os.sep, "/")
 
-    # Generate an absolute URL if in a request context
     original_url = relative_url
-    if has_app_context() and request:
-        base_url = request.url_root.rstrip('/')
-        original_url = f"{base_url}{relative_url}"
+    base_url = _get_request_base_url()
+    if base_url:
+        original_url = urljoin(f"{base_url}/", relative_url.lstrip("/"))
+        if thumb_relative_url:
+            thumb_url = urljoin(f"{base_url}/", thumb_relative_url.lstrip("/"))
+            if thumb_meta:
+                thumb_meta["url"] = thumb_url
+    elif has_request_context():
+        fallback_base = request.url_root.rstrip('/')
+        original_url = f"{fallback_base}{relative_url}"
         if thumb_url:
-            thumb_url = f"{base_url}{thumb_url}"
+            thumb_url = f"{fallback_base}{thumb_url}"
             if thumb_meta:
                 thumb_meta["url"] = thumb_url
 
