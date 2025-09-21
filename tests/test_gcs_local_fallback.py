@@ -75,3 +75,22 @@ def test_local_fallback_purges_old_files(tmp_path):
             guardar_adjunto_y_thumbnail(file_storage)
 
     assert not old_file.exists()
+
+
+def test_local_fallback_respects_forwarded_headers(tmp_path):
+    app = Flask(__name__)
+    upload_dir = tmp_path / "uploads"
+    app.config["LOCAL_UPLOAD_FOLDER"] = str(upload_dir)
+
+    with app.app_context():
+        headers = {
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "api.chatboc.ar",
+            "X-Forwarded-Port": "443",
+        }
+        with app.test_request_context("/archivos/upload/chat_attachment", headers=headers):
+            file_storage = _make_image_file("forwarded.jpg")
+            result = guardar_adjunto_y_thumbnail(file_storage)
+
+    assert result["original_url"].startswith("https://api.chatboc.ar/")
+    assert "forwarded" in result["original_url"]
