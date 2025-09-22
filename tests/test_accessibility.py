@@ -30,6 +30,8 @@ def test_main_menu_payload_structure(base_context):
     assert isinstance(payload["message_body"], str)
     assert isinstance(payload["options_list"], list)
     assert payload["message_type"] == "interactive_list"
+    assert "audio_text" in payload
+    assert isinstance(payload["audio_text"], str)
 
 def test_main_menu_options_are_valid(base_context):
     """
@@ -84,6 +86,7 @@ def test_main_menu_reduced_does_not_repeat_intro(base_context):
     assert payload["message_type"] == "interactive_list"
     assert "¡Gracias, Test!" in payload["message_body"]
     assert "Soy *JUNI*" not in payload["message_body"]
+    assert "Volvimos al menú principal" in payload["audio_text"]
 
 
 def test_main_menu_uses_contact_name_if_available(base_context):
@@ -96,3 +99,13 @@ def test_main_menu_uses_contact_name_if_available(base_context):
 
     assert "Marcelo" in payload["message_body"]
     assert payload.get("fuente") != "pedir_nombre_inicial"
+    assert "Marcelo" in payload["audio_text"]
+
+
+def test_main_menu_audio_text_lists_categories(base_context):
+    payload = _get_main_menu_payload(base_context)
+
+    audio_text = payload["audio_text"].lower()
+    assert "opción 1" in audio_text
+    assert "reclamos y consultas" in audio_text
+    assert "emojis" in audio_text
