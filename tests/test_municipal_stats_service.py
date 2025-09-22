@@ -12,7 +12,7 @@ from models import (
     TicketSatisfaccion,
     User,
 )
-from services.municipal_stats import build_stats_for_municipio
+from services.municipal_stats import build_stats_for_municipio, StatsFilters
 
 
 class MunicipalStatsServiceTest(unittest.TestCase):
@@ -150,6 +150,61 @@ class MunicipalStatsServiceTest(unittest.TestCase):
         self.assertTrue(any(punto["categoria"] == "Alumbrado" for punto in stats["por_categoria"]))
         self.assertTrue(stats["tiempos_respuesta"]["promedio_horas"] > 0)
         self.assertTrue(stats["tiempos_cierre"]["promedio_horas"] > 0)
+
+    def test_build_stats_filters_by_date(self):
+        base_time = datetime(2024, 5, 10, tzinfo=timezone.utc)
+
+        recent = MunicipioTicket(
+            municipio_id=self.admin.id,
+            estado="nuevo",
+            categoria="Alumbrado",
+            fecha=base_time - timedelta(hours=6),
+        )
+        old = MunicipioTicket(
+            municipio_id=self.admin.id,
+            estado="cerrado",
+            categoria="Alumbrado",
+            fecha=base_time - timedelta(days=30),
+        )
+        db.session.add_all([recent, old])
+        db.session.commit()
+
+        filtros = StatsFilters(
+            fecha_inicio=base_time - timedelta(days=1),
+            fecha_fin=base_time + timedelta(days=1),
+        )
+
+        stats = build_stats_for_municipio(self.admin.id, filters=filtros, now=base_time)
+
+        self.assertEqual(stats["resumen"]["total"], 1)
+        self.assertEqual(stats["resumen"]["nuevos"], 1)
+        self.assertTrue(all(categoria["categoria"] == "Alumbrado" for categoria in stats["por_categoria"]))
+
+    def test_build_stats_filters_by_categoria(self):
+        base_time = datetime(2024, 6, 1, tzinfo=timezone.utc)
+
+        alumbrado = MunicipioTicket(
+            municipio_id=self.admin.id,
+            estado="nuevo",
+            categoria="Alumbrado",
+            fecha=base_time - timedelta(days=1),
+        )
+        limpieza = MunicipioTicket(
+            municipio_id=self.admin.id,
+            estado="en_proceso",
+            categoria="Limpieza",
+            fecha=base_time - timedelta(days=1),
+        )
+        db.session.add_all([alumbrado, limpieza])
+        db.session.commit()
+
+        filtros = StatsFilters(categorias=("Alumbrado",))
+
+        stats = build_stats_for_municipio(self.admin.id, filters=filtros, now=base_time)
+
+        self.assertEqual(stats["resumen"]["total"], 1)
+        self.assertEqual(len(stats["por_categoria"]), 1)
+        self.assertEqual(stats["por_categoria"][0]["categoria"], "Alumbrado")
 
 
 if __name__ == '__main__':

@@ -1,9 +1,10 @@
 import os
+import unicodedata
 from typing import Iterator, Pattern, Union
 
 from flask import Blueprint, jsonify, request, current_app
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
-from datetime import timedelta
+from datetime import datetime, timedelta
 from utils.time_utils import get_local_now
 from utils.permissions import require_role
 from routes.crm import _obtener_clientes
@@ -13,7 +14,7 @@ from sqlalchemy import func
 from models import Conversacion, MunicipioTicket, User, db
 from routes.ticket import TICKET_ALLOWED_STATES
 from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS
-from services.municipal_stats import build_stats_for_municipio
+from services.municipal_stats import build_stats_for_municipio, StatsFilters
 
 municipal_bp = Blueprint('municipal_legacy', __name__, url_prefix='/municipal')
 
@@ -122,6 +123,167 @@ def apply_cors_headers(response):
 
     return response
 
+
+_STATS_RANGE_OPTIONS = [
+    {"id": "last_7_days", "label": "Últimos 7 días"},
+    {"id": "last_30_days", "label": "Últimos 30 días"},
+    {"id": "this_month", "label": "Este mes"},
+    {"id": "this_year", "label": "Este año"},
+    {"id": "today", "label": "Hoy"},
+]
+
+
+def _normalize_filter_text(value: str | None) -> str:
+    if not value:
+        return ""
+    normalized = unicodedata.normalize("NFKD", value)
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = normalized.lower().replace("_", " ").replace("-", " ")
+    return " ".join(normalized.split())
+
+
+def _parse_str_list(args, key: str) -> tuple[str, ...]:
+    values: list[str] = []
+    for raw in args.getlist(key):
+        if raw:
+            trimmed = raw.strip()
+            if trimmed:
+                values.append(trimmed)
+    for raw in args.getlist(f"{key}[]"):
+        if raw:
+            trimmed = raw.strip()
+            if trimmed:
+                values.append(trimmed)
+    if not values:
+        raw = args.get(key)
+        if raw:
+            values.extend(part.strip() for part in raw.split(",") if part.strip())
+    if not values:
+        return ()
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        lower = value.lower()
+        if lower not in seen:
+            seen.add(lower)
+            unique.append(value)
+    return tuple(unique)
+
+
+def _parse_int_list(args, key: str) -> tuple[int, ...]:
+    result: list[int] = []
+    seen: set[int] = set()
+    for raw in _parse_str_list(args, key):
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return tuple(result)
+
+
+def _parse_date_param(value: str | None, tzinfo, *, is_end: bool = False) -> datetime | None:
+    if not value:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        try:
+            parsed = datetime.strptime(raw, "%Y-%m-%d")
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=tzinfo)
+    if "T" not in raw and is_end:
+        parsed = parsed + timedelta(days=1)
+    return parsed
+
+
+def _resolve_range_datetimes(value: str | None, now: datetime) -> tuple[datetime | None, datetime | None]:
+    normalized = _normalize_filter_text(value)
+    if not normalized:
+        return None, None
+
+    if "7" in normalized and ("dia" in normalized or "day" in normalized):
+        return now - timedelta(days=7), now
+    if "30" in normalized and ("dia" in normalized or "day" in normalized):
+        return now - timedelta(days=30), now
+    if "mes" in normalized:
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        next_month = (start + timedelta(days=32)).replace(day=1)
+        return start, next_month
+    if "ano" in normalized or "year" in normalized:
+        start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        next_year = start.replace(year=start.year + 1)
+        return start, next_year
+    if "hoy" in normalized or "today" in normalized:
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return start, start + timedelta(days=1)
+    if "ayer" in normalized or "yesterday" in normalized:
+        start = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        return start, start + timedelta(days=1)
+
+    return None, None
+
+
+def _build_stats_filters_from_request(args) -> tuple[StatsFilters | None, datetime | None, datetime | None]:
+    current_now = get_local_now()
+    tzinfo = current_now.tzinfo
+    fecha_inicio, fecha_fin = _resolve_range_datetimes(args.get("rango"), current_now)
+
+    explicit_inicio = _parse_date_param(args.get("fecha_inicio"), tzinfo)
+    if explicit_inicio:
+        fecha_inicio = explicit_inicio
+
+    explicit_fin = _parse_date_param(args.get("fecha_fin"), tzinfo, is_end=True)
+    if explicit_fin:
+        fecha_fin = explicit_fin
+
+    estados = _parse_str_list(args, "estado")
+    categorias = _parse_str_list(args, "categoria")
+    distritos = _parse_str_list(args, "distrito")
+    canales = _parse_str_list(args, "canal")
+    agentes = _parse_int_list(args, "agente_id")
+    if not agentes:
+        agentes = _parse_int_list(args, "agente")
+
+    filters = StatsFilters(
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+        estados=estados or None,
+        categorias=categorias or None,
+        distritos=distritos or None,
+        canales=canales or None,
+        agentes=agentes or None,
+    )
+
+    if filters.is_empty():
+        filters = None
+
+    return filters, fecha_inicio, fecha_fin
+
+
+def _dedupe_sorted(values, fallback: str) -> list[str]:
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for value in values:
+        label = (value or "").strip()
+        if not label:
+            label = fallback
+        key = label.lower()
+        if key not in seen:
+            seen.add(key)
+            cleaned.append(label)
+    cleaned.sort()
+    return cleaned
+
+
 @municipal_bp.route('/usuarios', methods=['GET'])
 @token_requerido
 @admin_o_empleado_requerido
@@ -170,14 +332,75 @@ def municipal_stats(current_user):
     if request.method == 'OPTIONS':
         return "", 204
 
-    datos = build_stats_for_municipio(getattr(current_user, "municipio_id", None))
+    municipio_id = getattr(current_user, "municipio_id", None)
+    filters, _, _ = _build_stats_filters_from_request(request.args)
+
+    if filters:
+        datos = build_stats_for_municipio(municipio_id, filters=filters)
+    else:
+        datos = build_stats_for_municipio(municipio_id)
+
     return jsonify(datos)
 
 @municipal_bp.route('/stats/filters', methods=['GET', 'OPTIONS'])
 @token_requerido
 @admin_o_empleado_requerido
 def municipal_stats_filters(current_user):
-    return jsonify({'categorias': TODAS_LAS_CATEGORIAS_UNICAS})
+    municipio_id = getattr(current_user, "municipio_id", None)
+
+    if not municipio_id:
+        return jsonify(
+            {
+                "categorias": [],
+                "estados": sorted(TICKET_ALLOWED_STATES),
+                "rangos": _STATS_RANGE_OPTIONS,
+                "distritos": [],
+                "canales": [],
+            }
+        )
+
+    categorias_query = (
+        db.session.query(MunicipioTicket.categoria)
+        .filter(
+            MunicipioTicket.municipio_id == municipio_id,
+            MunicipioTicket.categoria.isnot(None),
+            MunicipioTicket.categoria != "",
+        )
+        .distinct()
+    )
+    categorias = _dedupe_sorted((row[0] for row in categorias_query), "Sin categoría")
+
+    distritos_query = (
+        db.session.query(MunicipioTicket.distrito)
+        .filter(
+            MunicipioTicket.municipio_id == municipio_id,
+            MunicipioTicket.distrito.isnot(None),
+            MunicipioTicket.distrito != "",
+        )
+        .distinct()
+    )
+    distritos = _dedupe_sorted((row[0] for row in distritos_query), "Sin distrito")
+
+    canales_query = (
+        db.session.query(MunicipioTicket.canal_ingreso)
+        .filter(
+            MunicipioTicket.municipio_id == municipio_id,
+            MunicipioTicket.canal_ingreso.isnot(None),
+            MunicipioTicket.canal_ingreso != "",
+        )
+        .distinct()
+    )
+    canales = _dedupe_sorted((row[0] for row in canales_query), "Sin especificar")
+
+    return jsonify(
+        {
+            "categorias": categorias,
+            "estados": sorted(TICKET_ALLOWED_STATES),
+            "rangos": _STATS_RANGE_OPTIONS,
+            "distritos": distritos,
+            "canales": canales,
+        }
+    )
 
 @municipal_bp.route('/tramites', methods=['GET'])
 def municipal_tramites():
@@ -275,28 +498,66 @@ def municipal_incidents(current_user):
     return jsonify(resultado)
 
 
-def _municipal_message_metrics(eid: int) -> list[dict]:
+def _municipal_message_metrics(
+    eid: int,
+    *,
+    fecha_inicio: datetime | None = None,
+    fecha_fin: datetime | None = None,
+) -> dict:
     """Calcula métricas de mensajes recibidos en distintos períodos."""
 
     ahora = get_local_now()
 
     def _contar_desde(dias: int) -> int:
         desde = ahora - timedelta(days=dias)
-        return (
+        if fecha_inicio:
+            desde = max(desde, fecha_inicio)
+        query = (
             db.session.query(func.count())
             .select_from(Conversacion)
             .join(User, Conversacion.user_id == User.id)
             .filter(User.empresa_id == eid)
             .filter(Conversacion.timestamp >= desde)
-            .scalar()
-            or 0
         )
+        if fecha_fin:
+            query = query.filter(Conversacion.timestamp < fecha_fin)
+        return int(query.scalar() or 0)
 
-    return [
+    cards = [
         {"label": "Mensajes esta semana", "value": _contar_desde(7)},
         {"label": "Mensajes este mes", "value": _contar_desde(30)},
         {"label": "Mensajes este año", "value": _contar_desde(365)},
     ]
+
+    total_general_query = (
+        db.session.query(func.count())
+        .select_from(Conversacion)
+        .join(User, Conversacion.user_id == User.id)
+        .filter(User.empresa_id == eid)
+    )
+    total_general = int(total_general_query.scalar() or 0)
+
+    filtrado_query = (
+        db.session.query(func.count())
+        .select_from(Conversacion)
+        .join(User, Conversacion.user_id == User.id)
+        .filter(User.empresa_id == eid)
+    )
+    if fecha_inicio:
+        filtrado_query = filtrado_query.filter(Conversacion.timestamp >= fecha_inicio)
+    if fecha_fin:
+        filtrado_query = filtrado_query.filter(Conversacion.timestamp < fecha_fin)
+    total_filtrado = int(filtrado_query.scalar() or 0)
+
+    summary = {
+        "last_7_days": cards[0]["value"],
+        "last_30_days": cards[1]["value"],
+        "last_365_days": cards[2]["value"],
+        "total": total_general,
+        "filtered_total": total_filtrado,
+    }
+
+    return {"cards": cards, "summary": summary}
 
 
 @municipal_bp.route('/metrics', methods=['GET'])
@@ -555,5 +816,33 @@ def municipal_analytics(current_user):
     if request.method == 'OPTIONS':
         return "", 204
 
+    municipio_id = getattr(current_user, "municipio_id", None)
+    filters, fecha_inicio, fecha_fin = _build_stats_filters_from_request(request.args)
+
+    if filters:
+        stats = build_stats_for_municipio(municipio_id, filters=filters)
+    else:
+        stats = build_stats_for_municipio(municipio_id)
+
     eid = current_user.id if current_user.empresa_id is None else current_user.empresa_id
-    return jsonify(_municipal_message_metrics(eid))
+    metrics_raw = _municipal_message_metrics(
+        eid, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin
+    )
+
+    if isinstance(metrics_raw, dict):
+        metrics_cards = list(metrics_raw.get("cards", []) or [])
+        metrics_summary = dict(metrics_raw.get("summary", {}) or {})
+        metrics_payload = metrics_raw
+    else:
+        metrics_cards = list(metrics_raw or [])
+        metrics_summary = {}
+        metrics_payload = {"cards": metrics_cards, "summary": metrics_summary}
+
+    response = {
+        "stats": stats,
+        "metrics": metrics_payload,
+        "cards": metrics_cards,
+        "summary": metrics_summary,
+    }
+
+    return jsonify(response)
