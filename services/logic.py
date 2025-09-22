@@ -352,10 +352,16 @@ def responder_chatboc(
     ):
         text_to_speak = response_data.get('audio_text')
         if not text_to_speak:
+            options_for_audio = (
+                response_data.get('options_list')
+                or response_data.get('botones')
+            )
             text_to_speak = render_audio_text(
                 response_data.get('message_body', ''),
-                response_data.get('options_list'),
-                response_data.get('categorias'),
+                options=options_for_audio,
+                categorias=response_data.get('categorias'),
+                datos=response_data.get('datos_estructura'),
+                accion=response_data.get('accion_backend'),
             )
         if text_to_speak:
             from services.tts_orchestrator import generar_audio

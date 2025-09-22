@@ -134,9 +134,30 @@ class TestResponseFormatter(unittest.TestCase):
 
     def test_render_audio_text_numbers_options(self):
         text = render_audio_text("Menú", options=[{"texto": "Uno"}, {"texto": "Dos"}])
-        self.assertIn("1. Uno", text)
-        self.assertIn("2. Dos", text)
-        self.assertFalse(text.strip().endswith("opción que necesites."))
+        self.assertIn("Opciones disponibles:", text)
+        self.assertIn("Opción 1: Uno", text)
+        self.assertIn("Opción 2: Dos", text)
+        self.assertIn("Respondé con el número de la opción que prefieras.", text)
+
+    def test_render_audio_text_includes_summary_for_reclamo(self):
+        datos = {
+            "categoria": "luminaria",
+            "descripcion": "poste caído",
+            "ubicacion": "Av. Siempre Viva 742",
+            "nombre_usuario_detectado": "Ana García",
+            "telefono_detectado": "123456789",
+        }
+        text = render_audio_text(
+            "Gracias, ya registramos tu reclamo.",
+            datos=datos,
+            accion="crear_reclamo",
+        )
+        self.assertIn("Resumen del reclamo:", text)
+        self.assertIn("Categoría: luminaria", text)
+        self.assertIn("Descripción: poste caído", text)
+        self.assertIn("Ubicación: Av. Siempre Viva 742", text)
+        self.assertIn("Nombre de contacto: Ana García", text)
+        self.assertIn("Teléfono: 123456789", text)
 
     def test_whatsapp_text_message(self):
         response = build_interactive_response(
