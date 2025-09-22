@@ -346,6 +346,7 @@ class TestConfig(Config):
     SESSION_COOKIE_SECURE = False
     SERVER_NAME = 'localhost'
     SESSION_COOKIE_DOMAIN = None
+    SESSION_TYPE = 'null'
 
 class TestingConfig(TestConfig):
     pass

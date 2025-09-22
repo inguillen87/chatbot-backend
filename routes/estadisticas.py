@@ -7,12 +7,56 @@ from models import User
 estadisticas_bp = Blueprint("estadisticas", __name__, url_prefix="/estadisticas")
 
 
+def _parse_estado_params(args) -> list[str] | None:
+    """Normaliza los parámetros ``estado`` del query string."""
+
+    estados: list[str] = []
+
+    # Permitir múltiples valores ?estado=foo&estado=bar
+    estados.extend([valor.strip() for valor in args.getlist("estado") if valor])
+
+    # Compatibilidad con clientes que envían estado[]=valor
+    if not estados:
+        estados.extend(
+            [valor.strip() for valor in args.getlist("estado[]") if valor]
+        )
+
+    # Compatibilidad hacia atrás con un único parámetro comma-separated
+    if not estados:
+        estado_unico = args.get("estado")
+        if estado_unico:
+            estados.extend(
+                [parte.strip() for parte in estado_unico.split(",") if parte.strip()]
+            )
+
+    # Quitar duplicados preservando el orden
+    if estados:
+        vistos: set[str] = set()
+        estados_unicos = []
+        for estado in estados:
+            if estado and estado not in vistos:
+                estados_unicos.append(estado)
+                vistos.add(estado)
+        return estados_unicos or None
+
+    return None
+
+
 @estadisticas_bp.route("/mapa_calor/datos", methods=["GET"])
 @token_requerido
 @admin_o_empleado_requerido
 def mapa_calor_datos(current_user):
     """Devuelve los puntos para el mapa de calor en formato JSON."""
     args = request.args
+    estados = _parse_estado_params(args)
+    estado_param = None
+    if estados:
+        estado_param = estados if len(estados) > 1 else estados[0]
+
+    distrito = args.get("distrito", type=str)
+    if distrito:
+        distrito = distrito.strip() or None
+
     puntos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
         tipo_ticket=args.get("tipo_ticket", "municipio"),
         municipio_id=args.get("municipio_id", type=int),
@@ -20,7 +64,8 @@ def mapa_calor_datos(current_user):
         fecha_inicio=args.get("fecha_inicio"),
         fecha_fin=args.get("fecha_fin"),
         categoria=args.get("categoria"),
-        estado=args.get("estado"),
+        distrito=distrito,
+        estado=estado_param,
         satisfactorio=args.get("satisfactorio", type=lambda v: str(v).lower() == "true"),
     )
     return jsonify(puntos)
@@ -64,6 +109,15 @@ def estadisticas_tickets(current_user):
     municipio_id = args.get("municipio_id", type=int)
     rubro_id = args.get("rubro_id", type=int)
 
+    estados = _parse_estado_params(args)
+    estado_param = None
+    if estados:
+        estado_param = estados if len(estados) > 1 else estados[0]
+
+    distrito = args.get("distrito", type=str)
+    if distrito:
+        distrito = distrito.strip() or None
+
     if tipo == "municipio" and municipio_id is None:
         municipio_id = getattr(current_user, "municipio_id", None)
     if tipo == "pyme" and rubro_id is None:
@@ -76,7 +130,8 @@ def estadisticas_tickets(current_user):
         fecha_inicio=args.get("fecha_inicio"),
         fecha_fin=args.get("fecha_fin"),
         categoria=args.get("categoria"),
-        estado=args.get("estado"),
+        distrito=distrito,
+        estado=estado_param,
         satisfactorio=args.get(
             "satisfactorio", type=lambda v: str(v).lower() == "true"
         ),

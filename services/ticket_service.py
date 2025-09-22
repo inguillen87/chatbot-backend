@@ -1,7 +1,7 @@
 # services/ticket_service.py
 import random
 from datetime import datetime, timedelta
-from typing import Dict, Any, Literal, Union
+from typing import Dict, Any, Literal, Union, Iterable
 import logging
 
 from models import (
@@ -296,7 +296,8 @@ class ServicioTickets:
         fecha_inicio: str | None = None,
         fecha_fin: str | None = None,
         categoria: str | None = None,
-        estado: str | None = None, # Nuevo parámetro de estado
+        distrito: str | None = None,
+        estado: str | Iterable[str] | None = None, # Nuevo parámetro de estado
         satisfactorio: bool | None = None,
     ) -> list[dict]:
         """
@@ -307,26 +308,56 @@ class ServicioTickets:
         Model = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
         try:
             logger.info(
-                "[TICKET_SERVICE_MAPA] tipo=%s municipio_id=%s rubro_id=%s fecha_inicio=%s fecha_fin=%s categoria=%s estado=%s",
+                "[TICKET_SERVICE_MAPA] tipo=%s municipio_id=%s rubro_id=%s fecha_inicio=%s fecha_fin=%s categoria=%s distrito=%s estado=%s",
                 tipo_ticket,
                 municipio_id,
                 rubro_id,
                 fecha_inicio,
                 fecha_fin,
                 categoria,
+                distrito,
                 estado,
             )
 
             query = Model.query.filter(Model.latitud.isnot(None), Model.longitud.isnot(None))
 
+            distrito_filtrado = distrito.strip() if isinstance(distrito, str) else None
+            if distrito_filtrado and hasattr(Model, "distrito"):
+                query = query.filter(Model.distrito == distrito_filtrado)
+
+            estados_filtrar_set: set[str] | None = None
             # Filtrar por estado si se proporciona. Si el estado solicitado es
             # "resuelto", también incluimos aquellos marcados como "cerrado" para
             # que el frontend pueda tratarlos como reclamos resueltos.
             if estado:
-                if estado == "resuelto":
-                    query = query.filter(Model.estado.in_(["resuelto", "cerrado"]))
+                if isinstance(estado, str):
+                    estados_solicitados = [estado.strip()] if estado.strip() else []
                 else:
-                    query = query.filter(Model.estado == estado)
+                    estados_solicitados = [
+                        valor.strip()
+                        for valor in estado
+                        if isinstance(valor, str) and valor.strip()
+                    ]
+
+                if estados_solicitados:
+                    estados_expandidos: list[str] = []
+                    for estado_solicitado in estados_solicitados:
+                        if estado_solicitado == "resuelto":
+                            estados_expandidos.extend(["resuelto", "cerrado"])
+                        else:
+                            estados_expandidos.append(estado_solicitado)
+
+                    # Quitar duplicados preservando el orden
+                    estados_unicos: list[str] = []
+                    vistos_estados: set[str] = set()
+                    for estado_unico in estados_expandidos:
+                        if estado_unico not in vistos_estados:
+                            estados_unicos.append(estado_unico)
+                            vistos_estados.add(estado_unico)
+
+                    if estados_unicos:
+                        estados_filtrar_set = set(estados_unicos)
+                        query = query.filter(Model.estado.in_(estados_unicos))
             # else: # Comportamiento por defecto si no se especifica estado (ej: no cerrados)
             #     query = query.filter(Model.estado != "cerrado") # Opcional: mantener un filtro por defecto
 
@@ -366,6 +397,16 @@ class ServicioTickets:
                 len(tickets),
             )
 
+            if distrito_filtrado and hasattr(Model, "distrito"):
+                tickets = [
+                    t for t in tickets if getattr(t, "distrito", None) == distrito_filtrado
+                ]
+
+            if estados_filtrar_set:
+                tickets = [
+                    t for t in tickets if getattr(t, "estado", None) in estados_filtrar_set
+                ]
+
             # El agrupamiento por ubicación y el cálculo de 'weight' permanecen igual.
             # Si se desea devolver todos los puntos individualmente para que el frontend agrupe/clusterice:
             # return [
@@ -399,6 +440,8 @@ class ServicioTickets:
                 resultado_heatmap.append(
                     {
                         "location": {"lat": lat, "lng": lng},
+                        "lat": lat,
+                        "lng": lng,
                         "weight": weight,
                         "categoria": cat,
                     }

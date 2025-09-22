@@ -111,6 +111,8 @@ class TicketServiceTests(unittest.TestCase):
         found_loc1 = False
         found_loc2 = False
         for item in res:
+            self.assertIn('lat', item)
+            self.assertIn('lng', item)
             # Rounding might occur in the service, so compare with tolerance or ensure mock data uses expected precision
             if (
                 abs(item['location']['lat'] - 10.0) < 0.0001
@@ -204,7 +206,10 @@ class TicketServiceTests(unittest.TestCase):
         self.assertEqual(len(res), 2)
         self.assertTrue(
             any(
-                abs(d['location']['lat'] - 10.0) < 0.0001
+                'lat' in d
+                and 'lng' in d
+                and abs(d['location']['lat'] - 10.0) < 0.0001
+                and abs(d['location']['lng'] - 20.0) < 0.0001
                 and d['weight'] == 1
                 and d.get('categoria') is None
                 for d in res
@@ -212,11 +217,175 @@ class TicketServiceTests(unittest.TestCase):
         )
         self.assertTrue(
             any(
-                abs(d['location']['lat'] - 11.0) < 0.0001
+                'lat' in d
+                and 'lng' in d
+                and abs(d['location']['lat'] - 11.0) < 0.0001
+                and abs(d['location']['lng'] - 21.0) < 0.0001
                 and d['weight'] == 1
                 and d.get('categoria') is None
                 for d in res
             )
+        )
+
+
+    def test_estado_resuelto_includes_cerrado(self):
+        from datetime import datetime
+
+        DummyTicket = SimpleNamespace
+
+        class DummyQuery(list):
+            def filter_by(self, **kwargs):
+                return DummyQuery(
+                    [
+                        t
+                        for t in self
+                        if all(getattr(t, k, None) == v for k, v in kwargs.items())
+                    ]
+                )
+
+            def filter(self, *criterion):
+                return self
+
+            def all(self):
+                return list(self)
+
+        tickets = [
+            DummyTicket(
+                id=1,
+                estado='cerrado',
+                latitud=10.0,
+                longitud=20.0,
+                municipio_id=5,
+                fecha=datetime.utcnow(),
+                categoria=None,
+                asunto=None,
+                distrito='Junin',
+            ),
+            DummyTicket(
+                id=2,
+                estado='resuelto',
+                latitud=11.0,
+                longitud=21.0,
+                municipio_id=5,
+                fecha=datetime.utcnow(),
+                categoria=None,
+                asunto=None,
+                distrito='Junin',
+            ),
+            DummyTicket(
+                id=3,
+                estado='en_proceso',
+                latitud=12.0,
+                longitud=22.0,
+                municipio_id=5,
+                fecha=datetime.utcnow(),
+                categoria=None,
+                asunto=None,
+                distrito='Junin',
+            ),
+        ]
+
+        class DummyModel:
+            latitud = MagicMock()
+            latitud.isnot.return_value = True
+            longitud = MagicMock()
+            longitud.isnot.return_value = True
+            estado = MagicMock()
+            estado.in_ = MagicMock(return_value=True)
+            distrito = MagicMock()
+
+            def __init__(self, **kwargs):
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        DummyModel.query = DummyQuery(tickets)
+
+        with patch.object(ts, 'MunicipioTicket', DummyModel):
+            service = ServicioTickets()
+            res = service.obtener_tickets_con_ubicacion_para_mapa(
+                tipo_ticket='municipio', municipio_id=5, estado='resuelto'
+            )
+
+        self.assertEqual(len(res), 2)
+        self.assertFalse(
+            any(
+                abs(item['location']['lat'] - 12.0) < 0.0001
+                and abs(item['location']['lng'] - 22.0) < 0.0001
+                for item in res
+            )
+        )
+
+    def test_distrito_filter_trims_value(self):
+        from datetime import datetime
+
+        DummyTicket = SimpleNamespace
+
+        class DummyQuery(list):
+            def filter_by(self, **kwargs):
+                return DummyQuery(
+                    [
+                        t
+                        for t in self
+                        if all(getattr(t, k, None) == v for k, v in kwargs.items())
+                    ]
+                )
+
+            def filter(self, *criterion):
+                return self
+
+            def all(self):
+                return list(self)
+
+        tickets = [
+            DummyTicket(
+                id=1,
+                estado='nuevo',
+                latitud=10.0,
+                longitud=20.0,
+                municipio_id=5,
+                fecha=datetime.utcnow(),
+                categoria=None,
+                asunto=None,
+                distrito='Junin',
+            ),
+            DummyTicket(
+                id=2,
+                estado='nuevo',
+                latitud=11.0,
+                longitud=21.0,
+                municipio_id=5,
+                fecha=datetime.utcnow(),
+                categoria=None,
+                asunto=None,
+                distrito='Godoy Cruz',
+            ),
+        ]
+
+        class DummyModel:
+            latitud = MagicMock()
+            latitud.isnot.return_value = True
+            longitud = MagicMock()
+            longitud.isnot.return_value = True
+            estado = MagicMock()
+            estado.in_ = MagicMock(return_value=True)
+            distrito = MagicMock()
+
+            def __init__(self, **kwargs):
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        DummyModel.query = DummyQuery(tickets)
+
+        with patch.object(ts, 'MunicipioTicket', DummyModel):
+            service = ServicioTickets()
+            res = service.obtener_tickets_con_ubicacion_para_mapa(
+                tipo_ticket='municipio', municipio_id=5, distrito=' Junin '
+            )
+
+        self.assertEqual(len(res), 1)
+        self.assertTrue(
+            abs(res[0]['location']['lat'] - 10.0) < 0.0001
+            and abs(res[0]['location']['lng'] - 20.0) < 0.0001
         )
 
 

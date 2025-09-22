@@ -16,8 +16,13 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
     def setUp(self):
         self.token_patcher = patch('utils.auth_helpers.token_requerido', lambda f: f)
         self.admin_patcher = patch('utils.auth_helpers.admin_o_empleado_requerido', lambda f: f)
+        self.session_patcher = patch(
+            'flask_session.Session',
+            lambda *args, **kwargs: SimpleNamespace(init_app=lambda app: None),
+        )
         self.token_patcher.start()
         self.admin_patcher.start()
+        self.session_patcher.start()
 
         import routes.estadisticas as estats
         importlib.reload(estats)
@@ -30,6 +35,7 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
     def tearDown(self):
         self.token_patcher.stop()
         self.admin_patcher.stop()
+        self.session_patcher.stop()
         self.app_context.pop()
 
     @patch('routes.estadisticas.servicio_tickets')
@@ -53,7 +59,30 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             fecha_inicio=None,
             fecha_fin=None,
             categoria=None,
+            distrito=None,
             estado=None,
+            satisfactorio=None,
+        )
+
+    @patch('routes.estadisticas.servicio_tickets')
+    def test_estadisticas_tickets_accepts_multiple_estados(self, mock_servicio):
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = []
+        current_user = SimpleNamespace(municipio_id=1, rubro_id=None)
+        import routes.estadisticas as estats
+        with self.app.test_request_context(
+            '/estadisticas/tickets?tipo=municipio&estado=nuevo&estado=en_proceso'
+        ):
+            response = estats.estadisticas_tickets(current_user)
+        self.assertEqual(response.status_code, 200)
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
+            tipo_ticket='municipio',
+            municipio_id=1,
+            rubro_id=None,
+            fecha_inicio=None,
+            fecha_fin=None,
+            categoria=None,
+            distrito=None,
+            estado=['nuevo', 'en_proceso'],
             satisfactorio=None,
         )
 
