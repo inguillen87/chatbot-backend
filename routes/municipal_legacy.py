@@ -1,3 +1,6 @@
+import os
+from typing import Iterator, Pattern, Union
+
 from flask import Blueprint, jsonify, request, current_app
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from datetime import timedelta
@@ -8,8 +11,115 @@ from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
 from routes.tramites import listar_tramites, obtener_tramite
 from models import MunicipioTicket, db
 from sqlalchemy import text
+from routes.ticket import TICKET_ALLOWED_STATES
+from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS
 
 municipal_bp = Blueprint('municipal_legacy', __name__, url_prefix='/municipal')
+
+
+AllowedOrigin = Union[str, Pattern[str]]
+
+
+def _iter_allowed_origins() -> Iterator[AllowedOrigin]:
+    """Yield the configured CORS origins in priority order."""
+
+    env_value = os.getenv("CORS_ALLOWED_ORIGINS")
+    if env_value is not None:
+        stripped = env_value.strip()
+        if stripped == "*":
+            yield "*"
+            return
+
+        seen = set()
+        for raw in stripped.split(","):
+            candidate = raw.strip().rstrip("/")
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            yield candidate
+        if seen:
+            return
+
+    for origin in DEFAULT_ALLOWED_ORIGINS:
+        yield origin
+
+
+def _resolve_cors_origin(origin: str | None) -> tuple[str | None, bool]:
+    """Return the header value and whether credentials are allowed."""
+
+    if not origin:
+        return None, False
+
+    normalized = origin.rstrip("/")
+    for allowed in _iter_allowed_origins():
+        if allowed == "*":
+            return "*", False
+        if isinstance(allowed, str):
+            if normalized == allowed.rstrip("/"):
+                return origin, True
+        elif hasattr(allowed, "match") and allowed.match(origin):
+            return origin, True
+
+    return None, False
+
+
+def _merge_header_values(response, header_name, values):
+    """Ensure the given response header contains the provided comma-separated values."""
+
+    existing = response.headers.get(header_name, "")
+    items = [item.strip() for item in existing.split(",") if item.strip()]
+
+    updated = list(items)
+    for value in values:
+        if value not in updated:
+            updated.append(value)
+
+    if updated:
+        response.headers[header_name] = ", ".join(updated)
+
+
+@municipal_bp.after_request
+def apply_cors_headers(response):
+    """Apply permissive CORS defaults for municipal endpoints."""
+
+    allowed_origin, allow_credentials = _resolve_cors_origin(
+        request.headers.get("Origin")
+    )
+
+    if allowed_origin:
+        response.headers["Access-Control-Allow-Origin"] = allowed_origin
+
+        if allowed_origin != "*":
+            _merge_header_values(response, "Vary", ["Origin"])
+            if allow_credentials:
+                response.headers["Access-Control-Allow-Credentials"] = "true"
+        else:
+            response.headers.pop("Access-Control-Allow-Credentials", None)
+
+        _merge_header_values(
+            response,
+            "Access-Control-Allow-Headers",
+            [
+                "Authorization",
+                "Content-Type",
+                "Origin",
+                "Accept",
+                "X-Entity-Token",
+                "X-Chat-Session-Id",
+                "X-Anon-Id",
+                "Anon-Id",
+            ],
+        )
+
+        _merge_header_values(
+            response,
+            "Access-Control-Allow-Methods",
+            ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        )
+    else:
+        response.headers.pop("Access-Control-Allow-Credentials", None)
+
+    return response
 
 @municipal_bp.route('/usuarios', methods=['GET'])
 @token_requerido
@@ -40,6 +150,15 @@ def municipal_usuarios(current_user):
 @require_role('admin', 'empleado')
 def municipal_categorias(current_user):
     return jsonify(TODAS_LAS_CATEGORIAS_UNICAS)
+
+@municipal_bp.route('/estados', methods=['GET', 'OPTIONS'])
+def municipal_estados():
+    """Devuelve la lista pública de estados permitidos para tickets municipales."""
+
+    if request.method == 'OPTIONS':
+        return "", 204
+
+    return jsonify({"estados": TICKET_ALLOWED_STATES})
 
 @municipal_bp.route('/stats', methods=['GET'])
 @token_requerido
