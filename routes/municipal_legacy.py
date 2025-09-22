@@ -8,8 +8,60 @@ from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
 from routes.tramites import listar_tramites, obtener_tramite
 from models import MunicipioTicket, db
 from sqlalchemy import text
+from routes.ticket import TICKET_ALLOWED_STATES
 
 municipal_bp = Blueprint('municipal_legacy', __name__, url_prefix='/municipal')
+
+
+def _merge_header_values(response, header_name, values):
+    """Ensure the given response header contains the provided comma-separated values."""
+
+    existing = response.headers.get(header_name, "")
+    items = [item.strip() for item in existing.split(",") if item.strip()]
+
+    updated = list(items)
+    for value in values:
+        if value not in updated:
+            updated.append(value)
+
+    if updated:
+        response.headers[header_name] = ", ".join(updated)
+
+
+@municipal_bp.after_request
+def apply_cors_headers(response):
+    """Apply permissive CORS defaults for municipal endpoints."""
+
+    origin = request.headers.get("Origin")
+    if origin:
+        response.headers.setdefault("Access-Control-Allow-Origin", origin)
+        response.headers.setdefault("Vary", "Origin")
+    else:
+        response.headers.setdefault("Access-Control-Allow-Origin", "*")
+
+    _merge_header_values(
+        response,
+        "Access-Control-Allow-Headers",
+        [
+            "Authorization",
+            "Content-Type",
+            "Origin",
+            "Accept",
+            "X-Entity-Token",
+            "X-Chat-Session-Id",
+            "X-Anon-Id",
+            "Anon-Id",
+        ],
+    )
+
+    _merge_header_values(
+        response,
+        "Access-Control-Allow-Methods",
+        ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    )
+
+    response.headers.setdefault("Access-Control-Allow-Credentials", "true")
+    return response
 
 @municipal_bp.route('/usuarios', methods=['GET'])
 @token_requerido
@@ -40,6 +92,15 @@ def municipal_usuarios(current_user):
 @require_role('admin', 'empleado')
 def municipal_categorias(current_user):
     return jsonify(TODAS_LAS_CATEGORIAS_UNICAS)
+
+@municipal_bp.route('/estados', methods=['GET', 'OPTIONS'])
+def municipal_estados():
+    """Devuelve la lista pública de estados permitidos para tickets municipales."""
+
+    if request.method == 'OPTIONS':
+        return "", 204
+
+    return jsonify({"estados": TICKET_ALLOWED_STATES})
 
 @municipal_bp.route('/stats', methods=['GET'])
 @token_requerido
