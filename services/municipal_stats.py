@@ -33,6 +33,32 @@ class _TimeSeriesPoint:
     cerrados: int
 
 
+@dataclass(frozen=True)
+class StatsFilters:
+    """Bundle of optional filters applied to municipal statistics."""
+
+    fecha_inicio: datetime | None = None
+    fecha_fin: datetime | None = None
+    estados: tuple[str, ...] | None = None
+    categorias: tuple[str, ...] | None = None
+    distritos: tuple[str, ...] | None = None
+    canales: tuple[str, ...] | None = None
+    agentes: tuple[int, ...] | None = None
+
+    def is_empty(self) -> bool:
+        return not any(
+            [
+                self.fecha_inicio,
+                self.fecha_fin,
+                self.estados,
+                self.categorias,
+                self.distritos,
+                self.canales,
+                self.agentes,
+            ]
+        )
+
+
 def _current_dialect_name(default: str = "sqlite") -> str:
     """Return the lower-cased SQL dialect name for the active session."""
 
@@ -127,7 +153,72 @@ def _summarize_hours(values: list[float]) -> dict[str, float]:
     }
 
 
-def _compute_time_to_first_response(municipio_id: int) -> list[float]:
+def _normalized_sequence(values: Iterable[str] | None) -> tuple[str, ...]:
+    if not values:
+        return ()
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        if raw is None:
+            continue
+        text = raw.strip().lower()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return tuple(normalized)
+
+
+def _apply_ticket_filters(query, filters: StatsFilters | None):
+    if not filters:
+        return query
+
+    if filters.fecha_inicio:
+        query = query.filter(MunicipioTicket.fecha >= filters.fecha_inicio)
+    if filters.fecha_fin:
+        query = query.filter(MunicipioTicket.fecha < filters.fecha_fin)
+
+    estados_norm = _normalized_sequence(filters.estados)
+    if estados_norm:
+        query = query.filter(func.lower(MunicipioTicket.estado).in_(estados_norm))
+
+    categorias_norm = _normalized_sequence(filters.categorias)
+    if categorias_norm:
+        query = query.filter(func.lower(MunicipioTicket.categoria).in_(categorias_norm))
+
+    distritos_norm = _normalized_sequence(filters.distritos)
+    if distritos_norm:
+        query = query.filter(func.lower(MunicipioTicket.distrito).in_(distritos_norm))
+
+    canales_norm = _normalized_sequence(filters.canales)
+    if canales_norm:
+        query = query.filter(func.lower(MunicipioTicket.canal_ingreso).in_(canales_norm))
+
+    if filters.agentes:
+        query = query.filter(MunicipioTicket.user_id.in_(filters.agentes))
+
+    return query
+
+
+def _apply_suggestion_filters(query, filters: StatsFilters | None):
+    if not filters:
+        return query
+
+    if filters.fecha_inicio:
+        query = query.filter(SugerenciaCiudadano.fecha >= filters.fecha_inicio)
+    if filters.fecha_fin:
+        query = query.filter(SugerenciaCiudadano.fecha < filters.fecha_fin)
+
+    categorias_norm = _normalized_sequence(filters.categorias)
+    if categorias_norm:
+        query = query.filter(func.lower(SugerenciaCiudadano.categoria).in_(categorias_norm))
+
+    return query
+
+
+def _compute_time_to_first_response(
+    municipio_id: int, filters: StatsFilters | None
+) -> list[float]:
     """Return the response times in hours for tickets con primera respuesta."""
 
     first_admin_comment = (
@@ -148,18 +239,21 @@ def _compute_time_to_first_response(municipio_id: int) -> list[float]:
         - cast(_epoch_seconds(MunicipioTicket.fecha), Float)
     )
 
-    rows = (
+    query = (
         db.session.query(response_seconds_expr.label("segundos"))
         .join(first_admin_comment, first_admin_comment.c.ticket_id == MunicipioTicket.id)
         .filter(MunicipioTicket.municipio_id == municipio_id)
-        .all()
     )
+    query = _apply_ticket_filters(query, filters)
+    rows = query.all()
 
     horas = [max(0.0, float(row.segundos) / 3600.0) for row in rows if row.segundos is not None]
     return horas
 
 
-def _compute_time_to_close(municipio_id: int) -> list[float]:
+def _compute_time_to_close(
+    municipio_id: int, filters: StatsFilters | None
+) -> list[float]:
     """Return closure times in hours for closed tickets."""
 
     cierre_segundos_expr = (
@@ -167,15 +261,16 @@ def _compute_time_to_close(municipio_id: int) -> list[float]:
         - cast(_epoch_seconds(MunicipioTicket.fecha), Float)
     )
 
-    rows = (
+    query = (
         db.session.query(cierre_segundos_expr.label("segundos"))
         .filter(
             MunicipioTicket.municipio_id == municipio_id,
             MunicipioTicket.estado.in_(_CLOSED_STATES),
             MunicipioTicket.ultima_actividad.isnot(None),
         )
-        .all()
     )
+    query = _apply_ticket_filters(query, filters)
+    rows = query.all()
 
     horas = [max(0.0, float(row.segundos) / 3600.0) for row in rows if row.segundos is not None]
     return horas
@@ -201,6 +296,7 @@ def _normalize_label(value: str | None, fallback: str) -> str:
 def build_stats_for_municipio(
     municipio_id: int | None,
     *,
+    filters: StatsFilters | None = None,
     now: datetime | None = None,
 ) -> dict:
     """Return detailed analytics for tickets and citizen suggestions."""
@@ -247,14 +343,20 @@ def build_stats_for_municipio(
         }
 
     ahora = now or get_local_now()
+    active_filters = filters if filters and not filters.is_empty() else None
+
+    def _tickets_query(*columns):
+        query = db.session.query(*columns).filter(
+            MunicipioTicket.municipio_id == municipio_id
+        )
+        return _apply_ticket_filters(query, active_filters)
 
     # --- Tickets por estado -------------------------------------------------
     state_rows = (
-        db.session.query(
+        _tickets_query(
             MunicipioTicket.estado,
             func.count(MunicipioTicket.id),
         )
-        .filter(MunicipioTicket.municipio_id == municipio_id)
         .group_by(MunicipioTicket.estado)
         .all()
     )
@@ -276,50 +378,48 @@ def build_stats_for_municipio(
         "resueltos": cerrados,
     }
 
-    expirados = (
-        db.session.query(func.count(MunicipioTicket.id))
-        .filter(
-            MunicipioTicket.municipio_id == municipio_id,
-            or_(
-                MunicipioTicket.estado.is_(None),
-                ~MunicipioTicket.estado.in_(list(_CLOSED_STATES)),
-            ),
-            MunicipioTicket.fecha < (ahora - timedelta(days=30)),
-        )
-        .scalar()
-        or 0
+    expirados_query = _tickets_query(func.count(MunicipioTicket.id)).filter(
+        or_(
+            MunicipioTicket.estado.is_(None),
+            ~MunicipioTicket.estado.in_(list(_CLOSED_STATES)),
+        ),
+        MunicipioTicket.fecha < (ahora - timedelta(days=30)),
     )
+    expirados = expirados_query.scalar() or 0
     resumen_base["expirados"] = expirados
 
     # --- Estadísticas por categoría ----------------------------------------
     categoria_rows = (
-        db.session.query(
+        _tickets_query(
             MunicipioTicket.categoria,
             func.count(MunicipioTicket.id).label("total"),
             func.sum(
                 case((MunicipioTicket.estado.in_(list(_CLOSED_STATES)), 1), else_=0)
             ).label("cerrados"),
         )
-        .filter(MunicipioTicket.municipio_id == municipio_id)
         .group_by(MunicipioTicket.categoria)
         .all()
     )
 
+    categoria_satisfaccion_query = db.session.query(
+        MunicipioTicket.categoria,
+        func.avg(TicketSatisfaccion.puntuacion).label("promedio"),
+        func.count(TicketSatisfaccion.id).label("respuestas"),
+    ).join(
+        TicketSatisfaccion,
+        and_(
+            TicketSatisfaccion.ticket_id == MunicipioTicket.id,
+            TicketSatisfaccion.tipo == "municipio",
+        ),
+        isouter=True,
+    )
     categoria_satisfaccion_rows = (
-        db.session.query(
-            MunicipioTicket.categoria,
-            func.avg(TicketSatisfaccion.puntuacion).label("promedio"),
-            func.count(TicketSatisfaccion.id).label("respuestas"),
-        )
-        .join(
-            TicketSatisfaccion,
-            and_(
-                TicketSatisfaccion.ticket_id == MunicipioTicket.id,
-                TicketSatisfaccion.tipo == "municipio",
+        _apply_ticket_filters(
+            categoria_satisfaccion_query.filter(
+                MunicipioTicket.municipio_id == municipio_id
             ),
-            isouter=True,
+            active_filters,
         )
-        .filter(MunicipioTicket.municipio_id == municipio_id)
         .group_by(MunicipioTicket.categoria)
         .all()
     )
@@ -352,17 +452,14 @@ def build_stats_for_municipio(
 
     # --- Distritos ---------------------------------------------------------
     distrito_rows = (
-        db.session.query(
+        _tickets_query(
             MunicipioTicket.distrito,
             func.count(MunicipioTicket.id).label("total"),
             func.sum(
                 case((MunicipioTicket.estado.in_(list(_CLOSED_STATES)), 1), else_=0)
             ).label("cerrados"),
         )
-        .filter(
-            MunicipioTicket.municipio_id == municipio_id,
-            MunicipioTicket.distrito.isnot(None),
-        )
+        .filter(MunicipioTicket.distrito.isnot(None))
         .group_by(MunicipioTicket.distrito)
         .all()
     )
@@ -379,11 +476,10 @@ def build_stats_for_municipio(
 
     # --- Canal de ingreso --------------------------------------------------
     canal_rows = (
-        db.session.query(
+        _tickets_query(
             MunicipioTicket.canal_ingreso,
             func.count(MunicipioTicket.id),
         )
-        .filter(MunicipioTicket.municipio_id == municipio_id)
         .group_by(MunicipioTicket.canal_ingreso)
         .all()
     )
@@ -398,14 +494,13 @@ def build_stats_for_municipio(
     # --- Tendencias temporales --------------------------------------------
     month_col = _build_month_expression(MunicipioTicket.fecha).label("mes")
     month_rows = (
-        db.session.query(
+        _tickets_query(
             month_col,
             func.count(MunicipioTicket.id).label("total"),
             func.sum(
                 case((MunicipioTicket.estado.in_(list(_CLOSED_STATES)), 1), else_=0)
             ).label("cerrados"),
         )
-        .filter(MunicipioTicket.municipio_id == municipio_id)
         .group_by(month_col)
         .order_by(month_col)
         .all()
@@ -425,18 +520,15 @@ def build_stats_for_municipio(
 
     day_col = _build_day_expression(MunicipioTicket.fecha).label("dia")
     semana_inicio = ahora - timedelta(days=6)
+    week_query = _tickets_query(
+        day_col,
+        func.count(MunicipioTicket.id).label("total"),
+        func.sum(
+            case((MunicipioTicket.estado.in_(list(_CLOSED_STATES)), 1), else_=0)
+        ).label("cerrados"),
+    )
     week_rows = (
-        db.session.query(
-            day_col,
-            func.count(MunicipioTicket.id).label("total"),
-            func.sum(
-                case((MunicipioTicket.estado.in_(list(_CLOSED_STATES)), 1), else_=0)
-            ).label("cerrados"),
-        )
-        .filter(
-            MunicipioTicket.municipio_id == municipio_id,
-            MunicipioTicket.fecha >= semana_inicio,
-        )
+        week_query.filter(MunicipioTicket.fecha >= semana_inicio)
         .group_by(day_col)
         .order_by(day_col)
         .all()
@@ -455,8 +547,10 @@ def build_stats_for_municipio(
     )
 
     # --- Tiempos de respuesta y cierre ------------------------------------
-    tiempos_respuesta_horas = _compute_time_to_first_response(municipio_id)
-    tiempos_cierre_horas = _compute_time_to_close(municipio_id)
+    tiempos_respuesta_horas = _compute_time_to_first_response(
+        municipio_id, active_filters
+    )
+    tiempos_cierre_horas = _compute_time_to_close(municipio_id, active_filters)
 
     tiempos_respuesta = _summarize_hours(tiempos_respuesta_horas)
     tiempos_cierre = _summarize_hours(tiempos_cierre_horas)
@@ -465,27 +559,19 @@ def build_stats_for_municipio(
     resumen_base["sla_24h"] = tiempos_respuesta["porcentaje_24h"]
 
     # --- Backlog -----------------------------------------------------------
-    menos_72 = (
-        db.session.query(func.count(MunicipioTicket.id))
-        .filter(
-            MunicipioTicket.municipio_id == municipio_id,
-            or_(
-                MunicipioTicket.estado.is_(None),
-                ~MunicipioTicket.estado.in_(list(_CLOSED_STATES)),
-            ),
-            MunicipioTicket.fecha >= (ahora - timedelta(hours=72)),
+    backlog_base = _tickets_query(func.count(MunicipioTicket.id)).filter(
+        or_(
+            MunicipioTicket.estado.is_(None),
+            ~MunicipioTicket.estado.in_(list(_CLOSED_STATES)),
         )
+    )
+    menos_72 = (
+        backlog_base.filter(MunicipioTicket.fecha >= (ahora - timedelta(hours=72)))
         .scalar()
         or 0
     )
     entre_3_y_7 = (
-        db.session.query(func.count(MunicipioTicket.id))
-        .filter(
-            MunicipioTicket.municipio_id == municipio_id,
-            or_(
-                MunicipioTicket.estado.is_(None),
-                ~MunicipioTicket.estado.in_(list(_CLOSED_STATES)),
-            ),
+        backlog_base.filter(
             MunicipioTicket.fecha < (ahora - timedelta(hours=72)),
             MunicipioTicket.fecha >= (ahora - timedelta(days=7)),
         )
@@ -493,15 +579,7 @@ def build_stats_for_municipio(
         or 0
     )
     mas_7 = (
-        db.session.query(func.count(MunicipioTicket.id))
-        .filter(
-            MunicipioTicket.municipio_id == municipio_id,
-            or_(
-                MunicipioTicket.estado.is_(None),
-                ~MunicipioTicket.estado.in_(list(_CLOSED_STATES)),
-            ),
-            MunicipioTicket.fecha < (ahora - timedelta(days=7)),
-        )
+        backlog_base.filter(MunicipioTicket.fecha < (ahora - timedelta(days=7)))
         .scalar()
         or 0
     )
@@ -514,9 +592,8 @@ def build_stats_for_municipio(
 
     # --- Geolocalización ---------------------------------------------------
     geolocalizados_total = (
-        db.session.query(func.count(MunicipioTicket.id))
+        _tickets_query(func.count(MunicipioTicket.id))
         .filter(
-            MunicipioTicket.municipio_id == municipio_id,
             MunicipioTicket.latitud.isnot(None),
             MunicipioTicket.longitud.isnot(None),
         )
@@ -525,12 +602,11 @@ def build_stats_for_municipio(
     )
 
     geolocalizados_por_categoria_rows = (
-        db.session.query(
+        _tickets_query(
             MunicipioTicket.categoria,
             func.count(MunicipioTicket.id),
         )
         .filter(
-            MunicipioTicket.municipio_id == municipio_id,
             MunicipioTicket.latitud.isnot(None),
             MunicipioTicket.longitud.isnot(None),
         )
@@ -552,19 +628,21 @@ def build_stats_for_municipio(
     }
 
     # --- Satisfacción global ----------------------------------------------
+    satisfaccion_query = db.session.query(
+        func.avg(TicketSatisfaccion.puntuacion),
+        func.count(TicketSatisfaccion.id),
+    ).join(
+        MunicipioTicket,
+        and_(
+            TicketSatisfaccion.ticket_id == MunicipioTicket.id,
+            TicketSatisfaccion.tipo == "municipio",
+        ),
+    )
     satisfaccion_global = (
-        db.session.query(
-            func.avg(TicketSatisfaccion.puntuacion),
-            func.count(TicketSatisfaccion.id),
+        _apply_ticket_filters(
+            satisfaccion_query.filter(MunicipioTicket.municipio_id == municipio_id),
+            active_filters,
         )
-        .join(
-            MunicipioTicket,
-            and_(
-                TicketSatisfaccion.ticket_id == MunicipioTicket.id,
-                TicketSatisfaccion.tipo == "municipio",
-            ),
-        )
-        .filter(MunicipioTicket.municipio_id == municipio_id)
         .first()
     )
 
@@ -584,19 +662,23 @@ def build_stats_for_municipio(
     )
 
     # --- Distribución de satisfacción -------------------------------------
+    satisfaccion_distribucion_query = db.session.query(
+        TicketSatisfaccion.puntuacion,
+        func.count(TicketSatisfaccion.id),
+    ).join(
+        MunicipioTicket,
+        and_(
+            TicketSatisfaccion.ticket_id == MunicipioTicket.id,
+            TicketSatisfaccion.tipo == "municipio",
+        ),
+    )
     satisfaccion_distribucion_rows = (
-        db.session.query(
-            TicketSatisfaccion.puntuacion,
-            func.count(TicketSatisfaccion.id),
-        )
-        .join(
-            MunicipioTicket,
-            and_(
-                TicketSatisfaccion.ticket_id == MunicipioTicket.id,
-                TicketSatisfaccion.tipo == "municipio",
+        _apply_ticket_filters(
+            satisfaccion_distribucion_query.filter(
+                MunicipioTicket.municipio_id == municipio_id
             ),
+            active_filters,
         )
-        .filter(MunicipioTicket.municipio_id == municipio_id)
         .group_by(TicketSatisfaccion.puntuacion)
         .order_by(TicketSatisfaccion.puntuacion)
         .all()
@@ -608,21 +690,22 @@ def build_stats_for_municipio(
     ]
 
     # --- Sugerencias -------------------------------------------------------
-    sugerencia_rows = (
-        db.session.query(
-            func.count(SugerenciaCiudadano.id),
-        )
-        .filter(SugerenciaCiudadano.municipio_id == municipio_id)
-        .first()
+    sugerencia_query = db.session.query(func.count(SugerenciaCiudadano.id)).filter(
+        SugerenciaCiudadano.municipio_id == municipio_id
     )
+    sugerencia_rows = _apply_suggestion_filters(
+        sugerencia_query, active_filters
+    ).first()
     sugerencias_total = int((sugerencia_rows or (0,))[0] or 0)
 
     sugerencias_por_estado_rows = (
-        db.session.query(
-            SugerenciaCiudadano.estado,
-            func.count(SugerenciaCiudadano.id),
+        _apply_suggestion_filters(
+            db.session.query(
+                SugerenciaCiudadano.estado,
+                func.count(SugerenciaCiudadano.id),
+            ).filter(SugerenciaCiudadano.municipio_id == municipio_id),
+            active_filters,
         )
-        .filter(SugerenciaCiudadano.municipio_id == municipio_id)
         .group_by(SugerenciaCiudadano.estado)
         .all()
     )
@@ -635,11 +718,13 @@ def build_stats_for_municipio(
     ]
 
     sugerencias_por_categoria_rows = (
-        db.session.query(
-            SugerenciaCiudadano.categoria,
-            func.count(SugerenciaCiudadano.id),
+        _apply_suggestion_filters(
+            db.session.query(
+                SugerenciaCiudadano.categoria,
+                func.count(SugerenciaCiudadano.id),
+            ).filter(SugerenciaCiudadano.municipio_id == municipio_id),
+            active_filters,
         )
-        .filter(SugerenciaCiudadano.municipio_id == municipio_id)
         .group_by(SugerenciaCiudadano.categoria)
         .all()
     )
@@ -653,11 +738,13 @@ def build_stats_for_municipio(
 
     sugerencia_month_col = _build_month_expression(SugerenciaCiudadano.fecha).label("mes")
     sugerencias_mensual_rows = (
-        db.session.query(
-            sugerencia_month_col,
-            func.count(SugerenciaCiudadano.id),
+        _apply_suggestion_filters(
+            db.session.query(
+                sugerencia_month_col,
+                func.count(SugerenciaCiudadano.id),
+            ).filter(SugerenciaCiudadano.municipio_id == municipio_id),
+            active_filters,
         )
-        .filter(SugerenciaCiudadano.municipio_id == municipio_id)
         .group_by(sugerencia_month_col)
         .order_by(sugerencia_month_col)
         .all()
