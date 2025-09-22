@@ -9,7 +9,8 @@ from utils.permissions import require_role
 from routes.crm import _obtener_clientes
 from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
 from routes.tramites import listar_tramites, obtener_tramite
-from models import MunicipioTicket, db
+from sqlalchemy import func
+from models import Conversacion, MunicipioTicket, User, db
 from routes.ticket import TICKET_ALLOWED_STATES
 from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS
 from services.municipal_stats import build_stats_for_municipio
@@ -282,13 +283,12 @@ def _municipal_message_metrics(eid: int) -> list[dict]:
     def _contar_desde(dias: int) -> int:
         desde = ahora - timedelta(days=dias)
         return (
-            db.session.execute(
-                db.text(
-                    "SELECT COUNT(*) FROM conversacion c JOIN user u ON c.user_id = u.id "
-                    "WHERE u.empresa_id = :eid AND c.timestamp >= :desde"
-                ),
-                {"eid": eid, "desde": desde},
-            ).scalar()
+            db.session.query(func.count())
+            .select_from(Conversacion)
+            .join(User, Conversacion.user_id == User.id)
+            .filter(User.empresa_id == eid)
+            .filter(Conversacion.timestamp >= desde)
+            .scalar()
             or 0
         )
 
