@@ -71,6 +71,11 @@ def ensure_buttons_compatibility(payload: Any) -> Any:
         if action_id and "id" not in button:
             button["id"] = action_id
 
+        url_value = button.get("url")
+        if isinstance(url_value, str) and url_value.strip():
+            button.setdefault("target", "_blank")
+            button.setdefault("rel", "noopener noreferrer")
+
     def _mirror_text_fields(container: MutableMapping) -> None:
         """Ensure all text aliases share the same content."""
 

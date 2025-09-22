@@ -67,6 +67,15 @@ class EnsureButtonsCompatibilityTest(unittest.TestCase):
         self.assertEqual(result.get("respuesta"), "Texto legado")
         self.assertEqual(result.get("respuesta_usuario"), "Texto legado")
 
+    def test_url_buttons_default_to_new_tab(self):
+        payload = {"botones": [{"texto": "Ir", "url": "https://example.com"}]}
+
+        result = ensure_buttons_compatibility(payload)
+
+        boton = result["botones"][0]
+        self.assertEqual(boton.get("target"), "_blank")
+        self.assertEqual(boton.get("rel"), "noopener noreferrer")
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
