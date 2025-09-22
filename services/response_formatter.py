@@ -10,41 +10,104 @@ logger = logging.getLogger(__name__)
 # MODIFIED: Default to TRUE to satisfy user request for text-based menus.
 WHATSAPP_FORCE_TEXT = os.getenv("WHATSAPP_FORCE_TEXT", "true").lower() != "false"
 
-def render_audio_text(message: str, options: list | None = None, categorias: list | None = None) -> str:
-    """Builds a plain text version of a menu suitable for TTS.
+def render_audio_text(
+    message: str,
+    options: list | None = None,
+    categorias: list | None = None,
+    datos: dict | None = None,
+    accion: str | None = None,
+) -> str:
+    """Builds a plain text version of a response tailored for text-to-speech.
 
-    Parameters
-    ----------
-    message: str
-        The main text body.
-    options: list | None
-        Flat list of option dictionaries with a ``texto`` key.
-    categorias: list | None
-        Structured categories as returned by the greeting handler. Each
-        category contains ``titulo`` and a ``botones`` list.
-
-    Returns
-    -------
-    str
-        Text with numbered options ready for speech synthesis.
+    Besides enumerating menu options, this helper extracts key information from
+    ``datos`` so the generated audio provides a concise summary of reclamos o
+    sugerencias. The resulting text avoids visual cues and relies on short,
+    descriptive sentences that are easier to follow when using a screen reader
+    or an audio player.
     """
-    lines = [message.strip()] if message else []
+
+    def _clean(value: str | None) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    def _append_if_valid(container: list[str], text: str | None) -> None:
+        cleaned = _clean(text)
+        if cleaned:
+            container.append(cleaned)
+
+    lines: list[str] = []
+    _append_if_valid(lines, message)
+
+    summary_lines: list[str] = []
+    if isinstance(datos, dict):
+        # Map of possible keys to human friendly labels. Several keys share the
+        # same label so we group them together.
+        summary_mapping: list[tuple[tuple[str, ...], str]] = [
+            (("categoria",), "Categoría"),
+            (("descripcion",), "Descripción"),
+            (("ubicacion", "direccion"), "Ubicación"),
+            (("distrito", "barrio"), "Distrito"),
+            (("nombre_usuario_detectado", "nombre"), "Nombre de contacto"),
+            (("dni",), "Documento"),
+            (("telefono_detectado", "telefono"), "Teléfono"),
+            (("email_detectado", "email"), "Correo"),
+        ]
+        seen_labels: set[str] = set()
+        for keys, label in summary_mapping:
+            for key in keys:
+                value = _clean(datos.get(key))
+                if value:
+                    entry = f"{label}: {value}"
+                    if entry not in seen_labels:
+                        summary_lines.append(entry)
+                        seen_labels.add(entry)
+                    break
+
+    if summary_lines:
+        if accion in {"crear_reclamo", "iniciar_reclamo"}:
+            header = "Resumen del reclamo:"
+        elif accion == "hacer_sugerencia":
+            header = "Resumen de la sugerencia:"
+        else:
+            header = "Resumen de la gestión:"
+        lines.append(header)
+        lines.extend(summary_lines)
+
     counter = 1
+    options_present = False
+
+    def _render_option(text: str | None) -> None:
+        nonlocal counter, options_present
+        cleaned = _clean(text)
+        if cleaned:
+            if not options_present:
+                lines.append("Opciones disponibles:")
+                options_present = True
+            lines.append(f"Opción {counter}: {cleaned}")
+            counter += 1
 
     if categorias:
         for categoria in categorias:
-            titulo = categoria.get("titulo")
+            titulo = _clean(categoria.get("titulo"))
             if titulo:
-                lines.append(titulo)
+                if not options_present:
+                    lines.append("Opciones disponibles:")
+                    options_present = True
+                lines.append(f"{titulo}:")
             for boton in categoria.get("botones", []):
-                lines.append(f"{counter}. {boton.get('texto', '')}")
-                counter += 1
+                _render_option(boton.get("texto"))
     elif options:
         for opt in options:
-            lines.append(f"{counter}. {opt.get('texto', '')}")
-            counter += 1
+            _render_option(opt.get("texto"))
 
-    return "\n".join(lines)
+    if options_present:
+        lines.append(
+            "Respondé con el número de la opción que prefieras. Si necesitás "
+            "escucharlo otra vez, pedilo."
+        )
+
+    return "\n".join(lines).strip()
 
 def build_interactive_response(options: list,
                                body_text: str,
