@@ -1,8 +1,11 @@
 import os
 import unicodedata
-from typing import Iterator, Pattern, Union
+from io import BytesIO
+import importlib.util
+from typing import Any, Iterator, Pattern, Union
 
-from flask import Blueprint, jsonify, request, current_app
+import pandas as pd
+from flask import Blueprint, jsonify, request, current_app, send_file, g
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from datetime import datetime, timedelta
 from utils.time_utils import get_local_now
@@ -122,6 +125,41 @@ def apply_cors_headers(response):
         response.headers.pop("Access-Control-Allow-Credentials", None)
 
     return response
+
+
+def _resolve_current_municipio_id(user) -> Any:
+    """Return the municipio identifier associated with the request user.
+
+    Municipal employees are linked to their owner entity through ``empresa_id``
+    and ``g.owner_user``. Prefer the municipality configured on the owner when
+    available so the endpoints operate on real production data instead of the
+    demo placeholders used when no association is found.
+    """
+
+    municipio_id = getattr(user, "municipio_id", None)
+    if municipio_id is not None:
+        return municipio_id
+
+    owner_user = getattr(g, "owner_user", None)
+    if owner_user is not None:
+        owner_municipio_id = getattr(owner_user, "municipio_id", None)
+        if owner_municipio_id is not None:
+            return owner_municipio_id
+        if getattr(owner_user, "tipo_chat", None) == "municipio":
+            owner_id = getattr(owner_user, "id", None)
+            if owner_id is not None:
+                return owner_id
+
+    empresa_id = getattr(user, "empresa_id", None)
+    if empresa_id is not None:
+        return empresa_id
+
+    if getattr(user, "tipo_chat", None) == "municipio":
+        fallback_id = getattr(user, "id", None)
+        if fallback_id is not None:
+            return fallback_id
+
+    return None
 
 
 _STATS_RANGE_OPTIONS = [
@@ -269,6 +307,460 @@ def _build_stats_filters_from_request(args) -> tuple[StatsFilters | None, dateti
     return filters, fecha_inicio, fecha_fin
 
 
+def _format_value_for_export(value: Any) -> str:
+    """Return a human readable representation for export files."""
+
+    if isinstance(value, bool):
+        return "Sí" if value else "No"
+    if isinstance(value, (int,)):
+        return str(value)
+    if isinstance(value, float):
+        if value.is_integer():
+            return f"{int(value)}"
+        return f"{value:.2f}"
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()  # type: ignore[call-arg]
+        except Exception:  # pragma: no cover - defensive
+            pass
+    if value is None:
+        return "-"
+    return str(value)
+
+
+def _format_filters_for_export(
+    filters: StatsFilters | None,
+    fecha_inicio: datetime | None,
+    fecha_fin: datetime | None,
+) -> list[tuple[str, str]]:
+    """Build a list of human-readable filter descriptions."""
+
+    items: list[tuple[str, str]] = []
+
+    if fecha_inicio:
+        items.append(("Fecha desde", fecha_inicio.date().isoformat()))
+    if fecha_fin:
+        items.append(("Fecha hasta", fecha_fin.date().isoformat()))
+
+    if filters:
+        if filters.estados:
+            items.append(("Estados", ", ".join(filters.estados)))
+        if filters.categorias:
+            items.append(("Categorías", ", ".join(filters.categorias)))
+        if filters.distritos:
+            items.append(("Distritos", ", ".join(filters.distritos)))
+        if filters.canales:
+            items.append(("Canales", ", ".join(filters.canales)))
+        if filters.agentes:
+            agentes = ", ".join(str(agente) for agente in filters.agentes)
+            items.append(("Agentes", agentes))
+
+    if not items:
+        items.append(("Filtros", "Sin filtros adicionales"))
+
+    return items
+
+
+def _sanitize_sheet_name(name: str) -> str:
+    sanitized = (name or "").strip() or "Hoja"
+    return sanitized[:31]
+
+
+def _select_excel_engine() -> str:
+    """Select an available engine for pandas Excel writer."""
+
+    for candidate in ("xlsxwriter", "openpyxl"):
+        if importlib.util.find_spec(candidate) is not None:
+            return candidate
+    raise RuntimeError(
+        "No se encontró un motor para escribir archivos Excel. Instala 'xlsxwriter' o 'openpyxl'."
+    )
+
+
+def _write_key_value_sheet(
+    writer: pd.ExcelWriter,
+    sheet_name: str,
+    items: list[tuple[str, Any]] | list[tuple[str, str]] | list[tuple[str, int]] | list[tuple[str, float]]
+) -> None:
+    rows = [
+        {"Campo": key, "Valor": _format_value_for_export(value)} for key, value in items
+    ]
+    if not rows:
+        rows = [{"Campo": "Sin datos", "Valor": ""}]
+    df = pd.DataFrame(rows)
+    df.to_excel(writer, sheet_name=_sanitize_sheet_name(sheet_name), index=False)
+
+
+def _write_table_sheet(writer: pd.ExcelWriter, sheet_name: str, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    df = pd.DataFrame(rows)
+    df.to_excel(writer, sheet_name=_sanitize_sheet_name(sheet_name), index=False)
+
+
+def _build_stats_excel(
+    stats: dict[str, Any],
+    filtros: list[tuple[str, str]],
+    metrics: dict[str, Any] | None = None,
+) -> bytes:
+    """Create an Excel workbook summarizing stats and optional metrics."""
+
+    engine = _select_excel_engine()
+    buffer = BytesIO()
+
+    with pd.ExcelWriter(buffer, engine=engine) as writer:
+        _write_key_value_sheet(writer, "Filtros", filtros)
+
+        resumen = stats.get("resumen")
+        if isinstance(resumen, dict) and resumen:
+            _write_key_value_sheet(writer, "Resumen", list(resumen.items()))
+
+        estados = stats.get("estados") or []
+        if estados:
+            _write_table_sheet(writer, "Estados", estados)
+
+        categorias_rows: list[dict[str, Any]] = []
+        for entry in stats.get("por_categoria", []) or []:
+            satisf = entry.get("satisfaccion") or {}
+            categorias_rows.append(
+                {
+                    "Categoría": entry.get("categoria"),
+                    "Total": entry.get("total"),
+                    "Abiertos": entry.get("abiertos"),
+                    "Cerrados": entry.get("cerrados"),
+                    "Satisfacción promedio": satisf.get("promedio"),
+                    "Satisfacción respuestas": satisf.get("respuestas"),
+                }
+            )
+        _write_table_sheet(writer, "Por categoría", categorias_rows)
+
+        _write_table_sheet(writer, "Por distrito", stats.get("por_distrito") or [])
+        _write_table_sheet(writer, "Por canal", stats.get("por_canal") or [])
+        _write_table_sheet(writer, "Tendencia mensual", stats.get("tendencia_mensual") or [])
+        _write_table_sheet(writer, "Tendencia semanal", stats.get("tendencia_semanal") or [])
+
+        tiempos_respuesta = stats.get("tiempos_respuesta") or {}
+        if tiempos_respuesta:
+            _write_key_value_sheet(writer, "Tiempos respuesta", list(tiempos_respuesta.items()))
+
+        tiempos_cierre = stats.get("tiempos_cierre") or {}
+        if tiempos_cierre:
+            _write_key_value_sheet(writer, "Tiempos cierre", list(tiempos_cierre.items()))
+
+        backlog = stats.get("backlog") or {}
+        if backlog:
+            _write_key_value_sheet(writer, "Backlog", list(backlog.items()))
+
+        geolocalizacion = stats.get("geolocalizacion") or {}
+        if geolocalizacion:
+            geo_summary = [("Tickets con coordenadas", geolocalizacion.get("con_coordenadas", 0))]
+            _write_key_value_sheet(writer, "Geolocalización", geo_summary)
+            _write_table_sheet(writer, "Geo por categoría", geolocalizacion.get("por_categoria") or [])
+
+        satisfaccion = stats.get("satisfaccion") or {}
+        if satisfaccion:
+            resumen_satisfaccion = [
+                ("Promedio", satisfaccion.get("promedio")),
+                ("Respuestas", satisfaccion.get("respuestas")),
+            ]
+            _write_key_value_sheet(writer, "Satisfacción", resumen_satisfaccion)
+            _write_table_sheet(writer, "Distribución satisfacción", satisfaccion.get("distribucion") or [])
+
+        sugerencias = stats.get("sugerencias") or {}
+        if sugerencias:
+            _write_key_value_sheet(writer, "Sugerencias", [("Total", sugerencias.get("total", 0))])
+            _write_table_sheet(writer, "Sug. por estado", sugerencias.get("por_estado") or [])
+            _write_table_sheet(writer, "Sug. por categoría", sugerencias.get("por_categoria") or [])
+            _write_table_sheet(writer, "Sug. tendencia", sugerencias.get("tendencia_mensual") or [])
+
+        if metrics:
+            cards = metrics.get("cards")
+            if cards:
+                _write_table_sheet(writer, "Métricas cards", cards)
+            summary = metrics.get("summary")
+            if isinstance(summary, dict) and summary:
+                _write_key_value_sheet(writer, "Resumen métricas", list(summary.items()))
+
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def _pdf_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _text_command(font: str, size: float, x: float, y: float, text: str) -> str:
+    escaped = _pdf_escape(text)
+    return f"BT /{font} {size:.0f} Tf {x:.2f} {y:.2f} Td ({escaped}) Tj ET\n"
+
+
+def _chunk_lines_for_pdf(entries: list[tuple[str, bool, int]]) -> list[str]:
+    """Convert textual entries into PDF drawing commands for each page."""
+
+    if not entries:
+        entries = [("Sin datos disponibles", False, 0)]
+
+    page_height = 792.0
+    top_margin = 60.0
+    bottom_margin = 60.0
+    line_height = 16.0
+    indent_width = 18.0
+
+    pages: list[list[str]] = []
+    current_page: list[str] = []
+    y = page_height - top_margin
+
+    for text, is_title, indent in entries:
+        if is_title and current_page:
+            y -= line_height / 2
+        if y <= bottom_margin:
+            pages.append(current_page)
+            current_page = []
+            y = page_height - top_margin
+
+        font = "F2" if is_title else "F1"
+        size = 14 if is_title else 11
+        x = 54.0 + max(indent, 0) * indent_width
+        current_page.append(_text_command(font, size, x, y, text))
+        y -= line_height
+
+    pages.append(current_page)
+    return ["".join(page) for page in pages if page]
+
+
+def _assemble_pdf(pages: list[str]) -> bytes:
+    objects: list[bytes | None] = []
+
+    def add_object(body: bytes | None = None) -> int:
+        objects.append(body)
+        return len(objects)
+
+    catalog_obj = add_object()
+    pages_obj = add_object()
+    font_regular = add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    font_bold = add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>")
+
+    page_numbers: list[int] = []
+    for commands in pages or [""]:
+        stream_bytes = commands.encode("latin-1", errors="replace")
+        stream_obj = add_object(
+            b"<< /Length "
+            + str(len(stream_bytes)).encode("ascii")
+            + b" >>\nstream\n"
+            + stream_bytes
+            + b"endstream"
+        )
+        page_obj = add_object(
+            (
+                f"<< /Type /Page /Parent {pages_obj} 0 R /MediaBox [0 0 612 792] /Contents {stream_obj} 0 R "
+                f"/Resources << /Font << /F1 {font_regular} 0 R /F2 {font_bold} 0 R >> >> >>"
+            ).encode("ascii")
+        )
+        page_numbers.append(page_obj)
+
+    kids = " ".join(f"{num} 0 R" for num in page_numbers)
+    objects[pages_obj - 1] = (
+        f"<< /Type /Pages /Kids [{kids}] /Count {len(page_numbers)} >>"
+    ).encode("ascii")
+    objects[catalog_obj - 1] = (
+        f"<< /Type /Catalog /Pages {pages_obj} 0 R >>"
+    ).encode("ascii")
+
+    pdf = bytearray(b"%PDF-1.4\n")
+    offsets = [0] * (len(objects) + 1)
+    for idx, body in enumerate(objects, start=1):
+        data = body or b"<< >>"
+        offsets[idx] = len(pdf)
+        pdf.extend(f"{idx} 0 obj\n".encode("ascii"))
+        pdf.extend(data)
+        pdf.extend(b"\nendobj\n")
+
+    xref_offset = len(pdf)
+    pdf.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    pdf.extend(b"0000000000 65535 f \n")
+    for idx in range(1, len(objects) + 1):
+        pdf.extend(f"{offsets[idx]:010d} 00000 n \n".encode("ascii"))
+
+    pdf.extend(
+        (
+            f"trailer << /Size {len(objects) + 1} /Root {catalog_obj} 0 R >>\nstartxref\n{xref_offset}\n%%EOF"
+        ).encode("ascii")
+    )
+
+    return bytes(pdf)
+
+
+def _build_stats_pdf(
+    stats: dict[str, Any],
+    filtros: list[tuple[str, str]],
+    metrics: dict[str, Any] | None = None,
+) -> bytes:
+    """Generate a simple PDF summarizing stats and optional metrics."""
+
+    entries: list[tuple[str, bool, int]] = []
+
+    entries.append(("Reporte de estadísticas municipales", True, 0))
+    entries.append(("", False, 0))
+
+    entries.append(("Filtros aplicados", True, 0))
+    for key, value in filtros:
+        entries.append((f"• {key}: {value}", False, 1))
+
+    resumen = stats.get("resumen") or {}
+    if resumen:
+        entries.append(("", False, 0))
+        entries.append(("Resumen", True, 0))
+        for key, value in resumen.items():
+            entries.append((f"• {key.replace('_', ' ').title()}: {_format_value_for_export(value)}", False, 1))
+
+    def _append_list_section(title: str, rows: list[dict[str, Any]], key_labels: list[tuple[str, str]]):
+        if not rows:
+            return
+        entries.append(("", False, 0))
+        entries.append((title, True, 0))
+        for row in rows:
+            parts = []
+            for key, label in key_labels:
+                if key in row:
+                    parts.append(f"{label}: {_format_value_for_export(row[key])}")
+            entries.append((f"• {' | '.join(parts)}", False, 1))
+
+    _append_list_section(
+        "Estados",
+        stats.get("estados") or [],
+        [("estado", "Estado"), ("total", "Total"), ("porcentaje", "%")],
+    )
+
+    categorias_rows = []
+    for entry in stats.get("por_categoria", []) or []:
+        row = {
+            "categoria": entry.get("categoria"),
+            "total": entry.get("total"),
+            "abiertos": entry.get("abiertos"),
+            "cerrados": entry.get("cerrados"),
+        }
+        satisf = entry.get("satisfaccion") or {}
+        if satisf:
+            row["satisfaccion"] = f"{_format_value_for_export(satisf.get('promedio'))} ({satisf.get('respuestas', 0)} respuestas)"
+        categorias_rows.append(row)
+    _append_list_section(
+        "Tickets por categoría",
+        categorias_rows,
+        [
+            ("categoria", "Categoría"),
+            ("total", "Total"),
+            ("abiertos", "Abiertos"),
+            ("cerrados", "Cerrados"),
+            ("satisfaccion", "Satisfacción"),
+        ],
+    )
+
+    _append_list_section(
+        "Tickets por distrito",
+        stats.get("por_distrito") or [],
+        [("distrito", "Distrito"), ("total", "Total"), ("abiertos", "Abiertos"), ("cerrados", "Cerrados")],
+    )
+    _append_list_section(
+        "Tickets por canal",
+        stats.get("por_canal") or [],
+        [("canal", "Canal"), ("total", "Total")],
+    )
+    _append_list_section(
+        "Tendencia mensual",
+        stats.get("tendencia_mensual") or [],
+        [("label", "Periodo"), ("total", "Total"), ("cerrados", "Cerrados"), ("abiertos", "Abiertos")],
+    )
+    _append_list_section(
+        "Tendencia semanal",
+        stats.get("tendencia_semanal") or [],
+        [("label", "Día"), ("total", "Total"), ("cerrados", "Cerrados"), ("abiertos", "Abiertos")],
+    )
+
+    for label, key in ("Tiempos de respuesta", "tiempos_respuesta"), ("Tiempos de cierre", "tiempos_cierre"):
+        valores = stats.get(key) or {}
+        if valores:
+            entries.append(("", False, 0))
+            entries.append((label, True, 0))
+            for k, v in valores.items():
+                entries.append((f"• {k.replace('_', ' ')}: {_format_value_for_export(v)}", False, 1))
+
+    backlog = stats.get("backlog") or {}
+    if backlog:
+        entries.append(("", False, 0))
+        entries.append(("Backlog", True, 0))
+        for k, v in backlog.items():
+            entries.append((f"• {k.replace('_', ' ')}: {_format_value_for_export(v)}", False, 1))
+
+    geolocalizacion = stats.get("geolocalizacion") or {}
+    if geolocalizacion:
+        entries.append(("", False, 0))
+        entries.append(("Geolocalización", True, 0))
+        entries.append((
+            f"• Tickets con coordenadas: {_format_value_for_export(geolocalizacion.get('con_coordenadas', 0))}",
+            False,
+            1,
+        ))
+        _append_list_section(
+            "Categorías geolocalizadas",
+            geolocalizacion.get("por_categoria") or [],
+            [("categoria", "Categoría"), ("total", "Total")],
+        )
+
+    satisfaccion = stats.get("satisfaccion") or {}
+    if satisfaccion:
+        entries.append(("", False, 0))
+        entries.append(("Satisfacción", True, 0))
+        entries.append((f"• Promedio: {_format_value_for_export(satisfaccion.get('promedio'))}", False, 1))
+        entries.append((f"• Respuestas: {_format_value_for_export(satisfaccion.get('respuestas'))}", False, 1))
+        _append_list_section(
+            "Distribución de satisfacción",
+            satisfaccion.get("distribucion") or [],
+            [("puntuacion", "Puntuación"), ("total", "Total")],
+        )
+
+    sugerencias = stats.get("sugerencias") or {}
+    if sugerencias:
+        entries.append(("", False, 0))
+        entries.append(("Sugerencias", True, 0))
+        entries.append((f"• Total: {_format_value_for_export(sugerencias.get('total', 0))}", False, 1))
+        _append_list_section(
+            "Sugerencias por estado",
+            sugerencias.get("por_estado") or [],
+            [("estado", "Estado"), ("total", "Total")],
+        )
+        _append_list_section(
+            "Sugerencias por categoría",
+            sugerencias.get("por_categoria") or [],
+            [("categoria", "Categoría"), ("total", "Total")],
+        )
+        _append_list_section(
+            "Tendencia de sugerencias",
+            sugerencias.get("tendencia_mensual") or [],
+            [("label", "Periodo"), ("total", "Total")],
+        )
+
+    if metrics:
+        cards = metrics.get("cards") or []
+        summary = metrics.get("summary") or {}
+        if cards or summary:
+            entries.append(("", False, 0))
+            entries.append(("Métricas de mensajería", True, 0))
+            for card in cards:
+                label = card.get("label", "")
+                value = card.get("value")
+                entries.append((f"• {label}: {_format_value_for_export(value)}", False, 1))
+            for key, value in summary.items():
+                entries.append((f"• {key.replace('_', ' ').title()}: {_format_value_for_export(value)}", False, 1))
+
+    entries.append(("", False, 0))
+    entries.append((f"Generado: {get_local_now().isoformat()}", False, 0))
+
+    pages = _chunk_lines_for_pdf(entries)
+    return _assemble_pdf(pages)
+
+
 def _dedupe_sorted(values, fallback: str) -> list[str]:
     seen: set[str] = set()
     cleaned: list[str] = []
@@ -332,7 +824,7 @@ def municipal_stats(current_user):
     if request.method == 'OPTIONS':
         return "", 204
 
-    municipio_id = getattr(current_user, "municipio_id", None)
+    municipio_id = _resolve_current_municipio_id(current_user)
     filters, _, _ = _build_stats_filters_from_request(request.args)
 
     if filters:
@@ -342,13 +834,65 @@ def municipal_stats(current_user):
 
     return jsonify(datos)
 
+
+@municipal_bp.route('/stats/export/<string:formato>', methods=['GET'])
+@token_requerido
+@admin_o_empleado_requerido
+def municipal_stats_export(current_user, formato: str):
+    """Permite exportar las estadísticas del municipio en PDF o Excel."""
+
+    municipio_id = _resolve_current_municipio_id(current_user)
+    if municipio_id is None:
+        return jsonify({"error": "El usuario no posee un municipio asociado."}), 404
+
+    filters, fecha_inicio, fecha_fin = _build_stats_filters_from_request(request.args)
+
+    if filters:
+        stats = build_stats_for_municipio(municipio_id, filters=filters)
+    else:
+        stats = build_stats_for_municipio(municipio_id)
+
+    filtros_legibles = _format_filters_for_export(filters, fecha_inicio, fecha_fin)
+    formato_normalizado = (formato or "").strip().lower()
+    timestamp = get_local_now().strftime("%Y%m%d_%H%M%S")
+
+    try:
+        if formato_normalizado == "excel":
+            contenido = _build_stats_excel(stats, filtros_legibles)
+            nombre = f"estadisticas_municipio_{municipio_id}_{timestamp}.xlsx"
+            return send_file(
+                BytesIO(contenido),
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                as_attachment=True,
+                download_name=nombre,
+            )
+        if formato_normalizado == "pdf":
+            contenido = _build_stats_pdf(stats, filtros_legibles)
+            nombre = f"estadisticas_municipio_{municipio_id}_{timestamp}.pdf"
+            return send_file(
+                BytesIO(contenido),
+                mimetype="application/pdf",
+                as_attachment=True,
+                download_name=nombre,
+            )
+    except RuntimeError as err:
+        current_app.logger.error("Error generando exportación de estadísticas: %s", err)
+        return jsonify({"error": str(err)}), 500
+    except Exception as err:  # pragma: no cover - protección adicional
+        current_app.logger.error(
+            "Falla inesperada al exportar estadísticas municipales", exc_info=True
+        )
+        return jsonify({"error": "No se pudo generar la exportación solicitada."}), 500
+
+    return jsonify({"error": "Formato no soportado"}), 400
+
 @municipal_bp.route('/stats/filters', methods=['GET', 'OPTIONS'])
 @token_requerido
 @admin_o_empleado_requerido
 def municipal_stats_filters(current_user):
-    municipio_id = getattr(current_user, "municipio_id", None)
+    municipio_id = _resolve_current_municipio_id(current_user)
 
-    if not municipio_id:
+    if municipio_id is None:
         return jsonify(
             {
                 "categorias": [],
@@ -422,8 +966,8 @@ def municipal_tickets_map_data(current_user):
     """
     from services.ticket_service import servicio_tickets  # Importación local
 
-    municipio_id_del_admin = current_user.municipio_id
-    if not municipio_id_del_admin:
+    municipio_id_del_admin = _resolve_current_municipio_id(current_user)
+    if municipio_id_del_admin is None:
         return jsonify({"error": "Usuario no asociado a un municipio"}), 400
 
     estado = request.args.get("estado")
@@ -445,8 +989,8 @@ def municipal_tickets_locations(current_user):
     """
     from services.ticket_service import servicio_tickets
 
-    municipio_id_del_admin = current_user.municipio_id
-    if not municipio_id_del_admin:
+    municipio_id_del_admin = _resolve_current_municipio_id(current_user)
+    if municipio_id_del_admin is None:
         return jsonify({"error": "Usuario no asociado a un municipio"}), 400
 
     locations = servicio_tickets.obtener_locations_de_tickets(
@@ -461,10 +1005,14 @@ def municipal_tickets_locations(current_user):
 def municipal_incidents(current_user):
     """Lista los tickets municipales abiertos para el municipio del usuario."""
 
+    municipio_id = _resolve_current_municipio_id(current_user)
+    if municipio_id is None:
+        return jsonify({"error": "Usuario no asociado a un municipio"}), 400
+
     try:
         tickets = (
             MunicipioTicket.query
-            .filter_by(municipio_id=current_user.municipio_id)
+            .filter_by(municipio_id=municipio_id)
             .filter(MunicipioTicket.estado != 'cerrado') # Podríamos querer ver todos en el admin, no solo los no cerrados
             .order_by(MunicipioTicket.fecha.desc())
             .all()
@@ -816,7 +1364,7 @@ def municipal_analytics(current_user):
     if request.method == 'OPTIONS':
         return "", 204
 
-    municipio_id = getattr(current_user, "municipio_id", None)
+    municipio_id = _resolve_current_municipio_id(current_user)
     filters, fecha_inicio, fecha_fin = _build_stats_filters_from_request(request.args)
 
     if filters:
@@ -846,3 +1394,65 @@ def municipal_analytics(current_user):
     }
 
     return jsonify(response)
+
+
+@municipal_bp.route('/analytics/export/<string:formato>', methods=['GET'])
+@token_requerido
+@admin_o_empleado_requerido
+def municipal_analytics_export(current_user, formato: str):
+    """Exporta estadísticas y métricas combinadas en PDF o Excel."""
+
+    municipio_id = _resolve_current_municipio_id(current_user)
+    if municipio_id is None:
+        return jsonify({"error": "El usuario no posee un municipio asociado."}), 404
+
+    filters, fecha_inicio, fecha_fin = _build_stats_filters_from_request(request.args)
+
+    if filters:
+        stats = build_stats_for_municipio(municipio_id, filters=filters)
+    else:
+        stats = build_stats_for_municipio(municipio_id)
+
+    eid = current_user.id if current_user.empresa_id is None else current_user.empresa_id
+    metrics_raw = _municipal_message_metrics(
+        eid, fecha_inicio=fecha_inicio, fecha_fin=fecha_fin
+    )
+
+    if isinstance(metrics_raw, dict):
+        metrics_payload = metrics_raw
+    else:
+        metrics_payload = {"cards": list(metrics_raw or []), "summary": {}}
+
+    filtros_legibles = _format_filters_for_export(filters, fecha_inicio, fecha_fin)
+    formato_normalizado = (formato or "").strip().lower()
+    timestamp = get_local_now().strftime("%Y%m%d_%H%M%S")
+
+    try:
+        if formato_normalizado == "excel":
+            contenido = _build_stats_excel(stats, filtros_legibles, metrics_payload)
+            nombre = f"analiticas_municipio_{municipio_id}_{timestamp}.xlsx"
+            return send_file(
+                BytesIO(contenido),
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                as_attachment=True,
+                download_name=nombre,
+            )
+        if formato_normalizado == "pdf":
+            contenido = _build_stats_pdf(stats, filtros_legibles, metrics_payload)
+            nombre = f"analiticas_municipio_{municipio_id}_{timestamp}.pdf"
+            return send_file(
+                BytesIO(contenido),
+                mimetype="application/pdf",
+                as_attachment=True,
+                download_name=nombre,
+            )
+    except RuntimeError as err:
+        current_app.logger.error("Error generando exportación de analíticas: %s", err)
+        return jsonify({"error": str(err)}), 500
+    except Exception as err:  # pragma: no cover - protección adicional
+        current_app.logger.error(
+            "Falla inesperada al exportar analíticas municipales", exc_info=True
+        )
+        return jsonify({"error": "No se pudo generar la exportación solicitada."}), 500
+
+    return jsonify({"error": "Formato no soportado"}), 400

@@ -1,10 +1,39 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from services.ticket_service import servicio_tickets
 from models import User
 
 
 estadisticas_bp = Blueprint("estadisticas", __name__, url_prefix="/estadisticas")
+
+
+def _resolve_municipio_id(user):
+    """Return the municipio identifier associated with the current request."""
+
+    municipio_id = getattr(user, "municipio_id", None)
+    if municipio_id is not None:
+        return municipio_id
+
+    owner_user = getattr(g, "owner_user", None)
+    if owner_user is not None:
+        owner_municipio_id = getattr(owner_user, "municipio_id", None)
+        if owner_municipio_id is not None:
+            return owner_municipio_id
+        if getattr(owner_user, "tipo_chat", None) == "municipio":
+            owner_id = getattr(owner_user, "id", None)
+            if owner_id is not None:
+                return owner_id
+
+    empresa_id = getattr(user, "empresa_id", None)
+    if empresa_id is not None:
+        return empresa_id
+
+    if getattr(user, "tipo_chat", None) == "municipio":
+        fallback_id = getattr(user, "id", None)
+        if fallback_id is not None:
+            return fallback_id
+
+    return None
 
 
 def _parse_estado_params(args) -> list[str] | None:
@@ -57,9 +86,13 @@ def mapa_calor_datos(current_user):
     if distrito:
         distrito = distrito.strip() or None
 
+    municipio_id = args.get("municipio_id", type=int)
+    if municipio_id is None and args.get("tipo_ticket", "municipio") == "municipio":
+        municipio_id = _resolve_municipio_id(current_user)
+
     puntos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
         tipo_ticket=args.get("tipo_ticket", "municipio"),
-        municipio_id=args.get("municipio_id", type=int),
+        municipio_id=municipio_id,
         rubro_id=args.get("rubro_id", type=int),
         fecha_inicio=args.get("fecha_inicio"),
         fecha_fin=args.get("fecha_fin"),
@@ -76,9 +109,13 @@ def mapa_calor_datos(current_user):
 @admin_o_empleado_requerido
 def get_user_locations(current_user):
     """Devuelve las ubicaciones (lat, lng) de usuarios del mismo municipio."""
+    municipio_id = _resolve_municipio_id(current_user)
+    if municipio_id is None:
+        return jsonify([])
+
     users = (
         User.query.filter(
-            User.municipio_id == current_user.municipio_id,
+            User.municipio_id == municipio_id,
             User.latitud.isnot(None),
             User.longitud.isnot(None),
         ).all()
@@ -119,7 +156,7 @@ def estadisticas_tickets(current_user):
         distrito = distrito.strip() or None
 
     if tipo == "municipio" and municipio_id is None:
-        municipio_id = getattr(current_user, "municipio_id", None)
+        municipio_id = _resolve_municipio_id(current_user)
     if tipo == "pyme" and rubro_id is None:
         rubro_id = getattr(current_user, "rubro_id", None)
 

@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from flask import Flask
+from flask import Flask, g
 
 from services.municipal_stats import StatsFilters
 
@@ -155,6 +155,74 @@ class MunicipalStatsTests(unittest.TestCase):
         self.assertIsNotNone(filtros.fecha_fin)
         self.assertEqual(resp, {"resumen": {}})
 
+    @patch('routes.municipal_legacy._build_stats_excel', return_value=b'EXCEL_BYTES')
+    @patch('routes.municipal_legacy.build_stats_for_municipio', return_value={"resumen": {}})
+    def test_municipal_stats_export_excel(self, mock_build_stats, mock_build_excel):
+        with patch('routes.municipal_legacy._format_filters_for_export', return_value=[('Filtros', 'Ninguno')]):
+            view = getattr(self.module.municipal_stats_export, '__wrapped__', self.module.municipal_stats_export)
+            app = Flask(__name__)
+            with app.test_request_context('/municipal/stats/export/excel'):
+                response = view(make_user(), 'excel')
+
+        mock_build_stats.assert_called_once()
+        mock_build_excel.assert_called_once()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.mimetype,
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        self.assertIn('attachment; filename=', response.headers.get('Content-Disposition', ''))
+        response.direct_passthrough = False
+        self.assertEqual(response.get_data(), b'EXCEL_BYTES')
+
+    @patch('routes.municipal_legacy._build_stats_pdf', return_value=b'PDF_BYTES')
+    @patch('routes.municipal_legacy.build_stats_for_municipio', return_value={"resumen": {}})
+    def test_municipal_stats_export_pdf(self, mock_build_stats, mock_build_pdf):
+        with patch('routes.municipal_legacy._format_filters_for_export', return_value=[('Filtros', 'Ninguno')]):
+            view = getattr(self.module.municipal_stats_export, '__wrapped__', self.module.municipal_stats_export)
+            app = Flask(__name__)
+            with app.test_request_context('/municipal/stats/export/pdf'):
+                response = view(make_user(), 'pdf')
+
+        mock_build_stats.assert_called_once()
+        mock_build_pdf.assert_called_once()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, 'application/pdf')
+        self.assertIn('attachment; filename=', response.headers.get('Content-Disposition', ''))
+        response.direct_passthrough = False
+        self.assertEqual(response.get_data(), b'PDF_BYTES')
+
+    @patch('routes.municipal_legacy._build_stats_excel', return_value=b'EXCEL_BYTES')
+    @patch('routes.municipal_legacy._municipal_message_metrics', return_value={'cards': [], 'summary': {}})
+    @patch('routes.municipal_legacy.build_stats_for_municipio', return_value={"resumen": {}})
+    def test_municipal_analytics_export_excel(self, mock_build_stats, mock_metrics, mock_build_excel):
+        with patch('routes.municipal_legacy._format_filters_for_export', return_value=[('Filtros', 'Ninguno')]):
+            view = getattr(self.module.municipal_analytics_export, '__wrapped__', self.module.municipal_analytics_export)
+            app = Flask(__name__)
+            with app.test_request_context('/municipal/analytics/export/excel'):
+                response = view(make_user(), 'excel')
+
+        mock_build_stats.assert_called_once()
+        mock_metrics.assert_called_once()
+        mock_build_excel.assert_called_once()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.mimetype,
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        self.assertIn('attachment; filename=', response.headers.get('Content-Disposition', ''))
+
+    def test_municipal_stats_export_invalid_format(self):
+        view = getattr(self.module.municipal_stats_export, '__wrapped__', self.module.municipal_stats_export)
+        app = Flask(__name__)
+        with patch('routes.municipal_legacy.build_stats_for_municipio', return_value={"resumen": {}}), \
+             patch('routes.municipal_legacy._format_filters_for_export', return_value=[('Filtros', 'Ninguno')]):
+            with app.test_request_context('/municipal/stats/export/csv'):
+                raw_response = view(make_user(), 'csv')
+
+        response = app.make_response(raw_response)
+        self.assertEqual(response.status_code, 400)
+
     def test_municipal_analytics_combines_stats_and_metrics(self):
         stats_payload = {'resumen': {'total': 0}}
         metrics_payload = {'cards': [], 'summary': {}}
@@ -224,6 +292,50 @@ class MunicipalStatsTests(unittest.TestCase):
         self.assertEqual(resp['distritos'], ['Centro'])
         self.assertEqual(resp['canales'], ['Web', 'WhatsApp'])
         self.assertIn('estados', resp)
+
+    def test_stats_for_employee_uses_empresa_id(self):
+        employee = SimpleNamespace(
+            id=99,
+            municipio_id=None,
+            empresa_id=77,
+            rol='empleado',
+            tipo_chat='municipio',
+        )
+
+        with patch('routes.municipal_legacy.jsonify', lambda x: x), \
+             patch('routes.municipal_legacy.build_stats_for_municipio', return_value={"resumen": {}}) as build_mock:
+            view = getattr(self.module.municipal_stats, '__wrapped__', self.module.municipal_stats)
+            app = Flask(__name__)
+            with app.test_request_context('/municipal/stats'):
+                resp = view(employee)
+
+        args, kwargs = build_mock.call_args
+        self.assertEqual(args[0], 77)
+        self.assertEqual(resp, {"resumen": {}})
+
+    def test_resolve_current_municipio_id_prefers_owner_context(self):
+        owner = SimpleNamespace(id=50, municipio_id=321, tipo_chat='municipio')
+        employee = SimpleNamespace(id=3, municipio_id=None, empresa_id=None, tipo_chat='municipio')
+
+        app = Flask(__name__)
+        with app.app_context():
+            g.owner_user = owner
+            resolved = self.module._resolve_current_municipio_id(employee)
+            g.pop('owner_user', None)
+
+        self.assertEqual(resolved, 321)
+
+    def test_resolve_current_municipio_id_falls_back_to_owner_id(self):
+        owner = SimpleNamespace(id=88, municipio_id=None, tipo_chat='municipio')
+        employee = SimpleNamespace(id=4, municipio_id=None, empresa_id=None, tipo_chat='municipio')
+
+        app = Flask(__name__)
+        with app.app_context():
+            g.owner_user = owner
+            resolved = self.module._resolve_current_municipio_id(employee)
+            g.pop('owner_user', None)
+
+        self.assertEqual(resolved, 88)
 
 
 if __name__ == '__main__':
