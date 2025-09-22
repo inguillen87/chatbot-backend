@@ -161,6 +161,12 @@ class PointsOfInterestHandler:
 
         keywords = ("estacionamiento", "estacionar", "lugar libre")
         if any(word in pregunta for word in keywords):
+            municipio_ctx = (
+                self.context.get("chat_db_context_data", {})
+                .setdefault(CONTEXTO_MUNICIPIO, {})
+            )
+            chat_db_context = self.context.get("chat_db_context")
+
             if not location:
                 # Try to geocode an address present in the question text
                 address_candidate = pregunta
@@ -179,36 +185,33 @@ class PointsOfInterestHandler:
                         "lat": coords.get("lat"),
                         "lon": coords.get("lon"),
                     }
-                    municipio_ctx = (
-                        self.context.get("chat_db_context_data", {})
-                        .setdefault(CONTEXTO_MUNICIPIO, {})
-                    )
                     municipio_ctx["ultima_consulta_poi"] = original_question
-                    chat_db_context = self.context.get("chat_db_context")
                     if chat_db_context:
                         flag_modified(chat_db_context, "context_data")
                     return self._parking_response(location)
 
                 # Geocoding failed; remember query and ask for location
-                municipio_ctx = (
-                    self.context.get("chat_db_context_data", {})
-                    .setdefault(CONTEXTO_MUNICIPIO, {})
-                )
                 municipio_ctx["estado_conversacion"] = (
                     ConversationState.ESPERANDO_UBICACION_GENERAL.name
                 )
                 municipio_ctx["consulta_pendiente_ubicacion"] = original_question
                 municipio_ctx["ultima_consulta_poi"] = original_question
-                chat_db_context = self.context.get("chat_db_context")
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
+                return {
+                    "message_body": (
+                        "Para encontrar estacionamiento libre, por favor compartí tu "
+                        "ubicación o escribí una dirección."
+                    ),
+                    "options_list": [
+                        {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
+                        {"texto": "Cancelar", "action": "cancelar"},
+                    ],
+                    "message_type": "interactive_buttons",
+                    "fuente": "pedir_ubicacion_estacionamiento",
+                }
 
-            municipio_ctx = (
-                self.context.get("chat_db_context_data", {})
-                .setdefault(CONTEXTO_MUNICIPIO, {})
-            )
             municipio_ctx["ultima_consulta_poi"] = original_question
-            chat_db_context = self.context.get("chat_db_context")
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             return self._parking_response(location)
