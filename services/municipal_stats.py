@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from statistics import mean, median
@@ -32,13 +33,47 @@ class _TimeSeriesPoint:
     cerrados: int
 
 
+def _current_dialect_name(default: str = "sqlite") -> str:
+    """Return the lower-cased SQL dialect name for the active session."""
+
+    bind = getattr(db.session, "bind", None)
+    if bind is not None:
+        name = getattr(getattr(bind, "dialect", None), "name", None)
+        if name:
+            return name.lower()
+
+    with suppress(Exception):
+        bind = db.session.get_bind()
+        name = getattr(getattr(bind, "dialect", None), "name", None)
+        if name:
+            return name.lower()
+
+    with suppress(Exception):
+        engine = db.engine
+        name = getattr(getattr(engine, "dialect", None), "name", None)
+        if name:
+            return name.lower()
+
+    with suppress(Exception):
+        engine = db.get_engine()
+        name = getattr(getattr(engine, "dialect", None), "name", None)
+        if name:
+            return name.lower()
+
+    return default.lower()
+
+
+def _uses_sqlite() -> bool:
+    """Return True when the active SQL dialect is SQLite."""
+
+    dialect = _current_dialect_name()
+    return dialect.split("+", 1)[0] == "sqlite"
+
+
 def _epoch_seconds(column):
     """Return an expression that converts a timestamp to epoch seconds."""
 
-    bind = db.session.bind
-    dialect = bind.dialect.name if bind is not None else "sqlite"
-
-    if dialect == "sqlite":
+    if _uses_sqlite():
         return func.strftime("%s", column)
 
     return func.extract("epoch", column)
@@ -147,17 +182,13 @@ def _compute_time_to_close(municipio_id: int) -> list[float]:
 
 
 def _build_month_expression(column=MunicipioTicket.fecha):
-    bind = db.session.bind
-    dialect = bind.dialect.name if bind is not None else "sqlite"
-    if dialect == "sqlite":
+    if _uses_sqlite():
         return func.strftime("%Y-%m", column)
     return func.to_char(column, "YYYY-MM")
 
 
 def _build_day_expression(column=MunicipioTicket.fecha):
-    bind = db.session.bind
-    dialect = bind.dialect.name if bind is not None else "sqlite"
-    if dialect == "sqlite":
+    if _uses_sqlite():
         return func.strftime("%Y-%m-%d", column)
     return func.to_char(column, "YYYY-MM-DD")
 
