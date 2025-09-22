@@ -16,8 +16,13 @@ class MunicipalTicketsMapDataRouteTest(unittest.TestCase):
     def setUp(self):
         self.token_patcher = patch('utils.auth_helpers.token_requerido', lambda f: f)
         self.admin_patcher = patch('utils.auth_helpers.admin_o_empleado_requerido', lambda f: f)
+        self.session_patcher = patch(
+            'flask_session.Session',
+            lambda *args, **kwargs: SimpleNamespace(init_app=lambda app: None),
+        )
         self.token_patcher.start()
         self.admin_patcher.start()
+        self.session_patcher.start()
 
         import routes.municipal_legacy as muni
         importlib.reload(muni)
@@ -32,6 +37,7 @@ class MunicipalTicketsMapDataRouteTest(unittest.TestCase):
         self.app_context.pop()
         self.token_patcher.stop()
         self.admin_patcher.stop()
+        self.session_patcher.stop()
 
     @patch('services.ticket_service.servicio_tickets')
     def test_estado_param_optional(self, mock_servicio):
