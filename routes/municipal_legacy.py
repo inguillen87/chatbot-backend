@@ -10,9 +10,9 @@ from routes.crm import _obtener_clientes
 from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
 from routes.tramites import listar_tramites, obtener_tramite
 from models import MunicipioTicket, db
-from sqlalchemy import text
 from routes.ticket import TICKET_ALLOWED_STATES
 from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS
+from services.municipal_stats import build_stats_for_municipio
 
 municipal_bp = Blueprint('municipal_legacy', __name__, url_prefix='/municipal')
 
@@ -160,90 +160,16 @@ def municipal_estados():
 
     return jsonify({"estados": TICKET_ALLOWED_STATES})
 
-@municipal_bp.route('/stats', methods=['GET'])
+@municipal_bp.route('/stats', methods=['GET', 'OPTIONS'])
 @token_requerido
 @admin_o_empleado_requerido
 def municipal_stats(current_user):
     """Estadísticas profesionales del municipio del usuario."""
 
-    mid = current_user.municipio_id
+    if request.method == 'OPTIONS':
+        return "", 204
 
-    abiertos = db.session.execute(
-        text(
-            "SELECT COUNT(*) FROM municipio_ticket "
-            "WHERE municipio_id = :mid AND estado != 'cerrado'"
-        ),
-        {"mid": mid},
-    ).scalar() or 0
-
-    cerrados = db.session.execute(
-        text(
-            "SELECT COUNT(*) FROM municipio_ticket "
-            "WHERE municipio_id = :mid AND estado = 'cerrado'"
-        ),
-        {"mid": mid},
-    ).scalar() or 0
-
-    rows = db.session.execute(
-        text(
-            "SELECT categoria, "
-            "SUM(CASE WHEN estado != 'cerrado' THEN 1 ELSE 0 END) AS abiertos, "
-            "SUM(CASE WHEN estado = 'cerrado' THEN 1 ELSE 0 END) AS cerrados "
-            "FROM municipio_ticket WHERE municipio_id = :mid GROUP BY categoria"
-        ),
-        {"mid": mid},
-    ).fetchall()
-    por_categoria = [
-        {
-            "categoria": r.categoria,
-            "abiertos": r.abiertos,
-            "cerrados": r.cerrados,
-        }
-        for r in rows
-    ]
-
-    rows_distrito = db.session.execute(
-        text(
-            "SELECT distrito, COUNT(*) as total "
-            "FROM municipio_ticket WHERE municipio_id = :mid "
-            "GROUP BY distrito"
-        ),
-        {"mid": mid},
-    ).fetchall()
-    por_distrito = [
-        {"distrito": r.distrito, "total": r.total}
-        for r in rows_distrito
-        if r.distrito is not None
-    ]
-
-    rows_mes = db.session.execute(
-        text(
-            "SELECT strftime('%Y-%m', fecha) AS mes, COUNT(*) as total "
-            "FROM municipio_ticket WHERE municipio_id = :mid "
-            "GROUP BY mes ORDER BY mes"
-        ),
-        {"mid": mid},
-    ).fetchall()
-    por_mes = [{"mes": r.mes, "total": r.total} for r in rows_mes]
-
-    tiempo_respuesta = db.session.execute(
-        text(
-            "SELECT AVG(julianday(tc.fecha) - julianday(mt.fecha)) * 86400 "
-            "FROM municipio_ticket mt JOIN ticket_comentario tc "
-            "ON tc.municipio_ticket_id = mt.id "
-            "WHERE tc.es_admin = 1 AND mt.municipio_id = :mid"
-        ),
-        {"mid": mid},
-    ).scalar()
-
-    datos = {
-        "totales": {"abiertos": abiertos, "cerrados": cerrados},
-        "por_categoria": por_categoria,
-        "por_distrito": por_distrito,
-        "por_mes": por_mes,
-        "tiempo_respuesta_promedio_segundos": round(tiempo_respuesta or 0, 2),
-    }
-
+    datos = build_stats_for_municipio(getattr(current_user, "municipio_id", None))
     return jsonify(datos)
 
 @municipal_bp.route('/stats/filters', methods=['GET'])
