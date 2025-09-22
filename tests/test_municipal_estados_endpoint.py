@@ -78,6 +78,16 @@ class MunicipalEstadosEndpointTests(unittest.TestCase):
         self.assertIn('Content-Type', allow_headers)
         self.assertIn('X-Entity-Token', allow_headers)
 
+    def test_disallowed_origin_receives_no_cors_headers(self):
+        response = self.client.get(
+            '/municipal/estados',
+            headers={'Origin': 'https://malicious.example'}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.headers.get('Access-Control-Allow-Origin'))
+        self.assertIsNone(response.headers.get('Access-Control-Allow-Credentials'))
+
 
 if __name__ == '__main__':
     unittest.main()
