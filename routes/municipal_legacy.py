@@ -172,7 +172,7 @@ def municipal_stats(current_user):
     datos = build_stats_for_municipio(getattr(current_user, "municipio_id", None))
     return jsonify(datos)
 
-@municipal_bp.route('/stats/filters', methods=['GET'])
+@municipal_bp.route('/stats/filters', methods=['GET', 'OPTIONS'])
 @token_requerido
 @admin_o_empleado_requerido
 def municipal_stats_filters(current_user):
@@ -546,11 +546,14 @@ def create_municipal_posts_bulk(current_user):
         return jsonify({"error": "Error interno al guardar los posts."}), 500
 
 
-@municipal_bp.route('/analytics', methods=['GET'])
+@municipal_bp.route('/analytics', methods=['GET', 'OPTIONS'])
 @token_requerido
 @admin_o_empleado_requerido
 def municipal_analytics(current_user):
     """Alias de ``/metrics`` para compatibilidad con el frontend."""
+
+    if request.method == 'OPTIONS':
+        return "", 204
 
     eid = current_user.id if current_user.empresa_id is None else current_user.empresa_id
     return jsonify(_municipal_message_metrics(eid))
