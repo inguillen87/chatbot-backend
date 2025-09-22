@@ -8,6 +8,7 @@ from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
 from routes.tramites import listar_tramites, obtener_tramite
 from models import MunicipioTicket, db
 from sqlalchemy import text
+from routes.ticket import TICKET_ALLOWED_STATES
 
 municipal_bp = Blueprint('municipal_legacy', __name__, url_prefix='/municipal')
 
@@ -40,6 +41,15 @@ def municipal_usuarios(current_user):
 @require_role('admin', 'empleado')
 def municipal_categorias(current_user):
     return jsonify(TODAS_LAS_CATEGORIAS_UNICAS)
+
+@municipal_bp.route('/estados', methods=['GET', 'OPTIONS'])
+def municipal_estados():
+    """Devuelve la lista pública de estados permitidos para tickets municipales."""
+
+    if request.method == 'OPTIONS':
+        return "", 204
+
+    return jsonify({"estados": TICKET_ALLOWED_STATES})
 
 @municipal_bp.route('/stats', methods=['GET'])
 @token_requerido
