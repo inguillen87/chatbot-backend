@@ -724,6 +724,58 @@ def _get_main_menu_payload(
                 new_boton['id'] = new_boton.get('action_id', new_boton['texto'])
                 flat_buttons.append(new_boton)
 
+    def _normalize_for_audio(value: str | None) -> str:
+        """Strip emojis/markdown so the spoken greeting sounds natural."""
+        normalized = clean_text_for_tts(value) if isinstance(value, str) else clean_text_for_tts(str(value) if value else "")
+        return normalized.strip()
+
+    safe_user_name = _normalize_for_audio(user_name)
+    if safe_user_name:
+        audio_greeting = f"Hola {safe_user_name}, soy Juni, el asistente virtual de la Municipalidad de Junín."
+    else:
+        audio_greeting = "Hola, soy Juni, el asistente virtual de la Municipalidad de Junín."
+
+    if reduced:
+        audio_intro = "Volvimos al menú principal para seguir con tu gestión."
+        audio_prompt = "Elegí una categoría para continuar."
+    else:
+        audio_intro = (
+            "Puedo ayudarte con trámites, reclamos e información del municipio. "
+            "Podés compartir tu ubicación, fotos o notas de voz y usar emojis para acciones rápidas."
+        )
+        audio_prompt = "Elegí una categoría para comenzar."
+
+    if channel == "whatsapp" and categorias:
+        primary_texts = [
+            text for text in (
+                _normalize_for_audio(btn.get("texto"))
+                for btn in categorias[0].get("botones", [])
+            ) if text
+        ]
+    else:
+        primary_texts = [
+            text for text in (
+                _normalize_for_audio(cat.get("titulo"))
+                for cat in categorias
+            ) if text
+        ]
+        if not primary_texts:
+            primary_texts = [
+                text for text in (
+                    _normalize_for_audio(btn.get("texto"))
+                    for cat in categorias
+                    for btn in cat.get("botones", [])
+                ) if text
+            ]
+
+    audio_options = [
+        f"Opción {idx}, {text}."
+        for idx, text in enumerate(primary_texts, start=1)
+    ]
+    audio_closing = "Respondé con el número de la opción o pedime que repita el menú."
+    audio_parts = [audio_greeting, audio_intro, audio_prompt, *audio_options, audio_closing]
+    audio_text = " ".join(part.strip() for part in audio_parts if part)
+
     response = {
         "message_body": f"{welcome_message}\n\n{main_text_body}",
         "options_list": flat_buttons,
@@ -731,6 +783,7 @@ def _get_main_menu_payload(
         "accion_backend": "responder_directamente",
         "fuente": "greeting_handler_structured_menu_v2",
         "categorias": categorias,
+        "audio_text": audio_text,
         "generar_audio": True
     }
     # Do not include a header image in the initial greeting menu to keep the
