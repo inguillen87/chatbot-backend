@@ -924,13 +924,21 @@ class DerivarHumanoActionHandler(BaseActionHandler):
 
             chat_id = f"M-{sala_dict['nro_ticket']}"
 
-            # formatear_ticket_respuesta now returns a tuple (message, buttons)
-            user_message, _ = formatear_ticket_respuesta("chat", nombre, pregunta_original, "Atención en Vivo", chat_id)
-            return {
+            user_message, botones = formatear_ticket_respuesta(
+                "chat",
+                nombre,
+                pregunta_original,
+                "Atención en Vivo",
+                chat_id,
+            )
+            response: Dict[str, Any] = {
                 "success": True,
                 "message_to_user": user_message,
                 "data": {"ticket_id": sala_dict['id'], "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
             }
+            if botones:
+                response["options_list"] = botones
+            return response
         except Exception as e:
             logger.error(f"Error en DerivarHumanoActionHandler: {e}", exc_info=True)
             return {

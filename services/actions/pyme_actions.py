@@ -13,6 +13,7 @@ import models
 from services.common_utils import parse_precio_flexible
 from socket_service import emit_ticket_update
 from routes.ticket import serialize_ticket_to_json
+from services.ticket_utils import formatear_ticket_respuesta
 
 logger = logging.getLogger(__name__)
 
@@ -265,6 +266,11 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
                 "pyme_id": getattr(owner_user, "id", None)
             }
 
+            if telefono:
+                ticket_data["telefono"] = telefono
+            if email:
+                ticket_data["email"] = email
+
             ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
 
             sala = servicio_tickets.crear_nuevo_ticket(tipo_ticket="pyme", ticket_data=ticket_data_cleaned)
@@ -305,12 +311,21 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
 
             chat_id = f"P-{nro_ticket}"
 
-            user_message = f"En breve un representante se pondrá en contacto contigo. Tu número de chat es {chat_id}."
-            return {
+            user_message, botones = formatear_ticket_respuesta(
+                "chat",
+                nombre,
+                pregunta_original,
+                "Atención en Vivo",
+                chat_id,
+            )
+            response: Dict[str, Any] = {
                 "success": True,
                 "message_to_user": user_message,
                 "data": {"ticket_id": ticket_id, "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
             }
+            if botones:
+                response["options_list"] = botones
+            return response
         except Exception as e:
             logger.error(f"Error en DerivarHumanoActionHandlerPyme: {e}", exc_info=True)
             return {

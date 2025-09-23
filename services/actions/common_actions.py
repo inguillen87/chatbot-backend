@@ -39,6 +39,11 @@ class DerivarHumanoAction(BaseActionHandler):
                 "email_cliente": email, # Usado por pyme
             }
 
+            if telefono:
+                ticket_data["telefono"] = telefono
+            if email:
+                ticket_data["email"] = email
+
             if target_entity_type == "municipio":
                 ticket_data["municipio_id"] = getattr(owner_user, "municipio_id", None)
             else: # pyme
@@ -95,12 +100,22 @@ class DerivarHumanoAction(BaseActionHandler):
             chat_id_prefix = "M" if target_entity_type == "municipio" else "P"
             chat_id = f"{chat_id_prefix}-{nro_ticket}"
 
-            user_message = formatear_ticket_respuesta("chat", nombre, pregunta_original, "Atención en Vivo", chat_id)
-            return {
+            user_message, botones = formatear_ticket_respuesta(
+                "chat",
+                nombre,
+                pregunta_original,
+                "Atención en Vivo",
+                chat_id,
+            )
+
+            response: Dict[str, Any] = {
                 "success": True,
                 "message_to_user": user_message,
                 "data": {"ticket_id": ticket_id, "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
             }
+            if botones:
+                response["options_list"] = botones
+            return response
         except Exception as e:
             logger.error(f"Error en DerivarHumanoAction: {e}", exc_info=True)
             return {

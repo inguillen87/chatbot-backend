@@ -132,6 +132,21 @@ def _esperando_info_libre(municipio_ctx: dict) -> bool:
         or municipio_ctx.get("esperando_info_llm_reclamo")
     )
 
+
+def _merge_nested_dicts(base: dict, updates: dict) -> dict:
+    """Return a shallow copy of ``base`` merged with ``updates`` recursively."""
+
+    if not updates:
+        return base
+
+    merged = dict(base or {})
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_nested_dicts(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
 # Load environment variables for Twilio credentials
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -700,7 +715,7 @@ def whatsapp_webhook():
 
         # Merge the contexts
         if updated_context:
-            merged_context = {**db_context, **updated_context}
+            merged_context = _merge_nested_dicts(db_context, updated_context)
         else:
             merged_context = db_context
 
