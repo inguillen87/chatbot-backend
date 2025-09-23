@@ -545,6 +545,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             botones_finales = remove_buttons_with_urls_in_message(
                 mensaje_respuesta,
                 botones_finales,
+                channel=self.context.get("channel"),
             )
 
             # Delayed menu

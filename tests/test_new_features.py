@@ -123,6 +123,20 @@ class TestNewFeatures(unittest.TestCase):
         self.assertEqual(len(filtered), 1)
         self.assertTrue(any(btn.get("action_id") == "editar" for btn in filtered))
 
+    def test_web_channel_keeps_url_buttons(self):
+        message = (
+            "✅ ¡Reclamo recibido!\n"
+            "🔗 Seguimiento: https://www.chatboc.ar/chat/999?pin=000"
+        )
+        buttons = [
+            {"texto": "💬 Ver mi Ticket", "url": "https://www.chatboc.ar/chat/999?pin=000"},
+            {"texto": "Editar", "action_id": "editar"},
+        ]
+
+        filtered = remove_buttons_with_urls_in_message(message, buttons, channel="web")
+
+        self.assertIs(filtered, buttons)
+
     def test_greeting_handler_final_menu(self):
         """
         Verifica que el GreetingHandler devuelve el menú principal final (v5).
@@ -139,7 +153,26 @@ class TestNewFeatures(unittest.TestCase):
         self.assertEqual(len(respuesta["options_list"]), 4)
         self.assertEqual(respuesta["options_list"][0]["texto"], "🗣️ Reclamos y Consultas")
         self.assertEqual(respuesta.get("fuente"), "greeting_handler_structured_menu_v2")
-        self.assertEqual(respuesta.get("image_url"), 'http://example.com/welcome.jpg')
+        self.assertIsNone(respuesta.get("image_url"))
+        self.assertEqual(respuesta.get("sticker_url"), 'http://example.com/welcome.jpg')
+        self.assertEqual(respuesta.get("image_channels"), ["web", "widget"])
+
+    def test_greeting_handler_prefers_webp_for_web_channel(self):
+        owner = MagicMock()
+        owner.widget_icon_url = "http://example.com/logo.webp"
+        owner.logo_url = "http://example.com/logo.png"
+
+        handler = GreetingHandler(context={
+            'profile_name': 'Tester',
+            'channel': 'web',
+            'user_obj': owner,
+            'municipio_config_actual': {}
+        })
+
+        respuesta = handler.handle(payload={})
+
+        self.assertEqual(respuesta.get("image_url"), "http://example.com/logo.webp")
+        self.assertEqual(respuesta.get("sticker_url"), "http://example.com/logo.webp")
 
     def test_greeting_handler_web_menu_includes_submenus(self):
         """El saludo en canal web debe incluir submenús de Obras y Punto Limpio."""

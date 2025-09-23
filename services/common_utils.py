@@ -619,6 +619,38 @@ def _get_main_menu_payload(
     viewer_user = context.get("viewer_user_obj")
     profile_name = context.get("profile_name")
     owner_user = context.get("user_obj")
+    municipio_config = context.get("municipio_config_actual") or {}
+
+    channel_normalized = str(context.get("channel") or "web").strip().lower()
+
+    def _normalize_url(candidate: Any) -> Optional[str]:
+        if isinstance(candidate, str):
+            value = candidate.strip()
+            if value:
+                return value
+        return None
+
+    image_candidates: list[str] = []
+
+    def _append_candidate(candidate: Any) -> None:
+        normalized = _normalize_url(candidate)
+        if normalized and normalized not in image_candidates:
+            image_candidates.append(normalized)
+
+    _append_candidate(municipio_config.get("welcome_sticker_url"))
+    _append_candidate(municipio_config.get("welcome_image_url"))
+
+    if owner_user:
+        _append_candidate(getattr(owner_user, "widget_icon_url", None))
+        _append_candidate(getattr(owner_user, "logo_url", None))
+
+    sticker_url = next(
+        (url for url in image_candidates if url.lower().endswith((".webp", ".gif"))),
+        None,
+    )
+
+    fallback_image_url = image_candidates[0] if image_candidates else None
+    welcome_image_url = sticker_url or fallback_image_url
 
     user_name = None
     if isinstance(profile_name, str) and profile_name.strip():
@@ -670,8 +702,7 @@ def _get_main_menu_payload(
             "¿Cómo te puedo ayudar hoy?"
         )
 
-    channel = context.get("channel", "web")
-    if channel == "whatsapp":
+    if channel_normalized == "whatsapp":
         # Simplified menu for WhatsApp: only top-level categories
         categorias = [{
             "titulo": "*Categorías*",
@@ -693,7 +724,7 @@ def _get_main_menu_payload(
         # Full accordion-style menu for web/widget channels
         categorias = [
             {"titulo": "🗣️ Reclamos y Consultas", "botones": [
-                {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "📝 Iniciar un Reclamo", "action_id": "iniciar_reclamo"},
                 {"texto": "💡 Enviar una Sugerencia", "action_id": "enviar_sugerencia"},
                 {"texto": "🤔 Consultar Estado de Reclamo", "action_id": "consultar_estado_reclamo"},
                 {"texto": "📞 Contactos Útiles", "action_id": "contactos_utiles"},
@@ -745,7 +776,7 @@ def _get_main_menu_payload(
         )
         audio_prompt = "Elegí una categoría para comenzar."
 
-    if channel == "whatsapp" and categorias:
+    if channel_normalized == "whatsapp" and categorias:
         primary_texts = [
             text for text in (
                 _normalize_for_audio(btn.get("texto"))
@@ -786,9 +817,15 @@ def _get_main_menu_payload(
         "audio_text": audio_text,
         "generar_audio": True
     }
-    # Do not include a header image in the initial greeting menu to keep the
-    # conversation lightweight and similar to other professional bots like
-    # Boti. Removing the image avoids large headers in WhatsApp.
+
+    allowed_image_channels = {"web", "widget"}
+    if welcome_image_url:
+        response["sticker_url"] = welcome_image_url
+        if channel_normalized in allowed_image_channels or channel_normalized.startswith("web"):
+            response["image_url"] = welcome_image_url
+        response["image_channels"] = sorted(allowed_image_channels)
+    # Web and widget channels can render the logo sticker from ``image_url``
+    # while WhatsApp clients may ignore it if they prefer a lighter welcome.
     return response
 
 def clean_text_for_tts(text: str) -> str:
