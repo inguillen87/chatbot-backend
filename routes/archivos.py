@@ -545,8 +545,12 @@ ALLOWED_CHAT_MIMES = {
     "audio/ogg",
     "audio/oga",
     "audio/webm",
+    "audio/mp4",
     "audio/m4a",
     "audio/aac",
+    "video/webm",
+    "video/ogg",
+    "video/mp4",
 }
 
 @archivos_bp.route('/upload/chat_attachment', methods=['OPTIONS'])
@@ -571,8 +575,12 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
         return jsonify({'error': 'No se seleccionó ningún archivo'}), 400
 
     # Validaciones de seguridad
-    if file.mimetype not in ALLOWED_CHAT_MIMES:
-        return jsonify({'error': f'Tipo de archivo no permitido: {file.mimetype}'}), 400
+    raw_mime_type = file.content_type or file.mimetype or ""
+    normalized_mime_type = raw_mime_type.split(";", 1)[0].strip().lower()
+
+    if normalized_mime_type not in ALLOWED_CHAT_MIMES:
+        display_mime = raw_mime_type or "desconocido"
+        return jsonify({'error': f'Tipo de archivo no permitido: {display_mime}'}), 400
 
     # El tamaño se valida dentro de gcs_service
 
