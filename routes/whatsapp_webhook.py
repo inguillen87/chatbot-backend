@@ -85,6 +85,33 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
             except Exception as e:
                 app.logger.error(f"Error sending delayed message: {e}")
 
+            audio_url = None
+            audio_payload = formatted.get("audio") if isinstance(formatted, dict) else None
+            if isinstance(audio_payload, dict):
+                audio_url = audio_payload.get("link")
+            if not audio_url:
+                audio_url = payload.get("audio_url")
+
+            if audio_url:
+                absolute_audio_url = audio_url
+                if audio_url.startswith("/"):
+                    base_url = app.config.get("APP_BASE_URL")
+                    if base_url:
+                        absolute_audio_url = f"{base_url.rstrip('/')}{audio_url}"
+                    else:
+                        app.logger.warning(
+                            "[WELCOME][DELAYED_AUDIO] APP_BASE_URL is not configured; sending relative audio URL."
+                        )
+
+                try:
+                    client.messages.create(
+                        from_=to_number,
+                        to=from_number,
+                        media_url=[absolute_audio_url],
+                    )
+                except Exception as e:
+                    app.logger.error(f"Error sending delayed audio message: {e}")
+
     if client:
         timer = threading.Timer(delay, _send)
         timer.daemon = True
