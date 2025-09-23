@@ -271,14 +271,29 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
             if not sala:
                 raise Exception("crear_nuevo_ticket devolvió None")
 
+            ticket_id = getattr(sala, "id", None)
+            if ticket_id is None and isinstance(sala, dict):
+                ticket_id = sala.get("id")
+            nro_ticket = getattr(sala, "nro_ticket", None)
+            if nro_ticket is None and isinstance(sala, dict):
+                nro_ticket = sala.get("nro_ticket")
+
+            if ticket_id is None or nro_ticket is None:
+                raise ValueError("El ticket creado no incluye los campos requeridos 'id' y 'nro_ticket'.")
+
             try:
-                ticket_json = serialize_ticket_to_json(sala, "pyme")
-                emit_ticket_update(ticket_json)
+                ticket_obj = db.session.get(models.PymeTicket, ticket_id)
+                if ticket_obj:
+                    ticket_json = serialize_ticket_to_json(ticket_obj, "pyme")
+                    emit_ticket_update(ticket_json)
             except Exception as e_notify:
-                logger.error(f"Error enviando notificación en tiempo real para ticket #{sala.nro_ticket}: {e_notify}", exc_info=True)
+                logger.error(
+                    f"Error enviando notificación en tiempo real para ticket #{nro_ticket}: {e_notify}",
+                    exc_info=True,
+                )
 
             servicio_tickets.crear_comentario(
-                ticket_id=sala.id,
+                ticket_id=ticket_id,
                 tipo_ticket="pyme",
                 comentario_data={
                     "comentario": pregunta_original,
@@ -288,13 +303,13 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
                 },
             )
 
-            chat_id = f"P-{sala.nro_ticket}"
+            chat_id = f"P-{nro_ticket}"
 
             user_message = f"En breve un representante se pondrá en contacto contigo. Tu número de chat es {chat_id}."
             return {
                 "success": True,
                 "message_to_user": user_message,
-                "data": {"ticket_id": sala.id, "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
+                "data": {"ticket_id": ticket_id, "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
             }
         except Exception as e:
             logger.error(f"Error en DerivarHumanoActionHandlerPyme: {e}", exc_info=True)
