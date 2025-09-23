@@ -5,8 +5,7 @@
   "web_url": "https://www.juninmendoza.gov.ar",
   "ciudad": "Junín, Mendoza",
   "base_chat_url": "https://www.chatboc.ar/chat",
-  "welcome_image_url": "https://chatboc-demo-widget-oigs.vercel.app/junibot.webp",
-  "welcome_sticker_url": "https://chatboc-demo-widget-oigs.vercel.app/junibot.webp",
+  "welcome_image_url": "https://chatboc-demo-widget-oigs.vercel.app/junibot.png",
   "social_links": [
     {
       "name": "Facebook",

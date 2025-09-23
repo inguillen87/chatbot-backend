@@ -1,6 +1,5 @@
 import re
 import unicodedata
-from typing import Optional
 
 from services.vocabulary_loader import get_ticket_vocabulary
 
@@ -370,14 +369,10 @@ def _remove_redundant_urls_from_message(message_body, options_list):
     return message_body_str
 
 
-def remove_buttons_with_urls_in_message(message_body, options_list, channel: Optional[str] = None):
+def remove_buttons_with_urls_in_message(message_body, options_list):
     """Return a copy of ``options_list`` without buttons whose URL is already present in the message body."""
 
     if not options_list:
-        return options_list
-
-    normalized_channel = (channel or "").strip().lower()
-    if normalized_channel in {"web", "widget"} or normalized_channel.startswith("web_"):
         return options_list
 
     message_text = str(message_body or "")

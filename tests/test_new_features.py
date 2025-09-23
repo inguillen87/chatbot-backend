@@ -123,20 +123,6 @@ class TestNewFeatures(unittest.TestCase):
         self.assertEqual(len(filtered), 1)
         self.assertTrue(any(btn.get("action_id") == "editar" for btn in filtered))
 
-    def test_web_channel_keeps_url_buttons(self):
-        message = (
-            "✅ ¡Reclamo recibido!\n"
-            "🔗 Seguimiento: https://www.chatboc.ar/chat/999?pin=000"
-        )
-        buttons = [
-            {"texto": "💬 Ver mi Ticket", "url": "https://www.chatboc.ar/chat/999?pin=000"},
-            {"texto": "Editar", "action_id": "editar"},
-        ]
-
-        filtered = remove_buttons_with_urls_in_message(message, buttons, channel="web")
-
-        self.assertIs(filtered, buttons)
-
     def test_greeting_handler_final_menu(self):
         """
         Verifica que el GreetingHandler devuelve el menú principal final (v5).

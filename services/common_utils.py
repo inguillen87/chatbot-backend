@@ -619,25 +619,6 @@ def _get_main_menu_payload(
     viewer_user = context.get("viewer_user_obj")
     profile_name = context.get("profile_name")
     owner_user = context.get("user_obj")
-    municipio_config = context.get("municipio_config_actual") or {}
-
-    welcome_image_url = municipio_config.get("welcome_image_url")
-    welcome_sticker_url = municipio_config.get("welcome_sticker_url")
-    if not welcome_sticker_url and isinstance(welcome_image_url, str):
-        if welcome_image_url.strip().lower().endswith(".webp"):
-            welcome_sticker_url = welcome_image_url
-    if not welcome_image_url and owner_user:
-        owner_image_candidates = [
-            getattr(owner_user, "widget_icon_url", None),
-            getattr(owner_user, "logo_url", None),
-        ]
-        for candidate in owner_image_candidates:
-            if isinstance(candidate, str) and candidate.strip():
-                welcome_image_url = candidate.strip()
-                break
-    if not welcome_sticker_url and isinstance(welcome_image_url, str):
-        if welcome_image_url.strip().lower().endswith(".webp"):
-            welcome_sticker_url = welcome_image_url.strip()
 
     user_name = None
     if isinstance(profile_name, str) and profile_name.strip():
@@ -712,7 +693,7 @@ def _get_main_menu_payload(
         # Full accordion-style menu for web/widget channels
         categorias = [
             {"titulo": "🗣️ Reclamos y Consultas", "botones": [
-                {"texto": "📝 Iniciar un Reclamo", "action_id": "iniciar_reclamo"},
+                {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
                 {"texto": "💡 Enviar una Sugerencia", "action_id": "enviar_sugerencia"},
                 {"texto": "🤔 Consultar Estado de Reclamo", "action_id": "consultar_estado_reclamo"},
                 {"texto": "📞 Contactos Útiles", "action_id": "contactos_utiles"},
@@ -805,31 +786,9 @@ def _get_main_menu_payload(
         "audio_text": audio_text,
         "generar_audio": True
     }
-
-    cleaned_image_url = (
-        welcome_image_url.strip()
-        if isinstance(welcome_image_url, str) and welcome_image_url.strip()
-        else None
-    )
-    cleaned_sticker_url = (
-        welcome_sticker_url.strip()
-        if isinstance(welcome_sticker_url, str) and welcome_sticker_url.strip()
-        else None
-    )
-
-    if cleaned_image_url:
-        response["image_url"] = cleaned_image_url
-
-    if cleaned_sticker_url:
-        if channel == "whatsapp":
-            response["suppress_whatsapp_image"] = True
-            response["whatsapp_sticker_url"] = cleaned_sticker_url
-        elif not cleaned_image_url:
-            # Widget/web channels display the sticker from the generic image slot
-            response["image_url"] = cleaned_sticker_url
-
-    # Web and widget channels can render the logo sticker from ``image_url``
-    # while WhatsApp clients may ignore it if they prefer a lighter welcome.
+    # Do not include a header image in the initial greeting menu to keep the
+    # conversation lightweight and similar to other professional bots like
+    # Boti. Removing the image avoids large headers in WhatsApp.
     return response
 
 def clean_text_for_tts(text: str) -> str:

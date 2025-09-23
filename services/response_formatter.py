@@ -152,12 +152,6 @@ def build_interactive_response(options: list,
 
     # Propagate any image url provided by the bot so the caller can attach it
     image_url = original_bot_response.get("image_url")
-    suppress_whatsapp_image = bool(original_bot_response.get("suppress_whatsapp_image"))
-    whatsapp_media_url = (
-        original_bot_response.get("whatsapp_media_url")
-        or original_bot_response.get("whatsapp_sticker_url")
-    )
-    whatsapp_media_kind = original_bot_response.get("whatsapp_media_kind")
 
     logger.debug(
         "build_interactive_response called | channel=%s | message_type=%s | num_options=%d | audio_url=%s",
@@ -175,8 +169,6 @@ def build_interactive_response(options: list,
         context_update = (context_update or {}).copy()
 
     if channel == "whatsapp":
-        if suppress_whatsapp_image:
-            image_url = None
         original_type = message_type
         num_options = len(options)
 
@@ -283,10 +275,6 @@ def build_interactive_response(options: list,
             }
             if image_url:
                 payload["image_url"] = image_url
-            if whatsapp_media_url:
-                payload["whatsapp_media_url"] = whatsapp_media_url
-            if whatsapp_media_kind:
-                payload["whatsapp_media_kind"] = whatsapp_media_kind
             if audio_url:
                 payload["audio"] = {"link": audio_url}
             return payload
@@ -340,10 +328,6 @@ def build_interactive_response(options: list,
                 }
                 if image_url:
                     payload["image_url"] = image_url
-                if whatsapp_media_url:
-                    payload["whatsapp_media_url"] = whatsapp_media_url
-                if whatsapp_media_kind:
-                    payload["whatsapp_media_kind"] = whatsapp_media_kind
                 if audio_url:
                     payload["audio"] = {"link": audio_url}
                 logger.info(f"build_interactive_response: falling back to TEXT payload because only URL options were present.")
@@ -416,15 +400,9 @@ def build_interactive_response(options: list,
 
         if audio_url:
             payload["audio"] = {"link": audio_url}
-        if whatsapp_media_url:
-            payload["whatsapp_media_url"] = whatsapp_media_url
-        if whatsapp_media_kind:
-            payload["whatsapp_media_kind"] = whatsapp_media_kind
         return payload
 
     elif channel == "web":
-        web_image_url = image_url or original_bot_response.get("whatsapp_sticker_url")
-
         web_response = {
             "respuesta": body_text, # "respuesta" is the key often used for web body
             "botones": [],
@@ -437,8 +415,7 @@ def build_interactive_response(options: list,
             "interpretacion_adjunto": original_bot_response.get("interpretacion_adjunto"),
             "estado_respuesta": original_bot_response.get("estado_respuesta"),
             "adjuntos": original_bot_response.get("adjuntos", []),
-            "audio_url": original_bot_response.get("audio_url"),
-            "image_url": web_image_url,
+            "audio_url": original_bot_response.get("audio_url")
         }
 
         if message_type == 'interactive_menu' and original_bot_response.get("data"):
