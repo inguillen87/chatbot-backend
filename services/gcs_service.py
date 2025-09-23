@@ -160,21 +160,42 @@ def _mask_sensitive_value(value: str) -> str:
     return f"{prefix}{'*' * (len(text) - 4)}{suffix}"
 
 
+def _clean_env_value(name: str) -> str | None:
+    """Return a trimmed environment variable or ``None`` if empty."""
+
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return None
+
+    cleaned = raw_value.strip()
+    return cleaned or None
+
+
 def _init_cloudinary():  # pragma: no cover - thin wrapper validated via tests
     """Return a tuple ``(enabled, uploader, extra_options)`` based on env vars."""
 
-    cloudinary_url = os.environ.get("CLOUDINARY_URL")
-    cloud_name = os.environ.get("CLOUDINARY_CLOUD_NAME")
-    api_key = os.environ.get("CLOUDINARY_API_KEY")
-    api_secret = os.environ.get("CLOUDINARY_API_SECRET")
-    upload_folder = os.environ.get("CLOUDINARY_UPLOAD_FOLDER")
+    cloudinary_url = _clean_env_value("CLOUDINARY_URL")
+    cloud_name = _clean_env_value("CLOUDINARY_CLOUD_NAME")
+    api_key = _clean_env_value("CLOUDINARY_API_KEY")
+    api_secret = _clean_env_value("CLOUDINARY_API_SECRET")
+    upload_folder = _clean_env_value("CLOUDINARY_UPLOAD_FOLDER")
 
-    config_kwargs = {}
-    if cloudinary_url:
+    config_kwargs: dict[str, str | bool] = {"secure": True}
+    explicit_values = [cloud_name, api_key, api_secret]
+    has_any_explicit = any(explicit_values)
+    has_all_explicit = all(explicit_values)
+
+    if has_all_explicit:
+        config_kwargs.update(
+            cloud_name=cloud_name, api_key=api_key, api_secret=api_secret
+        )
+        if cloudinary_url:
+            logger.info(
+                "CLOUDINARY_URL detected but overridden by explicit CLOUDINARY_* credentials."
+            )
+    elif cloudinary_url:
         config_kwargs["cloudinary_url"] = cloudinary_url
-    else:
-        provided_keys = [cloud_name, api_key, api_secret]
-        if any(provided_keys) and not all(provided_keys):
+        if has_any_explicit and not has_all_explicit:
             missing = []
             if not cloud_name:
                 missing.append("CLOUDINARY_CLOUD_NAME")
@@ -182,19 +203,24 @@ def _init_cloudinary():  # pragma: no cover - thin wrapper validated via tests
                 missing.append("CLOUDINARY_API_KEY")
             if not api_secret:
                 missing.append("CLOUDINARY_API_SECRET")
-            logger.warning(
-                "Cloudinary credentials incomplete. Uploads disabled (missing: %s)",
+            logger.info(
+                "Ignoring partial explicit Cloudinary credentials in favour of CLOUDINARY_URL (missing: %s)",
                 ", ".join(missing),
             )
-            return False, None, {}
-        if all(provided_keys):
-            config_kwargs.update(
-                cloud_name=cloud_name,
-                api_key=api_key,
-                api_secret=api_secret,
-            )
-
-    if not config_kwargs:
+    elif has_any_explicit:
+        missing = []
+        if not cloud_name:
+            missing.append("CLOUDINARY_CLOUD_NAME")
+        if not api_key:
+            missing.append("CLOUDINARY_API_KEY")
+        if not api_secret:
+            missing.append("CLOUDINARY_API_SECRET")
+        logger.warning(
+            "Cloudinary credentials incomplete. Uploads disabled (missing: %s)",
+            ", ".join(missing),
+        )
+        return False, None, {}
+    else:
         return False, None, {}
 
     try:
@@ -213,7 +239,7 @@ def _init_cloudinary():  # pragma: no cover - thin wrapper validated via tests
 
     extra_options = {}
     if upload_folder:
-        sanitized = upload_folder.strip().strip("/")
+        sanitized = upload_folder.strip("/")
         if sanitized:
             extra_options["folder"] = sanitized
 
