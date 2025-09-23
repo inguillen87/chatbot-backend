@@ -58,7 +58,13 @@ class TestLLMUtils(unittest.TestCase):
         potential_fields = ["nombre_cliente", "telefono_cliente", "direccion_cliente", "email_cliente"]
         result = extract_multiple_contact_details_llm(text, potential_fields)
 
-        self.assertEqual(result, mock_response_data)
+        expected = {
+            "nombre_cliente": "Juan Pérez",
+            "telefono_cliente": "+5491122334455",
+            "direccion_cliente": "Calle Falsa 123, Springfield",
+            "email_cliente": "juan.perez@example.com",
+        }
+        self.assertEqual(result, expected)
         mock_robust_chat.assert_called_once()
 
     @patch('services.llm_utils.robust_chat')
@@ -134,7 +140,14 @@ class TestLLMUtils(unittest.TestCase):
         text = "Hola, en Calle Sol 123, frente al parque, hay una farola que no enciende desde hace una semana."
         result = extract_complaint_details_llm(text)
 
-        self.assertEqual(result, mock_response_data)
+        expected = {
+            "tipo_problema": "Alumbrado público",
+            "ubicacion_problema": "Calle Sol 123, frente al parque",
+            "descripcion_problema": "La farola no enciende desde hace una semana",
+            "descripcion_corta": "La farola no enciende desde",
+        }
+
+        self.assertEqual(result, expected)
         mock_robust_chat.assert_called_once()
 
     @patch('services.llm_utils.robust_chat')
@@ -153,6 +166,8 @@ class TestLLMUtils(unittest.TestCase):
         self.assertIn("tipo_problema", result)
         self.assertIn("descripcion_problema", result)
         self.assertNotIn("ubicacion_problema", result) # Asumiendo que el mock no lo devuelve
+        self.assertIn("descripcion_corta", result)
+        self.assertTrue(result["descripcion_corta"])
 
     @patch('services.llm_utils.robust_chat')
     def test_extract_complaint_details_llm_empty_input(self, mock_robust_chat):
@@ -172,8 +187,10 @@ class TestLLMUtils(unittest.TestCase):
         text = "Problema en la Plaza Central."
         result = extract_complaint_details_llm(text)
 
-        expected_data = { # La función filtra claves con valores vacíos
-            "ubicacion_problema": "Plaza Central"
+        expected_data = {
+            "ubicacion_problema": "Plaza Central",
+            "descripcion_problema": "Problema en la Plaza Central",
+            "descripcion_corta": "Problema en la Plaza Central",
         }
         self.assertEqual(result, expected_data)
 
@@ -181,7 +198,11 @@ class TestLLMUtils(unittest.TestCase):
     def test_extract_complaint_details_llm_handles_invalid_json(self, mock_robust_chat):
         mock_robust_chat.return_value = "Mocked LLM response."
         result = extract_complaint_details_llm("Texto de prueba")
-        self.assertEqual(result, {})
+        expected = {
+            "descripcion_problema": "Texto de prueba",
+            "descripcion_corta": "Texto de prueba",
+        }
+        self.assertEqual(result, expected)
 
     @patch('services.llm_utils.robust_chat')
     def test_update_summary_with_llm_extraction_basic_append(self, mock_robust_chat):
@@ -258,9 +279,34 @@ class TestLLMUtils(unittest.TestCase):
 
         expected = {
             "tipo_problema": "Basura",
-            "descripcion_problema": "Mucha basura en la esquina."
+            "descripcion_problema": "Mucha basura en la esquina",
+            "descripcion_corta": "Mucha basura en la esquina",
         }
         self.assertEqual(result, expected)
+
+    @patch('services.llm_utils.robust_chat')
+    def test_extract_complaint_details_llm_handles_audio_style_text(self, mock_robust_chat):
+        mock_robust_chat.return_value = json.dumps({
+            "descripcion_problema": "tardes",
+            "ubicacion_problema": "mi documento es 32877",
+            "nombre_cliente": "Marcelo",
+        })
+
+        text = (
+            "Hola, buenas tardes. Sí, mirá, quería hacer un reclamo. Tengo un poste caído acá a mitad de cuadra en mi barrio. "
+            "Soy Marcelo Guillén, mi documento es 32877851. Mi dirección es Don Bosco 55 Esquina Sarmiento de Junín y mi número "
+            "de celular es 261-31-68-608."
+        )
+
+        result = extract_complaint_details_llm(text, default_localidad="Junín", default_provincia="Mendoza")
+
+        self.assertEqual(result.get("nombre_cliente"), "Marcelo Guillén")
+        self.assertEqual(result.get("dni_cliente"), "32877851")
+        self.assertEqual(result.get("telefono_cliente"), "+5492613168608")
+        self.assertIn("poste", result.get("descripcion_problema", "").lower())
+        self.assertIn("don bosco 55", result.get("ubicacion_problema", "").lower())
+        self.assertIn("mendoza", result.get("ubicacion_problema", "").lower())
+        self.assertTrue(result.get("descripcion_corta"))
 
     @patch('services.llm_utils.robust_chat')
     def test_extract_contact_details_llm_with_trailing_commas(self, mock_robust_chat):
@@ -289,6 +335,31 @@ class TestLLMUtils(unittest.TestCase):
         self.assertTrue(result.get("telefono_cliente"))
         self.assertEqual(result.get("email_cliente"), "ana@test.com")
         self.assertTrue(result.get("direccion_cliente"))
+
+    @patch('services.llm_utils.robust_chat')
+    def test_extract_multiple_contact_details_llm_handles_dense_audio_text(self, mock_robust_chat):
+        mock_robust_chat.return_value = json.dumps({"nombre_cliente": "Marcelo"})
+
+        text = (
+            "Hola, buenas tardes. Sí, mirá, quería hacer un reclamo. Tengo un poste caído acá a mitad de cuadra en mi barrio. "
+            "Soy Marcelo Guillén, mi documento es 32877851. Mi dirección es Don Bosco 55 Esquina Sarmiento de Junín y mi número "
+            "de celular es 261-31-68-608."
+        )
+        potential_fields = [
+            "nombre_cliente",
+            "telefono_cliente",
+            "direccion_cliente",
+            "email_cliente",
+            "dni_cliente",
+        ]
+
+        result = extract_multiple_contact_details_llm(text, potential_fields)
+
+        self.assertEqual(result.get("nombre_cliente"), "Marcelo Guillén")
+        self.assertEqual(result.get("telefono_cliente"), "+5492613168608")
+        self.assertEqual(result.get("dni_cliente"), "32877851")
+        self.assertIn("don bosco 55", result.get("direccion_cliente", "").lower())
+        self.assertNotIn("email_cliente", result)
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

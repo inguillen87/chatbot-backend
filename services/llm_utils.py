@@ -7,6 +7,8 @@ from utils.validators import (
     extract_phone,
     extract_name,
     extract_address,
+    extract_dni,
+    validate_name,
 )
 from google.cloud import documentai
 try:
@@ -102,6 +104,303 @@ except ImportError:
         return "{}"
 
 logger = logging.getLogger(__name__)
+
+_CONTACT_CLAUSE_PATTERN = re.compile(
+    r"\b(?:mi\s+(?:nombre|n[úu]mero|documento|dni|tel[eé]fono|celular|mail|correo|email|direcci[oó]n)\s+[^.,;:\n]*|"
+    r"soy\s+[A-Za-zÁÉÍÓÚÑáéíóúñ ]{2,60})",
+    re.IGNORECASE,
+)
+
+_FILLER_START_WORDS = {
+    "hola",
+    "buenas",
+    "buenos",
+    "dias",
+    "días",
+    "tardes",
+    "noches",
+    "si",
+    "sí",
+    "mira",
+    "mirá",
+    "queria",
+    "quería",
+    "quisiera",
+    "necesito",
+}
+
+_ADDRESS_FORBIDDEN_WORDS = {
+    "documento",
+    "dni",
+    "correo",
+    "email",
+    "mail",
+    "celular",
+    "telefono",
+    "teléfono",
+    "whatsapp",
+}
+
+_ADDRESS_HINT_WORDS = {
+    "calle",
+    "avenida",
+    "av.",
+    "ruta",
+    "esquina",
+    "barrio",
+    "pasaje",
+    "pje",
+    "manzana",
+    "lote",
+    "km",
+    "interseccion",
+    "intersección",
+    "plaza",
+    "esq",
+}
+
+_NAME_DISALLOWED_TOKENS = {
+    "calle",
+    "avenida",
+    "ruta",
+    "esquina",
+    "barrio",
+    "pasaje",
+    "pje",
+    "manzana",
+    "lote",
+    "km",
+    "interseccion",
+    "intersección",
+    "plaza",
+    "esq",
+    "frente",
+    "parque",
+}
+
+_ADDRESS_PATTERNS: List[str] = [
+    r"(?:mi|la|nuestra|nuestro)\s+direcci[oó]n\s+es\s+([^.;\n]+)",
+    r"(?:mi|la|nuestra|nuestro)\s+ubicaci[oó]n\s+es\s+([^.;\n]+)",
+    r"(?:vivo|estoy|queda|quedo|quedamos|nos\s+ubicamos|se\s+ubica|ubicado|ubicada|ubicados|ubicadas)\s+en\s+([^.;\n]+)",
+    r"(?:en\s+la\s+esquina\s+de)\s+([^.;\n]+)",
+    r"(?:entre\s+)?([A-Za-zÁÉÍÓÚÑáéíóúñ'\s]+\s+(?:y|e)\s+[A-Za-zÁÉÍÓÚÑáéíóúñ'\s]+)",
+    r"(?:en|sobre)\s+([A-Za-zÁÉÍÓÚÑáéíóúñ'\s]+\d{1,6}(?:[A-Za-zÁÉÍÓÚÑáéíóúñ'\s,.-]*))",
+]
+
+
+def _ensure_string(value: Any) -> Optional[str]:
+    """Return the first non-empty string representation for a value."""
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            candidate = _ensure_string(item)
+            if candidate:
+                return candidate
+        return None
+    return str(value).strip() or None
+
+
+def _normalize_address_candidate(value: Any) -> str:
+    """Normalize an address candidate by trimming common prefixes."""
+
+    candidate = _ensure_string(value) or ""
+    if not candidate:
+        return ""
+
+    candidate = re.sub(
+        r"^(?:mi|la|nuestra|nuestro)\s+direcci[oó]n\s+es\s+",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    candidate = re.sub(
+        r"^(?:mi|la|nuestra|nuestro)\s+ubicaci[oó]n\s+es\s+",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    candidate = re.sub(
+        r"^(?:vivo|estoy|queda|quedo|quedamos|nos\s+ubicamos|se\s+ubica|ubicado|ubicada|ubicados|ubicadas)\s+en\s+",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    candidate = re.sub(
+        r"^(?:en\s+la\s+esquina\s+de)\s+",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    candidate = re.sub(
+        r"\b(?:y\s+)?mi\s+(?:n[úu]mero|tel[eé]fono|celular)\b.*",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    candidate = re.sub(
+        r"\bmi\s+documento\b.*",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    candidate = re.sub(r"\s+", " ", candidate)
+    candidate = candidate.strip(" ,.;:-")
+    return candidate
+
+
+def _looks_like_address_fragment(value: Any) -> bool:
+    """Heuristic to determine if a string resembles an address."""
+
+    candidate = _normalize_address_candidate(value)
+    if not candidate:
+        return False
+
+    lowered = candidate.lower()
+    if any(stop_word in lowered for stop_word in _ADDRESS_FORBIDDEN_WORDS):
+        return False
+
+    if len(candidate.split()) < 2:
+        return False
+
+    has_number = bool(re.search(r"\d{1,6}", candidate))
+    has_hint = any(hint in lowered for hint in _ADDRESS_HINT_WORDS)
+    has_intersection = bool(
+        re.search(r"[A-Za-zÁÉÍÓÚÑáéíóúñ]+\s+(?:y|e)\s+[A-Za-zÁÉÍÓÚÑáéíóúñ]+", candidate)
+    )
+
+    return has_number or has_hint or has_intersection
+
+
+def _extract_address_candidates(text: str) -> List[str]:
+    """Return a list of possible addresses detected in free text."""
+
+    if not text:
+        return []
+
+    candidates: List[str] = []
+    for pattern in _ADDRESS_PATTERNS:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            # Patterns may have capturing groups; use the first one when available.
+            candidate = match.group(1) if match.groups() else match.group(0)
+            candidate = _normalize_address_candidate(candidate)
+            if _looks_like_address_fragment(candidate):
+                candidates.append(candidate)
+
+    fallback = extract_address(text)
+    if fallback:
+        fallback = _normalize_address_candidate(fallback)
+        if _looks_like_address_fragment(fallback):
+            candidates.append(fallback)
+
+    unique_candidates: List[str] = []
+    seen = set()
+    for candidate in candidates:
+        key = candidate.lower()
+        if key not in seen:
+            seen.add(key)
+            unique_candidates.append(candidate)
+
+    return unique_candidates
+
+
+def _extract_phone_candidate(value: Any, region: str = "AR") -> Optional[str]:
+    """Extract and normalize a phone number from a value."""
+
+    candidate = _ensure_string(value)
+    if candidate:
+        phone = extract_phone(candidate, region=region)
+        if phone:
+            normalized, _raw = phone
+            return normalized
+    return None
+
+
+def _normalize_dni_value(value: Any) -> Optional[str]:
+    """Return a sanitized DNI string if the value looks like a DNI."""
+
+    candidate = _ensure_string(value)
+    if not candidate:
+        return None
+
+    digits = re.sub(r"\D", "", candidate)
+    if 7 <= len(digits) <= 8:
+        return digits
+    return None
+
+
+def _clean_description_text(text: str) -> str:
+    """Remove contact clauses from a description while keeping the issue context."""
+
+    if not text:
+        return ""
+
+    cleaned = _CONTACT_CLAUSE_PATTERN.sub(" ", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-")
+    return cleaned or text.strip()
+
+
+def _build_short_description(text: str, max_words: int = 5) -> Optional[str]:
+    """Return a compact summary using the first relevant words of the text."""
+
+    if not text:
+        return None
+
+    tokens = re.findall(r"[A-Za-zÁÉÍÓÚÑáéíóúñ0-9']+", text)
+    if not tokens:
+        return None
+
+    summary_tokens: List[str] = []
+    for token in tokens:
+        lower = token.lower()
+        if not summary_tokens and lower in _FILLER_START_WORDS:
+            continue
+        summary_tokens.append(token)
+        if len(summary_tokens) >= max_words:
+            break
+
+    if not summary_tokens:
+        return None
+
+    return " ".join(summary_tokens)
+
+
+def _cleanup_name_candidate(name: Any) -> Optional[str]:
+    """Normalize a name candidate and drop obvious non-name fragments."""
+
+    candidate = _ensure_string(name)
+    if not candidate:
+        return None
+
+    candidate = re.sub(
+        r"\s+y\s+(?:mi|mis|su|sus|el|la|los|las)\b.*",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    )
+    candidate = re.sub(r"\s+con\s+.*", "", candidate, flags=re.IGNORECASE)
+    candidate = re.sub(r"\s*,.*", "", candidate)
+    candidate = re.sub(r"\s+", " ", candidate).strip(" ,.;:-")
+    if not candidate:
+        return None
+
+    lowered = candidate.lower()
+    if any(token in lowered for token in _NAME_DISALLOWED_TOKENS):
+        return None
+
+    if len(candidate.split()) > 4:
+        return None
+
+    if not validate_name(candidate):
+        return None
+
+    return candidate
 
 def _clean_llm_json_output(llm_output: str) -> str:
     """Clean and attempt to repair JSON returned by an LLM."""
@@ -204,25 +503,28 @@ def _close_open_json_structures(json_str: str) -> str:
 
 def extract_multiple_contact_details_llm(text: str, potential_fields: List[str]) -> Dict[str, Any]:
     """
-    Uses an LLM to extract multiple contact details from a given text.
+    Uses an LLM (with heuristics) to extract multiple contact details from a given text.
 
     Args:
         text: The user's input string.
-        potential_fields: A list of field names (e.g., "nombre_cliente", "telefono_cliente")
-                          to guide the LLM.
+        potential_fields: List of expected keys (e.g., "nombre_cliente").
 
     Returns:
-        A dictionary with extracted field names as keys and their values.
-        Returns an empty dictionary if no details are found or an error occurs.
+        A dictionary with the requested fields when they can be inferred.
     """
+
     if not text or not potential_fields:
+        return {}
+
+    filtered_fields = [field for field in potential_fields if isinstance(field, str) and field]
+    if not filtered_fields:
         return {}
 
     prompt = (
         "Eres un asistente amigable y eficiente. Extrae los siguientes datos de contacto del MENSAJE DEL USUARIO: "
-        f"{', '.join(potential_fields)}. "
+        f"{', '.join(filtered_fields)}. "
         "Devuelve la información SOLAMENTE como un objeto JSON válido con las claves de la lista: "
-        f"{potential_fields}. Si no encuentras un dato, omite la clave en el JSON. "
+        f"{filtered_fields}. Si no encuentras un dato, omite la clave en el JSON. "
         "No añadas explicaciones ni texto conversacional. Asegúrate de extraer los números de teléfono de la forma más precisa posible.\n\n"
         "Ejemplo de campos:\n"
         "- nombre_cliente: Nombre completo del cliente.\n"
@@ -233,82 +535,157 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
         "RESPUESTA JSON:"
     )
 
-    extracted_data = {}
+    response_content: Optional[str] = None
+    raw_extracted: Dict[str, Any] = {}
+
     try:
-        response_content = robust_chat(message=prompt) # Removed model_override
+        response_content = robust_chat(message=prompt)
         if response_content:
             cleaned_response = _clean_llm_json_output(response_content)
             if cleaned_response:
-                extracted_data = json.loads(cleaned_response)
-                # Ensure only requested fields are returned
-                extracted_data = {k: v for k, v in extracted_data.items() if k in potential_fields and v}
+                parsed = json.loads(cleaned_response)
+                if isinstance(parsed, dict):
+                    raw_extracted = {k: parsed.get(k) for k in filtered_fields if parsed.get(k)}
+                else:
+                    logger.info(
+                        "[LLM_CONTACT_EXTRACT] Ignoring non-dict response for text: %s", text
+                    )
             else:
-                logger.info(f"[LLM_CONTACT_EXTRACT] LLM response was empty after cleaning for text: {text}")
+                logger.info(
+                    "[LLM_CONTACT_EXTRACT] LLM response was empty after cleaning for text: %s",
+                    text,
+                )
         else:
-            logger.info(f"[LLM_CONTACT_EXTRACT] LLM returned empty response for text: {text}")
+            logger.info(
+                "[LLM_CONTACT_EXTRACT] LLM returned empty response for text: %s",
+                text,
+            )
 
-    except json.JSONDecodeError as e:
-        logger.error(f"[LLM_CONTACT_EXTRACT] JSONDecodeError parsing LLM response: {e}. Response: '{response_content}' for text: '{text}'")
-        # Optionally, try a more lenient parsing or regex for simple cases if JSON fails often
-    except Exception as e:
-        logger.error(f"[LLM_CONTACT_EXTRACT] Error in extract_multiple_contact_details_llm: {e} for text: '{text}'")
+    except json.JSONDecodeError as exc:
+        logger.error(
+            "[LLM_CONTACT_EXTRACT] JSONDecodeError parsing LLM response: %s. Response: '%s' for text: '%s'",
+            exc,
+            response_content,
+            text,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error(
+            "[LLM_CONTACT_EXTRACT] Error in extract_multiple_contact_details_llm: %s for text: '%s'",
+            exc,
+            text,
+        )
 
-    # Fallback heuristics for fields not provided by LLM
-    for field in potential_fields:
-        if field not in extracted_data or not extracted_data.get(field):
-            heuristic_value = None
-            if field == "nombre_cliente":
-                heuristic_value = extract_name(text)
-            elif field == "telefono_cliente":
-                heuristic_value = extract_phone(text)
-            elif field == "direccion_cliente":
-                heuristic_value = extract_address(text)
-                if not heuristic_value:
-                    # A more generic regex for addresses if the specific one fails
-                    address_regex = r'(?:en|en la)\s+((?:[\w\s,.-]+)+)'
-                    addresses = re.findall(address_regex, text, re.IGNORECASE)
-                    if addresses:
-                        heuristic_value = addresses[0].strip()
-            elif field == "email_cliente":
-                heuristic_value = extract_email(text)
-            if heuristic_value:
-                extracted_data[field] = heuristic_value
+    extracted_data: Dict[str, Any] = {}
+    for key, value in raw_extracted.items():
+        sanitized = _ensure_string(value)
+        if sanitized:
+            extracted_data[key] = sanitized
 
-    return extracted_data
+    if "nombre_cliente" in extracted_data:
+        cleaned_llm_name = _cleanup_name_candidate(extracted_data.get("nombre_cliente"))
+        if cleaned_llm_name:
+            extracted_data["nombre_cliente"] = cleaned_llm_name
+        else:
+            extracted_data.pop("nombre_cliente", None)
 
-def extract_complaint_details_llm(text: str, default_localidad: str | None = None, default_provincia: str | None = None) -> Dict[str, str]:
-    """
-    Uses an LLM to extract key details from a user's complaint message,
-    considering default location context.
+    normalized_text = text or ""
 
-    Args:
-        text: The user's complaint description.
-        default_localidad: The default city/locality for the bot's context.
-        default_provincia: The default province for the bot's context.
+    if "nombre_cliente" in filtered_fields:
+        llm_name = extracted_data.get("nombre_cliente")
+        name_cue_present = bool(
+            re.search(r"\b(soy|me llamo|mi nombre es|nombre\s*:)", normalized_text, re.IGNORECASE)
+        )
+        heuristic_name = _cleanup_name_candidate(
+            extract_name(normalized_text) if name_cue_present else None
+        )
+        if heuristic_name:
+            current_name = llm_name
+            if not current_name:
+                extracted_data["nombre_cliente"] = heuristic_name
+            elif (
+                heuristic_name.lower() not in current_name.lower()
+                and len(heuristic_name.split()) >= len(current_name.split())
+            ):
+                extracted_data["nombre_cliente"] = heuristic_name
+        elif not llm_name:
+            extracted_data.pop("nombre_cliente", None)
 
-    Returns:
-        A dictionary with keys like "tipo_problema", "ubicacion_problema",
-        "descripcion_problema". Returns an empty dictionary on error.
-    """
+    if "email_cliente" in filtered_fields:
+        heuristic_email = extract_email(normalized_text)
+        llm_email = _ensure_string(extracted_data.get("email_cliente"))
+        if heuristic_email:
+            if not llm_email or heuristic_email.lower() != llm_email.lower():
+                extracted_data["email_cliente"] = heuristic_email
+        elif llm_email:
+            extracted_data["email_cliente"] = llm_email
+
+    if "telefono_cliente" in filtered_fields:
+        llm_phone_raw = _ensure_string(extracted_data.get("telefono_cliente"))
+        normalized_phone = _extract_phone_candidate(llm_phone_raw)
+        if not normalized_phone:
+            normalized_phone = _extract_phone_candidate(normalized_text)
+        if normalized_phone:
+            extracted_data["telefono_cliente"] = normalized_phone
+        elif llm_phone_raw:
+            extracted_data["telefono_cliente"] = llm_phone_raw
+        else:
+            extracted_data.pop("telefono_cliente", None)
+
+    if "direccion_cliente" in filtered_fields:
+        llm_address = _ensure_string(extracted_data.get("direccion_cliente"))
+        if llm_address and not _looks_like_address_fragment(llm_address):
+            llm_address = None
+            extracted_data.pop("direccion_cliente", None)
+        address_candidates = _extract_address_candidates(normalized_text)
+        if llm_address and _looks_like_address_fragment(llm_address):
+            extracted_data["direccion_cliente"] = _normalize_address_candidate(llm_address)
+        elif address_candidates:
+            extracted_data["direccion_cliente"] = address_candidates[0]
+
+    if "dni_cliente" in filtered_fields:
+        llm_dni = _normalize_dni_value(extracted_data.get("dni_cliente"))
+        if llm_dni:
+            extracted_data["dni_cliente"] = llm_dni
+        else:
+            dni_match = extract_dni(normalized_text)
+            if dni_match:
+                extracted_data["dni_cliente"] = dni_match[0]
+            else:
+                extracted_data.pop("dni_cliente", None)
+
+    final_data = {k: v for k, v in extracted_data.items() if k in filtered_fields and v}
+    return final_data
+
+def extract_complaint_details_llm(
+    text: str,
+    default_localidad: str | None = None,
+    default_provincia: str | None = None,
+) -> Dict[str, str]:
+    """Extract complaint details combining LLM output with deterministic heuristics."""
+
     if not text:
         return {}
 
     location_context_instruction = ""
-    if default_localidad and default_provincia and default_localidad != 'N/A' and default_provincia != 'N/A':
+    if (
+        default_localidad
+        and default_provincia
+        and default_localidad != "N/A"
+        and default_provincia != "N/A"
+    ):
         location_context_instruction = (
             f"Este reclamo es para el municipio de {default_localidad}, {default_provincia}. "
             "Si el usuario menciona una calle y número pero no una ciudad o provincia, "
             f"asumí que la dirección corresponde a {default_localidad}, {default_provincia}. "
             "Solo usa estos valores por defecto para localidad y provincia si el usuario NO los especifica."
         )
-    elif default_localidad and default_localidad != 'N/A':
+    elif default_localidad and default_localidad != "N/A":
         location_context_instruction = (
             f"Este reclamo es para el municipio de {default_localidad}. "
             "Si el usuario menciona una calle y número pero no una ciudad, "
             f"asumí que la dirección corresponde a {default_localidad}. "
             "Solo usa este valor por defecto para localidad si el usuario NO lo especifica."
         )
-
 
     prompt = (
         "Eres un asistente amable y comprensivo. Analiza el RECLAMO DEL USUARIO y extrae los siguientes detalles: "
@@ -328,34 +705,186 @@ def extract_complaint_details_llm(text: str, default_localidad: str | None = Non
         "RESPUESTA JSON:"
     )
 
-    extracted_details = {}
+    response_content: Optional[str] = None
+    llm_result: Dict[str, Any] = {}
+    valid_keys = [
+        "tipo_problema",
+        "ubicacion_problema",
+        "descripcion_problema",
+        "descripcion_corta",
+        "nombre_cliente",
+        "email_cliente",
+        "telefono_cliente",
+        "dni_cliente",
+    ]
+
     try:
-        response_content = robust_chat(message=prompt) # Removed model_override
+        response_content = robust_chat(message=prompt)
         if response_content:
             cleaned_response = _clean_llm_json_output(response_content)
             if cleaned_response:
-                extracted_details = json.loads(cleaned_response)
-                # Ensure all potential fields are considered valid
-                valid_keys = ["tipo_problema", "ubicacion_problema", "descripcion_problema", "descripcion_corta", "nombre_cliente", "email_cliente", "telefono_cliente", "dni_cliente"]
-                extracted_details = {k: v for k, v in extracted_details.items() if k in valid_keys and v}
+                parsed = json.loads(cleaned_response)
+                if isinstance(parsed, dict):
+                    for key in valid_keys:
+                        if key not in parsed:
+                            continue
+                        value = parsed.get(key)
+                        if key == "descripcion_problema" and isinstance(value, (list, tuple)):
+                            combined = " ".join(
+                                filter(None, (_ensure_string(item) for item in value))
+                            ).strip()
+                            sanitized = combined or None
+                        else:
+                            sanitized = _ensure_string(value)
+                        if sanitized:
+                            llm_result[key] = sanitized
+                else:
+                    logger.info(
+                        "[LLM_COMPLAINT_EXTRACT] Ignoring non-dict response for text: %s",
+                        text,
+                    )
             else:
-                 logger.info(f"[LLM_COMPLAINT_EXTRACT] LLM response was empty after cleaning for text: {text}")
+                logger.info(
+                    "[LLM_COMPLAINT_EXTRACT] LLM response was empty after cleaning for text: %s",
+                    text,
+                )
         else:
-            logger.info(f"[LLM_COMPLAINT_EXTRACT] LLM returned empty response for text: {text}")
+            logger.info(
+                "[LLM_COMPLAINT_EXTRACT] LLM returned empty response for text: %s",
+                text,
+            )
 
-    except json.JSONDecodeError as e:
+    except json.JSONDecodeError as exc:
         logger.info(
-            f"[LLM_COMPLAINT_EXTRACT] Unable to parse LLM response; using fallback. Response: '{response_content}' for text: '{text}'. Error: {e}"
+            "[LLM_COMPLAINT_EXTRACT] Unable to parse LLM response; using fallback. Response: '%s' for text: '%s'. Error: %s",
+            response_content,
+            text,
+            exc,
         )
-    except Exception as e: # Captura genérica al final
-        # Si hemos identificado un error específico de Cohere y es de ese tipo, loguearlo específicamente.
-        if CohereAPIError and isinstance(e, CohereAPIError):
-            logger.error(f"[LLM_COMPLAINT_EXTRACT] Cohere API Error in extract_complaint_details_llm: {e} (Type: {type(e)}). Text: '{text}'")
+    except Exception as exc:  # pragma: no cover - defensive
+        if CohereAPIError and isinstance(exc, CohereAPIError):
+            logger.error(
+                "[LLM_COMPLAINT_EXTRACT] Cohere API Error in extract_complaint_details_llm: %s (Type: %s). Text: '%s'",
+                exc,
+                type(exc),
+                text,
+            )
         else:
-            # Log de error genérico para otros tipos de excepciones
-            logger.error(f"[LLM_COMPLAINT_EXTRACT] Generic Error in extract_complaint_details_llm: {e} (Type: {type(e)}). Text: '{text}'", exc_info=True) # exc_info=True para traceback
+            logger.error(
+                "[LLM_COMPLAINT_EXTRACT] Generic Error in extract_complaint_details_llm: %s (Type: %s). Text: '%s'",
+                exc,
+                type(exc),
+                text,
+                exc_info=True,
+            )
 
-    return extracted_details
+    result: Dict[str, Any] = {k: v for k, v in llm_result.items() if v}
+    normalized_text = text or ""
+
+    if "nombre_cliente" in result:
+        cleaned_name = _cleanup_name_candidate(result.get("nombre_cliente"))
+        if cleaned_name:
+            result["nombre_cliente"] = cleaned_name
+        else:
+            result.pop("nombre_cliente", None)
+
+    name_cue_present = bool(
+        re.search(r"\b(soy|me llamo|mi nombre es|nombre\s*:)", normalized_text, re.IGNORECASE)
+    )
+    heuristic_name = _cleanup_name_candidate(
+        extract_name(normalized_text) if name_cue_present else None
+    )
+    if heuristic_name:
+        current_name = result.get("nombre_cliente")
+        if not current_name:
+            result["nombre_cliente"] = heuristic_name
+        elif (
+            heuristic_name.lower() not in current_name.lower()
+            and len(heuristic_name.split()) >= len(current_name.split())
+        ):
+            result["nombre_cliente"] = heuristic_name
+
+    heuristic_email = extract_email(normalized_text)
+    if heuristic_email:
+        current_email = result.get("email_cliente")
+        if not current_email or heuristic_email.lower() != current_email.lower():
+            result["email_cliente"] = heuristic_email
+
+    llm_phone_raw = _ensure_string(result.get("telefono_cliente"))
+    normalized_phone = _extract_phone_candidate(llm_phone_raw)
+    heuristic_phone = _extract_phone_candidate(normalized_text)
+    if heuristic_phone:
+        result["telefono_cliente"] = heuristic_phone
+    elif normalized_phone:
+        result["telefono_cliente"] = normalized_phone
+    elif llm_phone_raw:
+        result["telefono_cliente"] = llm_phone_raw
+    else:
+        result.pop("telefono_cliente", None)
+
+    if result.get("dni_cliente"):
+        normalized_dni = _normalize_dni_value(result["dni_cliente"])
+        if normalized_dni:
+            result["dni_cliente"] = normalized_dni
+        else:
+            result.pop("dni_cliente", None)
+    dni_match = extract_dni(normalized_text)
+    if dni_match:
+        result["dni_cliente"] = dni_match[0]
+
+    if result.get("ubicacion_problema") and not _looks_like_address_fragment(
+        result["ubicacion_problema"]
+    ):
+        result.pop("ubicacion_problema", None)
+
+    address_candidates = _extract_address_candidates(normalized_text)
+    heur_address: Optional[str] = None
+    if address_candidates:
+        heur_address = address_candidates[0]
+        heur_address = _normalize_address_candidate(heur_address)
+        if (
+            default_localidad
+            and default_localidad != "N/A"
+            and default_localidad.lower() not in heur_address.lower()
+        ):
+            heur_address = f"{heur_address}, {default_localidad}"
+        if (
+            default_provincia
+            and default_provincia != "N/A"
+            and default_provincia.lower() not in heur_address.lower()
+        ):
+            heur_address = f"{heur_address}, {default_provincia}"
+        if not _looks_like_address_fragment(heur_address):
+            heur_address = None
+
+    if heur_address:
+        if "ubicacion_problema" not in result:
+            result["ubicacion_problema"] = heur_address
+        elif not _looks_like_address_fragment(result.get("ubicacion_problema")):
+            result["ubicacion_problema"] = heur_address
+
+    description_candidate = _ensure_string(result.get("descripcion_problema")) or ""
+    cleaned_description = _clean_description_text(description_candidate)
+    if not cleaned_description or len(cleaned_description.split()) < 4:
+        cleaned_description = _clean_description_text(normalized_text)
+    if cleaned_description:
+        result["descripcion_problema"] = cleaned_description
+    else:
+        result.pop("descripcion_problema", None)
+
+    short_source = (
+        result.get("descripcion_corta")
+        or result.get("descripcion_problema")
+        or normalized_text
+    )
+    heuristic_short = _build_short_description(short_source)
+    if heuristic_short:
+        result["descripcion_corta"] = heuristic_short
+    else:
+        result.pop("descripcion_corta", None)
+
+    result = {k: v for k, v in result.items() if v}
+    return result
 
 def update_summary_with_llm_extraction(current_summary: str, extracted_data: Dict[str, Any]) -> str:
     """
