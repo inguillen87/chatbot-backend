@@ -139,3 +139,62 @@ class CloudinaryUploadTests(unittest.TestCase):
         self.assertFalse(gcs_service.CLOUDINARY_ENABLED)
         self.assertEqual(gcs_service._CLOUDINARY_DISABLED_REASON, "unknown api key")
         self.assertEqual(mock_local.call_count, 2)
+
+    def test_explicit_cloudinary_vars_override_url(self):
+        fake_cloudinary = types.ModuleType("cloudinary")
+        config_calls = []
+
+        def fake_config(**kwargs):
+            config_calls.append(kwargs)
+
+        fake_cloudinary.uploader = types.SimpleNamespace(upload=lambda *_, **__: {})
+        fake_cloudinary.config = fake_config
+
+        env = {
+            "CLOUDINARY_URL": "cloudinary://url-key:url-secret@demo",
+            "CLOUDINARY_CLOUD_NAME": "real-cloud",
+            "CLOUDINARY_API_KEY": "explicit-key",
+            "CLOUDINARY_API_SECRET": "explicit-secret",
+        }
+
+        with patch.dict(sys.modules, {"cloudinary": fake_cloudinary}):
+            with patch.dict(os.environ, env, clear=True):
+                import services.gcs_service as gcs_service
+
+                importlib.reload(gcs_service)
+
+        self.assertTrue(config_calls)
+        config_used = config_calls[-1]
+        self.assertEqual(config_used["cloud_name"], "real-cloud")
+        self.assertEqual(config_used["api_key"], "explicit-key")
+        self.assertEqual(config_used["api_secret"], "explicit-secret")
+        self.assertNotIn("cloudinary_url", config_used)
+
+    def test_cloudinary_env_values_are_trimmed(self):
+        fake_cloudinary = types.ModuleType("cloudinary")
+        captured_config = {}
+
+        def fake_config(**kwargs):
+            captured_config.update(kwargs)
+
+        fake_cloudinary.uploader = types.SimpleNamespace(upload=lambda *_, **__: {})
+        fake_cloudinary.config = fake_config
+
+        env = {
+            "CLOUDINARY_CLOUD_NAME": " demo ",
+            "CLOUDINARY_API_KEY": "  key  ",
+            "CLOUDINARY_API_SECRET": " secret ",
+            "CLOUDINARY_UPLOAD_FOLDER": " /nested/path/ ",
+        }
+
+        with patch.dict(sys.modules, {"cloudinary": fake_cloudinary}):
+            with patch.dict(os.environ, env, clear=True):
+                import services.gcs_service as gcs_service
+
+                importlib.reload(gcs_service)
+
+        self.assertEqual(captured_config["cloud_name"], "demo")
+        self.assertEqual(captured_config["api_key"], "key")
+        self.assertEqual(captured_config["api_secret"], "secret")
+        self.assertIn("folder", gcs_service.CLOUDINARY_UPLOAD_OPTIONS)
+        self.assertEqual(gcs_service.CLOUDINARY_UPLOAD_OPTIONS["folder"], "nested/path")
