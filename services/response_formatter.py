@@ -423,6 +423,8 @@ def build_interactive_response(options: list,
         return payload
 
     elif channel == "web":
+        web_image_url = image_url or original_bot_response.get("whatsapp_sticker_url")
+
         web_response = {
             "respuesta": body_text, # "respuesta" is the key often used for web body
             "botones": [],
@@ -435,7 +437,8 @@ def build_interactive_response(options: list,
             "interpretacion_adjunto": original_bot_response.get("interpretacion_adjunto"),
             "estado_respuesta": original_bot_response.get("estado_respuesta"),
             "adjuntos": original_bot_response.get("adjuntos", []),
-            "audio_url": original_bot_response.get("audio_url")
+            "audio_url": original_bot_response.get("audio_url"),
+            "image_url": web_image_url,
         }
 
         if message_type == 'interactive_menu' and original_bot_response.get("data"):

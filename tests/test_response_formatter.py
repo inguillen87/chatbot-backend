@@ -288,6 +288,32 @@ class TestResponseFormatter(unittest.TestCase):
         self.assertEqual(response["botones"][0]["action_id"], "web_opt1")
         self.assertEqual(response["fuente"], "test_web_sugg")
 
+    def test_web_response_includes_image_url(self):
+        bot_response = {
+            "message_body": "Hola web",
+            "image_url": "https://example.com/junibot.webp"
+        }
+        response = build_interactive_response(
+            options=[],
+            body_text=bot_response["message_body"],
+            channel="web",
+            original_bot_response=bot_response
+        )
+        self.assertEqual(response["image_url"], "https://example.com/junibot.webp")
+
+    def test_web_response_uses_sticker_as_fallback_image(self):
+        bot_response = {
+            "message_body": "Hola web",
+            "whatsapp_sticker_url": "https://example.com/juni-sticker.webp"
+        }
+        response = build_interactive_response(
+            options=[],
+            body_text=bot_response["message_body"],
+            channel="web",
+            original_bot_response=bot_response
+        )
+        self.assertEqual(response["image_url"], "https://example.com/juni-sticker.webp")
+
     def test_web_response_structure_text(self):
         original_context = {"fuente": "test_web_plain"}
         response = build_interactive_response(
