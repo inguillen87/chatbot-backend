@@ -734,7 +734,7 @@ def _get_main_menu_payload(
         # Full accordion-style menu for web/widget channels
         categorias = [
             {"titulo": "🗣️ Reclamos y Consultas", "botones": [
-                {"texto": "📝 Iniciar un Reclamo", "action_id": "mostrar_menu_reclamos"},
+                {"texto": "📝 Iniciar un Reclamo", "action_id": "iniciar_reclamo"},
                 {"texto": "💡 Enviar una Sugerencia", "action_id": "enviar_sugerencia"},
                 {"texto": "🤔 Consultar Estado de Reclamo", "action_id": "consultar_estado_reclamo"},
                 {"texto": "📞 Contactos Útiles", "action_id": "contactos_utiles"},
