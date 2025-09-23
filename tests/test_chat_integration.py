@@ -53,6 +53,37 @@ class TestChatIntegration(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
+    @patch("routes.chat.responder_chatboc")
+    def test_attachment_payload_without_text_does_not_trigger_init(self, mock_responder):
+        mock_responder.return_value = {"message_body": "ok"}
+
+        payload = {
+            "pregunta": "",
+            "tipo_chat": "municipio",
+            "attachmentInfo": {
+                "id": 123,
+                "url": "https://example.com/foto.jpg",
+                "name": "foto.jpg",
+                "mimeType": "image/jpeg",
+                "size": 4,
+                "thumbUrl": "https://example.com/foto_thumb.jpg",
+            },
+        }
+
+        response = self.client.post("/ask/municipio", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertNotIn("error", data)
+
+        mock_responder.assert_called_once()
+        called_kwargs = mock_responder.call_args.kwargs
+        self.assertEqual(called_kwargs.get("pregunta"), "")
+
+        uploaded_info = called_kwargs.get("uploaded_file_info") or {}
+        self.assertEqual(uploaded_info.get("id"), payload["attachmentInfo"]["id"])
+        self.assertEqual(uploaded_info.get("source"), "web_upload")
+
     # @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat')
     # def test_chat_con_imagen_reclamo_exitoso(self, mock_interpretar_imagen_para_chat):
     #     mock_interpretar_imagen_para_chat.return_value = {
