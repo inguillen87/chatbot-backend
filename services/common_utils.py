@@ -620,6 +620,47 @@ def _get_main_menu_payload(
     profile_name = context.get("profile_name")
     owner_user = context.get("user_obj")
 
+    def _normalize_str(value: Optional[object]) -> str:
+        if value is None:
+            return ""
+        return str(value).strip().lower()
+
+    def _should_ignore_viewer_identity(viewer, owner) -> bool:
+        if not viewer:
+            return False
+
+        owner_id = getattr(owner, "id", None) if owner else None
+        viewer_id = getattr(viewer, "id", None)
+        if owner_id and viewer_id and viewer_id == owner_id:
+            return True
+
+        viewer_empresa_id = getattr(viewer, "empresa_id", None)
+        if owner_id and viewer_empresa_id and viewer_empresa_id == owner_id:
+            return True
+
+        owner_empresa_id = getattr(owner, "empresa_id", None) if owner else None
+        if owner_empresa_id and viewer_empresa_id and viewer_empresa_id == owner_empresa_id:
+            return True
+
+        viewer_role = _normalize_str(getattr(viewer, "rol", None) or getattr(viewer, "role", None))
+        internal_roles = {"admin", "super_admin", "empleado", "staff", "municipio", "empresa"}
+
+        owner_municipio_id = getattr(owner, "municipio_id", None) if owner else None
+        viewer_municipio_id = getattr(viewer, "municipio_id", None)
+        if (
+            owner_municipio_id
+            and viewer_municipio_id
+            and viewer_municipio_id == owner_municipio_id
+            and viewer_role in internal_roles
+        ):
+            return True
+
+        session_kind = context.get("session_kind") or context.get("viewer_session_kind")
+        if session_kind and _normalize_str(session_kind) == "widget" and viewer_role in internal_roles:
+            return True
+
+        return False
+
     user_name = None
     if isinstance(profile_name, str) and profile_name.strip():
         owner_name = None
@@ -628,7 +669,7 @@ def _get_main_menu_payload(
         # Avoid greeting with the admin/owner name when the session is anonymous
         if not owner_name or profile_name.strip().lower() != str(owner_name).strip().lower():
             user_name = profile_name.strip()
-    if not user_name and viewer_user:
+    if not user_name and viewer_user and not _should_ignore_viewer_identity(viewer_user, owner_user):
         user_name = getattr(viewer_user, "nombre", None) or getattr(viewer_user, "name", None)
 
     if not user_name:
