@@ -1903,6 +1903,27 @@ def _procesar_chat(
             responder_extra_kwargs["es_ubicacion"] = True
             responder_extra_kwargs["ubicacion_usuario"] = location
 
+        if attachment_info:
+            normalized_uploaded_info = {
+                "id": attachment_info.get("id"),
+                "url": attachment_info.get("url"),
+                "name": attachment_info.get("name"),
+                "mime_type": attachment_info.get("mimeType")
+                or attachment_info.get("mime_type"),
+                "size": attachment_info.get("size"),
+                "thumb_url": attachment_info.get("thumbUrl")
+                or attachment_info.get("thumbnailUrl"),
+                "thumbnail_url": attachment_info.get("thumbnailUrl")
+                or attachment_info.get("thumbUrl"),
+                "meta": attachment_info.get("meta"),
+                "source": attachment_info.get("source") or "web_upload",
+            }
+            responder_extra_kwargs["uploaded_file_info"] = {
+                key: value
+                for key, value in normalized_uploaded_info.items()
+                if value is not None
+            }
+
         resultado = responder_chatboc(
             pregunta=pregunta,
             owner_user=owner_del_bot,

@@ -61,5 +61,40 @@ class LogicPhotoForwardingTest(unittest.TestCase):
         mock_interpretar.assert_not_called()
         mock_get.assert_not_called()
 
+    @patch('services.logic.responder_municipio')
+    @patch('services.logic.db.session')
+    def test_web_upload_photo_sets_context(self, mock_db_session, mock_responder):
+        app = Flask(__name__)
+
+        owner_user = User(id=5, nombre_empresa="Municipio Test", tipo_chat="municipio")
+        rubro = Rubro(id=6, nombre="municipio", es_publico=True)
+        owner_user.rubro = rubro
+        chat_context = ChatSessionContext(context_data={})
+
+        uploaded = {
+            "id": 555,
+            "url": "http://example.com/web_photo.jpg",
+            "mime_type": "image/jpeg",
+            "name": "web_photo.jpg",
+            "source": "web_upload",
+        }
+
+        with app.app_context():
+            responder_chatboc(
+                "",
+                owner_user=owner_user,
+                rubro_obj=rubro,
+                chat_db_context=chat_context,
+                uploaded_file_info=uploaded,
+            )
+
+        mock_responder.assert_called_once()
+        _, kwargs = mock_responder.call_args
+        self.assertTrue(kwargs.get("es_foto"))
+        self.assertTrue(kwargs.get("es_archivo"))
+        self.assertEqual(kwargs.get("foto_url"), "http://example.com/web_photo.jpg")
+        self.assertEqual(kwargs.get("archivo_url"), "http://example.com/web_photo.jpg")
+        self.assertEqual(kwargs.get("archivo_id_para_asociar"), 555)
+
 if __name__ == '__main__':
     unittest.main()
