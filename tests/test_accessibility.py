@@ -33,6 +33,16 @@ def test_main_menu_payload_structure(base_context):
     assert "audio_text" in payload
     assert isinstance(payload["audio_text"], str)
 
+
+def test_main_menu_uses_sticker_when_no_logo_configured(base_context):
+    sticker_url = "https://example.com/juni-sticker.webp"
+    context = {**base_context, "municipio_config_actual": {"welcome_sticker_url": sticker_url}}
+
+    payload = _get_main_menu_payload(context)
+
+    assert payload["image_url"] == sticker_url
+
+
 def test_main_menu_options_are_valid(base_context):
     """
     Tests that the options in the main menu are well-formed.

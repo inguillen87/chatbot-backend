@@ -806,14 +806,28 @@ def _get_main_menu_payload(
         "generar_audio": True
     }
 
-    if welcome_image_url:
-        response["image_url"] = welcome_image_url
-        if channel == "whatsapp" and welcome_sticker_url:
+    cleaned_image_url = (
+        welcome_image_url.strip()
+        if isinstance(welcome_image_url, str) and welcome_image_url.strip()
+        else None
+    )
+    cleaned_sticker_url = (
+        welcome_sticker_url.strip()
+        if isinstance(welcome_sticker_url, str) and welcome_sticker_url.strip()
+        else None
+    )
+
+    if cleaned_image_url:
+        response["image_url"] = cleaned_image_url
+
+    if cleaned_sticker_url:
+        if channel == "whatsapp":
             response["suppress_whatsapp_image"] = True
-            response["whatsapp_sticker_url"] = welcome_sticker_url
-    elif channel == "whatsapp" and welcome_sticker_url:
-        response["whatsapp_sticker_url"] = welcome_sticker_url
-        response["suppress_whatsapp_image"] = True
+            response["whatsapp_sticker_url"] = cleaned_sticker_url
+        elif not cleaned_image_url:
+            # Widget/web channels display the sticker from the generic image slot
+            response["image_url"] = cleaned_sticker_url
+
     # Web and widget channels can render the logo sticker from ``image_url``
     # while WhatsApp clients may ignore it if they prefer a lighter welcome.
     return response

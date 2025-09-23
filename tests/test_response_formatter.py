@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 import json
 import services.response_formatter as rf
+from services.common_utils import _get_main_menu_payload
 from services.response_formatter import build_interactive_response, render_audio_text
 
 class TestResponseFormatter(unittest.TestCase):
@@ -287,6 +288,39 @@ class TestResponseFormatter(unittest.TestCase):
         self.assertEqual(len(response["botones"]), 1)
         self.assertEqual(response["botones"][0]["action_id"], "web_opt1")
         self.assertEqual(response["fuente"], "test_web_sugg")
+
+    def test_web_response_includes_image_url(self):
+        bot_response = {
+            "message_body": "Hola web",
+            "image_url": "https://example.com/junibot.webp"
+        }
+        response = build_interactive_response(
+            options=[],
+            body_text=bot_response["message_body"],
+            channel="web",
+            original_bot_response=bot_response
+        )
+        self.assertEqual(response["image_url"], "https://example.com/junibot.webp")
+
+    def test_web_response_includes_sticker_when_only_sticker_configured(self):
+        sticker_url = "https://example.com/juni-sticker.webp"
+        context = {
+            "channel": "web",
+            "profile_name": "Test Vecino",
+            "municipio_config_actual": {"welcome_sticker_url": sticker_url},
+        }
+
+        greeting_payload = _get_main_menu_payload(context)
+        self.assertEqual(greeting_payload["image_url"], sticker_url)
+
+        response = build_interactive_response(
+            options=greeting_payload.get("options_list", []),
+            body_text=greeting_payload["message_body"],
+            channel="web",
+            message_type=greeting_payload.get("message_type", "text"),
+            original_bot_response=greeting_payload,
+        )
+        self.assertEqual(response["image_url"], sticker_url)
 
     def test_web_response_structure_text(self):
         original_context = {"fuente": "test_web_plain"}
