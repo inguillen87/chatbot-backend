@@ -102,6 +102,35 @@ class ChatAttachmentUploadTests(unittest.TestCase):
         self.assertEqual(info["thumbnailUrl"], info["thumbUrl"])
         self.assertEqual(info["meta"]["url"], info["thumbUrl"])
 
+    def test_upload_chat_attachment_allows_video_webm(self):
+        data = {"file": (BytesIO(b"fake"), "nota.webm", "video/webm;codecs=opus")}
+
+        adjunto_mock = SimpleNamespace(
+            id=5,
+            url="/static/uploads/nota.webm",
+            mime="video/webm",
+            tamano=4,
+            nombre_original="nota.webm",
+            filename="nota.webm",
+        )
+
+        with self.app.test_request_context(
+            "/archivos/upload/chat_attachment",
+            method="POST",
+            data=data,
+            content_type="multipart/form-data",
+            headers={"X-Chat-Session-Id": "abc"},
+        ):
+            with patch(
+                "routes.archivos.create_attachment_with_thumbnail",
+                return_value=adjunto_mock,
+            ):
+                resp = archivos_route.upload_chat_attachment.__wrapped__(
+                    current_user=self.user
+                )
+
+        self.assertEqual(resp[1], 200)
+
     def test_ticket_comentario_to_dict_contains_thumbUrl(self):
         """Ensure model serialization uses local storage path when GCS is disabled."""
         from models import ArchivoAdjunto, TicketComentario
