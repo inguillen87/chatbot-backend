@@ -177,6 +177,20 @@ class TestResponseFormatter(unittest.TestCase):
         )
         self.assertEqual(response["image_url"], "http://example.com/pic.jpg")
 
+    def test_whatsapp_text_message_suppresses_image(self):
+        response = build_interactive_response(
+            options=[],
+            body_text="Hola imagen",
+            channel="whatsapp",
+            message_type='text',
+            original_bot_response={
+                "image_url": "http://example.com/pic.jpg",
+                "suppress_whatsapp_image": True,
+            }
+        )
+        self.assertEqual(response["type"], "text")
+        self.assertNotIn("image_url", response)
+
     def test_whatsapp_fallback_to_text_if_no_options_for_interactive(self):
         response = build_interactive_response(
             options=[], body_text="Sin opciones", channel="whatsapp", message_type='interactive_buttons'
