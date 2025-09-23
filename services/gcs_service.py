@@ -321,6 +321,59 @@ def get_thumb_filename(original_filename: str) -> str:
     return f"{base}_thumb.webp"
 
 
+def _normalize_mime(mime: str | None) -> str:
+    """Return a normalized MIME type without parameters."""
+
+    if not mime:
+        return ""
+
+    return mime.split(";", 1)[0].strip().lower()
+
+
+def resolve_attachment_thumb_url(
+    *,
+    file_url: str | None,
+    filename: str,
+    mime_type: str | None,
+    meta: dict | None = None,
+) -> tuple[str | None, dict]:
+    """Determine the most accurate thumbnail URL for an attachment.
+
+    The widget relies on ``thumbUrl`` to render previews.  For audio and other
+    non-visual files we must return the original file URL instead of pointing to
+    a non-existent ``*_thumb.webp`` asset.  When a generated thumbnail exists we
+    keep the previous behaviour so cached files (GCS/local) continue to work.
+    """
+
+    meta_data = dict(meta) if isinstance(meta, dict) else {}
+    thumb_url = meta_data.get("url")
+    if thumb_url:
+        return thumb_url, meta_data
+
+    normalized_mime = _normalize_mime(mime_type)
+    supports_generated_thumb = (
+        normalized_mime.startswith("image/") or normalized_mime == "application/pdf"
+    )
+
+    candidate_url: str | None = None
+    if supports_generated_thumb:
+        thumb_filename = get_thumb_filename(filename)
+        if GCS_ENABLED:
+            candidate_url = f"https://storage.googleapis.com/{BUCKET_NAME}/{thumb_filename}"
+        elif file_url:
+            candidate_url = os.path.join(
+                os.path.dirname(file_url), thumb_filename
+            ).replace("\\", "/")
+
+    if not candidate_url:
+        candidate_url = file_url
+
+    if candidate_url and "url" not in meta_data:
+        meta_data["url"] = candidate_url
+
+    return candidate_url, meta_data
+
+
 def _save_to_local(
     original_filename: str,
     file_bytes: bytes,
