@@ -619,6 +619,18 @@ def _get_main_menu_payload(
     viewer_user = context.get("viewer_user_obj")
     profile_name = context.get("profile_name")
     owner_user = context.get("user_obj")
+    municipio_config = context.get("municipio_config_actual") or {}
+
+    welcome_image_url = municipio_config.get("welcome_image_url")
+    if not welcome_image_url and owner_user:
+        owner_image_candidates = [
+            getattr(owner_user, "widget_icon_url", None),
+            getattr(owner_user, "logo_url", None),
+        ]
+        for candidate in owner_image_candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                welcome_image_url = candidate.strip()
+                break
 
     user_name = None
     if isinstance(profile_name, str) and profile_name.strip():
@@ -786,9 +798,11 @@ def _get_main_menu_payload(
         "audio_text": audio_text,
         "generar_audio": True
     }
-    # Do not include a header image in the initial greeting menu to keep the
-    # conversation lightweight and similar to other professional bots like
-    # Boti. Removing the image avoids large headers in WhatsApp.
+
+    if welcome_image_url:
+        response["image_url"] = welcome_image_url
+    # Web and widget channels can render the logo sticker from ``image_url``
+    # while WhatsApp clients may ignore it if they prefer a lighter welcome.
     return response
 
 def clean_text_for_tts(text: str) -> str:
