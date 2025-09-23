@@ -53,8 +53,18 @@ def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
     return parts
 
 
-def _send_delayed_payload(client, to_number: str, from_number: str, payload: dict, delay: int, app):
+def _send_delayed_payload(
+    client,
+    to_number: str,
+    from_number: str,
+    payload: dict,
+    delay: int,
+    app,
+    base_url: str | None = None,
+):
     """Send a payload via WhatsApp after a delay using a background thread."""
+
+    normalized_base_url = base_url.rstrip("/") if isinstance(base_url, str) else None
 
     def _send():
         with app.app_context():
@@ -76,9 +86,38 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
             else:
                 params["body"] = formatted.get("text", {}).get("body", "")
 
+            def _resolve_absolute_url(url: str | None) -> str | None:
+                if not url or not isinstance(url, str):
+                    return url
+                candidate = url.strip()
+                if not candidate:
+                    return candidate
+                if candidate.startswith(("http://", "https://")):
+                    return candidate
+
+                base_candidates: list[str] = []
+                if normalized_base_url:
+                    base_candidates.append(normalized_base_url)
+                config_base = app.config.get("APP_BASE_URL")
+                if isinstance(config_base, str) and config_base.strip():
+                    base_candidates.append(config_base.strip().rstrip("/"))
+
+                for base_candidate in base_candidates:
+                    if not base_candidate:
+                        continue
+                    return f"{base_candidate}{candidate}"
+
+                app.logger.warning(
+                    "[WELCOME][DELAYED_MEDIA] Could not resolve absolute URL for %s; sending original value.",
+                    candidate,
+                )
+                return candidate
+
             image_url = formatted.get("image_url")
             if image_url and "persistent_action" not in params:
-                params["media_url"] = [image_url]
+                resolved_image_url = _resolve_absolute_url(image_url)
+                if resolved_image_url:
+                    params["media_url"] = [resolved_image_url]
 
             try:
                 client.messages.create(**params)
@@ -93,15 +132,9 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                 audio_url = payload.get("audio_url")
 
             if audio_url:
-                absolute_audio_url = audio_url
-                if audio_url.startswith("/"):
-                    base_url = app.config.get("APP_BASE_URL")
-                    if base_url:
-                        absolute_audio_url = f"{base_url.rstrip('/')}{audio_url}"
-                    else:
-                        app.logger.warning(
-                            "[WELCOME][DELAYED_AUDIO] APP_BASE_URL is not configured; sending relative audio URL."
-                        )
+                absolute_audio_url = _resolve_absolute_url(audio_url)
+                if not absolute_audio_url:
+                    return
 
                 try:
                     client.messages.create(
@@ -309,7 +342,8 @@ def whatsapp_webhook():
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
                 _send_delayed_payload(
                     client=twilio_client, to_number=to_number_raw, from_number=from_number_raw,
-                    payload=welcome_response_payload, delay=delay, app=current_app._get_current_object()
+                    payload=welcome_response_payload, delay=delay, app=current_app._get_current_object(),
+                    base_url=request.url_root.rstrip("/") if request.url_root else None,
                 )
                 # Persist any context modifications made during the welcome call
                 safe_flag_modified(session_context_db_entry, "context_data")
@@ -363,6 +397,7 @@ def whatsapp_webhook():
                     payload=welcome_response_payload,
                     delay=delay,
                     app=current_app._get_current_object(),
+                    base_url=request.url_root.rstrip("/") if request.url_root else None,
                 )
                 # Persist any context updates from responder_chatboc
                 safe_flag_modified(session_context_db_entry, "context_data")
@@ -847,7 +882,8 @@ def whatsapp_webhook():
             from_number_raw,
             bot_response_dict["delayed_payload"],
             bot_response_dict["delay_seconds"],
-            current_app._get_current_object()
+            current_app._get_current_object(),
+            base_url=request.url_root.rstrip("/") if request.url_root else None,
         )
 
     return "OK", 200
