@@ -340,14 +340,9 @@ def enviar_email_ticket_cliente(ticket) -> bool:
 
 def enviar_email_ticket_novedad(ticket, mensaje: str) -> bool:
     """Notifica al cliente que su ticket tiene una novedad con una plantilla HTML mejorada."""
-    destino = (
-        getattr(ticket, "email", None)
-        or getattr(ticket, "email_vecino", None)
-        or getattr(ticket, "email_cliente", None)
-    )
+    destino = getattr(ticket, "email", None)
     if not destino and getattr(ticket, "user_id", None):
-        from models import User  # Importar User aquí para evitar importación circular a nivel de módulo
-
+        from models import User # Importar User aquí para evitar importación circular a nivel de módulo
         usuario = User.query.get(ticket.user_id)
         destino = getattr(usuario, "email", None)
     if not destino:

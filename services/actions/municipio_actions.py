@@ -12,7 +12,7 @@ from services.herramientas_municipio import parse_direccion_completa as parse_di
 from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.config_loader import cargar_configuracion_municipio
-from models import MunicipioTicket, db
+from models import MunicipioTicket
 from services.common_utils import _get_main_menu_payload
 from services import promo_service
 
@@ -370,22 +370,6 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 raise ValueError("El ticket creado no tiene un 'nro_ticket'.")
             nro_ticket_str = f"M-{ticket_nro}"
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
-
-            ticket_id = ticket_creado.get('id')
-            if ticket_id:
-                try:
-                    from routes.ticket import serialize_ticket_to_json
-                    from socket_service import emit_ticket_update
-
-                    ticket_obj = db.session.get(MunicipioTicket, ticket_id)
-                    if ticket_obj:
-                        ticket_json = serialize_ticket_to_json(ticket_obj, "municipio")
-                        emit_ticket_update(ticket_json)
-                except Exception as e_notify:
-                    logger.error(
-                        f"Error enviando notificación en tiempo real para el ticket {nro_ticket_str}: {e_notify}",
-                        exc_info=True,
-                    )
 
             # Completar datos desde tramites.json si existen
             tramites_cfg = cargar_configuracion_municipio(
@@ -924,21 +908,13 @@ class DerivarHumanoActionHandler(BaseActionHandler):
 
             chat_id = f"M-{sala_dict['nro_ticket']}"
 
-            user_message, botones = formatear_ticket_respuesta(
-                "chat",
-                nombre,
-                pregunta_original,
-                "Atención en Vivo",
-                chat_id,
-            )
-            response: Dict[str, Any] = {
+            # formatear_ticket_respuesta now returns a tuple (message, buttons)
+            user_message, _ = formatear_ticket_respuesta("chat", nombre, pregunta_original, "Atención en Vivo", chat_id)
+            return {
                 "success": True,
                 "message_to_user": user_message,
                 "data": {"ticket_id": sala_dict['id'], "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
             }
-            if botones:
-                response["options_list"] = botones
-            return response
         except Exception as e:
             logger.error(f"Error en DerivarHumanoActionHandler: {e}", exc_info=True)
             return {

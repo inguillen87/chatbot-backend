@@ -16,29 +16,6 @@ socketio = SocketIO(
 def emit_ticket_update(data):
     socketio.emit('ticket_update', data)
 
-
-def emit_new_chat_message(ticket_type: str, ticket_id: int, message_payload: dict) -> None:
-    """Emit a Socket.IO event for a new chat message in a ticket room."""
-
-    room_name = f"ticket_{ticket_type}_{ticket_id}"
-    try:
-        socketio.emit(
-            'new_chat_message',
-            {
-                'ticket_id': ticket_id,
-                'message': message_payload,
-            },
-            room=room_name,
-        )
-    except Exception as exc:  # pragma: no cover - defensive logging only
-        current_app.logger.error(
-            "Failed to emit live chat message for %s ticket %s: %s",
-            ticket_type,
-            ticket_id,
-            exc,
-            exc_info=True,
-        )
-
 def send_welcome_message(sid, auth):
     """Sends a welcome message to a newly connected anonymous client."""
     from services.municipio_responder import responder_municipio
