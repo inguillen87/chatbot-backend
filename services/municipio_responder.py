@@ -219,9 +219,7 @@ class ReclamoFlowHandler:
         if _is_placeholder_description(datos.get('descripcion_sugerida')):
             datos.pop('descripcion_sugerida', None)
 
-        # Mark the conversation as being inside the claim flow and discard
-        # leftover menu hints from previous states (e.g., ubicación proactiva).
-        self.municipal_ctx['estado_conversacion'] = "EN_FLUJO_RECLAMO"
+        # Discard leftover menu hints from previous states (e.g., ubicación proactiva).
         self.municipal_ctx.pop('menu_opciones', None)
 
         # Prefill from image analysis if available
@@ -339,9 +337,13 @@ class ReclamoFlowHandler:
 
         # Check what data is missing and transition to the correct state
         if not self.flow_context['datos_reclamo'].get('categoria'):
+            self.municipal_ctx['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
             self.flow_context['state'] = ReclamoState.ESPERANDO_CATEGORIA.name
             return _get_reclamos_menu()
-        elif not self.flow_context['datos_reclamo'].get('descripcion'):
+        # Once we have a category, mark the flow as active.
+        self.municipal_ctx['estado_conversacion'] = "EN_FLUJO_RECLAMO"
+
+        if not self.flow_context['datos_reclamo'].get('descripcion'):
             # This case is less likely if categoria is present, but good to have
             self.flow_context['state'] = ReclamoState.ESPERANDO_DESCRIPCION.name
             categoria = self.flow_context['datos_reclamo']['categoria']
@@ -1878,12 +1880,12 @@ def handle_location_update(data):
     }
 
 BOTONES_COMANDOS_MUNICIPIO = {
-    "Hacer un reclamo": "iniciar_reclamo",
+    "Hacer un reclamo": "mostrar_menu_reclamos",
     "Consultar estado de un trámite": "consultar_estado_ticket",
     "Consultar estado de ticket": "consultar_estado_ticket",
     "Consultar otro ticket": "consultar_estado_ticket",
     "Hablar con un agente": "hablar_con_agente",
-    "Nuevo reclamo": "iniciar_reclamo",
+    "Nuevo reclamo": "mostrar_menu_reclamos",
     "Adjuntar foto": "adjuntar_foto",
     "Compartir ubicación": "compartir_ubicacion",
     "Foto": "adjuntar_foto",
@@ -2225,16 +2227,17 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             return _get_main_menu_payload(context), contexto_municipio_actual
         elif accion_backend_llm == "mostrar_menu_reclamos":
             logger.info("[HANDLE_LLM] LLM solicitó mostrar el menú de reclamos.")
-            # Setear estado y menú para que el siguiente click se procese como selección
-            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
-            contexto_municipio_actual["current_menu"] = "reclamos"
-            contexto_municipio_actual["menu_page"] = 1
-            if chat_db_context and hasattr(chat_db_context, "context_data"):
-                chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
-                flag_modified(chat_db_context, "context_data")
+            # Reutilizar la misma lógica del menú principal para asegurar consistencia.
+            menu_response = handle_main_menu_action(
+                "mostrar_menu_reclamos",
+                context,
+                chat_db_context,
+            )
 
-            # Devolver menú con botones
-            return _get_reclamos_menu(), contexto_municipio_actual
+            # ``handle_main_menu_action`` ya actualiza el contexto y marca la sesión
+            # como modificada, pero devolvemos explícitamente el estado actualizado
+            # para mantener la firma de retorno del LLM handler.
+            return menu_response, contexto_municipio_actual
         elif accion_backend_llm == "derivar_humano":
             context["intencion"] = "hablar_con_agente"
             contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = respuesta_usuario_llm
@@ -2461,8 +2464,14 @@ MENU_KEYWORDS = {
         "consultas",
         "pregunta",
         "preguntas",
+        "iniciar reclamo",
+        "hacer reclamo",
+        "nuevo reclamo",
+        "realizar reclamo",
+        "presentar reclamo",
+        "registrar queja",
     ],
-    "iniciar_reclamo": ["iniciar reclamo", "hacer reclamo", "nuevo reclamo", "realizar reclamo", "presentar reclamo", "registrar queja"],
+    "iniciar_reclamo": [],
     "solicitar_turnos": ["turnos", "turno", "solicitar turno", "pedir turno", "turnos online", "reservar turno", "agendar turno"],
     "licencia_de_conducir": ["licencia", "conducir", "carnet", "registro", "renovar licencia", "sacar licencia", "tramitar licencia", "registro de conducir"],
     "enviar_sugerencia": [
@@ -2741,7 +2750,7 @@ EMOJI_MAIN_MENU_ACTIONS = {
     "\U0001F17F": "buscar_estacionamiento", # 🅿️
     "\U0001F3DB": "menu_principal", # 🏛️
     "\U0001F5E3": "mostrar_menu_reclamos", # 🗣️
-    "\U0001F4DD": "iniciar_reclamo", # 📝
+    "\U0001F4DD": "mostrar_menu_reclamos", # 📝
     "\U0001F50D": "consultar_estado_reclamo", # 🔍
     "\u274C": "cancelar", # ❌
     "\U0001F4DC": "mostrar_menu_tramites", # 📜
@@ -4729,7 +4738,10 @@ def responder_municipio(
             contexto_municipio_actual['estado_conversacion'] = None
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
-            response = handle_main_menu_action(inferred_action, context, chat_db_context)
+            if inferred_action == "iniciar_reclamo":
+                response = handle_main_menu_action("mostrar_menu_reclamos", context, chat_db_context)
+            else:
+                response = handle_main_menu_action(inferred_action, context, chat_db_context)
             if response:
                 return _finalize_response(response)
     # --- END GLOBAL MENU SHORTCUTS ---
@@ -4753,11 +4765,9 @@ def responder_municipio(
 
     if intent == "iniciar_reclamo":
         logger_actual.info("Claim initiation intent detected. Bypassing LLM and showing reclamos menu.")
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return _finalize_response(_get_reclamos_menu())
+        response = handle_main_menu_action("mostrar_menu_reclamos", context, chat_db_context)
+        if response:
+            return _finalize_response(response)
 
     if intent == "consultar_reclamo":
         logger_actual.info("Claim status check intent detected. Bypassing LLM.")
@@ -4843,7 +4853,10 @@ def responder_municipio(
             contexto_municipio_actual['estado_conversacion'] = None
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
-            response = handle_main_menu_action(inferred_action, context, chat_db_context)
+            if inferred_action == "iniciar_reclamo":
+                response = handle_main_menu_action("mostrar_menu_reclamos", context, chat_db_context)
+            else:
+                response = handle_main_menu_action(inferred_action, context, chat_db_context)
             if response:
                 return _finalize_response(response)
 
@@ -5285,7 +5298,16 @@ def responder_municipio(
         if not inferred_action:
             inferred_action = find_global_menu_action(pregunta_str or "")
         if inferred_action:
-            response = handle_main_menu_action(inferred_action, context, chat_db_context)
+            # Si el usuario escribe "iniciar reclamo" (u otra variante) en texto libre,
+            # mostramos el menú de reclamos en lugar de saltar directamente al flujo.
+            if inferred_action == "iniciar_reclamo":
+                response = handle_main_menu_action(
+                    "mostrar_menu_reclamos",
+                    context,
+                    chat_db_context,
+                )
+            else:
+                response = handle_main_menu_action(inferred_action, context, chat_db_context)
             if response:
                 return _finalize_response(response)
 
@@ -5476,6 +5498,17 @@ def responder_municipio(
 
         menu_opciones = contexto_municipio_actual.get("menu_opciones", [])
         selected_action = action_payload or find_menu_action_by_input(pregunta_str_menu, menu_opciones)
+
+        if not action_payload and selected_action == "iniciar_reclamo":
+            # El usuario volvió a escribir "iniciar reclamo" en lugar de pulsar el botón.
+            # Reenviamos el menú de reclamos para que pueda elegir una opción.
+            submenu = _get_reclamos_consultas_menu()
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+            contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(submenu)
+
         if not selected_action:
             selected_action = find_global_menu_action(pregunta_str_menu)
 
@@ -5608,6 +5641,14 @@ def responder_municipio(
     # --- FIN: Manejo de selección de menú de reclamos ---
 
     elif estado_conversacion == ConversationState.ESPERANDO_NOMBRE_INICIAL.name:
+        if action:
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            response = handle_main_menu_action(action, context, chat_db_context)
+            if response:
+                return _finalize_response(response)
+
         nombre_usuario = (pregunta_str or "").strip()
         if len(nombre_usuario) > 2:
             # Save the name
