@@ -32,7 +32,6 @@ def test_main_menu_payload_structure(base_context):
     assert payload["message_type"] == "interactive_list"
     assert "audio_text" in payload
     assert isinstance(payload["audio_text"], str)
-
 def test_main_menu_options_are_valid(base_context):
     """
     Tests that the options in the main menu are well-formed.

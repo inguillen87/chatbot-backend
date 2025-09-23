@@ -621,6 +621,12 @@ def _get_main_menu_payload(
     owner_user = context.get("user_obj")
     municipio_config = context.get("municipio_config_actual") or {}
 
+    def _strip_string(value):
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        return None
+
     welcome_image_url = municipio_config.get("welcome_image_url")
     welcome_sticker_url = municipio_config.get("welcome_sticker_url")
     if not welcome_sticker_url and isinstance(welcome_image_url, str):
@@ -639,28 +645,48 @@ def _get_main_menu_payload(
         if welcome_image_url.strip().lower().endswith(".webp"):
             welcome_sticker_url = welcome_image_url.strip()
 
-    user_name = None
-    if isinstance(profile_name, str) and profile_name.strip():
-        owner_name = None
-        if owner_user:
-            owner_name = getattr(owner_user, "nombre", None) or getattr(owner_user, "name", None)
-        # Avoid greeting with the admin/owner name when the session is anonymous
-        if not owner_name or profile_name.strip().lower() != str(owner_name).strip().lower():
-            user_name = profile_name.strip()
-    if not user_name and viewer_user:
-        user_name = getattr(viewer_user, "nombre", None) or getattr(viewer_user, "name", None)
+    owner_name = _strip_string(
+        getattr(owner_user, "nombre", None) or getattr(owner_user, "name", None)
+    ) if owner_user else None
+    owner_email = _strip_string(getattr(owner_user, "email", None)) if owner_user else None
+    owner_id = getattr(owner_user, "id", None) if owner_user else None
 
-    if not user_name:
-        municipal_context = (
-            context.get("chat_db_context_data", {}).get(CONTEXTO_MUNICIPIO, {})
-            if isinstance(context.get("chat_db_context_data"), dict)
-            else {}
+    chat_context_data = context.get("chat_db_context_data")
+    municipal_context = (
+        chat_context_data.get(CONTEXTO_MUNICIPIO, {})
+        if isinstance(chat_context_data, dict)
+        else {}
+    )
+    contacto_usuario = (
+        municipal_context.get("contacto_usuario", {})
+        if isinstance(municipal_context, dict)
+        else {}
+    )
+    user_name = _strip_string(
+        contacto_usuario.get("nombre") if isinstance(contacto_usuario, dict) else None
+    )
+
+    if not user_name and isinstance(profile_name, str) and profile_name.strip():
+        profile_candidate = profile_name.strip()
+        if not owner_name or profile_candidate.lower() != owner_name.lower():
+            user_name = profile_candidate
+
+    if not user_name and viewer_user:
+        viewer_name = _strip_string(
+            getattr(viewer_user, "nombre", None) or getattr(viewer_user, "name", None)
         )
-        contacto_usuario = municipal_context.get("contacto_usuario", {})
-        if isinstance(contacto_usuario, dict):
-            nombre_contacto = contacto_usuario.get("nombre")
-            if isinstance(nombre_contacto, str) and nombre_contacto.strip():
-                user_name = nombre_contacto.strip()
+        viewer_email = _strip_string(getattr(viewer_user, "email", None))
+        viewer_id = getattr(viewer_user, "id", None)
+        viewer_matches_owner = False
+        if owner_id and viewer_id and viewer_id == owner_id:
+            viewer_matches_owner = True
+        elif owner_name and viewer_name and viewer_name.lower() == owner_name.lower():
+            viewer_matches_owner = True
+        elif owner_email and viewer_email and viewer_email.lower() == owner_email.lower():
+            viewer_matches_owner = True
+
+        if not viewer_matches_owner and viewer_name:
+            user_name = viewer_name
 
     if welcome_message_override:
         welcome_message = welcome_message_override
@@ -814,6 +840,7 @@ def _get_main_menu_payload(
     elif channel == "whatsapp" and welcome_sticker_url:
         response["whatsapp_sticker_url"] = welcome_sticker_url
         response["suppress_whatsapp_image"] = True
+
     # Web and widget channels can render the logo sticker from ``image_url``
     # while WhatsApp clients may ignore it if they prefer a lighter welcome.
     return response

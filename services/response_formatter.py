@@ -435,7 +435,8 @@ def build_interactive_response(options: list,
             "interpretacion_adjunto": original_bot_response.get("interpretacion_adjunto"),
             "estado_respuesta": original_bot_response.get("estado_respuesta"),
             "adjuntos": original_bot_response.get("adjuntos", []),
-            "audio_url": original_bot_response.get("audio_url")
+            "audio_url": original_bot_response.get("audio_url"),
+            "image_url": image_url,
         }
 
         if message_type == 'interactive_menu' and original_bot_response.get("data"):

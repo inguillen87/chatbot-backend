@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch
+from types import SimpleNamespace
 from services.municipio_responder import GreetingHandler, CONTEXTO_MUNICIPIO
 
 def test_greeting_handler_whatsapp_menu():
@@ -47,3 +47,24 @@ def test_greeting_handler_uses_contacto_usuario_name():
     # The greeting should incorporate the stored contact name instead of asking for it again.
     assert "Marcelo" in response.get("message_body", "")
     assert response.get("fuente") != "pedir_nombre_inicial"
+
+
+def test_greeting_handler_avoids_owner_identity_for_widget():
+    owner = SimpleNamespace(
+        id=7,
+        nombre="Mauricio Alonso",
+        email="mauricio@junin.com",
+    )
+    context = {
+        "user_obj": owner,
+        "viewer_user_obj": owner,
+        "profile_name": "Mauricio Alonso",
+        "channel": "web",
+        "chat_db_context_data": {CONTEXTO_MUNICIPIO: {}},
+    }
+
+    handler = GreetingHandler(context)
+    response = handler.handle({})
+
+    assert response.get("fuente") == "pedir_nombre_inicial"
+    assert "Mauricio Alonso" not in response.get("message_body", "")
