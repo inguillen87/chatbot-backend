@@ -34,6 +34,11 @@ from services import cart as cart_service
 from services.promocion_service import promocion_service
 from .llm_utils import extract_multiple_contact_details_llm, resumir_descripcion_producto_llm
 from .common_utils import validar_email, validar_telefono
+from services.live_chat_schedule import (
+    detect_urgency_reason,
+    get_schedule_description,
+    is_live_chat_available,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -828,11 +833,108 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         old_hist = chat_db_context.context_data.pop("mensajes_previos_gemini_formato", [])
         chat_db_context.context_data["mensajes_previos_llm_formato"] = old_hist
 
-    pyme_ctx_actual = chat_db_context.context_data.get(CONTEXTO_PYME, {})
+    pyme_ctx_actual = chat_db_context.context_data.setdefault(CONTEXTO_PYME, {})
     historial_chat_llm = chat_db_context.context_data.get("mensajes_previos_llm_formato", [])
 
-    # --- 2. Construir Información de Usuario para el LLM ---
     nombre_pyme_display = getattr(owner_user, "nombre_empresa", "la tienda") if owner_user else "la tienda"
+    rubro_nombre = (
+        getattr(owner_user.rubro, "nombre", "general").lower()
+        if owner_user and hasattr(owner_user, "rubro") and owner_user.rubro
+        else "general"
+    )
+    rubro_id_val = (
+        getattr(rubro_obj, "id", None)
+        or (getattr(owner_user.rubro, "id", None) if owner_user and hasattr(owner_user, "rubro") else None)
+    )
+    coleccion_qdrant = coleccion_catalogo_para_rubro(rubro_nombre)
+
+    global_context_for_orchestrator = {
+        CONTEXTO_PYME: pyme_ctx_actual,
+        "user_obj": owner_user,
+        "user_id": getattr(owner_user, "id", None),
+        "nombre_pyme": nombre_pyme_display,
+        "rubro_nombre": rubro_nombre,
+        "viewer_user_obj": viewer_user,
+        "cliente_id": getattr(viewer_user, "id", None),
+        "anon_id": anon_id,
+        "rubro_id": rubro_id_val,
+        "coleccion_qdrant": coleccion_qdrant,
+        "chat_session_uuid": kwargs.get("chat_session_uuid"),
+        "chat_db_context_data": chat_db_context.context_data,
+        "channel": channel,
+        "target_entity_type": "pyme",
+        "empresa_token": getattr(owner_user, "token", None),
+        "pregunta_actual_usuario": pregunta_str,
+        "action_button_payload": received_payload.get("action"),
+        "uploaded_file_info": (
+            received_payload.get("uploaded_file_info")
+            or received_payload.get("uploaded_file_info_whatsapp")
+        ),
+        "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
+    }
+
+    def _es_personal_pyme(user_obj) -> bool:
+        return bool(user_obj and getattr(user_obj, "rol", "").lower() in {"admin", "empleado"})
+
+    puede_autoderivar = (
+        global_context_for_orchestrator.get("action_button_payload") is None
+        and isinstance(pregunta_str, str)
+        and bool(pregunta_str.strip())
+        and not pyme_ctx_actual.get("live_chat_autoderivado")
+        and not _es_personal_pyme(viewer_user)
+    )
+
+    if puede_autoderivar:
+        urgencia_detectada = detect_urgency_reason(pregunta_str)
+        if urgencia_detectada:
+            if is_live_chat_available():
+                from services.actions.pyme_actions import DerivarHumanoActionHandlerPyme
+
+                pyme_ctx_actual["live_chat_autoderivado"] = True
+                pyme_ctx_actual["ultimo_motivo_urgencia"] = urgencia_detectada
+                handler = DerivarHumanoActionHandlerPyme(global_context_for_orchestrator)
+                motivo_texto = f"Consulta urgente detectada ({urgencia_detectada})"
+                handler_result = handler.execute({"motivo_derivacion": motivo_texto})
+
+                if handler_result.get("success"):
+                    mensaje_agente = handler_result.get("message_to_user") or (
+                        "Estoy avisando a un asesor humano para que se sume a la conversación."
+                    )
+                    pyme_ctx_actual["mensaje_previo_llm_para_escalamiento"] = mensaje_agente
+                    if chat_db_context:
+                        flag_modified(chat_db_context, "context_data")
+                    return {
+                        "message_body": mensaje_agente,
+                        "options_list": [],
+                        "message_type": "text",
+                        "fuente": "auto_live_chat_urgente",
+                    }
+
+                pyme_ctx_actual.pop("live_chat_autoderivado", None)
+                pyme_ctx_actual["auto_live_chat_error"] = handler_result.get("error_details")
+                logger_actual.error(
+                    "[AUTO_LIVE_CHAT_PYME] No se pudo crear el chat en vivo: %s",
+                    handler_result.get("error_details"),
+                )
+            else:
+                if not pyme_ctx_actual.get("live_chat_fuera_horario_notificado"):
+                    pyme_ctx_actual["live_chat_fuera_horario_notificado"] = True
+                    pyme_ctx_actual["ultimo_motivo_urgencia"] = urgencia_detectada
+                    mensaje_fuera_horario = (
+                        "Detecté que necesitás asistencia urgente, pero nuestro equipo humano atiende por "
+                        f"chat en vivo {get_schedule_description()}. Voy a dejar asentada tu solicitud y "
+                        "un asesor la retomará apenas esté disponible. Mientras tanto puedo ayudarte por este medio."
+                    )
+                    if chat_db_context:
+                        flag_modified(chat_db_context, "context_data")
+                    return {
+                        "message_body": mensaje_fuera_horario,
+                        "options_list": [],
+                        "message_type": "text",
+                        "fuente": "auto_live_chat_fuera_horario",
+                    }
+
+    # --- 2. Construir Información de Usuario para el LLM ---
     usuario_info_for_llm = {
         "nombre": getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None) or pyme_ctx_actual.get("nombre_cliente") or "Cliente",
         "tipo_entidad": "pyme",
@@ -873,29 +975,6 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         chat_db_context.context_data["mensajes_previos_llm_formato"] = []
     chat_db_context.context_data["mensajes_previos_llm_formato"].append({"role": "user", "parts": [{"text": mensaje_para_llm}]})
     # La respuesta del modelo al historial se añade después del ActionHandler
-
-    # --- 4. Preparar Contexto Global para ChatOrchestrator y Action Handlers ---
-    global_context_for_orchestrator = {
-        CONTEXTO_PYME: pyme_ctx_actual,
-        "user_id": getattr(owner_user, "id", None), # ID de la PYME (owner)
-        "nombre_pyme": nombre_pyme_display,
-        "rubro_nombre": getattr(owner_user.rubro, "nombre", "general").lower() if owner_user and hasattr(owner_user, "rubro") else "general",
-        "viewer_user_obj": viewer_user,
-        "cliente_id": getattr(viewer_user, "id", None), # ID del cliente final
-        "anon_id": anon_id,
-        "rubro_id": getattr(rubro_obj, "id", None) or (getattr(owner_user.rubro, "id", None) if owner_user and hasattr(owner_user, "rubro") else None),
-        "coleccion_qdrant": coleccion_catalogo_para_rubro(getattr(owner_user.rubro, "nombre", "general").lower() if owner_user and hasattr(owner_user, "rubro") else "general"),
-        "chat_session_uuid": kwargs.get("chat_session_uuid"),
-        "chat_db_context_data": chat_db_context.context_data, # El dict vivo
-        "channel": channel,
-        "target_entity_type": "pyme", # Para DerivarHumanoAction
-        "empresa_token": getattr(owner_user, "token", None),
-        # Pasar datos del payload que podrían ser útiles para handlers
-        "pregunta_actual_usuario": pregunta_str,
-        "action_button_payload": received_payload.get("action"),
-        "uploaded_file_info": received_payload.get("uploaded_file_info") or received_payload.get("uploaded_file_info_whatsapp"),
-        "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"), # Si ya se subió un archivo
-    }
 
     # --- 5. Ejecutar Acción vía ChatOrchestrator ---
     if llm_response_structured.get("accion_backend") == "saludar":

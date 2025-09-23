@@ -39,6 +39,7 @@ from services.utils_placeholders import (
 from services.config_loader import cargar_configuracion_municipio
 from .actions.municipio_actions import (
     CrearReclamoActionHandler,
+    DerivarHumanoActionHandler,
 )
 from .herramientas_municipio import (
     consultar_recoleccion_por_direccion,
@@ -67,6 +68,11 @@ from services.intent_classifier import IntentClassifier
 from services.multimodal_analyzer import analizar_imagen_con_fallback
 import json
 from services.ticket_utils import formatear_ticket_respuesta, construir_descripcion_breve
+from services.live_chat_schedule import (
+    detect_urgency_reason,
+    get_schedule_description,
+    is_live_chat_available,
+)
 from services.vocabulary_loader import get_name_prefix_stopwords
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
 
@@ -3901,10 +3907,74 @@ def responder_municipio(
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
         "location_link_info": location_link_info,
+        "target_entity_type": "municipio",
+        "pregunta_actual_usuario": pregunta_str,
     }
     # --- FIN REFACTOR ---
 
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
+
+    def _es_personal_municipal(user_obj) -> bool:
+        return bool(user_obj and getattr(user_obj, "rol", "").lower() in {"admin", "empleado"})
+
+    puede_intentar_live_chat = (
+        context.get("action") is None
+        and isinstance(pregunta_str, str)
+        and bool(pregunta_str.strip())
+        and not contexto_municipio_actual.get("live_chat_autoderivado")
+        and not _es_personal_municipal(viewer_user)
+    )
+
+    if puede_intentar_live_chat:
+        urgencia_detectada = detect_urgency_reason(pregunta_str)
+        if urgencia_detectada:
+            if is_live_chat_available():
+                contexto_municipio_actual["live_chat_autoderivado"] = True
+                contexto_municipio_actual["ultimo_motivo_urgencia"] = urgencia_detectada
+                context["intencion"] = "hablar_con_agente"
+
+                motivo_texto = f"Consulta urgente detectada ({urgencia_detectada})"
+                handler = DerivarHumanoActionHandler(context)
+                handler_result = handler.execute({"motivo_derivacion": motivo_texto})
+
+                if handler_result.get("success"):
+                    mensaje_agente = handler_result.get("message_to_user") or (
+                        "Estoy avisando a un agente humano para que se sume a la conversación."
+                    )
+                    contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = mensaje_agente
+                    if chat_db_context:
+                        flag_modified(chat_db_context, "context_data")
+                    return _finalize_response({
+                        "message_body": mensaje_agente,
+                        "options_list": [],
+                        "message_type": "text",
+                        "fuente": "auto_live_chat_urgente",
+                    })
+
+                # Si falló la creación del chat en vivo, limpiar el flag para permitir que continúe el flujo normal.
+                contexto_municipio_actual.pop("live_chat_autoderivado", None)
+                contexto_municipio_actual["auto_live_chat_error"] = handler_result.get("error_details")
+                logger_actual.error(
+                    "[AUTO_LIVE_CHAT] No se pudo crear el chat en vivo para urgencia detectada: %s",
+                    handler_result.get("error_details"),
+                )
+            else:
+                if not contexto_municipio_actual.get("live_chat_fuera_horario_notificado"):
+                    contexto_municipio_actual["live_chat_fuera_horario_notificado"] = True
+                    contexto_municipio_actual["ultimo_motivo_urgencia"] = urgencia_detectada
+                    mensaje_fuera_horario = (
+                        "Detecté que necesitás asistencia urgente, pero nuestro equipo humano atiende por "
+                        f"chat en vivo {get_schedule_description()}. Voy a registrar tu reclamo para que lo tomen ni bien "
+                        "comience el horario de atención. Mientras tanto puedo ayudarte a dejar todos los detalles por aquí."
+                    )
+                    if chat_db_context:
+                        flag_modified(chat_db_context, "context_data")
+                    return _finalize_response({
+                        "message_body": mensaje_fuera_horario,
+                        "options_list": [],
+                        "message_type": "text",
+                        "fuente": "auto_live_chat_fuera_horario",
+                    })
 
     if location_link_info:
         flow_state = (
