@@ -1016,11 +1016,18 @@ def _parse_request(tipo_chat_fijo: str | None = None):
             raise TypeError("El cuerpo debe ser JSON")
 
         pregunta = data.get("pregunta")
+        attachment_info = data.get("attachmentInfo") or data.get("attachment_info")
         location = data.get("location")
+        raw_action = data.get("action") or data.get("action_id")
 
-        # If the question is empty (or not provided) and there's no location,
-        # it's the initial message from the widget.
-        if not location and (pregunta is None or str(pregunta).strip() == ""):
+        # If the question is empty (or not provided) and there's no extra payload
+        # (location, attachment or quick action), it's the initial message from the widget.
+        if (
+            not location
+            and not attachment_info
+            and not raw_action
+            and (pregunta is None or str(pregunta).strip() == "")
+        ):
             pregunta = "__INIT__"
 
         if tipo_chat_fijo:
@@ -1047,12 +1054,10 @@ def _parse_request(tipo_chat_fijo: str | None = None):
             else:
                 raise ValueError("'tipo_chat' debe ser 'pyme' o 'municipio'")
 
-        attachment_info = data.get("attachmentInfo") or data.get("attachment_info")
-        location = data.get("location")
         ticket_id = data.get("ticket_id")
         tipo_ticket = data.get("tipo_ticket")
         profile_name = data.get("nombre_usuario") or data.get("profile_name")
-        action_id = data.get("action") or data.get("action_id")
+        action_id = raw_action
 
         if isinstance(pregunta, dict):
             action_id = action_id or pregunta.get("action") or pregunta.get("action_id")
