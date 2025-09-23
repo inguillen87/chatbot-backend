@@ -194,11 +194,32 @@ def responder_chatboc(
     procesamiento_archivo_en_curso = False # Nueva bandera
 
     if uploaded_file_info and isinstance(uploaded_file_info, dict):
-        logger.info(f"DEBUG: Processing uploaded_file_info in responder_chatboc: {uploaded_file_info}")
+        logger.info(
+            f"DEBUG: Processing uploaded_file_info in responder_chatboc: {uploaded_file_info}"
+        )
         if uploaded_file_info.get("id"):
             archivo_id = uploaded_file_info.get("id")
-            current_app.logger.info(f"[LOGIC] Procesando uploaded_file_info para ArchivoAdjunto ID: {archivo_id}")
-            # El resto de la lógica para archivos subidos desde el frontend va aquí
+            current_app.logger.info(
+                f"[LOGIC] Procesando uploaded_file_info para ArchivoAdjunto ID: {archivo_id}"
+            )
+            archivo_id_para_asociar_al_ticket = archivo_id
+
+            mime_type = uploaded_file_info.get("mime_type") or uploaded_file_info.get(
+                "mimeType"
+            )
+            mime_type = str(mime_type) if mime_type else ""
+            file_url = uploaded_file_info.get("url")
+
+            if file_url:
+                kwargs.setdefault("es_archivo", True)
+                kwargs.setdefault("archivo_url", file_url)
+
+            if file_url and mime_type.startswith("image/"):
+                kwargs.setdefault("es_foto", True)
+                kwargs.setdefault("foto_url", file_url)
+            elif file_url and mime_type.startswith("audio/"):
+                kwargs.setdefault("es_audio", True)
+
         elif uploaded_file_info.get("source") == "whatsapp":
             from services.document_processing_service import document_processing_service
             from services.interpretacion_imagen_service import interpretar_imagen_para_chat
