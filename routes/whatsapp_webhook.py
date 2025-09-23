@@ -60,12 +60,15 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
         with app.app_context():
             from services.response_formatter import build_interactive_response
 
+            audio_url = payload.get("audio_url")
+
             formatted = build_interactive_response(
                 options=payload.get("options_list", []),
                 body_text=payload.get("message_body", ""),
                 channel="whatsapp",
                 message_type=payload.get("message_type", "text"),
                 original_bot_response=payload,
+                audio_url=audio_url,
             )
 
             params = {"from_": to_number, "to": from_number}
@@ -81,7 +84,31 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                 params["media_url"] = [image_url]
 
             try:
-                client.messages.create(**params)
+                message = client.messages.create(**params)
+
+                if audio_url:
+                    absolute_audio_url = audio_url
+                    if absolute_audio_url.startswith('/'):
+                        base_url = (app.config.get("APP_BASE_URL") or "").rstrip('/')
+                        if base_url:
+                            absolute_audio_url = f"{base_url}{audio_url}"
+                        else:
+                            app.logger.warning(
+                                "[DELAYED_AUDIO] APP_BASE_URL no configurada; no se puede enviar audio con URL relativa %s",
+                                audio_url,
+                            )
+                            absolute_audio_url = None
+
+                    if absolute_audio_url:
+                        audio_params = {
+                            'from_': to_number,
+                            'to': from_number,
+                            'media_url': [absolute_audio_url]
+                        }
+                        app.logger.debug(
+                            "[DELAYED_AUDIO] Enviando audio adicional para mensaje diferido SID %s", getattr(message, 'sid', 'N/A')
+                        )
+                        client.messages.create(**audio_params)
             except Exception as e:
                 app.logger.error(f"Error sending delayed message: {e}")
 
