@@ -24,6 +24,8 @@ from models import (
     Conversacion,
 )
 from services.ticket_service import servicio_tickets
+from socket_service import emit_ticket_update, emit_new_chat_message
+from routes.ticket import serialize_ticket_to_json
 from utils.db_utils import safe_flag_modified
 # Compatibilidad hacia atrás para pruebas que parchean `flag_modified`
 flag_modified = safe_flag_modified
@@ -39,6 +41,7 @@ from services.utils_placeholders import (
 from services.config_loader import cargar_configuracion_municipio
 from .actions.municipio_actions import (
     CrearReclamoActionHandler,
+    DerivarHumanoActionHandler,
 )
 from .herramientas_municipio import (
     consultar_recoleccion_por_direccion,
@@ -67,6 +70,11 @@ from services.intent_classifier import IntentClassifier
 from services.multimodal_analyzer import analizar_imagen_con_fallback
 import json
 from services.ticket_utils import formatear_ticket_respuesta, construir_descripcion_breve
+from services.live_chat_schedule import (
+    detect_urgency_reason,
+    get_schedule_description,
+    is_live_chat_available,
+)
 from services.vocabulary_loader import get_name_prefix_stopwords
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
 
@@ -3901,10 +3909,200 @@ def responder_municipio(
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
         "location_link_info": location_link_info,
+        "target_entity_type": "municipio",
+        "pregunta_actual_usuario": pregunta_str,
     }
     # --- FIN REFACTOR ---
 
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
+
+    def _forward_message_to_live_chat_if_active(message_text: str) -> Optional[dict]:
+        """Intercept messages when a live chat with a human agent is active."""
+
+        live_chat_ticket_id = contexto_municipio_actual.get("live_chat_ticket_id")
+        live_chat_enabled = contexto_municipio_actual.get("live_chat_autoderivado")
+        if not live_chat_ticket_id or not live_chat_enabled:
+            if live_chat_enabled and not live_chat_ticket_id:
+                for key in [
+                    "live_chat_ticket_id",
+                    "live_chat_autoderivado",
+                    "live_chat_tipo",
+                    "live_chat_estado",
+                    "live_chat_channel",
+                ]:
+                    contexto_municipio_actual.pop(key, None)
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+            return None
+
+        text = (message_text or "").strip() if isinstance(message_text, str) else ""
+        archivo_id = kwargs.get("archivo_id_para_asociar")
+        if not text and not archivo_id:
+            return None
+        if text.upper() == "__INIT__":
+            return None
+
+        ticket_obj = db.session.get(MunicipioTicket, live_chat_ticket_id)
+        if not ticket_obj or ticket_obj.estado not in {"esperando_agente_en_vivo", "en_vivo", "en_proceso"}:
+            for key in [
+                "live_chat_ticket_id",
+                "live_chat_autoderivado",
+                "live_chat_tipo",
+                "live_chat_estado",
+            ]:
+                contexto_municipio_actual.pop(key, None)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return None
+
+        comentario_texto = text or "[Mensaje del usuario]"
+        comentario_data = {
+            "comentario": comentario_texto,
+            "user_id": getattr(viewer_user, "id", None),
+            "anon_id": None,
+            "es_admin": False,
+            "origen": f"live_chat_{channel or 'web'}",
+        }
+        if comentario_data["user_id"] is None:
+            comentario_data["anon_id"] = anon_id
+        if archivo_id:
+            comentario_data["archivo_adjunto_id"] = archivo_id
+
+        nuevo_comentario = servicio_tickets.crear_comentario(
+            ticket_id=live_chat_ticket_id,
+            tipo_ticket="municipio",
+            comentario_data=comentario_data,
+        )
+
+        if not nuevo_comentario:
+            return {
+                "message_body": "No pude enviar tu mensaje al equipo humano. ¿Podés intentar de nuevo?",
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "live_chat_forward_error",
+            }
+
+        try:
+            db.session.flush()
+        except Exception as exc:
+            logger_actual.error("No se pudo hacer flush luego de crear comentario en live chat: %s", exc, exc_info=True)
+
+        try:
+            emit_new_chat_message("municipio", live_chat_ticket_id, nuevo_comentario.to_dict())
+        except Exception as exc:
+            logger_actual.error("Error emitiendo mensaje de live chat a sockets: %s", exc, exc_info=True)
+
+        try:
+            ticket_payload = serialize_ticket_to_json(ticket_obj, "municipio")
+            emit_ticket_update(ticket_payload)
+        except Exception as exc:
+            logger_actual.warning("No se pudo emitir actualización de ticket tras mensaje de live chat: %s", exc, exc_info=True)
+
+        contexto_municipio_actual["live_chat_estado"] = ticket_obj.estado
+        contexto_municipio_actual.setdefault("live_chat_tipo", "municipio")
+        contexto_municipio_actual.setdefault("live_chat_channel", channel)
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+
+        contexto_serializado = serializar_enum(contexto_municipio_actual)
+
+        return {
+            "message_body": "✉️ Tu mensaje fue enviado al equipo humano. Apenas puedan te responderán por este chat.",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "live_chat_forward_municipio",
+            "data": {
+                "ticket_id": live_chat_ticket_id,
+                "status": ticket_obj.estado,
+            },
+            "contexto_actualizado": {CONTEXTO_MUNICIPIO: contexto_serializado},
+        }
+
+    def _es_personal_municipal(user_obj) -> bool:
+        return bool(user_obj and getattr(user_obj, "rol", "").lower() in {"admin", "empleado"})
+
+    live_chat_forward_response = _forward_message_to_live_chat_if_active(pregunta_str)
+    if live_chat_forward_response:
+        return _finalize_response(live_chat_forward_response)
+
+    puede_intentar_live_chat = (
+        context.get("action") is None
+        and isinstance(pregunta_str, str)
+        and bool(pregunta_str.strip())
+        and not contexto_municipio_actual.get("live_chat_autoderivado")
+        and not _es_personal_municipal(viewer_user)
+    )
+
+    if puede_intentar_live_chat:
+        urgencia_detectada = detect_urgency_reason(pregunta_str)
+        if urgencia_detectada:
+            if is_live_chat_available():
+                contexto_municipio_actual["ultimo_motivo_urgencia"] = urgencia_detectada
+                context["intencion"] = "hablar_con_agente"
+
+                motivo_texto = f"Consulta urgente detectada ({urgencia_detectada})"
+                handler = DerivarHumanoActionHandler(context)
+                handler_result = handler.execute({"motivo_derivacion": motivo_texto})
+
+                if handler_result.get("success"):
+                    mensaje_agente = handler_result.get("message_to_user") or (
+                        "Estoy avisando a un agente humano para que se sume a la conversación."
+                    )
+                    datos_ticket = handler_result.get("data", {}) or {}
+                    ticket_id = datos_ticket.get("ticket_id")
+                    if ticket_id:
+                        contexto_municipio_actual["live_chat_autoderivado"] = True
+                        contexto_municipio_actual["live_chat_ticket_id"] = ticket_id
+                        contexto_municipio_actual["live_chat_tipo"] = "municipio"
+                        contexto_municipio_actual["live_chat_estado"] = datos_ticket.get("status")
+                        contexto_municipio_actual["live_chat_channel"] = channel
+                    else:
+                        logger_actual.error(
+                            "[AUTO_LIVE_CHAT] Respuesta exitosa sin ticket_id para urgencia '%s'",
+                            urgencia_detectada,
+                        )
+                        contexto_municipio_actual.pop("live_chat_autoderivado", None)
+
+                    contexto_municipio_actual["mensaje_previo_llm_para_escalamiento"] = mensaje_agente
+                    if chat_db_context:
+                        flag_modified(chat_db_context, "context_data")
+                    contexto_serializado = serializar_enum(contexto_municipio_actual)
+                    response_payload = {
+                        "message_body": mensaje_agente,
+                        "options_list": [],
+                        "message_type": "text",
+                        "fuente": "auto_live_chat_urgente",
+                        "data": datos_ticket,
+                        "contexto_actualizado": {
+                            CONTEXTO_MUNICIPIO: contexto_serializado,
+                        },
+                    }
+                    return _finalize_response(response_payload)
+
+                # Si falló la creación del chat en vivo, limpiar el flag para permitir que continúe el flujo normal.
+                contexto_municipio_actual.pop("live_chat_autoderivado", None)
+                contexto_municipio_actual["auto_live_chat_error"] = handler_result.get("error_details")
+                logger_actual.error(
+                    "[AUTO_LIVE_CHAT] No se pudo crear el chat en vivo para urgencia detectada: %s",
+                    handler_result.get("error_details"),
+                )
+            else:
+                if not contexto_municipio_actual.get("live_chat_fuera_horario_notificado"):
+                    contexto_municipio_actual["live_chat_fuera_horario_notificado"] = True
+                    contexto_municipio_actual["ultimo_motivo_urgencia"] = urgencia_detectada
+                    mensaje_fuera_horario = (
+                        "Detecté que necesitás asistencia urgente, pero nuestro equipo humano atiende por "
+                        f"chat en vivo {get_schedule_description()}. Voy a registrar tu reclamo para que lo tomen ni bien "
+                        "comience el horario de atención. Mientras tanto puedo ayudarte a dejar todos los detalles por aquí."
+                    )
+                    if chat_db_context:
+                        flag_modified(chat_db_context, "context_data")
+                    return _finalize_response({
+                        "message_body": mensaje_fuera_horario,
+                        "options_list": [],
+                        "message_type": "text",
+                        "fuente": "auto_live_chat_fuera_horario",
+                    })
 
     if location_link_info:
         flow_state = (

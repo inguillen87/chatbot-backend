@@ -4,6 +4,7 @@ from typing import Dict, Any
 from .base_action_handler import BaseActionHandler
 from services.ticket_service import servicio_tickets
 from services.ticket_utils import formatear_ticket_respuesta
+from models import MunicipioTicket, PymeTicket, db
 
 logger = logging.getLogger(__name__)
 
@@ -18,25 +19,70 @@ class DerivarHumanoAction(BaseActionHandler):
             pregunta_original = self.context.get("pregunta_actual_usuario", "")
             target_entity_type = self.context.get("target_entity_type", "general")
 
-            nombre = (getattr(viewer_user, "name", None) or action_data.get("nombre"))
-            telefono = (getattr(viewer_user, "telefono", None) or action_data.get("telefono"))
-            email = (getattr(viewer_user, "email", None) or action_data.get("email"))
+            context_data = self.context.get("chat_db_context_data") or {}
+            contacto_context = {}
+            if target_entity_type == "municipio":
+                municipal_ctx = self.context.get("contexto_municipio_v2") or {}
+                if isinstance(municipal_ctx, dict):
+                    contacto_context.update(municipal_ctx.get("contacto_usuario") or {})
+                if isinstance(context_data, dict):
+                    contacto_context.update(
+                        (context_data.get("contexto_municipio_v2", {}) or {}).get("contacto_usuario", {})
+                    )
+            elif target_entity_type == "pyme":
+                for candidate in (
+                    self.context.get("contexto_pyme_v2"),
+                    context_data.get("contexto_pyme_v2") if isinstance(context_data, dict) else None,
+                ):
+                    if isinstance(candidate, dict):
+                        contacto_context.update(candidate)
+
+            nombre = (
+                getattr(viewer_user, "name", None)
+                or getattr(viewer_user, "nombre", None)
+                or action_data.get("nombre")
+            )
+            if target_entity_type == "municipio":
+                nombre = nombre or contacto_context.get("nombre")
+            elif target_entity_type == "pyme":
+                nombre = nombre or contacto_context.get("nombre_cliente") or contacto_context.get("nombre")
+
+            telefono = (
+                getattr(viewer_user, "telefono", None)
+                or action_data.get("telefono")
+            )
+            if not telefono:
+                telefono = contacto_context.get("telefono") or contacto_context.get("telefono_cliente")
+
+            email = (
+                getattr(viewer_user, "email", None)
+                or action_data.get("email")
+            )
+            if not email:
+                email = contacto_context.get("email") or contacto_context.get("email_cliente")
+
+            nombre_display = nombre or ("Vecino" if target_entity_type == "municipio" else "Cliente")
 
             ticket_data = {
-                "asunto": f"Solicitud de Chat en Vivo por: {nombre or 'Usuario'}",
+                "asunto": f"Solicitud de Chat en Vivo por: {nombre_display}",
                 "categoria": "Atención en Vivo",
                 "pregunta": pregunta_original,
                 "detalles": action_data.get("motivo_derivacion", "Solicitud de agente"),
                 "user_id": self.context.get("cliente_id"),
                 "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
                 "estado": "esperando_agente_en_vivo",
-                "nombre_vecino": nombre, # Usado por municipio
+                "nombre_vecino": nombre or nombre_display, # Usado por municipio
                 "telefono_vecino": telefono, # Usado por municipio
                 "email_vecino": email, # Usado por municipio
-                "nombre_cliente": nombre, # Usado por pyme
+                "nombre_cliente": nombre or nombre_display, # Usado por pyme
                 "telefono_cliente": telefono, # Usado por pyme
                 "email_cliente": email, # Usado por pyme
             }
+
+            if telefono:
+                ticket_data["telefono"] = telefono
+            if email:
+                ticket_data["email"] = email
 
             if target_entity_type == "municipio":
                 ticket_data["municipio_id"] = getattr(owner_user, "municipio_id", None)
@@ -47,12 +93,25 @@ class DerivarHumanoAction(BaseActionHandler):
             ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
             ticket_data_cleaned['tipo_ticket'] = target_entity_type
 
-            sala = servicio_tickets.crear_nuevo_ticket(tipo_ticket=target_entity_type, ticket_data=ticket_data_cleaned)
+            sala = servicio_tickets.crear_nuevo_ticket(
+                tipo_ticket=target_entity_type,
+                ticket_data=ticket_data_cleaned,
+            )
             if not sala:
                 raise Exception("crear_nuevo_ticket devolvió None")
 
+            ticket_id = getattr(sala, "id", None)
+            if ticket_id is None and isinstance(sala, dict):
+                ticket_id = sala.get("id")
+            nro_ticket = getattr(sala, "nro_ticket", None)
+            if nro_ticket is None and isinstance(sala, dict):
+                nro_ticket = sala.get("nro_ticket")
+
+            if ticket_id is None or nro_ticket is None:
+                raise ValueError("El ticket creado no incluye los campos requeridos 'id' y 'nro_ticket'.")
+
             servicio_tickets.crear_comentario(
-                ticket_id=sala.id,
+                ticket_id=ticket_id,
                 tipo_ticket=target_entity_type,
                 comentario_data={
                     "comentario": pregunta_original,
@@ -62,16 +121,41 @@ class DerivarHumanoAction(BaseActionHandler):
                 },
             )
 
+            try:
+                from routes.ticket import serialize_ticket_to_json
+                from socket_service import emit_ticket_update
+
+                ticket_model = MunicipioTicket if target_entity_type == "municipio" else PymeTicket
+                ticket_obj = db.session.get(ticket_model, ticket_id)
+                if ticket_obj:
+                    ticket_json = serialize_ticket_to_json(ticket_obj, target_entity_type)
+                    emit_ticket_update(ticket_json)
+            except Exception as e_notify:
+                logger.error(
+                    f"Error enviando actualización en vivo para el ticket {ticket_id}: {e_notify}",
+                    exc_info=True,
+                )
+
             # Formatear el prefijo del ID de chat según el tipo de entidad
             chat_id_prefix = "M" if target_entity_type == "municipio" else "P"
-            chat_id = f"{chat_id_prefix}-{sala.nro_ticket}"
+            chat_id = f"{chat_id_prefix}-{nro_ticket}"
 
-            user_message = formatear_ticket_respuesta("chat", nombre, pregunta_original, "Atención en Vivo", chat_id)
-            return {
+            user_message, botones = formatear_ticket_respuesta(
+                "chat",
+                nombre or nombre_display,
+                pregunta_original,
+                "Atención en Vivo",
+                chat_id,
+            )
+
+            response: Dict[str, Any] = {
                 "success": True,
                 "message_to_user": user_message,
-                "data": {"ticket_id": sala.id, "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
+                "data": {"ticket_id": ticket_id, "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
             }
+            if botones:
+                response["options_list"] = botones
+            return response
         except Exception as e:
             logger.error(f"Error en DerivarHumanoAction: {e}", exc_info=True)
             return {

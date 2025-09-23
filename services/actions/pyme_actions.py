@@ -13,6 +13,9 @@ import models
 from services.common_utils import parse_precio_flexible
 from socket_service import emit_ticket_update
 from routes.ticket import serialize_ticket_to_json
+from services.ticket_utils import formatear_ticket_respuesta
+
+CONTEXTO_PYME = "contexto_pyme_v2"
 
 logger = logging.getLogger(__name__)
 
@@ -247,23 +250,56 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
             owner_user = self.context.get("user_obj")
             pregunta_original = self.context.get("pregunta_actual_usuario", "")
 
-            nombre = (getattr(viewer_user, "name", None) or action_data.get("nombre"))
-            telefono = (getattr(viewer_user, "telefono", None) or action_data.get("telefono"))
-            email = (getattr(viewer_user, "email", None) or action_data.get("email"))
+            contacto_context = {}
+            pyme_ctx = self.context.get(CONTEXTO_PYME)
+            if isinstance(pyme_ctx, dict):
+                contacto_context.update(pyme_ctx)
+            chat_ctx_data = self.context.get("chat_db_context_data")
+            if isinstance(chat_ctx_data, dict):
+                ctx_pyme = chat_ctx_data.get(CONTEXTO_PYME)
+                if isinstance(ctx_pyme, dict):
+                    contacto_context = {**ctx_pyme, **contacto_context}
+
+            nombre = (
+                getattr(viewer_user, "name", None)
+                or getattr(viewer_user, "nombre", None)
+                or action_data.get("nombre")
+                or contacto_context.get("nombre_cliente")
+                or contacto_context.get("nombre")
+            )
+            telefono = (
+                getattr(viewer_user, "telefono", None)
+                or action_data.get("telefono")
+                or contacto_context.get("telefono_cliente")
+                or contacto_context.get("telefono")
+            )
+            email = (
+                getattr(viewer_user, "email", None)
+                or action_data.get("email")
+                or contacto_context.get("email_cliente")
+                or contacto_context.get("email")
+            )
+
+            nombre_display = nombre or "Cliente"
 
             ticket_data = {
-                "asunto": f"Solicitud de Chat en Vivo por: {nombre or 'Usuario'}",
+                "asunto": f"Solicitud de Chat en Vivo por: {nombre_display}",
                 "categoria": "Atención en Vivo",
                 "pregunta": pregunta_original,
                 "detalles": action_data.get("motivo_derivacion", "Solicitud de agente"),
                 "user_id": self.context.get("cliente_id"),
                 "anon_id": self.context.get("anon_id") if not self.context.get("cliente_id") else None,
                 "estado": "esperando_agente_en_vivo",
-                "nombre_cliente": nombre,
+                "nombre_cliente": nombre or nombre_display,
                 "telefono_cliente": telefono,
                 "email_cliente": email,
                 "pyme_id": getattr(owner_user, "id", None)
             }
+
+            if telefono:
+                ticket_data["telefono"] = telefono
+            if email:
+                ticket_data["email"] = email
 
             ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
 
@@ -271,14 +307,29 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
             if not sala:
                 raise Exception("crear_nuevo_ticket devolvió None")
 
+            ticket_id = getattr(sala, "id", None)
+            if ticket_id is None and isinstance(sala, dict):
+                ticket_id = sala.get("id")
+            nro_ticket = getattr(sala, "nro_ticket", None)
+            if nro_ticket is None and isinstance(sala, dict):
+                nro_ticket = sala.get("nro_ticket")
+
+            if ticket_id is None or nro_ticket is None:
+                raise ValueError("El ticket creado no incluye los campos requeridos 'id' y 'nro_ticket'.")
+
             try:
-                ticket_json = serialize_ticket_to_json(sala, "pyme")
-                emit_ticket_update(ticket_json)
+                ticket_obj = db.session.get(models.PymeTicket, ticket_id)
+                if ticket_obj:
+                    ticket_json = serialize_ticket_to_json(ticket_obj, "pyme")
+                    emit_ticket_update(ticket_json)
             except Exception as e_notify:
-                logger.error(f"Error enviando notificación en tiempo real para ticket #{sala.nro_ticket}: {e_notify}", exc_info=True)
+                logger.error(
+                    f"Error enviando notificación en tiempo real para ticket #{nro_ticket}: {e_notify}",
+                    exc_info=True,
+                )
 
             servicio_tickets.crear_comentario(
-                ticket_id=sala.id,
+                ticket_id=ticket_id,
                 tipo_ticket="pyme",
                 comentario_data={
                     "comentario": pregunta_original,
@@ -288,14 +339,23 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
                 },
             )
 
-            chat_id = f"P-{sala.nro_ticket}"
+            chat_id = f"P-{nro_ticket}"
 
-            user_message = f"En breve un representante se pondrá en contacto contigo. Tu número de chat es {chat_id}."
-            return {
+            user_message, botones = formatear_ticket_respuesta(
+                "chat",
+                nombre or nombre_display,
+                pregunta_original,
+                "Atención en Vivo",
+                chat_id,
+            )
+            response: Dict[str, Any] = {
                 "success": True,
                 "message_to_user": user_message,
-                "data": {"ticket_id": sala.id, "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
+                "data": {"ticket_id": ticket_id, "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
             }
+            if botones:
+                response["options_list"] = botones
+            return response
         except Exception as e:
             logger.error(f"Error en DerivarHumanoActionHandlerPyme: {e}", exc_info=True)
             return {
