@@ -15,6 +15,7 @@ from app import create_app, db
 from config import Config
 from models import User, Rubro, WhatsappNumero, ChatSessionContext
 from services.municipio_responder import CONTEXTO_MUNICIPIO
+from routes.whatsapp_webhook import _send_delayed_payload
 # Moved model imports after app and config to ensure they are found via sys.path
 # and to avoid potential issues if models.py itself tries to import app-context related things early.
 # However, for direct use in tests, they are typically at the top. Let's try keeping them here.
@@ -114,6 +115,69 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.validator_patch.stop()
         self.twilio_client_patch.stop()
         self.welcome_patch.stop()
+
+    @patch('routes.whatsapp_webhook.threading.Timer')
+    @patch('services.response_formatter.build_interactive_response')
+    def test_send_delayed_payload_includes_audio(self, mock_build_response, mock_timer):
+        """Ensure delayed payloads also send synthesized audio attachments."""
+
+        self.app.config["APP_BASE_URL"] = "https://example.com"
+
+        payload = {
+            "message_body": "Hola, este es el menú.",
+            "options_list": [{"texto": "Opción", "id": "opcion"}],
+            "message_type": "text",
+            "audio_url": "/static/audio/menu.mp3",
+        }
+
+        mock_build_response.return_value = {
+            "type": "text",
+            "text": {"body": "Mensaje principal"},
+        }
+
+        class ImmediateTimer:
+            def __init__(self, delay, callback):
+                self.delay = delay
+                self.callback = callback
+                self.daemon = False
+
+            def start(self):
+                self.callback()
+
+        mock_timer.side_effect = lambda delay, callback: ImmediateTimer(delay, callback)
+
+        sent_messages = []
+
+        def fake_create(**kwargs):
+            sent_messages.append(kwargs)
+            msg = MagicMock()
+            msg.sid = f"SM{len(sent_messages)}"
+            return msg
+
+        client = MagicMock()
+        client.messages.create.side_effect = fake_create
+
+        _send_delayed_payload(
+            client=client,
+            to_number="whatsapp:+111111111",
+            from_number="whatsapp:+222222222",
+            payload=payload,
+            delay=0,
+            app=self.app,
+        )
+
+        # First call is the main message, second the audio attachment.
+        self.assertEqual(len(sent_messages), 2)
+        self.assertEqual(sent_messages[0]["body"], "Mensaje principal")
+        self.assertEqual(
+            sent_messages[1]["media_url"],
+            ["https://example.com/static/audio/menu.mp3"],
+        )
+        mock_build_response.assert_called_once()
+        self.assertEqual(
+            mock_build_response.call_args.kwargs["audio_url"],
+            payload["audio_url"],
+        )
 
     def test_whatsapp_webhook_valid_request(self):
         # Arrange
