@@ -11,7 +11,7 @@ import uuid
 import json
 import os
 import random
-from services.gcs_service import get_thumb_filename, BUCKET_NAME, GCS_ENABLED
+from services.gcs_service import resolve_attachment_thumb_url
 
 
 JSONType = JSONB().with_variant(SQLITE_JSON, "sqlite")
@@ -377,21 +377,12 @@ class TicketComentario(db.Model):
             if not isinstance(meta, dict):
                 meta = {}
 
-            thumb_url = meta.get("url") if meta else None
-            if not thumb_url:
-                thumb_filename = get_thumb_filename(self.archivo_adjunto.filename)
-                if GCS_ENABLED:
-                    thumb_url = f"https://storage.googleapis.com/{BUCKET_NAME}/{thumb_filename}"
-                else:
-                    thumb_url = os.path.join(
-                        os.path.dirname(self.archivo_adjunto.url), thumb_filename
-                    ).replace("\\", "/")
-
-            if not thumb_url:
-                thumb_url = self.archivo_adjunto.url
-
-            if thumb_url and "url" not in meta:
-                meta["url"] = thumb_url
+            thumb_url, meta = resolve_attachment_thumb_url(
+                file_url=self.archivo_adjunto.url,
+                filename=self.archivo_adjunto.filename,
+                mime_type=self.archivo_adjunto.mime,
+                meta=meta,
+            )
 
             attachment_info["thumbUrl"] = thumb_url
             attachment_info["thumbnailUrl"] = thumb_url

@@ -11,8 +11,7 @@ from services.gcs_service import (
     upload_to_gcs,
     BUCKET_NAME,
     MAX_FILE_SIZE,
-    get_thumb_filename,
-    GCS_ENABLED,
+    resolve_attachment_thumb_url,
 )
 from services.attachment_service import create_attachment_with_thumbnail
 from services.archivo_service import guardar_archivo_adjunto_ticket
@@ -613,20 +612,12 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
         if not isinstance(meta_data, dict):
             meta_data = {}
 
-        # Construir la URL de la miniatura según metadatos o entorno de almacenamiento
-        thumb_url = meta_data.get("url") if meta_data else None
-        if not thumb_url:
-            thumb_filename = get_thumb_filename(adjunto.filename)
-            if GCS_ENABLED:
-                thumb_url = f"https://storage.googleapis.com/{BUCKET_NAME}/{thumb_filename}"
-            else:
-                thumb_url = os.path.join(os.path.dirname(adjunto.url), thumb_filename).replace("\\", "/")
-
-        if not thumb_url:
-            thumb_url = adjunto.url
-
-        if thumb_url and "url" not in meta_data:
-            meta_data["url"] = thumb_url
+        thumb_url, meta_data = resolve_attachment_thumb_url(
+            file_url=adjunto.url,
+            filename=adjunto.filename,
+            mime_type=adjunto.mime,
+            meta=meta_data,
+        )
 
         return jsonify({
             "ok": True,
