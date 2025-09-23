@@ -10,6 +10,8 @@ from services.live_chat_schedule import (
     get_schedule_description,
     is_live_chat_available,
 )
+from services.constants import CONTEXTO_MUNICIPIO
+from services.pymes import CONTEXTO_PYME
 
 
 def test_detect_urgency_reason_keywords():
@@ -62,8 +64,12 @@ def test_municipio_auto_live_chat_triggers(app, owner_user, viewer_user, municip
             channel="web",
         )
         assert response["fuente"] == "auto_live_chat_urgente"
+        assert response["data"]["ticket_id"] == 1
+        assert response["contexto_actualizado"][CONTEXTO_MUNICIPIO]["live_chat_ticket_id"] == 1
         mock_execute.assert_called_once()
         assert municipio_context.context_data["contexto_municipio_v2"]["live_chat_autoderivado"] is True
+        assert municipio_context.context_data["contexto_municipio_v2"]["live_chat_ticket_id"] == 1
+        assert municipio_context.context_data["contexto_municipio_v2"]["live_chat_estado"] == "esperando_agente_en_vivo"
 
 
 @pytest.fixture
@@ -120,8 +126,12 @@ def test_pyme_auto_live_chat_triggers(app, pyme_owner, viewer_user, pyme_context
             channel="web",
         )
         assert response["fuente"] == "auto_live_chat_urgente"
+        assert response["data"]["ticket_id"] == 2
+        assert response["contexto_actualizado"][CONTEXTO_PYME]["live_chat_ticket_id"] == 2
         mock_execute.assert_called_once()
         assert pyme_context.context_data["contexto_pyme_v2"]["live_chat_autoderivado"] is True
+        assert pyme_context.context_data["contexto_pyme_v2"]["live_chat_ticket_id"] == 2
+        assert pyme_context.context_data["contexto_pyme_v2"]["live_chat_estado"] == "esperando_agente_en_vivo"
 
 
 def test_schedule_description_contains_range(app):
