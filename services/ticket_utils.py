@@ -393,7 +393,18 @@ def remove_buttons_with_urls_in_message(message_body, options_list):
 
     return filtered_options
 
-def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_ticket=None, contacto_especializado=None, base_chat_url=None, dni=None, consulta_pin=None):
+def formatear_ticket_respuesta(
+    tipo,
+    nombre_usuario,
+    descripcion,
+    categoria,
+    id_ticket=None,
+    contacto_especializado=None,
+    base_chat_url=None,
+    dni=None,
+    consulta_pin=None,
+    include_links_in_message=True,
+):
     nombre_asesor = None
     titulo_asesor = None
     telefono_asesor = None
@@ -473,7 +484,12 @@ def formatear_ticket_respuesta(tipo, nombre_usuario, descripcion, categoria, id_
     if consulta_pin:
         seguimiento_lineas.append(f"• *PIN:* `{consulta_pin}`")
     if chat_url:
-        seguimiento_lineas.append(f"• *Ver mi Ticket:* {chat_url}")
+        if include_links_in_message:
+            seguimiento_lineas.append(f"• *Ver mi Ticket:* {chat_url}")
+        else:
+            seguimiento_lineas.append(
+                "• *Ver mi Ticket:* Usá el botón \"Ver mi Ticket\" que aparece debajo."
+            )
 
     respuesta_lineas: list[str] = [f"✅ *¡{texto_tipo} recibido, {nombre_usuario}!*"]
     if resumen_lineas:

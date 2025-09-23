@@ -66,6 +66,24 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("654321", message)
         self.assertTrue(any("pin=654321" in b.get("url", "") for b in buttons))
 
+    def test_formatear_ticket_respuesta_sin_enlace_para_web(self):
+        message, buttons = formatear_ticket_respuesta(
+            "reclamo",
+            "Ana",
+            "Descripción",
+            "Categoria",
+            "M-99999",
+            contacto_especializado=None,
+            base_chat_url="https://example.com/tickets",
+            consulta_pin="654321",
+            include_links_in_message=False,
+        )
+        expected_url = "https://example.com/tickets/99999?pin=654321"
+        self.assertIn("Ver mi Ticket", message)
+        self.assertIn("botón \"Ver mi Ticket\"", message)
+        self.assertNotIn(expected_url, message)
+        self.assertTrue(any(btn.get("url") == expected_url for btn in buttons))
+
     def test_formatear_ticket_respuesta_recorta_descripcion(self):
         message, _ = formatear_ticket_respuesta(
             "reclamo",

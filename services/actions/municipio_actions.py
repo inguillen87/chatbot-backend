@@ -452,6 +452,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
             promo_image_url = municipio_config.get('promo_image_url')
+            channel_value = (self.context.get("channel") or "").strip().lower()
+            is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
             categoria_display = categoria
             mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
                 "reclamo",
@@ -463,6 +465,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 base_chat_url,
                 dni=ticket_data_cleaned.get("dni_vecino"),
                 consulta_pin=pin_final,
+                include_links_in_message=not is_web_like_channel,
             )
             if botones_finales is None:
                 botones_finales = []
@@ -526,10 +529,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 if not promo_image_url and promo_section.get("image_url"):
                     promo_image_url = promo_section.get("image_url")
 
-            botones_finales = remove_buttons_with_urls_in_message(
-                mensaje_respuesta,
-                botones_finales,
-            )
+            if not is_web_like_channel:
+                botones_finales = remove_buttons_with_urls_in_message(
+                    mensaje_respuesta,
+                    botones_finales,
+                )
 
             # Delayed menu
             menu_payload = _get_main_menu_payload(self.context)
