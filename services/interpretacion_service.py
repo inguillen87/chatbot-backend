@@ -31,11 +31,19 @@ class InterpretacionService:
             stt_service = SpeechToTextService()
             try:
                 texto = stt_service.transcribe_audio_url(archivo_adjunto.url, mime)
+                if texto:
+                    resultado["texto_extraido"] = texto
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Error de red al descargar audio {archivo_adjunto.url}: {e}", exc_info=True)
+                resultado["error"] = "No se pudo descargar el archivo de audio para transcribir."
             except Exception as e:
-                logger.error(f"Error transcribiendo audio {archivo_adjunto.url}: {e}", exc_info=True)
-                texto = ""
-            if texto:
-                resultado["texto_extraido"] = texto
+                from google.api_core.exceptions import PermissionDenied
+                if isinstance(e, PermissionDenied) and "billing" in str(e).lower():
+                    logger.error("Error de facturación de Google STT: %s", e)
+                    resultado["error"] = "El servicio de transcripción de audio no está disponible en este momento."
+                else:
+                    logger.error(f"Error inesperado transcribiendo audio {archivo_adjunto.url}: {e}", exc_info=True)
+                    resultado["error"] = "Ocurrió un error al procesar el audio."
 
         return resultado
 

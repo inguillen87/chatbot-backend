@@ -282,37 +282,8 @@ def responder_chatboc(
                         )
             elif file_url and mime_type.startswith("audio/"):
                 kwargs.setdefault("es_audio", True)
-                stt_service = _get_speech_to_text_service()
-                transcript = ""
-                if stt_service and getattr(stt_service, "client", None):
-                    try:
-                        transcript = stt_service.transcribe_audio_url(file_url, mime_type)
-                    except Exception as exc:  # pragma: no cover - logged for visibility
-                        current_app.logger.error(
-                            "Error transcribiendo audio %s para ArchivoAdjunto ID %s: %s",
-                            file_url,
-                            archivo_id,
-                            exc,
-                            exc_info=True,
-                        )
-
-                    if not transcript and file_url.startswith("/"):
-                        local_path = os.path.join(
-                            current_app.root_path, file_url.lstrip("/")
-                        )
-                        if os.path.exists(local_path):
-                            try:
-                                transcript = stt_service.transcribe_audio_file(
-                                    local_path, mime_type
-                                )
-                            except Exception as exc:  # pragma: no cover - logging only
-                                current_app.logger.error(
-                                    "Error transcribiendo audio local %s (ArchivoAdjunto ID %s): %s",
-                                    local_path,
-                                    archivo_id,
-                                    exc,
-                                    exc_info=True,
-                                )
+                from services.openai_whisper_service import whisper_service
+                transcript = whisper_service.transcribe_audio_url(file_url)
 
                 if transcript:
                     if isinstance(pregunta, str):
@@ -322,11 +293,13 @@ def responder_chatboc(
                         datos_interpretados_de_archivo = {}
                     datos_interpretados_de_archivo["texto_transcrito"] = transcript
                     current_app.logger.info(
-                        "STT completado para ArchivoAdjunto ID %s", archivo_id
+                        "Transcripción con OpenAI Whisper completada para ArchivoAdjunto ID %s",
+                        archivo_id,
                     )
-                elif stt_service and getattr(stt_service, "client", None):
-                    current_app.logger.info(
-                        "STT no produjo transcripción para ArchivoAdjunto ID %s", archivo_id
+                else:
+                    current_app.logger.warning(
+                        "OpenAI Whisper no produjo transcripción para ArchivoAdjunto ID %s",
+                        archivo_id,
                     )
 
         elif uploaded_file_info.get("source") == "whatsapp":
