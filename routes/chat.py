@@ -1064,8 +1064,12 @@ def _parse_request(tipo_chat_fijo: str | None = None):
 
 
         if attachment_info:
-            if not isinstance(attachment_info, dict) or not all(k in attachment_info for k in ['id', 'url', 'name', 'mimeType', 'size']):
-                raise ValueError("El campo 'attachmentInfo' es inválido o le faltan campos requeridos.")
+            if not isinstance(attachment_info, dict) or not all(k in attachment_info for k in ['id', 'url']):
+                current_app.logger.warning(
+                    "attachmentInfo validado de forma laxa. Contenido: %s",
+                    str(attachment_info),
+                )
+                # raise ValueError("El campo 'attachmentInfo' es inválido o le faltan campos requeridos.")
 
         normalized_location = None
         if location:
