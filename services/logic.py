@@ -12,33 +12,7 @@ from models import db, ArchivoAdjunto
 from services.interpretacion_service import interpretacion_service
 from services.archivo_service import archivo_service
 # servicio_tickets se importa/usa en los handlers específicos (municipios.py, pymes.py)
-from services.google_speech_to_text import SpeechToTextService
-
 logger = logging.getLogger(__name__)
-
-_speech_to_text_service: SpeechToTextService | None = None
-_speech_service_unavailable_logged = False
-
-
-def _get_speech_to_text_service() -> SpeechToTextService | None:
-    """Return a cached instance of :class:`SpeechToTextService`."""
-
-    global _speech_to_text_service, _speech_service_unavailable_logged
-
-    if _speech_to_text_service is None:
-        _speech_to_text_service = SpeechToTextService()
-
-    if (
-        _speech_to_text_service
-        and getattr(_speech_to_text_service, "client", None) is None
-        and not _speech_service_unavailable_logged
-    ):
-        logger.warning(
-            "Speech-to-text client is not available; audio uploads will not be transcribed."
-        )
-        _speech_service_unavailable_logged = True
-
-    return _speech_to_text_service
 
 # Rubros que deben usar la lógica de municipio/ente público
 RUBROS_PUBLICOS = {
@@ -282,52 +256,50 @@ def responder_chatboc(
                         )
             elif file_url and mime_type.startswith("audio/"):
                 kwargs.setdefault("es_audio", True)
-                stt_service = _get_speech_to_text_service()
-                transcript = ""
-                if stt_service and getattr(stt_service, "client", None):
-                    try:
-                        transcript = stt_service.transcribe_audio_url(file_url, mime_type)
-                    except Exception as exc:  # pragma: no cover - logged for visibility
-                        current_app.logger.error(
-                            "Error transcribiendo audio %s para ArchivoAdjunto ID %s: %s",
-                            file_url,
-                            archivo_id,
-                            exc,
-                            exc_info=True,
-                        )
+                from services.audio_transcription_service import transcribe_audio_from_url
 
-                    if not transcript and file_url.startswith("/"):
-                        local_path = os.path.join(
-                            current_app.root_path, file_url.lstrip("/")
-                        )
-                        if os.path.exists(local_path):
-                            try:
-                                transcript = stt_service.transcribe_audio_file(
-                                    local_path, mime_type
-                                )
-                            except Exception as exc:  # pragma: no cover - logging only
-                                current_app.logger.error(
-                                    "Error transcribiendo audio local %s (ArchivoAdjunto ID %s): %s",
-                                    local_path,
-                                    archivo_id,
-                                    exc,
-                                    exc_info=True,
-                                )
+                # Re-introduce the specific error handling for the final solution
+                transcript = ""
+                try:
+                    transcript = transcribe_audio_from_url(file_url)
+                except Exception as e:
+                    from google.api_core.exceptions import PermissionDenied
+                    if isinstance(e, PermissionDenied) and "billing" in str(e).lower():
+                        logger.error("Error de facturación de Google STT detectado (aunque se usa OpenAI): %s", e)
+                        # This path should ideally not be hit if OpenAI is used, but as a safeguard:
+                        return {
+                            "message_body": "El servicio de transcripción de audio no está disponible en este momento por un problema de configuración. Por favor, intente más tarde o escriba su consulta.",
+                            "fuente": "stt_billing_error_fallback",
+                        }
+                    logger.error(f"Error inesperado durante la transcripción de audio web: {e}", exc_info=True)
 
                 if transcript:
-                    if isinstance(pregunta, str):
-                        pregunta = f"{pregunta} {transcript}".strip()
+                    # This is the key change: pass the transcript in the same way WhatsApp does,
+                    # not just by prepending it to the 'pregunta'.
+                    # The 'pregunta' for an audio message should be the transcript itself.
+                    pregunta = transcript
+
+                    # Ensure the info dictionary is correctly populated for downstream processing
                     uploaded_file_info["transcribed_text"] = transcript
                     if not isinstance(datos_interpretados_de_archivo, dict):
                         datos_interpretados_de_archivo = {}
                     datos_interpretados_de_archivo["texto_transcrito"] = transcript
+
                     current_app.logger.info(
-                        "STT completado para ArchivoAdjunto ID %s", archivo_id
+                        "Transcripción de audio web completada para ArchivoAdjunto ID %s. Texto: '%s'",
+                        archivo_id,
+                        transcript[:100]
                     )
-                elif stt_service and getattr(stt_service, "client", None):
-                    current_app.logger.info(
-                        "STT no produjo transcripción para ArchivoAdjunto ID %s", archivo_id
+                else:
+                    current_app.logger.warning(
+                        "La transcripción de audio web no produjo texto para ArchivoAdjunto ID %s. Se enviará un mensaje de error.",
+                        archivo_id,
                     )
+                    # Return a user-friendly error if transcription fails for any reason
+                    return {
+                        "message_body": "No pude entender el audio que enviaste. ¿Podrías intentarlo de nuevo o escribir tu consulta?",
+                        "fuente": "web_transcription_failed",
+                    }
 
         elif uploaded_file_info.get("source") == "whatsapp":
             from services.document_processing_service import document_processing_service
