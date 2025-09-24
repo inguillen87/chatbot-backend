@@ -94,3 +94,23 @@ def test_local_fallback_respects_forwarded_headers(tmp_path):
 
     assert result["original_url"].startswith("https://api.chatboc.ar/")
     assert "forwarded" in result["original_url"]
+
+
+def test_local_fallback_uses_backend_url_for_private_hosts(tmp_path):
+    app = Flask(__name__)
+    upload_dir = tmp_path / "uploads"
+    app.config["LOCAL_UPLOAD_FOLDER"] = str(upload_dir)
+    app.config["BACKEND_URL"] = "https://api.chatboc.ar"
+
+    with app.app_context():
+        with app.test_request_context(
+            "/archivos/upload/chat_attachment",
+            base_url="http://10.1.2.3:5000",
+        ):
+            file_storage = _make_image_file("privado.jpg")
+            result = guardar_adjunto_y_thumbnail(file_storage)
+
+    assert result["original_url"].startswith("https://api.chatboc.ar/")
+    assert "privado" in result["original_url"]
+    thumb_meta = result.get("thumb_meta") or {}
+    assert thumb_meta.get("url", "").startswith("https://api.chatboc.ar/")

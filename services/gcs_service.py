@@ -118,6 +118,70 @@ def _get_request_base_url() -> str | None:
     return f"{scheme}://{host}".rstrip("/")
 
 
+_PRIVATE_IPV4_PREFIXES = ("10.", "127.", "169.254.", "192.168.")
+
+
+def _is_private_host(host: str | None) -> bool:
+    """Return ``True`` when ``host`` refers to a loopback or private address."""
+
+    if not host:
+        return True
+
+    normalized = host.strip().lower()
+    if not normalized:
+        return True
+
+    if normalized in {"localhost", "0.0.0.0"}:
+        return True
+    if normalized.startswith("::1") or normalized == "[::1]":
+        return True
+
+    for prefix in _PRIVATE_IPV4_PREFIXES:
+        if normalized.startswith(prefix):
+            return True
+
+    if normalized.startswith("172."):
+        try:
+            second_octet = int(normalized.split(".")[1])
+        except (IndexError, ValueError):
+            pass
+        else:
+            if 16 <= second_octet <= 31:
+                return True
+
+    # Unique local IPv6 ranges (fc00::/7) and link-local (fe80::/10)
+    if normalized.startswith("fc") or normalized.startswith("fd") or normalized.startswith("fe80"):
+        return True
+
+    return False
+
+
+def _normalize_base_url(url: str | None) -> tuple[str | None, str | None]:
+    """Return a normalized base URL and host tuple from ``url``."""
+
+    if not url:
+        return None, None
+
+    candidate = url.strip()
+    if not candidate:
+        return None, None
+
+    if "://" not in candidate:
+        candidate = f"https://{candidate}"
+
+    parsed = urlparse(candidate)
+    netloc = parsed.netloc or parsed.path
+    if not netloc:
+        return None, None
+
+    netloc = netloc.split("/", 1)[0]
+    scheme = parsed.scheme if parsed.scheme in {"http", "https"} else "https"
+    normalized_url = f"{scheme}://{netloc}".rstrip("/")
+    host = parsed.hostname or netloc.split(":")[0]
+
+    return normalized_url, host
+
+
 def _purge_old_files(upload_dir: str, retention_days: int) -> None:
     """Delete files older than ``retention_days`` inside ``upload_dir``."""
 
@@ -423,7 +487,20 @@ def _save_to_local(
     relative_url = "/" + rel_path.replace(os.sep, "/")
 
     original_url = relative_url
-    base_url = _get_request_base_url()
+    base_url, base_host = _normalize_base_url(_get_request_base_url())
+
+    if not base_url and has_request_context():
+        fallback_url, fallback_host = _normalize_base_url(request.url_root)
+        base_url, base_host = fallback_url, fallback_host
+
+    config_base_url, config_host = _normalize_base_url(current_app.config.get("BACKEND_URL"))
+    if config_base_url:
+        if not base_url:
+            base_url, base_host = config_base_url, config_host
+        elif base_host and _is_private_host(base_host):
+            if not config_host or not _is_private_host(config_host):
+                base_url, base_host = config_base_url, config_host
+
     if base_url:
         original_url = urljoin(f"{base_url}/", relative_url.lstrip("/"))
         if thumb_relative_url:
