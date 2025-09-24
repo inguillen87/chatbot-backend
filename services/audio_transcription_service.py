@@ -36,13 +36,15 @@ def normalize_spanish_transcription(text: str) -> str:
         text = re.sub(rf"\b{short}\b", full, text, flags=re.IGNORECASE)
     return text
 
-def transcribe_audio_from_url(url: str, account_sid: str = None, auth_token: str = None) -> str | None:
+def transcribe_audio_from_url(url: str, mime_type: str, account_sid: str = None, auth_token: str = None) -> str | None:
     """Download an audio file and transcribe it using OpenAI Whisper.
 
     Parameters
     ----------
     url:
         Direct URL to the audio file.
+    mime_type:
+        The MIME type of the audio file (e.g., 'audio/webm', 'audio/ogg').
     account_sid:
         Optional Twilio Account SID for authentication.
     auth_token:
@@ -62,12 +64,17 @@ def transcribe_audio_from_url(url: str, account_sid: str = None, auth_token: str
 
         audio_bytes = audio_response.content
 
+        # Determine a safe filename with a proper extension
+        extension = mime_type.split('/')[-1] if '/' in mime_type else 'audio'
+        safe_extension = re.sub(r'[^a-zA-Z0-9]', '', extension)
+        filename = f"audio.{safe_extension}"
+
         # Send the audio to OpenAI's transcription endpoint
         with io.BytesIO(audio_bytes) as audio_file:
             # give the BytesIO object a name so the client knows the mimetype
-            audio_file.name = "audio.ogg"
+            audio_file.name = filename
             transcription = openai_client.audio.transcriptions.create(
-                model="gpt-4o-transcribe", file=audio_file
+                model="whisper-1", file=audio_file
             )
 
         text = getattr(transcription, "text", None)

@@ -456,7 +456,7 @@ def whatsapp_webhook():
                 session_context_db_entry.context_data['source_is_audio'] = True
                 from services.audio_transcription_service import transcribe_audio_from_url
                 # We pass the direct URL to the transcription service
-                transcribed_text = transcribe_audio_from_url(media_url, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+                transcribed_text = transcribe_audio_from_url(media_url, media_content_type, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
                 if transcribed_text:
                     message_body = transcribed_text
                     uploaded_file_info['transcribed_text'] = transcribed_text
