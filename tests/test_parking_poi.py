@@ -55,21 +55,25 @@ class TestParkingPOI(unittest.TestCase):
         self.assertIn("Las Heras 105", body_lines[1])
         mock_geo.assert_called_once()
 
-    @patch("services.points_of_interest_handler.random.sample", side_effect=lambda seq, k: list(range(k)))
     @patch("services.points_of_interest_handler.consultar_ocupacion", return_value={"libres": 3, "camera": "Demo", "timestamp": "00:00", "segmentos": []})
-    def test_parking_response_availability_free(self, mock_occ, mock_sample):
+    def test_parking_response_availability_free(self, mock_occ):
         handler = PointsOfInterestHandler(context={})
         loc = {"lat": -33.023818, "lon": -68.497164, "address": "Las Heras 105, Junín, Mendoza"}
         res = handler.handle({"pregunta": "estacionamiento", "location": loc})
-        self.assertIn("libre", res.get("message_body", ""))
+        lines = [line for line in res.get("message_body", "").splitlines() if line.startswith("-")]
+        self.assertTrue(any("libre" in line for line in lines))
+        free_spots = [spot for spot in res.get("spots", []) if spot.get("available_spots", 0) > 0]
+        self.assertTrue(free_spots)
 
-    @patch("services.points_of_interest_handler.random.sample", side_effect=lambda seq, k: list(range(k)))
     @patch("services.points_of_interest_handler.consultar_ocupacion", return_value={"libres": 0, "camera": "Demo", "timestamp": "00:00", "segmentos": []})
-    def test_parking_response_availability_defaults_to_free(self, mock_occ, mock_sample):
+    def test_parking_response_handles_no_libres(self, mock_occ):
         handler = PointsOfInterestHandler(context={})
         loc = {"lat": -33.023818, "lon": -68.497164, "address": "Las Heras 105, Junín, Mendoza"}
         res = handler.handle({"pregunta": "estacionamiento", "location": loc})
-        self.assertIn("libre", res.get("message_body", ""))
+        lines = [line for line in res.get("message_body", "").splitlines() if line.startswith("-")]
+        self.assertTrue(lines)
+        self.assertTrue(all("ocupado" in line for line in lines))
+        self.assertTrue(all(spot.get("available_spots") == 0 for spot in res.get("spots", [])))
 
     def test_parking_keyword_estacionar(self):
         with patch("services.points_of_interest_handler.get_coordinates", return_value=None):
