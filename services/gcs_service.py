@@ -502,6 +502,16 @@ def _save_to_local(
                 base_url, base_host = config_base_url, config_host
 
     if base_url:
+        final_base_url, final_base_host = _normalize_base_url(base_url)
+        if final_base_host and _is_private_host(final_base_host):
+            public_domain = os.getenv("PUBLIC_ROOT_DOMAIN", "chatboc.ar")
+            logger.warning(
+                "Detected private/localhost base URL '%s', forcing public URL using domain '%s'.",
+                base_url,
+                public_domain,
+            )
+            base_url = f"https://{public_domain}"
+
         original_url = urljoin(f"{base_url}/", relative_url.lstrip("/"))
         if thumb_relative_url:
             thumb_url = urljoin(f"{base_url}/", thumb_relative_url.lstrip("/"))
