@@ -10,7 +10,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
 from app import create_app
-from models import db, ChatSessionContext, User, Rubro
+from models import db, ChatSessionContext, User, Rubro, ArchivoAdjunto
 from services.logic import responder_chatboc
 from services.municipio_responder import CONTEXTO_MUNICIPIO, ConversationState
 from services.response_formatter import build_interactive_response
@@ -195,6 +195,97 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         self.assertEqual(final_context.get('historial_llm_reclamo'), [])
         self.assertNotIn('esperando_info_llm_reclamo', final_context)
         self.assertEqual(final_context.get('estado_conversacion'), ConversationState.CONVERSACION_GENERAL_LLM.name)
+
+    def test_web_audio_attachment_transcribes_and_updates_payload(self):
+        chat_session = ChatSessionContext(
+            chat_session_id='web_audio_session', user_id=self.owner_user.id
+        )
+        db.session.add(chat_session)
+
+        audio_adj = ArchivoAdjunto(
+            user_id=self.owner_user.id,
+            filename="nota.webm",
+            nombre_original="nota.webm",
+            mime="audio/webm",
+            tamano=1024,
+            url="https://cdn.example.com/nota.webm",
+        )
+        db.session.add(audio_adj)
+        db.session.commit()
+
+        uploaded_info = {"id": audio_adj.id}
+
+        with patch("services.logic._get_speech_to_text_service") as mock_get_stt, patch(
+            "services.logic.responder_municipio"
+        ) as mock_responder_municipio:
+            stt_instance = MagicMock()
+            stt_instance.client = object()
+            stt_instance.transcribe_audio_url.return_value = "esto es un audio"
+            mock_get_stt.return_value = stt_instance
+            mock_responder_municipio.return_value = {"message_body": "ok"}
+
+            responder_chatboc(
+                pregunta="",
+                owner_user=self.owner_user,
+                current_user=self.viewer_user,
+                rubro_obj=self.owner_user.rubro,
+                chat_db_context=chat_session,
+                uploaded_file_info=uploaded_info,
+            )
+
+        mock_responder_municipio.assert_called_once()
+        _, called_kwargs = mock_responder_municipio.call_args
+        self.assertEqual(called_kwargs["pregunta_original"], "esto es un audio")
+        self.assertTrue(called_kwargs.get("es_audio"))
+        interpreted = called_kwargs.get("datos_interpretados_archivo")
+        self.assertIsInstance(interpreted, dict)
+        self.assertEqual(interpreted.get("texto_transcrito"), "esto es un audio")
+
+    def test_web_image_attachment_triggers_interpretation(self):
+        chat_session = ChatSessionContext(
+            chat_session_id='web_image_session', user_id=self.owner_user.id
+        )
+        db.session.add(chat_session)
+
+        image_adj = ArchivoAdjunto(
+            user_id=self.owner_user.id,
+            filename="bache.jpg",
+            nombre_original="bache.jpg",
+            mime="image/jpeg",
+            tamano=2048,
+            url="https://cdn.example.com/bache.jpg",
+        )
+        db.session.add(image_adj)
+        db.session.commit()
+
+        uploaded_info = {"id": image_adj.id}
+
+        with patch(
+            "services.interpretacion_imagen_service.interpretar_imagen_para_chat",
+            return_value={"categoria_sugerida": "bache", "es_reclamo": True},
+        ) as mock_interpretar, patch(
+            "services.logic.responder_municipio"
+        ) as mock_responder_municipio:
+            mock_responder_municipio.return_value = {"message_body": "ok"}
+
+            responder_chatboc(
+                pregunta="mira la foto",
+                owner_user=self.owner_user,
+                current_user=self.viewer_user,
+                rubro_obj=self.owner_user.rubro,
+                chat_db_context=chat_session,
+                uploaded_file_info=uploaded_info,
+            )
+
+        mock_interpretar.assert_called_once()
+        mock_responder_municipio.assert_called_once()
+        _, called_kwargs = mock_responder_municipio.call_args
+        self.assertTrue(called_kwargs.get("es_foto"))
+        self.assertEqual(called_kwargs.get("foto_url"), image_adj.url)
+        interpreted = called_kwargs.get("datos_interpretados_archivo")
+        self.assertIsInstance(interpreted, dict)
+        self.assertEqual(interpreted.get("categoria_sugerida"), "bache")
+        self.assertTrue(interpreted.get("es_reclamo"))
 
     @unittest.skip("Test is flawed and needs to be rewritten. Mocks wrong handler.")
     @patch('services.pymes.llamar_gemini')
