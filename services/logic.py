@@ -8,12 +8,37 @@ if project_root_logic not in sys.path:
     sys.path.insert(0, project_root_logic)
 
 from flask import current_app
-from models import db
+from models import db, ArchivoAdjunto
 from services.interpretacion_service import interpretacion_service
 from services.archivo_service import archivo_service
 # servicio_tickets se importa/usa en los handlers específicos (municipios.py, pymes.py)
+from services.google_speech_to_text import SpeechToTextService
 
 logger = logging.getLogger(__name__)
+
+_speech_to_text_service: SpeechToTextService | None = None
+_speech_service_unavailable_logged = False
+
+
+def _get_speech_to_text_service() -> SpeechToTextService | None:
+    """Return a cached instance of :class:`SpeechToTextService`."""
+
+    global _speech_to_text_service, _speech_service_unavailable_logged
+
+    if _speech_to_text_service is None:
+        _speech_to_text_service = SpeechToTextService()
+
+    if (
+        _speech_to_text_service
+        and getattr(_speech_to_text_service, "client", None) is None
+        and not _speech_service_unavailable_logged
+    ):
+        logger.warning(
+            "Speech-to-text client is not available; audio uploads will not be transcribed."
+        )
+        _speech_service_unavailable_logged = True
+
+    return _speech_to_text_service
 
 # Rubros que deben usar la lógica de municipio/ente público
 RUBROS_PUBLICOS = {
@@ -210,6 +235,20 @@ def responder_chatboc(
             mime_type = str(mime_type) if mime_type else ""
             file_url = uploaded_file_info.get("url")
 
+            archivo_obj = None
+            if archivo_id:
+                archivo_obj = db.session.get(ArchivoAdjunto, archivo_id)
+                if not archivo_obj:
+                    current_app.logger.warning(
+                        "[LOGIC] ArchivoAdjunto ID %s no encontrado en la base de datos.",
+                        archivo_id,
+                    )
+                else:
+                    if not file_url:
+                        file_url = archivo_obj.url
+                    if not mime_type and archivo_obj.mime:
+                        mime_type = str(archivo_obj.mime)
+
             if file_url:
                 kwargs.setdefault("es_archivo", True)
                 kwargs.setdefault("archivo_url", file_url)
@@ -217,8 +256,78 @@ def responder_chatboc(
             if file_url and mime_type.startswith("image/"):
                 kwargs.setdefault("es_foto", True)
                 kwargs.setdefault("foto_url", file_url)
+                if not skip_image_analysis:
+                    try:
+                        from services.interpretacion_imagen_service import (
+                            interpretar_imagen_para_chat,
+                        )
+
+                        analisis_objetivo = archivo_obj or uploaded_file_info
+                        analisis_resultado = interpretar_imagen_para_chat(
+                            archivo_adjunto=analisis_objetivo,
+                            tipo_interpretacion="reclamo_auto_descripcion_categoria",
+                        )
+                        if isinstance(analisis_resultado, dict):
+                            if not isinstance(datos_interpretados_de_archivo, dict):
+                                datos_interpretados_de_archivo = {}
+                            datos_interpretados_de_archivo.update(analisis_resultado)
+                        else:
+                            datos_interpretados_de_archivo = analisis_resultado
+                    except Exception as exc:  # pragma: no cover - logged for observability
+                        current_app.logger.error(
+                            "Error interpretando imagen para ArchivoAdjunto ID %s: %s",
+                            archivo_id,
+                            exc,
+                            exc_info=True,
+                        )
             elif file_url and mime_type.startswith("audio/"):
                 kwargs.setdefault("es_audio", True)
+                stt_service = _get_speech_to_text_service()
+                transcript = ""
+                if stt_service and getattr(stt_service, "client", None):
+                    try:
+                        transcript = stt_service.transcribe_audio_url(file_url, mime_type)
+                    except Exception as exc:  # pragma: no cover - logged for visibility
+                        current_app.logger.error(
+                            "Error transcribiendo audio %s para ArchivoAdjunto ID %s: %s",
+                            file_url,
+                            archivo_id,
+                            exc,
+                            exc_info=True,
+                        )
+
+                    if not transcript and file_url.startswith("/"):
+                        local_path = os.path.join(
+                            current_app.root_path, file_url.lstrip("/")
+                        )
+                        if os.path.exists(local_path):
+                            try:
+                                transcript = stt_service.transcribe_audio_file(
+                                    local_path, mime_type
+                                )
+                            except Exception as exc:  # pragma: no cover - logging only
+                                current_app.logger.error(
+                                    "Error transcribiendo audio local %s (ArchivoAdjunto ID %s): %s",
+                                    local_path,
+                                    archivo_id,
+                                    exc,
+                                    exc_info=True,
+                                )
+
+                if transcript:
+                    if isinstance(pregunta, str):
+                        pregunta = f"{pregunta} {transcript}".strip()
+                    uploaded_file_info["transcribed_text"] = transcript
+                    if not isinstance(datos_interpretados_de_archivo, dict):
+                        datos_interpretados_de_archivo = {}
+                    datos_interpretados_de_archivo["texto_transcrito"] = transcript
+                    current_app.logger.info(
+                        "STT completado para ArchivoAdjunto ID %s", archivo_id
+                    )
+                elif stt_service and getattr(stt_service, "client", None):
+                    current_app.logger.info(
+                        "STT no produjo transcripción para ArchivoAdjunto ID %s", archivo_id
+                    )
 
         elif uploaded_file_info.get("source") == "whatsapp":
             from services.document_processing_service import document_processing_service
