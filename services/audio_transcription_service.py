@@ -36,14 +36,17 @@ def normalize_spanish_transcription(text: str) -> str:
         text = re.sub(rf"\b{short}\b", full, text, flags=re.IGNORECASE)
     return text
 
-def transcribe_audio_from_url(url: str, account_sid: str, auth_token: str) -> str | None:
+def transcribe_audio_from_url(url: str, account_sid: str = None, auth_token: str = None) -> str | None:
     """Download an audio file and transcribe it using OpenAI Whisper.
 
     Parameters
     ----------
     url:
-        Direct URL to the audio file (Twilio-provided).  The request is
-        authenticated with the given ``account_sid`` and ``auth_token``.
+        Direct URL to the audio file.
+    account_sid:
+        Optional Twilio Account SID for authentication.
+    auth_token:
+        Optional Twilio Auth Token for authentication.
 
     Returns
     -------
@@ -52,8 +55,9 @@ def transcribe_audio_from_url(url: str, account_sid: str, auth_token: str) -> st
     """
 
     try:
-        # Download the audio file using Twilio credentials for authentication
-        audio_response = requests.get(url, auth=(account_sid, auth_token))
+        # Download the audio file, using auth only if provided
+        auth = (account_sid, auth_token) if account_sid and auth_token else None
+        audio_response = requests.get(url, auth=auth)
         audio_response.raise_for_status()
 
         audio_bytes = audio_response.content
