@@ -602,6 +602,7 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
         if not adjunto:
             return jsonify({'error': 'Error al procesar y guardar el archivo.'}), 500
 
+        # Commit here to ensure adjunto.id is populated
         db.session.commit()
 
         # Cargar metadatos del análisis si existen
@@ -619,18 +620,21 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
             meta=meta_data,
         )
 
+        # Build the final response object AFTER the commit.
+        attachment_info_payload = {
+            "id": adjunto.id,
+            "url": adjunto.url,
+            "thumbUrl": thumb_url,
+            "thumbnailUrl": thumb_url,
+            "mimeType": adjunto.mime,
+            "size": adjunto.tamano,
+            "name": adjunto.nombre_original,
+            "meta": meta_data,
+        }
+
         return jsonify({
             "ok": True,
-            "attachmentInfo": {
-                "id": adjunto.id,
-                "url": adjunto.url,
-                "thumbUrl": thumb_url,
-                "thumbnailUrl": thumb_url,
-                "mimeType": adjunto.mime,
-                "size": adjunto.tamano,
-                "name": adjunto.nombre_original,
-                "meta": meta_data,
-            },
+            "attachmentInfo": attachment_info_payload,
         }), 200
 
     except Exception as e:
