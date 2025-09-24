@@ -6,7 +6,6 @@ from typing import Dict, Any, List, Optional
 # from models import AnalisisArchivo # Movido para evitar importación circular
 # Asumiendo que robust_chat está en llm_utils o cohere_ai
 from services.llm_utils import robust_chat, _clean_llm_json_output # _clean_llm_json_output es de llm_utils
-from services.google_speech_to_text import SpeechToTextService
 from services.vision_fallback_service import analyze_image_smart
 from services.categorias_municipio import CATEGORIAS_RECLAMO
 
@@ -28,22 +27,14 @@ class InterpretacionService:
 
         mime = archivo_adjunto.mime.lower()
         if mime.startswith("audio/"):
-            stt_service = SpeechToTextService()
+            from services.audio_transcription_service import transcribe_audio_from_url
             try:
-                texto = stt_service.transcribe_audio_url(archivo_adjunto.url, mime)
+                texto = transcribe_audio_from_url(archivo_adjunto.url)
                 if texto:
                     resultado["texto_extraido"] = texto
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Error de red al descargar audio {archivo_adjunto.url}: {e}", exc_info=True)
-                resultado["error"] = "No se pudo descargar el archivo de audio para transcribir."
             except Exception as e:
-                from google.api_core.exceptions import PermissionDenied
-                if isinstance(e, PermissionDenied) and "billing" in str(e).lower():
-                    logger.error("Error de facturación de Google STT: %s", e)
-                    resultado["error"] = "El servicio de transcripción de audio no está disponible en este momento."
-                else:
-                    logger.error(f"Error inesperado transcribiendo audio {archivo_adjunto.url}: {e}", exc_info=True)
-                    resultado["error"] = "Ocurrió un error al procesar el audio."
+                logger.error(f"Error transcribiendo audio {archivo_adjunto.url}: {e}", exc_info=True)
+                resultado["error"] = "Ocurrió un error al procesar el audio."
 
         return resultado
 
@@ -72,9 +63,11 @@ class InterpretacionService:
         if not audio_url or not mime_type:
             return {"texto_transcrito": "", "datos_estructurados": {}}
 
-        stt_service = SpeechToTextService()
+        from services.audio_transcription_service import transcribe_audio_from_url
         try:
-            texto = stt_service.transcribe_audio_url(audio_url, mime_type)
+            # Note: This path seems to be for a specific flow and might need auth keys.
+            # The unified function handles optional auth.
+            texto = transcribe_audio_from_url(audio_url)
         except Exception as e:
             logger.error(f"Error transcribiendo audio {audio_url}: {e}", exc_info=True)
             texto = ""

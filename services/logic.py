@@ -261,16 +261,8 @@ def responder_chatboc(
                 # Re-introduce the specific error handling for the final solution
                 transcript = ""
                 try:
-                    transcript = transcribe_audio_from_url(file_url)
+                    transcript = transcribe_audio_from_url(file_url, mime_type)
                 except Exception as e:
-                    from google.api_core.exceptions import PermissionDenied
-                    if isinstance(e, PermissionDenied) and "billing" in str(e).lower():
-                        logger.error("Error de facturación de Google STT detectado (aunque se usa OpenAI): %s", e)
-                        # This path should ideally not be hit if OpenAI is used, but as a safeguard:
-                        return {
-                            "message_body": "El servicio de transcripción de audio no está disponible en este momento por un problema de configuración. Por favor, intente más tarde o escriba su consulta.",
-                            "fuente": "stt_billing_error_fallback",
-                        }
                     logger.error(f"Error inesperado durante la transcripción de audio web: {e}", exc_info=True)
 
                 if transcript:
