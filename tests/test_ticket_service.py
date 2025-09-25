@@ -132,6 +132,85 @@ class TicketServiceTests(unittest.TestCase):
         self.assertTrue(found_loc1, "Location (10.0, 20.0) with weight 2 not found")
         self.assertTrue(found_loc2, "Location (11.0, 21.0) with weight 1 not found")
 
+    def test_mapa_filtra_varias_categorias(self):
+        from datetime import datetime
+
+        DummyTicket = SimpleNamespace
+
+        class DummyQuery(list):
+            def filter_by(self, **kwargs):
+                return DummyQuery(
+                    [
+                        t
+                        for t in self
+                        if all(getattr(t, k, None) == v for k, v in kwargs.items())
+                    ]
+                )
+
+            def filter(self, *criterion):
+                return self
+
+            def all(self):
+                return list(self)
+
+        tickets = [
+            DummyTicket(
+                id=1,
+                estado='nuevo',
+                latitud=10.0,
+                longitud=20.0,
+                municipio_id=5,
+                fecha=datetime.utcnow(),
+                categoria='Baches',
+                asunto=None,
+            ),
+            DummyTicket(
+                id=2,
+                estado='nuevo',
+                latitud=11.0,
+                longitud=21.0,
+                municipio_id=5,
+                fecha=datetime.utcnow(),
+                categoria='Arbol',
+                asunto=None,
+            ),
+            DummyTicket(
+                id=3,
+                estado='nuevo',
+                latitud=12.0,
+                longitud=22.0,
+                municipio_id=5,
+                fecha=datetime.utcnow(),
+                categoria='luminaria',
+                asunto=None,
+            ),
+        ]
+
+        class DummyModel:
+            latitud = MagicMock()
+            latitud.isnot.return_value = True
+            longitud = MagicMock()
+            longitud.isnot.return_value = True
+            categoria = MagicMock()
+
+            def __init__(self, **kwargs):
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+        DummyModel.query = DummyQuery(tickets)
+
+        with patch.object(ts, 'MunicipioTicket', DummyModel):
+            service = ServicioTickets()
+            res = service.obtener_tickets_con_ubicacion_para_mapa(
+                tipo_ticket='municipio',
+                municipio_id=5,
+                categoria=['Baches', 'Luminaria'],
+            )
+
+        categorias = {item.get('categoria') for item in res}
+        self.assertEqual(categorias, {'Baches', 'luminaria'})
+        self.assertNotIn('Arbol', categorias)
+
     def test_preserves_user_provided_phone_when_user_exists(self):
         service = ServicioTickets()
         class DummyCreator:

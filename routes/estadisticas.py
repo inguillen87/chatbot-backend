@@ -210,7 +210,7 @@ def mapa_calor_datos(current_user):
         rubro_id=args.get("rubro_id", type=int),
         fecha_inicio=args.get("fecha_inicio"),
         fecha_fin=args.get("fecha_fin"),
-        categoria=categorias[0] if categorias else None,
+        categoria=categorias or None,
         distrito=distrito,
         estado=estado_param,
         satisfactorio=args.get("satisfactorio", type=lambda v: str(v).lower() == "true"),
@@ -291,7 +291,7 @@ def estadisticas_tickets(current_user):
         rubro_id = getattr(current_user, "rubro_id", None)
 
     categoria_values = _parse_multi_value_param(args, "categoria")
-    categoria = categoria_values[0] if categoria_values else None
+    categoria = categoria_values or None
 
     puntos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
         tipo_ticket=tipo,
