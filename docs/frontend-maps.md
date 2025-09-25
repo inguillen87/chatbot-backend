@@ -14,4 +14,11 @@ Para que el equipo de frontend implemente los mapas y las estadísticas solicita
 4. Incluir campos de filtro (categoría, fechas, etc.) que se traduzcan en parámetros de consulta para el endpoint de datos.
 5. En el perfil con mapa grande, reutilizar la misma lógica para mostrar la distribución de tickets o usuarios según corresponda.
 
+### Nuevo dashboard unificado
+- `GET /estadisticas/dashboard` ofrece en una sola respuesta los KPIs principales, los datos de mapas de calor, filtros aplicados y la estructura necesaria para construir tableros modernos tanto para municipios como para pymes.
+- El payload incluye tarjetas (`cards`) listas para renderizar con librerías como **ECharts**, **Chart.js**, **ApexCharts** o **AntV**, y series temporales listas para conectar con componentes de línea/área.
+- Para el modo PyME se complementa con métricas de ventas (ingresos, pedidos, clientes únicos, tasa de conversión) y colecciones de datos (`ventas_over_time`, `top_productos`, `ventas_por_region`) que permiten construir dashboards con visualizaciones como gráficos de área apilados, treemaps o mapas de calor.
+- En municipios se reutiliza el mismo JSON enriquecido de `build_stats_for_municipio`, facilitando gráficos de barras apiladas, líneas de tendencia y diagramas de estado.
+- Desde la UI se puede consumir el JSON y alimentar componentes modernos (por ejemplo, **MUI X Charts**, **Recharts** o **Kepler.gl** para mapas) aplicando filtros en vivo contra el backend mediante los parámetros `estado`, `categoria`, `fecha_inicio`, `fecha_fin`, `distrito` y `satisfactorio`.
+
 Estas instrucciones permiten desarrollar toda la interfaz en el frontend sin requerir plantillas HTML dentro del backend.
