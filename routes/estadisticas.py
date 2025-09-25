@@ -6,6 +6,7 @@ from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from utils.time_utils import get_local_now
 from services.ticket_service import servicio_tickets
 from services.municipal_stats import build_stats_for_municipio, StatsFilters
+from services.metricas_service import MetricasService
 from models import User
 
 
@@ -99,6 +100,22 @@ def _parse_int_params(args, key: str) -> tuple[int, ...]:
     return tuple(enteros)
 
 
+def _parse_bool_param(args, key: str) -> bool | None:
+    """Convierte parámetros booleanos del query string."""
+
+    raw = args.get(key)
+    if raw is None:
+        return None
+
+    texto = str(raw).strip().lower()
+    if texto in {"1", "true", "t", "yes", "si", "sí"}:
+        return True
+    if texto in {"0", "false", "f", "no"}:
+        return False
+
+    return None
+
+
 def _parse_iso_datetime(value: str | None, *, is_end: bool = False) -> datetime | None:
     """Parsea fechas ISO añadiendo zona horaria local y normalizando fin de rango."""
 
@@ -182,6 +199,174 @@ def _build_summary_cards(summary: dict) -> list[dict]:
         {"label": "Reclamos en Proceso", "value": en_proceso},
         {"label": "Reclamos Resueltos", "value": resueltos},
     ]
+
+
+def _normalize_dashboard_tipo(raw_tipo: str | None) -> str:
+    """Normaliza el parámetro ``tipo`` para el dashboard unificado."""
+
+    if not raw_tipo:
+        return "municipio"
+
+    tipo = raw_tipo.strip().lower()
+    if tipo not in {"municipio", "pyme"}:
+        return "municipio"
+
+    return tipo
+
+
+def _clean_text_param(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _build_applied_filters(
+    *,
+    estados: list[str] | None,
+    categorias: list[str],
+    distrito: str | None,
+    fecha_inicio: str | None,
+    fecha_fin: str | None,
+    satisfactorio: bool | None,
+    municipio_id: int | None,
+    rubro_id: int | None,
+) -> dict:
+    """Construye un diccionario serializable con los filtros aplicados."""
+
+    return {
+        "estados": estados or [],
+        "categorias": categorias,
+        "distrito": distrito,
+        "fecha_inicio": fecha_inicio,
+        "fecha_fin": fecha_fin,
+        "satisfactorio": satisfactorio,
+        "municipio_id": municipio_id,
+        "rubro_id": rubro_id,
+    }
+
+
+@estadisticas_bp.route("/dashboard", methods=["GET"])
+@token_requerido
+@admin_o_empleado_requerido
+def estadisticas_dashboard(current_user):
+    """Fusiona estadísticas municipales/pyme en un único payload para dashboards modernos."""
+
+    args = request.args
+    tipo = _normalize_dashboard_tipo(args.get("tipo", "municipio"))
+
+    estados = _parse_estado_params(args)
+    estado_param = None
+    if estados:
+        estado_param = estados if len(estados) > 1 else estados[0]
+
+    categorias = _parse_multi_value_param(args, "categoria")
+
+    distrito = _clean_text_param(args.get("distrito"))
+    fecha_inicio = args.get("fecha_inicio")
+    fecha_fin = args.get("fecha_fin")
+    satisfactorio = _parse_bool_param(args, "satisfactorio")
+
+    municipio_id = args.get("municipio_id", type=int)
+    rubro_id = args.get("rubro_id", type=int)
+
+    if tipo == "municipio" and municipio_id is None:
+        municipio_id = _resolve_municipio_id(current_user)
+    if tipo == "pyme" and rubro_id is None:
+        rubro_id = getattr(current_user, "rubro_id", None)
+
+    heatmap = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
+        tipo_ticket=tipo,
+        municipio_id=municipio_id,
+        rubro_id=rubro_id,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+        categoria=categorias or None,
+        distrito=distrito,
+        estado=estado_param,
+        satisfactorio=satisfactorio,
+    )
+
+    metadata = {
+        "municipio_id": municipio_id,
+        "rubro_id": rubro_id,
+        "last_updated": get_local_now().isoformat(),
+    }
+
+    payload: dict[str, object] = {
+        "tipo": tipo,
+        "heatmap": heatmap,
+        "metadata": metadata,
+        "applied_filters": _build_applied_filters(
+            estados=estados,
+            categorias=categorias,
+            distrito=distrito,
+            fecha_inicio=fecha_inicio,
+            fecha_fin=fecha_fin,
+            satisfactorio=satisfactorio,
+            municipio_id=municipio_id,
+            rubro_id=rubro_id,
+        ),
+    }
+
+    if tipo == "municipio":
+        stats_filters = _build_stats_filters(args, estados)
+        if stats_filters:
+            stats = build_stats_for_municipio(municipio_id, filters=stats_filters)
+        else:
+            stats = build_stats_for_municipio(municipio_id)
+
+        resumen = dict(stats.get("resumen", {})) if isinstance(stats, dict) else {}
+        payload["stats"] = stats
+        payload["summary"] = resumen
+        payload["cards"] = _build_summary_cards(resumen)
+        payload["filters"] = _serialize_filters(stats_filters)
+    else:
+        pyme_id = args.get("pyme_id", type=int)
+        if pyme_id is None:
+            pyme_id = getattr(current_user, "pyme_id", None) or getattr(current_user, "id", None)
+
+        metadata["pyme_id"] = pyme_id
+
+        resumen_pyme: dict[str, object] = {}
+        cards_pyme: list[dict[str, object]] = []
+        stats_pyme: dict[str, object] = {}
+
+        if pyme_id:
+            metricas = MetricasService(pyme_id)
+            total_ventas = metricas.get_total_ingresos()
+            total_pedidos = metricas.get_total_pedidos()
+            clientes_unicos = metricas.get_new_customers()
+            tasa_conversion = metricas.get_conversion_rate()
+
+            resumen_pyme = {
+                "total_ventas": total_ventas,
+                "total_pedidos": total_pedidos,
+                "clientes_unicos": clientes_unicos,
+                "tasa_conversion": tasa_conversion,
+            }
+
+            cards_pyme = [
+                {"label": "Ingresos Totales", "value": total_ventas},
+                {"label": "Pedidos", "value": total_pedidos},
+                {"label": "Clientes Únicos", "value": clientes_unicos},
+                {"label": "Tasa de Conversión", "value": tasa_conversion},
+            ]
+
+            stats_pyme = {
+                "kpis": metricas.get_kpis(),
+                "ventas_over_time": metricas.get_sales_over_time(),
+                "top_productos": metricas.get_top_products(),
+                "ventas_por_region": metricas.get_sales_by_region(),
+            }
+
+        payload["stats"] = stats_pyme
+        payload["summary"] = resumen_pyme
+        payload["cards"] = cards_pyme
+        payload["filters"] = {}
+
+    return jsonify(payload)
 
 
 @estadisticas_bp.route("/mapa_calor/datos", methods=["GET"])

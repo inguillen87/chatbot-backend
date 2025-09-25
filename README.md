@@ -66,6 +66,7 @@ selection instructions to maintain full visibility of all choices.
 - `GET /tickets/<tipo>/<id>/encuesta` – retrieve survey results for a ticket.
 - `GET /tickets/<tipo>/mapa` – list open tickets with latitude and longitude.
 - `GET /estadisticas/reclamos` – statistics of tickets by category and type.
+- `GET /estadisticas/dashboard` – unified analytics payload (KPIs, heatmap data, filters) for modern municipal and SME dashboards.
 - `GET /estadisticas/usuarios/ubicaciones` – coordinates of users in the same municipality for heatmaps.
 - `GET /tramites` – list available municipal procedures, supports `?q=` filtering.
 - `GET /tramites/<nombre>` – detailed info for a specific procedure.
