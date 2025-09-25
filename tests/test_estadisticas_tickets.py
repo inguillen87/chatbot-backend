@@ -1,57 +1,89 @@
+import os
+import sys
+import types
 import unittest
 from unittest.mock import patch
 import importlib
-import os
-import sys
 from types import SimpleNamespace
+
+from flask import Flask
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from config import TestConfig
+from services.municipal_stats import StatsFilters
 
 
 class EstadisticasTicketsRouteTest(unittest.TestCase):
     def setUp(self):
-        self.token_patcher = patch('utils.auth_helpers.token_requerido', lambda f: f)
-        self.admin_patcher = patch('utils.auth_helpers.admin_o_empleado_requerido', lambda f: f)
+        self.original_auth_helpers = sys.modules.get('utils.auth_helpers')
+        stub = types.ModuleType('utils.auth_helpers')
+        stub.token_requerido = lambda f: f
+        stub.admin_o_empleado_requerido = lambda f: f
+        stub.anon_o_token_requerido = lambda f: f
+        sys.modules['utils.auth_helpers'] = stub
+
+        os.environ.setdefault('OPENAI_API_KEY', 'test')
+
         self.session_patcher = patch(
             'flask_session.Session',
             lambda *args, **kwargs: SimpleNamespace(init_app=lambda app: None),
         )
-        self.token_patcher.start()
-        self.admin_patcher.start()
         self.session_patcher.start()
 
         import routes.estadisticas as estats
         importlib.reload(estats)
-        import app as app_module
-        importlib.reload(app_module)
-        self.app = app_module.create_app(TestConfig)
+
+        self.app = Flask(__name__)
+        self.app.config.from_object(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
 
     def tearDown(self):
-        self.token_patcher.stop()
-        self.admin_patcher.stop()
         self.session_patcher.stop()
+        if self.original_auth_helpers is not None:
+            sys.modules['utils.auth_helpers'] = self.original_auth_helpers
+        else:
+            sys.modules.pop('utils.auth_helpers', None)
         self.app_context.pop()
 
+    @patch('routes.estadisticas.build_stats_for_municipio')
     @patch('routes.estadisticas.servicio_tickets')
-    def test_estadisticas_tickets_returns_heatmap(self, mock_servicio):
+    def test_estadisticas_tickets_returns_heatmap_and_stats(self, mock_servicio, mock_stats):
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = [
             {"location": {"lat": 1, "lng": 2}, "weight": 3}
         ]
+        mock_stats.return_value = {
+            "resumen": {
+                "abiertos": 5,
+                "en_proceso": 2,
+                "resueltos": 7,
+            },
+            "estados": [],
+        }
         current_user = SimpleNamespace(municipio_id=1, rubro_id=None)
         import routes.estadisticas as estats
         with self.app.test_request_context('/estadisticas/tickets?tipo=municipio'):
             response = estats.estadisticas_tickets(current_user)
         self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
         self.assertEqual(
-            response.get_json(),
-            {"heatmap": [{"location": {"lat": 1, "lng": 2}, "weight": 3}]},
+            payload["heatmap"],
+            [{"location": {"lat": 1, "lng": 2}, "weight": 3}],
         )
+        self.assertEqual(payload["stats"], mock_stats.return_value)
+        self.assertEqual(payload["summary"], mock_stats.return_value["resumen"])
+        self.assertEqual(
+            payload["cards"],
+            [
+                {"label": "Reclamos Abiertos", "value": 5},
+                {"label": "Reclamos en Proceso", "value": 2},
+                {"label": "Reclamos Resueltos", "value": 7},
+            ],
+        )
+        self.assertEqual(payload["filters"], {})
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='municipio',
             municipio_id=1,
@@ -64,9 +96,11 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             satisfactorio=None,
         )
 
+    @patch('routes.estadisticas.build_stats_for_municipio')
     @patch('routes.estadisticas.servicio_tickets')
-    def test_estadisticas_tickets_accepts_multiple_estados(self, mock_servicio):
+    def test_estadisticas_tickets_accepts_multiple_estados(self, mock_servicio, mock_stats):
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = []
+        mock_stats.return_value = {"resumen": {}}
         current_user = SimpleNamespace(municipio_id=1, rubro_id=None)
         import routes.estadisticas as estats
         with self.app.test_request_context(
@@ -84,6 +118,52 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             distrito=None,
             estado=['nuevo', 'en_proceso'],
             satisfactorio=None,
+        )
+        filters = mock_stats.call_args.kwargs.get('filters')
+        self.assertIsInstance(filters, (StatsFilters, type(None)))
+
+    @patch('routes.estadisticas.build_stats_for_municipio')
+    @patch('routes.estadisticas.servicio_tickets')
+    def test_estadisticas_tickets_builds_filters(self, mock_servicio, mock_stats):
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = []
+        mock_stats.return_value = {"resumen": {}}
+        current_user = SimpleNamespace(municipio_id=42, rubro_id=None)
+        import routes.estadisticas as estats
+        with self.app.test_request_context(
+            '/estadisticas/tickets?tipo=municipio'
+            '&estado=cerrado'
+            '&categoria=Basura'
+            '&distrito=Centro'
+            '&canal=Web'
+            '&agente_id=7&agente_id=8'
+            '&fecha_inicio=2024-01-01'
+            '&fecha_fin=2024-01-31'
+        ):
+            response = estats.estadisticas_tickets(current_user)
+
+        self.assertEqual(response.status_code, 200)
+        filters = mock_stats.call_args.kwargs.get('filters')
+        self.assertIsInstance(filters, StatsFilters)
+        self.assertEqual(filters.estados, ('cerrado',))
+        self.assertEqual(filters.categorias, ('Basura',))
+        self.assertEqual(filters.distritos, ('Centro',))
+        self.assertEqual(filters.canales, ('Web',))
+        self.assertEqual(filters.agentes, (7, 8))
+        self.assertEqual(filters.fecha_inicio.isoformat(), '2024-01-01T00:00:00+00:00')
+        self.assertEqual(filters.fecha_fin.isoformat(), '2024-02-01T00:00:00+00:00')
+
+        payload = response.get_json()
+        self.assertEqual(
+            payload["filters"],
+            {
+                "fecha_inicio": '2024-01-01T00:00:00+00:00',
+                "fecha_fin": '2024-02-01T00:00:00+00:00',
+                "estados": ['cerrado'],
+                "categorias": ['Basura'],
+                "distritos": ['Centro'],
+                "canales": ['Web'],
+                "agentes": [7, 8],
+            },
         )
 
 
