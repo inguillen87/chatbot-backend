@@ -13,7 +13,7 @@ from utils.permissions import require_role
 from routes.crm import _obtener_clientes
 from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
 from routes.tramites import listar_tramites, obtener_tramite
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from models import Conversacion, MunicipioTicket, User, db
 from routes.ticket import TICKET_ALLOWED_STATES
 from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS
@@ -900,6 +900,7 @@ def municipal_stats_filters(current_user):
                 "rangos": _STATS_RANGE_OPTIONS,
                 "distritos": [],
                 "canales": [],
+                "agentes": [],
             }
         )
 
@@ -936,6 +937,56 @@ def municipal_stats_filters(current_user):
     )
     canales = _dedupe_sorted((row[0] for row in canales_query), "Sin especificar")
 
+    owner_user = getattr(g, "owner_user", None)
+    owner_id = None
+    if owner_user is not None:
+        owner_id = getattr(owner_user, "id", None)
+    if owner_id is None:
+        owner_id = getattr(current_user, "empresa_id", None) or getattr(
+            current_user, "id", None
+        )
+
+    user_conditions = [User.municipio_id == municipio_id]
+    if owner_id is not None:
+        user_conditions.append(User.empresa_id == owner_id)
+        user_conditions.append(User.id == owner_id)
+
+    if len(user_conditions) == 1:
+        combined_condition = user_conditions[0]
+    else:
+        combined_condition = or_(*user_conditions)
+
+    agentes_rows = (
+        db.session.query(User.id, User.name, User.email, User.rol)
+        .filter(combined_condition)
+        .filter(or_(User.rol.is_(None), User.rol != "usuario"))
+        .all()
+    )
+
+    agentes: list[dict[str, object]] = []
+    vistos: set[int] = set()
+    for row in agentes_rows:
+        agent_id = int(getattr(row, "id", 0) or 0)
+        if not agent_id or agent_id in vistos:
+            continue
+        vistos.add(agent_id)
+
+        nombre = getattr(row, "name", None) or getattr(row, "email", None) or ""
+        nombre = (nombre or "").strip() or f"Agente #{agent_id}"
+        rol = getattr(row, "rol", None)
+
+        agentes.append(
+            {
+                "id": agent_id,
+                "name": nombre,
+                "label": nombre,
+                "value": agent_id,
+                "rol": rol,
+            }
+        )
+
+    agentes.sort(key=lambda item: item["label"].lower())
+
     return jsonify(
         {
             "categorias": categorias,
@@ -943,6 +994,7 @@ def municipal_stats_filters(current_user):
             "rangos": _STATS_RANGE_OPTIONS,
             "distritos": distritos,
             "canales": canales,
+            "agentes": agentes,
         }
     )
 

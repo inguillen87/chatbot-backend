@@ -262,11 +262,15 @@ class MunicipalStatsTests(unittest.TestCase):
         self.assertEqual(resp['categorias'], [])
         self.assertIn('estados', resp)
         self.assertIn('rangos', resp)
+        self.assertEqual(resp['agentes'], [])
 
     def test_stats_filters_dynamic_values(self):
         class QueryStub:
-            def __init__(self, values):
-                self._values = [(value,) for value in values]
+            def __init__(self, values, wrap_tuple: bool = True):
+                if wrap_tuple:
+                    self._values = [(value,) for value in values]
+                else:
+                    self._values = list(values)
 
             def filter(self, *args, **kwargs):
                 return self
@@ -274,15 +278,27 @@ class MunicipalStatsTests(unittest.TestCase):
             def distinct(self):
                 return self
 
+            def all(self):
+                return list(self._values)
+
             def __iter__(self):
                 return iter(self._values)
 
         categories_stub = QueryStub(["Alumbrado", "Limpieza"])
         districts_stub = QueryStub(["Centro"])
         channels_stub = QueryStub(["WhatsApp", "Web"])
+        agents_stub = QueryStub(
+            [
+                SimpleNamespace(id=10, name="Ana", email="ana@example.com", rol="admin"),
+                SimpleNamespace(
+                    id=11, name="Luis", email="luis@example.com", rol="empleado"
+                ),
+            ],
+            wrap_tuple=False,
+        )
 
         with patch('routes.municipal_legacy.jsonify', lambda x: x), \
-             patch('routes.municipal_legacy.db.session.query', side_effect=[categories_stub, districts_stub, channels_stub]):
+             patch('routes.municipal_legacy.db.session.query', side_effect=[categories_stub, districts_stub, channels_stub, agents_stub]):
             view = getattr(self.module.municipal_stats_filters, '__wrapped__', self.module.municipal_stats_filters)
             app = Flask(__name__)
             with app.test_request_context('/municipal/stats/filters'):
@@ -292,6 +308,25 @@ class MunicipalStatsTests(unittest.TestCase):
         self.assertEqual(resp['distritos'], ['Centro'])
         self.assertEqual(resp['canales'], ['Web', 'WhatsApp'])
         self.assertIn('estados', resp)
+        self.assertEqual(
+            resp['agentes'],
+            [
+                {
+                    'id': 10,
+                    'label': 'Ana',
+                    'name': 'Ana',
+                    'rol': 'admin',
+                    'value': 10,
+                },
+                {
+                    'id': 11,
+                    'label': 'Luis',
+                    'name': 'Luis',
+                    'rol': 'empleado',
+                    'value': 11,
+                },
+            ],
+        )
 
     def test_stats_for_employee_uses_empresa_id(self):
         employee = SimpleNamespace(
