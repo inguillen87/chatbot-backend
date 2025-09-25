@@ -166,6 +166,31 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             },
         )
 
+    @patch('routes.estadisticas.build_stats_for_municipio')
+    @patch('routes.estadisticas.servicio_tickets')
+    def test_estadisticas_tickets_acepta_varias_categorias(self, mock_servicio, mock_stats):
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = []
+        mock_stats.return_value = {"resumen": {}}
+        current_user = SimpleNamespace(municipio_id=42, rubro_id=None)
+        import routes.estadisticas as estats
+        with self.app.test_request_context(
+            '/estadisticas/tickets?tipo=municipio&categoria=Arbol&categoria=Luminaria'
+        ):
+            response = estats.estadisticas_tickets(current_user)
+
+        self.assertEqual(response.status_code, 200)
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
+            tipo_ticket='municipio',
+            municipio_id=42,
+            rubro_id=None,
+            fecha_inicio=None,
+            fecha_fin=None,
+            categoria=['Arbol', 'Luminaria'],
+            distrito=None,
+            estado=None,
+            satisfactorio=None,
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

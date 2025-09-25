@@ -295,7 +295,7 @@ class ServicioTickets:
         rubro_id: int | None = None,
         fecha_inicio: str | None = None,
         fecha_fin: str | None = None,
-        categoria: str | None = None,
+        categoria: str | Iterable[str] | None = None,
         distrito: str | None = None,
         estado: str | Iterable[str] | None = None, # Nuevo parámetro de estado
         satisfactorio: bool | None = None,
@@ -388,8 +388,30 @@ class ServicioTickets:
                 except ValueError:
                     logger.warning(f"Formato de fecha_fin inválido: {fecha_fin}")
 
+            categorias_filtrar_lower: list[str] = []
             if categoria and hasattr(Model, 'categoria'):
-                query = query.filter(Model.categoria == categoria)
+                if isinstance(categoria, str):
+                    raw_values = [categoria]
+                else:
+                    raw_values = list(categoria)
+
+                vistos: set[str] = set()
+                for raw in raw_values:
+                    if not isinstance(raw, str):
+                        continue
+                    texto = raw.strip()
+                    if not texto:
+                        continue
+                    clave = texto.lower()
+                    if clave in vistos:
+                        continue
+                    vistos.add(clave)
+                    categorias_filtrar_lower.append(clave)
+
+                if categorias_filtrar_lower:
+                    query = query.filter(
+                        db.func.lower(Model.categoria).in_(categorias_filtrar_lower)
+                    )
 
             tickets = query.all()
             logger.info(
@@ -405,6 +427,14 @@ class ServicioTickets:
             if estados_filtrar_set:
                 tickets = [
                     t for t in tickets if getattr(t, "estado", None) in estados_filtrar_set
+                ]
+
+            if categorias_filtrar_lower and hasattr(Model, "categoria"):
+                tickets = [
+                    t
+                    for t in tickets
+                    if isinstance(getattr(t, "categoria", None), str)
+                    and getattr(t, "categoria").strip().lower() in categorias_filtrar_lower
                 ]
 
             # El agrupamiento por ubicación y el cálculo de 'weight' permanecen igual.
