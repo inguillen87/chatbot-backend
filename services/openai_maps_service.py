@@ -9,6 +9,7 @@ import openai
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = os.environ.get("OPENAI_MAP_MODEL", "gpt-4.1-mini")
+CHAT_FALLBACK_MODEL = os.environ.get("OPENAI_MAP_CHAT_MODEL", "gpt-4o-mini")
 
 
 def _solicitar_json_a_openai(
@@ -25,19 +26,28 @@ def _solicitar_json_a_openai(
         try:
             with httpx.Client(proxy=None, trust_env=False) as http_client:
                 client = client_ctor(api_key=api_key, http_client=http_client)
-                response = client.responses.create(
-                    model=DEFAULT_MODEL,
-                    input=[
-                        {"role": "system", "content": system_message},
-                        {"role": "user", "content": prompt},
-                    ],
-                    response_format={"type": "json_schema", "json_schema": schema},
-                )
-            text = response.output[0].content[0].text
-            return json.loads(text)
+                responses_api = getattr(client, "responses", None)
+                if responses_api is None or not hasattr(responses_api, "create"):
+                    logger.debug(
+                        "Instancia OpenAI sin soporte para responses.create; se usará ChatCompletion."
+                    )
+                else:
+                    response = responses_api.create(
+                        model=DEFAULT_MODEL,
+                        input=[
+                            {"role": "system", "content": system_message},
+                            {"role": "user", "content": prompt},
+                        ],
+                        response_format={"type": "json_schema", "json_schema": schema},
+                    )
+                    text = response.output[0].content[0].text
+                    return json.loads(text)
         except AttributeError:
             # Instalada una versión previa del SDK sin soporte para responses.create
-            pass
+            logger.debug(
+                "El cliente OpenAI no expone responses.create; aplicando ChatCompletion fallback.",
+                exc_info=True,
+            )
         except json.JSONDecodeError as exc:
             logger.warning("Respuesta JSON inválida del endpoint responses: %s", exc, exc_info=True)
         except Exception as exc:  # pragma: no cover - SDK/network specifics
@@ -47,7 +57,7 @@ def _solicitar_json_a_openai(
         try:
             openai.api_key = api_key
             completion = openai.ChatCompletion.create(
-                model=DEFAULT_MODEL,
+                model=CHAT_FALLBACK_MODEL,
                 temperature=0,
                 messages=[
                     {
