@@ -4,6 +4,7 @@ import hashlib
 import shutil
 import re
 import textwrap
+from config import BACKEND_URL
 
 logger = logging.getLogger(__name__)
 
@@ -67,20 +68,29 @@ def generar_audio(text: str) -> str | None:
     cached_rel_path = os.path.join(cache_dir, f"{text_hash}.mp3")
     if os.path.exists(cached_rel_path):
         logger.info("TTS Service: Returning cached audio.")
-        return f"/{cached_rel_path}"
+        return f"{BACKEND_URL}/{cached_rel_path}"
 
     def cache_and_return(audio_url: str | None) -> str | None:
         if not audio_url:
             return None
+
+        # Ensure audio_url is a relative path before proceeding
+        # This handles cases where a full URL might be returned by a service
+        if audio_url.startswith("http://") or audio_url.startswith("https://"):
+             # If it's already a full URL, we can't cache it locally easily, return as is
+            return audio_url
+
         generated_path = audio_url.lstrip("/")
         try:
             if os.path.exists(generated_path):
                 shutil.copyfile(generated_path, cached_rel_path)
                 logger.info(f"TTS Service: Cached audio at {cached_rel_path}")
-                return f"/{cached_rel_path}"
+                return f"{BACKEND_URL}/{cached_rel_path}"
         except Exception as e:
             logger.warning(f"TTS Service: Failed to cache audio file from {generated_path}: {e}")
-        return audio_url
+
+        # Fallback to returning the original URL if caching fails but URL is valid
+        return f"{BACKEND_URL}/{generated_path}"
 
     # Import the OpenAI provider lazily to avoid heavy dependencies at module import time
     from services.openai_tts_bridge import generar_audio_openai
