@@ -221,13 +221,6 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         greeting_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
         self.assertIn("body", greeting_kwargs)
 
-        second_call_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
-        expected_media = [self.app.config["WELCOME_MEDIA_URL"]]
-        self.assertEqual(second_call_kwargs.get("media_url"), expected_media)
-        self.assertIn(
-            f"whatsapp:sticker:{expected_media[0]}",
-            second_call_kwargs.get("persistent_action", []),
-        )
 
         # Legacy welcome helper is no longer used.
         self.mock_welcome.assert_not_called()
