@@ -346,6 +346,9 @@ class Config:
         "WELCOME_AUDIO_URL",
         "https://chatboc-demo-widget-oigs.vercel.app/saludo_inicial_juni.mp3",
     )
+    WELCOME_STICKER_COOLDOWN_SECONDS = int(
+        os.getenv("WELCOME_STICKER_COOLDOWN_SECONDS", "300")
+    )
 
 class TestConfig(Config):
     TESTING = True
