@@ -1,10 +1,12 @@
 import json
 import logging
-from datetime import datetime
+
 from models import db, Rubro, QA, Sugerencia, User
 from werkzeug.security import generate_password_hash
+
 from services.logic import es_rubro_publico
 from faq_questions import faq_data
+from services.user_service import assign_whatsapp_numbers
 
 def crear_rubro_si_no_existe(clave, nombre=None, descripcion=None, parent_clave=None):
     try:
@@ -129,6 +131,19 @@ def cargar_usuarios_demo():
             "nombre_empresa": "Clínica San Dona",
             "password": "demo1234",
             "rubro_clave": "medico"
+        },
+        {
+            "email": "franco@cuatrofincas.com",
+            "name": "Franco Cuatro Fincas",
+            "nombre_empresa": "Bodega Cuatro Fincas",
+            "password": "123456",
+            "rubro_clave": "bodega",
+            "rol": "admin",
+            "plan": "premium",
+            "limite_preguntas": 250,
+            "token": "cuatrofincas-live-token",
+            "tipo_chat": "pyme",
+            "whatsapp_numbers": ["+18564858589"]
         }
     ]
 
@@ -138,28 +153,109 @@ def cargar_usuarios_demo():
             print(f"❌ Rubro no encontrado: {data['rubro_clave']} (para {data['email']})")
             continue
 
+        tipo_chat = data.get("tipo_chat") or ("municipio" if es_rubro_publico(rubro) else "pyme")
+        token = data.get("token") or f"demo-token-{data['rubro_clave']}"
+        plan = data.get("plan", "gratis")
+        preguntas_usadas = data.get("preguntas_usadas", 0)
+        limite_preguntas = data.get("limite_preguntas", 50)
+
         existente = User.query.filter_by(email=data["email"]).first()
         if existente:
-            existente.nombre_empresa = data["nombre_empresa"]
+            existente.name = data.get("name", existente.name)
+            existente.nombre_empresa = data.get("nombre_empresa", existente.nombre_empresa)
             existente.rubro_id = rubro.id
-            db.session.commit()
-            print(f"🔄 Usuario actualizado: {data['email']}")
-            continue
+            existente.tipo_chat = tipo_chat
+            existente.plan = plan
+            existente.preguntas_usadas = preguntas_usadas
+            existente.limite_preguntas = limite_preguntas
+            existente.token = token
 
-        nuevo_user = User(
-            name=data["name"],
-            email=data["email"],
-            nombre_empresa=data["nombre_empresa"],
-            password_hash=generate_password_hash(data["password"]),
-            token=f"demo-token-{data['rubro_clave']}",
-            plan="gratis",
-            preguntas_usadas=0,
-            limite_preguntas=50,
-            rubro_id=rubro.id,
-            tipo_chat="municipio" if es_rubro_publico(rubro) else "pyme",
+            if data.get("rol"):
+                existente.rol = data["rol"]
+
+            if data.get("password"):
+                existente.password_hash = generate_password_hash(data["password"])
+
+            for optional_field in [
+                "telefono",
+                "link_web",
+                "logo_url",
+                "color_primario",
+                "color_secundario",
+                "badge_tipo",
+            ]:
+                if optional_field in data:
+                    setattr(existente, optional_field, data[optional_field])
+
+            user_obj = existente
+            print(f"🔄 Usuario actualizado: {data['email']}")
+        else:
+            if not data.get("password"):
+                print(f"⚠️ No se pudo crear {data['email']} sin contraseña definida.")
+                continue
+
+            nuevo_user = User(
+                name=data.get("name", data["email"]),
+                email=data["email"],
+                nombre_empresa=data.get("nombre_empresa"),
+                password_hash=generate_password_hash(data["password"]),
+                token=token,
+                plan=plan,
+                preguntas_usadas=preguntas_usadas,
+                limite_preguntas=limite_preguntas,
+                rubro_id=rubro.id,
+                tipo_chat=tipo_chat,
+            )
+
+            if data.get("rol"):
+                nuevo_user.rol = data["rol"]
+
+            for optional_field in [
+                "telefono",
+                "link_web",
+                "logo_url",
+                "color_primario",
+                "color_secundario",
+                "badge_tipo",
+            ]:
+                if optional_field in data:
+                    setattr(nuevo_user, optional_field, data[optional_field])
+
+            db.session.add(nuevo_user)
+            user_obj = nuevo_user
+            print(f"✅ Usuario demo creado: {data['email']}")
+
+        db.session.flush()
+        whatsapp_results = assign_whatsapp_numbers(
+            user_obj,
+            data.get("whatsapp_numbers"),
+            activate=True,
+            commit=False,
         )
-        db.session.add(nuevo_user)
-        print(f"✅ Usuario demo creado: {data['email']}")
+
+        for result in whatsapp_results:
+            number = result["number"]
+            status = result["status"]
+            prev_email = result.get("previous_user_email") or result.get("previous_user_id")
+            reactivated = result.get("reactivated")
+
+            if status == "created":
+                print(f"✅ Número WhatsApp {number} asignado a {user_obj.email}.")
+            elif status == "reassigned":
+                if prev_email:
+                    print(
+                        f"🔁 Número WhatsApp {number} reasignado de {prev_email} a {user_obj.email}."
+                    )
+                else:
+                    print(
+                        f"🔁 Número WhatsApp {number} reasignado a {user_obj.email}."
+                    )
+                if reactivated:
+                    print(f"♻️ Número WhatsApp {number} reactivado para {user_obj.email}.")
+            elif status == "reactivated":
+                print(f"♻️ Número WhatsApp {number} reactivado para {user_obj.email}.")
+            elif status == "updated":
+                print(f"ℹ️ Número WhatsApp {number} ya estaba activo para {user_obj.email}.")
 
     db.session.commit()
     print("✅ Usuarios demo listos.")

@@ -23,6 +23,55 @@ def register_commands(app):
             except Exception as e:
                 cli_logger.error(f"❌ Error cargando datos iniciales CLI: {e}", exc_info=True)
 
+    @app.cli.command("asignar-whatsapp")
+    @click.option("--email", required=True, help="Email del usuario PyME/Municipio al que se asignará el número.")
+    @click.option(
+        "--numero",
+        "numeros",
+        multiple=True,
+        required=True,
+        help="Número(s) de WhatsApp en formato E.164 (puede especificarse varias veces).",
+    )
+    @with_appcontext
+    def asignar_whatsapp_command(email: str, numeros: tuple[str, ...]):
+        """Asigna uno o más números de WhatsApp a un usuario existente."""
+
+        from models import User
+        from services.user_service import assign_whatsapp_numbers
+
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            click.echo(f"❌ Usuario no encontrado: {email}")
+            return
+
+        results = assign_whatsapp_numbers(user, numeros, activate=True, commit=True)
+
+        if not results:
+            click.echo(f"ℹ️ No se asignaron números para {email}; verifique los valores ingresados.")
+            return
+
+        for result in results:
+            number = result["number"]
+            status = result["status"]
+            prev_email = result.get("previous_user_email") or result.get("previous_user_id")
+            reactivated = result.get("reactivated")
+
+            if status == "created":
+                click.echo(f"✅ Número WhatsApp {number} asignado a {user.email}.")
+            elif status == "reassigned":
+                if prev_email:
+                    click.echo(
+                        f"🔁 Número WhatsApp {number} reasignado de {prev_email} a {user.email}."
+                    )
+                else:
+                    click.echo(f"🔁 Número WhatsApp {number} reasignado a {user.email}.")
+                if reactivated:
+                    click.echo(f"♻️ Número WhatsApp {number} reactivado para {user.email}.")
+            elif status == "reactivated":
+                click.echo(f"♻️ Número WhatsApp {number} reactivado para {user.email}.")
+            elif status == "updated":
+                click.echo(f"ℹ️ Número WhatsApp {number} ya estaba activo para {user.email}.")
+
     @app.cli.command("aplicar_migraciones")
     def aplicar_migraciones_command():
         from flask_migrate import upgrade
