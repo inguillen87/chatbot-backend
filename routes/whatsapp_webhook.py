@@ -6,7 +6,8 @@ import requests
 import io
 import json
 import threading
-from typing import Optional
+import re
+from typing import Optional, Tuple
 from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
 from extensions import db  # Import db instance for database operations
@@ -75,6 +76,70 @@ def _resolve_public_url(url: Optional[str], base_url: str) -> Optional[str]:
         return f"{base}{url}"
 
     return f"{base}/{url}"
+
+
+def _normalize_whatsapp_address(value: Optional[str]) -> Optional[str]:
+    """Normalize WhatsApp numbers to ``+<digits>`` for consistent lookups."""
+
+    if not value:
+        return None
+
+    candidate = str(value).strip()
+    if not candidate:
+        return None
+
+    if candidate.lower().startswith("whatsapp:"):
+        candidate = candidate.split(":", 1)[1].strip()
+
+    if not candidate:
+        return None
+
+    digits = re.sub(r"\D", "", candidate)
+    if not digits:
+        return None
+
+    if digits.startswith("00"):
+        digits = digits[2:]
+
+    return f"+{digits}"
+
+
+def _lookup_whatsapp_mapping(to_number_raw: str) -> Tuple[Optional[WhatsappNumero], str, Optional[str]]:
+    """Return the ``WhatsappNumero`` for the destination number, with fallbacks.
+
+    Parameters
+    ----------
+    to_number_raw:
+        Raw ``To`` header received from Twilio (e.g. ``whatsapp:+549...``).
+
+    Returns
+    -------
+    tuple
+        (mapping, cleaned_number, normalized_number)
+    """
+
+    cleaned = (to_number_raw or "").replace("whatsapp:", "").strip()
+    normalized = _normalize_whatsapp_address(to_number_raw)
+
+    lookup_options = dict(is_active=True)
+
+    for candidate in filter(None, {cleaned, normalized}):
+        mapping = WhatsappNumero.query.options(
+            joinedload(WhatsappNumero.user).joinedload(User.rubro)
+        ).filter_by(**lookup_options, numero_whatsapp=candidate).first()
+        if mapping:
+            return mapping, cleaned, normalized
+
+    if normalized:
+        base_query = WhatsappNumero.query.options(
+            joinedload(WhatsappNumero.user).joinedload(User.rubro)
+        ).filter_by(**lookup_options)
+        for mapping in base_query.all():
+            existing_normalized = _normalize_whatsapp_address(mapping.numero_whatsapp)
+            if existing_normalized == normalized:
+                return mapping, cleaned, normalized
+
+    return None, cleaned, normalized
 
 
 def _send_delayed_payload(client, to_number: str, from_number: str, payload: dict, delay: int, app):
@@ -186,16 +251,26 @@ def whatsapp_webhook():
 
     to_number_raw = post_vars.get("To", "")
     from_number_raw = post_vars.get("From", "")
-    to_number_cleaned = to_number_raw.replace("whatsapp:", "")
+
+    whatsapp_mapping, to_number_cleaned, to_number_normalized = _lookup_whatsapp_mapping(to_number_raw)
     from_number_cleaned = from_number_raw.replace("whatsapp:", "")
 
-    # --- Session Management FIRST ---
-    whatsapp_mapping = WhatsappNumero.query.options(
-        joinedload(WhatsappNumero.user).joinedload(User.rubro)
-    ).filter_by(numero_whatsapp=to_number_cleaned, is_active=True).first()
+    current_app.logger.info(
+        "[WHATSAPP_WEBHOOK] Incoming message AccountSid=%s ServiceSid=%s To=%s (normalized=%s) From=%s",
+        post_vars.get("AccountSid"),
+        post_vars.get("MessagingServiceSid"),
+        to_number_cleaned,
+        to_number_normalized,
+        from_number_cleaned,
+    )
 
     if not whatsapp_mapping:
-        print(f"Error: WhatsApp number {to_number_cleaned} not found or inactive in database.")
+        looked_up = to_number_normalized or to_number_cleaned
+        current_app.logger.error(
+            "[WHATSAPP_WEBHOOK] No active mapping for destination number %s (raw=%s)",
+            looked_up,
+            to_number_raw,
+        )
         return "WhatsApp number not configured for any client.", 404
 
     client_user = whatsapp_mapping.user
