@@ -214,9 +214,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertIn("content_variables", first_call_kwargs)
 
         second_call_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
-        self.assertEqual(
-            second_call_kwargs.get("media_url"),
-            [self.app.config["WELCOME_MEDIA_URL"]],
+        expected_media = [self.app.config["WELCOME_MEDIA_URL"]]
+        self.assertEqual(second_call_kwargs.get("media_url"), expected_media)
+        self.assertIn(
+            f"whatsapp:sticker:{expected_media[0]}",
+            second_call_kwargs.get("persistent_action", []),
         )
 
         # Legacy welcome helper is no longer used.
@@ -250,6 +252,10 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         greeting_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
         expected_media = ["http://localhost:5000/static/welcome/sticker.png"]
         self.assertEqual(greeting_kwargs.get("media_url"), expected_media)
+        self.assertIn(
+            f"whatsapp:sticker:{expected_media[0]}",
+            greeting_kwargs.get("persistent_action", []),
+        )
 
     def test_welcome_payload_uses_configured_audio_and_image(self):
         self.mock_validator.validate.return_value = True

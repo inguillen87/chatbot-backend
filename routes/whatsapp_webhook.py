@@ -352,7 +352,7 @@ def whatsapp_webhook():
                     if user_name
                     else "*¡Hola!* Soy *Juni* \U0001F44B ¿Cómo te llamás?"
                 )
-                media_kwargs = {}
+                media_kwargs: dict[str, object] = {}
                 fallback_media_url = current_app.config.get("WELCOME_MEDIA_URL")
                 media_base_url = current_app.config.get("APP_BASE_URL") or request.url_root
                 normalized_base = _resolve_media_url(
@@ -372,6 +372,9 @@ def whatsapp_webhook():
                 )
                 if welcome_media_absolute:
                     media_kwargs['media_url'] = [welcome_media_absolute]
+                    media_kwargs.setdefault('persistent_action', []).append(
+                        f"whatsapp:sticker:{welcome_media_absolute}"
+                    )
 
                 twilio_client.messages.create(
                     from_=to_number_raw, to=from_number_raw, body=greeting, **media_kwargs
