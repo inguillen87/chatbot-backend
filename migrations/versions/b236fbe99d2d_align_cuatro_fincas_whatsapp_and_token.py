@@ -31,7 +31,11 @@ def _fetch_user(session: Session, email: str) -> Optional[dict]:
     return (
         session.execute(
             sa.text(
-                "SELECT id, token, rol, tipo_chat FROM \"user\" WHERE email = :email"
+                """
+                SELECT id, token, rol, tipo_chat, password_hash
+                FROM \"user\"
+                WHERE email = :email
+                """
             ),
             {"email": email},
         )
@@ -75,8 +79,6 @@ def _ensure_franco_user(session: Session) -> Optional[int]:
     if not rubro_id:
         return None
 
-    password_hash = generate_password_hash(FRANCO_PASSWORD)
-
     existing = _fetch_user(session, FRANCO_EMAIL)
     if existing:
         session.execute(
@@ -91,7 +93,6 @@ def _ensure_franco_user(session: Session) -> Optional[int]:
                     plan = :plan,
                     limite_preguntas = :limite_preguntas,
                     token = :token,
-                    password_hash = :password_hash,
                     empresa_id = NULL,
                     pyme_id = NULL,
                     municipio_id = NULL
@@ -107,12 +108,28 @@ def _ensure_franco_user(session: Session) -> Optional[int]:
                 "plan": FRANCO_PLAN,
                 "limite_preguntas": FRANCO_LIMIT,
                 "token": FRANCO_TOKEN,
-                "password_hash": password_hash,
                 "email": FRANCO_EMAIL,
             },
         )
+
+        if not existing.get("password_hash"):
+            password_hash = generate_password_hash(FRANCO_PASSWORD)
+            session.execute(
+                sa.text(
+                    """
+                    UPDATE "user"
+                    SET password_hash = :password_hash
+                    WHERE id = :user_id
+                    """
+                ),
+                {
+                    "password_hash": password_hash,
+                    "user_id": existing["id"],
+                },
+            )
         return existing["id"]
 
+    password_hash = generate_password_hash(FRANCO_PASSWORD)
     result = session.execute(
         sa.text(
             """
