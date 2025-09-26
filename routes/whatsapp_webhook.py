@@ -34,6 +34,62 @@ webhook_bp = Blueprint('whatsapp_webhook', __name__)
 MAX_TWILIO_BODY_LENGTH = 1600
 
 
+def _resolve_media_url(url: str | None, *, base_url: str | None, fallback_url: str | None) -> str | None:
+    """Return an absolute media URL if possible."""
+
+    if not url:
+        return None
+
+    if url.startswith(("http://", "https://")):
+        return url
+
+    candidate_base = (base_url or "").strip()
+    if not candidate_base and fallback_url:
+        candidate_base = fallback_url
+
+    if not candidate_base:
+        return url
+
+    candidate_base = candidate_base.rstrip("/")
+    normalized_path = url if url.startswith("/") else f"/{url}"
+    return f"{candidate_base}{normalized_path}"
+
+
+def _apply_welcome_media_defaults(payload: dict, *, app, request_url_root: str | None) -> None:
+    """Inject default media (sticker + audio) for the welcome flow."""
+
+    if not isinstance(payload, dict):
+        return
+
+    base_url = (app.config.get("APP_BASE_URL") or "").strip()
+    request_root = (request_url_root or "").strip()
+
+    if request_root:
+        payload.setdefault("_request_url_root", request_root)
+
+    effective_base = base_url or request_root.rstrip("/")
+    if effective_base:
+        payload.setdefault("_base_url", effective_base.rstrip("/"))
+
+    sticker_url = app.config.get("WELCOME_MEDIA_URL")
+    resolved_sticker = _resolve_media_url(
+        sticker_url,
+        base_url=base_url.rstrip("/") if base_url else None,
+        fallback_url=request_root.rstrip("/") if request_root else None,
+    )
+    if resolved_sticker:
+        payload.setdefault("image_url", resolved_sticker)
+
+    audio_url = app.config.get("WELCOME_AUDIO_URL")
+    resolved_audio = _resolve_media_url(
+        audio_url,
+        base_url=base_url.rstrip("/") if base_url else None,
+        fallback_url=request_root.rstrip("/") if request_root else None,
+    )
+    if resolved_audio:
+        payload["audio_url"] = resolved_audio
+
+
 def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
     """Split `text` into chunks no longer than `limit` characters.
 
@@ -81,25 +137,35 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
 
             image_url = formatted.get("image_url")
             if image_url and "persistent_action" not in params:
-                params["media_url"] = [image_url]
+                base_url = payload.get("_base_url") or app.config.get("APP_BASE_URL")
+                fallback_root = payload.get("_request_url_root")
+                absolute_image_url = _resolve_media_url(
+                    image_url,
+                    base_url=base_url.rstrip("/") if isinstance(base_url, str) else None,
+                    fallback_url=fallback_root.rstrip("/") if isinstance(fallback_root, str) else None,
+                ) or image_url
+
+                if absolute_image_url.startswith("http://"):
+                    absolute_image_url = "https://" + absolute_image_url[len("http://") :]
+
+                params["media_url"] = [absolute_image_url]
 
             try:
                 message = client.messages.create(**params)
 
                 if audio_url:
-                    absolute_audio_url = audio_url
-                    if absolute_audio_url.startswith('/'):
-                        base_url = (app.config.get("APP_BASE_URL") or "").rstrip('/')
-                        if base_url:
-                            absolute_audio_url = f"{base_url}{audio_url}"
-                        else:
-                            app.logger.warning(
-                                "[DELAYED_AUDIO] APP_BASE_URL no configurada; no se puede enviar audio con URL relativa %s",
-                                audio_url,
-                            )
-                            absolute_audio_url = None
+                    base_url = payload.get("_base_url") or app.config.get("APP_BASE_URL")
+                    fallback_root = payload.get("_request_url_root")
+                    absolute_audio_url = _resolve_media_url(
+                        audio_url,
+                        base_url=base_url.rstrip("/") if isinstance(base_url, str) else None,
+                        fallback_url=fallback_root.rstrip("/") if isinstance(fallback_root, str) else None,
+                    ) or audio_url
 
-                    if absolute_audio_url:
+                    if absolute_audio_url.startswith("http://"):
+                        absolute_audio_url = "https://" + absolute_audio_url[len("http://") :]
+
+                    if absolute_audio_url.startswith(("http://", "https://")):
                         audio_params = {
                             'from_': to_number,
                             'to': from_number,
@@ -109,6 +175,10 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                             "[DELAYED_AUDIO] Enviando audio adicional para mensaje diferido SID %s", getattr(message, 'sid', 'N/A')
                         )
                         client.messages.create(**audio_params)
+                    else:
+                        app.logger.warning(
+                            "[DELAYED_AUDIO] No se pudo resolver una URL absoluta para el audio %s", audio_url
+                        )
             except Exception as e:
                 app.logger.error(f"Error sending delayed message: {e}")
 
@@ -267,6 +337,19 @@ def whatsapp_webhook():
                         f"[WELCOME] Template {template_sid} sent to {from_number_cleaned} with name: {user_name or '<unknown>'}."
                     )
 
+                media_url = current_app.config.get("WELCOME_MEDIA_URL")
+                resolved_media = _resolve_media_url(
+                    media_url,
+                    base_url=(current_app.config.get("APP_BASE_URL") or "").rstrip("/"),
+                    fallback_url=request.url_root.rstrip("/") if request.url_root else None,
+                )
+                if resolved_media:
+                    twilio_client.messages.create(
+                        from_=to_number_raw,
+                        to=from_number_raw,
+                        media_url=[resolved_media],
+                    )
+
                 greeting = (
                     f"*¡Hola, {user_name}!* Acá *Juni* \U0001F44B"
                     if user_name
@@ -291,6 +374,12 @@ def whatsapp_webhook():
                     tipo_chat=client_user.tipo_chat, anon_id=from_number_cleaned,
                     chat_session_uuid=chat_session_id_internal, channel="whatsapp"
                 )
+                _apply_welcome_media_defaults(
+                    welcome_response_payload,
+                    app=current_app._get_current_object(),
+                    request_url_root=request.url_root,
+                )
+
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
                 _send_delayed_payload(
                     client=twilio_client, to_number=to_number_raw, from_number=from_number_raw,
@@ -340,6 +429,12 @@ def whatsapp_webhook():
                     tipo_chat=client_user.tipo_chat, anon_id=from_number_cleaned,
                     chat_session_uuid=chat_session_id_internal, channel="whatsapp",
                 )
+                _apply_welcome_media_defaults(
+                    welcome_response_payload,
+                    app=current_app._get_current_object(),
+                    request_url_root=request.url_root,
+                )
+
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
                 _send_delayed_payload(
                     client=twilio_client,
