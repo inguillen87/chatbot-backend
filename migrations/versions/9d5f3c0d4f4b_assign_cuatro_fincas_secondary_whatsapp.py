@@ -21,7 +21,7 @@ depends_on = None
 
 
 FRANCO_EMAIL = "franco@cuatrofincas.com"
-CUATRO_FINCAS_WHATSAPP = "+14795924727"
+CUATRO_FINCAS_WHATSAPP = "+18564858589"
 
 
 def _fetch_user_id(session: Session, email: str) -> Optional[int]:

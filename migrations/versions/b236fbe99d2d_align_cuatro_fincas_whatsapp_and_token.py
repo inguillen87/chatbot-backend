@@ -24,7 +24,8 @@ FRANCO_LIMIT = 250
 FRANCO_RUBRO_CLAVE = "bodega"
 
 CUATRO_FINCAS_WHATSAPP = "+18564858589"
-DEFAULT_MUNICIPIO_WHATSAPP = "+14795924727"
+MAURICIO_EMAIL = "mauricio@junin.com"
+MAURICIO_WHATSAPP = "+17432643718"
 
 
 def _fetch_user(session: Session, email: str) -> Optional[dict]:
@@ -158,19 +159,6 @@ def _ensure_franco_user(session: Session) -> Optional[int]:
     return result.scalar() if result else None
 
 
-def _resolve_municipio_admin(session: Session) -> Optional[int]:
-    for rol_filter in ("admin", None):
-        query = "SELECT id FROM \"user\" WHERE tipo_chat = 'municipio'"
-        if rol_filter:
-            query += " AND rol = :rol"
-        query += " ORDER BY id ASC LIMIT 1"
-        params = {"rol": rol_filter} if rol_filter else {}
-        record = session.execute(sa.text(query), params).scalar()
-        if record:
-            return record
-    return None
-
-
 def _assign_number(session: Session, number: str, user_id: int) -> None:
     now = datetime.utcnow()
     mapping = (
@@ -225,13 +213,13 @@ def upgrade() -> None:
 
     try:
         franco_id = _ensure_franco_user(session)
-        municipio_admin_id = _resolve_municipio_admin(session)
+        mauricio = _fetch_user(session, MAURICIO_EMAIL)
 
         if franco_id:
             _assign_number(session, CUATRO_FINCAS_WHATSAPP, franco_id)
 
-        if municipio_admin_id:
-            _assign_number(session, DEFAULT_MUNICIPIO_WHATSAPP, municipio_admin_id)
+        if mauricio:
+            _assign_number(session, MAURICIO_WHATSAPP, mauricio["id"])
 
         session.commit()
     finally:
@@ -244,7 +232,7 @@ def downgrade() -> None:
 
     try:
         franco = _fetch_user(session, FRANCO_EMAIL)
-        municipio_admin_id = _resolve_municipio_admin(session)
+        mauricio = _fetch_user(session, MAURICIO_EMAIL)
 
         if franco:
             mapping = (
@@ -263,9 +251,9 @@ def downgrade() -> None:
                     {"mapping_id": mapping["id"]},
                 )
 
-            _assign_number(session, DEFAULT_MUNICIPIO_WHATSAPP, franco["id"])
-        elif municipio_admin_id:
-            _assign_number(session, DEFAULT_MUNICIPIO_WHATSAPP, municipio_admin_id)
+            _assign_number(session, MAURICIO_WHATSAPP, franco["id"])
+        elif mauricio:
+            _assign_number(session, MAURICIO_WHATSAPP, mauricio["id"])
 
         session.commit()
     finally:
