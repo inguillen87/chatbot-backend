@@ -1718,7 +1718,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             return {
-                "message_body": "Para buscar estacionamientos necesito tu ubicación.",
+                "message_body": "Para buscar estacionamientos necesito tu ubicación. Tocá 'Compartir ubicación' o escribí una dirección.",
                 "options_list": [
                     {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
                     {"texto": "Cancelar", "action": "cancelar"},
