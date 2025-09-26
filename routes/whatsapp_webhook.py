@@ -437,7 +437,11 @@ def whatsapp_webhook():
                     existing_image_url = welcome_response_payload.get("image_url")
                     resolved_existing_image = _resolve_public_url(existing_image_url, effective_base_url)
                     if resolved_existing_image:
-                        welcome_response_payload["image_url"] = resolved_existing_image
+                        if resolved_sticker_url and resolved_existing_image == resolved_sticker_url:
+                            # Avoid duplicating the welcome sticker in the delayed payload.
+                            welcome_response_payload.pop("image_url", None)
+                        else:
+                            welcome_response_payload["image_url"] = resolved_existing_image
 
                     existing_audio_url = welcome_response_payload.get("audio_url")
                     resolved_existing_audio = _resolve_public_url(existing_audio_url, effective_base_url)
@@ -504,7 +508,10 @@ def whatsapp_webhook():
                     existing_image_url = welcome_response_payload.get("image_url")
                     resolved_existing_image = _resolve_public_url(existing_image_url, effective_base_url)
                     if resolved_existing_image:
-                        welcome_response_payload["image_url"] = resolved_existing_image
+                        if resolved_sticker_url and resolved_existing_image == resolved_sticker_url:
+                            welcome_response_payload.pop("image_url", None)
+                        else:
+                            welcome_response_payload["image_url"] = resolved_existing_image
 
                     existing_audio_url = welcome_response_payload.get("audio_url")
                     resolved_existing_audio = _resolve_public_url(existing_audio_url, effective_base_url)
