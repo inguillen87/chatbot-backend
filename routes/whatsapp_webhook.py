@@ -6,6 +6,8 @@ import requests
 import io
 import json
 import threading
+import re
+from typing import Optional, Tuple
 from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
 from extensions import db  # Import db instance for database operations
@@ -51,6 +53,93 @@ def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
         text = text[split_idx:].lstrip()
     parts.append(text)
     return parts
+
+
+def _resolve_public_url(url: Optional[str], base_url: str) -> Optional[str]:
+    """Return an absolute URL for ``url`` using ``base_url`` when relative."""
+
+    if not url:
+        return None
+
+    url = str(url).strip()
+    if not url:
+        return None
+
+    if url.startswith(("http://", "https://")):
+        return url
+
+    base = (base_url or "").rstrip("/")
+    if not base:
+        return url
+
+    if url.startswith("/"):
+        return f"{base}{url}"
+
+    return f"{base}/{url}"
+
+
+def _normalize_whatsapp_address(value: Optional[str]) -> Optional[str]:
+    """Normalize WhatsApp numbers to ``+<digits>`` for consistent lookups."""
+
+    if not value:
+        return None
+
+    candidate = str(value).strip()
+    if not candidate:
+        return None
+
+    if candidate.lower().startswith("whatsapp:"):
+        candidate = candidate.split(":", 1)[1].strip()
+
+    if not candidate:
+        return None
+
+    digits = re.sub(r"\D", "", candidate)
+    if not digits:
+        return None
+
+    if digits.startswith("00"):
+        digits = digits[2:]
+
+    return f"+{digits}"
+
+
+def _lookup_whatsapp_mapping(to_number_raw: str) -> Tuple[Optional[WhatsappNumero], str, Optional[str]]:
+    """Return the ``WhatsappNumero`` for the destination number, with fallbacks.
+
+    Parameters
+    ----------
+    to_number_raw:
+        Raw ``To`` header received from Twilio (e.g. ``whatsapp:+549...``).
+
+    Returns
+    -------
+    tuple
+        (mapping, cleaned_number, normalized_number)
+    """
+
+    cleaned = (to_number_raw or "").replace("whatsapp:", "").strip()
+    normalized = _normalize_whatsapp_address(to_number_raw)
+
+    lookup_options = dict(is_active=True)
+
+    for candidate in filter(None, {cleaned, normalized}):
+        mapping = WhatsappNumero.query.options(
+            joinedload(WhatsappNumero.user).joinedload(User.rubro)
+        ).filter_by(**lookup_options, numero_whatsapp=candidate).first()
+        if mapping:
+            return mapping, cleaned, normalized
+
+    if normalized:
+        base_query = WhatsappNumero.query.options(
+            joinedload(WhatsappNumero.user).joinedload(User.rubro)
+        ).filter_by(**lookup_options)
+        for mapping in base_query.all():
+            existing_normalized = _normalize_whatsapp_address(mapping.numero_whatsapp)
+            if existing_normalized == normalized:
+                return mapping, cleaned, normalized
+
+    return None, cleaned, normalized
 
 
 def _send_delayed_payload(client, to_number: str, from_number: str, payload: dict, delay: int, app):
@@ -162,16 +251,26 @@ def whatsapp_webhook():
 
     to_number_raw = post_vars.get("To", "")
     from_number_raw = post_vars.get("From", "")
-    to_number_cleaned = to_number_raw.replace("whatsapp:", "")
+
+    whatsapp_mapping, to_number_cleaned, to_number_normalized = _lookup_whatsapp_mapping(to_number_raw)
     from_number_cleaned = from_number_raw.replace("whatsapp:", "")
 
-    # --- Session Management FIRST ---
-    whatsapp_mapping = WhatsappNumero.query.options(
-        joinedload(WhatsappNumero.user).joinedload(User.rubro)
-    ).filter_by(numero_whatsapp=to_number_cleaned, is_active=True).first()
+    current_app.logger.info(
+        "[WHATSAPP_WEBHOOK] Incoming message AccountSid=%s ServiceSid=%s To=%s (normalized=%s) From=%s",
+        post_vars.get("AccountSid"),
+        post_vars.get("MessagingServiceSid"),
+        to_number_cleaned,
+        to_number_normalized,
+        from_number_cleaned,
+    )
 
     if not whatsapp_mapping:
-        print(f"Error: WhatsApp number {to_number_cleaned} not found or inactive in database.")
+        looked_up = to_number_normalized or to_number_cleaned
+        current_app.logger.error(
+            "[WHATSAPP_WEBHOOK] No active mapping for destination number %s (raw=%s)",
+            looked_up,
+            to_number_raw,
+        )
         return "WhatsApp number not configured for any client.", 404
 
     client_user = whatsapp_mapping.user
@@ -235,6 +334,15 @@ def whatsapp_webhook():
 
     should_trigger_welcome = is_override or (is_greeting and not is_waiting_for_info)
 
+    request_root = request.url_root or ""
+    request_root_stripped = request_root.rstrip("/")
+    configured_base_url = (current_app.config.get("APP_BASE_URL") or "").rstrip("/")
+    effective_base_url = configured_base_url or request_root_stripped
+    configured_sticker_url = current_app.config.get("WELCOME_MEDIA_URL")
+    configured_audio_url = current_app.config.get("WELCOME_AUDIO_URL")
+    resolved_sticker_url = _resolve_public_url(configured_sticker_url, effective_base_url)
+    resolved_audio_url = _resolve_public_url(configured_audio_url, effective_base_url)
+
     if should_trigger_welcome and not is_rate_limited:
         current_app.logger.info(f"[WELCOME] Triggering Boti-style welcome for user {from_number_cleaned}. Reason: '{normalized_input}'.")
 
@@ -262,27 +370,56 @@ def whatsapp_webhook():
                         # safer than omitting the field and triggering a 400.
                         "content_variables": json.dumps({"1": user_name or ""}),
                     }
-                    twilio_client.messages.create(**params)
-                    current_app.logger.info(
-                        f"[WELCOME] Template {template_sid} sent to {from_number_cleaned} with name: {user_name or '<unknown>'}."
-                    )
+                    try:
+                        twilio_client.messages.create(**params)
+                        current_app.logger.info(
+                            f"[WELCOME] Template {template_sid} sent to {from_number_cleaned} with name: {user_name or '<unknown>'}."
+                        )
+                    except Exception as e:
+                        current_app.logger.warning(
+                            f"[WELCOME] Failed to send welcome template {template_sid} to {from_number_cleaned}: {e}"
+                        )
+
+                if resolved_sticker_url:
+                    try:
+                        twilio_client.messages.create(
+                            from_=to_number_raw,
+                            to=from_number_raw,
+                            media_url=[resolved_sticker_url],
+                        )
+                        current_app.logger.info(
+                            f"[WELCOME] Sticker sent to {from_number_cleaned} using {resolved_sticker_url}."
+                        )
+                    except Exception as e:
+                        current_app.logger.warning(
+                            f"[WELCOME] Failed to send welcome sticker to {from_number_cleaned}: {e}"
+                        )
+
+                greeting_sent = False
 
                 greeting = (
                     f"*¡Hola, {user_name}!* Acá *Juni* \U0001F44B"
                     if user_name
                     else "*¡Hola!* Soy *Juni* \U0001F44B ¿Cómo te llamás?"
                 )
-                twilio_client.messages.create(
-                    from_=to_number_raw, to=from_number_raw, body=greeting
-                )
+                try:
+                    twilio_client.messages.create(
+                        from_=to_number_raw, to=from_number_raw, body=greeting
+                    )
+                    greeting_sent = True
+                except Exception as e:
+                    greeting_sent = False
+                    current_app.logger.error(
+                        f"[WELCOME] Failed to send welcome greeting to {from_number_cleaned}: {e}"
+                    )
 
-                if not user_name:
+                if not user_name and greeting_sent:
                     session_context_db_entry.context_data["awaiting_user_name"] = True
                     safe_flag_modified(session_context_db_entry, "context_data")
                     db.session.commit()
                     return "OK", 200
             except Exception as e:
-                current_app.logger.error(f"[WELCOME] Failed to send sticker/template: {e}")
+                current_app.logger.error(f"[WELCOME] Failed to send welcome template or sticker: {e}")
 
             try:
                 welcome_response_payload = responder_chatboc(
@@ -291,6 +428,28 @@ def whatsapp_webhook():
                     tipo_chat=client_user.tipo_chat, anon_id=from_number_cleaned,
                     chat_session_uuid=chat_session_id_internal, channel="whatsapp"
                 )
+                if isinstance(welcome_response_payload, dict):
+                    if effective_base_url:
+                        welcome_response_payload.setdefault("_base_url", effective_base_url)
+                    if request_root:
+                        welcome_response_payload.setdefault("_request_url_root", request_root)
+
+                    existing_image_url = welcome_response_payload.get("image_url")
+                    resolved_existing_image = _resolve_public_url(existing_image_url, effective_base_url)
+                    if resolved_existing_image:
+                        if resolved_sticker_url and resolved_existing_image == resolved_sticker_url:
+                            # Avoid duplicating the welcome sticker in the delayed payload.
+                            welcome_response_payload.pop("image_url", None)
+                        else:
+                            welcome_response_payload["image_url"] = resolved_existing_image
+
+                    existing_audio_url = welcome_response_payload.get("audio_url")
+                    resolved_existing_audio = _resolve_public_url(existing_audio_url, effective_base_url)
+                    if resolved_existing_audio:
+                        welcome_response_payload["audio_url"] = resolved_existing_audio
+                    elif resolved_audio_url:
+                        welcome_response_payload.setdefault("audio_url", resolved_audio_url)
+
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
                 _send_delayed_payload(
                     client=twilio_client, to_number=to_number_raw, from_number=from_number_raw,
@@ -340,6 +499,27 @@ def whatsapp_webhook():
                     tipo_chat=client_user.tipo_chat, anon_id=from_number_cleaned,
                     chat_session_uuid=chat_session_id_internal, channel="whatsapp",
                 )
+                if isinstance(welcome_response_payload, dict):
+                    if effective_base_url:
+                        welcome_response_payload.setdefault("_base_url", effective_base_url)
+                    if request_root:
+                        welcome_response_payload.setdefault("_request_url_root", request_root)
+
+                    existing_image_url = welcome_response_payload.get("image_url")
+                    resolved_existing_image = _resolve_public_url(existing_image_url, effective_base_url)
+                    if resolved_existing_image:
+                        if resolved_sticker_url and resolved_existing_image == resolved_sticker_url:
+                            welcome_response_payload.pop("image_url", None)
+                        else:
+                            welcome_response_payload["image_url"] = resolved_existing_image
+
+                    existing_audio_url = welcome_response_payload.get("audio_url")
+                    resolved_existing_audio = _resolve_public_url(existing_audio_url, effective_base_url)
+                    if resolved_existing_audio:
+                        welcome_response_payload["audio_url"] = resolved_existing_audio
+                    elif resolved_audio_url:
+                        welcome_response_payload.setdefault("audio_url", resolved_audio_url)
+
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
                 _send_delayed_payload(
                     client=twilio_client,
