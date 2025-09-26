@@ -1,0 +1,45 @@
+{
+  "nombre_pyme": "Bodega Cuatro Fincas",
+  "descripcion": "Bodega familiar mendocina que combina venta directa, hospitality y distribución mayorista de vinos premiados.",
+  "contacto": {
+    "admin": {
+      "nombre": "Mariana López",
+      "cargo": "Directora Comercial",
+      "email": "mariana@cuatrofincas.com",
+      "telefono": "+5492615551234"
+    },
+    "enoturismo": {
+      "email": "visitas@cuatrofincas.com",
+      "telefono": "+5492614567890"
+    }
+  },
+  "ubicaciones": [
+    {
+      "nombre": "Casa central y bodega",
+      "direccion": "Ruta Provincial 60 km 12, Luján de Cuyo, Mendoza",
+      "coordenadas": {
+        "lat": -33.0418,
+        "lon": -68.8794
+      },
+      "telefono": "+542614455678"
+    },
+    {
+      "nombre": "Depósito mayorista Buenos Aires",
+      "direccion": "Av. del Libertador 3500, CABA",
+      "coordenadas": {
+        "lat": -34.5742,
+        "lon": -58.4066
+      },
+      "telefono": "+541144556677"
+    }
+  ],
+  "horarios": {
+    "degustaciones": "Todos los días 10:00 - 18:00",
+    "logistica": "Lunes a viernes 08:00 - 17:00",
+    "atencion_whatsapp": "Lunes a domingo 09:00 - 22:00"
+  },
+  "whatsapp": {
+    "numero": "+5492613168608",
+    "descripcion": "Canal oficial para pedidos, reservas de visitas y soporte a distribuidores"
+  }
+}

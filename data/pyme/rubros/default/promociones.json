@@ -1,0 +1,14 @@
+[
+  {
+    "nombre": "Bienvenida mayoristas",
+    "descripcion": "15% OFF en la primera compra superior a $120.000",
+    "validez": "Hasta agotar stock",
+    "canal": "WhatsApp y Web"
+  },
+  {
+    "nombre": "Promo referidos",
+    "descripcion": "Traé un nuevo cliente y ambos reciben envío bonificado",
+    "validez": "Todo el mes",
+    "canal": "Todos los canales"
+  }
+]

@@ -1,0 +1,26 @@
+[
+  {
+    "sku": "CF-MALBEC-RSV",
+    "nombre": "Malbec Reserva 2022",
+    "presentacion": "Caja x6 - 750 ml",
+    "precio": 43200,
+    "moneda": "ARS",
+    "descripcion": "Malbec de altura con 12 meses en barrica francesa, puntaje 94 Tim Atkin"
+  },
+  {
+    "sku": "CF-BLEND-HOSP",
+    "nombre": "Blend Hospitality",
+    "presentacion": "Caja x12 - mix tintos y blancos",
+    "precio": 76800,
+    "moneda": "ARS",
+    "descripcion": "Selección para hoteles y restaurantes con rotación alta"
+  },
+  {
+    "sku": "CF-ESPUMANTE-BRUT",
+    "nombre": "Espumante Brut Nature",
+    "presentacion": "Caja x6 - 750 ml",
+    "precio": 51500,
+    "moneda": "ARS",
+    "descripcion": "Método tradicional con 24 meses sobre borras, ideal para eventos"
+  }
+]

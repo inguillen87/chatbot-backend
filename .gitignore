@@ -15,6 +15,7 @@ instance/*
 !data/estacionamiento/camaras.json
 !data/estacionamiento/parking_spots.json
 !data/municipios/**
+!data/pyme/**
 __pycache__/
 *.pyc
 venv/
