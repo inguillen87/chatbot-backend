@@ -106,6 +106,14 @@ class TestParkingPOI(unittest.TestCase):
         mock_geo.assert_called_once()
         self.assertIn("Las Heras 105", res.get("message_body", ""))
 
+    def test_action_identifier_does_not_trigger_geocode(self):
+        context = {"chat_db_context_data": {}}
+        handler = PointsOfInterestHandler(context=context)
+        with patch("services.points_of_interest_handler.get_coordinates") as mock_geo:
+            res = handler.handle({"pregunta": "buscar_estacionamiento", "location": None})
+            self.assertIn("ubicación", res.get("message_body", "").lower())
+            mock_geo.assert_not_called()
+
     @patch("services.points_of_interest_handler.consultar_ocupacion", return_value={"libres": 1, "camera": "Demo", "timestamp": "00:00", "segmentos": []})
     def test_stateful_location_triggers_parking(self, mock_occ):
         import eventlet
