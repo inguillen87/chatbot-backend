@@ -6,6 +6,7 @@ from models import User, db
 from sqlalchemy import func
 from services.logic import es_rubro_publico
 from services.common_utils import validar_email
+from services.pyme_menu import get_pyme_menu_payload
 import uuid
 from datetime import datetime
 
@@ -206,6 +207,13 @@ class FinalizarTramiteActionHandler(BaseActionHandler):
 class MenuPrincipalActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"Executing MenuPrincipalActionHandler with data: {action_data}")
+
+        if self.context.get("target_entity_type") == "pyme":
+            channel = self.context.get("channel", "web")
+            menu_payload = get_pyme_menu_payload(self.context, channel=channel)
+            menu_payload.setdefault("success", True)
+            menu_payload.setdefault("message_to_user", menu_payload.get("message_body"))
+            return menu_payload
 
         main_menu = {
             "title": "Menú Principal",

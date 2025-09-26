@@ -1,0 +1,14 @@
+[
+  {
+    "pregunta": "¿Cómo coordino un envío frío para Capital Federal?",
+    "respuesta": "Compartí la dirección exacta o tu ubicación. El bot calcula tarifa, agenda retiro desde depósito y te devuelve la hoja de ruta." 
+  },
+  {
+    "pregunta": "¿Puedo mandar una foto de la carta para que recomienden vinos?",
+    "respuesta": "Sí, subí la imagen o envianos una nota de voz. Analizamos estilos y márgenes y proponemos maridajes automáticos." 
+  },
+  {
+    "pregunta": "¿Atienden eventos corporativos?",
+    "respuesta": "Claro. Enviá fecha, cantidad de invitados y presupuesto estimado. Armamos propuesta con sommeliers, catering y música." 
+  }
+]

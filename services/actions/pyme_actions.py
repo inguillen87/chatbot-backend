@@ -13,30 +13,17 @@ import models
 from services.common_utils import parse_precio_flexible
 from socket_service import emit_ticket_update
 from routes.ticket import serialize_ticket_to_json
+from services.pyme_menu import get_pyme_menu_payload
 
 logger = logging.getLogger(__name__)
 
 class SaludoHandler(BasePymeHandler):
     def execute(self, action_data):
-        nombre = self.context.get("nombre_pyme", "la empresa")
-        body = f"¡Hola! Soy tu asistente para {nombre}. Por favor elige una de las siguientes opciones:"
-        options = [
-            {"id": "pyme_productos_stock", "texto": "Productos y stock 👟"},
-            {"id": "pyme_promociones", "texto": "Promociones 🔥"},
-            {"id": "pyme_estado_pedido", "texto": "Estado de mi pedido"},
-            {"id": "pyme_hacer_pedido", "texto": "Hacer un pedido"},
-            {"id": "pyme_hablar_agente", "texto": "Hablar con un agente"},
-            {"id": "pyme_otras_consultas", "texto": "Otras consultas"}
-        ]
-
-        message_type = 'interactive_list'
-
-        return {
-            "message_body": body,
-            "options_list": options,
-            "message_type": message_type,
-            "fuente": "pyme_saludo_menu_principal_v3"
-        }
+        channel = self.context.get("channel", "web")
+        menu_payload = get_pyme_menu_payload(self.context, channel=channel)
+        menu_payload.setdefault("fuente", "pyme_saludo_menu_principal_v4")
+        menu_payload.setdefault("success", True)
+        return menu_payload
 
 class CatalogoHandler(BasePymeHandler):
     def execute(self, action_data):

@@ -1,0 +1,16 @@
+[
+  {
+    "titulo": "Demo de catálogo digital",
+    "descripcion": "Sesión online para mostrar cómo el bot arma presupuestos y notas de pedido",
+    "fecha": "Todos los miércoles",
+    "modalidad": "Zoom",
+    "registro": "https://demo.chatboc.ar/eventos/catalogo-digital"
+  },
+  {
+    "titulo": "Workshop de ventas asistidas",
+    "descripcion": "Casos de uso para combinar WhatsApp, webchat y visitas comerciales",
+    "fecha": "Primer viernes de cada mes",
+    "modalidad": "Presencial",
+    "registro": "mailto:eventos@pyme-demo.com"
+  }
+]

@@ -1,0 +1,14 @@
+[
+  {
+    "pregunta": "¿Cómo calculan el costo de envío?",
+    "respuesta": "Compartí tu ubicación o decinos el código postal y el bot propone la tarifa estimada según peso y operador disponible."
+  },
+  {
+    "pregunta": "¿Puedo enviar una nota de voz con mi pedido?",
+    "respuesta": "Sí, las notas de voz se transcriben automáticamente y se convierten en un listado editable dentro del carrito."
+  },
+  {
+    "pregunta": "¿Qué pasa si no encuentro un producto?",
+    "respuesta": "Mandá una foto o describilo; buscamos coincidencias en el catálogo y te sugerimos alternativas compatibles."
+  }
+]
