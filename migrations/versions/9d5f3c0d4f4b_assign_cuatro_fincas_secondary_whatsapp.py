@@ -1,7 +1,7 @@
 """Assign dedicated WhatsApp sender to Cuatro Fincas pyme admin
 
 Revision ID: 9d5f3c0d4f4b
-Revises: 3f3b6a9b7d6e
+Revises: b1f2a4a25d3e
 Create Date: 2025-09-26 18:30:00.000000
 """
 
@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 # revision identifiers, used by Alembic.
 revision = "9d5f3c0d4f4b"
-down_revision = "3f3b6a9b7d6e"
+down_revision = "b1f2a4a25d3e"
 branch_labels = None
 depends_on = None
 
