@@ -157,6 +157,9 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         client = MagicMock()
         client.messages.create.side_effect = fake_create
 
+        payload.setdefault("_base_url", self.app.config["APP_BASE_URL"])
+        payload.setdefault("_request_url_root", self.app.config["APP_BASE_URL"])
+
         _send_delayed_payload(
             client=client,
             to_number="whatsapp:+111111111",
@@ -210,8 +213,158 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         first_call_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
         self.assertIn("content_variables", first_call_kwargs)
 
+        second_call_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        expected_media = [self.app.config["WELCOME_MEDIA_URL"]]
+        self.assertEqual(second_call_kwargs.get("media_url"), expected_media)
+        self.assertIn(
+            f"whatsapp:sticker:{expected_media[0]}",
+            second_call_kwargs.get("persistent_action", []),
+        )
+
         # Legacy welcome helper is no longer used.
         self.mock_welcome.assert_not_called()
+
+    def test_welcome_includes_media_when_configured(self):
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+        self.app.config["WELCOME_MEDIA_URL"] = "/static/welcome/sticker.png"
+
+        mock_twilio_message = MagicMock()
+        mock_twilio_message.sid = "SMxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_test_sid"
+        self.mock_twilio_create.return_value = mock_twilio_message
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+            "ProfileName": "Tester",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.mock_twilio_create.call_count, 2)
+
+        template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertIn("content_sid", template_kwargs)
+
+        greeting_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        expected_media = ["http://localhost:5000/static/welcome/sticker.png"]
+        self.assertEqual(greeting_kwargs.get("media_url"), expected_media)
+        self.assertIn(
+            f"whatsapp:sticker:{expected_media[0]}",
+            greeting_kwargs.get("persistent_action", []),
+        )
+
+    def test_welcome_payload_uses_configured_audio_and_image(self):
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+        self.app.config["WELCOME_MEDIA_URL"] = "/static/welcome/sticker.png"
+        self.app.config["WELCOME_AUDIO_URL"] = "/static/welcome/bienvenida.mp3"
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+            "ProfileName": "Tester",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        captured = {}
+
+        def fake_delayed(client, to_number, from_number, payload, delay, app):
+            captured["payload"] = payload
+            captured["delay"] = delay
+            captured["to_number"] = to_number
+            captured["from_number"] = from_number
+            captured["app"] = app
+
+        from services.pymes import get_or_create_user_by_phone
+
+        known_user = get_or_create_user_by_phone(self.test_user_number_str, self.mock_client_user)
+        known_user.name = "Tester"
+        db.session.add(known_user)
+        db.session.commit()
+
+        with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=fake_delayed) as mock_delayed, \
+             patch("routes.whatsapp_webhook.responder_chatboc") as mock_bot:
+            mock_bot.return_value = {"message_body": "Menú principal", "options_list": []}
+
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        mock_delayed.assert_called_once()
+        self.assertIn("payload", captured)
+        delayed_payload = captured["payload"]
+        self.assertIn("audio_url", delayed_payload)
+        self.assertIn("image_url", delayed_payload)
+        self.assertEqual(
+            delayed_payload["image_url"],
+            "http://localhost:5000/static/welcome/sticker.png",
+        )
+        self.assertEqual(
+            delayed_payload["audio_url"],
+            "http://localhost:5000/static/welcome/bienvenida.mp3",
+        )
+        # Ensure the widget/web payload can reuse the resolved base URL.
+        self.assertEqual(delayed_payload.get("_base_url"), "http://localhost:5000")
+        self.assertTrue(
+            delayed_payload.get("_request_url_root", "").startswith("http://localhost")
+        )
+
+    @patch('routes.whatsapp_webhook.threading.Timer')
+    @patch('services.response_formatter.build_interactive_response')
+    def test_delayed_payload_upgrades_image_url_to_https(self, mock_build_response, mock_timer):
+        self.app.config["APP_BASE_URL"] = "http://chatboc.ar"
+
+        payload = {
+            "message_body": "Hola", 
+            "options_list": [],
+            "message_type": "text",
+            "image_url": "/static/welcome/sticker.png",
+            "_base_url": "http://chatboc.ar",
+            "_request_url_root": "http://chatboc.ar",
+        }
+
+        mock_build_response.return_value = {
+            "type": "text",
+            "text": {"body": "Hola"},
+            "image_url": "/static/welcome/sticker.png",
+        }
+
+        class ImmediateTimer:
+            def __init__(self, delay, callback):
+                self.callback = callback
+
+            def start(self):
+                self.callback()
+
+        mock_timer.side_effect = lambda delay, callback: ImmediateTimer(delay, callback)
+
+        sent_messages = []
+
+        def fake_create(**kwargs):
+            sent_messages.append(kwargs)
+            msg = MagicMock()
+            msg.sid = f"SM{len(sent_messages)}"
+            return msg
+
+        client = MagicMock()
+        client.messages.create.side_effect = fake_create
+
+        _send_delayed_payload(
+            client=client,
+            to_number="whatsapp:+111",
+            from_number="whatsapp:+222",
+            payload=payload,
+            delay=0,
+            app=self.app,
+        )
+
+        self.assertTrue(sent_messages)
+        first_call = sent_messages[0]
+        self.assertEqual(first_call.get("media_url"), ["https://chatboc.ar/static/welcome/sticker.png"])
 
     def test_welcome_skips_generic_profile_name(self):
         """Generic profile names should trigger a name request."""
@@ -241,6 +394,10 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         text_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
         self.assertEqual(text_kwargs.get("body"), "*¡Hola!* Soy *Juni* 👋 ¿Cómo te llamás?")
+        self.assertEqual(
+            text_kwargs.get("media_url"),
+            [self.app.config["WELCOME_MEDIA_URL"]],
+        )
 
     def test_welcome_asks_for_name_when_unknown(self):
         """When no name is known, the bot should ask for it."""
@@ -261,6 +418,10 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         text_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
         self.assertEqual(text_kwargs.get("body"), "*¡Hola!* Soy *Juni* 👋 ¿Cómo te llamás?")
+        self.assertEqual(
+            text_kwargs.get("media_url"),
+            [self.app.config["WELCOME_MEDIA_URL"]],
+        )
 
         session_id = f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
         ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
