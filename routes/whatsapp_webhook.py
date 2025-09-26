@@ -364,9 +364,17 @@ def whatsapp_webhook():
                     is_secure=request.is_secure,
                 )
 
-                media_kwargs = {}
                 if welcome_media_absolute:
-                    media_kwargs["media_url"] = [welcome_media_absolute]
+                    try:
+                        twilio_client.messages.create(
+                            from_=to_number_raw,
+                            to=from_number_raw,
+                            media_url=[welcome_media_absolute],
+                        )
+                    except Exception as sticker_exc:
+                        current_app.logger.error(
+                            f"[WELCOME] Failed to send sticker media: {sticker_exc}"
+                        )
 
                 greeting = (
                     f"*¡Hola, {user_name}!* Acá *Juni* \U0001F44B"
@@ -375,7 +383,7 @@ def whatsapp_webhook():
                 )
 
                 twilio_client.messages.create(
-                    from_=to_number_raw, to=from_number_raw, body=greeting, **media_kwargs
+                    from_=to_number_raw, to=from_number_raw, body=greeting
                 )
 
                 if not user_name:
