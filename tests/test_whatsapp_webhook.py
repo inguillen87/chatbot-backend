@@ -224,6 +224,72 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         # Legacy welcome helper is no longer used.
         self.mock_welcome.assert_not_called()
 
+    def test_webhook_finds_mapping_without_plus_prefix(self):
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+
+        # Store the number without the leading '+' to emulate inconsistent data.
+        self.mock_whatsapp_mapping.numero_whatsapp = self.test_whatsapp_number_str.replace("+", "")
+        db.session.add(self.mock_whatsapp_mapping)
+        db.session.commit()
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        with patch("routes.whatsapp_webhook._send_delayed_payload") as mock_delayed, \
+             patch("routes.whatsapp_webhook.responder_chatboc", return_value={"message_body": "Menú", "options_list": []}) as mock_bot:
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        mock_bot.assert_called_once()
+        self.assertEqual(mock_bot.call_args.kwargs["owner_user"].id, self.mock_client_user.id)
+        mock_delayed.assert_called_once()
+
+    def test_webhook_uses_correct_owner_for_additional_number(self):
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+
+        second_user = User(
+            name="Cuatro Fincas",
+            email="cuatro@example.com",
+            rol="empresa",
+            tipo_chat="pyme",
+            pyme_id=2,
+            nombre_empresa="Cuatro Fincas",
+        )
+        second_user.set_password("otrotest")
+        db.session.add(second_user)
+        db.session.commit()
+
+        second_number = "+15559876543"
+        second_mapping = WhatsappNumero(
+            numero_whatsapp=second_number.replace("+", ""),
+            user_id=second_user.id,
+            is_active=True,
+        )
+        db.session.add(second_mapping)
+        db.session.commit()
+
+        payload = {
+            "To": f"whatsapp:{second_number}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        with patch("routes.whatsapp_webhook._send_delayed_payload") as mock_delayed, \
+             patch("routes.whatsapp_webhook.responder_chatboc", return_value={"message_body": "Menú", "options_list": []}) as mock_bot:
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        mock_bot.assert_called_once()
+        self.assertEqual(mock_bot.call_args.kwargs["owner_user"].id, second_user.id)
+        mock_delayed.assert_called_once()
+
     def test_welcome_includes_media_when_configured(self):
         self.mock_validator.validate.return_value = True
         self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
