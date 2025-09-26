@@ -206,12 +206,20 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertEqual(response.data.decode(), "OK")
         self.mock_validator.validate.assert_called_once()
 
-        # The webhook should send both the template/sticker and a plain text greeting,
-        # so messages.create is invoked twice. The template call must include an empty
-        # string for the name placeholder when unknown.
-        self.assertEqual(self.mock_twilio_create.call_count, 2)
-        first_call_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
-        self.assertIn("content_variables", first_call_kwargs)
+        # The webhook should send the template, the sticker media and the greeting text,
+        # so messages.create is invoked three times. The template call must include an
+        # empty string for the name placeholder when unknown.
+        self.assertEqual(self.mock_twilio_create.call_count, 3)
+        template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertIn("content_variables", template_kwargs)
+
+        sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        expected_media = [self.app.config["WELCOME_MEDIA_URL"]]
+        self.assertEqual(sticker_kwargs.get("media_url"), expected_media)
+        self.assertNotIn("persistent_action", sticker_kwargs)
+
+        greeting_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
+        self.assertIn("body", greeting_kwargs)
 
         second_call_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
         expected_media = [self.app.config["WELCOME_MEDIA_URL"]]
@@ -244,18 +252,18 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.mock_twilio_create.call_count, 2)
+        self.assertEqual(self.mock_twilio_create.call_count, 3)
 
         template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
         self.assertIn("content_sid", template_kwargs)
 
-        greeting_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
         expected_media = ["http://localhost:5000/static/welcome/sticker.png"]
-        self.assertEqual(greeting_kwargs.get("media_url"), expected_media)
-        self.assertIn(
-            f"whatsapp:sticker:{expected_media[0]}",
-            greeting_kwargs.get("persistent_action", []),
-        )
+        self.assertEqual(sticker_kwargs.get("media_url"), expected_media)
+        self.assertNotIn("persistent_action", sticker_kwargs)
+
+        greeting_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
+        self.assertIn("body", greeting_kwargs)
 
     def test_welcome_payload_uses_configured_audio_and_image(self):
         self.mock_validator.validate.return_value = True
@@ -387,17 +395,21 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.mock_twilio_create.call_count, 2)
+        self.assertEqual(self.mock_twilio_create.call_count, 3)
 
         template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
         self.assertEqual(json.loads(template_kwargs["content_variables"]).get("1"), "")
 
-        text_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
-        self.assertEqual(text_kwargs.get("body"), "*¡Hola!* Soy *Juni* 👋 ¿Cómo te llamás?")
+        sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
         self.assertEqual(
-            text_kwargs.get("media_url"),
+            sticker_kwargs.get("media_url"),
             [self.app.config["WELCOME_MEDIA_URL"]],
         )
+        self.assertNotIn("body", sticker_kwargs)
+
+        text_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
+        self.assertEqual(text_kwargs.get("body"), "*¡Hola!* Soy *Juni* 👋 ¿Cómo te llamás?")
+        self.assertNotIn("media_url", text_kwargs)
 
     def test_welcome_asks_for_name_when_unknown(self):
         """When no name is known, the bot should ask for it."""
@@ -414,14 +426,18 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.mock_twilio_create.call_count, 2)
+        self.assertEqual(self.mock_twilio_create.call_count, 3)
 
-        text_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
-        self.assertEqual(text_kwargs.get("body"), "*¡Hola!* Soy *Juni* 👋 ¿Cómo te llamás?")
+        sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
         self.assertEqual(
-            text_kwargs.get("media_url"),
+            sticker_kwargs.get("media_url"),
             [self.app.config["WELCOME_MEDIA_URL"]],
         )
+        self.assertNotIn("body", sticker_kwargs)
+
+        text_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
+        self.assertEqual(text_kwargs.get("body"), "*¡Hola!* Soy *Juni* 👋 ¿Cómo te llamás?")
+        self.assertNotIn("media_url", text_kwargs)
 
         session_id = f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
         ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
