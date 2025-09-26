@@ -6,6 +6,7 @@ import requests
 import io
 import json
 import threading
+from urllib.parse import urlparse, urlunparse
 from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
 from extensions import db  # Import db instance for database operations
@@ -41,6 +42,7 @@ def _resolve_media_url(
     app=None,
     request_url_root: str | None = None,
     is_secure: bool | None = None,
+    prefer_https: bool = True,
 ) -> str | None:
     """Return an absolute URL for media assets.
 
@@ -74,6 +76,28 @@ def _resolve_media_url(
 
     if not resolved_base:
         return None
+
+    resolved_base = resolved_base.strip()
+    if not resolved_base:
+        return None
+
+    parsed = urlparse(resolved_base)
+    if not parsed.scheme:
+        # ``resolved_base`` might be just a hostname. Assume https/http based
+        # on the request security if available, defaulting to https.
+        scheme = "https"
+        if is_secure is not None:
+            scheme = "https" if is_secure else "http"
+        resolved_base = f"{scheme}://{resolved_base.lstrip('/')}"
+        parsed = urlparse(resolved_base)
+
+    if (
+        prefer_https
+        and parsed.scheme == "http"
+        and parsed.hostname not in {"localhost", "127.0.0.1", "0.0.0.0"}
+    ):
+        parsed = parsed._replace(scheme="https")
+        resolved_base = urlunparse(parsed)
 
     resolved_base = resolved_base.rstrip('/')
 
@@ -128,9 +152,16 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
             else:
                 params["body"] = formatted.get("text", {}).get("body", "")
 
-            image_url = formatted.get("image_url")
+            image_url = formatted.get("image_url") or payload.get("image_url")
             if image_url and "persistent_action" not in params:
-                params["media_url"] = [image_url]
+                resolved_image = _resolve_media_url(
+                    image_url,
+                    base_url=payload.get("_base_url"),
+                    app=app,
+                    request_url_root=payload.get("_request_url_root"),
+                )
+                if resolved_image:
+                    params["media_url"] = [resolved_image]
 
             try:
                 message = client.messages.create(**params)
@@ -140,6 +171,7 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                         audio_url,
                         base_url=payload.get("_base_url"),
                         app=app,
+                        request_url_root=payload.get("_request_url_root"),
                     )
 
                     if absolute_audio_url:
@@ -323,9 +355,18 @@ def whatsapp_webhook():
                 media_kwargs = {}
                 fallback_media_url = current_app.config.get("WELCOME_MEDIA_URL")
                 media_base_url = current_app.config.get("APP_BASE_URL") or request.url_root
+                normalized_base = _resolve_media_url(
+                    "/",
+                    base_url=media_base_url,
+                    app=current_app,
+                    request_url_root=request.url_root,
+                    is_secure=request.is_secure,
+                )
+                if normalized_base:
+                    normalized_base = normalized_base.rstrip('/')
                 welcome_media_absolute = _resolve_media_url(
                     fallback_media_url,
-                    base_url=media_base_url,
+                    base_url=normalized_base,
                     app=current_app,
                     is_secure=request.is_secure,
                 )
@@ -352,13 +393,14 @@ def whatsapp_webhook():
                     chat_session_uuid=chat_session_id_internal, channel="whatsapp"
                 )
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
-                welcome_response_payload.setdefault("_base_url", (media_base_url or "").rstrip('/'))
+                welcome_response_payload.setdefault("_base_url", normalized_base or "")
+                welcome_response_payload.setdefault("_request_url_root", (request.url_root or "").rstrip('/'))
                 if welcome_media_absolute:
                     welcome_response_payload.setdefault("image_url", welcome_media_absolute)
 
                 welcome_audio_absolute = _resolve_media_url(
                     current_app.config.get("WELCOME_AUDIO_URL"),
-                    base_url=media_base_url,
+                    base_url=normalized_base,
                     app=current_app,
                     is_secure=request.is_secure,
                 )
@@ -413,13 +455,23 @@ def whatsapp_webhook():
                     chat_session_uuid=chat_session_id_internal, channel="whatsapp",
                 )
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
-                welcome_response_payload.setdefault("_base_url", (media_base_url or "").rstrip('/'))
+                welcome_response_payload.setdefault("_base_url", normalized_base or "")
+                welcome_response_payload.setdefault("_request_url_root", (request.url_root or "").rstrip('/'))
 
                 fallback_media_url = current_app.config.get("WELCOME_MEDIA_URL")
                 media_base_url = current_app.config.get("APP_BASE_URL") or request.url_root
+                normalized_base = _resolve_media_url(
+                    "/",
+                    base_url=media_base_url,
+                    app=current_app,
+                    request_url_root=request.url_root,
+                    is_secure=request.is_secure,
+                )
+                if normalized_base:
+                    normalized_base = normalized_base.rstrip('/')
                 welcome_media_absolute = _resolve_media_url(
                     fallback_media_url,
-                    base_url=media_base_url,
+                    base_url=normalized_base,
                     app=current_app,
                     is_secure=request.is_secure,
                 )
@@ -428,7 +480,7 @@ def whatsapp_webhook():
 
                 welcome_audio_absolute = _resolve_media_url(
                     current_app.config.get("WELCOME_AUDIO_URL"),
-                    base_url=media_base_url,
+                    base_url=normalized_base,
                     app=current_app,
                     is_secure=request.is_secure,
                 )

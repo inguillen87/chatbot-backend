@@ -157,6 +157,9 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         client = MagicMock()
         client.messages.create.side_effect = fake_create
 
+        payload.setdefault("_base_url", self.app.config["APP_BASE_URL"])
+        payload.setdefault("_request_url_root", self.app.config["APP_BASE_URL"])
+
         _send_delayed_payload(
             client=client,
             to_number="whatsapp:+111111111",
@@ -300,6 +303,62 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         )
         # Ensure the widget/web payload can reuse the resolved base URL.
         self.assertEqual(delayed_payload.get("_base_url"), "http://localhost:5000")
+        self.assertTrue(
+            delayed_payload.get("_request_url_root", "").startswith("http://localhost")
+        )
+
+    @patch('routes.whatsapp_webhook.threading.Timer')
+    @patch('services.response_formatter.build_interactive_response')
+    def test_delayed_payload_upgrades_image_url_to_https(self, mock_build_response, mock_timer):
+        self.app.config["APP_BASE_URL"] = "http://chatboc.ar"
+
+        payload = {
+            "message_body": "Hola", 
+            "options_list": [],
+            "message_type": "text",
+            "image_url": "/static/welcome/sticker.png",
+            "_base_url": "http://chatboc.ar",
+            "_request_url_root": "http://chatboc.ar",
+        }
+
+        mock_build_response.return_value = {
+            "type": "text",
+            "text": {"body": "Hola"},
+            "image_url": "/static/welcome/sticker.png",
+        }
+
+        class ImmediateTimer:
+            def __init__(self, delay, callback):
+                self.callback = callback
+
+            def start(self):
+                self.callback()
+
+        mock_timer.side_effect = lambda delay, callback: ImmediateTimer(delay, callback)
+
+        sent_messages = []
+
+        def fake_create(**kwargs):
+            sent_messages.append(kwargs)
+            msg = MagicMock()
+            msg.sid = f"SM{len(sent_messages)}"
+            return msg
+
+        client = MagicMock()
+        client.messages.create.side_effect = fake_create
+
+        _send_delayed_payload(
+            client=client,
+            to_number="whatsapp:+111",
+            from_number="whatsapp:+222",
+            payload=payload,
+            delay=0,
+            app=self.app,
+        )
+
+        self.assertTrue(sent_messages)
+        first_call = sent_messages[0]
+        self.assertEqual(first_call.get("media_url"), ["https://chatboc.ar/static/welcome/sticker.png"])
 
     def test_welcome_skips_generic_profile_name(self):
         """Generic profile names should trigger a name request."""
