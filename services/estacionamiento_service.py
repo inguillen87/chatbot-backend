@@ -140,6 +140,79 @@ def _estimar_ocupacion_y_confianza(
 
     return ocupacion_estimada, confianza
 
+def _extraer_coordenadas(ubicacion: Dict[str, Any]) -> Tuple[float | None, float | None]:
+    """Acepta distintos formatos de coordenadas y las normaliza a floats."""
+
+    if not isinstance(ubicacion, dict):
+        return None, None
+
+    lat_candidates = (
+        ubicacion.get("lat"),
+        ubicacion.get("latitude"),
+        ubicacion.get("latitud"),
+    )
+    lon_candidates = (
+        ubicacion.get("lon"),
+        ubicacion.get("lng"),
+        ubicacion.get("longitude"),
+        ubicacion.get("longitud"),
+    )
+
+    lat = next((value for value in lat_candidates if value not in (None, "")), None)
+    lon = next((value for value in lon_candidates if value not in (None, "")), None)
+
+    try:
+        lat_f = float(lat) if lat is not None else None
+        lon_f = float(lon) if lon is not None else None
+    except (TypeError, ValueError):
+        return None, None
+
+    return lat_f, lon_f
+
+
+def _normalizar_consulta_textual(texto: str) -> str:
+    if not texto:
+        return ""
+    normalized = texto.replace("_", " ")
+    normalized = " ".join(normalized.split())
+    return normalized.strip()
+
+
+def _es_comando_sin_direccion(texto: str) -> bool:
+    if not texto:
+        return True
+    lowered = texto.lower()
+    comandos = {
+        "buscar_estacionamiento",
+        "buscar estacionamiento",
+        "compartir ubicacion",
+        "compartir ubicación",
+        "compartir tu ubicacion",
+    }
+    if lowered in comandos:
+        return True
+    if "_" in texto and lowered.replace("_", " ") in comandos:
+        return True
+    # Evitar tratar como dirección cadenas de una sola palabra genérica
+    tokens = lowered.split()
+    if len(tokens) == 1 and tokens[0] in {"buscar", "estacionamiento", "ubicacion"}:
+        return True
+    return False
+
+
+def _confianza_desde_precision(precision_m: Any) -> float | None:
+    try:
+        precision = float(precision_m)
+    except (TypeError, ValueError):
+        return None
+    if precision <= 0:
+        return 0.95
+    if precision >= 500:
+        return 0.45
+    ratio = max(0.0, min(1.0, 1 - (precision / 500)))
+    return 0.45 + (0.5 * ratio)
+
+
 def consultar_ocupacion(ubicacion_texto_o_coord: Any) -> Dict[str, Any]:
     """
     Input: texto ("San Martín 1200, Junín") o dict {"lat":..., "lon":...}
@@ -152,26 +225,54 @@ def consultar_ocupacion(ubicacion_texto_o_coord: Any) -> Dict[str, Any]:
     matched_cam = None
     matched_reference = None
 
-    if isinstance(ubicacion_texto_o_coord, dict) and "lat" in ubicacion_texto_o_coord:
-        try:
-            user_lat = float(ubicacion_texto_o_coord["lat"])
-            user_lon = float(ubicacion_texto_o_coord["lon"])
-        except (TypeError, ValueError):
-            user_lat = user_lon = None
-        geocode_source = "provided"
+    texto = None
+    ubicacion_dict = ubicacion_texto_o_coord if isinstance(ubicacion_texto_o_coord, dict) else None
+
+    if ubicacion_dict:
+        user_lat, user_lon = _extraer_coordenadas(ubicacion_dict)
+        if user_lat is not None and user_lon is not None:
+            geocode_source = "provided"
+            matched_reference = (
+                ubicacion_dict.get("address")
+                or ubicacion_dict.get("formatted_address")
+                or ubicacion_dict.get("description")
+            )
+            if not matched_reference:
+                matched_reference = ubicacion_dict.get("label")
+            geocode_confidence = _confianza_desde_precision(
+                ubicacion_dict.get("accuracy")
+                or ubicacion_dict.get("precision")
+            )
+        else:
+            texto = (
+                ubicacion_dict.get("address")
+                or ubicacion_dict.get("formatted_address")
+                or ubicacion_dict.get("description")
+                or ubicacion_dict.get("label")
+            )
     else:
         texto = str(ubicacion_texto_o_coord or "").strip()
-        heuristica = aproximar_coordenadas_por_texto(texto, CAMARAS)
-        if heuristica:
-            user_lat = heuristica["lat"]
-            user_lon = heuristica["lon"]
-            matched_cam = heuristica.get("camera")
-            geocode_confidence = heuristica.get("confidence")
-            geocode_source = "camaras_heuristica"
-            matched_reference = ", ".join(heuristica.get("matched_keywords", [])) or None
-        if user_lat is None:
+
+    if user_lat is None or user_lon is None:
+        texto_str = texto or ""
+        texto_normalizado = _normalizar_consulta_textual(texto_str)
+        if _es_comando_sin_direccion(texto_normalizado):
+            return {
+                "texto": "Necesito una calle, altura o que compartas tu ubicación para recomendarte dónde estacionar.",
+                "geocode_source": "invalid_query",
+            }
+        if texto_str.strip():
+            heuristica = aproximar_coordenadas_por_texto(texto_str, CAMARAS)
+            if heuristica:
+                user_lat = heuristica["lat"]
+                user_lon = heuristica["lon"]
+                matched_cam = heuristica.get("camera")
+                geocode_confidence = heuristica.get("confidence")
+                geocode_source = "camaras_heuristica"
+                matched_reference = ", ".join(heuristica.get("matched_keywords", [])) or None
+        if user_lat is None and texto_str.strip():
             llm_result = geocodificar_texto_llm(
-                texto,
+                texto_str,
                 puntos_referencia=CAMARAS,
             )
             if llm_result:
