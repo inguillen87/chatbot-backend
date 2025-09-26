@@ -295,10 +295,32 @@ def whatsapp_webhook():
                         # safer than omitting the field and triggering a 400.
                         "content_variables": json.dumps({"1": user_name or ""}),
                     }
-                    twilio_client.messages.create(**params)
-                    current_app.logger.info(
-                        f"[WELCOME] Template {template_sid} sent to {from_number_cleaned} with name: {user_name or '<unknown>'}."
-                    )
+                    try:
+                        twilio_client.messages.create(**params)
+                        current_app.logger.info(
+                            f"[WELCOME] Template {template_sid} sent to {from_number_cleaned} with name: {user_name or '<unknown>'}."
+                        )
+                    except Exception as e:
+                        current_app.logger.warning(
+                            f"[WELCOME] Failed to send welcome template {template_sid} to {from_number_cleaned}: {e}"
+                        )
+
+                if resolved_sticker_url:
+                    try:
+                        twilio_client.messages.create(
+                            from_=to_number_raw,
+                            to=from_number_raw,
+                            media_url=[resolved_sticker_url],
+                        )
+                        current_app.logger.info(
+                            f"[WELCOME] Sticker sent to {from_number_cleaned} using {resolved_sticker_url}."
+                        )
+                    except Exception as e:
+                        current_app.logger.warning(
+                            f"[WELCOME] Failed to send welcome sticker to {from_number_cleaned}: {e}"
+                        )
+
+                greeting_sent = False
 
                 if resolved_sticker_url:
                     twilio_client.messages.create(
@@ -315,11 +337,18 @@ def whatsapp_webhook():
                     if user_name
                     else "*¡Hola!* Soy *Juni* \U0001F44B ¿Cómo te llamás?"
                 )
-                twilio_client.messages.create(
-                    from_=to_number_raw, to=from_number_raw, body=greeting
-                )
+                try:
+                    twilio_client.messages.create(
+                        from_=to_number_raw, to=from_number_raw, body=greeting
+                    )
+                    greeting_sent = True
+                except Exception as e:
+                    greeting_sent = False
+                    current_app.logger.error(
+                        f"[WELCOME] Failed to send welcome greeting to {from_number_cleaned}: {e}"
+                    )
 
-                if not user_name:
+                if not user_name and greeting_sent:
                     session_context_db_entry.context_data["awaiting_user_name"] = True
                     safe_flag_modified(session_context_db_entry, "context_data")
                     db.session.commit()
@@ -344,8 +373,6 @@ def whatsapp_webhook():
                     resolved_existing_image = _resolve_public_url(existing_image_url, effective_base_url)
                     if resolved_existing_image:
                         welcome_response_payload["image_url"] = resolved_existing_image
-                    elif resolved_sticker_url:
-                        welcome_response_payload.setdefault("image_url", resolved_sticker_url)
 
                     existing_audio_url = welcome_response_payload.get("audio_url")
                     resolved_existing_audio = _resolve_public_url(existing_audio_url, effective_base_url)
@@ -413,8 +440,6 @@ def whatsapp_webhook():
                     resolved_existing_image = _resolve_public_url(existing_image_url, effective_base_url)
                     if resolved_existing_image:
                         welcome_response_payload["image_url"] = resolved_existing_image
-                    elif resolved_sticker_url:
-                        welcome_response_payload.setdefault("image_url", resolved_sticker_url)
 
                     existing_audio_url = welcome_response_payload.get("audio_url")
                     resolved_existing_audio = _resolve_public_url(existing_audio_url, effective_base_url)
