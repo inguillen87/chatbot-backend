@@ -1447,6 +1447,35 @@ def _procesar_chat(
         tipo_chat_normalized = (tipo_chat or "").strip().lower()
         is_municipal_request = tipo_chat_normalized == "municipio"
 
+        def _update_tipo_flags() -> None:
+            nonlocal tipo_chat_normalized, is_municipal_request, tipo_chat
+            tipo_chat_normalized = (tipo_chat or "").strip().lower()
+            is_municipal_request = tipo_chat_normalized == "municipio"
+            if tipo_chat and tipo_chat != tipo_chat_normalized:
+                tipo_chat = tipo_chat_normalized
+
+        def _set_tipo_chat(value) -> None:
+            nonlocal tipo_chat
+            if value is None:
+                return
+            normalized_value = str(value).strip().lower()
+            if not normalized_value:
+                return
+            tipo_chat = normalized_value
+            _update_tipo_flags()
+
+        owner_tipo_chat = (getattr(owner_user, "tipo_chat", None) or "").strip().lower()
+        if owner_tipo_chat in {"pyme", "municipio"} and owner_tipo_chat != tipo_chat_normalized:
+            current_app.logger.info(
+                "[CHAT] Ajustando tipo_chat a '%s' basado en owner_user %s (valor previo: '%s')",
+                owner_tipo_chat,
+                getattr(owner_user, "id", "N/A"),
+                tipo_chat_normalized or "",
+            )
+            _set_tipo_chat(owner_tipo_chat)
+        else:
+            _update_tipo_flags()
+
         if is_municipal_request and isinstance(contexto_chat, dict):
             demo_keys_to_clear = (
                 "demo_session",
@@ -1513,7 +1542,7 @@ def _procesar_chat(
                     rubro_clave = rubro_candidate.clave
 
             if demo_match_from_token.tipo_chat:
-                tipo_chat = demo_match_from_token.tipo_chat
+                _set_tipo_chat(demo_match_from_token.tipo_chat)
 
             if demo_payload_from_token:
                 changed = _activate_demo_session(
@@ -1590,7 +1619,7 @@ def _procesar_chat(
                             rubro_id = rubro_obj_global.id
                         if not rubro_clave and getattr(rubro_obj_global, "clave", None):
                             rubro_clave = rubro_obj_global.clave
-                    tipo_chat = contexto_chat.get("demo_tipo_chat", tipo_chat)
+                    _set_tipo_chat(contexto_chat.get("demo_tipo_chat", tipo_chat))
 
         if owner_del_bot and getattr(owner_del_bot, "token", None):
             demo_match = demo_rubro_for_token(owner_del_bot.token)
@@ -1604,7 +1633,7 @@ def _procesar_chat(
                 if demo_payload.get("rubro_clave") and not rubro_clave:
                     rubro_clave = demo_payload.get("rubro_clave")
                 if demo_payload.get("tipo_chat"):
-                    tipo_chat = demo_payload.get("tipo_chat")
+                    _set_tipo_chat(demo_payload.get("tipo_chat"))
                 changed = _activate_demo_session(
                     contexto_chat,
                     demo_payload,
@@ -1664,7 +1693,7 @@ def _procesar_chat(
                     return jsonify(selector_payload), 200
 
                 rubro_para_log = selected_demo["label"]
-                tipo_chat = selected_demo["tipo_chat"]
+                _set_tipo_chat(selected_demo.get("tipo_chat"))
                 rubro_id = getattr(rubro_obj_global, "id", rubro_id)
                 if getattr(rubro_obj_global, "clave", None):
                     rubro_clave = rubro_obj_global.clave
