@@ -384,7 +384,7 @@ def whatsapp_webhook():
                 )
 
                 twilio_client.messages.create(
-                    from_=to_number_raw, to=from_number_raw, body=greeting
+                    from_=to_number_raw, to=from_number_raw, body=greeting, **media_kwargs
                 )
 
                 if not user_name:
