@@ -1,5 +1,5 @@
 import math
-from typing import List, Dict
+from typing import List, Dict, Any
 import random
 
 def _dist_m(lat1, lon1, lat2, lon2):
@@ -9,13 +9,16 @@ def _dist_m(lat1, lon1, lat2, lon2):
     a = math.sin(dp/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
     return 2*R*math.asin(math.sqrt(a))
 
-def seleccionar_camara_para_ubicacion(lat, lon, cams: List[Dict]):
-    # simple: elegir la más cercana dentro de 5 km
-    mejor = None; dmin = 5000
+def seleccionar_camara_para_ubicacion(lat, lon, cams: List[Dict[str, Any]]):
+    """Return the closest camera within a 5 km radius."""
+
+    mejor = None
+    dmin = 5000
     for c in cams:
         d = _dist_m(lat, lon, c["lat"], c["lon"])
         if d < dmin:
-            dmin = d; mejor = c
+            dmin = d
+            mejor = c
     return mejor if dmin < 5000 else None
 
 def evaluar_ocupacion_rois(detecciones, rois_geojson):
@@ -37,32 +40,43 @@ def evaluar_ocupacion_rois(detecciones, rois_geojson):
         })
     return res
 
-def simular_detecciones(rois_geojson: Dict) -> List[Dict]:
-    """
-    Simula detecciones de autos para un conjunto de ROIs.
-    Genera una detección para aproximadamente el 50% de los ROIs.
-    """
-    detecciones = []
-    for feat in rois_geojson["features"]:
-        # Simular con un 50% de probabilidad que el lugar está ocupado
-        if random.random() < 0.5:
-            poly_coords = feat["geometry"]["coordinates"][0]
+def simular_detecciones(
+    rois_geojson: Dict[str, Any],
+    ocupacion_estimacion: float,
+    seed: str | None = None,
+) -> List[Dict[str, float]]:
+    """Simulate car detections for a set of ROIs.
 
-            # Encontrar el bounding box del polígono para generar un punto dentro
+    Args:
+        rois_geojson: GeoJSON definition of the ROIs.
+        ocupacion_estimacion: Expected occupancy probability (0-1).
+        seed: Optional deterministic seed so consecutive calls within a
+            window yield coherent results.
+
+    Returns:
+        A list of bounding boxes representing detected vehicles.
+    """
+
+    rng = random.Random(seed) if seed is not None else random.Random()
+    ocupacion = max(0.0, min(1.0, ocupacion_estimacion or 0.0))
+    detecciones: List[Dict[str, float]] = []
+
+    for feat in rois_geojson.get("features", []):
+        if rng.random() < ocupacion:
+            poly_coords = feat["geometry"]["coordinates"][0]
             min_x = min(p[0] for p in poly_coords)
             max_x = max(p[0] for p in poly_coords)
             min_y = min(p[1] for p in poly_coords)
             max_y = max(p[1] for p in poly_coords)
 
-            # Generar un punto aleatorio dentro del bounding box del ROI
-            # y crear una pequeña detección (bounding box) alrededor de ese punto.
-            center_x = random.uniform(min_x, max_x)
-            center_y = random.uniform(min_y, max_y)
+            center_x = rng.uniform(min_x, max_x)
+            center_y = rng.uniform(min_y, max_y)
 
-            # Crear un bounding box de 10x10 alrededor del centro
             deteccion = {
-                "x1": center_x - 5, "y1": center_y - 5,
-                "x2": center_x + 5, "y2": center_y + 5
+                "x1": center_x - 6,
+                "y1": center_y - 6,
+                "x2": center_x + 6,
+                "y2": center_y + 6,
             }
             detecciones.append(deteccion)
 
