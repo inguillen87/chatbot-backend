@@ -322,16 +322,6 @@ def whatsapp_webhook():
 
                 greeting_sent = False
 
-                if resolved_sticker_url:
-                    twilio_client.messages.create(
-                        from_=to_number_raw,
-                        to=from_number_raw,
-                        media_url=[resolved_sticker_url],
-                    )
-                    current_app.logger.info(
-                        f"[WELCOME] Sticker sent to {from_number_cleaned} using {resolved_sticker_url}."
-                    )
-
                 greeting = (
                     f"*¡Hola, {user_name}!* Acá *Juni* \U0001F44B"
                     if user_name
