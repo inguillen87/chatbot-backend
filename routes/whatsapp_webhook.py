@@ -34,6 +34,55 @@ webhook_bp = Blueprint('whatsapp_webhook', __name__)
 MAX_TWILIO_BODY_LENGTH = 1600
 
 
+def _resolve_media_url(
+    raw_url: str | None,
+    *,
+    base_url: str | None = None,
+    app=None,
+    request_url_root: str | None = None,
+    is_secure: bool | None = None,
+) -> str | None:
+    """Return an absolute URL for media assets.
+
+    Supports absolute, protocol-relative and relative paths, using the
+    configured APP_BASE_URL or the provided ``base_url`` as reference.
+    """
+
+    if not raw_url:
+        return None
+
+    candidate = raw_url.strip()
+    if not candidate:
+        return None
+
+    if candidate.startswith(("http://", "https://")):
+        return candidate
+
+    if candidate.startswith("//"):
+        scheme = "https"
+        if is_secure is not None:
+            scheme = "https" if is_secure else "http"
+        elif app is not None:
+            scheme = "https" if app.config.get("IS_HTTPS") else "http"
+        return f"{scheme}:{candidate}"
+
+    resolved_base = base_url
+    if not resolved_base and app is not None:
+        resolved_base = app.config.get("APP_BASE_URL")
+    if not resolved_base:
+        resolved_base = request_url_root
+
+    if not resolved_base:
+        return None
+
+    resolved_base = resolved_base.rstrip('/')
+
+    if candidate.startswith('/'):
+        return f"{resolved_base}{candidate}"
+
+    return f"{resolved_base}/{candidate.lstrip('/')}"
+
+
 def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
     """Split `text` into chunks no longer than `limit` characters.
 
@@ -87,17 +136,11 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                 message = client.messages.create(**params)
 
                 if audio_url:
-                    absolute_audio_url = audio_url
-                    if absolute_audio_url.startswith('/'):
-                        base_url = (app.config.get("APP_BASE_URL") or "").rstrip('/')
-                        if base_url:
-                            absolute_audio_url = f"{base_url}{audio_url}"
-                        else:
-                            app.logger.warning(
-                                "[DELAYED_AUDIO] APP_BASE_URL no configurada; no se puede enviar audio con URL relativa %s",
-                                audio_url,
-                            )
-                            absolute_audio_url = None
+                    absolute_audio_url = _resolve_media_url(
+                        audio_url,
+                        base_url=payload.get("_base_url"),
+                        app=app,
+                    )
 
                     if absolute_audio_url:
                         audio_params = {
@@ -109,6 +152,11 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                             "[DELAYED_AUDIO] Enviando audio adicional para mensaje diferido SID %s", getattr(message, 'sid', 'N/A')
                         )
                         client.messages.create(**audio_params)
+                    else:
+                        app.logger.warning(
+                            "[DELAYED_AUDIO] No se pudo resolver URL absoluta para %s",
+                            audio_url,
+                        )
             except Exception as e:
                 app.logger.error(f"Error sending delayed message: {e}")
 
@@ -272,8 +320,20 @@ def whatsapp_webhook():
                     if user_name
                     else "*¡Hola!* Soy *Juni* \U0001F44B ¿Cómo te llamás?"
                 )
+                media_kwargs = {}
+                fallback_media_url = current_app.config.get("WELCOME_MEDIA_URL")
+                media_base_url = current_app.config.get("APP_BASE_URL") or request.url_root
+                welcome_media_absolute = _resolve_media_url(
+                    fallback_media_url,
+                    base_url=media_base_url,
+                    app=current_app,
+                    is_secure=request.is_secure,
+                )
+                if welcome_media_absolute:
+                    media_kwargs['media_url'] = [welcome_media_absolute]
+
                 twilio_client.messages.create(
-                    from_=to_number_raw, to=from_number_raw, body=greeting
+                    from_=to_number_raw, to=from_number_raw, body=greeting, **media_kwargs
                 )
 
                 if not user_name:
@@ -292,6 +352,18 @@ def whatsapp_webhook():
                     chat_session_uuid=chat_session_id_internal, channel="whatsapp"
                 )
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
+                welcome_response_payload.setdefault("_base_url", (media_base_url or "").rstrip('/'))
+                if welcome_media_absolute:
+                    welcome_response_payload.setdefault("image_url", welcome_media_absolute)
+
+                welcome_audio_absolute = _resolve_media_url(
+                    current_app.config.get("WELCOME_AUDIO_URL"),
+                    base_url=media_base_url,
+                    app=current_app,
+                    is_secure=request.is_secure,
+                )
+                if welcome_audio_absolute and not welcome_response_payload.get("audio_url"):
+                    welcome_response_payload["audio_url"] = welcome_audio_absolute
                 _send_delayed_payload(
                     client=twilio_client, to_number=to_number_raw, from_number=from_number_raw,
                     payload=welcome_response_payload, delay=delay, app=current_app._get_current_object()
@@ -341,6 +413,27 @@ def whatsapp_webhook():
                     chat_session_uuid=chat_session_id_internal, channel="whatsapp",
                 )
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
+                welcome_response_payload.setdefault("_base_url", (media_base_url or "").rstrip('/'))
+
+                fallback_media_url = current_app.config.get("WELCOME_MEDIA_URL")
+                media_base_url = current_app.config.get("APP_BASE_URL") or request.url_root
+                welcome_media_absolute = _resolve_media_url(
+                    fallback_media_url,
+                    base_url=media_base_url,
+                    app=current_app,
+                    is_secure=request.is_secure,
+                )
+                if welcome_media_absolute:
+                    welcome_response_payload.setdefault("image_url", welcome_media_absolute)
+
+                welcome_audio_absolute = _resolve_media_url(
+                    current_app.config.get("WELCOME_AUDIO_URL"),
+                    base_url=media_base_url,
+                    app=current_app,
+                    is_secure=request.is_secure,
+                )
+                if welcome_audio_absolute and not welcome_response_payload.get("audio_url"):
+                    welcome_response_payload["audio_url"] = welcome_audio_absolute
                 _send_delayed_payload(
                     client=twilio_client,
                     to_number=to_number_raw,
@@ -826,11 +919,14 @@ def whatsapp_webhook():
         and bot_response_dict.get("delayed_payload")
         and bot_response_dict.get("delay_seconds")
     ):
+        delayed_payload = bot_response_dict["delayed_payload"]
+        if isinstance(delayed_payload, dict):
+            delayed_payload.setdefault("_base_url", request.url_root.rstrip('/'))
         _send_delayed_payload(
             twilio_client,
             to_number_raw,
             from_number_raw,
-            bot_response_dict["delayed_payload"],
+            delayed_payload,
             bot_response_dict["delay_seconds"],
             current_app._get_current_object()
         )

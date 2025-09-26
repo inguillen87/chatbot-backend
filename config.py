@@ -338,6 +338,14 @@ class Config:
     # WhatsApp Welcome Message Configuration
     WELCOME_TEMPLATE_SID = os.getenv("WELCOME_TEMPLATE_SID", "HXaf135ced6edd005551a456bbb2258d4a")
     WELCOME_MESSAGE_DELAY_SECONDS = int(os.getenv("WELCOME_MESSAGE_DELAY_SECONDS", "5"))
+    WELCOME_MEDIA_URL = os.getenv(
+        "WELCOME_MEDIA_URL",
+        "https://chatboc-demo-widget-oigs.vercel.app/stickerJuni2.webp",
+    )
+    WELCOME_AUDIO_URL = os.getenv(
+        "WELCOME_AUDIO_URL",
+        "https://chatboc-demo-widget-oigs.vercel.app/saludo_inicial_juni.mp3",
+    )
 
 class TestConfig(Config):
     TESTING = True
