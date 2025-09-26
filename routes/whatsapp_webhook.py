@@ -121,9 +121,15 @@ def _lookup_whatsapp_mapping(to_number_raw: str) -> Tuple[Optional[WhatsappNumer
     cleaned = (to_number_raw or "").replace("whatsapp:", "").strip()
     normalized = _normalize_whatsapp_address(to_number_raw)
 
+    # HACK: If the number is a 13-digit argentine mobile number (+549...),
+    # create a variant without the '9' as it's sometimes omitted in databases.
+    normalized_arg_variant = None
+    if normalized and normalized.startswith("+549") and len(normalized) == 13:
+        normalized_arg_variant = "+54" + normalized[4:]
+
     lookup_options = dict(is_active=True)
 
-    for candidate in filter(None, {cleaned, normalized}):
+    for candidate in filter(None, {cleaned, normalized, normalized_arg_variant}):
         mapping = WhatsappNumero.query.options(
             joinedload(WhatsappNumero.user).joinedload(User.rubro)
         ).filter_by(**lookup_options, numero_whatsapp=candidate).first()
@@ -434,14 +440,10 @@ def whatsapp_webhook():
                     if request_root:
                         welcome_response_payload.setdefault("_request_url_root", request_root)
 
-                    existing_image_url = welcome_response_payload.get("image_url")
-                    resolved_existing_image = _resolve_public_url(existing_image_url, effective_base_url)
-                    if resolved_existing_image:
-                        if resolved_sticker_url and resolved_existing_image == resolved_sticker_url:
-                            # Avoid duplicating the welcome sticker in the delayed payload.
-                            welcome_response_payload.pop("image_url", None)
-                        else:
-                            welcome_response_payload["image_url"] = resolved_existing_image
+                    # Always remove the image_url from the delayed payload to prevent duplicate stickers.
+                    # The initial sticker is sent immediately, this delayed message should not have another one.
+                    if "image_url" in welcome_response_payload:
+                        welcome_response_payload.pop("image_url", None)
 
                     existing_audio_url = welcome_response_payload.get("audio_url")
                     resolved_existing_audio = _resolve_public_url(existing_audio_url, effective_base_url)
