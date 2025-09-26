@@ -257,7 +257,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         greeting_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
         self.assertIn("body", greeting_kwargs)
 
-    def test_welcome_payload_uses_configured_audio_and_image(self):
+    def test_welcome_payload_resolves_audio_and_existing_image(self):
         self.mock_validator.validate.return_value = True
         self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
         self.app.config["WELCOME_MEDIA_URL"] = "/static/welcome/sticker.png"
@@ -289,7 +289,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=fake_delayed) as mock_delayed, \
              patch("routes.whatsapp_webhook.responder_chatboc") as mock_bot:
-            mock_bot.return_value = {"message_body": "Menú principal", "options_list": []}
+            mock_bot.return_value = {
+                "message_body": "Menú principal",
+                "options_list": [],
+                "image_url": "/static/menu/banner.png",
+            }
 
             response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
@@ -300,18 +304,76 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertIn("audio_url", delayed_payload)
         self.assertIn("image_url", delayed_payload)
         self.assertEqual(
-            delayed_payload["image_url"],
-            "http://localhost:5000/static/welcome/sticker.png",
-        )
-        self.assertEqual(
             delayed_payload["audio_url"],
             "http://localhost:5000/static/welcome/bienvenida.mp3",
+        )
+        self.assertEqual(
+            delayed_payload["image_url"],
+            "http://localhost:5000/static/menu/banner.png",
         )
         # Ensure the widget/web payload can reuse the resolved base URL.
         self.assertEqual(delayed_payload.get("_base_url"), "http://localhost:5000")
         self.assertTrue(
             delayed_payload.get("_request_url_root", "").startswith("http://localhost")
         )
+
+    def test_welcome_payload_without_image_does_not_attach_sticker(self):
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+        self.app.config["WELCOME_MEDIA_URL"] = "/static/welcome/sticker.png"
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+            "ProfileName": "Tester",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        self._create_confirmed_session()
+
+        response_payload = {"message_body": "Menú principal", "options_list": []}
+
+        with patch("routes.whatsapp_webhook._send_delayed_payload") as mock_delayed, \
+             patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("image_url", response_payload)
+
+    def test_welcome_template_failure_still_sends_followups(self):
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+        self.app.config["WELCOME_MEDIA_URL"] = "https://example.com/sticker.webp"
+
+        def fail_first(*args, **kwargs):
+            call_index = len(self.mock_twilio_create.call_args_list)
+            if call_index == 0:
+                raise Exception("template failure")
+            return MagicMock()
+
+        self.mock_twilio_create.side_effect = fail_first
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        # Even though the template failed, we still attempt the sticker and greeting.
+        self.assertGreaterEqual(self.mock_twilio_create.call_count, 3)
+        # Second call should correspond to the sticker send.
+        sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        self.assertEqual(
+            sticker_kwargs.get("media_url"),
+            [self.app.config["WELCOME_MEDIA_URL"]],
+        )
+        greeting_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
+        self.assertIn("body", greeting_kwargs)
 
     @patch('routes.whatsapp_webhook.threading.Timer')
     @patch('services.response_formatter.build_interactive_response')
