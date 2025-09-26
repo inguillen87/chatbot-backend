@@ -176,7 +176,27 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
 
             image_url = formatted.get("image_url")
             if image_url and "persistent_action" not in params:
-                params["media_url"] = [image_url]
+                resolved_image_url = image_url
+                base_candidates = [
+                    (payload.get("_base_url") or "").rstrip("/"),
+                    (payload.get("_request_url_root") or "").rstrip("/"),
+                    (app.config.get("APP_BASE_URL") or "").rstrip("/"),
+                ]
+
+                if resolved_image_url.startswith("/"):
+                    for base in base_candidates:
+                        if base:
+                            https_base = (
+                                f"https://{base.split('://', 1)[1]}"
+                                if base.startswith("http://")
+                                else base
+                            )
+                            resolved_image_url = f"{https_base}{resolved_image_url}"
+                            break
+                elif resolved_image_url.startswith("http://"):
+                    resolved_image_url = resolved_image_url.replace("http://", "https://", 1)
+
+                params["media_url"] = [resolved_image_url]
 
             try:
                 message = client.messages.create(**params)
@@ -338,6 +358,12 @@ def whatsapp_webhook():
     last_welcome_ts = session_context_db_entry.context_data.get("last_welcome_ts", 0)
     is_rate_limited = (now - last_welcome_ts) < 15
 
+    welcome_state = session_context_db_entry.context_data.setdefault("_welcome_state", {})
+    template_state = welcome_state.setdefault("template", {})
+    sticker_state = welcome_state.setdefault("sticker", {})
+
+    safe_flag_modified(session_context_db_entry, "context_data")
+
     should_trigger_welcome = is_override or (is_greeting and not is_waiting_for_info)
 
     request_root = request.url_root or ""
@@ -359,6 +385,7 @@ def whatsapp_webhook():
         if twilio_client:
             try:
                 template_sid = current_app.config.get("WELCOME_TEMPLATE_SID")
+                sticker_cooldown = current_app.config.get("WELCOME_STICKER_COOLDOWN_SECONDS", 300)
                 # Prioritize DB name, then WhatsApp profile name. Avoid generic
                 # "vecino" fallback so the bot either personalizes or greets
                 # without a name and lets downstream logic ask for it.
@@ -366,7 +393,24 @@ def whatsapp_webhook():
                 if user_name.lower() in {"vecino", "vecina", "vecino/a"}:
                     user_name = ""
 
-                if template_sid:
+                should_send_template = bool(template_sid) and not template_state.get("disabled", False)
+                should_send_sticker = bool(resolved_sticker_url) and not sticker_state.get("disabled", False)
+
+                if client_user and getattr(client_user, "tipo_chat", None) == "pyme":
+                    should_send_template = False
+                    should_send_sticker = False
+
+                last_sticker_ts = sticker_state.get("last_sent_ts")
+                if should_send_sticker and last_sticker_ts:
+                    if (now - last_sticker_ts) < max(0, sticker_cooldown):
+                        should_send_sticker = False
+                        current_app.logger.info(
+                            "[WELCOME] Sticker skipped for %s due to cooldown (last_sent_ts=%s)",
+                            from_number_cleaned,
+                            last_sticker_ts,
+                        )
+
+                if should_send_template:
                     params = {
                         "from_": to_number_raw,
                         "to": from_number_raw,
@@ -378,6 +422,8 @@ def whatsapp_webhook():
                     }
                     try:
                         twilio_client.messages.create(**params)
+                        template_state["last_sent_ts"] = now
+                        safe_flag_modified(session_context_db_entry, "context_data")
                         current_app.logger.info(
                             f"[WELCOME] Template {template_sid} sent to {from_number_cleaned} with name: {user_name or '<unknown>'}."
                         )
@@ -385,14 +431,18 @@ def whatsapp_webhook():
                         current_app.logger.warning(
                             f"[WELCOME] Failed to send welcome template {template_sid} to {from_number_cleaned}: {e}"
                         )
+                        template_state["disabled"] = True
+                        safe_flag_modified(session_context_db_entry, "context_data")
 
-                if resolved_sticker_url:
+                if should_send_sticker:
                     try:
                         twilio_client.messages.create(
                             from_=to_number_raw,
                             to=from_number_raw,
                             media_url=[resolved_sticker_url],
                         )
+                        sticker_state["last_sent_ts"] = now
+                        safe_flag_modified(session_context_db_entry, "context_data")
                         current_app.logger.info(
                             f"[WELCOME] Sticker sent to {from_number_cleaned} using {resolved_sticker_url}."
                         )
@@ -400,6 +450,8 @@ def whatsapp_webhook():
                         current_app.logger.warning(
                             f"[WELCOME] Failed to send welcome sticker to {from_number_cleaned}: {e}"
                         )
+                        sticker_state["disabled"] = True
+                        safe_flag_modified(session_context_db_entry, "context_data")
 
                 greeting_sent = False
 
