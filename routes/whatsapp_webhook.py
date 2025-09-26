@@ -355,12 +355,11 @@ def whatsapp_webhook():
                     app=current_app,
                     request_url_root=request.url_root,
                     is_secure=request.is_secure,
-                )
-                if normalized_base:
-                    normalized_base = normalized_base.rstrip('/')
+                ) or ""
+                normalized_base = normalized_base.rstrip('/') if normalized_base else ""
                 welcome_media_absolute = _resolve_media_url(
                     fallback_media_url,
-                    base_url=normalized_base,
+                    base_url=normalized_base or None,
                     app=current_app,
                     is_secure=request.is_secure,
                 )
@@ -403,7 +402,7 @@ def whatsapp_webhook():
                     chat_session_uuid=chat_session_id_internal, channel="whatsapp"
                 )
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
-                welcome_response_payload.setdefault("_base_url", normalized_base or "")
+                welcome_response_payload.setdefault("_base_url", normalized_base)
                 welcome_response_payload.setdefault("_request_url_root", (request.url_root or "").rstrip('/'))
                 if welcome_media_absolute:
                     welcome_response_payload.setdefault("image_url", welcome_media_absolute)

@@ -221,7 +221,6 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         greeting_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
         self.assertIn("body", greeting_kwargs)
 
-
         # Legacy welcome helper is no longer used.
         self.mock_welcome.assert_not_called()
 
