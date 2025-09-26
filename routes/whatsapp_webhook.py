@@ -347,12 +347,6 @@ def whatsapp_webhook():
                         f"[WELCOME] Template {template_sid} sent to {from_number_cleaned} with name: {user_name or '<unknown>'}."
                     )
 
-                greeting = (
-                    f"*¡Hola, {user_name}!* Acá *Juni* \U0001F44B"
-                    if user_name
-                    else "*¡Hola!* Soy *Juni* \U0001F44B ¿Cómo te llamás?"
-                )
-                media_kwargs: dict[str, object] = {}
                 fallback_media_url = current_app.config.get("WELCOME_MEDIA_URL")
                 media_base_url = current_app.config.get("APP_BASE_URL") or request.url_root
                 normalized_base = _resolve_media_url(
@@ -370,11 +364,24 @@ def whatsapp_webhook():
                     app=current_app,
                     is_secure=request.is_secure,
                 )
+
                 if welcome_media_absolute:
-                    media_kwargs['media_url'] = [welcome_media_absolute]
-                    media_kwargs.setdefault('persistent_action', []).append(
-                        f"whatsapp:sticker:{welcome_media_absolute}"
-                    )
+                    try:
+                        twilio_client.messages.create(
+                            from_=to_number_raw,
+                            to=from_number_raw,
+                            media_url=[welcome_media_absolute],
+                        )
+                    except Exception as sticker_exc:
+                        current_app.logger.error(
+                            f"[WELCOME] Failed to send sticker media: {sticker_exc}"
+                        )
+
+                greeting = (
+                    f"*¡Hola, {user_name}!* Acá *Juni* \U0001F44B"
+                    if user_name
+                    else "*¡Hola!* Soy *Juni* \U0001F44B ¿Cómo te llamás?"
+                )
 
                 twilio_client.messages.create(
                     from_=to_number_raw, to=from_number_raw, body=greeting, **media_kwargs
@@ -407,7 +414,7 @@ def whatsapp_webhook():
                     app=current_app,
                     is_secure=request.is_secure,
                 )
-                if welcome_audio_absolute and not welcome_response_payload.get("audio_url"):
+                if welcome_audio_absolute:
                     welcome_response_payload["audio_url"] = welcome_audio_absolute
                 _send_delayed_payload(
                     client=twilio_client, to_number=to_number_raw, from_number=from_number_raw,
@@ -458,8 +465,6 @@ def whatsapp_webhook():
                     chat_session_uuid=chat_session_id_internal, channel="whatsapp",
                 )
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
-                welcome_response_payload.setdefault("_base_url", normalized_base or "")
-                welcome_response_payload.setdefault("_request_url_root", (request.url_root or "").rstrip('/'))
 
                 fallback_media_url = current_app.config.get("WELCOME_MEDIA_URL")
                 media_base_url = current_app.config.get("APP_BASE_URL") or request.url_root
@@ -470,11 +475,14 @@ def whatsapp_webhook():
                     request_url_root=request.url_root,
                     is_secure=request.is_secure,
                 )
-                if normalized_base:
-                    normalized_base = normalized_base.rstrip('/')
+                trimmed_base = normalized_base.rstrip('/') if normalized_base else ""
+                welcome_response_payload.setdefault("_base_url", trimmed_base)
+                welcome_response_payload.setdefault(
+                    "_request_url_root", (request.url_root or "").rstrip('/')
+                )
                 welcome_media_absolute = _resolve_media_url(
                     fallback_media_url,
-                    base_url=normalized_base,
+                    base_url=trimmed_base,
                     app=current_app,
                     is_secure=request.is_secure,
                 )
@@ -483,11 +491,11 @@ def whatsapp_webhook():
 
                 welcome_audio_absolute = _resolve_media_url(
                     current_app.config.get("WELCOME_AUDIO_URL"),
-                    base_url=normalized_base,
+                    base_url=trimmed_base,
                     app=current_app,
                     is_secure=request.is_secure,
                 )
-                if welcome_audio_absolute and not welcome_response_payload.get("audio_url"):
+                if welcome_audio_absolute:
                     welcome_response_payload["audio_url"] = welcome_audio_absolute
                 _send_delayed_payload(
                     client=twilio_client,
