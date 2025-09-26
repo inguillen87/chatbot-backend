@@ -349,4 +349,6 @@ def consultar_ocupacion(ubicacion_texto_o_coord: Any) -> Dict[str, Any]:
         "geocode_source": geocode_source,
         "geocode_confidence": geocode_confidence,
         "matched_reference": matched_reference,
+        "resolved_lat": user_lat,
+        "resolved_lon": user_lon,
     }

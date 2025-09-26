@@ -9,6 +9,77 @@ import openai
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = os.environ.get("OPENAI_MAP_MODEL", "gpt-4.1-mini")
+CHAT_FALLBACK_MODEL = os.environ.get("OPENAI_MAP_CHAT_MODEL", "gpt-4o-mini")
+
+
+def _solicitar_json_a_openai(
+    *,
+    api_key: str,
+    prompt: str,
+    schema: dict,
+    system_message: str,
+):
+    """Pide a OpenAI que devuelva JSON válido, con fallback para SDK antiguos."""
+
+    client_ctor = getattr(openai, "OpenAI", None)
+    if client_ctor is not None:
+        try:
+            with httpx.Client(proxy=None, trust_env=False) as http_client:
+                client = client_ctor(api_key=api_key, http_client=http_client)
+                responses_api = getattr(client, "responses", None)
+                if responses_api is None or not hasattr(responses_api, "create"):
+                    logger.debug(
+                        "Instancia OpenAI sin soporte para responses.create; se usará ChatCompletion."
+                    )
+                else:
+                    response = responses_api.create(
+                        model=DEFAULT_MODEL,
+                        input=[
+                            {"role": "system", "content": system_message},
+                            {"role": "user", "content": prompt},
+                        ],
+                        response_format={"type": "json_schema", "json_schema": schema},
+                    )
+                    text = response.output[0].content[0].text
+                    return json.loads(text)
+        except AttributeError:
+            # Instalada una versión previa del SDK sin soporte para responses.create
+            logger.debug(
+                "El cliente OpenAI no expone responses.create; aplicando ChatCompletion fallback.",
+                exc_info=True,
+            )
+        except json.JSONDecodeError as exc:
+            logger.warning("Respuesta JSON inválida del endpoint responses: %s", exc, exc_info=True)
+        except Exception as exc:  # pragma: no cover - SDK/network specifics
+            logger.warning("OpenAI responses API falló, intentando fallback: %s", exc, exc_info=True)
+
+    if hasattr(openai, "ChatCompletion"):
+        try:
+            openai.api_key = api_key
+            completion = openai.ChatCompletion.create(
+                model=CHAT_FALLBACK_MODEL,
+                temperature=0,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system_message
+                        + " Respondé únicamente con JSON válido que cumpla el esquema.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            text = completion["choices"][0]["message"]["content"]
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            logger.error("Respuesta JSON inválida del fallback ChatCompletion: %s", exc, exc_info=True)
+        except Exception as exc:  # pragma: no cover - network/SDK failures
+            logger.error(
+                "Error al solicitar JSON a OpenAI mediante ChatCompletion: %s",
+                exc,
+                exc_info=True,
+            )
+
+    return None
 
 
 def geocodificar_inversa_llm(latitud: float, longitud: float) -> dict | None:
@@ -23,39 +94,31 @@ def geocodificar_inversa_llm(latitud: float, longitud: float) -> dict | None:
     if not api_key:
         logger.warning("OPENAI_API_KEY not configured")
         return None
-    try:
-        http_client = httpx.Client(proxy=None, trust_env=False)
-        client = openai.OpenAI(api_key=api_key, http_client=http_client)
-        prompt = (
-            "Convierte las coordenadas en una dirección humana. "
-            f"Latitud: {latitud}, Longitud: {longitud}. "
-            "Responde solamente en JSON con el campo 'formatted_address'."
-        )
-        schema = {
-            "name": "address_schema",
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "formatted_address": {"type": "string"}
-                },
-                "required": ["formatted_address"],
-                "additionalProperties": False,
-            },
-        }
-        response = client.responses.create(
-            model=DEFAULT_MODEL,
-            input=prompt,
-            response_format={"type": "json_schema", "json_schema": schema},
-        )
-        text = response.output[0].content[0].text
-        data = json.loads(text)
-        return data
-    except Exception as e:
-        logger.error(
-            f"Error al geocodificar inversamente con OpenAI: {e}",
-            exc_info=True,
-        )
-        return None
+
+    schema = {
+        "name": "address_schema",
+        "schema": {
+            "type": "object",
+            "properties": {"formatted_address": {"type": "string"}},
+            "required": ["formatted_address"],
+            "additionalProperties": False,
+        },
+    }
+    prompt = (
+        "Convierte las coordenadas en una dirección humana. "
+        f"Latitud: {latitud}, Longitud: {longitud}."
+    )
+    system_message = (
+        "Sos un asistente geográfico. Generá una descripción breve en español "
+        "para las coordenadas proporcionadas."
+    )
+
+    return _solicitar_json_a_openai(
+        api_key=api_key,
+        prompt=prompt,
+        schema=schema,
+        system_message=system_message,
+    )
 
 
 def geocodificar_texto_llm(
@@ -128,17 +191,14 @@ def geocodificar_texto_llm(
         },
     }
 
-    try:
-        http_client = httpx.Client(proxy=None, trust_env=False)
-        client = openai.OpenAI(api_key=api_key, http_client=http_client)
-        response = client.responses.create(
-            model=DEFAULT_MODEL,
-            input=prompt,
-            response_format={"type": "json_schema", "json_schema": schema},
-        )
-        text = response.output[0].content[0].text
-        data = json.loads(text)
-        return data
-    except Exception as exc:  # pragma: no cover - network/SDK failures
-        logger.error("Error al geocodificar dirección con OpenAI: %s", exc, exc_info=True)
-        return None
+    system_message = (
+        "Sos un asistente SIG experto en Mendoza y sus municipios. "
+        "Debés devolver únicamente JSON con latitud, longitud y metadatos."
+    )
+
+    return _solicitar_json_a_openai(
+        api_key=api_key,
+        prompt=prompt,
+        schema=schema,
+        system_message=system_message,
+    )
