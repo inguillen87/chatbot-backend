@@ -7,7 +7,6 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from .herramientas_municipio import TOOL_REGISTRY
 from .estacionamiento_utils import _dist_m
-from .google_maps_service import get_coordinates
 from .estacionamiento_service import consultar_ocupacion
 from .conversation_state import ConversationState
 
@@ -163,7 +162,30 @@ class PointsOfInterestHandler:
                     return combined
         return combined
 
-    def _parking_response(self, location: dict | str) -> dict:
+    @staticmethod
+    def _normalize_reference_value(value: str | None) -> str | None:
+        if not value:
+            return None
+        cleaned = value.replace("_", " ")
+        cleaned = " ".join(cleaned.split())
+        cleaned = cleaned.strip(",.;:- ")
+        lowered = cleaned.lower()
+        banned = {
+            "buscar",
+            "buscar estacionamiento",
+            "buscar libre",
+            "compartir ubicacion",
+            "compartir ubicación",
+            "ubicacion",
+            "ubicación",
+            "tu ubicacion",
+            "libre",
+        }
+        if not cleaned or lowered in banned:
+            return None
+        return cleaned
+
+    def _parking_response(self, location: dict | str, info: dict | None = None) -> dict:
         """Generate a parking response based on coordinates or an address."""
         if not self.parking_data:
             from .municipio_responder import _message_with_menu
@@ -195,22 +217,53 @@ class PointsOfInterestHandler:
         else:
             address = str(location)
 
-        if (lat is None or lon is None) and address:
-            try:
-                coords = get_coordinates(address)
-                if coords:
-                    lat, lon = float(coords["lat"]), float(coords["lon"])
-            except Exception as exc:  # pragma: no cover
-                logger.error("Error geocoding address %s: %s", address, exc, exc_info=True)
-        spots: list[dict] = []
-        info = {}
-        try:
+        consulta_payload = None
+        if info is None:
             if lat is not None and lon is not None:
-                info = consultar_ocupacion({"lat": lat, "lon": lon})
-            elif address:
-                info = consultar_ocupacion(address)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.error("Error consultando ocupación: %s", exc, exc_info=True)
+                consulta_payload = {"lat": lat, "lon": lon}
+            else:
+                consulta_payload = address or location
+            try:
+                if consulta_payload is not None:
+                    info = consultar_ocupacion(consulta_payload)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error("Error consultando ocupación: %s", exc, exc_info=True)
+                info = {}
+        elif not isinstance(info, dict):
+            info = {}
+
+        lat = lat if lat is not None else info.get("resolved_lat")
+        lon = lon if lon is not None else info.get("resolved_lon")
+        if not address:
+            address = (
+                info.get("matched_reference")
+                or info.get("reference_location")
+                or (location.get("address") if isinstance(location, dict) else None)
+                or ""
+            )
+
+        if info.get("geocode_source") == "invalid_query" and not info.get("segmentos"):
+            from .municipio_responder import _message_with_menu  # local import
+            payload = _message_with_menu(info.get("texto") or "Necesito una dirección para ayudarte.", self.context)
+            payload.update({
+                "fuente": "points_of_interest_handler",
+                "geocode_source": info.get("geocode_source"),
+            })
+            return payload
+
+        if lat is None or lon is None:
+            message = info.get("texto") or "No pude ubicar esa dirección. Probá con calle y altura (ej.: San Martín 1200)."
+            from .municipio_responder import _message_with_menu
+            payload = _message_with_menu(message, self.context)
+            payload.update({
+                "fuente": "points_of_interest_handler",
+                "geocode_source": info.get("geocode_source"),
+            })
+            return payload
+
+        spots: list[dict] = []
+        if not isinstance(info, dict):
+            info = {}
 
         libres = info.get("libres") if isinstance(info, dict) else None
         cam_name = info.get("camera") if isinstance(info, dict) else None
@@ -237,10 +290,28 @@ class PointsOfInterestHandler:
         if not nearest:
             nearest = self.parking_data[:3]
 
-        lines = [
-            f"Datos de estacionamiento cerca de {address or 'tu ubicación'}:" \
+        referencia = (
+            self._normalize_reference_value(info.get("matched_reference") if isinstance(info, dict) else None)
+            or self._normalize_reference_value(info.get("reference_location") if isinstance(info, dict) else None)
+            or self._normalize_reference_value(address)
+        )
+        if referencia is None and isinstance(location, dict):
+            referencia = self._normalize_reference_value(location.get("address") or location.get("formatted_address"))
+        if referencia is None and isinstance(location, str):
+            referencia = self._normalize_reference_value(location)
+        if referencia is None:
+            referencia = "tu ubicación"
+
+        encabezado = info.get("texto") if isinstance(info, dict) else None
+        if encabezado:
+            lines = [encabezado.strip(), ""]
+        else:
+            lines = []
+
+        lines.append(
+            f"Datos de estacionamiento cerca de {referencia}:"
             + (f" (Fuente: {cam_name} {timestamp})" if cam_name and timestamp else "")
-        ]
+        )
 
         remaining_libres = libres if isinstance(libres, int) and libres >= 0 else None
 
@@ -295,6 +366,13 @@ class PointsOfInterestHandler:
             "camera": cam_name,
             "timestamp": timestamp,
             "spots": spots,
+            "geocode_source": info.get("geocode_source") if isinstance(info, dict) else None,
+            "geocode_confidence": info.get("geocode_confidence") if isinstance(info, dict) else None,
+            "matched_reference": info.get("matched_reference") if isinstance(info, dict) else None,
+        })
+        base_payload.update({
+            "resolved_lat": lat,
+            "resolved_lon": lon,
         })
         return base_payload
     def handle(self, payload: dict) -> dict | None:
@@ -315,23 +393,49 @@ class PointsOfInterestHandler:
                 address_candidate = pregunta
                 for word in keywords:
                     address_candidate = address_candidate.replace(word, "")
+                address_candidate = address_candidate.replace("_", " ")
+                address_candidate = " ".join(address_candidate.split())
                 address_candidate = address_candidate.strip(",.;:- ")
                 coords = None
-                if len(address_candidate) > 3:
+                info = None
+                cleaned_candidate = self._normalize_reference_value(address_candidate)
+                if cleaned_candidate and len(cleaned_candidate) > 3:
                     try:
-                        coords = get_coordinates(address_candidate)
+                        info = consultar_ocupacion(cleaned_candidate)
                     except Exception:  # pragma: no cover - defensive
-                        coords = None
+                        info = None
+                    if isinstance(info, dict) and info.get("resolved_lat") is not None and info.get("resolved_lon") is not None:
+                        coords = {
+                            "lat": info.get("resolved_lat"),
+                            "lon": info.get("resolved_lon"),
+                            "address": info.get("matched_reference") or cleaned_candidate,
+                        }
+                    elif isinstance(info, dict) and info.get("texto") and not info.get("segmentos"):
+                        # Forward the message returned by the occupancy service
+                        municipio_ctx["estado_conversacion"] = ConversationState.ESPERANDO_UBICACION_GENERAL.name
+                        municipio_ctx["consulta_pendiente_ubicacion"] = original_question
+                        municipio_ctx["ultima_consulta_poi"] = original_question
+                        if chat_db_context:
+                            flag_modified(chat_db_context, "context_data")
+                        return {
+                            "message_body": info.get("texto"),
+                            "options_list": [
+                                {"texto": "Compartir ubicación", "action": "compartir_ubicacion"},
+                                {"texto": "Cancelar", "action": "cancelar"},
+                            ],
+                            "message_type": "interactive_buttons",
+                            "fuente": "pedir_ubicacion_estacionamiento",
+                        }
                 if coords:
                     location = {
-                        "address": address_candidate,
+                        "address": coords.get("address") or cleaned_candidate,
                         "lat": coords.get("lat"),
                         "lon": coords.get("lon"),
                     }
                     municipio_ctx["ultima_consulta_poi"] = original_question
                     if chat_db_context:
                         flag_modified(chat_db_context, "context_data")
-                    return self._parking_response(location)
+                    return self._parking_response(location, info=info if isinstance(info, dict) else None)
 
                 # Geocoding failed; remember query and ask for location
                 municipio_ctx["estado_conversacion"] = (

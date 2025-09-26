@@ -1,9 +1,10 @@
 import json
 import logging
-import requests
+import json
 import os
-import unicodedata
 import re
+import unicodedata
+import requests
 from geopy.exc import GeocoderServiceError, GeocoderTimedOut
 import services.google_maps_service as google_maps_service
 from services.config_loader import cargar_configuracion_municipio
@@ -12,7 +13,9 @@ from services.tts_orchestrator import generar_audio
 from models import MunicipioTicket
 from database import db
 from services.openai_bridge import client as openai_client
-from services.openai_maps_service import geocodificar_inversa_llm
+from services.openai_maps_service import geocodificar_inversa_llm, geocodificar_texto_llm
+from services.estacionamiento_utils import aproximar_coordenadas_por_texto
+from pathlib import Path
 
 # ... (el resto de tus herramientas y diccionarios)
 
@@ -741,70 +744,90 @@ def buscar_puntos_de_interes(
 def log_uso_herramienta(nombre, usuario, parametros, resultado):
     logger.info(f"[USO_HERRAMIENTA] {nombre} | Usuario: {usuario} | Parámetros: {parametros} | Resultado: {resultado[:100]}")
 
+_CAMARAS_CACHE: list[dict] | None = None
+
+
+def _load_camaras_referencia() -> list[dict]:
+    global _CAMARAS_CACHE
+    if _CAMARAS_CACHE is None:
+        cam_path = Path(__file__).resolve().parents[1] / "data" / "estacionamiento" / "camaras.json"
+        try:
+            with open(cam_path, "r", encoding="utf-8") as fh:
+                _CAMARAS_CACHE = json.load(fh)
+        except Exception:
+            _CAMARAS_CACHE = []
+    return _CAMARAS_CACHE
+
+
 def validar_y_formatear_direccion(direccion: str, municipio_config: dict | None = None) -> dict | None:
-    """
-    Valida y formatea una dirección utilizando la API de Google Maps,
-    con bias hacia la localidad y provincia del municipio.
-    """
-    if not Maps_API_KEY:
-        logger.error("[GEO] Maps_API_KEY no configurada.")
+    """Valida y formatea una dirección sin depender de Google Maps."""
+
+    direccion = (direccion or "").strip()
+    if not direccion:
         return None
 
-    component_parts = ["country:AR"]
-    if municipio_config:
-        provincia = municipio_config.get("provincia")
-        localidad = municipio_config.get("ciudad")
-        if provincia and provincia != 'N/A':
-            component_parts.append(f"administrative_area:{provincia.replace(' ', '')}")
-        if localidad and localidad != 'N/A':
-            component_parts.append(f"locality:{localidad.replace(' ', '')}")
+    municipio_config = municipio_config or {}
+    localidad = (
+        municipio_config.get("ciudad")
+        or municipio_config.get("ciudad_default")
+        or municipio_config.get("localidad")
+    )
+    provincia = (
+        municipio_config.get("provincia")
+        or municipio_config.get("provincia_default")
+    )
 
-    components_str = "|".join(component_parts)
-    logger.info(f"Geocoding with components: {components_str}")
+    camaras = _load_camaras_referencia()
 
-    params = {
-        'address': direccion,
-        'key': Maps_API_KEY,
-        'language': 'es',
-        'components': components_str
-    }
-
-    geocode_url = "https://maps.googleapis.com/maps/api/geocode/json"
-
-    try:
-        response = requests.get(geocode_url, params=params)
-        response.raise_for_status()
-        data = response.json()
-
-        if data and data.get('status') == 'OK' and data.get('results'):
-            best_result = data['results'][0]
-
-            # Additional check: Does the result actually fall within a reasonable area?
-            # This can prevent overly broad matches. For now, we trust Google's first result if status is OK.
-
-            formatted_address = best_result.get('formatted_address')
-            location = best_result['geometry']['location']
-            lat, lng = location['lat'], location['lng']
-
-            logger.info(f"[GEO] Dirección '{direccion}' geocodificada exitosamente a '{formatted_address}' ({lat}, {lng}).")
-
+    heuristica = aproximar_coordenadas_por_texto(direccion, camaras)
+    if heuristica:
+        lat = heuristica.get("lat")
+        lon = heuristica.get("lon")
+        if lat is not None and lon is not None:
+            formatted = direccion
+            if localidad and localidad.lower() not in formatted.lower():
+                formatted = f"{formatted}, {localidad}"
+            if provincia and provincia.lower() not in formatted.lower():
+                formatted = f"{formatted}, {provincia}"
             return {
-                "formatted_address": formatted_address,
-                "lat": lat,
-                "lng": lng
+                "formatted_address": formatted,
+                "lat": float(lat),
+                "lng": float(lon),
+                "confidence": heuristica.get("confidence"),
+                "source": "parking_heuristic",
             }
-        else:
-            # Log the failure reason from Google
-            status = data.get('status', 'N/A')
-            error_message = data.get('error_message', 'No error message provided.')
-            logger.warning(f"[GEO] Falla al geocodificar '{direccion}'. Status: {status}. Error: {error_message}")
-            return None
-    except requests.exceptions.RequestException as e:
-        logger.error(f"[GEO] Error de conexión con Google API para geocoding ({direccion}): {e}")
-        return None
-    except Exception as e:
-        logger.error(f"[GEO] Error inesperado en geocoding para {direccion}: {e}", exc_info=True)
-        return None
+
+    llm_result = geocodificar_texto_llm(
+        direccion,
+        puntos_referencia=camaras,
+        localidad_predeterminada=localidad,
+    )
+    if llm_result:
+        try:
+            lat = float(llm_result.get("lat"))
+            lon = float(llm_result.get("lon"))
+        except (TypeError, ValueError):
+            lat = lon = None
+        if lat is not None and lon is not None:
+            formatted = (
+                llm_result.get("normalized_query")
+                or llm_result.get("matched_reference")
+                or direccion
+            )
+            if localidad and localidad.lower() not in formatted.lower():
+                formatted = f"{formatted}, {localidad}"
+            if provincia and provincia.lower() not in formatted.lower():
+                formatted = f"{formatted}, {provincia}"
+            return {
+                "formatted_address": formatted,
+                "lat": lat,
+                "lng": lon,
+                "confidence": llm_result.get("confidence"),
+                "source": "openai_llm",
+            }
+
+    logger.warning("[GEO] No se pudo resolver la dirección '%s' sin Google.", direccion)
+    return None
 
 def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
     """Obtiene una dirección formateada y sus componentes a partir de coordenadas.
