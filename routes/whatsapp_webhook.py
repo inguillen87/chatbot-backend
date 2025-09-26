@@ -6,6 +6,7 @@ import requests
 import io
 import json
 import threading
+from typing import Optional
 from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
 from extensions import db  # Import db instance for database operations
@@ -51,6 +52,29 @@ def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
         text = text[split_idx:].lstrip()
     parts.append(text)
     return parts
+
+
+def _resolve_public_url(url: Optional[str], base_url: str) -> Optional[str]:
+    """Return an absolute URL for ``url`` using ``base_url`` when relative."""
+
+    if not url:
+        return None
+
+    url = str(url).strip()
+    if not url:
+        return None
+
+    if url.startswith(("http://", "https://")):
+        return url
+
+    base = (base_url or "").rstrip("/")
+    if not base:
+        return url
+
+    if url.startswith("/"):
+        return f"{base}{url}"
+
+    return f"{base}/{url}"
 
 
 def _send_delayed_payload(client, to_number: str, from_number: str, payload: dict, delay: int, app):
@@ -235,6 +259,15 @@ def whatsapp_webhook():
 
     should_trigger_welcome = is_override or (is_greeting and not is_waiting_for_info)
 
+    request_root = request.url_root or ""
+    request_root_stripped = request_root.rstrip("/")
+    configured_base_url = (current_app.config.get("APP_BASE_URL") or "").rstrip("/")
+    effective_base_url = configured_base_url or request_root_stripped
+    configured_sticker_url = current_app.config.get("WELCOME_MEDIA_URL")
+    configured_audio_url = current_app.config.get("WELCOME_AUDIO_URL")
+    resolved_sticker_url = _resolve_public_url(configured_sticker_url, effective_base_url)
+    resolved_audio_url = _resolve_public_url(configured_audio_url, effective_base_url)
+
     if should_trigger_welcome and not is_rate_limited:
         current_app.logger.info(f"[WELCOME] Triggering Boti-style welcome for user {from_number_cleaned}. Reason: '{normalized_input}'.")
 
@@ -267,6 +300,16 @@ def whatsapp_webhook():
                         f"[WELCOME] Template {template_sid} sent to {from_number_cleaned} with name: {user_name or '<unknown>'}."
                     )
 
+                if resolved_sticker_url:
+                    twilio_client.messages.create(
+                        from_=to_number_raw,
+                        to=from_number_raw,
+                        media_url=[resolved_sticker_url],
+                    )
+                    current_app.logger.info(
+                        f"[WELCOME] Sticker sent to {from_number_cleaned} using {resolved_sticker_url}."
+                    )
+
                 greeting = (
                     f"*¡Hola, {user_name}!* Acá *Juni* \U0001F44B"
                     if user_name
@@ -282,7 +325,7 @@ def whatsapp_webhook():
                     db.session.commit()
                     return "OK", 200
             except Exception as e:
-                current_app.logger.error(f"[WELCOME] Failed to send sticker/template: {e}")
+                current_app.logger.error(f"[WELCOME] Failed to send welcome template or sticker: {e}")
 
             try:
                 welcome_response_payload = responder_chatboc(
@@ -291,6 +334,26 @@ def whatsapp_webhook():
                     tipo_chat=client_user.tipo_chat, anon_id=from_number_cleaned,
                     chat_session_uuid=chat_session_id_internal, channel="whatsapp"
                 )
+                if isinstance(welcome_response_payload, dict):
+                    if effective_base_url:
+                        welcome_response_payload.setdefault("_base_url", effective_base_url)
+                    if request_root:
+                        welcome_response_payload.setdefault("_request_url_root", request_root)
+
+                    existing_image_url = welcome_response_payload.get("image_url")
+                    resolved_existing_image = _resolve_public_url(existing_image_url, effective_base_url)
+                    if resolved_existing_image:
+                        welcome_response_payload["image_url"] = resolved_existing_image
+                    elif resolved_sticker_url:
+                        welcome_response_payload.setdefault("image_url", resolved_sticker_url)
+
+                    existing_audio_url = welcome_response_payload.get("audio_url")
+                    resolved_existing_audio = _resolve_public_url(existing_audio_url, effective_base_url)
+                    if resolved_existing_audio:
+                        welcome_response_payload["audio_url"] = resolved_existing_audio
+                    elif resolved_audio_url:
+                        welcome_response_payload.setdefault("audio_url", resolved_audio_url)
+
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
                 _send_delayed_payload(
                     client=twilio_client, to_number=to_number_raw, from_number=from_number_raw,
@@ -340,6 +403,26 @@ def whatsapp_webhook():
                     tipo_chat=client_user.tipo_chat, anon_id=from_number_cleaned,
                     chat_session_uuid=chat_session_id_internal, channel="whatsapp",
                 )
+                if isinstance(welcome_response_payload, dict):
+                    if effective_base_url:
+                        welcome_response_payload.setdefault("_base_url", effective_base_url)
+                    if request_root:
+                        welcome_response_payload.setdefault("_request_url_root", request_root)
+
+                    existing_image_url = welcome_response_payload.get("image_url")
+                    resolved_existing_image = _resolve_public_url(existing_image_url, effective_base_url)
+                    if resolved_existing_image:
+                        welcome_response_payload["image_url"] = resolved_existing_image
+                    elif resolved_sticker_url:
+                        welcome_response_payload.setdefault("image_url", resolved_sticker_url)
+
+                    existing_audio_url = welcome_response_payload.get("audio_url")
+                    resolved_existing_audio = _resolve_public_url(existing_audio_url, effective_base_url)
+                    if resolved_existing_audio:
+                        welcome_response_payload["audio_url"] = resolved_existing_audio
+                    elif resolved_audio_url:
+                        welcome_response_payload.setdefault("audio_url", resolved_audio_url)
+
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
                 _send_delayed_payload(
                     client=twilio_client,
