@@ -5,14 +5,15 @@ from models import User
 import logging
 import requests
 
+from services.plan_config import (
+    MERCADOPAGO_PLAN_LOOKUP,
+    apply_plan_to_user,
+    serialize_plan_for_response,
+)
+
 mp_bp = Blueprint("mp_bp", __name__)
 
 ACCESS_TOKEN = "TEST-1688111541735106-061215-d58dd42a5db75ad361985176634393ee-2474247593"
-
-PLANES = {
-    "2c9380849764e81a01976585767f0040": "pro",   # PRO
-    "2c9380849763daeb0197658791ee00b1": "full",  # FULL
-}
 
 @mp_bp.route("/mercadopago_webhook", methods=["POST"])
 def mercadopago_webhook():
@@ -43,7 +44,7 @@ def mercadopago_webhook():
             logging.warning(f"Faltan datos: {info}")
             return jsonify({"error": "Faltan datos"}), 400
 
-        plan = PLANES.get(plan_id)
+        plan = MERCADOPAGO_PLAN_LOOKUP.get(plan_id)
         if not plan:
             logging.warning(f"Plan no reconocido: {plan_id}")
             return jsonify({"error": "Plan desconocido"}), 400
@@ -54,17 +55,22 @@ def mercadopago_webhook():
             logging.warning(f"Usuario no encontrado para email: {email}")
             return jsonify({"error": "Usuario no encontrado"}), 404
 
-        # Actualizá datos del usuario
-        user.plan = plan.lower()
-        user.preapproval_id = preapproval_id
-        user.plan_status = status
-        if user.plan == "pro":
-            user.limite_preguntas = 200
-        elif user.plan == "full":
-            user.limite_preguntas = None
+        # Actualizá datos del usuario con la metadata centralizada
+        plan_metadata = apply_plan_to_user(
+            user,
+            plan,
+            status=status,
+            preapproval_id=preapproval_id,
+        )
         db.session.commit()
         logging.info(f"Usuario {email} actualizado a plan {plan}, status {status}")
 
-        return jsonify({"ok": True, "msg": f"Upgrade exitoso a {plan} ({status})"})
+        return jsonify(
+            {
+                "ok": True,
+                "msg": f"Upgrade exitoso a {plan} ({status})",
+                "plan": serialize_plan_for_response(plan_metadata),
+            }
+        )
 
     return jsonify({"ok": False, "msg": "Evento ignorado"}), 200
