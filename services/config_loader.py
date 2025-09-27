@@ -13,19 +13,39 @@ logger = logging.getLogger(__name__)
 
 _default_data_path = os.environ.get("DATA_DIR", "/data")
 
-try:
-    # Ensure the directory exists so subsequent code can rely on it.
-    os.makedirs(os.path.join(_default_data_path, "municipios"), exist_ok=True)
-except OSError:
-    # Fallback to repo `data` directory if `/data` cannot be created/written.
-    _default_data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
-    os.makedirs(os.path.join(_default_data_path, "municipios"), exist_ok=True)
+def _ensure_base_directory(base_path: str, *subdirs: str) -> str:
+    """Ensure the desired directory tree exists, returning the usable base path."""
+
+    try:
+        os.makedirs(os.path.join(base_path, *subdirs), exist_ok=True)
+        return base_path
+    except OSError:
+        return ""
+
+# Prefer the external persistent volume when available; otherwise fall back to
+# the repository bundled data directory for local development and automated
+# tests.
+base_path_candidate = _ensure_base_directory(_default_data_path, "municipios")
+if not base_path_candidate:
+    repo_data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+    _default_data_path = repo_data_path
+    _ensure_base_directory(_default_data_path, "municipios")
+else:
+    _default_data_path = base_path_candidate
+
+# Ensure PYME directories mirror the municipio layout so configuration files
+# can be dropped in the same persistent volume.
+_ensure_base_directory(_default_data_path, "pyme", "rubros")
 
 BASE_DATA_PATH = _default_data_path
 BASE_CONFIG_PATH = os.path.join(BASE_DATA_PATH, "municipios")
+BASE_PYME_CONFIG_PATH = os.path.join(BASE_DATA_PATH, "pyme", "rubros")
 
 _config_cache = {}
 _mtime_cache = {}
+
+_pyme_config_cache = {}
+_pyme_mtime_cache = {}
 
 
 def cargar_configuracion_municipio(municipio_id: str, archivo: str) -> dict:
@@ -82,4 +102,65 @@ def cargar_configuracion_municipio(municipio_id: str, archivo: str) -> dict:
         logger.error(f"[CONFIG] No se pudo cargar {ruta}: {e}")
         _config_cache[clave] = {}
         _mtime_cache[clave] = mtime
+        return {}
+
+
+def cargar_configuracion_pyme(rubro_slug: str, archivo: str) -> dict:
+    """Carga un archivo de configuración JSON para un rubro PYME específico."""
+
+    if not rubro_slug:
+        rubro_slug = "default"
+
+    rubro_slug = str(rubro_slug).strip().lower()
+    clave = (rubro_slug, archivo)
+
+    # Ruta prioritaria: volumen persistente (`/data/pyme/rubros/...`).
+    ruta = os.path.join(BASE_PYME_CONFIG_PATH, rubro_slug, archivo)
+
+    # Ruta de respaldo dentro del repositorio por si aún no existe una copia en
+    # el volumen persistente (p. ej. entornos de desarrollo o tests).
+    repo_ruta = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)), "data", "pyme", "rubros", rubro_slug, archivo
+    )
+
+    if not os.path.exists(ruta):
+        if os.path.exists(repo_ruta):
+            ruta = repo_ruta
+        elif rubro_slug != "default":
+            # Intentar fallback al rubro "default" para garantizar valores.
+            return cargar_configuracion_pyme("default", archivo)
+        else:
+            logger.warning(
+                f"[CONFIG] Archivo PYME '{archivo}' no encontrado para rubro '{rubro_slug}'."
+            )
+            _pyme_config_cache[clave] = {}
+            _pyme_mtime_cache[clave] = None
+            return {}
+
+    try:
+        mtime = os.path.getmtime(ruta)
+    except OSError as e:
+        if isinstance(e, FileNotFoundError):
+            logger.warning(
+                f"[CONFIG] Archivo de configuración PYME no encontrado en {ruta}. Usando valores por defecto."
+            )
+        else:
+            logger.error(f"[CONFIG] No se pudo acceder a {ruta}: {e}")
+        _pyme_config_cache[clave] = {}
+        _pyme_mtime_cache[clave] = None
+        return {}
+
+    if clave in _pyme_config_cache and _pyme_mtime_cache.get(clave) == mtime:
+        return _pyme_config_cache[clave]
+
+    try:
+        with open(ruta, "r", encoding="utf-8") as f:
+            datos = json.load(f)
+        _pyme_config_cache[clave] = datos
+        _pyme_mtime_cache[clave] = mtime
+        return datos
+    except Exception as e:
+        logger.error(f"[CONFIG] No se pudo cargar {ruta}: {e}")
+        _pyme_config_cache[clave] = {}
+        _pyme_mtime_cache[clave] = mtime
         return {}

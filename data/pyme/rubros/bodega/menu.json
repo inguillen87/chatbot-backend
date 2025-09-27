@@ -1,0 +1,58 @@
+{
+  "title": "Menú Bodega Cuatro Fincas",
+  "greeting": "¡Hola! Soy el asistente de Cuatro Fincas. Te acompaño con pedidos de vino, hospitality y soporte a distribuidores.",
+  "help_text": "Escribí, enviá tu ubicación para cotizar envíos, mandá fotos de etiquetas o una nota de voz con el pedido. Yo lo interpreto y genero la orden.",
+  "sections": [
+    {
+      "title": "Ventas y catálogo",
+      "description": "Seleccioná la opción que mejor se adapte a lo que necesitás",
+      "options": [
+        {
+          "id": "pyme_productos_stock",
+          "label": "Vinos y stock",
+          "description": "Tintos, blancos, espumantes y ediciones limitadas"
+        },
+        {
+          "id": "pyme_promociones",
+          "label": "Promos mayoristas",
+          "description": "Bonificaciones por volumen y combos gastronómicos"
+        },
+        {
+          "id": "pyme_hacer_pedido",
+          "label": "Cargar pedido",
+          "description": "Dictá tu nota de pedido o adjuntá una lista"
+        }
+      ]
+    },
+    {
+      "title": "Logística y hospitality",
+      "options": [
+        {
+          "id": "pyme_estado_pedido",
+          "label": "Estado de pedido",
+          "description": "Tracking de envíos, retiros y remitos"
+        },
+        {
+          "id": "pyme_factura",
+          "label": "Solicitar factura",
+          "description": "Descargá comprobantes o pedí duplicados"
+        },
+        {
+          "id": "pyme_hablar_agente",
+          "label": "Hablar con sommelier",
+          "description": "Coordiná degustaciones, eventos o wine pairing"
+        }
+      ]
+    }
+  ],
+  "quick_actions": [
+    {
+      "id": "pyme_otras_consultas",
+      "label": "Consultas generales",
+      "description": "Reservas de visitas, presupuestos corporativos o exportaciones",
+      "channels": ["all"],
+      "prompt": "Necesito información sobre hospitality, exportaciones y eventos corporativos"
+    }
+  ],
+  "footer": "Tip: si querés cotizar envío compartí la dirección del delivery o tu geolocalización."}
+

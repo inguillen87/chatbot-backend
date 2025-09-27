@@ -1,0 +1,14 @@
+[
+  {
+    "nombre": "Combo hospitality",
+    "descripcion": "20% OFF en mix de 3 etiquetas + espumante para aperturas de temporada",
+    "validez": "Hasta 30/09",
+    "canal": "Distribuidores y hoteles"
+  },
+  {
+    "nombre": "Mayorista nacional",
+    "descripcion": "Envío bonificado a todo el país para pedidos superiores a 40 cajas",
+    "validez": "Septiembre 2025",
+    "canal": "Operadores logísticos"
+  }
+]

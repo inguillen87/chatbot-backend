@@ -262,6 +262,73 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertFalse(welcome_state.get("sticker", {}).get("last_sent_ts"))
         self.assertFalse(welcome_state.get("template", {}).get("last_sent_ts"))
 
+    def test_pyme_welcome_uses_rubro_overrides(self):
+        self._set_owner_tipo_chat("pyme")
+        rubro = Rubro(clave="bodega", nombre="Bodega")
+        db.session.add(rubro)
+        db.session.commit()
+
+        self.mock_client_user.rubro = rubro
+        self.mock_client_user.rubro_id = rubro.id
+        db.session.add(self.mock_client_user)
+        db.session.commit()
+
+        self.mock_validator.validate.return_value = True
+        self.app.config["APP_BASE_URL"] = "https://chatboc.ar"
+        self.app.config["WELCOME_TEMPLATE_SID"] = "municipio_template"
+        self.app.config["WELCOME_MEDIA_URL"] = "https://example.com/municipio.webp"
+
+        mock_twilio_message = MagicMock()
+        mock_twilio_message.sid = "SMxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_test_sid"
+        self.mock_twilio_create.return_value = mock_twilio_message
+
+        override_config = {
+            "nombre_pyme": "Bodega Cuatro Fincas",
+            "whatsapp": {"numero": "+5492613168608"},
+            "welcome": {
+                "template_sid": "HX33b306d980ee328f7893db484ba349c4",
+                "template_variables": {"1": "{{pyme_whatsapp}}"},
+                "sticker_url": "/static/welcome/saludo_media_cuatrofincas.webp",
+                "sticker_cooldown_seconds": 120,
+            },
+        }
+
+        def _mock_loader(slug, archivo):
+            if archivo != "config.json":
+                return {}
+            if slug == "bodega":
+                return override_config
+            if slug == "default":
+                return {"welcome": {}}
+            return {}
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        with patch("routes.whatsapp_webhook.cargar_configuracion_pyme", side_effect=_mock_loader):
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.mock_twilio_create.call_count, 3)
+
+        template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertEqual(template_kwargs.get("content_sid"), override_config["welcome"]["template_sid"])
+        content_vars = json.loads(template_kwargs.get("content_variables"))
+        self.assertEqual(content_vars, {"1": "+5492613168608"})
+
+        sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        self.assertEqual(
+            sticker_kwargs.get("media_url"),
+            ["https://chatboc.ar/static/welcome/saludo_media_cuatrofincas.webp"],
+        )
+
+        greeting_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
+        self.assertIn("body", greeting_kwargs)
+
     def test_sticker_respects_cooldown(self):
         self._set_owner_tipo_chat("municipio")
         self.mock_validator.validate.return_value = True
