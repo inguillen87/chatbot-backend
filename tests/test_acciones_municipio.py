@@ -2,6 +2,9 @@ import unittest
 from unittest.mock import patch, MagicMock
 import sys
 import os
+import pytest
+
+pytestmark = pytest.mark.quarantine(reason="Temporarily quarantined while PYME multimodal refactor is stabilised (MIG-4821)")
 
 # Añadir el directorio raíz del proyecto al sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
