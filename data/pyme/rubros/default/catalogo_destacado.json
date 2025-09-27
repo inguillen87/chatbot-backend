@@ -1,0 +1,26 @@
+[
+  {
+    "sku": "DEMO-001",
+    "nombre": "Combo degustación",
+    "presentacion": "Caja x6 unidades",
+    "precio": 18000,
+    "moneda": "ARS",
+    "descripcion": "Selección de productos estrella para iniciar tu pedido"
+  },
+  {
+    "sku": "DEMO-002",
+    "nombre": "Kit premium",
+    "presentacion": "Caja regalo",
+    "precio": 31500,
+    "moneda": "ARS",
+    "descripcion": "Incluye folletería, merchandising y catálogos digitales"
+  },
+  {
+    "sku": "DEMO-003",
+    "nombre": "Reposición express",
+    "presentacion": "Pedido mínimo 12 unidades",
+    "precio": 9600,
+    "moneda": "ARS",
+    "descripcion": "Pensado para comercios con reposición semanal"
+  }
+]

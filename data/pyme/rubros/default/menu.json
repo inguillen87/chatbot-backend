@@ -1,0 +1,57 @@
+{
+  "title": "Menú comercial",
+  "greeting": "¡Hola! Soy tu asistente de ventas. Estoy listo para ayudarte con pedidos, stock y consultas.",
+  "help_text": "Podés escribirnos directamente o compartir tu ubicación, fotos de productos, notas de voz o archivos. Yo me ocupo de interpretarlos para que el equipo responda más rápido.",
+  "sections": [
+    {
+      "title": "Ventas y stock",
+      "description": "Consultas rápidas para nuevos pedidos",
+      "options": [
+        {
+          "id": "pyme_productos_stock",
+          "label": "Ver productos y stock",
+          "description": "Catálogo resumido con disponibilidad actual"
+        },
+        {
+          "id": "pyme_promociones",
+          "label": "Promociones vigentes",
+          "description": "Ofertas y combos especiales de esta semana"
+        },
+        {
+          "id": "pyme_hacer_pedido",
+          "label": "Cargar un pedido",
+          "description": "Armá tu nota de pedido en el chat"
+        }
+      ]
+    },
+    {
+      "title": "Seguimiento y soporte",
+      "options": [
+        {
+          "id": "pyme_estado_pedido",
+          "label": "Estado de mi pedido",
+          "description": "Consultá entregas, envíos y facturación"
+        },
+        {
+          "id": "pyme_factura",
+          "label": "Descargar factura",
+          "description": "Obtené comprobantes y resúmenes"
+        },
+        {
+          "id": "pyme_hablar_agente",
+          "label": "Hablar con un asesor",
+          "description": "Derivá la conversación al equipo comercial"
+        }
+      ]
+    }
+  ],
+  "quick_actions": [
+    {
+      "id": "pyme_otras_consultas",
+      "label": "Otras consultas",
+      "description": "Preguntas generales, catálogos especiales o presupuestos",
+      "channels": ["all"]
+    }
+  ],
+  "footer": "Tip: si querés cotizar envíos compartí tu ubicación o domicilio y te devolvemos el costo estimado."
+}

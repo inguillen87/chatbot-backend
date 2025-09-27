@@ -7,7 +7,7 @@ import io
 import json
 import threading
 import re
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
 from extensions import db  # Import db instance for database operations
@@ -23,6 +23,7 @@ from services.media_classifier import clasificar_adjunto_whatsapp
 from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.openai_maps_service import geocodificar_inversa_llm
 from services.municipio_responder import CONTEXTO_MUNICIPIO
+from services.config_loader import cargar_configuracion_pyme
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -76,6 +77,75 @@ def _resolve_public_url(url: Optional[str], base_url: str) -> Optional[str]:
         return f"{base}{url}"
 
     return f"{base}/{url}"
+
+
+def _slugify_rubro(value: Optional[str]) -> str:
+    """Normalize rubro names/keys to filesystem-friendly slugs."""
+
+    if not value:
+        return "default"
+
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value).lower()).strip("-")
+    return slug or "default"
+
+
+def _load_pyme_welcome_settings(owner: Optional[User]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Return welcome overrides and context for a PYME owner."""
+
+    if not owner:
+        return {}, {}
+
+    rubro_value = None
+    rubro_obj = getattr(owner, "rubro", None)
+    if rubro_obj:
+        rubro_value = getattr(rubro_obj, "clave", None) or getattr(rubro_obj, "nombre", None)
+
+    rubro_slug = _slugify_rubro(rubro_value)
+    config_data = cargar_configuracion_pyme(rubro_slug, "config.json") or {}
+    base_config = dict(config_data)
+
+    welcome_config = base_config.get("welcome") if isinstance(base_config.get("welcome"), dict) else {}
+    if not welcome_config and rubro_slug != "default":
+        default_config = cargar_configuracion_pyme("default", "config.json") or {}
+        default_welcome = default_config.get("welcome")
+        if isinstance(default_welcome, dict):
+            welcome_config = default_welcome
+            if not base_config:
+                base_config = dict(default_config)
+
+    context: Dict[str, Any] = {
+        "config": base_config,
+        "nombre_pyme": base_config.get("nombre_pyme"),
+        "whatsapp_numero": (base_config.get("whatsapp") or {}).get("numero"),
+    }
+
+    return welcome_config or {}, context
+
+
+def _render_template_variables(
+    variables: Dict[str, Any], *, user_name: str, context: Dict[str, Any]
+) -> Dict[str, str]:
+    """Resolve template variables replacing known placeholders."""
+
+    resolved: Dict[str, str] = {}
+    replacements = {
+        "{{user_name}}": user_name or "",
+        "{{customer_name}}": user_name or "",
+        "{{pyme_nombre}}": context.get("nombre_pyme") or "",
+        "{{pyme_whatsapp}}": context.get("whatsapp_numero") or "",
+    }
+
+    for key, raw_value in (variables or {}).items():
+        key_str = str(key)
+        value = ""
+        if raw_value is not None:
+            value = str(raw_value)
+            for placeholder, actual in replacements.items():
+                if placeholder in value:
+                    value = value.replace(placeholder, actual)
+        resolved[key_str] = value
+
+    return resolved
 
 
 def _normalize_whatsapp_address(value: Optional[str]) -> Optional[str]:
@@ -375,6 +445,19 @@ def whatsapp_webhook():
     resolved_sticker_url = _resolve_public_url(configured_sticker_url, effective_base_url)
     resolved_audio_url = _resolve_public_url(configured_audio_url, effective_base_url)
 
+    pyme_welcome_overrides: Dict[str, Any] = {}
+    pyme_welcome_context: Dict[str, Any] = {}
+    if client_user and getattr(client_user, "tipo_chat", "") == "pyme":
+        pyme_welcome_overrides, pyme_welcome_context = _load_pyme_welcome_settings(client_user)
+        if "sticker_url" in pyme_welcome_overrides:
+            resolved_sticker_url = _resolve_public_url(
+                pyme_welcome_overrides.get("sticker_url"), effective_base_url
+            )
+        if "audio_url" in pyme_welcome_overrides:
+            resolved_audio_url = _resolve_public_url(
+                pyme_welcome_overrides.get("audio_url"), effective_base_url
+            )
+
     if should_trigger_welcome and not is_rate_limited:
         current_app.logger.info(f"[WELCOME] Triggering Boti-style welcome for user {from_number_cleaned}. Reason: '{normalized_input}'.")
 
@@ -395,10 +478,41 @@ def whatsapp_webhook():
 
                 should_send_template = bool(template_sid) and not template_state.get("disabled", False)
                 should_send_sticker = bool(resolved_sticker_url) and not sticker_state.get("disabled", False)
+                template_variables_payload: Dict[str, str] = {"1": user_name or ""}
 
                 if client_user and getattr(client_user, "tipo_chat", None) == "pyme":
-                    should_send_template = False
-                    should_send_sticker = False
+                    if "sticker_cooldown_seconds" in pyme_welcome_overrides:
+                        try:
+                            sticker_cooldown = int(pyme_welcome_overrides.get("sticker_cooldown_seconds") or sticker_cooldown)
+                            if sticker_cooldown < 0:
+                                sticker_cooldown = 0
+                        except (TypeError, ValueError):
+                            current_app.logger.warning(
+                                "[WELCOME] Invalid sticker cooldown override '%s' for PYME owner %s.",
+                                pyme_welcome_overrides.get("sticker_cooldown_seconds"),
+                                getattr(client_user, "id", "<unknown>"),
+                            )
+
+                    if "template_sid" in pyme_welcome_overrides:
+                        template_sid = pyme_welcome_overrides.get("template_sid")
+                        should_send_template = bool(template_sid) and not template_state.get("disabled", False)
+                    else:
+                        should_send_template = False
+
+                    if "sticker_url" in pyme_welcome_overrides:
+                        should_send_sticker = bool(resolved_sticker_url) and not sticker_state.get("disabled", False)
+                    else:
+                        should_send_sticker = False
+
+                    template_vars_override = pyme_welcome_overrides.get("template_variables")
+                    if template_vars_override and should_send_template:
+                        template_variables_payload = _render_template_variables(
+                            template_vars_override,
+                            user_name=user_name,
+                            context=pyme_welcome_context,
+                        )
+                    elif not should_send_template:
+                        template_variables_payload = {}
 
                 last_sticker_ts = sticker_state.get("last_sent_ts")
                 if should_send_sticker and last_sticker_ts:
@@ -410,7 +524,7 @@ def whatsapp_webhook():
                             last_sticker_ts,
                         )
 
-                if should_send_template:
+                if should_send_template and template_sid:
                     params = {
                         "from_": to_number_raw,
                         "to": from_number_raw,
@@ -418,14 +532,17 @@ def whatsapp_webhook():
                         # Always supply the template variables. WhatsApp requires
                         # all placeholders to be populated, so an empty string is
                         # safer than omitting the field and triggering a 400.
-                        "content_variables": json.dumps({"1": user_name or ""}),
+                        "content_variables": json.dumps(template_variables_payload or {}),
                     }
                     try:
                         twilio_client.messages.create(**params)
                         template_state["last_sent_ts"] = now
                         safe_flag_modified(session_context_db_entry, "context_data")
                         current_app.logger.info(
-                            f"[WELCOME] Template {template_sid} sent to {from_number_cleaned} with name: {user_name or '<unknown>'}."
+                            "[WELCOME] Template %s sent to %s with variables: %s",
+                            template_sid,
+                            from_number_cleaned,
+                            template_variables_payload,
                         )
                     except Exception as e:
                         current_app.logger.warning(
@@ -492,9 +609,14 @@ def whatsapp_webhook():
                     if request_root:
                         welcome_response_payload.setdefault("_request_url_root", request_root)
 
-                    # Always remove the image_url from the delayed payload to prevent duplicate stickers.
-                    # The initial sticker is sent immediately, this delayed message should not have another one.
-                    if "image_url" in welcome_response_payload:
+                    existing_image_url = welcome_response_payload.get("image_url")
+                    resolved_existing_image = _resolve_public_url(existing_image_url, effective_base_url)
+                    if resolved_existing_image:
+                        if resolved_sticker_url and resolved_existing_image == resolved_sticker_url:
+                            welcome_response_payload.pop("image_url", None)
+                        else:
+                            welcome_response_payload["image_url"] = resolved_existing_image
+                    elif "image_url" in welcome_response_payload:
                         welcome_response_payload.pop("image_url", None)
 
                     existing_audio_url = welcome_response_payload.get("audio_url")
