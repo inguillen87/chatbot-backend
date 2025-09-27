@@ -570,29 +570,6 @@ def whatsapp_webhook():
                         sticker_state["disabled"] = True
                         safe_flag_modified(session_context_db_entry, "context_data")
 
-                greeting_sent = False
-
-                greeting = (
-                    f"*¡Hola, {user_name}!* Acá *Juni* \U0001F44B"
-                    if user_name
-                    else "*¡Hola!* Soy *Juni* \U0001F44B ¿Cómo te llamás?"
-                )
-                try:
-                    twilio_client.messages.create(
-                        from_=to_number_raw, to=from_number_raw, body=greeting
-                    )
-                    greeting_sent = True
-                except Exception as e:
-                    greeting_sent = False
-                    current_app.logger.error(
-                        f"[WELCOME] Failed to send welcome greeting to {from_number_cleaned}: {e}"
-                    )
-
-                if not user_name and greeting_sent:
-                    session_context_db_entry.context_data["awaiting_user_name"] = True
-                    safe_flag_modified(session_context_db_entry, "context_data")
-                    db.session.commit()
-                    return "OK", 200
             except Exception as e:
                 current_app.logger.error(f"[WELCOME] Failed to send welcome template or sticker: {e}")
 

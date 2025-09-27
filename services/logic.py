@@ -50,8 +50,8 @@ def es_rubro_publico(rubro) -> bool:
 
 from services.demo_response_engine import maybe_handle_demo_interaction
 from services.llm_utils import clasificar_entidad_con_llm
-from services.municipio_responder import responder_municipio
 from services.pymes import responder_pyme
+from services.municipio_responder import responder_municipio
 from services.response_formatter import render_audio_text
 from services.constants import CONTEXTO_MUNICIPIO
 

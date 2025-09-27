@@ -59,4 +59,5 @@ ACTION_HANDLER_MAP = {
     "pyme_hablar_agente": "services.actions.pyme_actions.HumanHandler",
     "pyme_otras_consultas": "services.actions.pyme_actions.OtrasConsultasHandler",
     "pyme_factura": "services.actions.pyme_actions.FacturaHandler",
+    "ver_catalogo_pyme_ofertas": "services.actions.pyme_actions.CatalogoHandler",
 }

@@ -14,6 +14,7 @@ from services.common_utils import parse_precio_flexible
 from socket_service import emit_ticket_update
 from routes.ticket import serialize_ticket_to_json
 from services.pyme_menu import get_pyme_menu_payload
+from services.config_loader import cargar_configuracion_pyme
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +30,25 @@ class CatalogoHandler(BasePymeHandler):
     def execute(self, action_data):
         pregunta = action_data.get("pregunta", "")
         if not self.pyme_id_actual: return {"respuesta": "No puedo identificar la tienda.", "fuente": "catalogo_sin_pyme_id_v2"}
+
+        owner_user = self.context.get("user_obj")
+        if owner_user:
+            add_preference(owner_user.id, "busquedas", pregunta)
+
         query_qdrant = pregunta
         if self.context.get("intencion") == "ver_catalogo" and len(pregunta.split()) < 3: query_qdrant = "productos populares"
 
         resultados_qdrant = buscar_catalogo_qdrant(self.pyme_id_actual, query_qdrant, self.context.get("rubro_nombre"), 3, self.context.get("coleccion_qdrant", CATALOGO_PYME))
-        add_preference("busquedas", pregunta)
+
+        if not resultados_qdrant:
+            logger.warning("Qdrant search failed or returned no results. Falling back to static catalog.")
+            pyme_config = (self.context.get("pyme_config_full") or {}).get("config", {})
+            static_catalog = pyme_config.get("catalogo_destacado", [])
+
+            # Convert static catalog to a format similar to Qdrant results
+            resultados_qdrant = []
+            for item in static_catalog:
+                resultados_qdrant.append(type('obj', (object,), {'payload': item})())
 
         respuesta_texto = ""; botones_catalogo = []; fuente_catalogo = "catalogo_qdrant_sin_resultados_v2"
 
@@ -45,17 +60,17 @@ class CatalogoHandler(BasePymeHandler):
                 payload = getattr(hit, "payload", {}); item_db_id = payload.get("db_id")
                 item_obj = db.session.get(models.CatalogoItem, item_db_id) if item_db_id else None
                 nombre = payload.get("nombre", "Producto")
-                precio_s, precio_f, moneda = parse_precio_flexible(payload.get("precio_str", ""))
-                cantidad = payload.get("cantidad", "")
+                precio_s, precio_f, moneda = parse_precio_flexible(payload.get("precio_str") or payload.get("precio"))
+                cantidad = payload.get("presentacion", "")
                 linea = f"| {nombre} | ${precio_f:,.2f} {moneda or 'ARS'} | {cantidad} |"
                 productos_formateados.append(linea)
                 identificador_accion = payload.get("sku") or item_db_id or nombre
                 botones_catalogo.append({"texto": f"Pedir {nombre[:20]}", "action": f"pedir_item_{identificador_accion}"})
 
             if productos_formateados:
-                respuesta_texto = "Algunos productos que podrían interesarte:\n\n" + "\n".join(productos_formateados)
+                respuesta_texto = "Estos son nuestros productos destacados:\n\n" + "\n".join(productos_formateados)
                 respuesta_texto += "\n\nSi quieres alguno, usa los botones o dime (ej: 'quiero 2 [nombre]')."
-                fuente_catalogo = "catalogo_qdrant_con_promos_v2"
+                fuente_catalogo = "catalogo_fallback_statico_v1"
 
         if not respuesta_texto:
             respuesta_texto = f"No encontré productos para '{pregunta}'. Intenta con otras palabras."
@@ -112,7 +127,7 @@ class OfertasHandler(BasePymeHandler):
         if not self.pyme_id_actual: return {"respuesta": "No puedo identificar la tienda.", "fuente": "ofertas_sin_pyme_id_v2"}
         promos = promocion_service.get_promociones_for_pyme(self.pyme_id_actual, activas_unicamente=True)
 
-        options = [{"id": "ver_catalogo_pyme_ofertas", "texto": "Ver catálogo"}]
+        options = [{"id": "pyme_productos_stock", "texto": "Ver catálogo"}]
         message_type = 'interactive_buttons'
 
         if promos:

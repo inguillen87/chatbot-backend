@@ -17,6 +17,16 @@ class TicketSearchTests(unittest.TestCase):
         self.app_context.push()
         db.create_all()
 
+        municipio = Municipio(id=5, nombre='Test Municipio')
+        db.session.add(municipio)
+        db.session.commit()
+
+        # Create the User that represents the Municipality
+        municipio_user = User(id=5, email='municipio@test.com', name='Test Municipio', tipo_chat='municipio')
+        municipio_user.set_password('password')
+        db.session.add(municipio_user)
+        db.session.commit()
+
         self.admin = User(email='admin@test.com', name='Admin', rol='admin', municipio_id=5, tipo_chat='municipio')
         self.admin.set_password('password')
         self.neighbor = User(email='vecino@test.com', name='Juan Gomez')

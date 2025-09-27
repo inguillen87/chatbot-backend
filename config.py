@@ -353,6 +353,7 @@ class Config:
 class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
+    SQLALCHEMY_ENGINE_OPTIONS = {}  # Desactiva opciones de pool para SQLite en memoria
     CELERY_TASK_ALWAYS_EAGER = True
     SESSION_COOKIE_SECURE = False
     SERVER_NAME = 'localhost'

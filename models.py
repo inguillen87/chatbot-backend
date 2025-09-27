@@ -11,9 +11,6 @@ import uuid
 import json
 import os
 import random
-from services.gcs_service import resolve_attachment_thumb_url
-
-
 JSONType = JSONB().with_variant(SQLITE_JSON, "sqlite")
 
 print("Importing models.py")
@@ -377,6 +374,7 @@ class TicketComentario(db.Model):
             if not isinstance(meta, dict):
                 meta = {}
 
+            from services.gcs_service import resolve_attachment_thumb_url
             thumb_url, meta = resolve_attachment_thumb_url(
                 file_url=self.archivo_adjunto.url,
                 filename=self.archivo_adjunto.filename,
