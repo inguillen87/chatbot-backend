@@ -11,6 +11,17 @@ from services.config_loader import cargar_configuracion_pyme
 logger = logging.getLogger(__name__)
 
 
+PYME_MENU_DISPLAY_ORDER = [
+    "pyme_productos_stock",
+    "pyme_promociones",
+    "pyme_hacer_pedido",
+    "pyme_estado_pedido",
+    "pyme_hablar_agente",
+    "ver_carrito_pyme",
+    "limpiar_y_nuevo_pedido_saludo_pyme",
+]
+
+
 def _slugify(value: str | None) -> str:
     if not value:
         return "default"
@@ -151,7 +162,16 @@ def get_pyme_menu_payload(context: Dict[str, Any], channel: str = "web") -> Dict
             ]
         )
 
-    flat_options = _dedupe_options(flat_options)[:10]
+    deduped_options = _dedupe_options(flat_options)
+    indexed_options = list(enumerate(deduped_options))
+    order_map = {action: idx for idx, action in enumerate(PYME_MENU_DISPLAY_ORDER)}
+    indexed_options.sort(
+        key=lambda item: (
+            order_map.get(item[1].get("id") or item[1].get("action_id"), len(order_map)),
+            item[0],
+        )
+    )
+    flat_options = [item[1] for item in indexed_options][:10]
 
     payload: Dict[str, Any] = {
         "message_body": message_body,
@@ -163,6 +183,31 @@ def get_pyme_menu_payload(context: Dict[str, Any], channel: str = "web") -> Dict
             "sections": structured_sections,
         },
     }
+
+    if channel.lower() == "whatsapp":
+        assistant_name = menu_config.get("assistant_name") or "ACA WinRey"
+        brand_name = nombre_pyme or menu_config.get("nombre_pyme") or "la bodega"
+        whatsapp_lines = [
+            f"🍷 ¡Hola! Soy *{assistant_name}*, tu asistente virtual de {brand_name}.",
+        ]
+        if help_text:
+            whatsapp_lines.append(help_text.strip())
+        whatsapp_lines.append("Elegí una opción para comenzar o escribime tu consulta.")
+        payload["message_body"] = "\n\n".join([line for line in whatsapp_lines if line]).strip()
+        payload["message_type"] = "text"
+        payload["categorias"] = [
+            {
+                "titulo": menu_config.get("title") or "Opciones principales",
+                "botones": [
+                    {
+                        "texto": option.get("texto"),
+                        "action_id": option.get("id") or option.get("action_id"),
+                    }
+                    for option in flat_options
+                    if option.get("texto")
+                ],
+            }
+        ]
 
     if menu_config.get("footer"):
         payload["data"]["footer"] = menu_config["footer"]
