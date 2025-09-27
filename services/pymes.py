@@ -33,6 +33,18 @@ from services.preferences import add_preference
 from services import cart as cart_service
 from services.promocion_service import promocion_service
 from services.config_loader import cargar_configuracion_pyme
+from services.pyme_multimodal import (
+    PymeSessionState,
+    PymeFlowResult,
+    detect_intent_from_text,
+    handle_keyword_intent,
+    handle_location_payload,
+    persist_order,
+    handle_image_payload,
+    handle_pdf_payload,
+    ensure_session_context,
+    load_catalog,
+)
 from .llm_utils import extract_multiple_contact_details_llm, resumir_descripcion_producto_llm
 from .common_utils import validar_email, validar_telefono
 
@@ -275,31 +287,69 @@ class BaseHandler(BaseActionHandler):
 
 class SaludoHandler(BaseHandler):
     def execute(self, action_data):
-        nombre = self.context.get("nombre_pyme", "la empresa")
-        body = f"¡Hola! Soy tu asistente para {nombre}. ¿En qué puedo ayudarte hoy?"
-        options = [
-            {"id": "ver_catalogo_pyme", "texto": "Ver catálogo"},
-            {"id": "ver_ofertas_pyme", "texto": "Ver ofertas"}
-        ]
+        channel = self.context.get("channel", "web")
+        rubro_slug = (
+            self.pyme_ctx.get("rubro_slug")
+            or self.context.get("rubro_nombre")
+            or getattr(self.context.get("rubro_obj"), "slug", None)
+        )
+        menu_context = {
+            "rubro_slug": rubro_slug,
+            "nombre_pyme": self.context.get("nombre_pyme"),
+            "nombre_pyme_cache": self.pyme_ctx.get("nombre_pyme_cache"),
+        }
+
+        menu_payload = get_pyme_menu_payload({**menu_context, **{k: v for k, v in self.context.items() if k in {"nombre_pyme", "rubro_nombre"}}}, channel=channel)
+        menu_payload.setdefault("fuente", "pyme_saludo_menu_principal_v4")
+        menu_payload.setdefault("success", True)
+
+        opciones_menu = menu_payload.get("options_list", [])
+        opciones_extra = []
 
         if self.pyme_id_actual:
-            resumen_carrito_existente = cart_service.get_cart_summary(self.pyme_carts_data, self.pyme_id_actual, self.cliente_id_actual)
+            resumen_carrito_existente = cart_service.get_cart_summary(
+                self.pyme_carts_data,
+                self.pyme_id_actual,
+                self.cliente_id_actual,
+            )
             if resumen_carrito_existente and resumen_carrito_existente.get("items_detalle"):
-                body += "\n\nVeo que tienes algunos productos en tu carrito. ¿Quieres continuar con ese pedido o empezar uno nuevo?"
-                options = [
-                    {"id": "ver_carrito_pyme", "texto": "Continuar pedido"},
-                    {"id": "limpiar_y_nuevo_pedido_saludo_pyme", "texto": "Nuevo pedido"},
-                    {"id": "ver_catalogo_pyme_con_carrito", "texto": "Ver catálogo"}
-                ]
+                mensaje_cart = (
+                    "\n\nTenés un pedido en progreso. Podés retomarlo o iniciar uno nuevo."
+                )
+                menu_payload["message_body"] = menu_payload.get("message_body", "").strip()
+                if menu_payload["message_body"]:
+                    menu_payload["message_body"] += mensaje_cart
+                else:
+                    menu_payload["message_body"] = mensaje_cart.strip()
+                opciones_extra.extend(
+                    [
+                        {"id": "ver_carrito_pyme", "texto": "Continuar pedido"},
+                        {"id": "limpiar_y_nuevo_pedido_saludo_pyme", "texto": "Nuevo pedido"},
+                    ]
+                )
 
-        message_type = 'interactive_buttons'
+        if opciones_extra:
+            opciones_menu = opciones_extra + opciones_menu
 
-        return {
-            "message_body": body,
-            "options_list": options,
-            "message_type": message_type,
-            "fuente": "pyme_saludo_interactivo_v2"
-        }
+        opciones_simplificadas = _simplify_options(opciones_menu)
+        opciones_finales: list[dict] = []
+        seen_ids: set[str] = set()
+        for opt in opciones_simplificadas:
+            action_id = opt.get("action_id") or opt.get("texto")
+            if not action_id:
+                continue
+            if action_id in seen_ids:
+                continue
+            seen_ids.add(action_id)
+            opciones_finales.append({
+                "id": action_id,
+                "texto": opt.get("texto", action_id),
+            })
+            if len(opciones_finales) >= 10:
+                break
+
+        menu_payload["options_list"] = opciones_finales
+        return menu_payload
 
 class CatalogoHandler(BaseHandler):
     def execute(self, action_data):
@@ -814,9 +864,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             "fuente": "error_no_owner_user"
         }
 
-    if chat_db_context is None:
-        chat_db_context = models.ChatSessionContext()
-        chat_db_context.context_data = {}
+    chat_db_context = ensure_session_context(chat_db_context)
 
     # --- 1. Procesamiento de Entrada y Carga de Contexto (simplificado) ---
     received_payload = {}
@@ -829,14 +877,69 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         received_payload["pregunta"] = pregunta_original
     if kwargs: received_payload.update(kwargs)
 
-    if chat_db_context.context_data is None:
-        chat_db_context.context_data = {}
-
     if "mensajes_previos_llm_formato" not in chat_db_context.context_data:
         old_hist = chat_db_context.context_data.pop("mensajes_previos_gemini_formato", [])
         chat_db_context.context_data["mensajes_previos_llm_formato"] = old_hist
 
     pyme_ctx_actual = chat_db_context.context_data.setdefault(CONTEXTO_PYME, {})
+    session_state = PymeSessionState(pyme_ctx_actual, getattr(owner_user, "id", None))
+    pyme_ctx_actual["request_id"] = request_id
+
+    def _finalize_early_response(flow_result: PymeFlowResult, *, intent: Optional[str] = None) -> dict:
+        session_state.save()
+        pyme_ctx_actual[session_state.STORAGE_KEY] = session_state.raw
+        contexto_serializado = serializar_enum(pyme_ctx_actual)
+        chat_db_context.context_data[CONTEXTO_PYME] = contexto_serializado
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+
+        final_payload = {
+            "message_body": flow_result.message_body,
+            "options_list": flow_result.options_list,
+            "message_type": flow_result.message_type,
+            "fuente": flow_result.source,
+            "contexto_actualizado": {CONTEXTO_PYME: contexto_serializado},
+        }
+        if flow_result.data:
+            final_payload["data"] = flow_result.data
+
+        logger_actual.info(
+            "[PYME_FLOW] early_response",
+            extra={
+                "intent": intent or session_state.last_intent,
+                "request_id": request_id,
+                "source": flow_result.source,
+            },
+        )
+
+        if anon_id and not viewer_user:
+            try:
+                rubro_nombre_log = (
+                    getattr(getattr(owner_user, "rubro", None), "nombre", None)
+                    or getattr(rubro_obj, "nombre", None)
+                    or "general"
+                )
+                db.session.add(
+                    Conversacion(
+                        session_id=kwargs.get("chat_session_uuid") or anon_id,
+                        pregunta=pregunta_str,
+                        respuesta=flow_result.message_body,
+                        fuente=flow_result.source,
+                        rubro=rubro_nombre_log,
+                        user_id=None,
+                        pyme_id=getattr(owner_user, "id", None),
+                    )
+                )
+                db.session.commit()
+            except Exception as e_conv_pyme_final:
+                logger_actual.error(
+                    f"Error guardando Conversacion temprana (PYME): {e_conv_pyme_final}",
+                    exc_info=True,
+                )
+                db.session.rollback()
+
+        return final_payload
+
     historial_chat_llm = chat_db_context.context_data.get("mensajes_previos_llm_formato", [])
 
     # --- 2. Construir Información de Usuario para el LLM ---
@@ -957,6 +1060,234 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             location_note += f" Coordenadas: {lat}, {lon}."
         contextual_notes.append(location_note)
 
+        logger_actual.info(
+            "[PYME_FLOW] intent_detected",
+            extra={"intent": "delivery_location", "request_id": request_id},
+        )
+        location_result = handle_location_payload(session_state, config_data, ubicacion_payload)
+        return _finalize_early_response(location_result, intent="delivery_location")
+
+    uploaded_info = (
+        received_payload.get("uploaded_file_info")
+        or received_payload.get("uploaded_file_info_whatsapp")
+        or kwargs.get("uploaded_file_info")
+    )
+    if isinstance(uploaded_info, dict) and uploaded_info.get("url"):
+        ultimo_adjunto = {
+            "url": uploaded_info.get("url"),
+            "mime_type": uploaded_info.get("mime_type"),
+            "id": uploaded_info.get("id"),
+            "name": uploaded_info.get("name"),
+            "thumbnail": uploaded_info.get("thumbnail_url") or uploaded_info.get("thumbnail"),
+        }
+        pyme_ctx_actual["ultimo_adjunto"] = ultimo_adjunto
+        usuario_info_for_llm["ultimo_adjunto"] = ultimo_adjunto
+        mime_type = (uploaded_info.get("mime_type") or "").lower()
+        if mime_type.startswith("image/"):
+            pyme_ctx_actual["foto_url"] = uploaded_info.get("url")
+            usuario_info_for_llm["imagen_url"] = uploaded_info.get("url")
+            contextual_notes.append("El usuario envió una imagen con detalles para su pedido o consulta.")
+            logger_actual.info(
+                "[PYME_FLOW] media_saved",
+                extra={"media_type": "image", "request_id": request_id},
+            )
+            catalog_items = load_catalog(getattr(owner_user, "id", None), rubro_slug)
+            image_result = handle_image_payload(
+                session_state,
+                uploaded_info,
+                catalog_items,
+                request_id=request_id,
+            )
+            return _finalize_early_response(image_result, intent="image_catalog_match")
+        elif mime_type == "application/pdf" or mime_type.endswith("+pdf"):
+            contextual_notes.append("El usuario envió un catálogo o lista de precios en PDF.")
+            logger_actual.info(
+                "[PYME_FLOW] media_saved",
+                extra={"media_type": "pdf", "request_id": request_id},
+            )
+            catalog_items = load_catalog(getattr(owner_user, "id", None), rubro_slug)
+            pdf_result = handle_pdf_payload(
+                session_state,
+                uploaded_info,
+                catalog_items,
+                request_id=request_id,
+            )
+            return _finalize_early_response(pdf_result, intent="pdf_catalog_match")
+        elif mime_type.startswith("audio/"):
+            contextual_notes.append("El usuario envió una nota de voz.")
+            transcripcion = uploaded_info.get("transcribed_text")
+            if transcripcion:
+                intent_from_audio = detect_intent_from_text(transcripcion)
+                if intent_from_audio:
+                    logger_actual.info(
+                        "[PYME_FLOW] audio_detected",
+                        extra={"intent": intent_from_audio, "request_id": request_id},
+                    )
+                    audio_flow = handle_keyword_intent(
+                        intent=intent_from_audio,
+                        text=transcripcion,
+                        state=session_state,
+                        owner_user_id=getattr(owner_user, "id", None),
+                        rubro_slug=rubro_slug,
+                        context={
+                            "nombre_pyme": nombre_pyme_display,
+                            "rubro_slug": rubro_slug,
+                            "rubro_nombre": rubro_nombre_contexto,
+                            "config": config_data,
+                            "viewer_user_id": getattr(viewer_user, "id", None),
+                            "request_id": request_id,
+                        },
+                        channel=channel,
+                        parsed_items=extraer_productos_pedido(transcripcion)
+                        if intent_from_audio == "pedido"
+                        else None,
+                        request_id=request_id,
+                    )
+                    if audio_flow:
+                        logger_actual.info(
+                            "[PYME_FLOW] audio_intent",
+                            extra={"intent": intent_from_audio, "request_id": request_id},
+                        )
+                        return _finalize_early_response(audio_flow, intent=intent_from_audio)
+        elif mime_type:
+            contextual_notes.append(f"El usuario adjuntó un archivo del tipo {mime_type}.")
+
+        if uploaded_info.get("caption") and not pregunta_str.strip():
+            pregunta_str = uploaded_info["caption"]
+        if uploaded_info.get("transcribed_text"):
+            transcripcion = uploaded_info["transcribed_text"].strip()
+            if transcripcion:
+                contextual_notes.append(f"Transcripción de audio: {transcripcion}")
+                pregunta_str = transcripcion
+
+    datos_interpretados_archivo = kwargs.get("datos_interpretados_archivo")
+    if isinstance(datos_interpretados_archivo, dict) and datos_interpretados_archivo:
+        pyme_ctx_actual["datos_interpretados_archivo"] = datos_interpretados_archivo
+        usuario_info_for_llm["datos_interpretados_archivo"] = datos_interpretados_archivo
+        descripcion_sugerida = datos_interpretados_archivo.get("descripcion_sugerida")
+        if descripcion_sugerida:
+            contextual_notes.append(f"Descripción interpretada del adjunto: {descripcion_sugerida}")
+            if not pregunta_str.strip():
+                pregunta_str = descripcion_sugerida
+        categoria_sugerida = datos_interpretados_archivo.get("categoria_sugerida")
+        if categoria_sugerida:
+            contextual_notes.append(f"Categoría sugerida del adjunto: {categoria_sugerida}")
+        texto_extraido = datos_interpretados_archivo.get("texto_extraido")
+        if texto_extraido and texto_extraido.strip():
+            contextual_notes.append(f"Texto extraído del archivo: {texto_extraido.strip()}")
+
+    if not pregunta_str.strip():
+        transcripcion_note = next(
+            (nota.split(":", 1)[1].strip() for nota in contextual_notes if nota and nota.lower().startswith("transcripción de audio")),
+            None,
+        )
+        if transcripcion_note:
+            pregunta_str = transcripcion_note
+        elif contextual_notes:
+            pregunta_str = contextual_notes[0]
+        else:
+            pregunta_str = "El usuario compartió información sin texto adicional."
+
+    mensaje_para_llm = pregunta_str.strip()
+    if contextual_notes:
+        notas_texto = "\n".join(f"- {nota}" for nota in contextual_notes if nota)
+        if mensaje_para_llm:
+            mensaje_para_llm = f"{mensaje_para_llm}\n\nContexto adicional proporcionado por el usuario:\n{notas_texto}"
+        else:
+            mensaje_para_llm = f"Contexto adicional proporcionado por el usuario:\n{notas_texto}"
+
+    intent_detected = detect_intent_from_text(pregunta_str or "") if pregunta_str else None
+    if not intent_detected and received_payload.get("action"):
+        intent_detected = detect_intent_from_text(received_payload.get("action", ""))
+
+    if intent_detected:
+        parsed_items = extraer_productos_pedido(pregunta_str or "") if intent_detected == "pedido" else None
+        logger_actual.info(
+            "[PYME_FLOW] intent_detected",
+            extra={"intent": intent_detected, "request_id": request_id},
+        )
+        flow_result = handle_keyword_intent(
+            intent=intent_detected,
+            text=pregunta_str or "",
+            state=session_state,
+            owner_user_id=getattr(owner_user, "id", None),
+            rubro_slug=rubro_slug,
+            context={
+                "nombre_pyme": nombre_pyme_display,
+                "rubro_slug": rubro_slug,
+                "rubro_nombre": rubro_nombre_contexto,
+                "config": config_data,
+                "viewer_user_id": getattr(viewer_user, "id", None),
+                "request_id": request_id,
+            },
+            channel=channel,
+            parsed_items=parsed_items,
+            request_id=request_id,
+        )
+        if flow_result:
+            return _finalize_early_response(flow_result, intent=intent_detected)
+
+    if intent_detected:
+        logger_actual.info(
+            "[PYME_FLOW] intent_fallback",
+            extra={"intent": intent_detected, "request_id": request_id},
+        )
+
+    if not intent_detected:
+        for nota in contextual_notes:
+            if nota and "transcripción de audio" in nota.lower():
+                texto_audio = nota.split(":", 1)[1].strip() if ":" in nota else nota
+                reintento_intent = detect_intent_from_text(texto_audio)
+                if reintento_intent:
+                    flow_result = handle_keyword_intent(
+                        intent=reintento_intent,
+                        text=texto_audio,
+                        state=session_state,
+                        owner_user_id=getattr(owner_user, "id", None),
+                        rubro_slug=rubro_slug,
+                        context={
+                            "nombre_pyme": nombre_pyme_display,
+                            "rubro_slug": rubro_slug,
+                            "rubro_nombre": rubro_nombre_contexto,
+                            "config": config_data,
+                            "viewer_user_id": getattr(viewer_user, "id", None),
+                            "request_id": request_id,
+                        },
+                        channel=channel,
+                        parsed_items=extraer_productos_pedido(texto_audio)
+                        if reintento_intent == "pedido"
+                        else None,
+                        request_id=request_id,
+                    )
+                    if flow_result:
+                        logger_actual.info(
+                            "[PYME_FLOW] audio_retry",
+                            extra={"intent": reintento_intent, "request_id": request_id},
+                        )
+                        return _finalize_early_response(flow_result, intent=reintento_intent)
+                break
+
+    llm_response_structured, _ = llamar_llm_con_fallback(
+        app=current_app,
+        mensaje_usuario=mensaje_para_llm,
+        usuario=usuario_info_for_llm,
+        historial=historial_chat_llm,
+        chat_session_id=kwargs.get("chat_session_uuid")
+    )
+    contextual_notes: list[str] = []
+    if isinstance(ubicacion_payload, dict) and ubicacion_payload:
+        pyme_ctx_actual["ultima_ubicacion_usuario"] = ubicacion_payload
+        usuario_info_for_llm["ubicacion_compartida"] = ubicacion_payload
+        lat = ubicacion_payload.get("lat") or ubicacion_payload.get("latitude")
+        lon = ubicacion_payload.get("lon") or ubicacion_payload.get("longitude")
+        address = ubicacion_payload.get("address") or ubicacion_payload.get("descripcion")
+        location_note = "El usuario compartió su ubicación para coordinar envíos o retiros."
+        if address:
+            location_note += f" Dirección: {address}."
+        elif lat is not None and lon is not None:
+            location_note += f" Coordenadas: {lat}, {lon}."
+        contextual_notes.append(location_note)
+
     uploaded_info = (
         received_payload.get("uploaded_file_info")
         or received_payload.get("uploaded_file_info_whatsapp")
@@ -1021,13 +1352,55 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         else:
             mensaje_para_llm = f"Contexto adicional proporcionado por el usuario:\n{notas_texto}"
 
-    llm_response_structured, _ = llamar_llm_con_fallback(
-        app=current_app,
-        mensaje_usuario=mensaje_para_llm,
-        usuario=usuario_info_for_llm,
-        historial=historial_chat_llm,
-        chat_session_id=kwargs.get("chat_session_uuid")
-    )
+    action_payload_id = _extract_action_id(received_payload.get("action"))
+    normalized_input = _normalize_user_input(pregunta_str)
+    menu_request: Optional[tuple[str, Optional[str]]] = None
+
+    if action_payload_id:
+        normalized_action = _normalize_user_input(action_payload_id)
+        if normalized_action in MENU_KEYWORDS or action_payload_id in {"menu", "menu_principal"}:
+            menu_request = ("menu", None)
+        else:
+            menu_request = ("action", action_payload_id)
+    else:
+        if not normalized_input and not historial_chat_llm:
+            menu_request = ("menu", None)
+        elif normalized_input in GREETING_KEYWORDS or normalized_input.startswith("hola"):
+            menu_request = ("menu", None)
+        elif normalized_input in MENU_KEYWORDS:
+            menu_request = ("menu", None)
+        else:
+            resolved_action = _find_menu_action_by_input(pregunta_str, pyme_ctx_actual.get("last_options_sent", []))
+            if resolved_action:
+                menu_request = ("action", resolved_action)
+
+    manual_llm_output = None
+    if menu_request:
+        kind, value = menu_request
+        if kind == "menu":
+            manual_llm_output = {
+                "accion_backend": "saludar",
+                "datos_estructura": {"target": "pyme"},
+                "message_body": "",
+                "botones": [],
+            }
+        elif kind == "action" and value:
+            manual_llm_output = {
+                "accion_backend": value,
+                "datos_estructura": {"target": "pyme"},
+                "message_body": "",
+                "botones": [],
+            }
+
+    llm_response_structured = manual_llm_output
+    if not llm_response_structured:
+        llm_response_structured, _ = llamar_llm_con_fallback(
+            app=current_app,
+            mensaje_usuario=mensaje_para_llm,
+            usuario=usuario_info_for_llm,
+            historial=historial_chat_llm,
+            chat_session_id=kwargs.get("chat_session_uuid")
+        )
 
     # Actualizar historial para la próxima llamada al LLM
     if "mensajes_previos_llm_formato" not in chat_db_context.context_data:
@@ -1069,7 +1442,17 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     # --- 5. Ejecutar Acción vía ChatOrchestrator ---
     if llm_response_structured.get("accion_backend") == "saludar":
         handler = SaludoHandler(global_context_for_orchestrator)
-        action_handler_result = handler.execute(pregunta_str)
+        action_handler_result = handler.execute({})
+    elif llm_response_structured.get("accion_backend") == "error_fatal_llm":
+        handler = SaludoHandler(global_context_for_orchestrator)
+        action_handler_result = handler.execute({})
+        error_msg = llm_response_structured.get("message_body")
+        if error_msg:
+            existing_body = action_handler_result.get("message_body", "")
+            action_handler_result["message_body"] = (
+                f"{error_msg}\n\n{existing_body}" if existing_body else error_msg
+            )
+        action_handler_result["fuente"] = "pyme_menu_fallback_llm_error_v1"
     else:
         orchestrator = ChatOrchestrator(global_context=global_context_for_orchestrator)
         action_handler_result = orchestrator.execute_action(llm_response_structured)
@@ -1160,6 +1543,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     elif estado_final_pyme_str is None:
         pyme_ctx_actual.pop("estado_conversacion", None)
 
+    session_state.save()
+    pyme_ctx_actual[session_state.STORAGE_KEY] = session_state.raw
     contexto_pyme_serializado_para_db = serializar_enum(pyme_ctx_actual)
     chat_db_context.context_data[CONTEXTO_PYME] = contexto_pyme_serializado_para_db
     if chat_db_context:
