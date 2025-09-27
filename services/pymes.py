@@ -51,9 +51,101 @@ from .common_utils import validar_email, validar_telefono
 logger = logging.getLogger(__name__)
 
 
+def _normalize_user_input(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    return re.sub(r"\s+", " ", value).strip().lower()
+
+
+def _extract_action_id(action_payload) -> Optional[str]:
+    if isinstance(action_payload, dict):
+        return (
+            action_payload.get("action_id")
+            or action_payload.get("id")
+            or action_payload.get("action")
+        )
+    if isinstance(action_payload, str):
+        return action_payload.strip()
+    return None
+
+
+def _simplify_options(options: list[dict]) -> list[dict]:
+    simplified: list[dict] = []
+    for opt in options or []:
+        action_id = opt.get("action_id") or opt.get("id") or opt.get("action")
+        label = opt.get("texto") or opt.get("label") or opt.get("title") or action_id
+        if not label and not action_id:
+            continue
+        simplified.append({
+            "action_id": action_id,
+            "texto": label,
+        })
+    return simplified
+
+
+def _find_menu_action_by_input(user_input: str, menu_buttons: list[dict]) -> Optional[str]:
+    if not user_input or not menu_buttons:
+        return None
+
+    normalized = _normalize_user_input(user_input)
+
+    # Direct ID or label match
+    for button in menu_buttons:
+        action_id = button.get("action_id") or button.get("id")
+        button_label = _normalize_user_input(button.get("texto") or button.get("label"))
+        if normalized and action_id and normalized == _normalize_user_input(action_id):
+            return action_id
+        if normalized and button_label and normalized == button_label:
+            return action_id
+
+    # Numeric selection (1-indexed)
+    if normalized.isdigit():
+        index = int(normalized) - 1
+        if 0 <= index < len(menu_buttons):
+            return menu_buttons[index].get("action_id") or menu_buttons[index].get("id")
+
+    # Partial match on label
+    for button in menu_buttons:
+        action_id = button.get("action_id") or button.get("id")
+        button_label = _normalize_user_input(button.get("texto") or button.get("label"))
+        if normalized and button_label and normalized in button_label:
+            return action_id
+
+    return None
+
+
+GREETING_KEYWORDS = {
+    "hola",
+    "hola!",
+    "hola.",
+    "hola buenas",
+    "hola buen dia",
+    "hola buen día",
+    "buenas",
+    "buenas tardes",
+    "buenas noches",
+    "buen dia",
+    "buen día",
+    "saludos",
+}
+
+MENU_KEYWORDS = {
+    "menu",
+    "menú",
+    "menu principal",
+    "menú principal",
+    "inicio",
+    "volver al inicio",
+    "ver menu",
+    "ver menú",
+}
+
+
 def _slugify_rubro(value: Optional[str]) -> str:
     if not value:
         return "default"
+    if not isinstance(value, str):
+        value = str(value)
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return slug or "default"
 
@@ -1469,6 +1561,15 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     )
     if not opciones_finales:
         opciones_finales = []
+    if opciones_finales:
+        simplified_options = _simplify_options(opciones_finales)
+        pyme_ctx_actual["last_options_sent"] = simplified_options
+        if isinstance(chat_db_context.context_data, dict):
+            chat_db_context.context_data["last_options_sent"] = simplified_options
+    else:
+        pyme_ctx_actual.pop("last_options_sent", None)
+        if isinstance(chat_db_context.context_data, dict):
+            chat_db_context.context_data.pop("last_options_sent", None)
     pedir_info_final = action_handler_result.get("pedir_info") or llm_response_structured.get("pedir_info")
 
     # Actualizar estado de conversación en pyme_ctx_actual (que es global_context_for_orchestrator[CONTEXTO_PYME])
