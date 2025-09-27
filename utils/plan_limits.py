@@ -1,13 +1,7 @@
-PLAN_LIMITS = {
-    "pro": 200,
-    "full": None,
-}
-
-
 def limite_para_usuario(user):
     """Devuelve el límite de preguntas de un ``user``.
 
-    - ``pro``  -> 200
+    - ``pro``  -> 250
     - ``full`` -> None (ilimitado)
     - otro plan -> ``user.limite_preguntas``
 
@@ -20,8 +14,10 @@ def limite_para_usuario(user):
     if isinstance(plan, str):
         plan = plan.lower()
 
-    limite = PLAN_LIMITS.get(plan)
-    if limite is not None or plan in PLAN_LIMITS:
-        return limite
+    from services.plan_config import get_plan_metadata
+
+    metadata = get_plan_metadata(plan)
+    if metadata is not None:
+        return metadata.message_limit
 
     return getattr(user, "limite_preguntas", None)

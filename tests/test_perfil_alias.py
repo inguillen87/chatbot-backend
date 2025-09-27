@@ -398,7 +398,7 @@ def test_legacy_perfil_accepts_demo_token(client, monkeypatch):
     assert data["provincia"] == "Buenos Aires"
     assert data["pais"] == "Argentina"
     assert data["preguntas_usadas"] == 5
-    assert data["limite_preguntas"] == 200  # plan pro via limite_para_usuario
+    assert data["limite_preguntas"] == 250  # plan pro via limite_para_usuario
     assert data["catalogo_label"] == "Cargar Catálogo de Trámites"
 
 def test_login_jwt_wins_over_entity_token_header(client):

@@ -22,6 +22,11 @@ auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 from utils.auth_helpers import token_requerido, obtener_token, get_or_create_anon_id, generar_token, user_from_token
 from flask_login import current_user
 from utils.plan_limits import limite_para_usuario
+from services.plan_config import (
+    get_plan_metadata,
+    serialize_plan_catalog,
+    serialize_plan_for_response,
+)
 
 
 _OWNER_TOKEN_RESOLVER: Optional[Callable[[User], Optional[str]]] = None
@@ -113,6 +118,14 @@ def _timestamp_to_iso(value: Optional[object]) -> Optional[str]:
         return None
 
 
+@auth_bp.route('/plans', methods=['GET'])
+@cross_origin()
+def public_plan_catalog():
+    """Expose the available subscription plans for the frontend."""
+
+    return jsonify({"planes": serialize_plan_catalog()})
+
+
 def build_profile_payload(user: User) -> Dict[str, Any]:
     """Assemble the profile payload shared by the legacy and new endpoints."""
 
@@ -160,6 +173,10 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "logo_url": getattr(user, "logo_url", None),
         "preguntas_usadas": getattr(user, "preguntas_usadas", None),
     }
+
+    plan_metadata = get_plan_metadata(profile_data.get("plan"))
+    profile_data["plan_detalle"] = serialize_plan_for_response(plan_metadata)
+    profile_data["planes_disponibles"] = serialize_plan_catalog()
 
     owner_token = _resolve_owner_token(user)
     widget_session_active = bool(getattr(g, "widget_session", False))
