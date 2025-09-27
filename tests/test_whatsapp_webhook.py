@@ -31,12 +31,6 @@ class TestConfig(Config):
     # TWILIO_NUMEROS_JSON is no longer used
 
 class WhatsAppWebhookTestCase(unittest.TestCase):
-    def _get_immediate_timer(self, interval, function, args=None, kwargs=None):
-        """Timer that executes immediately for testing."""
-        # This is a simplified version for synchronous testing
-        # In a real-world scenario, you might want to use a more sophisticated mock
-        # that allows for time control, but for these tests, immediate execution is fine.
-        return function(*(args or []), **(kwargs or {}))
 
     def setUp(self):
         os.environ["TWILIO_ACCOUNT_SID"] = TestConfig.TWILIO_ACCOUNT_SID
@@ -147,18 +141,16 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             "text": {"body": "Mensaje principal"},
         }
 
-        def immediate_timer(delay, callback, args=None, kwargs=None):
-            class ImmediateTimer:
-                def __init__(self, delay, callback, args, kwargs):
-                    self.callback = callback
-                    self.args = args if args is not None else []
-                    self.kwargs = kwargs if kwargs is not None else {}
-                    self.daemon = False
-                def start(self):
-                    self.callback(*self.args, **self.kwargs)
-            return ImmediateTimer(delay, callback, args, kwargs)
+        class ImmediateTimer:
+            def __init__(self, delay, callback):
+                self.delay = delay
+                self.callback = callback
+                self.daemon = False
 
-        mock_timer.side_effect = immediate_timer
+            def start(self):
+                self.callback()
+
+        mock_timer.side_effect = lambda delay, callback: ImmediateTimer(delay, callback)
 
         sent_messages = []
 
@@ -214,9 +206,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         headers = { "X-Twilio-Signature": "dummy_signature_valid" }
 
         # Act
-        with patch('routes.whatsapp_webhook.responder_chatboc') as mock_responder_chatboc:
-            mock_responder_chatboc.return_value = {"message_body": "Hola! Soy JUNI", "options_list": [], "audio_url": "dummy_url"}
-            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
         # Assert
         self.assertEqual(response.status_code, 200)
@@ -226,24 +216,22 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         # The webhook should send the template, the sticker media and the greeting text,
         # so messages.create is invoked three times. The template call must include an
         # empty string for the name placeholder when unknown.
-        self.assertEqual(self.mock_twilio_create.call_count, 2)
+        self.assertEqual(self.mock_twilio_create.call_count, 3)
+        template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertIn("content_variables", template_kwargs)
 
-        sticker_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
         expected_media = [self.app.config["WELCOME_MEDIA_URL"]]
         self.assertEqual(sticker_kwargs.get("media_url"), expected_media)
         self.assertNotIn("persistent_action", sticker_kwargs)
 
-        greeting_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        greeting_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
         self.assertIn("body", greeting_kwargs)
 
         # Legacy welcome helper is no longer used.
         self.mock_welcome.assert_not_called()
 
-    @patch('services.whatsapp_utils.should_trigger_welcome_message')
-    @patch('services.pymes.responder_pyme')
-    def test_pyme_welcome_skips_template_and_sticker(self, mock_responder_pyme, mock_should_trigger):
-        mock_should_trigger.return_value = (False, "test")
-        mock_responder_pyme.return_value = {"message_body": "Hola Pyme"}
+    def test_pyme_welcome_skips_template_and_sticker(self):
         self._set_owner_tipo_chat("pyme")
         self.mock_validator.validate.return_value = True
         self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
@@ -274,11 +262,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertFalse(welcome_state.get("sticker", {}).get("last_sent_ts"))
         self.assertFalse(welcome_state.get("template", {}).get("last_sent_ts"))
 
-    @patch('services.whatsapp_utils.should_trigger_welcome_message')
-    @patch('services.pymes.responder_pyme')
-    def test_pyme_welcome_uses_rubro_overrides(self, mock_responder_pyme, mock_should_trigger):
-        mock_should_trigger.return_value = (True, "test")
-        mock_responder_pyme.return_value = {"message_body": "Hola Pyme"}
+    def test_pyme_welcome_uses_rubro_overrides(self):
         self._set_owner_tipo_chat("pyme")
         rubro = Rubro(clave="bodega", nombre="Bodega")
         db.session.add(rubro)
@@ -329,7 +313,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.mock_twilio_create.call_count, 2)
+        self.assertEqual(self.mock_twilio_create.call_count, 3)
 
         template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
         self.assertEqual(template_kwargs.get("content_sid"), override_config["welcome"]["template_sid"])
@@ -341,6 +325,9 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             sticker_kwargs.get("media_url"),
             ["https://chatboc.ar/static/welcome/saludo_media_cuatrofincas.webp"],
         )
+
+        greeting_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
+        self.assertIn("body", greeting_kwargs)
 
     def test_sticker_respects_cooldown(self):
         self._set_owner_tipo_chat("municipio")
@@ -359,11 +346,9 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         }
         headers = {"X-Twilio-Signature": "dummy_signature_valid"}
 
-        with patch('routes.whatsapp_webhook.responder_chatboc') as mock_responder_chatboc:
-            mock_responder_chatboc.return_value = {"message_body": "Hola! Soy JUNI", "options_list": [], "audio_url": "dummy_url"}
-            first = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+        first = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
         self.assertEqual(first.status_code, 200)
-        self.assertEqual(self.mock_twilio_create.call_count, 2)
+        self.assertEqual(self.mock_twilio_create.call_count, 3)
 
         session_id = f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
         ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
@@ -372,15 +357,13 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         db.session.commit()
 
         self.mock_twilio_create.reset_mock()
-        with patch('routes.whatsapp_webhook.responder_chatboc') as mock_responder_chatboc:
-            mock_responder_chatboc.return_value = {"message_body": "Hola! Soy JUNI", "options_list": [], "audio_url": "dummy_url"}
-            second = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+        second = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
         self.assertEqual(second.status_code, 200)
         # Sticker should be skipped; remaining sends must not include media.
         self.assertGreaterEqual(self.mock_twilio_create.call_count, 1)
         for call in self.mock_twilio_create.call_args_list:
-            self.assertIsNone(call.kwargs.get("media_url"))
+            self.assertNotIn("media_url", call.kwargs)
 
     def test_webhook_finds_mapping_without_plus_prefix(self):
         self._set_owner_tipo_chat("municipio")
@@ -511,19 +494,20 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         }
         headers = {"X-Twilio-Signature": "dummy_signature_valid"}
 
-        with patch('routes.whatsapp_webhook.responder_chatboc') as mock_responder_chatboc:
-            mock_responder_chatboc.return_value = {"message_body": "Hola! Soy JUNI", "options_list": [], "audio_url": "dummy_url"}
-            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.mock_twilio_create.call_count, 2)
+        self.assertEqual(self.mock_twilio_create.call_count, 3)
 
-        sticker_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertIn("content_sid", template_kwargs)
+
+        sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
         expected_media = ["http://localhost:5000/static/welcome/sticker.png"]
         self.assertEqual(sticker_kwargs.get("media_url"), expected_media)
         self.assertNotIn("persistent_action", sticker_kwargs)
 
-        greeting_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        greeting_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
         self.assertIn("body", greeting_kwargs)
 
     def test_welcome_payload_resolves_audio_and_existing_image(self):
@@ -672,20 +656,18 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         }
         headers = {"X-Twilio-Signature": "dummy_signature_valid"}
 
-        with patch('routes.whatsapp_webhook.responder_chatboc') as mock_responder_chatboc:
-            mock_responder_chatboc.return_value = {"message_body": "Hola! Soy JUNI", "options_list": [], "audio_url": "dummy_url"}
-            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
         self.assertEqual(response.status_code, 200)
         # Even though the template failed, we still attempt the sticker and greeting.
-        self.assertGreaterEqual(self.mock_twilio_create.call_count, 1)
+        self.assertGreaterEqual(self.mock_twilio_create.call_count, 3)
         # Second call should correspond to the sticker send.
-        sticker_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
         self.assertEqual(
             sticker_kwargs.get("media_url"),
             [self.app.config["WELCOME_MEDIA_URL"]],
         )
-        greeting_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        greeting_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
         self.assertIn("body", greeting_kwargs)
 
     @patch('routes.whatsapp_webhook.threading.Timer')
@@ -708,18 +690,14 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             "image_url": "/static/welcome/sticker.png",
         }
 
-        def immediate_timer(delay, callback, args=None, kwargs=None):
-            class ImmediateTimer:
-                def __init__(self, delay, callback, args, kwargs):
-                    self.callback = callback
-                    self.args = args if args is not None else []
-                    self.kwargs = kwargs if kwargs is not None else {}
-                    self.daemon = False
-                def start(self):
-                    self.callback(*self.args, **self.kwargs)
-            return ImmediateTimer(delay, callback, args, kwargs)
+        class ImmediateTimer:
+            def __init__(self, delay, callback):
+                self.callback = callback
 
-        mock_timer.side_effect = immediate_timer
+            def start(self):
+                self.callback()
+
+        mock_timer.side_effect = lambda delay, callback: ImmediateTimer(delay, callback)
 
         sent_messages = []
 
@@ -764,21 +742,22 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         }
         headers = {"X-Twilio-Signature": "dummy_signature_valid"}
 
-        with patch('routes.whatsapp_webhook.responder_chatboc') as mock_responder_chatboc:
-            mock_responder_chatboc.return_value = {"message_body": "Hola! Soy JUNI", "options_list": [], "audio_url": "dummy_url"}
-            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.mock_twilio_create.call_count, 2)
+        self.assertEqual(self.mock_twilio_create.call_count, 3)
 
-        sticker_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertEqual(json.loads(template_kwargs["content_variables"]).get("1"), "")
+
+        sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
         self.assertEqual(
             sticker_kwargs.get("media_url"),
             [self.app.config["WELCOME_MEDIA_URL"]],
         )
         self.assertNotIn("body", sticker_kwargs)
 
-        text_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        text_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
         self.assertEqual(text_kwargs.get("body"), "*¡Hola!* Soy *Juni* 👋 ¿Cómo te llamás?")
         self.assertNotIn("media_url", text_kwargs)
 
@@ -795,21 +774,19 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         }
         headers = {"X-Twilio-Signature": "dummy_signature_valid"}
 
-        with patch('routes.whatsapp_webhook.responder_chatboc') as mock_responder_chatboc:
-            mock_responder_chatboc.return_value = {"message_body": "Hola! Soy JUNI", "options_list": [], "audio_url": "dummy_url"}
-            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.mock_twilio_create.call_count, 2)
+        self.assertEqual(self.mock_twilio_create.call_count, 3)
 
-        sticker_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
         self.assertEqual(
             sticker_kwargs.get("media_url"),
             [self.app.config["WELCOME_MEDIA_URL"]],
         )
         self.assertNotIn("body", sticker_kwargs)
 
-        text_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        text_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
         self.assertEqual(text_kwargs.get("body"), "*¡Hola!* Soy *Juni* 👋 ¿Cómo te llamás?")
         self.assertNotIn("media_url", text_kwargs)
 

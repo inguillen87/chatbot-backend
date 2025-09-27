@@ -681,7 +681,7 @@ def get_or_create_anon_id() -> str:
         anon_id = request.cookies.get(cookie_name)
 
     if not anon_id:
-        anon_id = str(uuid.uuid4())
+        anon_id = uuid.uuid4().hex
 
     g.anon_id = anon_id
     return anon_id

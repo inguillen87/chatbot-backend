@@ -19,7 +19,8 @@ def _solicitar_json_a_openai(
     schema: dict,
     system_message: str,
 ):
-    """Pide a OpenAI que devuelva JSON válido."""
+    """Pide a OpenAI que devuelva JSON válido, con fallback para SDK antiguos."""
+
     messages = [
         {
             "role": "system",
@@ -29,28 +30,104 @@ def _solicitar_json_a_openai(
         {"role": "user", "content": prompt},
     ]
 
-    try:
-        client = openai.OpenAI(api_key=api_key)
-        completion = client.chat.completions.create(
-            model=CHAT_FALLBACK_MODEL,
-            temperature=0,
-            messages=messages,
-            response_format={"type": "json_object"},
-        )
-        text = completion.choices[0].message.content
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        logger.error(
-            "Respuesta JSON inválida de OpenAI: %s",
-            exc,
-            exc_info=True,
-        )
-    except Exception as exc:
-        logger.error(
-            "Error al solicitar JSON a OpenAI: %s",
-            exc,
-            exc_info=True,
-        )
+    def _parse_completion(payload):
+        try:
+            # SDK <= 0.28 devuelve dicts, el >=1 objetos con atributos.
+            return payload["choices"][0]["message"]["content"]
+        except (TypeError, KeyError):
+            return payload.choices[0].message.content
+
+    client_ctor = getattr(openai, "OpenAI", None)
+    if client_ctor is not None:
+        try:
+            with httpx.Client(proxy=None, trust_env=False) as http_client:
+                client = client_ctor(api_key=api_key, http_client=http_client)
+
+                responses_api = getattr(client, "responses", None)
+                if responses_api is not None and hasattr(responses_api, "create"):
+                    try:
+                        response = responses_api.create(
+                            model=DEFAULT_MODEL,
+                            input=[
+                                {"role": "system", "content": system_message},
+                                {"role": "user", "content": prompt},
+                            ],
+                            response_format={"type": "json_schema", "json_schema": schema},
+                        )
+                        text = response.output[0].content[0].text
+                        return json.loads(text)
+                    except json.JSONDecodeError as exc:
+                        logger.warning(
+                            "Respuesta JSON inválida del endpoint responses: %s",
+                            exc,
+                            exc_info=True,
+                        )
+                    except Exception as exc:  # pragma: no cover - SDK/network specifics
+                        logger.warning(
+                            "OpenAI responses API falló, intentando fallback: %s",
+                            exc,
+                            exc_info=True,
+                        )
+                else:
+                    logger.debug(
+                        "Instancia OpenAI sin soporte para responses.create; se intentará chat.completions."
+                    )
+
+                chat_api = getattr(client, "chat", None)
+                completions_api = getattr(chat_api, "completions", None) if chat_api else None
+                if completions_api is not None and hasattr(completions_api, "create"):
+                    try:
+                        completion = completions_api.create(
+                            model=CHAT_FALLBACK_MODEL,
+                            temperature=0,
+                            messages=messages,
+                            response_format={"type": "json_schema", "json_schema": schema},
+                        )
+                        text = _parse_completion(completion)
+                        return json.loads(text)
+                    except json.JSONDecodeError as exc:
+                        logger.error(
+                            "Respuesta JSON inválida del chat fallback (client): %s",
+                            exc,
+                            exc_info=True,
+                        )
+                    except Exception as exc:  # pragma: no cover - SDK/network specifics
+                        logger.error(
+                            "Error al solicitar JSON vía client.chat.completions: %s",
+                            exc,
+                            exc_info=True,
+                        )
+        except AttributeError:
+            # Instalada una versión previa del SDK sin soporte para OpenAI client moderno
+            logger.debug(
+                "El cliente OpenAI no expone la interfaz moderna; se usará ChatCompletion legado.",
+                exc_info=True,
+            )
+
+    chat_completion_cls = getattr(openai, "ChatCompletion", None)
+    if chat_completion_cls is not None and hasattr(chat_completion_cls, "create"):
+        try:
+            openai.api_key = api_key
+            completion = chat_completion_cls.create(
+                model=CHAT_FALLBACK_MODEL,
+                temperature=0,
+                messages=messages,
+            )
+            text = _parse_completion(completion)
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            logger.error(
+                "Respuesta JSON inválida del fallback ChatCompletion legado: %s",
+                exc,
+                exc_info=True,
+            )
+        except Exception as exc:  # pragma: no cover - network/SDK failures
+            logger.error(
+                "Error al solicitar JSON a OpenAI mediante ChatCompletion legado: %s",
+                exc,
+                exc_info=True,
+            )
+
     return None
 
 

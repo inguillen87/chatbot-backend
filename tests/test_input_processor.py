@@ -1,16 +1,25 @@
 import unittest
 from unittest.mock import MagicMock, patch
-from services.input_processor import InputProcessor
+from services.input_processor import InputProcessor # Assuming this path
 
 class TestInputProcessor(unittest.TestCase):
 
     def setUp(self):
-        # The processor will be instantiated in each test where it's needed.
-        self.processor = InputProcessor()
+        # Mock STT service for these tests if it's a dependency
+        self.mock_stt_service = MagicMock()
+        self.mock_stt_service.transcribe_audio_from_url.return_value = "Texto de audio transcrito (mock)"
+        # self.processor = InputProcessor(stt_service_instance=self.mock_stt_service) # Old
+        self.processor = InputProcessor(speech_to_text_service=self.mock_stt_service) # Inject mock STT
+        # If InputProcessor initializes STT internally, you might need to patch it there:
+        # @patch('services.input_processor.SpeechToTextService')
+        # then pass the mock_stt_service_class to the test methods.
+
 
     def test_process_web_input_basic_text(self):
         mock_payload = {"pregunta": "Hola mundo"}
+
         text_input, media_info, location_info = self.processor.process_input(mock_payload, "web")
+
         self.assertEqual(text_input, "Hola mundo")
         self.assertEqual(media_info, {})
         self.assertEqual(location_info, {})
@@ -23,7 +32,9 @@ class TestInputProcessor(unittest.TestCase):
                 "mime_type": "image/jpeg", "source": "web_upload"
             }
         }
+
         text_input, media_info, location_info = self.processor.process_input(mock_payload, "web")
+
         self.assertEqual(text_input, "Ver foto")
         self.assertIsNotNone(media_info)
         self.assertEqual(media_info.get("id"), 789)
@@ -35,7 +46,9 @@ class TestInputProcessor(unittest.TestCase):
             "pregunta": "",
             "ubicacion_usuario": {"lat": -34.123, "lon": -58.456, "accuracy": 15.0}
         }
+
         text_input, media_info, location_info = self.processor.process_input(mock_payload, "web")
+
         self.assertEqual(text_input, "")
         self.assertEqual(media_info, {})
         self.assertIsNotNone(location_info)
@@ -44,41 +57,54 @@ class TestInputProcessor(unittest.TestCase):
         self.assertEqual(location_info["accuracy"], 15.0)
 
     def test_process_web_input_with_action_payload(self):
+        # The InputProcessor currently does not explicitly handle 'action_payload'.
+        # This test might need adjustment based on whether 'action_payload' should be part of its output.
+        # For now, it will be ignored by process_input.
         mock_payload = {
             "pregunta": "Confirmar",
-            "action_payload": "confirm_button_clicked"
+            "action_payload": "confirm_button_clicked" # This key is not used by current process_input
         }
+
         text_input, media_info, location_info = self.processor.process_input(mock_payload, "web")
+
         self.assertEqual(text_input, "Confirmar")
+        # self.assertEqual(result["action_payload"], "confirm_button_clicked") # No longer returned directly
+
 
     def test_process_whatsapp_input_text(self):
         mock_whatsapp_payload = {
             "From": "whatsapp:+5491112345678", "To": "whatsapp:+17432643718",
-            "Body": "Pedido de prueba"
+            "Body": "Pedido de prueba" # 'Body' is used as 'pregunta' by WhatsApp handler typically
         }
+        # Simulate how the payload might look after initial transformation by a webhook handler
         transformed_payload = {"pregunta": mock_whatsapp_payload["Body"], **mock_whatsapp_payload}
+
         text_input, media_info, location_info = self.processor.process_input(transformed_payload, "whatsapp")
+
         self.assertEqual(text_input, "Pedido de prueba")
         self.assertEqual(media_info, {})
         self.assertEqual(location_info, {})
+        # Other assertions like whatsapp_from_number would be part of higher-level processing
 
-    @patch('services.audio_transcription_service.transcribe_audio_from_url')
-    def test_process_whatsapp_input_voice_transcribed(self, mock_transcribe):
-        mock_transcribe.return_value = "Audio transcrito: hola que tal"
-        processor = InputProcessor() # Uses the real (patched) function by default
+    # No longer patching the attribute directly on the class. STT service is injected.
+    def test_process_whatsapp_input_voice_transcribed(self):
+        # self.mock_stt_service is already injected into self.processor in setUp
+        self.mock_stt_service.transcribe_audio_url.return_value = "Audio transcrito: hola que tal"
 
         mock_whatsapp_payload = {
-            "From": "whatsapp:+549112", "To": "whatsapp:+17432643718", "Body": "Audio adjunto.",
+            "From": "whatsapp:+549112", "To": "whatsapp:+17432643718", "Body": "Audio adjunto.", # User might type this
             "NumMedia": "1", "MediaUrl0": "http://example.com/voice.ogg", "MediaContentType0": "audio/ogg",
         }
         transformed_payload = {"pregunta": mock_whatsapp_payload["Body"], **mock_whatsapp_payload}
-        text_input, media_info, location_info = processor.process_input(transformed_payload, "whatsapp")
+
+        text_input, media_info, location_info = self.processor.process_input(transformed_payload, "whatsapp")
 
         self.assertEqual(text_input, "Audio adjunto. Audio transcrito: hola que tal")
         self.assertIsNotNone(media_info)
         self.assertEqual(media_info["mime_type"], "audio/ogg")
         self.assertEqual(media_info["transcribed_text"], "Audio transcrito: hola que tal")
-        mock_transcribe.assert_called_once_with("http://example.com/voice.ogg", "audio/ogg")
+        self.mock_stt_service.transcribe_audio_url.assert_called_once_with("http://example.com/voice.ogg", "audio/ogg")
+
 
     def test_process_whatsapp_input_location(self):
         mock_whatsapp_payload = {
@@ -86,22 +112,32 @@ class TestInputProcessor(unittest.TestCase):
             "Latitude": "-34.567", "Longitude": "-58.789",
         }
         transformed_payload = {"pregunta": "", "ubicacion_usuario": {"lat": -34.567, "lon": -58.789}, **mock_whatsapp_payload}
+
         text_input, media_info, location_info = self.processor.process_input(transformed_payload, "whatsapp")
-        self.assertEqual(text_input, "")
+
+        self.assertEqual(text_input, "") # Body was empty
         self.assertEqual(media_info, {})
         self.assertIsNotNone(location_info)
         self.assertEqual(location_info.get("lat"), -34.567)
         self.assertEqual(location_info.get("lon"), -58.789)
 
     def test_process_whatsapp_input_button_payload(self):
+        # WhatsApp button clicks often send 'Body' as the button text and 'ButtonPayload'
         mock_whatsapp_payload = {
             "From": "whatsapp:+549114", "To": "whatsapp:+17432643718",
             "Body": "Texto del Botón",
             "ButtonPayload": "action_button_id_123"
         }
+        # InputProcessor's current `process_input` doesn't explicitly handle ButtonPayload.
+        # It would typically be handled by the calling layer (Orchestrator or specific WhatsApp handler)
+        # which would then decide if 'Body' or 'ButtonPayload' is the primary user message/action.
+        # For this test, let's assume 'Body' is treated as 'pregunta'.
         transformed_payload = {"pregunta": mock_whatsapp_payload["Body"], **mock_whatsapp_payload}
+
         text_input, media_info, location_info = self.processor.process_input(transformed_payload, "whatsapp")
+
         self.assertEqual(text_input, "Texto del Botón")
+        # self.assertEqual(result["action_payload"], "action_button_id_123") # Not part of process_input's direct output
 
 if __name__ == '__main__':
     unittest.main()

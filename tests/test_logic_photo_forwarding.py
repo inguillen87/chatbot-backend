@@ -6,7 +6,7 @@ from models import User, Rubro, ChatSessionContext
 from services.constants import CONTEXTO_MUNICIPIO
 
 class LogicPhotoForwardingTest(unittest.TestCase):
-    @patch('services.municipio_responder.responder_municipio')
+    @patch('services.logic.responder_municipio')
     @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat')
     @patch('requests.get')
     @patch('services.logic.db.session')
@@ -34,7 +34,7 @@ class LogicPhotoForwardingTest(unittest.TestCase):
         self.assertTrue(kwargs.get("es_foto"))
         self.assertEqual(kwargs.get("foto_url"), "http://example.com/img.jpg")
 
-    @patch('services.municipio_responder.responder_municipio')
+    @patch('services.logic.responder_municipio')
     @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat')
     @patch('requests.get')
     @patch('services.logic.db.session')
@@ -61,7 +61,7 @@ class LogicPhotoForwardingTest(unittest.TestCase):
         mock_interpretar.assert_not_called()
         mock_get.assert_not_called()
 
-    @patch('services.municipio_responder.responder_municipio')
+    @patch('services.logic.responder_municipio')
     @patch('services.logic.db.session')
     def test_web_upload_photo_sets_context(self, mock_db_session, mock_responder):
         app = Flask(__name__)

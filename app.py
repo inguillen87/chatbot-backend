@@ -1,5 +1,4 @@
 # app.py
-import monkey_patch
 import ssl
 import os
 import sys
@@ -7,6 +6,14 @@ import logging
 
 # --- Modo "solo migraciones" para que Alembic no cargue nada pesado ---
 MIGRATIONS_ONLY = os.getenv("FLASK_MIGRATIONS_ONLY") == "1"
+
+# Desactivar greendns SIEMPRE antes de importar eventlet (evita getaddrinfo 'type')
+os.environ.setdefault("EVENTLET_NO_GREENDNS", "YES")
+
+# Solo en runtime normal (no durante migraciones) parcheamos con eventlet
+if not MIGRATIONS_ONLY:
+    import eventlet
+    eventlet.monkey_patch()
 
 from flask import Flask, request, current_app, g
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -156,24 +163,6 @@ def create_app(config_class=Config):
             app.config['SESSION_TYPE'] = 'filesystem'
         session_ext.init_app(app)
 
-        # FIX: Evitar error de redefinición de tabla 'sessions' en tests
-        if app.config.get("TESTING"):
-            with app.app_context():
-                # La tabla 'sessions' es creada por Flask-Session.
-                # Al usar un app factory, la tabla se redefine en cada test.
-                # Le decimos a SQLAlchemy que está bien extender la tabla existente.
-                if 'sessions' in db.metadata.tables:
-                    db.metadata.tables['sessions'].__table_args__ = {'extend_existing': True}
-
-        # FIX: Evitar error de redefinición de tabla 'sessions' en tests
-        if app.config.get("TESTING"):
-            with app.app_context():
-                # La tabla 'sessions' es creada por Flask-Session.
-                # Al usar un app factory, la tabla se redefine en cada test.
-                # Le decimos a SQLAlchemy que está bien extender la tabla existente.
-                if 'sessions' in db.metadata.tables:
-                    db.metadata.tables['sessions'].__table_args__ = {'extend_existing': True}
-
     # Logging de app
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
     handler = logging.StreamHandler(sys.stderr)
@@ -306,7 +295,7 @@ def create_app(config_class=Config):
 
         # Inicializar SocketIO solo en runtime normal
         if socketio is not None:
-            socketio.init_app(app, async_mode='threading')
+            socketio.init_app(app)
 
     return app
 

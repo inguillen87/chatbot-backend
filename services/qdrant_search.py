@@ -9,7 +9,6 @@ from services.logic import es_rubro_publico
 
 # from collections import Counter # Ya está importado arriba
 from qdrant_client.http import models as qdrant_models
-from qdrant_client.http.exceptions import UnexpectedResponse
 from .common_utils import limpiar_texto_base, unir_codigos_alfa_numericos # Changed from .utils
 from .herramientas_municipio import normalizar_texto
 
@@ -149,20 +148,6 @@ def buscar_catalogo_qdrant(
 
         return resultados
 
-    except UnexpectedResponse as e_qdrant_http:
-        id_log = f"user_id {user_id}" if user_id is not None else "ANONIMO"
-        logger.error(
-            f"[QDRANT SEARCH] Error de conexión HTTP con Qdrant para {id_log} (código: {e_qdrant_http.status_code}). El servicio podría no estar disponible. Pregunta: '{pregunta_limpia}'. Error: {e_qdrant_http}",
-            exc_info=True,
-        )
-        return []
-    except UnexpectedResponse as e_qdrant_http:
-        id_log = f"user_id {user_id}" if user_id is not None else "ANONIMO"
-        logger.error(
-            f"[QDRANT SEARCH] Error de conexión HTTP con Qdrant para {id_log} (código: {e_qdrant_http.status_code}). El servicio podría no estar disponible. Pregunta: '{pregunta_limpia}'. Error: {e_qdrant_http}",
-            exc_info=True,
-        )
-        return []
     except Exception as e_qdrant:
         id_log = f"user_id {user_id}" if user_id is not None else "ANONIMO"
         logger.error(

@@ -1,7 +1,7 @@
 # services/input_processor.py
 import logging
-from typing import Dict, Any, Tuple, Callable, Optional
-from services.audio_transcription_service import transcribe_audio_from_url
+from typing import Dict, Any, Tuple
+from services.google_speech_to_text import SpeechToTextService
 
 logger = logging.getLogger(__name__)
 
@@ -11,8 +11,8 @@ class InputProcessor:
     processes media URLs, and performs speech-to-text if needed.
     """
 
-    def __init__(self, speech_to_text_service: Optional[Callable] = None):
-        self.stt_service = speech_to_text_service or transcribe_audio_from_url
+    def __init__(self, speech_to_text_service=None): # speech_to_text_service can be injected
+        self.stt_service = speech_to_text_service or SpeechToTextService()
 
     def process_input(self, payload: Dict[str, Any], channel: str) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
         """
@@ -58,8 +58,10 @@ class InputProcessor:
                     # Speech-to-text for audio files from WhatsApp
                     if mime_type.startswith('audio/') and self.stt_service:
                         try:
-                            # The injected service is now the function itself
-                            transcribed_text = self.stt_service(media_url, mime_type)
+                            # Note: WhatsApp .ogg files might need conversion (e.g., with FFmpeg)
+                            # before sending to some STT services if they don't support opus directly.
+                            # This is a simplified STT call.
+                            transcribed_text = self.stt_service.transcribe_audio_url(media_url, mime_type)
                             if transcribed_text:
                                 text_input = f"{text_input} {transcribed_text}".strip() # Append or replace
                                 logger.info(f"STT from WhatsApp audio: '{transcribed_text}'")

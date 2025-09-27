@@ -3,7 +3,6 @@ import re
 import random
 import json
 import uuid
-import unicodedata
 from datetime import datetime
 from typing import Optional
 from enum import Enum, auto
@@ -41,21 +40,10 @@ from .common_utils import validar_email, validar_telefono
 logger = logging.getLogger(__name__)
 
 
-def _normalize_text_robust(value: Optional[str]) -> str:
+def _normalize_user_input(value: Optional[str]) -> str:
     if not value:
         return ""
-    # NFD normalization to separate base characters from accents
-    s = "".join(
-        c
-        for c in unicodedata.normalize("NFD", value)
-        if unicodedata.category(c) != "Mn"
-    )
-    # Lowercase and compress whitespace
-    return re.sub(r"\s+", " ", s).strip().lower()
-
-
-def _normalize_user_input(value: Optional[str]) -> str:
-    return _normalize_text_robust(value)
+    return re.sub(r"\s+", " ", value).strip().lower()
 
 
 def _extract_action_id(action_payload) -> Optional[str]:
@@ -452,8 +440,7 @@ class CatalogoHandler(BaseHandler):
         if self.context.get("intencion") == "ver_catalogo" and len(pregunta.split()) < 3: query_qdrant = "productos populares"
 
         resultados_qdrant = buscar_catalogo_qdrant(self.pyme_id_actual, query_qdrant, self.context.get("rubro_nombre"), 3, self.context.get("coleccion_qdrant", CATALOGO_PYME))
-        if self.context.get("chat_db_context_data") is not None:
-            add_preference(self.context.get("chat_db_context_data"), "busquedas", pregunta)
+        add_preference("busquedas", pregunta)
         
         respuesta_texto = ""; botones_catalogo = []; fuente_catalogo = "catalogo_qdrant_sin_resultados_v2"
 
