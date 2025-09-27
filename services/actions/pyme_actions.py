@@ -2,10 +2,9 @@ import logging
 from typing import Any, Dict
 
 from services.pyme_menu import get_pyme_menu_payload
-from services.cart import get_cart_summary, add_item_to_cart, clear_pyme_cart
+from services.cart import get_cart_summary, add_item_to_cart, clear_pyme_cart, format_cart_for_display
 from services.qdrant_search import buscar_catalogo_qdrant
 from services.herramientas_pyme import add_preference
-from services.utils import format_cart_for_display
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +80,7 @@ class AgregarCarritoHandler(BasePymeHandler):
     async def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         sku = action_data.get("sku", "GEN-PROD-001")
         quantity = action_data.get("quantity", 1)
+        # In a real scenario, we'd fetch product info from the DB here
         producto_info = {"catalogo_item_id": sku, "nombre": "Producto Genérico", "precio_unitario": 100.0, "moneda": "ARS"}
         self.pyme_carts_data = add_item_to_cart(self.pyme_carts_data, self.pyme_id, self.cliente_id, producto_info, quantity)
         self._save_context()

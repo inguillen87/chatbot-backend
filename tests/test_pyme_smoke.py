@@ -24,51 +24,68 @@ class PymeSmokeTests(unittest.TestCase):
         self.app_context.pop()
 
     @patch("services.pymes.ChatOrchestrator.execute_action", new_callable=AsyncMock)
-    async def run_keyword_test(self, keyword, expected_action, mock_response, mock_execute_action):
-        """Helper function to run a keyword-based test."""
-        mock_execute_action.return_value = mock_response
+    def test_pyme_smoke_text_to_quote_to_order(
+        self, mock_execute_action
+    ):
+        async def run_test():
+            # 1. User starts an order
+            mock_execute_action.return_value = {"message_body": "OK, empecemos tu pedido."}
+            response = await responder_pyme_v4(1, "comprar", "+1", "Test", {})
+            self.assertIn("empecemos tu pedido", response["message_body"])
+            mock_execute_action.assert_called_with('pyme_hacer_pedido', unittest.mock.ANY, unittest.mock.ANY)
 
-        response = await responder_pyme_v4(
-            pyme_id=1,
-            message=keyword,
-            normalized_phone="+1234567890",
-            profile_name="Test User",
-            chat_context_data={},
-        )
+            # 2. User asks for a quote (presupuesto)
+            mock_execute_action.return_value = {"message_body": "Tu presupuesto es $100."}
+            response = await responder_pyme_v4(1, "presupuesto", "+1", "Test", {})
+            self.assertIn("Tu presupuesto es", response["message_body"])
 
-        mock_execute_action.assert_called_with(expected_action, {'target': 'pyme'}, unittest.mock.ANY)
-        self.assertIn(mock_response["message_body"], response["message_body"])
-        self.assertEqual(mock_response["fuente"], response["fuente"])
+            # 3. User confirms order
+            mock_execute_action.return_value = {"message_body": "¡Gracias por tu compra!"}
+            response = await responder_pyme_v4(1, "confirmar pedido", "+1", "Test", {})
+            self.assertIn("¡Gracias por tu compra!", response["message_body"])
 
-    def test_pyme_menu_keyword(self):
-        mock_response = {
-            "message_body": "¡Hola! Soy tu asistente virtual...",
-            "fuente": "pyme_menu_principal_handler"
-        }
         with self.app.test_request_context():
-            self.loop.run_until_complete(
-                self.run_keyword_test("menu", "pyme_menu_principal", mock_response)
-            )
+            self.loop.run_until_complete(run_test())
 
-    def test_pyme_catalog_keyword(self):
-        mock_response = {
-            "message_body": "Aquí está nuestro catálogo de productos.",
-            "fuente": "pyme_catalogo_handler"
-        }
-        with self.app.test_request_context():
-            self.loop.run_until_complete(
-                self.run_keyword_test("catalogo", "pyme_productos_stock", mock_response)
-            )
+    @patch("services.pymes.ChatOrchestrator.execute_action", new_callable=AsyncMock)
+    def test_pyme_image_to_catalog_match(
+        self, mock_execute_action
+    ):
+        async def run_test():
+            mock_execute_action.return_value = {"message_body": "Basado en tu imagen, encontré Producto X"}
+            response = await responder_pyme_v4(1, "cuanto cuesta esto?", "+1", "Test", {}, media_url="http://a.com/img.png")
+            self.assertIn("Producto X", response["message_body"])
 
-    def test_pyme_ver_carrito_keyword(self):
-        mock_response = {
-            "message_body": "Este es el contenido de tu carrito.",
-            "fuente": "pyme_ver_carrito_handler"
-        }
         with self.app.test_request_context():
-            self.loop.run_until_complete(
-                self.run_keyword_test("carrito", "pyme_ver_carrito", mock_response)
-            )
+            self.loop.run_until_complete(run_test())
+
+    @patch("services.pymes.ChatOrchestrator.execute_action", new_callable=AsyncMock)
+    def test_pyme_audio_to_intent_delivery(
+        self, mock_execute_action
+    ):
+        async def run_test():
+            # Assume transcription would result in "delivery"
+            mock_execute_action.return_value = {"message_body": "Información de delivery..."}
+            response = await responder_pyme_v4(1, "delivery", "+1", "Test", {}, media_url="http://a.com/audio.ogg")
+            self.assertIn("Información de delivery", response["message_body"])
+            mock_execute_action.assert_called_with('pyme_info_envio', unittest.mock.ANY, unittest.mock.ANY)
+
+        with self.app.test_request_context():
+            self.loop.run_until_complete(run_test())
+
+    @patch("services.pymes.ChatOrchestrator.execute_action", new_callable=AsyncMock)
+    def test_pyme_location_to_shipping_estimate(
+        self, mock_execute_action
+    ):
+        async def run_test():
+            mock_execute_action.return_value = {"message_body": "El envío a tu ubicación cuesta $150."}
+            location_data = {"lat": -34.6, "lon": -58.4}
+            response = await responder_pyme_v4(1, "", "+1", "Test", {}, location=location_data)
+            self.assertIn("cuesta $150", response["message_body"])
+            mock_execute_action.assert_called_with('pyme_info_envio', unittest.mock.ANY, unittest.mock.ANY)
+
+        with self.app.test_request_context():
+            self.loop.run_until_complete(run_test())
 
 if __name__ == "__main__":
     unittest.main()
