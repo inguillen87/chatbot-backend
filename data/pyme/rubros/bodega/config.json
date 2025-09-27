@@ -41,5 +41,13 @@
   "whatsapp": {
     "numero": "+5492613168608",
     "descripcion": "Canal oficial para pedidos, reservas de visitas y soporte a distribuidores"
+  },
+  "welcome": {
+    "template_sid": "HX33b306d980ee328f7893db484ba349c4",
+    "template_variables": {
+      "1": "{{pyme_whatsapp}}"
+    },
+    "sticker_url": "https://chatboc.ar/static/welcome/saludo_media_cuatrofincas.webp",
+    "sticker_cooldown_seconds": 300
   }
 }

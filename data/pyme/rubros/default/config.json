@@ -30,5 +30,6 @@
   "whatsapp": {
     "numero": "+5491112345678",
     "descripcion": "Canal oficial automatizado para consultas de stock, pedidos y soporte"
-  }
+  },
+  "welcome": {}
 }
