@@ -93,10 +93,10 @@ _PLAN_CATALOG: Dict[str, PlanMetadata] = {
         name="Plan Pro",
         price_ars=65_000,
         order=1,
-        message_limit=200,
-        summary="Automatización comercial y de soporte con 200 interacciones inteligentes al mes.",
+        message_limit=250,
+        summary="Automatización comercial y de soporte con 250 interacciones inteligentes al mes.",
         features=[
-            "200 mensajes IA por mes entre WhatsApp, webchat y email",
+            "250 mensajes IA por mes entre WhatsApp, webchat y email",
             "Campañas segmentadas y CRM sincronizado",
             "Carga de catálogos PDF/Excel con respuesta inmediata",
             "Agendamiento de visitas y recordatorios automáticos",

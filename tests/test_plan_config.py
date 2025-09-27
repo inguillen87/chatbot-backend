@@ -44,7 +44,7 @@ class PlanConfigTests(unittest.TestCase):
         self.assertIsNotNone(pro)
         self.assertIsNotNone(full)
         self.assertEqual(pro.price_ars, 65_000)
-        self.assertEqual(pro.message_limit, 200)
+        self.assertEqual(pro.message_limit, 250)
         self.assertEqual(full.price_ars, 95_000)
         self.assertIsNone(full.message_limit)
 
@@ -59,7 +59,7 @@ class PlanConfigTests(unittest.TestCase):
 
         apply_plan_to_user(user, "pro")
         self.assertEqual(user.plan, "pro")
-        self.assertEqual(user.limite_preguntas, 200)
+        self.assertEqual(user.limite_preguntas, 250)
 
         apply_plan_to_user(user, "full")
         self.assertEqual(user.plan, "full")

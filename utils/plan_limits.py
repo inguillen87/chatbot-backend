@@ -1,7 +1,7 @@
 def limite_para_usuario(user):
     """Devuelve el límite de preguntas de un ``user``.
 
-    - ``pro``  -> 200
+    - ``pro``  -> 250
     - ``full`` -> None (ilimitado)
     - otro plan -> ``user.limite_preguntas``
 
