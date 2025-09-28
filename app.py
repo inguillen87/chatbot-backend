@@ -210,6 +210,7 @@ def create_app(config_class=Config):
         from routes.chat import chat_bp
         from routes.ticket import ticket_bp
         from routes.crm import crm_bp
+        from routes.analytics import analytics_bp
         from services.upload_processor import upload_bp
         from routes.archivos import archivos_bp
         from routes.rubros import rubros_bp
@@ -289,6 +290,7 @@ def create_app(config_class=Config):
         app.register_blueprint(bp_est)
         app.register_blueprint(media_bp)
         app.register_blueprint(accessibility_bp)
+        app.register_blueprint(analytics_bp)
 
         # Comandos CLI
         register_commands(app)
