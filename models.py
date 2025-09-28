@@ -1,7 +1,8 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from utils.time_utils import get_local_now
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text
 from sqlalchemy import Index
+from sqlalchemy.orm import validates
 from sqlalchemy.dialects.sqlite import JSON as SQLITE_JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from database import db
@@ -178,6 +179,71 @@ class MunicipioTicket(db.Model):
         lazy='dynamic', # O 'select'/'joined' según la necesidad de carga
         cascade="all, delete-orphan" # Opcional: si se borra el ticket, borrar sus archivos
     )
+
+
+class MunicipioPost(db.Model):
+    __tablename__ = "municipio_post"
+
+    id = Column(Integer, primary_key=True)
+    municipio_id = Column(Integer, ForeignKey('user.id'), nullable=False, index=True)
+    tipo_post = Column(String(30), nullable=False, default="noticia")
+    titulo = Column(String(255), nullable=False)
+    subtitulo = Column(String(255), nullable=True)
+    descripcion = Column(Text, nullable=False)
+    tags = Column(JSONType, nullable=True)
+    imagen_url = Column(String(500), nullable=True)
+    enlace = Column(String(500), nullable=True)
+    fecha_evento_inicio = Column(DateTime(timezone=True), nullable=True)
+    fecha_evento_fin = Column(DateTime(timezone=True), nullable=True)
+    fecha_publicacion = Column(DateTime(timezone=True), nullable=False, default=get_local_now)
+    ubicacion = Column(String(255), nullable=True)
+    datos_extra = Column(JSONType, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=get_local_now)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=get_local_now, onupdate=get_local_now)
+
+    __table_args__ = (
+        Index('ix_municipio_post_municipio_fecha', 'municipio_id', 'fecha_publicacion'),
+    )
+
+    ALLOWED_TYPES = {"noticia", "evento", "informacion", "promocion", "promocionar"}
+
+    @validates("tipo_post")
+    def _validate_tipo_post(self, key, value):  # pragma: no cover - simple normalization
+        normalized = (value or "noticia").strip().lower()
+        if normalized not in self.ALLOWED_TYPES:
+            normalized = "noticia"
+        return normalized
+
+    @staticmethod
+    def _serialize_datetime(value):
+        if not value:
+            return None
+        try:
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.isoformat()
+        except Exception:
+            return None
+
+    def to_dict(self) -> dict:
+        tags_value = self.tags if isinstance(self.tags, list) else []
+        if self.tipo_post not in tags_value:
+            tags_value = [self.tipo_post, *(tag for tag in tags_value if tag != self.tipo_post)]
+        return {
+            "id": str(self.id),
+            "titulo": self.titulo,
+            "subtitulo": self.subtitulo,
+            "descripcion": self.descripcion,
+            "tipo_post": self.tipo_post,
+            "tags": tags_value,
+            "imagen_url": self.imagen_url,
+            "enlace": self.enlace,
+            "fecha_evento_inicio": self._serialize_datetime(self.fecha_evento_inicio),
+            "fecha_evento_fin": self._serialize_datetime(self.fecha_evento_fin),
+            "fecha_publicacion": self._serialize_datetime(self.fecha_publicacion),
+            "ubicacion": self.ubicacion,
+            "datos_extra": self.datos_extra or {},
+        }
 
 class PymeTicket(db.Model):
     __tablename__ = "pyme_ticket"

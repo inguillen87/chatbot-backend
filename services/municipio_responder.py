@@ -22,6 +22,7 @@ from models import (
     db,
     SitioWebInfo,
     Conversacion,
+    MunicipioPost,
 )
 from services.ticket_service import servicio_tickets
 from utils.db_utils import safe_flag_modified
@@ -1011,7 +1012,22 @@ def cargar_contactos_utiles(municipio_id: str = MUNICIPIO_ID):
     return cargar_configuracion_municipio(municipio_id, "contactos_utiles.json")
 
 def cargar_agenda_cultural(municipio_id: str = MUNICIPIO_ID):
-    return cargar_configuracion_municipio(municipio_id, "agenda_cultural.json")
+    try:
+        posts = (
+            MunicipioPost.query.filter(MunicipioPost.municipio_id == municipio_id)
+            .order_by(MunicipioPost.fecha_publicacion.desc())
+            .limit(200)
+            .all()
+        )
+        if posts:
+            return {"eventos": [post.to_dict() for post in posts]}
+    except Exception:
+        logger.exception("Error al cargar agenda cultural desde la base de datos")
+
+    fallback = cargar_configuracion_municipio(municipio_id, "agenda_cultural.json")
+    if isinstance(fallback, dict):
+        return fallback
+    return {"eventos": []}
 
 def obtener_info_tramite_web(tramite_nombre: str, municipio_id: str = MUNICIPIO_ID) -> dict:
     """Obtiene la descripción y enlaces de un trámite desde ``tramites.json``.
