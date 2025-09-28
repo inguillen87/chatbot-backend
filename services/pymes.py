@@ -655,7 +655,8 @@ class CatalogoHandler(BaseHandler):
         if self.context.get("intencion") == "ver_catalogo" and len(pregunta.split()) < 3: query_qdrant = "productos populares"
 
         resultados_qdrant = buscar_catalogo_qdrant(self.pyme_id_actual, query_qdrant, self.context.get("rubro_nombre"), 3, self.context.get("coleccion_qdrant", CATALOGO_PYME))
-        add_preference("busquedas", pregunta)
+        chat_ctx = self.context.setdefault("chat_db_context_data", {})
+        add_preference(chat_ctx, "busquedas", pregunta)
         
         respuesta_texto = ""; botones_catalogo = []; fuente_catalogo = "catalogo_qdrant_sin_resultados_v2"
 
