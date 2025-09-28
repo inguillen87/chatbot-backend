@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 from .pyme_base_handler import BasePymeHandler
 from services.ticket_service import servicio_tickets
 from services.pymes import PymeConversationState, tiene_archivo_catalogo, url_descargar_catalogo_pyme
@@ -8,6 +8,7 @@ from services.google_search import google_search
 from services.promocion_service import promocion_service
 from services.qdrant_search import buscar_catalogo_qdrant, CATALOGO_PYME
 from services.preferences import add_preference
+from services.config_loader import cargar_configuracion_pyme
 from models import db
 import models
 from services.common_utils import parse_precio_flexible
@@ -32,8 +33,25 @@ class CatalogoHandler(BasePymeHandler):
         query_qdrant = pregunta
         if self.context.get("intencion") == "ver_catalogo" and len(pregunta.split()) < 3: query_qdrant = "productos populares"
 
-        resultados_qdrant = buscar_catalogo_qdrant(self.pyme_id_actual, query_qdrant, self.context.get("rubro_nombre"), 3, self.context.get("coleccion_qdrant", CATALOGO_PYME))
-        add_preference("busquedas", pregunta)
+        resultados_qdrant: List[Any] = []
+        try:
+            resultados_qdrant = buscar_catalogo_qdrant(
+                self.pyme_id_actual,
+                query_qdrant,
+                self.context.get("rubro_nombre"),
+                3,
+                self.context.get("coleccion_qdrant", CATALOGO_PYME),
+            )
+        except Exception as exc:
+            logger.warning(
+                "[PYME][CatalogoHandler] Error consultando Qdrant: %s",
+                exc,
+                exc_info=True,
+            )
+            resultados_qdrant = []
+
+        chat_ctx = self.context.setdefault("chat_db_context_data", {})
+        add_preference(chat_ctx, "busquedas", pregunta)
 
         respuesta_texto = ""; botones_catalogo = []; fuente_catalogo = "catalogo_qdrant_sin_resultados_v2"
 
@@ -58,11 +76,58 @@ class CatalogoHandler(BasePymeHandler):
                 fuente_catalogo = "catalogo_qdrant_con_promos_v2"
 
         if not respuesta_texto:
-            respuesta_texto = f"No encontré productos para '{pregunta}'. Intenta con otras palabras."
-            botones_catalogo = []
+            fallback_items: List[Dict[str, Any]] = []
+            static_bundle = self.pyme_ctx.get("static_data_cache") or {}
+            raw_catalog = static_bundle.get("catalogo_destacado")
+            if not isinstance(raw_catalog, list):
+                raw_catalog = None
+            if not raw_catalog:
+                rubro_slug = (
+                    self.context.get("rubro_nombre")
+                    or self.pyme_ctx.get("rubro_slug")
+                    or "default"
+                )
+                raw_catalog = cargar_configuracion_pyme(rubro_slug, "catalogo_destacado.json")
+                if not raw_catalog:
+                    raw_catalog = cargar_configuracion_pyme("default", "catalogo_destacado.json")
+            if isinstance(raw_catalog, list):
+                for raw in raw_catalog:
+                    if isinstance(raw, dict):
+                        fallback_items.append(raw)
+                        if len(fallback_items) >= 5:
+                            break
+
+            if fallback_items:
+                lines: List[str] = [
+                    "Estos son algunos destacados de nuestra bodega:"
+                ]
+                for idx, item in enumerate(fallback_items, 1):
+                    nombre = item.get("nombre") or item.get("sku") or "Producto"
+                    presentacion = item.get("presentacion") or "Presentación estándar"
+                    precio = item.get("precio")
+                    moneda = item.get("moneda") or "ARS"
+                    descripcion = item.get("descripcion") or ""
+                    precio_txt = ""
+                    try:
+                        if precio is not None:
+                            precio_txt = f" — ${float(precio):,.0f} {moneda}"
+                    except (TypeError, ValueError):
+                        precio_txt = ""
+                    line = f"*{idx}. {nombre}* ({presentacion}){precio_txt}"
+                    if descripcion:
+                        line += f"\n   {descripcion}"
+                    lines.append(line)
+                respuesta_texto = "\n\n".join(lines)
+                fuente_catalogo = "pyme_catalogo_destacado_static_v1"
+            else:
+                respuesta_texto = (
+                    "No encontré productos listados todavía."
+                    " Si querés, puedo derivarte con un sommelier para que te ayude."
+                )
+                botones_catalogo = []
 
         body = respuesta_texto
-        options = []
+        options: List[Dict[str, Any]] = []
 
         for btn_cat_original in botones_catalogo:
             action_str = btn_cat_original.get("action", "")
@@ -72,8 +137,11 @@ class CatalogoHandler(BasePymeHandler):
                 "id": f"pedir_item_pyme_{id_suffix}",
                 "texto": btn_cat_original.get("texto", "Pedir producto")[:20]
             })
-            if len(options) >= 7 and self.context.get("channel") == 'whatsapp':
+            if len(options) >= 5 and self.context.get("channel") == 'whatsapp':
                 break
+
+        if not botones_catalogo and respuesta_texto:
+            options.append({"id": "pyme_hacer_pedido", "texto": "Cargar pedido"})
 
         options.append({"id": "ver_catalogo_pyme_buscar_otra", "texto": "Buscar otra cosa"})
 
@@ -89,6 +157,7 @@ class CatalogoHandler(BasePymeHandler):
                     "type": "url"
                 })
 
+        options.append({"id": "pyme_promociones", "texto": "Ver promociones"})
         options.append({"id": "hablar_con_agente_pyme_catalogo", "texto": "Hablar con un agente"})
 
         interactive_options_count = sum(1 for opt in options if opt.get("type") != "url")
@@ -112,18 +181,59 @@ class OfertasHandler(BasePymeHandler):
         if not self.pyme_id_actual: return {"respuesta": "No puedo identificar la tienda.", "fuente": "ofertas_sin_pyme_id_v2"}
         promos = promocion_service.get_promociones_for_pyme(self.pyme_id_actual, activas_unicamente=True)
 
-        options = [{"id": "ver_catalogo_pyme_ofertas", "texto": "Ver catálogo"}]
+        options = [
+            {"id": "ver_catalogo_pyme_ofertas", "texto": "Ver catálogo"},
+            {"id": "pyme_hacer_pedido", "texto": "Cargar pedido"},
+        ]
         message_type = 'interactive_buttons'
 
         if promos:
-            body = "¡Tenemos estas promociones activas!\n" + "\n".join([f"\n**{p.nombre_promocion}**: {p.descripcion_publica}" for p in promos[:3]])
-            if len(promos) > 3: body += f"\n... y {len(promos) - 3} más!"
+            body = "¡Tenemos estas promociones activas!\n" + "\n".join([
+                f"\n**{p.nombre_promocion}**: {p.descripcion_publica}" for p in promos[:3]
+            ])
+            if len(promos) > 3:
+                body += f"\n... y {len(promos) - 3} más!"
             body += "\n\n¿Te interesa alguna o quieres ver productos?"
             return {
                 "message_body": body,
                 "options_list": options,
                 "message_type": message_type,
                 "fuente": "pyme_ofertas_con_promos_v2"
+            }
+
+        static_bundle = self.pyme_ctx.get("static_data_cache") or {}
+        raw_promos = static_bundle.get("promociones")
+        if not isinstance(raw_promos, list):
+            raw_promos = cargar_configuracion_pyme(
+                self.context.get("rubro_nombre") or self.pyme_ctx.get("rubro_slug") or "default",
+                "promociones.json",
+            ) or []
+        formatted_promos: List[str] = []
+        for promo in raw_promos[:3]:
+            if not isinstance(promo, dict):
+                continue
+            nombre = promo.get("nombre") or "Promoción"
+            canal = promo.get("canal")
+            validez = promo.get("validez")
+            descripcion = promo.get("descripcion") or promo.get("descripcion_publica") or ""
+            header = f"**{nombre}**"
+            if canal:
+                header += f" · {canal}"
+            if validez:
+                header += f" (vigente hasta {validez})"
+            block = header
+            if descripcion:
+                block += f"\n   {descripcion}"
+            formatted_promos.append(block)
+
+        if formatted_promos:
+            body = "Estas son nuestras promos vigentes:\n\n" + "\n\n".join(formatted_promos)
+            body += "\n\nDecime cuál te interesa o pedime un pedido directo."
+            return {
+                "message_body": body,
+                "options_list": options,
+                "message_type": message_type,
+                "fuente": "pyme_promos_estaticas_v1",
             }
 
         body_no_ofertas = "No tenemos ofertas especiales ahora, pero explora nuestro catálogo."

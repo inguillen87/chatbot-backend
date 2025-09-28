@@ -3,13 +3,16 @@ import re
 import random
 import json
 import uuid
+import unicodedata
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any
 from enum import Enum, auto
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import flag_modified
-from models import Conversacion, db, PymePedido
+from fuzzywuzzy import process
+
+from models import Conversacion, db, PymePedido, ArchivoAdjunto
 try:
     from flask import session as flask_session, current_app, request # Añadir request
 except Exception:
@@ -33,6 +36,7 @@ from services.preferences import add_preference
 from services import cart as cart_service
 from services.promocion_service import promocion_service
 from services.config_loader import cargar_configuracion_pyme
+from services.pyme_menu import get_pyme_menu_payload, PYME_MENU_DISPLAY_ORDER
 from services.pyme_multimodal import (
     PymeSessionState,
     PymeFlowResult,
@@ -71,6 +75,274 @@ CONTEXTO_PYME = "contexto_pyme_v2"
 NOMBRE_HISTORIAL_SESION = "historial_chat_cliente_pyme_v2"
 MAX_HISTORIAL_CHAT = 30
 CANCEL_KEYWORDS = {"cancel", "cancelar", "cancelalo", "anular", "borrar", "no gracias", "mejor no", "olvidalo"}
+
+
+def _strip_variation_selector(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    return str(value).replace("\ufe0f", "").replace("\u200d", "")
+
+
+def _normalize_user_input(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    text = _strip_variation_selector(str(value))
+    normalized = unicodedata.normalize("NFKD", text)
+    cleaned = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip().lower()
+    return cleaned
+
+
+RAW_GREETING_KEYWORDS = {
+    "hola",
+    "buenas",
+    "buenos dias",
+    "buenas tardes",
+    "buenas noches",
+    "buen dia",
+    "holaa",
+}
+GREETING_KEYWORDS = {_normalize_user_input(word) for word in RAW_GREETING_KEYWORDS}
+
+RAW_MENU_COMMAND_KEYWORDS = {
+    "menu",
+    "menú",
+    "menu principal",
+    "menú principal",
+    "inicio",
+    "volver al inicio",
+    "volver al menu",
+    "volver al menú",
+}
+MENU_COMMAND_KEYWORDS = {_normalize_user_input(word) for word in RAW_MENU_COMMAND_KEYWORDS}
+
+
+RAW_PYME_MENU_KEYWORDS = {
+    "pyme_productos_stock": {
+        "productos",
+        "ver productos",
+        "catálogo",
+        "catalogo",
+        "stock",
+        "ver catalogo",
+    },
+    "pyme_promociones": {
+        "promos",
+        "promociones",
+        "ofertas",
+        "descuentos",
+    },
+    "pyme_hacer_pedido": {
+        "hacer pedido",
+        "nuevo pedido",
+        "comprar",
+        "hacer compra",
+        "armar pedido",
+    },
+    "pyme_estado_pedido": {
+        "estado de mi pedido",
+        "seguimiento",
+        "mi pedido",
+        "ver pedido",
+    },
+    "pyme_hablar_agente": {
+        "hablar con un asesor",
+        "asesor",
+        "humano",
+        "representante",
+        "agente",
+    },
+    "ver_carrito_pyme": {
+        "ver carrito",
+        "continuar pedido",
+        "carrito",
+    },
+    "limpiar_y_nuevo_pedido_saludo_pyme": {
+        "nuevo pedido",
+        "empezar de nuevo",
+        "arrancar de cero",
+    },
+}
+
+
+def _build_keyword_mapping() -> tuple[dict[str, set[str]], dict[str, str]]:
+    action_keywords: dict[str, set[str]] = {}
+    keyword_map: dict[str, str] = {}
+    for action, keywords in RAW_PYME_MENU_KEYWORDS.items():
+        normalized_set: set[str] = set()
+        for keyword in set(keywords) | {action}:
+            normalized = _normalize_user_input(keyword)
+            if not normalized:
+                continue
+            normalized_set.add(normalized)
+            keyword_map.setdefault(normalized, action)
+        action_keywords[action] = normalized_set
+    return action_keywords, keyword_map
+
+
+PYME_MENU_KEYWORDS, PYME_KEYWORD_MAPPING = _build_keyword_mapping()
+
+ORDER_MAP = {action: idx for idx, action in enumerate(PYME_MENU_DISPLAY_ORDER)}
+
+
+def _order_menu_options(options: list[dict]) -> list[dict]:
+    indexed = list(enumerate(options))
+    indexed.sort(
+        key=lambda item: (
+            ORDER_MAP.get(item[1].get("id") or item[1].get("action_id"), len(ORDER_MAP)),
+            item[0],
+        )
+    )
+    return [item[1] for item in indexed]
+
+
+def _simplify_options(options: Optional[list[dict]]) -> list[dict]:
+    if not options:
+        return []
+
+    simplified: list[dict] = []
+    seen_ids: set[str] = set()
+
+    for raw_option in options:
+        if not isinstance(raw_option, dict):
+            continue
+
+        option = dict(raw_option)
+
+        action_id = option.get("action_id") or option.get("id")
+        if not action_id:
+            action_id = _extract_action_id(option.get("payload"))
+        if not action_id:
+            action_id = _extract_action_id(option.get("value"))
+        if not action_id:
+            action_id = _extract_action_id(option.get("action"))
+        if not action_id and option.get("texto"):
+            action_id = option.get("texto")
+
+        label = (
+            option.get("texto")
+            or option.get("label")
+            or option.get("title")
+            or option.get("prompt")
+            or (action_id if isinstance(action_id, str) else "")
+        )
+
+        if isinstance(action_id, dict) or isinstance(action_id, list):
+            action_id = _extract_action_id(action_id)
+
+        if action_id:
+            action_id = str(action_id)
+
+        unique_key = action_id or str(label) or option.get("url")
+        if not unique_key:
+            continue
+        if unique_key in seen_ids:
+            continue
+        seen_ids.add(unique_key)
+
+        simplified_option: dict[str, Any] = {
+            "action_id": action_id,
+            "id": action_id or option.get("id") or unique_key,
+            "texto": str(label).strip() or str(action_id or unique_key),
+        }
+
+        if option.get("descripcion"):
+            simplified_option["descripcion"] = option["descripcion"]
+        if option.get("description"):
+            simplified_option["description"] = option["description"]
+        if option.get("url"):
+            simplified_option["url"] = option["url"]
+        if option.get("emoji"):
+            simplified_option["emoji"] = option["emoji"]
+        if option.get("prompt"):
+            simplified_option["prompt"] = option["prompt"]
+
+        simplified.append(simplified_option)
+
+    return simplified
+
+
+def _extract_action_id(payload) -> Optional[str]:
+    if not payload:
+        return None
+    if isinstance(payload, str):
+        payload_str = payload.strip()
+        if not payload_str:
+            return None
+        try:
+            parsed = json.loads(payload_str)
+        except json.JSONDecodeError:
+            return payload_str
+        return _extract_action_id(parsed)
+    if isinstance(payload, dict):
+        for key in ("action_id", "id", "payload", "value"):
+            value = payload.get(key)
+            action = _extract_action_id(value)
+            if action:
+                return action
+        reply = payload.get("reply")
+        if isinstance(reply, dict):
+            action = _extract_action_id(reply)
+            if action:
+                return action
+        action_container = payload.get("action")
+        if action_container and action_container is not payload:
+            action = _extract_action_id(action_container)
+            if action:
+                return action
+    if isinstance(payload, list):
+        for item in payload:
+            action = _extract_action_id(item)
+            if action:
+                return action
+    if payload is None:
+        return None
+    return str(payload)
+
+
+def _find_menu_action_by_input(user_input: str, menu_buttons: list[dict]) -> Optional[str]:
+    if not user_input:
+        return None
+    normalized_input = _normalize_user_input(user_input)
+    if not normalized_input:
+        return None
+
+    direct_match = PYME_KEYWORD_MAPPING.get(normalized_input)
+    if direct_match:
+        return direct_match
+
+    for button in menu_buttons or []:
+        possible_values = [
+            button.get("action_id"),
+            button.get("id"),
+            button.get("texto"),
+        ]
+        for candidate in possible_values:
+            candidate_norm = _normalize_user_input(candidate)
+            if candidate_norm and candidate_norm == normalized_input:
+                return button.get("action_id") or button.get("id") or candidate
+
+    try:
+        selected_index = int(normalized_input) - 1
+        if 0 <= selected_index < len(menu_buttons or []):
+            selected_button = menu_buttons[selected_index]
+            return selected_button.get("action_id") or selected_button.get("id")
+    except (TypeError, ValueError):
+        pass
+
+    if len(normalized_input) == 1:
+        for button in menu_buttons or []:
+            button_text_norm = _normalize_user_input(button.get("texto"))
+            if button_text_norm.startswith(normalized_input):
+                return button.get("action_id") or button.get("id")
+
+    if len(normalized_input) >= 3 and PYME_KEYWORD_MAPPING:
+        best_match = process.extractOne(normalized_input, list(PYME_KEYWORD_MAPPING.keys()))
+        if best_match and best_match[1] >= 85:
+            return PYME_KEYWORD_MAPPING.get(best_match[0])
+
+    return None
+
 
 def tiene_archivo_catalogo(user_id: int) -> bool:
     if not user_id: return False
@@ -348,7 +620,31 @@ class SaludoHandler(BaseHandler):
             if len(opciones_finales) >= 10:
                 break
 
+        opciones_finales = _order_menu_options(opciones_finales)
         menu_payload["options_list"] = opciones_finales
+        if isinstance(menu_payload.get("categorias"), list) and menu_payload["categorias"]:
+            menu_payload["categorias"][0]["botones"] = [
+                {
+                    "texto": opt.get("texto"),
+                    "action_id": opt.get("id"),
+                }
+                for opt in opciones_finales
+            ]
+
+        if channel and str(channel).lower() == "whatsapp":
+            existing_body = menu_payload.get("message_body", "").strip()
+            reminder_line = "Respondé con el número de la opción que prefieras."
+            if reminder_line not in existing_body:
+                menu_payload["message_body"] = (
+                    f"{existing_body}\n\n{reminder_line}" if existing_body else reminder_line
+                )
+            menu_payload["message_type"] = "text"
+
+        self.pyme_ctx["last_options_sent"] = opciones_finales
+        chat_context_data = self.context.get("chat_db_context_data")
+        if isinstance(chat_context_data, dict):
+            chat_context_data["last_options_sent"] = opciones_finales
+
         return menu_payload
 
 class CatalogoHandler(BaseHandler):
@@ -359,7 +655,8 @@ class CatalogoHandler(BaseHandler):
         if self.context.get("intencion") == "ver_catalogo" and len(pregunta.split()) < 3: query_qdrant = "productos populares"
 
         resultados_qdrant = buscar_catalogo_qdrant(self.pyme_id_actual, query_qdrant, self.context.get("rubro_nombre"), 3, self.context.get("coleccion_qdrant", CATALOGO_PYME))
-        add_preference("busquedas", pregunta)
+        chat_ctx = self.context.setdefault("chat_db_context_data", {})
+        add_preference(chat_ctx, "busquedas", pregunta)
         
         respuesta_texto = ""; botones_catalogo = []; fuente_catalogo = "catalogo_qdrant_sin_resultados_v2"
 
@@ -397,7 +694,7 @@ class CatalogoHandler(BaseHandler):
             # Original action: f"pedir_item_{identificador_accion}"
             # We need the identificador_accion part for the ID.
             action_str = btn_cat_original.get("action", "")
-            id_suffix = action_str.replace("pedir_item_", "") if action_str.startswith("pedir_item_") else normalizar_texto(btn_cat_original.get("texto", ""))
+            id_suffix = action_str.replace("pedir_item_", "") if action_str.startswith("pedir_item_") else _normalize_user_input(btn_cat_original.get("texto", "")).replace(" ", "_")
 
             options.append({
                 "id": f"pedir_item_pyme_{id_suffix}",
@@ -1356,9 +1653,20 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     normalized_input = _normalize_user_input(pregunta_str)
     menu_request: Optional[tuple[str, Optional[str]]] = None
 
+    last_options_sent: list[dict] = []
+    if isinstance(pyme_ctx_actual.get("last_options_sent"), list):
+        last_options_sent = pyme_ctx_actual.get("last_options_sent", [])
+    elif chat_db_context and isinstance(getattr(chat_db_context, "context_data", None), dict):
+        context_options = chat_db_context.context_data.get("last_options_sent")
+        if isinstance(context_options, list):
+            last_options_sent = context_options
+    if not isinstance(last_options_sent, list):
+        last_options_sent = []
+    pyme_ctx_actual["last_options_sent"] = last_options_sent
+
     if action_payload_id:
         normalized_action = _normalize_user_input(action_payload_id)
-        if normalized_action in MENU_KEYWORDS or action_payload_id in {"menu", "menu_principal"}:
+        if normalized_action in MENU_COMMAND_KEYWORDS or action_payload_id in {"menu", "menu_principal"}:
             menu_request = ("menu", None)
         else:
             menu_request = ("action", action_payload_id)
@@ -1367,10 +1675,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             menu_request = ("menu", None)
         elif normalized_input in GREETING_KEYWORDS or normalized_input.startswith("hola"):
             menu_request = ("menu", None)
-        elif normalized_input in MENU_KEYWORDS:
+        elif normalized_input in MENU_COMMAND_KEYWORDS:
             menu_request = ("menu", None)
         else:
-            resolved_action = _find_menu_action_by_input(pregunta_str, pyme_ctx_actual.get("last_options_sent", []))
+            resolved_action = _find_menu_action_by_input(pregunta_str, last_options_sent)
             if resolved_action:
                 menu_request = ("action", resolved_action)
 
@@ -1552,7 +1860,9 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
 
     # Formatear respuesta
     message_type_pyme = action_handler_result.get("message_type") or "text"
-    if message_type_pyme == "text" and opciones_finales:
+    if channel and str(channel).lower() == "whatsapp":
+        message_type_pyme = "text"
+    elif message_type_pyme == "text" and opciones_finales:
         num_opt = len(opciones_finales)
         if 0 < num_opt <= 3:
             message_type_pyme = "interactive_buttons"
