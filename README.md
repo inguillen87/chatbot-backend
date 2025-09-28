@@ -42,6 +42,19 @@ selection instructions to maintain full visibility of all choices.
   `url_imagen` (or a prebuilt `mensaje`). Limited to one send per day por
   empresa. Super admins can include `{"todos": true}` to enviar a todos los
   tenants y el límite diario se aplica globalmente.
+
+## Analytics Module
+
+- `GET /analytics/summary` – KPIs (tickets, SLA, automatización, NPS/CSAT).
+- `GET /analytics/timeseries` – series diarias con breakdown por categoría o canal.
+- `GET /analytics/geo/heatmap` y `/analytics/geo/points` – hotspots geográficos con celdas H3 y clusters.
+- `GET /analytics/top` – ranking de barrios/calles/productos/plantillas.
+- `GET /analytics/operations` – aging, colas y carga por agente.
+- `GET /analytics/cohorts` – cohortes y recurrencia de clientes.
+- `GET /analytics/whatsapp/templates` – métricas de CTR y bloqueos por plantilla.
+- `GET /analytics/ui` – dashboard responsive con filtros persistentes, exportación CSV/PNG y modo oscuro.
+
+Todos los endpoints requieren `tenant_id` y validan RBAC (`admin`, `operador`, `visor`). El módulo puede deshabilitarse con `ANALYTICS_ENABLED=false` y cuenta con cache TTL configurable (`ANALYTICS_CACHE_TTL`).
 - `GET /catalogo/buscar` – query the vector catalog with `?q=` and optional
   `?limite=` to control how many products are returned (defaults to
   `CATALOGO_RESULT_LIMIT`).

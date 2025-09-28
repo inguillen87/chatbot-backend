@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Analytics &amp; CRM</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='analytics/dashboard.css') }}" />
+  </head>
+  <body>
+    <header class="app-header">
+      <h1>Analytics &amp; CRM</h1>
+      <div class="scope-selector" role="tablist">
+        <button class="scope-button" data-scope="municipio" role="tab" aria-selected="true">Municipio</button>
+        <button class="scope-button" data-scope="pyme" role="tab">PyME</button>
+        <button class="scope-button" data-scope="operaciones" role="tab">Operaciones</button>
+      </div>
+      <div class="actions">
+        <button id="share-view" class="ghost">Compartir vista</button>
+        <button id="toggle-theme" class="ghost">Modo claro</button>
+      </div>
+    </header>
+
+    <main class="app-main" data-tenant="{{ tenant_id or '' }}" data-scope="{{ scope or 'municipio' }}">
+      <section class="filters" aria-label="Filtros globales">
+        <div class="filter-group">
+          <label for="date-from">Desde</label>
+          <input type="date" id="date-from" />
+        </div>
+        <div class="filter-group">
+          <label for="date-to">Hasta</label>
+          <input type="date" id="date-to" />
+        </div>
+        <div class="filter-group">
+          <label for="filter-canal">Canal</label>
+          <select id="filter-canal" multiple></select>
+        </div>
+        <div class="filter-group">
+          <label for="filter-categoria">Categoría / Rubro</label>
+          <select id="filter-categoria" multiple></select>
+        </div>
+        <div class="filter-group">
+          <label for="filter-estado">Estado</label>
+          <select id="filter-estado" multiple></select>
+        </div>
+        <div class="filter-group">
+          <label for="filter-agente">Agente</label>
+          <select id="filter-agente" multiple></select>
+        </div>
+        <div class="filter-group">
+          <label for="filter-zona">Zona / Barrio</label>
+          <select id="filter-zona" multiple></select>
+        </div>
+        <div class="filter-group">
+          <label for="filter-etiqueta">Etiqueta</label>
+          <select id="filter-etiqueta" multiple></select>
+        </div>
+        <div class="filter-group">
+          <label for="filter-bbox">BBox</label>
+          <input type="text" id="filter-bbox" placeholder="minLon,minLat,maxLon,maxLat" />
+        </div>
+        <div class="filter-actions">
+          <button id="apply-filters">Aplicar</button>
+          <button id="reset-filters" class="ghost">Limpiar</button>
+        </div>
+      </section>
+
+      <section class="dashboard" id="municipio-dashboard" data-scope="municipio">
+        <header><h2>Vista Municipio</h2></header>
+        <div class="kpi-grid" id="municipio-kpis"></div>
+        <div class="layout-grid">
+          <article class="card wide">
+            <header>
+              <h3>Evolución diaria</h3>
+              <div class="card-actions">
+                <button data-export="municipio-timeseries" data-format="csv">CSV</button>
+                <button data-export="municipio-timeseries" data-format="png">PNG</button>
+              </div>
+            </header>
+            <canvas id="municipio-timeseries"></canvas>
+          </article>
+          <article class="card">
+            <header>
+              <h3>Top categorías</h3>
+              <div class="card-actions">
+                <button data-export="municipio-top-categorias" data-format="csv">CSV</button>
+              </div>
+            </header>
+            <canvas id="municipio-top-categorias"></canvas>
+          </article>
+          <article class="card">
+            <header>
+              <h3>Mix por canal</h3>
+              <div class="card-actions">
+                <button data-export="municipio-top-canales" data-format="png">PNG</button>
+              </div>
+            </header>
+            <canvas id="municipio-top-canales"></canvas>
+          </article>
+          <article class="card wide">
+            <header>
+              <h3>Mapa de incidencias</h3>
+              <div class="card-actions">
+                <button id="map-mode-heat">Calor</button>
+                <button id="map-mode-cluster">Clusters</button>
+                <button data-export="municipio-map" data-format="png">PNG</button>
+              </div>
+            </header>
+            <div id="municipio-map" class="map"></div>
+          </article>
+          <article class="card">
+            <header>
+              <h3>Zonas críticas</h3>
+              <div class="card-actions">
+                <button data-export="municipio-top-zonas" data-format="csv">CSV</button>
+              </div>
+            </header>
+            <table id="municipio-top-zonas" class="data-table"></table>
+          </article>
+          <article class="card">
+            <header>
+              <h3>SLA y tiempos</h3>
+            </header>
+            <div id="municipio-sla"></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="dashboard hidden" id="pyme-dashboard" data-scope="pyme">
+        <header><h2>Vista PyME</h2></header>
+        <div class="kpi-grid" id="pyme-kpis"></div>
+        <div class="layout-grid">
+          <article class="card wide">
+            <header>
+              <h3>Pedidos &amp; ingresos</h3>
+              <div class="card-actions">
+                <button data-export="pyme-timeseries" data-format="csv">CSV</button>
+                <button data-export="pyme-timeseries" data-format="png">PNG</button>
+              </div>
+            </header>
+            <canvas id="pyme-timeseries"></canvas>
+          </article>
+          <article class="card">
+            <header><h3>Top productos / servicios</h3></header>
+            <canvas id="pyme-top-productos"></canvas>
+          </article>
+          <article class="card">
+            <header><h3>Conversión por canal</h3></header>
+            <canvas id="pyme-conversion-canal"></canvas>
+          </article>
+          <article class="card wide">
+            <header><h3>Mapa de pedidos</h3></header>
+            <div id="pyme-map" class="map"></div>
+          </article>
+          <article class="card">
+            <header><h3>Plantillas WhatsApp</h3></header>
+            <table id="pyme-templates" class="data-table"></table>
+          </article>
+          <article class="card">
+            <header><h3>Cohortes</h3></header>
+            <table id="pyme-cohorts" class="data-table"></table>
+          </article>
+        </div>
+      </section>
+
+      <section class="dashboard hidden" id="operaciones-dashboard" data-scope="operaciones">
+        <header><h2>Vista Operaciones</h2></header>
+        <div class="kpi-grid" id="operaciones-kpis"></div>
+        <div class="layout-grid">
+          <article class="card">
+            <header><h3>Aging de tickets</h3></header>
+            <canvas id="operaciones-aging"></canvas>
+          </article>
+          <article class="card">
+            <header><h3>Carga por agente</h3></header>
+            <table id="operaciones-agentes" class="data-table"></table>
+          </article>
+          <article class="card wide">
+            <header><h3>Violaciones SLA</h3></header>
+            <canvas id="operaciones-sla"></canvas>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+    <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+    <script src="{{ url_for('static', filename='analytics/dashboard.js') }}" type="module"></script>
+  </body>
+</html>
