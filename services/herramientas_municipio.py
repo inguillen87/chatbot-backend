@@ -1,6 +1,5 @@
 import json
 import logging
-import json
 import os
 import re
 import unicodedata
@@ -10,12 +9,13 @@ import services.google_maps_service as google_maps_service
 from services.config_loader import cargar_configuracion_municipio
 from services.location_service import geocode_address
 from services.tts_orchestrator import generar_audio
-from models import MunicipioTicket
+from models import MunicipioTicket, MunicipioPost
 from database import db
 from services.openai_bridge import client as openai_client
 from services.openai_maps_service import geocodificar_inversa_llm, geocodificar_texto_llm
 from services.estacionamiento_utils import aproximar_coordenadas_por_texto
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 # ... (el resto de tus herramientas y diccionarios)
 
@@ -103,6 +103,7 @@ logger = logging.getLogger(__name__)
 Maps_API_KEY = os.environ.get("Maps_API_KEY")
 MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
 CONFIG_MUNICIPIO = cargar_configuracion_municipio(MUNICIPIO_ID, "config.json")
+ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
 
 # --- Utilidades internas para parsing sin LLM ---
@@ -515,66 +516,92 @@ def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
 
 from services.google_search import google_search
 from services.scraper_avanzado import extraer_noticias
-from datetime import datetime, timedelta
-from services.config_loader import BASE_CONFIG_PATH
+from datetime import datetime, timedelta, timezone
+from utils.time_utils import get_local_now
 
 # --- HERRAMIENTA DINÁMICA: AGENDA DE EVENTOS DESDE ARCHIVO ---
 
 def consultar_eventos_culturales(fecha: str) -> str:
-    """
-    Consulta la agenda de eventos culturales desde un archivo JSON local,
-    filtrando por tipo de post 'evento' y por fecha.
-    """
-    logger.info(f"[HERRAMIENTA EVENTOS] Consultando agenda de eventos para fecha: '{fecha}'")
+    """Consulta eventos culturales almacenados en la base de datos."""
 
-    try:
-        agenda_path = os.path.join(BASE_CONFIG_PATH, MUNICIPIO_ID, 'agenda_cultural.json')
-        with open(agenda_path, 'r', encoding='utf-8') as f:
-            agenda_data = json.load(f).get('eventos', [])
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        logger.error(f"No se pudo cargar o parsear el archivo de agenda cultural: {e}")
-        return "Lo siento, no pude acceder a la agenda cultural en este momento. Por favor, intenta más tarde."
+    logger.info(f"[HERRAMIENTA EVENTOS] Consultando agenda de eventos para fecha: '%s'", fecha)
 
-    # 1. Filtrar solo los que son 'eventos'
-    eventos_culturales = [post for post in agenda_data if post.get('tipo_post') == 'evento']
-
-    # 2. Filtrar por fecha
     fecha_norm = normalizar_texto(fecha)
-    target_date_str = None
-
+    now_local = get_local_now().astimezone(ARG_TZ)
     if fecha_norm == "hoy":
-        target_date_str = datetime.now().strftime('%Y-%m-%d')
+        target_date = now_local.date()
     elif fecha_norm == "manana":
-        target_date_str = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+        target_date = (now_local + timedelta(days=1)).date()
     else:
         return f"No entiendo la fecha '{fecha}'. Por favor, intentá con 'hoy' o 'mañana'."
 
-    # Filtrar por fecha de inicio del evento
-    eventos_encontrados = [
-        evento for evento in eventos_culturales
-        if evento.get('fecha_evento_inicio') and evento.get('fecha_evento_inicio').startswith(target_date_str)
-    ]
+    try:
+        eventos_query = (
+            MunicipioPost.query.filter(
+                MunicipioPost.municipio_id == MUNICIPIO_ID,
+                MunicipioPost.tipo_post == "evento",
+            )
+            .order_by(
+                MunicipioPost.fecha_evento_inicio.asc(),
+                MunicipioPost.fecha_publicacion.desc(),
+            )
+            .limit(100)
+        )
+        eventos_db = eventos_query.all()
+    except Exception:
+        logger.exception("No se pudo consultar la agenda cultural desde la base de datos")
+        return (
+            "Lo siento, no pude acceder a la agenda cultural en este momento. "
+            "Por favor, intenta más tarde."
+        )
+
+    eventos_encontrados: list[MunicipioPost] = []
+    proximos_eventos: list[MunicipioPost] = []
+
+    for evento in eventos_db:
+        inicio = evento.fecha_evento_inicio
+        if inicio is None:
+            proximos_eventos.append(evento)
+            continue
+        inicio_local = inicio if inicio.tzinfo else inicio.replace(tzinfo=timezone.utc)
+        inicio_local = inicio_local.astimezone(ARG_TZ)
+        if inicio_local.date() == target_date:
+            eventos_encontrados.append(evento)
+        elif inicio_local.date() > target_date:
+            proximos_eventos.append(evento)
 
     if not eventos_encontrados:
-        return f"No encontré eventos culturales programados para '{fecha_norm}'. Puedes consultar la agenda completa en la web del municipio."
+        if proximos_eventos:
+            eventos_encontrados = proximos_eventos[:3]
+        else:
+            return (
+                f"No encontré eventos culturales programados para '{fecha_norm}'. "
+                "Puedes consultar la agenda completa en la web del municipio."
+            )
 
-    # 3. Formatear la respuesta
-    lista_eventos_str = []
+    lista_eventos_str: list[str] = []
     for evento in eventos_encontrados:
-        titulo = evento.get('titulo', 'Sin título')
-        subtitulo = evento.get('subtitulo')
-        descripcion = evento.get('descripcion', 'Sin descripción')
+        data = evento.to_dict()
+        titulo = data.get("titulo") or "Sin título"
+        subtitulo = data.get("subtitulo")
+        descripcion = data.get("descripcion") or "Sin descripción"
 
         evento_str = f"*{titulo}*"
         if subtitulo:
             evento_str += f"\n_{subtitulo}_"
         evento_str += f"\n{descripcion}"
 
+        if evento.ubicacion:
+            evento_str += f"\n📍 {evento.ubicacion}"
+        if data.get("enlace"):
+            evento_str += f"\n🔗 {data['enlace']}"
+
         lista_eventos_str.append(evento_str)
 
-    respuesta = f"Para '{fecha_norm}', la agenda cultural es:\n\n" + "\n\n---\n\n".join(lista_eventos_str)
+    respuesta = (
+        f"Para '{fecha_norm}', la agenda cultural es:\n\n" + "\n\n---\n\n".join(lista_eventos_str)
+    )
 
-    # Add social media links
     respuesta += "\n\n---\n"
     respuesta += "Seguinos en nuestras redes para más eventos y noticias:\n"
     respuesta += "Facebook: https://www.facebook.com/JuninMunicipio\n"
@@ -588,32 +615,40 @@ def consultar_noticias_municipio() -> str:
     """
     logger.info("[HERRAMIENTA NOTICIAS] Consultando noticias y eventos desde la base de datos.")
 
-    # Asumimos un municipio_id por defecto. En una implementación real, esto debería ser dinámico.
-    municipio_id = 1
+    municipio_id = MUNICIPIO_ID
+    municipio_nombre = CONFIG_MUNICIPIO.get("nombre", "el municipio") if isinstance(CONFIG_MUNICIPIO, dict) else "el municipio"
 
     try:
-        news_and_events = db.session.query(MunicipioTicket).filter(
-            MunicipioTicket.municipio_id == municipio_id,
-            MunicipioTicket.categoria.in_(['Noticia', 'Evento'])
-        ).order_by(MunicipioTicket.fecha.desc()).limit(3).all()
+        posts = (
+            MunicipioPost.query.filter(MunicipioPost.municipio_id == municipio_id)
+            .filter(MunicipioPost.tipo_post != "evento")
+            .order_by(MunicipioPost.fecha_publicacion.desc())
+            .limit(5)
+            .all()
+        )
 
-        if not news_and_events:
+        if not posts:
             return "No se encontraron noticias o eventos recientes en la base de datos."
 
-        mensaje = "Aquí están las últimas noticias y eventos de Junín Mendoza:\n\n"
-        for i, item in enumerate(news_and_events, 1):
-            mensaje += f"📰 *{item.asunto}* ({item.categoria})\n"
-            # Podríamos agregar un link si tuviéramos una vista de detalle
-            # mensaje += f"   {item.link}\n\n"
-            mensaje += f"   {item.detalles}\n\n"
+        mensaje = f"Aquí están las últimas novedades de {municipio_nombre}:\n\n"
+        for item in posts:
+            etiqueta = "Evento" if item.tipo_post == "informacion" else item.tipo_post.capitalize()
+            mensaje += f"📰 *{item.titulo}* ({etiqueta})\n"
+            if item.subtitulo:
+                mensaje += f"   _{item.subtitulo}_\n"
+            if item.descripcion:
+                mensaje += f"   {item.descripcion}\n"
+            if item.enlace:
+                mensaje += f"   🔗 {item.enlace}\n"
+            mensaje += "\n"
 
         return mensaje.strip()
 
-    except Exception as e:
-        logger.error(f"[HERRAMIENTA NOTICIAS] Error al consultar la base de datos: {e}", exc_info=True)
+    except Exception:
+        logger.exception("[HERRAMIENTA NOTICIAS] Error al consultar la base de datos")
         return (
             "No pude obtener las últimas noticias en este momento debido a un error interno. "
-            "Puedes consultarlas directamente en el sitio web: https://www.juninmendoza.gov.ar/noticias/"
+            "Puedes consultarlas directamente en el sitio web oficial."
         )
 
 

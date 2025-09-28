@@ -7,14 +7,14 @@ from typing import Any, Iterator, Pattern, Union
 import pandas as pd
 from flask import Blueprint, jsonify, request, current_app, send_file, g
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from utils.time_utils import get_local_now
 from utils.permissions import require_role
 from routes.crm import _obtener_clientes
 from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
 from routes.tramites import listar_tramites, obtener_tramite
 from sqlalchemy import func, or_
-from models import Conversacion, MunicipioTicket, User, db
+from models import Conversacion, MunicipioTicket, MunicipioPost, User, db
 from routes.ticket import TICKET_ALLOWED_STATES
 from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS
 from services.municipal_stats import build_stats_for_municipio, StatsFilters
@@ -1173,48 +1173,157 @@ def municipal_metrics(current_user):
 import os
 import json
 from werkzeug.utils import secure_filename
-from uuid import uuid4
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    normalized = candidate.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        try:
+            parsed = datetime.fromisoformat(normalized.replace(" ", "T", 1))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _month_bounds(month_str: str) -> tuple[datetime | None, datetime | None]:
+    try:
+        base = datetime.strptime(month_str, "%Y-%m")
+    except ValueError:
+        return None, None
+    start = base.replace(day=1, tzinfo=timezone.utc)
+    if base.month == 12:
+        end = base.replace(year=base.year + 1, month=1, day=1, tzinfo=timezone.utc)
+    else:
+        end = base.replace(month=base.month + 1, day=1, tzinfo=timezone.utc)
+    return start, end
+
+
+def _prune_old_posts(municipio_id: int, max_posts: int = 200) -> int:
+    surplus_ids = (
+        db.session.query(MunicipioPost.id)
+        .filter(MunicipioPost.municipio_id == municipio_id)
+        .order_by(MunicipioPost.fecha_publicacion.desc(), MunicipioPost.id.desc())
+        .offset(max_posts)
+        .all()
+    )
+    ids_to_delete = [row[0] for row in surplus_ids]
+    if not ids_to_delete:
+        return 0
+    deleted = (
+        db.session.query(MunicipioPost)
+        .filter(MunicipioPost.id.in_(ids_to_delete))
+        .delete(synchronize_session=False)
+    )
+    return deleted or 0
+
 
 @municipal_bp.route('/posts', methods=['GET'])
 @token_requerido
 @admin_o_empleado_requerido
 def list_municipal_posts(current_user):
-    """Devuelve los posts municipales (eventos o noticias) guardados."""
+    """Devuelve los posts municipales almacenados en la base de datos."""
+
     if current_user.tipo_chat != "municipio":
         return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
 
-    from services.config_loader import BASE_CONFIG_PATH
-    agenda_dir = os.path.join(BASE_CONFIG_PATH, 'default')
-    agenda_path = os.path.join(agenda_dir, 'agenda_cultural.json')
+    municipio_id = _resolve_current_municipio_id(current_user)
+    if municipio_id is None:
+        return jsonify({"error": "No se pudo determinar el municipio asociado al usuario."}), 400
 
-    if not os.path.exists(agenda_path):
-        return jsonify([]), 200
+    limit = request.args.get("limit", type=int) or 20
+    limit = max(1, min(limit, 100))
+    offset = request.args.get("offset", type=int) or 0
+    offset = max(0, offset)
+    month_param = request.args.get("month")
+    date_param = request.args.get("date")
+    from_param = request.args.get("from_date") or request.args.get("fecha_desde")
+    to_param = request.args.get("to_date") or request.args.get("fecha_hasta")
+    tipo_post = request.args.get("tipo_post")
 
-    try:
-        with open(agenda_path, 'r', encoding='utf-8') as f:
-            contenido = f.read().strip()
-            if not contenido:
-                return jsonify([]), 200
-            try:
-                data = json.loads(contenido)
-            except json.JSONDecodeError:
-                current_app.logger.warning("agenda_cultural.json corrupto, se recreará.")
-                return jsonify([]), 200
-        eventos = data.get('eventos', [])
-        return jsonify(eventos[:10]), 200
-    except Exception as e:
-        current_app.logger.error(f"Error al leer agenda_cultural.json: {e}", exc_info=True)
-        return jsonify({"error": "Error interno al leer la agenda."}), 500
+    query = MunicipioPost.query.filter(MunicipioPost.municipio_id == municipio_id)
+
+    applied_filters: dict[str, Any] = {}
+
+    if tipo_post:
+        normalized_tipo = tipo_post.strip().lower()
+        query = query.filter(MunicipioPost.tipo_post == normalized_tipo)
+        applied_filters["tipo_post"] = normalized_tipo
+
+    if month_param:
+        start, end = _month_bounds(month_param)
+        if not start or not end:
+            return jsonify({"error": "Formato de mes inválido. Usa YYYY-MM."}), 400
+        query = query.filter(
+            MunicipioPost.fecha_publicacion >= start,
+            MunicipioPost.fecha_publicacion < end,
+        )
+        applied_filters["month"] = month_param
+
+    if date_param:
+        day_start = _parse_iso_datetime(date_param)
+        if not day_start:
+            return jsonify({"error": "Formato de fecha inválido. Usa YYYY-MM-DD."}), 400
+        day_end = day_start + timedelta(days=1)
+        query = query.filter(
+            MunicipioPost.fecha_publicacion >= day_start,
+            MunicipioPost.fecha_publicacion < day_end,
+        )
+        applied_filters["date"] = date_param
+
+    if from_param:
+        from_date = _parse_iso_datetime(from_param)
+        if not from_date:
+            return jsonify({"error": "Formato de fecha_desde inválido. Usa YYYY-MM-DD."}), 400
+        query = query.filter(MunicipioPost.fecha_publicacion >= from_date)
+        applied_filters["from_date"] = from_param
+
+    if to_param:
+        to_date = _parse_iso_datetime(to_param)
+        if not to_date:
+            return jsonify({"error": "Formato de fecha_hasta inválido. Usa YYYY-MM-DD."}), 400
+        query = query.filter(MunicipioPost.fecha_publicacion <= to_date)
+        applied_filters["to_date"] = to_param
+
+    total = query.count()
+    posts = (
+        query.order_by(MunicipioPost.fecha_publicacion.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    payload = [post.to_dict() for post in posts]
+    response = jsonify(payload)
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Limit"] = str(limit)
+    response.headers["X-Offset"] = str(offset)
+    response.headers["X-Has-More"] = "true" if offset + limit < total else "false"
+    if applied_filters:
+        response.headers["X-Applied-Filters"] = json.dumps(applied_filters)
+    return response, 200
 
 @municipal_bp.route('/posts', methods=['POST'])
 @token_requerido
 @admin_o_empleado_requerido
 def create_municipal_post(current_user):
     """
-    Crea un nuevo post municipal (evento o noticia) y lo guarda en agenda_cultural.json.
+    Crea un nuevo post municipal (evento o noticia) y lo guarda en la base de datos.
     """
     if current_user.tipo_chat != "municipio":
         return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
+
+    municipio_id = _resolve_current_municipio_id(current_user)
+    if municipio_id is None:
+        return jsonify({"error": "No se pudo determinar el municipio asociado al usuario."}), 400
 
     # --- Recopilar datos del formulario ---
     titulo = request.form.get('titulo')
@@ -1247,53 +1356,53 @@ def create_municipal_post(current_user):
             # Para una app en producción, esto debería ser una URL de GCS o S3.
             flyer_image_url = f"/data/archivos/{filename}"
 
-    # --- Construir el nuevo post ---
-    nuevo_post = {
-        "id": str(int(get_local_now().timestamp())), # ID simple basado en timestamp
-        "titulo": titulo,
-        "subtitulo": subtitulo,
-        "descripcion": contenido, # Mapear 'contenido' a 'descripcion' para consistencia
-        "tipo_post": tipo_post,
-        "tags": [tipo_post],
-        "imagen_url": flyer_image_url or imagen_url_externa,
-        "fecha_evento_inicio": fecha_evento_inicio,
-        "fecha_evento_fin": fecha_evento_fin,
-        "fecha_publicacion": get_local_now().isoformat(),
-        "enlace": enlace,
-        "ubicacion": ubicacion,
-    }
+    fecha_publicacion = request.form.get('fecha_publicacion')
+    fecha_publicacion_dt = _parse_iso_datetime(fecha_publicacion) if fecha_publicacion else get_local_now()
+    inicio_dt = _parse_iso_datetime(fecha_evento_inicio)
+    fin_dt = _parse_iso_datetime(fecha_evento_fin)
 
-    # --- Leer, actualizar y escribir el archivo JSON ---
-    from services.config_loader import BASE_CONFIG_PATH
-    agenda_dir = os.path.join(BASE_CONFIG_PATH, 'default')
-    os.makedirs(agenda_dir, exist_ok=True)
-    agenda_path = os.path.join(agenda_dir, 'agenda_cultural.json')
+    tags_raw = request.form.getlist('tags') or []
+    datos_extra_raw = request.form.get('datos_extra')
+    datos_extra: dict[str, Any] | None = None
+    if datos_extra_raw:
+        try:
+            parsed_extra = json.loads(datos_extra_raw)
+            if isinstance(parsed_extra, dict):
+                datos_extra = parsed_extra
+        except json.JSONDecodeError:
+            current_app.logger.warning("datos_extra inválido, se ignora.")
+
+    normalized_tipo = tipo_post.strip().lower() if tipo_post else "noticia"
 
     try:
-        data = {"eventos": []}
-        if os.path.exists(agenda_path):
-            with open(agenda_path, 'r', encoding='utf-8') as f:
-                contenido = f.read().strip()
-                if contenido:
-                    try:
-                        data = json.loads(contenido)
-                    except json.JSONDecodeError:
-                        current_app.logger.warning("agenda_cultural.json corrupto, se recreará.")
-        if 'eventos' not in data or not isinstance(data['eventos'], list):
-            data['eventos'] = []
-
-        data['eventos'].insert(0, nuevo_post)  # Insertar al principio para que aparezca primero
-
-        # Mantener solo los 200 posts más recientes en el archivo
-        data['eventos'] = data['eventos'][:200]
-
-        with open(agenda_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
-        return jsonify(nuevo_post), 201
-
+        nuevo_post = MunicipioPost(
+            municipio_id=municipio_id,
+            titulo=titulo.strip(),
+            subtitulo=subtitulo.strip() if subtitulo else None,
+            descripcion=contenido,
+            tipo_post=normalized_tipo,
+            tags=tags_raw or [normalized_tipo],
+            imagen_url=flyer_image_url or (imagen_url_externa or None),
+            enlace=enlace,
+            fecha_evento_inicio=inicio_dt,
+            fecha_evento_fin=fin_dt,
+            fecha_publicacion=fecha_publicacion_dt,
+            ubicacion=ubicacion,
+            datos_extra=datos_extra,
+        )
+        db.session.add(nuevo_post)
+        db.session.flush()
+        _prune_old_posts(municipio_id)
+        db.session.commit()
+        persisted = MunicipioPost.query.get(nuevo_post.id)
+        if not persisted:
+            return jsonify({
+                "message": "El post se creó pero se archivó automáticamente por superar el límite de publicaciones recientes."
+            }), 201
+        return jsonify(persisted.to_dict()), 201
     except Exception as e:
-        current_app.logger.error(f"Error al actualizar agenda_cultural.json: {e}", exc_info=True)
+        current_app.logger.error("Error al guardar el post municipal", exc_info=True)
+        db.session.rollback()
         return jsonify({"error": "Error interno al guardar el post."}), 500
 
 
@@ -1304,6 +1413,10 @@ def create_municipal_posts_bulk(current_user):
     """Crea múltiples posts municipales a partir de una lista de eventos."""
     if current_user.tipo_chat != "municipio":
         return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
+
+    municipio_id = _resolve_current_municipio_id(current_user)
+    if municipio_id is None:
+        return jsonify({"error": "No se pudo determinar el municipio asociado al usuario."}), 400
 
     raw_payload = request.get_json(silent=True)
     payload = raw_payload if isinstance(raw_payload, dict) else {}
@@ -1346,64 +1459,98 @@ def create_municipal_posts_bulk(current_user):
     if not isinstance(events, list):
         return jsonify({"error": "Se requiere un JSON con la lista 'events' o un campo 'text' o archivo 'file'."}), 400
 
-    from services.config_loader import BASE_CONFIG_PATH
-    agenda_dir = os.path.join(BASE_CONFIG_PATH, 'default')
-    os.makedirs(agenda_dir, exist_ok=True)
-    agenda_path = os.path.join(agenda_dir, 'agenda_cultural.json')
+    base_time = get_local_now()
+    normalized_tipo_default = (tipo_post or "evento").strip().lower()
+
+    created_posts: list[MunicipioPost] = []
 
     try:
-        data = {"eventos": []}
-        if os.path.exists(agenda_path):
-            with open(agenda_path, 'r', encoding='utf-8') as f:
-                contenido = f.read().strip()
-                if contenido:
-                    try:
-                        data = json.loads(contenido)
-                    except json.JSONDecodeError:
-                        current_app.logger.warning("agenda_cultural.json corrupto, se recreará.")
-        if 'eventos' not in data or not isinstance(data['eventos'], list):
-            data['eventos'] = []
-
-        created_posts = []
-        for ev in events:
-            title = ev.get("title") or ev.get("titulo")
+        for index, ev in enumerate(events):
+            title = (ev.get("title") or ev.get("titulo") or "").strip()
             if not title:
                 continue
 
-            day = ev.get("day") or ev.get("dia")
-            time_val = ev.get("time") or ev.get("hora") or ""
-            descripcion = ev.get("description") or ev.get("descripcion", "")
-            location = ev.get("location") or ev.get("ubicacion")
-            image_url = ev.get("imagen_url") or ev.get("imagen", "")
-            enlace = ev.get("enlace") or ev.get("url")
+            day = (ev.get("day") or ev.get("dia") or "").strip() or None
+            descripcion = (ev.get("description") or ev.get("descripcion") or "").strip()
+            location = (ev.get("location") or ev.get("ubicacion") or "").strip() or None
+            image_url = (ev.get("imagen_url") or ev.get("imagen") or "").strip() or None
+            enlace = (ev.get("enlace") or ev.get("url") or "").strip() or None
+            tipo_evento = (ev.get("tipo_post") or normalized_tipo_default).strip().lower()
 
-            post = {
-                "id": str(uuid4()),
-                "titulo": title,
-                "subtitulo": day,
-                "descripcion": descripcion,
-                "tipo_post": tipo_post,
-                "tags": [tipo_post],
-                "imagen_url": image_url,
-                "fecha_evento_inicio": f"{day or ''} {time_val}".strip(),
-                "fecha_evento_fin": ev.get("fecha_evento_fin") or ev.get("fecha_fin"),
-                "fecha_publicacion": get_local_now().isoformat(),
-                "enlace": enlace,
-                "ubicacion": location,
-            }
-            data['eventos'].insert(0, post)
+            fecha_inicio_val = (
+                ev.get("fecha_evento_inicio")
+                or ev.get("fecha_inicio")
+                or ev.get("inicio")
+            )
+            fecha_fin_val = (
+                ev.get("fecha_evento_fin")
+                or ev.get("fecha_fin")
+                or ev.get("fin")
+            )
+            inicio_dt = _parse_iso_datetime(fecha_inicio_val)
+            fin_dt = _parse_iso_datetime(fecha_fin_val)
+
+            hora_val = (ev.get("time") or ev.get("hora") or "").strip()
+            subtitulo = day
+            if not subtitulo and hora_val:
+                subtitulo = hora_val
+            elif subtitulo and hora_val:
+                subtitulo = f"{subtitulo} {hora_val}".strip()
+
+            tags_value = []
+            raw_tags = ev.get("tags")
+            if isinstance(raw_tags, list):
+                tags_value = [str(tag).strip() for tag in raw_tags if str(tag).strip()]
+            if tipo_evento not in tags_value:
+                tags_value.insert(0, tipo_evento)
+
+            publication_dt = base_time + timedelta(milliseconds=index)
+
+            datos_extra = {}
+            for key, value in ev.items():
+                if key in {"title", "titulo", "description", "descripcion", "location", "ubicacion", "enlace", "url", "imagen", "imagen_url", "fecha_evento_inicio", "fecha_inicio", "inicio", "fecha_evento_fin", "fecha_fin", "fin", "tipo_post", "tags"}:
+                    continue
+                datos_extra[key] = value
+
+            post = MunicipioPost(
+                municipio_id=municipio_id,
+                titulo=title,
+                subtitulo=subtitulo,
+                descripcion=descripcion,
+                tipo_post=tipo_evento,
+                tags=tags_value,
+                imagen_url=image_url,
+                enlace=enlace,
+                fecha_evento_inicio=inicio_dt,
+                fecha_evento_fin=fin_dt,
+                fecha_publicacion=publication_dt,
+                ubicacion=location,
+                datos_extra=datos_extra or None,
+            )
+            db.session.add(post)
             created_posts.append(post)
 
-        # Limitar a los 200 eventos más recientes
-        data['eventos'] = data['eventos'][:200]
+        if not created_posts:
+            return jsonify({"error": "No se encontraron eventos válidos para crear."}), 400
 
-        with open(agenda_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        db.session.flush()
+        created_ids = [post.id for post in created_posts]
+        _prune_old_posts(municipio_id)
+        db.session.commit()
 
-        return jsonify({"created": created_posts}), 201
+        persisted_posts = (
+            MunicipioPost.query.filter(MunicipioPost.id.in_(created_ids)).all()
+            if created_ids
+            else []
+        )
+        persisted_map = {post.id: post for post in persisted_posts}
+        payload = [persisted_map[pid].to_dict() for pid in created_ids if pid in persisted_map]
 
-    except Exception as e:
-        current_app.logger.error(f"Error al actualizar agenda_cultural.json: {e}", exc_info=True)
+        return jsonify({"created": payload}), 201
+
+    except Exception:
+        current_app.logger.exception("Error al guardar los posts municipales en lote")
+        db.session.rollback()
         return jsonify({"error": "Error interno al guardar los posts."}), 500
 
 
