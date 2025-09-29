@@ -282,6 +282,88 @@ def _strip_duplicate_welcome_media(
                 interactive.pop("header", None)
 
 
+def _normalize_media_url(url: Optional[str], base_url: Optional[str] = None) -> Optional[str]:
+    """Return a canonical HTTPS URL for comparison purposes."""
+
+    if not url:
+        return None
+
+    candidate = str(url).strip()
+    if not candidate:
+        return None
+
+    resolved = _resolve_public_url(candidate, (base_url or ""))
+    candidate = str(resolved or candidate).strip()
+    if not candidate:
+        return None
+
+    if candidate.startswith("data:"):
+        return candidate
+
+    parsed = urlsplit(candidate)
+    scheme = parsed.scheme.lower() or "https"
+    netloc = parsed.netloc.lower()
+    path = parsed.path.rstrip("/") or "/"
+    normalized = urlunsplit((scheme, netloc, path, "", ""))
+
+    if normalized.startswith("http://"):
+        normalized = "https://" + normalized.split("://", 1)[1]
+
+    return normalized
+
+
+def _strip_duplicate_welcome_media(
+    payload: Dict[str, Any],
+    sticker_urls: Iterable[Optional[str]],
+    base_url: Optional[str],
+) -> None:
+    """Remove media fields that duplicate the configured welcome sticker."""
+
+    if not isinstance(payload, dict):
+        return
+
+    normalized_targets = {
+        normalized
+        for url in sticker_urls
+        for normalized in (_normalize_media_url(url, base_url),)
+        if normalized
+    }
+
+    if not normalized_targets:
+        return
+
+    def _matches(url: Optional[str]) -> bool:
+        return _normalize_media_url(url, base_url) in normalized_targets
+
+    image_url = payload.get("image_url")
+    if _matches(image_url):
+        payload.pop("image_url", None)
+
+    media_url = payload.get("media_url")
+    if isinstance(media_url, (list, tuple)):
+        filtered = [value for value in media_url if not _matches(value)]
+        if filtered:
+            payload["media_url"] = filtered
+        else:
+            payload.pop("media_url", None)
+
+    header = payload.get("header")
+    if isinstance(header, dict) and header.get("type") == "image":
+        header_image = header.get("image", {})
+        header_link = header_image.get("link") if isinstance(header_image, dict) else None
+        if _matches(header_link):
+            payload.pop("header", None)
+
+    interactive = payload.get("interactive")
+    if isinstance(interactive, dict):
+        interactive_header = interactive.get("header")
+        if isinstance(interactive_header, dict) and interactive_header.get("type") == "image":
+            image_data = interactive_header.get("image", {})
+            image_link = image_data.get("link") if isinstance(image_data, dict) else None
+            if _matches(image_link):
+                interactive.pop("header", None)
+
+
 def _slugify_rubro(value: Optional[str]) -> str:
     """Normalize rubro names/keys to filesystem-friendly slugs."""
 
