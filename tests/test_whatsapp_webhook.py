@@ -240,6 +240,69 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertEqual(len(sent_messages), 1)
         self.assertNotIn("media_url", sent_messages[0])
 
+    @patch('routes.whatsapp_webhook.threading.Timer')
+    @patch('services.response_formatter.build_interactive_response')
+    def test_send_delayed_payload_strips_sticker_header(self, mock_build_response, mock_timer):
+        """Interactive headers using the welcome sticker must be removed."""
+
+        sticker_url = "https://example.com/static/welcome/sticker.webp"
+        payload = {
+            "message_body": "Hola, este es el menú.",
+            "message_type": "interactive_menu",
+            "options_list": [{"texto": "Opción", "id": "opcion"}],
+            "_base_url": "https://example.com",
+            "_request_url_root": "https://example.com/",
+            "_welcome_sticker_urls": [sticker_url],
+        }
+
+        mock_build_response.return_value = {
+            "type": "interactive",
+            "interactive": {
+                "type": "list",
+                "body": {"text": "Menú"},
+                "header": {"type": "image", "image": {"link": sticker_url}},
+                "action": {"sections": []},
+            },
+        }
+
+        class ImmediateTimer:
+            def __init__(self, delay, callback):
+                self.callback = callback
+
+            def start(self):
+                self.callback()
+
+        mock_timer.side_effect = lambda delay, callback: ImmediateTimer(delay, callback)
+
+        sent_messages = []
+
+        def fake_create(**kwargs):
+            sent_messages.append(kwargs)
+            msg = MagicMock()
+            msg.sid = f"SM{len(sent_messages)}"
+            return msg
+
+        client = MagicMock()
+        client.messages.create.side_effect = fake_create
+
+        _send_delayed_payload(
+            client=client,
+            to_number="whatsapp:+111111111",
+            from_number="whatsapp:+222222222",
+            payload=payload,
+            delay=0,
+            app=self.app,
+        )
+
+        self.assertEqual(len(sent_messages), 1)
+        params = sent_messages[0]
+        self.assertIn("persistent_action", params)
+        action_payload = params["persistent_action"][0]
+        self.assertTrue(action_payload.startswith("whatsapp:"))
+        serialized = action_payload.split("whatsapp:", 1)[1]
+        interactive_json = json.loads(serialized)
+        self.assertNotIn("header", interactive_json)
+
     def test_whatsapp_webhook_valid_request(self):
         # Arrange
         self._set_owner_tipo_chat("municipio")
