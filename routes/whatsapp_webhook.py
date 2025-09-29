@@ -8,6 +8,7 @@ import json
 import threading
 import re
 from typing import Any, Dict, Iterable, Optional, Tuple
+from urllib.parse import urlsplit, urlunsplit
 from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
 from extensions import db  # Import db instance for database operations
@@ -94,10 +95,19 @@ def _normalize_media_url(url: Optional[str], base_url: Optional[str] = None) -> 
     if not candidate:
         return None
 
-    if candidate.startswith("http://"):
-        candidate = "https://" + candidate.split("://", 1)[1]
+    if candidate.startswith("data:"):
+        return candidate
 
-    return candidate.rstrip("/")
+    parsed = urlsplit(candidate)
+    scheme = parsed.scheme.lower() or "https"
+    netloc = parsed.netloc.lower()
+    path = parsed.path.rstrip("/") or "/"
+    normalized = urlunsplit((scheme, netloc, path, "", ""))
+
+    if normalized.startswith("http://"):
+        normalized = "https://" + normalized.split("://", 1)[1]
+
+    return normalized
 
 
 def _strip_duplicate_welcome_media(
@@ -120,16 +130,59 @@ def _strip_duplicate_welcome_media(
     if not normalized_targets:
         return
 
+    def _matches(url: Optional[str]) -> bool:
+        return _normalize_media_url(url, base_url) in normalized_targets
+
     image_url = payload.get("image_url")
-    if _normalize_media_url(image_url, base_url) in normalized_targets:
+    if _matches(image_url):
         payload.pop("image_url", None)
+
+    media_url = payload.get("media_url")
+
+    def _filter_media(values: Iterable[Optional[str]]) -> list[str]:
+        return [value for value in values if value and not _matches(value)]
+
+    if isinstance(media_url, str):
+        filtered = _filter_media([media_url])
+        if filtered:
+            payload["media_url"] = filtered[0] if len(filtered) == 1 else filtered
+        else:
+            payload.pop("media_url", None)
+    elif isinstance(media_url, (list, tuple, set)):
+        filtered = _filter_media(media_url)
+        if filtered:
+            payload["media_url"] = list(filtered)
+        else:
+            payload.pop("media_url", None)
 
     header = payload.get("header")
     if isinstance(header, dict) and header.get("type") == "image":
         header_image = header.get("image", {})
         header_link = header_image.get("link") if isinstance(header_image, dict) else None
-        if _normalize_media_url(header_link, base_url) in normalized_targets:
+        if _matches(header_link):
             payload.pop("header", None)
+
+    interactive = payload.get("interactive")
+    if isinstance(interactive, dict):
+        interactive_header = interactive.get("header")
+        if isinstance(interactive_header, dict) and interactive_header.get("type") == "image":
+            image_data = interactive_header.get("image", {})
+            image_link = image_data.get("link") if isinstance(image_data, dict) else None
+            if _matches(image_link):
+                interactive.pop("header", None)
+
+    image_field = payload.get("image")
+    if isinstance(image_field, dict):
+        image_link = image_field.get("link") or image_field.get("url")
+        if _matches(image_link):
+            payload.pop("image", None)
+
+    media_field = payload.get("media")
+    if isinstance(media_field, dict):
+        media_link = media_field.get("link") or media_field.get("url")
+        if _matches(media_link):
+            payload.pop("media", None)
+
 
 
 def _slugify_rubro(value: Optional[str]) -> str:
@@ -297,6 +350,32 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
             else:
                 params["body"] = formatted.get("text", {}).get("body", "")
 
+            sticker_targets = []
+            if isinstance(payload, dict):
+                raw_stickers = payload.get("_welcome_sticker_urls") or []
+                base_for_normalization = (
+                    payload.get("_base_url")
+                    or payload.get("_request_url_root")
+                    or app.config.get("APP_BASE_URL")
+                    or ""
+                )
+                for candidate in raw_stickers:
+                    normalized = _normalize_media_url(candidate, base_for_normalization)
+                    if normalized:
+                        sticker_targets.append(normalized)
+
+            def _is_welcome_sticker(url: Optional[str]) -> bool:
+                if not url:
+                    return False
+                normalized = _normalize_media_url(
+                    url,
+                    payload.get("_base_url")
+                    or payload.get("_request_url_root")
+                    or app.config.get("APP_BASE_URL")
+                    or "",
+                )
+                return bool(normalized and normalized in sticker_targets)
+
             image_url = formatted.get("image_url")
             if image_url and "persistent_action" not in params:
                 resolved_image_url = image_url
@@ -319,7 +398,8 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                 elif resolved_image_url.startswith("http://"):
                     resolved_image_url = resolved_image_url.replace("http://", "https://", 1)
 
-                params["media_url"] = [resolved_image_url]
+                if not _is_welcome_sticker(resolved_image_url):
+                    params["media_url"] = [resolved_image_url]
 
             try:
                 message = client.messages.create(**params)
@@ -335,6 +415,10 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                                 "[DELAYED_AUDIO] APP_BASE_URL no configurada; no se puede enviar audio con URL relativa %s",
                                 audio_url,
                             )
+                            absolute_audio_url = None
+
+                    if absolute_audio_url:
+                        if _is_welcome_sticker(absolute_audio_url):
                             absolute_audio_url = None
 
                     if absolute_audio_url:
@@ -668,6 +752,16 @@ def whatsapp_webhook():
                         base_url=effective_base_url,
                     )
 
+                    sticker_payload = [
+                        url
+                        for url in [resolved_sticker_url, configured_sticker_url]
+                        if url
+                    ]
+                    if sticker_payload:
+                        welcome_response_payload["_welcome_sticker_urls"] = sticker_payload
+                    else:
+                        welcome_response_payload.pop("_welcome_sticker_urls", None)
+
                     remaining_image_url = welcome_response_payload.get("image_url")
                     resolved_existing_image = _resolve_public_url(
                         remaining_image_url, effective_base_url
@@ -744,6 +838,16 @@ def whatsapp_webhook():
                         sticker_urls=[resolved_sticker_url, configured_sticker_url],
                         base_url=effective_base_url,
                     )
+
+                    sticker_payload = [
+                        url
+                        for url in [resolved_sticker_url, configured_sticker_url]
+                        if url
+                    ]
+                    if sticker_payload:
+                        welcome_response_payload["_welcome_sticker_urls"] = sticker_payload
+                    else:
+                        welcome_response_payload.pop("_welcome_sticker_urls", None)
 
                     remaining_image_url = welcome_response_payload.get("image_url")
                     resolved_existing_image = _resolve_public_url(
