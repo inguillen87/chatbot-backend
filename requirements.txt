@@ -86,6 +86,8 @@ portalocker==2.10.1
 propcache==0.3.2
 msgspec==0.19.0
 jsonschema
+h3==4.1.0
+faker==25.9.1
 
 ############################
 # GOOGLE CLOUD / GEN AI
