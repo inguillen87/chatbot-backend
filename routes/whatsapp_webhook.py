@@ -350,6 +350,32 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
             else:
                 params["body"] = formatted.get("text", {}).get("body", "")
 
+            sticker_targets = []
+            if isinstance(payload, dict):
+                raw_stickers = payload.get("_welcome_sticker_urls") or []
+                base_for_normalization = (
+                    payload.get("_base_url")
+                    or payload.get("_request_url_root")
+                    or app.config.get("APP_BASE_URL")
+                    or ""
+                )
+                for candidate in raw_stickers:
+                    normalized = _normalize_media_url(candidate, base_for_normalization)
+                    if normalized:
+                        sticker_targets.append(normalized)
+
+            def _is_welcome_sticker(url: Optional[str]) -> bool:
+                if not url:
+                    return False
+                normalized = _normalize_media_url(
+                    url,
+                    payload.get("_base_url")
+                    or payload.get("_request_url_root")
+                    or app.config.get("APP_BASE_URL")
+                    or "",
+                )
+                return bool(normalized and normalized in sticker_targets)
+
             image_url = formatted.get("image_url")
             if image_url and "persistent_action" not in params:
                 resolved_image_url = image_url
@@ -372,7 +398,8 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                 elif resolved_image_url.startswith("http://"):
                     resolved_image_url = resolved_image_url.replace("http://", "https://", 1)
 
-                params["media_url"] = [resolved_image_url]
+                if not _is_welcome_sticker(resolved_image_url):
+                    params["media_url"] = [resolved_image_url]
 
             try:
                 message = client.messages.create(**params)
@@ -388,6 +415,10 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                                 "[DELAYED_AUDIO] APP_BASE_URL no configurada; no se puede enviar audio con URL relativa %s",
                                 audio_url,
                             )
+                            absolute_audio_url = None
+
+                    if absolute_audio_url:
+                        if _is_welcome_sticker(absolute_audio_url):
                             absolute_audio_url = None
 
                     if absolute_audio_url:
@@ -721,6 +752,16 @@ def whatsapp_webhook():
                         base_url=effective_base_url,
                     )
 
+                    sticker_payload = [
+                        url
+                        for url in [resolved_sticker_url, configured_sticker_url]
+                        if url
+                    ]
+                    if sticker_payload:
+                        welcome_response_payload["_welcome_sticker_urls"] = sticker_payload
+                    else:
+                        welcome_response_payload.pop("_welcome_sticker_urls", None)
+
                     remaining_image_url = welcome_response_payload.get("image_url")
                     resolved_existing_image = _resolve_public_url(
                         remaining_image_url, effective_base_url
@@ -797,6 +838,16 @@ def whatsapp_webhook():
                         sticker_urls=[resolved_sticker_url, configured_sticker_url],
                         base_url=effective_base_url,
                     )
+
+                    sticker_payload = [
+                        url
+                        for url in [resolved_sticker_url, configured_sticker_url]
+                        if url
+                    ]
+                    if sticker_payload:
+                        welcome_response_payload["_welcome_sticker_urls"] = sticker_payload
+                    else:
+                        welcome_response_payload.pop("_welcome_sticker_urls", None)
 
                     remaining_image_url = welcome_response_payload.get("image_url")
                     resolved_existing_image = _resolve_public_url(
