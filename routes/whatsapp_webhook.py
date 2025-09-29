@@ -7,7 +7,7 @@ import io
 import json
 import threading
 import re
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Set, Tuple
 from urllib.parse import urlsplit, urlunsplit
 from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
@@ -110,6 +110,45 @@ def _normalize_media_url(url: Optional[str], base_url: Optional[str] = None) -> 
     return normalized
 
 
+def _media_signature_tokens(url: Optional[str], base_url: Optional[str]) -> Set[str]:
+    """Return a set of identifiers that represent the referenced media."""
+
+    tokens: Set[str] = set()
+    normalized = _normalize_media_url(url, base_url)
+    if not normalized:
+        return tokens
+
+    tokens.add(f"url::{normalized}")
+
+    parsed = urlsplit(normalized)
+    path = parsed.path.rstrip("/") or "/"
+    tokens.add(f"path::{path}")
+
+    basename = path.rsplit("/", 1)[-1]
+    if basename:
+        tokens.add(f"file::{basename.lower()}")
+
+    return tokens
+
+
+def _collect_signature_set(urls: Iterable[Optional[str]], base_url: Optional[str]) -> Set[str]:
+    """Build a signature set for the provided media URLs."""
+
+    signature_set: Set[str] = set()
+    for candidate in urls:
+        signature_set.update(_media_signature_tokens(candidate, base_url))
+    return signature_set
+
+
+def _matches_signature(url: Optional[str], base_url: Optional[str], signatures: Set[str]) -> bool:
+    """True if the URL matches any of the known media signatures."""
+
+    if not url or not signatures:
+        return False
+
+    return bool(_media_signature_tokens(url, base_url) & signatures)
+
+
 def _strip_duplicate_welcome_media(
     payload: Dict[str, Any],
     sticker_urls: Iterable[Optional[str]],
@@ -120,18 +159,13 @@ def _strip_duplicate_welcome_media(
     if not isinstance(payload, dict):
         return
 
-    normalized_targets = {
-        normalized
-        for url in sticker_urls
-        for normalized in (_normalize_media_url(url, base_url),)
-        if normalized
-    }
+    normalized_targets = _collect_signature_set(sticker_urls, base_url)
 
     if not normalized_targets:
         return
 
     def _matches(url: Optional[str]) -> bool:
-        return _normalize_media_url(url, base_url) in normalized_targets
+        return _matches_signature(url, base_url, normalized_targets)
 
     image_url = payload.get("image_url")
     if _matches(image_url):
@@ -343,31 +377,23 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
             )
 
             params = {"from_": to_number, "to": from_number}
-            sticker_targets = []
+
+            base_for_normalization = ""
+            sticker_signatures: Set[str] = set()
             if isinstance(payload, dict):
-                raw_stickers = payload.get("_welcome_sticker_urls") or []
                 base_for_normalization = (
                     payload.get("_base_url")
                     or payload.get("_request_url_root")
                     or app.config.get("APP_BASE_URL")
                     or ""
                 )
-                for candidate in raw_stickers:
-                    normalized = _normalize_media_url(candidate, base_for_normalization)
-                    if normalized:
-                        sticker_targets.append(normalized)
+                sticker_signatures = _collect_signature_set(
+                    payload.get("_welcome_sticker_urls") or [],
+                    base_for_normalization,
+                )
 
             def _is_welcome_sticker(url: Optional[str]) -> bool:
-                if not url:
-                    return False
-                normalized = _normalize_media_url(
-                    url,
-                    payload.get("_base_url")
-                    or payload.get("_request_url_root")
-                    or app.config.get("APP_BASE_URL")
-                    or "",
-                )
-                return bool(normalized and normalized in sticker_targets)
+                return _matches_signature(url, base_for_normalization, sticker_signatures)
 
             if formatted.get("type") == "interactive":
                 interactive = formatted.get("interactive") or {}
@@ -388,31 +414,7 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
             else:
                 params["body"] = formatted.get("text", {}).get("body", "")
 
-            sticker_targets = []
-            if isinstance(payload, dict):
-                raw_stickers = payload.get("_welcome_sticker_urls") or []
-                base_for_normalization = (
-                    payload.get("_base_url")
-                    or payload.get("_request_url_root")
-                    or app.config.get("APP_BASE_URL")
-                    or ""
-                )
-                for candidate in raw_stickers:
-                    normalized = _normalize_media_url(candidate, base_for_normalization)
-                    if normalized:
-                        sticker_targets.append(normalized)
-
-            def _is_welcome_sticker(url: Optional[str]) -> bool:
-                if not url:
-                    return False
-                normalized = _normalize_media_url(
-                    url,
-                    payload.get("_base_url")
-                    or payload.get("_request_url_root")
-                    or app.config.get("APP_BASE_URL")
-                    or "",
-                )
-                return bool(normalized and normalized in sticker_targets)
+            sticker_signatures = sticker_signatures or set()
 
             image_url = formatted.get("image_url")
             if image_url and "persistent_action" not in params:
