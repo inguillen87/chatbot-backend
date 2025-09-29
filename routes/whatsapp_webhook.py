@@ -343,8 +343,46 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
             )
 
             params = {"from_": to_number, "to": from_number}
+            sticker_targets = []
+            if isinstance(payload, dict):
+                raw_stickers = payload.get("_welcome_sticker_urls") or []
+                base_for_normalization = (
+                    payload.get("_base_url")
+                    or payload.get("_request_url_root")
+                    or app.config.get("APP_BASE_URL")
+                    or ""
+                )
+                for candidate in raw_stickers:
+                    normalized = _normalize_media_url(candidate, base_for_normalization)
+                    if normalized:
+                        sticker_targets.append(normalized)
+
+            def _is_welcome_sticker(url: Optional[str]) -> bool:
+                if not url:
+                    return False
+                normalized = _normalize_media_url(
+                    url,
+                    payload.get("_base_url")
+                    or payload.get("_request_url_root")
+                    or app.config.get("APP_BASE_URL")
+                    or "",
+                )
+                return bool(normalized and normalized in sticker_targets)
+
             if formatted.get("type") == "interactive":
-                interactive = formatted.get("interactive")
+                interactive = formatted.get("interactive") or {}
+                header_candidate = interactive.get("header")
+                if (
+                    isinstance(header_candidate, dict)
+                    and header_candidate.get("type") == "image"
+                ):
+                    image_payload = header_candidate.get("image")
+                    header_link = None
+                    if isinstance(image_payload, dict):
+                        header_link = image_payload.get("link") or image_payload.get("url")
+                    if _is_welcome_sticker(header_link):
+                        interactive.pop("header", None)
+                formatted["interactive"] = interactive
                 params["body"] = interactive.get("body", {}).get("text", "")
                 params["persistent_action"] = [f"whatsapp:{json.dumps(interactive)}"]
             else:
