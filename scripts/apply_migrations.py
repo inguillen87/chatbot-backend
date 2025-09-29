@@ -3,6 +3,7 @@ import os
 from sqlalchemy import create_engine
 from alembic.config import Config
 from alembic import command
+from alembic.util import CommandError
 
 dburl = os.environ.get("SQLALCHEMY_DATABASE_URI") or os.environ["DATABASE_URL"]
 
@@ -17,5 +18,13 @@ with engine.connect() as conn:
     # Inyectamos la conexión al entorno Alembic
     cfg.attributes["connection"] = conn
     print("Running migrations with existing connection...")
-    command.upgrade(cfg, "head")
+    try:
+        command.upgrade(cfg, "head")
+    except CommandError as exc:
+        message = str(exc)
+        if "Multiple heads" in message:
+            print("Multiple heads detected, upgrading all heads instead...")
+            command.upgrade(cfg, "heads")
+        else:
+            raise
     print("Migrations applied.")
