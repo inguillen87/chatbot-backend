@@ -3,24 +3,18 @@ from unittest.mock import patch, MagicMock
 import os
 import sys
 import json
-import threading
-import re
-from typing import Any, Dict, Iterable, Optional, Tuple
-from urllib.parse import urlsplit, urlunsplit
-from werkzeug.datastructures import FileStorage
-from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
-from extensions import db  # Import db instance for database operations
-import uuid
-from services.logic import responder_chatboc  # Import the correct chatbot logic processor
-from sqlalchemy.orm import joinedload  # To potentially eager load User.rubro
-from utils.db_utils import safe_flag_modified
-from services.gcs_service import upload_to_gcs
-from services.attachment_service import create_attachment_with_thumbnail
-from services.llm_utils import extract_multiple_contact_details_llm
-from services.user_service import update_user_profile
-from services.media_classifier import clasificar_adjunto_whatsapp
-from utils.maps_utils import extraer_coordenadas_de_url_google_maps
-from services.openai_maps_service import geocodificar_inversa_llm
+import time
+
+from flask import g
+
+# Añadir el directorio raíz del proyecto al sys.path
+project_root_whatsapp = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root_whatsapp not in sys.path:
+    sys.path.insert(0, project_root_whatsapp)
+
+from app import create_app, db
+from config import Config
+from models import User, Rubro, WhatsappNumero, ChatSessionContext
 from services.municipio_responder import CONTEXTO_MUNICIPIO
 from routes.whatsapp_webhook import _send_delayed_payload
 # Moved model imports after app and config to ensure they are found via sys.path
@@ -200,90 +194,9 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.mock_validator.validate.return_value = True
         self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
 
-def _normalize_media_url(url: Optional[str], base_url: Optional[str] = None) -> Optional[str]:
-    """Return a canonical HTTPS URL for comparison purposes."""
-
-    if not url:
-        return None
-
-    candidate = str(url).strip()
-    if not candidate:
-        return None
-
-    resolved = _resolve_public_url(candidate, (base_url or ""))
-    candidate = str(resolved or candidate).strip()
-    if not candidate:
-        return None
-
-    if candidate.startswith("data:"):
-        return candidate
-
-    parsed = urlsplit(candidate)
-    scheme = parsed.scheme.lower() or "https"
-    netloc = parsed.netloc.lower()
-    path = parsed.path.rstrip("/") or "/"
-    normalized = urlunsplit((scheme, netloc, path, "", ""))
-
-    if normalized.startswith("http://"):
-        normalized = "https://" + normalized.split("://", 1)[1]
-
-    return normalized
-
-
-def _strip_duplicate_welcome_media(
-    payload: Dict[str, Any],
-    sticker_urls: Iterable[Optional[str]],
-    base_url: Optional[str],
-) -> None:
-    """Remove media fields that duplicate the configured welcome sticker."""
-
-    if not isinstance(payload, dict):
-        return
-
-    normalized_targets = {
-        normalized
-        for url in sticker_urls
-        for normalized in (_normalize_media_url(url, base_url),)
-        if normalized
-    }
-
-    if not normalized_targets:
-        return
-
-    def _matches(url: Optional[str]) -> bool:
-        return _normalize_media_url(url, base_url) in normalized_targets
-
-    image_url = payload.get("image_url")
-    if _matches(image_url):
-        payload.pop("image_url", None)
-
-    media_url = payload.get("media_url")
-    if isinstance(media_url, (list, tuple)):
-        filtered = [value for value in media_url if not _matches(value)]
-        if filtered:
-            payload["media_url"] = filtered
-        else:
-            payload.pop("media_url", None)
-
-    header = payload.get("header")
-    if isinstance(header, dict) and header.get("type") == "image":
-        header_image = header.get("image", {})
-        header_link = header_image.get("link") if isinstance(header_image, dict) else None
-        if _matches(header_link):
-            payload.pop("header", None)
-
-    interactive = payload.get("interactive")
-    if isinstance(interactive, dict):
-        interactive_header = interactive.get("header")
-        if isinstance(interactive_header, dict) and interactive_header.get("type") == "image":
-            image_data = interactive_header.get("image", {})
-            image_link = image_data.get("link") if isinstance(image_data, dict) else None
-            if _matches(image_link):
-                interactive.pop("header", None)
-
-
-def _slugify_rubro(value: Optional[str]) -> str:
-    """Normalize rubro names/keys to filesystem-friendly slugs."""
+        mock_twilio_message = MagicMock()
+        mock_twilio_message.sid = "SMxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_test_sid"
+        self.mock_twilio_create.return_value = mock_twilio_message
 
         payload = {
             "To": f"whatsapp:{self.test_whatsapp_number_str}",
@@ -708,278 +621,390 @@ def _slugify_rubro(value: Optional[str]) -> str:
         known_user.name = "Tester"
         db.session.commit()
 
-        if twilio_client:
-            try:
-                template_sid = current_app.config.get("WELCOME_TEMPLATE_SID")
-                sticker_cooldown = current_app.config.get("WELCOME_STICKER_COOLDOWN_SECONDS", 300)
-                # Prioritize DB name, then WhatsApp profile name. Avoid generic
-                # "vecino" fallback so the bot either personalizes or greets
-                # without a name and lets downstream logic ask for it.
-                user_name = getattr(end_user, "name", "") or (post_vars.get("ProfileName") or "").strip()
-                if user_name.lower() in {"vecino", "vecina", "vecino/a"}:
-                    user_name = ""
+        captured = {}
 
-                should_send_template = bool(template_sid) and not template_state.get("disabled", False)
-                should_send_sticker = bool(resolved_sticker_url) and not sticker_state.get("disabled", False)
-                template_variables_payload: Dict[str, str] = {"1": user_name or ""}
+        def capture_delayed(**kwargs):
+            captured.update(kwargs)
 
-                if client_user and getattr(client_user, "tipo_chat", None) == "pyme":
-                    if "sticker_cooldown_seconds" in pyme_welcome_overrides:
-                        try:
-                            sticker_cooldown = int(pyme_welcome_overrides.get("sticker_cooldown_seconds") or sticker_cooldown)
-                            if sticker_cooldown < 0:
-                                sticker_cooldown = 0
-                        except (TypeError, ValueError):
-                            current_app.logger.warning(
-                                "[WELCOME] Invalid sticker cooldown override '%s' for PYME owner %s.",
-                                pyme_welcome_overrides.get("sticker_cooldown_seconds"),
-                                getattr(client_user, "id", "<unknown>"),
-                            )
+        with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed) as mock_delayed, \
+             patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
-                    if "template_sid" in pyme_welcome_overrides:
-                        template_sid = pyme_welcome_overrides.get("template_sid")
-                        should_send_template = bool(template_sid) and not template_state.get("disabled", False)
-                    else:
-                        should_send_template = False
+        self.assertEqual(response.status_code, 200)
+        mock_delayed.assert_called_once()
+        delayed_payload = captured.get("payload", {})
+        self.assertNotIn("image_url", delayed_payload)
 
-                    if "sticker_url" in pyme_welcome_overrides:
-                        should_send_sticker = bool(resolved_sticker_url) and not sticker_state.get("disabled", False)
-                    else:
-                        should_send_sticker = False
+    def test_welcome_payload_matching_sticker_string_media_url_removed(self):
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+        self.app.config["WELCOME_MEDIA_URL"] = "https://example.com/sticker.webp"
 
-                    template_vars_override = pyme_welcome_overrides.get("template_variables")
-                    if template_vars_override and should_send_template:
-                        template_variables_payload = _render_template_variables(
-                            template_vars_override,
-                            user_name=user_name,
-                            context=pyme_welcome_context,
-                        )
-                    elif not should_send_template:
-                        template_variables_payload = {}
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+            "ProfileName": "Tester",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
 
-                last_sticker_ts = sticker_state.get("last_sent_ts")
-                if should_send_sticker and last_sticker_ts:
-                    if (now - last_sticker_ts) < max(0, sticker_cooldown):
-                        should_send_sticker = False
-                        current_app.logger.info(
-                            "[WELCOME] Sticker skipped for %s due to cooldown (last_sent_ts=%s)",
-                            from_number_cleaned,
-                            last_sticker_ts,
-                        )
+        self._create_confirmed_session()
 
-                if should_send_template and template_sid:
-                    params = {
-                        "from_": to_number_raw,
-                        "to": from_number_raw,
-                        "content_sid": template_sid,
-                        # Always supply the template variables. WhatsApp requires
-                        # all placeholders to be populated, so an empty string is
-                        # safer than omitting the field and triggering a 400.
-                        "content_variables": json.dumps(template_variables_payload or {}),
-                    }
-                    try:
-                        twilio_client.messages.create(**params)
-                        template_state["last_sent_ts"] = now
-                        safe_flag_modified(session_context_db_entry, "context_data")
-                        current_app.logger.info(
-                            "[WELCOME] Template %s sent to %s with variables: %s",
-                            template_sid,
-                            from_number_cleaned,
-                            template_variables_payload,
-                        )
-                    except Exception as e:
-                        current_app.logger.warning(
-                            f"[WELCOME] Failed to send welcome template {template_sid} to {from_number_cleaned}: {e}"
-                        )
-                        template_state["disabled"] = True
-                        safe_flag_modified(session_context_db_entry, "context_data")
+        response_payload = {
+            "message_body": "Menú principal",
+            "options_list": [],
+            "media_url": "https://example.com/sticker.webp",
+        }
 
-                if should_send_sticker:
-                    try:
-                        twilio_client.messages.create(
-                            from_=to_number_raw,
-                            to=from_number_raw,
-                            media_url=[resolved_sticker_url],
-                        )
-                        sticker_state["last_sent_ts"] = now
-                        safe_flag_modified(session_context_db_entry, "context_data")
-                        current_app.logger.info(
-                            f"[WELCOME] Sticker sent to {from_number_cleaned} using {resolved_sticker_url}."
-                        )
-                    except Exception as e:
-                        current_app.logger.warning(
-                            f"[WELCOME] Failed to send welcome sticker to {from_number_cleaned}: {e}"
-                        )
-                        sticker_state["disabled"] = True
-                        safe_flag_modified(session_context_db_entry, "context_data")
+        captured = {}
 
-                greeting_sent = False
+        def capture_delayed(**kwargs):
+            captured.update(kwargs)
 
-                greeting = (
-                    f"*¡Hola, {user_name}!* Acá *Juni* \U0001F44B"
-                    if user_name
-                    else "*¡Hola!* Soy *Juni* \U0001F44B ¿Cómo te llamás?"
-                )
-                try:
-                    twilio_client.messages.create(
-                        from_=to_number_raw, to=from_number_raw, body=greeting
-                    )
-                    greeting_sent = True
-                except Exception as e:
-                    greeting_sent = False
-                    current_app.logger.error(
-                        f"[WELCOME] Failed to send welcome greeting to {from_number_cleaned}: {e}"
-                    )
+        with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed), \
+             patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
-                if not user_name and greeting_sent:
-                    session_context_db_entry.context_data["awaiting_user_name"] = True
-                    safe_flag_modified(session_context_db_entry, "context_data")
-                    db.session.commit()
-                    return "OK", 200
-            except Exception as e:
-                current_app.logger.error(f"[WELCOME] Failed to send welcome template or sticker: {e}")
+        self.assertEqual(response.status_code, 200)
+        delayed_payload = captured.get("payload", {})
+        self.assertNotIn("media_url", delayed_payload)
 
-            try:
-                welcome_response_payload = responder_chatboc(
-                    pregunta="hola", owner_user=client_user, current_user=end_user,
-                    rubro_obj=client_user.rubro, chat_db_context=session_context_db_entry,
-                    tipo_chat=client_user.tipo_chat, anon_id=from_number_cleaned,
-                    chat_session_uuid=chat_session_id_internal, channel="whatsapp"
-                )
-                if isinstance(welcome_response_payload, dict):
-                    if effective_base_url:
-                        welcome_response_payload.setdefault("_base_url", effective_base_url)
-                    if request_root:
-                        welcome_response_payload.setdefault("_request_url_root", request_root)
+    def test_welcome_payload_matching_sticker_with_http_scheme_is_removed(self):
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+        self.app.config["WELCOME_MEDIA_URL"] = "https://example.com/sticker.webp"
 
-                    _strip_duplicate_welcome_media(
-                        welcome_response_payload,
-                        sticker_urls=[resolved_sticker_url, configured_sticker_url],
-                        base_url=effective_base_url,
-                    )
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+            "ProfileName": "Tester",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
 
-                    remaining_image_url = welcome_response_payload.get("image_url")
-                    resolved_existing_image = _resolve_public_url(
-                        remaining_image_url, effective_base_url
-                    )
-                    if resolved_existing_image:
-                        welcome_response_payload["image_url"] = resolved_existing_image
-                    elif "image_url" in welcome_response_payload:
-                        welcome_response_payload.pop("image_url", None)
+        self._create_confirmed_session()
 
-                    existing_audio_url = welcome_response_payload.get("audio_url")
-                    resolved_existing_audio = _resolve_public_url(existing_audio_url, effective_base_url)
-                    if resolved_existing_audio:
-                        welcome_response_payload["audio_url"] = resolved_existing_audio
-                    elif resolved_audio_url:
-                        welcome_response_payload.setdefault("audio_url", resolved_audio_url)
+        response_payload = {
+            "message_body": "Menú principal",
+            "options_list": [],
+            "image_url": "http://example.com/sticker.webp",
+        }
 
-                delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
-                _send_delayed_payload(
-                    client=twilio_client, to_number=to_number_raw, from_number=from_number_raw,
-                    payload=welcome_response_payload, delay=delay, app=current_app._get_current_object()
-                )
-                # Persist any context modifications made during the welcome call
-                safe_flag_modified(session_context_db_entry, "context_data")
-                db.session.add(session_context_db_entry)
-                db.session.commit()
-                current_app.logger.info(f"[WELCOME] Scheduled delayed menu for {from_number_cleaned}.")
-            except Exception as e:
-                current_app.logger.error(f"[WELCOME] Failed to schedule delayed menu: {e}")
+        captured = {}
 
-        return "OK", 200
-    elif should_trigger_welcome and is_rate_limited:
-        current_app.logger.info(f"[WELCOME] Welcome skipped for {from_number_cleaned} due to rate-limit.")
-    elif is_greeting and is_waiting_for_info:
-        current_app.logger.info(f"[WELCOME] Welcome skipped for {from_number_cleaned} because bot is waiting for info.")
+        def capture_delayed(**kwargs):
+            captured.update(kwargs)
 
-    # Determine incoming text before any special handling (re-declaration to ensure it's available for the rest of the code)
-    list_id = post_vars.get("ListId")
-    incoming_text = button_payload or list_id or post_vars.get("Body", "")
+        with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed), \
+             patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
 
-    if session_context_db_entry.context_data.get("awaiting_user_name"):
-        name_candidate = incoming_text.strip()
-        if name_candidate:
-            try:
-                extracted = extract_multiple_contact_details_llm(name_candidate, ["nombre"])
-            except Exception as e:
-                current_app.logger.error(f"[WELCOME] Name extraction failed: {e}")
-                extracted = {}
-            new_name = extracted.get("nombre") or name_candidate
-            update_user_profile(end_user, {"name": new_name})
-            session_context_db_entry.context_data.pop("awaiting_user_name", None)
-            safe_flag_modified(session_context_db_entry, "context_data")
-            db.session.commit()
-            if twilio_client:
-                twilio_client.messages.create(
-                    from_=to_number_raw,
-                    to=from_number_raw,
-                    body=f"¡Encantado, {new_name}! ¿En qué puedo ayudarte?",
-                )
-            try:
-                welcome_response_payload = responder_chatboc(
-                    pregunta="hola", owner_user=client_user, current_user=end_user,
-                    rubro_obj=client_user.rubro, chat_db_context=session_context_db_entry,
-                    tipo_chat=client_user.tipo_chat, anon_id=from_number_cleaned,
-                    chat_session_uuid=chat_session_id_internal, channel="whatsapp",
-                )
-                if isinstance(welcome_response_payload, dict):
-                    if effective_base_url:
-                        welcome_response_payload.setdefault("_base_url", effective_base_url)
-                    if request_root:
-                        welcome_response_payload.setdefault("_request_url_root", request_root)
+        self.assertEqual(response.status_code, 200)
+        delayed_payload = captured.get("payload", {})
+        self.assertNotIn("image_url", delayed_payload)
 
-                    _strip_duplicate_welcome_media(
-                        welcome_response_payload,
-                        sticker_urls=[resolved_sticker_url, configured_sticker_url],
-                        base_url=effective_base_url,
-                    )
+    def test_welcome_payload_matching_sticker_with_query_is_removed(self):
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+        self.app.config["WELCOME_MEDIA_URL"] = "https://example.com/sticker.webp"
 
-                    remaining_image_url = welcome_response_payload.get("image_url")
-                    resolved_existing_image = _resolve_public_url(
-                        remaining_image_url, effective_base_url
-                    )
-                    if resolved_existing_image:
-                        welcome_response_payload["image_url"] = resolved_existing_image
-                    elif "image_url" in welcome_response_payload:
-                        welcome_response_payload.pop("image_url", None)
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+            "ProfileName": "Tester",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
 
-                    existing_audio_url = welcome_response_payload.get("audio_url")
-                    resolved_existing_audio = _resolve_public_url(existing_audio_url, effective_base_url)
-                    if resolved_existing_audio:
-                        welcome_response_payload["audio_url"] = resolved_existing_audio
-                    elif resolved_audio_url:
-                        welcome_response_payload.setdefault("audio_url", resolved_audio_url)
+        self._create_confirmed_session()
 
-                delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
-                _send_delayed_payload(
-                    client=twilio_client,
-                    to_number=to_number_raw,
-                    from_number=from_number_raw,
-                    payload=welcome_response_payload,
-                    delay=delay,
-                    app=current_app._get_current_object(),
-                )
-                # Persist any context updates from responder_chatboc
-                safe_flag_modified(session_context_db_entry, "context_data")
-                db.session.add(session_context_db_entry)
-                db.session.commit()
-                current_app.logger.info(
-                    f"[WELCOME] Scheduled delayed menu for {from_number_cleaned}."
-                )
-            except Exception as e:
-                current_app.logger.error(
-                    f"[WELCOME] Failed to schedule delayed menu after name: {e}"
-                )
-            return "OK", 200
+        response_payload = {
+            "message_body": "Menú principal",
+            "options_list": [],
+            "image_url": "https://example.com/sticker.webp?updated=123",
+        }
 
-    # --- Handle pending paginated messages ---
-    pending_chunks = session_context_db_entry.context_data.get("pending_chunks", [])
-    if pending_chunks and incoming_text.strip().lower() in ["mas", "más", "mostrar mas", "mostrar más", "show_more"]:
-        next_chunk = pending_chunks.pop(0)
-        session_context_db_entry.context_data["pending_chunks"] = pending_chunks
-        safe_flag_modified(session_context_db_entry, "context_data")
-        db.session.add(session_context_db_entry)
+        captured = {}
+
+        def capture_delayed(**kwargs):
+            captured.update(kwargs)
+
+        with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed), \
+             patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        delayed_payload = captured.get("payload", {})
+        self.assertNotIn("image_url", delayed_payload)
+
+    def test_welcome_payload_header_matching_sticker_is_removed(self):
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+        self.app.config["WELCOME_MEDIA_URL"] = "https://example.com/sticker.webp"
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+            "ProfileName": "Tester",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        self._create_confirmed_session()
+
+        response_payload = {
+            "message_body": "Menú principal",
+            "options_list": [],
+            "header": {
+                "type": "image",
+                "image": {"link": "http://example.com/sticker.webp"},
+            },
+        }
+
+        captured = {}
+
+        def capture_delayed(**kwargs):
+            captured.update(kwargs)
+
+        with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed), \
+             patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        delayed_payload = captured.get("payload", {})
+        self.assertNotIn("header", delayed_payload)
+
+    def test_welcome_payload_interactive_header_matching_sticker_is_removed(self):
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+        self.app.config["WELCOME_MEDIA_URL"] = "https://example.com/sticker.webp"
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+            "ProfileName": "Tester",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        self._create_confirmed_session()
+
+        response_payload = {
+            "message_body": "Menú principal",
+            "options_list": [],
+            "interactive": {
+                "type": "list",
+                "body": {"text": "Contenido"},
+                "header": {"type": "image", "image": {"link": "https://example.com/sticker.webp"}},
+                "action": {"sections": []},
+            },
+        }
+
+        captured = {}
+
+        def capture_delayed(**kwargs):
+            captured.update(kwargs)
+
+        with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed), \
+             patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        delayed_payload = captured.get("payload", {})
+        interactive = delayed_payload.get("interactive", {})
+        self.assertIsInstance(interactive, dict)
+        self.assertNotIn("header", interactive)
+
+    def test_welcome_template_failure_still_sends_followups(self):
+        self._set_owner_tipo_chat("municipio")
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+        self.app.config["WELCOME_MEDIA_URL"] = "https://example.com/sticker.webp"
+
+        def fail_first(*args, **kwargs):
+            call_index = len(self.mock_twilio_create.call_args_list)
+            if call_index == 0:
+                raise Exception("template failure")
+            return MagicMock()
+
+        self.mock_twilio_create.side_effect = fail_first
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        # Even though the template failed, we still attempt the sticker and greeting.
+        self.assertGreaterEqual(self.mock_twilio_create.call_count, 3)
+        # Second call should correspond to the sticker send.
+        sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        self.assertEqual(
+            sticker_kwargs.get("media_url"),
+            [self.app.config["WELCOME_MEDIA_URL"]],
+        )
+        greeting_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
+        self.assertIn("body", greeting_kwargs)
+
+    @patch('routes.whatsapp_webhook.threading.Timer')
+    @patch('services.response_formatter.build_interactive_response')
+    def test_delayed_payload_upgrades_image_url_to_https(self, mock_build_response, mock_timer):
+        self.app.config["APP_BASE_URL"] = "http://chatboc.ar"
+
+        payload = {
+            "message_body": "Hola", 
+            "options_list": [],
+            "message_type": "text",
+            "image_url": "/static/welcome/sticker.png",
+            "_base_url": "http://chatboc.ar",
+            "_request_url_root": "http://chatboc.ar",
+        }
+
+        mock_build_response.return_value = {
+            "type": "text",
+            "text": {"body": "Hola"},
+            "image_url": "/static/welcome/sticker.png",
+        }
+
+        class ImmediateTimer:
+            def __init__(self, delay, callback):
+                self.callback = callback
+
+            def start(self):
+                self.callback()
+
+        mock_timer.side_effect = lambda delay, callback: ImmediateTimer(delay, callback)
+
+        sent_messages = []
+
+        def fake_create(**kwargs):
+            sent_messages.append(kwargs)
+            msg = MagicMock()
+            msg.sid = f"SM{len(sent_messages)}"
+            return msg
+
+        client = MagicMock()
+        client.messages.create.side_effect = fake_create
+
+        _send_delayed_payload(
+            client=client,
+            to_number="whatsapp:+111",
+            from_number="whatsapp:+222",
+            payload=payload,
+            delay=0,
+            app=self.app,
+        )
+
+        self.assertTrue(sent_messages)
+        first_call = sent_messages[0]
+        self.assertEqual(first_call.get("media_url"), ["https://chatboc.ar/static/welcome/sticker.png"])
+
+    def test_welcome_skips_generic_profile_name(self):
+        """Generic profile names should trigger a name request."""
+        self._set_owner_tipo_chat("municipio")
+        self._create_confirmed_session()
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+
+        mock_twilio_message = MagicMock()
+        mock_twilio_message.sid = "SMxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_test_sid"
+        self.mock_twilio_create.return_value = mock_twilio_message
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+            "ProfileName": "Vecino/a",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.mock_twilio_create.call_count, 3)
+
+        template_kwargs = self.mock_twilio_create.call_args_list[0].kwargs
+        self.assertEqual(json.loads(template_kwargs["content_variables"]).get("1"), "")
+
+        sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        self.assertEqual(
+            sticker_kwargs.get("media_url"),
+            [self.app.config["WELCOME_MEDIA_URL"]],
+        )
+        self.assertNotIn("body", sticker_kwargs)
+
+        text_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
+        self.assertEqual(text_kwargs.get("body"), "*¡Hola!* Soy *Juni* 👋 ¿Cómo te llamás?")
+        self.assertNotIn("media_url", text_kwargs)
+
+    def test_welcome_asks_for_name_when_unknown(self):
+        """When no name is known, the bot should ask for it."""
+        self._set_owner_tipo_chat("municipio")
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.mock_twilio_create.call_count, 3)
+
+        sticker_kwargs = self.mock_twilio_create.call_args_list[1].kwargs
+        self.assertEqual(
+            sticker_kwargs.get("media_url"),
+            [self.app.config["WELCOME_MEDIA_URL"]],
+        )
+        self.assertNotIn("body", sticker_kwargs)
+
+        text_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
+        self.assertEqual(text_kwargs.get("body"), "*¡Hola!* Soy *Juni* 👋 ¿Cómo te llamás?")
+        self.assertNotIn("media_url", text_kwargs)
+
+        session_id = f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
+        self.assertTrue(ctx.context_data.get("awaiting_user_name"))
+
+
+    def test_whatsapp_webhook_invalid_signature(self):
+        # Arrange
+        self.mock_validator.validate.return_value = False # Simulate invalid signature
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "Hello Test"
+        }
+        headers = { "X-Twilio-Signature": "dummy_signature_invalid" }
+
+        # Act
+        response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        # Assert
+        self.assertEqual(response.status_code, 403) # Expect Forbidden
+        self.mock_validator.validate.assert_called_once()
+        self.mock_twilio_create.assert_not_called() # Message should not be sent
+        self.mock_welcome.assert_not_called()
+
+    def test_numeric_input_ignored_when_waiting_info(self):
+        """Ensure numeric shortcuts are disabled when awaiting free text."""
+        self._create_confirmed_session()
+        session_id = f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
+        ctx.context_data["last_options_sent"] = [
+            {"id": "menu_principal", "texto": "Menú"},
+            {"id": "cancelar", "texto": "Cancelar"},
+        ]
+        ctx.context_data[CONTEXTO_MUNICIPIO] = {"esperando_info_llm": "ubicacion"}
+        db.session.add(ctx)
         db.session.commit()
 
         self.mock_validator.validate.return_value = True
