@@ -188,6 +188,121 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             payload["audio_url"],
         )
 
+    @patch('routes.whatsapp_webhook.threading.Timer')
+    @patch('services.response_formatter.build_interactive_response')
+    def test_send_delayed_payload_skips_welcome_sticker_media(self, mock_build_response, mock_timer):
+        """Delayed payload should not resend the welcome sticker media."""
+
+        sticker_url = "https://example.com/static/welcome/sticker.webp"
+        payload = {
+            "message_body": "Hola, este es el menú.",
+            "message_type": "text",
+            "_base_url": "https://example.com",
+            "_request_url_root": "https://example.com/",
+            "_welcome_sticker_urls": [sticker_url],
+        }
+
+        mock_build_response.return_value = {
+            "type": "text",
+            "text": {"body": "Mensaje principal"},
+            "image_url": sticker_url,
+        }
+
+        class ImmediateTimer:
+            def __init__(self, delay, callback):
+                self.callback = callback
+
+            def start(self):
+                self.callback()
+
+        mock_timer.side_effect = lambda delay, callback: ImmediateTimer(delay, callback)
+
+        sent_messages = []
+
+        def fake_create(**kwargs):
+            sent_messages.append(kwargs)
+            msg = MagicMock()
+            msg.sid = f"SM{len(sent_messages)}"
+            return msg
+
+        client = MagicMock()
+        client.messages.create.side_effect = fake_create
+
+        _send_delayed_payload(
+            client=client,
+            to_number="whatsapp:+111111111",
+            from_number="whatsapp:+222222222",
+            payload=payload,
+            delay=0,
+            app=self.app,
+        )
+
+        self.assertEqual(len(sent_messages), 1)
+        self.assertNotIn("media_url", sent_messages[0])
+
+    @patch('routes.whatsapp_webhook.threading.Timer')
+    @patch('services.response_formatter.build_interactive_response')
+    def test_send_delayed_payload_strips_sticker_header(self, mock_build_response, mock_timer):
+        """Interactive headers using the welcome sticker must be removed."""
+
+        sticker_url = "https://example.com/static/welcome/sticker.webp"
+        payload = {
+            "message_body": "Hola, este es el menú.",
+            "message_type": "interactive_menu",
+            "options_list": [{"texto": "Opción", "id": "opcion"}],
+            "_base_url": "https://example.com",
+            "_request_url_root": "https://example.com/",
+            "_welcome_sticker_urls": [sticker_url],
+        }
+
+        mock_build_response.return_value = {
+            "type": "interactive",
+            "interactive": {
+                "type": "list",
+                "body": {"text": "Menú"},
+                "header": {"type": "image", "image": {"link": sticker_url}},
+                "action": {"sections": []},
+            },
+        }
+
+        class ImmediateTimer:
+            def __init__(self, delay, callback):
+                self.callback = callback
+
+            def start(self):
+                self.callback()
+
+        mock_timer.side_effect = lambda delay, callback: ImmediateTimer(delay, callback)
+
+        sent_messages = []
+
+        def fake_create(**kwargs):
+            sent_messages.append(kwargs)
+            msg = MagicMock()
+            msg.sid = f"SM{len(sent_messages)}"
+            return msg
+
+        client = MagicMock()
+        client.messages.create.side_effect = fake_create
+
+        _send_delayed_payload(
+            client=client,
+            to_number="whatsapp:+111111111",
+            from_number="whatsapp:+222222222",
+            payload=payload,
+            delay=0,
+            app=self.app,
+        )
+
+        self.assertEqual(len(sent_messages), 1)
+        params = sent_messages[0]
+        self.assertIn("persistent_action", params)
+        action_payload = params["persistent_action"][0]
+        self.assertTrue(action_payload.startswith("whatsapp:"))
+        serialized = action_payload.split("whatsapp:", 1)[1]
+        interactive_json = json.loads(serialized)
+        self.assertNotIn("header", interactive_json)
+
     def test_whatsapp_webhook_valid_request(self):
         # Arrange
         self._set_owner_tipo_chat("municipio")
@@ -634,6 +749,186 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         mock_delayed.assert_called_once()
         delayed_payload = captured.get("payload", {})
         self.assertNotIn("image_url", delayed_payload)
+
+    def test_welcome_payload_matching_sticker_string_media_url_removed(self):
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+        self.app.config["WELCOME_MEDIA_URL"] = "https://example.com/sticker.webp"
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+            "ProfileName": "Tester",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        self._create_confirmed_session()
+
+        response_payload = {
+            "message_body": "Menú principal",
+            "options_list": [],
+            "media_url": "https://example.com/sticker.webp",
+        }
+
+        captured = {}
+
+        def capture_delayed(**kwargs):
+            captured.update(kwargs)
+
+        with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed), \
+             patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        delayed_payload = captured.get("payload", {})
+        self.assertNotIn("media_url", delayed_payload)
+
+    def test_welcome_payload_matching_sticker_with_http_scheme_is_removed(self):
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+        self.app.config["WELCOME_MEDIA_URL"] = "https://example.com/sticker.webp"
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+            "ProfileName": "Tester",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        self._create_confirmed_session()
+
+        response_payload = {
+            "message_body": "Menú principal",
+            "options_list": [],
+            "image_url": "http://example.com/sticker.webp",
+        }
+
+        captured = {}
+
+        def capture_delayed(**kwargs):
+            captured.update(kwargs)
+
+        with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed), \
+             patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        delayed_payload = captured.get("payload", {})
+        self.assertNotIn("image_url", delayed_payload)
+
+    def test_welcome_payload_matching_sticker_with_query_is_removed(self):
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+        self.app.config["WELCOME_MEDIA_URL"] = "https://example.com/sticker.webp"
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+            "ProfileName": "Tester",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        self._create_confirmed_session()
+
+        response_payload = {
+            "message_body": "Menú principal",
+            "options_list": [],
+            "image_url": "https://example.com/sticker.webp?updated=123",
+        }
+
+        captured = {}
+
+        def capture_delayed(**kwargs):
+            captured.update(kwargs)
+
+        with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed), \
+             patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        delayed_payload = captured.get("payload", {})
+        self.assertNotIn("image_url", delayed_payload)
+
+    def test_welcome_payload_header_matching_sticker_is_removed(self):
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+        self.app.config["WELCOME_MEDIA_URL"] = "https://example.com/sticker.webp"
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+            "ProfileName": "Tester",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        self._create_confirmed_session()
+
+        response_payload = {
+            "message_body": "Menú principal",
+            "options_list": [],
+            "header": {
+                "type": "image",
+                "image": {"link": "http://example.com/sticker.webp"},
+            },
+        }
+
+        captured = {}
+
+        def capture_delayed(**kwargs):
+            captured.update(kwargs)
+
+        with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed), \
+             patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        delayed_payload = captured.get("payload", {})
+        self.assertNotIn("header", delayed_payload)
+
+    def test_welcome_payload_interactive_header_matching_sticker_is_removed(self):
+        self.mock_validator.validate.return_value = True
+        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
+        self.app.config["WELCOME_MEDIA_URL"] = "https://example.com/sticker.webp"
+
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+            "ProfileName": "Tester",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        self._create_confirmed_session()
+
+        response_payload = {
+            "message_body": "Menú principal",
+            "options_list": [],
+            "interactive": {
+                "type": "list",
+                "body": {"text": "Contenido"},
+                "header": {"type": "image", "image": {"link": "https://example.com/sticker.webp"}},
+                "action": {"sections": []},
+            },
+        }
+
+        captured = {}
+
+        def capture_delayed(**kwargs):
+            captured.update(kwargs)
+
+        with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed), \
+             patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
+            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        delayed_payload = captured.get("payload", {})
+        interactive = delayed_payload.get("interactive", {})
+        self.assertIsInstance(interactive, dict)
+        self.assertNotIn("header", interactive)
 
     def test_welcome_template_failure_still_sends_followups(self):
         self._set_owner_tipo_chat("municipio")
