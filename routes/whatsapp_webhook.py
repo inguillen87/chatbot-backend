@@ -7,7 +7,8 @@ import io
 import json
 import threading
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
+from urllib.parse import urlsplit, urlunsplit
 from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
 from extensions import db  # Import db instance for database operations
@@ -77,6 +78,111 @@ def _resolve_public_url(url: Optional[str], base_url: str) -> Optional[str]:
         return f"{base}{url}"
 
     return f"{base}/{url}"
+
+
+def _normalize_media_url(url: Optional[str], base_url: Optional[str] = None) -> Optional[str]:
+    """Return a canonical HTTPS URL for comparison purposes."""
+
+    if not url:
+        return None
+
+    candidate = str(url).strip()
+    if not candidate:
+        return None
+
+    resolved = _resolve_public_url(candidate, (base_url or ""))
+    candidate = str(resolved or candidate).strip()
+    if not candidate:
+        return None
+
+    if candidate.startswith("data:"):
+        return candidate
+
+    parsed = urlsplit(candidate)
+    scheme = parsed.scheme.lower() or "https"
+    netloc = parsed.netloc.lower()
+    path = parsed.path.rstrip("/") or "/"
+    normalized = urlunsplit((scheme, netloc, path, "", ""))
+
+    if normalized.startswith("http://"):
+        normalized = "https://" + normalized.split("://", 1)[1]
+
+    return normalized
+
+
+def _strip_duplicate_welcome_media(
+    payload: Dict[str, Any],
+    sticker_urls: Iterable[Optional[str]],
+    base_url: Optional[str],
+) -> None:
+    """Remove media fields that duplicate the configured welcome sticker."""
+
+    if not isinstance(payload, dict):
+        return
+
+    normalized_targets = {
+        normalized
+        for url in sticker_urls
+        for normalized in (_normalize_media_url(url, base_url),)
+        if normalized
+    }
+
+    if not normalized_targets:
+        return
+
+    def _matches(url: Optional[str]) -> bool:
+        return _normalize_media_url(url, base_url) in normalized_targets
+
+    image_url = payload.get("image_url")
+    if _matches(image_url):
+        payload.pop("image_url", None)
+
+    media_url = payload.get("media_url")
+
+    def _filter_media(values: Iterable[Optional[str]]) -> list[str]:
+        return [value for value in values if value and not _matches(value)]
+
+    if isinstance(media_url, str):
+        filtered = _filter_media([media_url])
+        if filtered:
+            payload["media_url"] = filtered[0] if len(filtered) == 1 else filtered
+        else:
+            payload.pop("media_url", None)
+    elif isinstance(media_url, (list, tuple, set)):
+        filtered = _filter_media(media_url)
+        if filtered:
+            payload["media_url"] = list(filtered)
+        else:
+            payload.pop("media_url", None)
+
+    header = payload.get("header")
+    if isinstance(header, dict) and header.get("type") == "image":
+        header_image = header.get("image", {})
+        header_link = header_image.get("link") if isinstance(header_image, dict) else None
+        if _matches(header_link):
+            payload.pop("header", None)
+
+    interactive = payload.get("interactive")
+    if isinstance(interactive, dict):
+        interactive_header = interactive.get("header")
+        if isinstance(interactive_header, dict) and interactive_header.get("type") == "image":
+            image_data = interactive_header.get("image", {})
+            image_link = image_data.get("link") if isinstance(image_data, dict) else None
+            if _matches(image_link):
+                interactive.pop("header", None)
+
+    image_field = payload.get("image")
+    if isinstance(image_field, dict):
+        image_link = image_field.get("link") or image_field.get("url")
+        if _matches(image_link):
+            payload.pop("image", None)
+
+    media_field = payload.get("media")
+    if isinstance(media_field, dict):
+        media_link = media_field.get("link") or media_field.get("url")
+        if _matches(media_link):
+            payload.pop("media", None)
+
 
 
 def _slugify_rubro(value: Optional[str]) -> str:
@@ -609,13 +715,18 @@ def whatsapp_webhook():
                     if request_root:
                         welcome_response_payload.setdefault("_request_url_root", request_root)
 
-                    existing_image_url = welcome_response_payload.get("image_url")
-                    resolved_existing_image = _resolve_public_url(existing_image_url, effective_base_url)
+                    _strip_duplicate_welcome_media(
+                        welcome_response_payload,
+                        sticker_urls=[resolved_sticker_url, configured_sticker_url],
+                        base_url=effective_base_url,
+                    )
+
+                    remaining_image_url = welcome_response_payload.get("image_url")
+                    resolved_existing_image = _resolve_public_url(
+                        remaining_image_url, effective_base_url
+                    )
                     if resolved_existing_image:
-                        if resolved_sticker_url and resolved_existing_image == resolved_sticker_url:
-                            welcome_response_payload.pop("image_url", None)
-                        else:
-                            welcome_response_payload["image_url"] = resolved_existing_image
+                        welcome_response_payload["image_url"] = resolved_existing_image
                     elif "image_url" in welcome_response_payload:
                         welcome_response_payload.pop("image_url", None)
 
@@ -681,13 +792,20 @@ def whatsapp_webhook():
                     if request_root:
                         welcome_response_payload.setdefault("_request_url_root", request_root)
 
-                    existing_image_url = welcome_response_payload.get("image_url")
-                    resolved_existing_image = _resolve_public_url(existing_image_url, effective_base_url)
+                    _strip_duplicate_welcome_media(
+                        welcome_response_payload,
+                        sticker_urls=[resolved_sticker_url, configured_sticker_url],
+                        base_url=effective_base_url,
+                    )
+
+                    remaining_image_url = welcome_response_payload.get("image_url")
+                    resolved_existing_image = _resolve_public_url(
+                        remaining_image_url, effective_base_url
+                    )
                     if resolved_existing_image:
-                        if resolved_sticker_url and resolved_existing_image == resolved_sticker_url:
-                            welcome_response_payload.pop("image_url", None)
-                        else:
-                            welcome_response_payload["image_url"] = resolved_existing_image
+                        welcome_response_payload["image_url"] = resolved_existing_image
+                    elif "image_url" in welcome_response_payload:
+                        welcome_response_payload.pop("image_url", None)
 
                     existing_audio_url = welcome_response_payload.get("audio_url")
                     resolved_existing_audio = _resolve_public_url(existing_audio_url, effective_base_url)
