@@ -1261,6 +1261,8 @@ class GreetingHandler(BaseMunicipioHandler):
 
         contexto_municipio_actual: dict = {}
 
+        preserved_welcome_state = None
+        preserved_last_welcome_ts = None
         if chat_db_context_data:
             logger.info(
                 "[GreetingHandler] Saludo detectado. Realizando reseteo completo del contexto."
@@ -1272,6 +1274,8 @@ class GreetingHandler(BaseMunicipioHandler):
                 "contacto_usuario", {}
             )
             profile_name = chat_db_context_data.get("profile_name")
+            preserved_welcome_state = chat_db_context_data.get("_welcome_state")
+            preserved_last_welcome_ts = chat_db_context_data.get("last_welcome_ts")
 
             # Clear the entire context to prevent stale data from any flow
             chat_db_context_data.clear()
@@ -1286,10 +1290,16 @@ class GreetingHandler(BaseMunicipioHandler):
                 contexto_municipio_actual["user"] = user_info
             if profile_name:
                 chat_db_context_data["profile_name"] = profile_name
+            if preserved_welcome_state is not None:
+                chat_db_context_data["_welcome_state"] = preserved_welcome_state
+            if preserved_last_welcome_ts is not None:
+                chat_db_context_data["last_welcome_ts"] = preserved_last_welcome_ts
         else:
             contexto_municipio_actual = chat_db_context_data.setdefault(
                 CONTEXTO_MUNICIPIO, {}
             )
+            if "_welcome_state" not in chat_db_context_data:
+                chat_db_context_data["_welcome_state"] = {}
 
         # Establecer el estado para esperar una selección del menú principal en el próximo turno.
         contexto_municipio_actual["estado_conversacion"] = (

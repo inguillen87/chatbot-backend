@@ -1,13 +1,14 @@
 import json
 import logging
 import re
-from typing import Dict, List, Any, Optional # Added Optional
+from typing import Dict, List, Any, Optional  # Added Optional
 from utils.validators import (
     extract_email,
     extract_phone,
     extract_name,
     extract_address,
     extract_dni,
+    normalize_phone,
     validate_name,
 )
 from google.cloud import documentai
@@ -129,6 +130,43 @@ _FILLER_START_WORDS = {
     "necesito",
 }
 
+_DESCRIPTION_SKIP_WORDS = _FILLER_START_WORDS | {
+    "hacer",
+    "reclamo",
+    "reclamos",
+    "consulta",
+    "consultar",
+    "consultas",
+    "pregunta",
+    "pregunto",
+    "quiero",
+    "queremos",
+    "quisieramos",
+    "quisiéramos",
+    "solicito",
+    "solicitamos",
+    "presento",
+    "presentar",
+    "aviso",
+    "avisar",
+    "tengo",
+    "tenemos",
+    "hay",
+    "soy",
+    "somos",
+}
+
+_SUMMARY_LEADING_SKIP = _DESCRIPTION_SKIP_WORDS | {
+    "favor",
+    "un",
+    "una",
+    "por",
+}
+
+_PHONE_KEYWORD_PATTERN = re.compile(
+    r"(tel[eé]fono|celular|whatsapp|contacto|llam[aé]me|llamar)", re.IGNORECASE
+)
+
 _ADDRESS_FORBIDDEN_WORDS = {
     "documento",
     "dni",
@@ -188,6 +226,23 @@ _ADDRESS_PATTERNS: List[str] = [
 ]
 
 
+def _strip_leading_filler_words(text: str) -> str:
+    """Trim leading filler words and punctuation from a sentence."""
+
+    if not text:
+        return ""
+
+    tokens = text.strip().split()
+    idx = 0
+    while idx < len(tokens):
+        token = re.sub(r"^[^A-Za-zÁÉÍÓÚÑáéíóúñ0-9']+|[^A-Za-zÁÉÍÓÚÑáéíóúñ0-9']+$", "", tokens[idx])
+        if token.lower() not in _SUMMARY_LEADING_SKIP:
+            break
+        idx += 1
+
+    return " ".join(tokens[idx:]).strip(" ,.;:-")
+
+
 def _ensure_string(value: Any) -> Optional[str]:
     """Return the first non-empty string representation for a value."""
 
@@ -233,6 +288,13 @@ def _normalize_address_candidate(value: Any) -> str:
         flags=re.IGNORECASE,
     )
     candidate = re.sub(
+        r".*?(?:vivo|estoy|queda|quedo|quedamos|nos\s+ubicamos|se\s+ubica|ubicado|ubicada|ubicados|ubicadas)\s+en\s+",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+        count=1,
+    )
+    candidate = re.sub(
         r"^(?:en\s+la\s+esquina\s+de)\s+",
         "",
         candidate,
@@ -250,6 +312,9 @@ def _normalize_address_candidate(value: Any) -> str:
         candidate,
         flags=re.IGNORECASE,
     )
+    candidate = re.sub(r"\b(?:hay|tengo|tenemos)\b.*", "", candidate, flags=re.IGNORECASE)
+    candidate = re.sub(r"\bque\s+(?:no|est[aá]|se)\b.*", "", candidate, flags=re.IGNORECASE)
+    candidate = re.sub(r"\b(esquina\s+)+", "esquina ", candidate, flags=re.IGNORECASE)
     candidate = re.sub(r"\s+", " ", candidate)
     candidate = candidate.strip(" ,.;:-")
     return candidate
@@ -278,30 +343,54 @@ def _looks_like_address_fragment(value: Any) -> bool:
     return has_number or has_hint or has_intersection
 
 
+def _score_address_candidate(candidate: str) -> tuple[int, int, int]:
+    """Return a score tuple to sort address candidates by relevance."""
+
+    lowered = candidate.lower()
+    has_number = bool(re.search(r"\d{1,6}", candidate))
+    has_intersection = "esquina" in lowered or bool(
+        re.search(r"\b(?:y|e)\b", lowered)
+    )
+    starts_with_preposition = lowered.startswith("en ") or lowered.startswith("sobre ")
+
+    tokens = re.findall(r"[A-Za-zÁÉÍÓÚÑáéíóúñ0-9]+", candidate)
+    short_tokens = sum(1 for token in tokens if token.isalpha() and len(token) <= 2)
+
+    score = 0
+    if has_number:
+        score += 2
+    if has_intersection:
+        score += 1
+    if not starts_with_preposition:
+        score += 1
+
+    return score, -short_tokens, len(candidate)
+
+
 def _extract_address_candidates(text: str) -> List[str]:
     """Return a list of possible addresses detected in free text."""
 
     if not text:
         return []
 
-    candidates: List[str] = []
+    candidates: List[tuple[tuple[int, int, int], str]] = []
     for pattern in _ADDRESS_PATTERNS:
         for match in re.finditer(pattern, text, re.IGNORECASE):
             # Patterns may have capturing groups; use the first one when available.
             candidate = match.group(1) if match.groups() else match.group(0)
             candidate = _normalize_address_candidate(candidate)
             if _looks_like_address_fragment(candidate):
-                candidates.append(candidate)
+                candidates.append((_score_address_candidate(candidate), candidate))
 
     fallback = extract_address(text)
     if fallback:
         fallback = _normalize_address_candidate(fallback)
         if _looks_like_address_fragment(fallback):
-            candidates.append(fallback)
+            candidates.append((_score_address_candidate(fallback), fallback))
 
     unique_candidates: List[str] = []
     seen = set()
-    for candidate in candidates:
+    for _score, candidate in sorted(candidates, key=lambda item: item[0], reverse=True):
         key = candidate.lower()
         if key not in seen:
             seen.add(key)
@@ -315,11 +404,100 @@ def _extract_phone_candidate(value: Any, region: str = "AR") -> Optional[str]:
 
     candidate = _ensure_string(value)
     if candidate:
+        matches: List[tuple[tuple[bool, bool, int], str]] = []
+        for match in re.finditer(r"(\+?\d[\d\s.-]{7,18}\d)", candidate):
+            raw_value = match.group(1)
+            digits = re.sub(r"\D", "", raw_value)
+            if len(digits) < 8:
+                continue
+
+            surrounding = candidate[max(0, match.start() - 25) : match.end() + 5]
+            if re.search(r"\b(dni|documento|ticket|tramite|trámite)\b", surrounding, re.IGNORECASE):
+                continue
+
+            normalized = normalize_phone(raw_value, region=region)
+            if not normalized:
+                continue
+
+            has_keyword = bool(
+                _PHONE_KEYWORD_PATTERN.search(candidate[max(0, match.start() - 25) : match.start()])
+            )
+            is_long_number = len(digits) >= 10
+            if len(digits) < 9 and not has_keyword:
+                continue
+            matches.append(((has_keyword, is_long_number, len(digits)), normalized))
+
+        if matches:
+            matches.sort(key=lambda item: item[0], reverse=True)
+            return matches[0][1]
+
         phone = extract_phone(candidate, region=region)
         if phone:
             normalized, _raw = phone
-            return normalized
+            if normalized and len(re.sub(r"\D", "", normalized)) >= 9:
+                return normalized
     return None
+
+
+def _count_digits(value: Optional[str]) -> int:
+    """Return the count of numeric digits in the provided value."""
+
+    if not value:
+        return 0
+    return len(re.sub(r"\D", "", value))
+
+
+def _select_best_phone_candidate(candidates: List[tuple[Optional[str], bool]]) -> Optional[str]:
+    """Pick the most plausible phone number from candidate values."""
+
+    best_value: Optional[str] = None
+    best_score: tuple[int, int, int] = (-1, -1, -1)
+    for value, from_text in candidates:
+        if not value:
+            continue
+        digits_count = _count_digits(value)
+        if digits_count < 9:
+            continue
+        score = (
+            digits_count,
+            1 if from_text else 0,
+            1 if isinstance(value, str) and value.startswith("+") else 0,
+        )
+        if score > best_score:
+            best_score = score
+            best_value = value
+
+    return best_value
+
+
+def _select_best_address_candidate(
+    llm_address: Optional[str], heuristic_address: Optional[str]
+) -> Optional[str]:
+    """Choose the richer address candidate between LLM and heuristic outputs."""
+
+    normalized_llm = _normalize_address_candidate(llm_address) if llm_address else None
+    normalized_heuristic = (
+        _normalize_address_candidate(heuristic_address) if heuristic_address else None
+    )
+
+    def score(value: Optional[str]) -> tuple[int, int, int, int]:
+        if not value:
+            return (-1, -1, -1, -1)
+        digits = _count_digits(value)
+        lowered = value.lower()
+        has_intersection = 1 if ("esquina" in lowered or re.search(r"\b(?:y|e)\b", lowered)) else 0
+        tokens = re.findall(r"[A-Za-zÁÉÍÓÚÑáéíóúñ0-9]+", value)
+        short_tokens = sum(1 for token in tokens if token.isalpha() and len(token) <= 2)
+        return (digits, has_intersection, -short_tokens, len(value))
+
+    llm_score = score(normalized_llm)
+    heuristic_score = score(normalized_heuristic)
+
+    if heuristic_score > llm_score:
+        return normalized_heuristic
+    if normalized_llm:
+        return normalized_llm
+    return normalized_heuristic
 
 
 def _normalize_dni_value(value: Any) -> Optional[str]:
@@ -343,7 +521,29 @@ def _clean_description_text(text: str) -> str:
 
     cleaned = _CONTACT_CLAUSE_PATTERN.sub(" ", text)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-")
-    return cleaned or text.strip()
+    if not cleaned:
+        return ""
+
+    sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+    filtered_sentences: List[str] = []
+    for sentence in sentences:
+        normalized_sentence = sentence.strip(" ,.;:-")
+        normalized_sentence = _strip_leading_filler_words(normalized_sentence)
+        if not normalized_sentence:
+            continue
+        words = re.findall(r"[A-Za-zÁÉÍÓÚÑáéíóúñ']+", normalized_sentence.lower())
+        if not words:
+            continue
+        meaningful_words = [
+            word for word in words if len(word) > 2 and word not in _DESCRIPTION_SKIP_WORDS
+        ]
+        if not meaningful_words:
+            continue
+        filtered_sentences.append(normalized_sentence)
+
+    cleaned = " ".join(filtered_sentences).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned
 
 
 def _build_short_description(text: str, max_words: int = 5) -> Optional[str]:
@@ -359,7 +559,9 @@ def _build_short_description(text: str, max_words: int = 5) -> Optional[str]:
     summary_tokens: List[str] = []
     for token in tokens:
         lower = token.lower()
-        if not summary_tokens and lower in _FILLER_START_WORDS:
+        if not summary_tokens and lower in _SUMMARY_LEADING_SKIP:
+            continue
+        if lower in _FILLER_START_WORDS and not summary_tokens:
             continue
         summary_tokens.append(token)
         if len(summary_tokens) >= max_words:
@@ -621,11 +823,16 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
 
     if "telefono_cliente" in filtered_fields:
         llm_phone_raw = _ensure_string(extracted_data.get("telefono_cliente"))
-        normalized_phone = _extract_phone_candidate(llm_phone_raw)
-        if not normalized_phone:
-            normalized_phone = _extract_phone_candidate(normalized_text)
-        if normalized_phone:
-            extracted_data["telefono_cliente"] = normalized_phone
+        llm_phone = _extract_phone_candidate(llm_phone_raw)
+        text_phone = _extract_phone_candidate(normalized_text)
+        best_phone = _select_best_phone_candidate(
+            [
+                (llm_phone, False),
+                (text_phone, True),
+            ]
+        )
+        if best_phone:
+            extracted_data["telefono_cliente"] = best_phone
         elif llm_phone_raw:
             extracted_data["telefono_cliente"] = llm_phone_raw
         else:
@@ -637,10 +844,12 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
             llm_address = None
             extracted_data.pop("direccion_cliente", None)
         address_candidates = _extract_address_candidates(normalized_text)
-        if llm_address and _looks_like_address_fragment(llm_address):
-            extracted_data["direccion_cliente"] = _normalize_address_candidate(llm_address)
-        elif address_candidates:
-            extracted_data["direccion_cliente"] = address_candidates[0]
+        heuristic_address = address_candidates[0] if address_candidates else None
+        best_address = _select_best_address_candidate(llm_address, heuristic_address)
+        if best_address:
+            extracted_data["direccion_cliente"] = best_address
+        else:
+            extracted_data.pop("direccion_cliente", None)
 
     if "dni_cliente" in filtered_fields:
         llm_dni = _normalize_dni_value(extracted_data.get("dni_cliente"))
@@ -811,12 +1020,16 @@ def extract_complaint_details_llm(
             result["email_cliente"] = heuristic_email
 
     llm_phone_raw = _ensure_string(result.get("telefono_cliente"))
-    normalized_phone = _extract_phone_candidate(llm_phone_raw)
+    llm_phone = _extract_phone_candidate(llm_phone_raw)
     heuristic_phone = _extract_phone_candidate(normalized_text)
-    if heuristic_phone:
-        result["telefono_cliente"] = heuristic_phone
-    elif normalized_phone:
-        result["telefono_cliente"] = normalized_phone
+    best_phone = _select_best_phone_candidate(
+        [
+            (llm_phone, False),
+            (heuristic_phone, True),
+        ]
+    )
+    if best_phone:
+        result["telefono_cliente"] = best_phone
     elif llm_phone_raw:
         result["telefono_cliente"] = llm_phone_raw
     else:
@@ -840,28 +1053,45 @@ def extract_complaint_details_llm(
     address_candidates = _extract_address_candidates(normalized_text)
     heur_address: Optional[str] = None
     if address_candidates:
-        heur_address = address_candidates[0]
-        heur_address = _normalize_address_candidate(heur_address)
-        if (
-            default_localidad
-            and default_localidad != "N/A"
-            and default_localidad.lower() not in heur_address.lower()
-        ):
-            heur_address = f"{heur_address}, {default_localidad}"
-        if (
-            default_provincia
-            and default_provincia != "N/A"
-            and default_provincia.lower() not in heur_address.lower()
-        ):
-            heur_address = f"{heur_address}, {default_provincia}"
-        if not _looks_like_address_fragment(heur_address):
+        heur_address = _normalize_address_candidate(address_candidates[0])
+        if heur_address and _looks_like_address_fragment(heur_address):
+            if (
+                default_localidad
+                and default_localidad != "N/A"
+                and default_localidad.lower() not in heur_address.lower()
+            ):
+                heur_address = f"{heur_address}, {default_localidad}"
+            if (
+                default_provincia
+                and default_provincia != "N/A"
+                and default_provincia.lower() not in heur_address.lower()
+            ):
+                heur_address = f"{heur_address}, {default_provincia}"
+        else:
             heur_address = None
 
-    if heur_address:
-        if "ubicacion_problema" not in result:
-            result["ubicacion_problema"] = heur_address
-        elif not _looks_like_address_fragment(result.get("ubicacion_problema")):
-            result["ubicacion_problema"] = heur_address
+    if heur_address or result.get("ubicacion_problema"):
+        best_address = _select_best_address_candidate(
+            result.get("ubicacion_problema"), heur_address
+        )
+        if best_address:
+            enriched_address = best_address
+            if (
+                default_localidad
+                and default_localidad != "N/A"
+                and default_localidad.lower() not in enriched_address.lower()
+            ):
+                enriched_address = f"{enriched_address}, {default_localidad}"
+            if (
+                default_provincia
+                and default_provincia != "N/A"
+                and default_provincia.lower() not in enriched_address.lower()
+            ):
+                enriched_address = f"{enriched_address}, {default_provincia}"
+
+            result["ubicacion_problema"] = enriched_address
+        else:
+            result.pop("ubicacion_problema", None)
 
     description_candidate = _ensure_string(result.get("descripcion_problema")) or ""
     cleaned_description = _clean_description_text(description_candidate)
@@ -872,14 +1102,17 @@ def extract_complaint_details_llm(
     else:
         result.pop("descripcion_problema", None)
 
-    short_source = (
-        result.get("descripcion_corta")
-        or result.get("descripcion_problema")
-        or normalized_text
-    )
+    llm_short = _ensure_string(result.get("descripcion_corta"))
+    short_source = result.get("descripcion_problema") or normalized_text
     heuristic_short = _build_short_description(short_source)
     if heuristic_short:
         result["descripcion_corta"] = heuristic_short
+    elif llm_short:
+        rebuilt_short = _build_short_description(llm_short)
+        if rebuilt_short:
+            result["descripcion_corta"] = rebuilt_short
+        else:
+            result["descripcion_corta"] = llm_short
     else:
         result.pop("descripcion_corta", None)
 
