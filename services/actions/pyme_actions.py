@@ -12,7 +12,7 @@ from services.config_loader import cargar_configuracion_pyme
 from models import db
 import models
 from services.common_utils import parse_precio_flexible
-from socket_service import emit_ticket_update
+from socket_service import emit_new_ticket
 from routes.ticket import serialize_ticket_to_json
 from services.pyme_menu import get_pyme_menu_payload
 
@@ -370,7 +370,7 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
 
             try:
                 ticket_json = serialize_ticket_to_json(sala, "pyme")
-                emit_ticket_update(ticket_json)
+                emit_new_ticket(ticket_json)
             except Exception as e_notify:
                 logger.error(f"Error enviando notificación en tiempo real para ticket #{sala.nro_ticket}: {e_notify}", exc_info=True)
 
