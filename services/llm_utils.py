@@ -343,7 +343,7 @@ def _looks_like_address_fragment(value: Any) -> bool:
     return has_number or has_hint or has_intersection
 
 
-def _score_address_candidate(candidate: str) -> tuple[int, int]:
+def _score_address_candidate(candidate: str) -> tuple[int, int, int]:
     """Return a score tuple to sort address candidates by relevance."""
 
     lowered = candidate.lower()
@@ -353,6 +353,9 @@ def _score_address_candidate(candidate: str) -> tuple[int, int]:
     )
     starts_with_preposition = lowered.startswith("en ") or lowered.startswith("sobre ")
 
+    tokens = re.findall(r"[A-Za-zÁÉÍÓÚÑáéíóúñ0-9]+", candidate)
+    short_tokens = sum(1 for token in tokens if token.isalpha() and len(token) <= 2)
+
     score = 0
     if has_number:
         score += 2
@@ -361,7 +364,7 @@ def _score_address_candidate(candidate: str) -> tuple[int, int]:
     if not starts_with_preposition:
         score += 1
 
-    return score, len(candidate)
+    return score, -short_tokens, len(candidate)
 
 
 def _extract_address_candidates(text: str) -> List[str]:
@@ -370,7 +373,7 @@ def _extract_address_candidates(text: str) -> List[str]:
     if not text:
         return []
 
-    candidates: List[tuple[tuple[int, int], str]] = []
+    candidates: List[tuple[tuple[int, int, int], str]] = []
     for pattern in _ADDRESS_PATTERNS:
         for match in re.finditer(pattern, text, re.IGNORECASE):
             # Patterns may have capturing groups; use the first one when available.
@@ -477,13 +480,15 @@ def _select_best_address_candidate(
         _normalize_address_candidate(heuristic_address) if heuristic_address else None
     )
 
-    def score(value: Optional[str]) -> tuple[int, int, int]:
+    def score(value: Optional[str]) -> tuple[int, int, int, int]:
         if not value:
-            return (-1, -1, -1)
-        lowered = value.lower()
+            return (-1, -1, -1, -1)
         digits = _count_digits(value)
+        lowered = value.lower()
         has_intersection = 1 if ("esquina" in lowered or re.search(r"\b(?:y|e)\b", lowered)) else 0
-        return (digits, has_intersection, len(value))
+        tokens = re.findall(r"[A-Za-zÁÉÍÓÚÑáéíóúñ0-9]+", value)
+        short_tokens = sum(1 for token in tokens if token.isalpha() and len(token) <= 2)
+        return (digits, has_intersection, -short_tokens, len(value))
 
     llm_score = score(normalized_llm)
     heuristic_score = score(normalized_heuristic)
@@ -1070,7 +1075,21 @@ def extract_complaint_details_llm(
             result.get("ubicacion_problema"), heur_address
         )
         if best_address:
-            result["ubicacion_problema"] = best_address
+            enriched_address = best_address
+            if (
+                default_localidad
+                and default_localidad != "N/A"
+                and default_localidad.lower() not in enriched_address.lower()
+            ):
+                enriched_address = f"{enriched_address}, {default_localidad}"
+            if (
+                default_provincia
+                and default_provincia != "N/A"
+                and default_provincia.lower() not in enriched_address.lower()
+            ):
+                enriched_address = f"{enriched_address}, {default_provincia}"
+
+            result["ubicacion_problema"] = enriched_address
         else:
             result.pop("ubicacion_problema", None)
 
@@ -1083,14 +1102,17 @@ def extract_complaint_details_llm(
     else:
         result.pop("descripcion_problema", None)
 
-    short_source = (
-        result.get("descripcion_corta")
-        or result.get("descripcion_problema")
-        or normalized_text
-    )
+    llm_short = _ensure_string(result.get("descripcion_corta"))
+    short_source = result.get("descripcion_problema") or normalized_text
     heuristic_short = _build_short_description(short_source)
     if heuristic_short:
         result["descripcion_corta"] = heuristic_short
+    elif llm_short:
+        rebuilt_short = _build_short_description(llm_short)
+        if rebuilt_short:
+            result["descripcion_corta"] = rebuilt_short
+        else:
+            result["descripcion_corta"] = llm_short
     else:
         result.pop("descripcion_corta", None)
 
