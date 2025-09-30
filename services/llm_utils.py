@@ -8,6 +8,7 @@ from utils.validators import (
     extract_name,
     extract_address,
     extract_dni,
+    normalize_phone,
     validate_name,
 )
 from google.cloud import documentai
@@ -128,6 +129,43 @@ _FILLER_START_WORDS = {
     "quisiera",
     "necesito",
 }
+
+_DESCRIPTION_SKIP_WORDS = _FILLER_START_WORDS | {
+    "hacer",
+    "reclamo",
+    "reclamos",
+    "consulta",
+    "consultar",
+    "consultas",
+    "pregunta",
+    "pregunto",
+    "quiero",
+    "queremos",
+    "quisieramos",
+    "quisiéramos",
+    "solicito",
+    "solicitamos",
+    "presento",
+    "presentar",
+    "aviso",
+    "avisar",
+    "tengo",
+    "tenemos",
+    "hay",
+    "soy",
+    "somos",
+}
+
+_SUMMARY_LEADING_SKIP = _DESCRIPTION_SKIP_WORDS | {
+    "favor",
+    "un",
+    "una",
+    "por",
+}
+
+_PHONE_KEYWORD_PATTERN = re.compile(
+    r"(tel[eé]fono|celular|whatsapp|contacto|llam[aé]me|llamar)", re.IGNORECASE
+)
 
 _ADDRESS_FORBIDDEN_WORDS = {
     "documento",
@@ -278,30 +316,51 @@ def _looks_like_address_fragment(value: Any) -> bool:
     return has_number or has_hint or has_intersection
 
 
+def _score_address_candidate(candidate: str) -> tuple[int, int]:
+    """Return a score tuple to sort address candidates by relevance."""
+
+    lowered = candidate.lower()
+    has_number = bool(re.search(r"\d{1,6}", candidate))
+    has_intersection = "esquina" in lowered or bool(
+        re.search(r"\b(?:y|e)\b", lowered)
+    )
+    starts_with_preposition = lowered.startswith("en ") or lowered.startswith("sobre ")
+
+    score = 0
+    if has_number:
+        score += 2
+    if has_intersection:
+        score += 1
+    if not starts_with_preposition:
+        score += 1
+
+    return score, len(candidate)
+
+
 def _extract_address_candidates(text: str) -> List[str]:
     """Return a list of possible addresses detected in free text."""
 
     if not text:
         return []
 
-    candidates: List[str] = []
+    candidates: List[tuple[tuple[int, int], str]] = []
     for pattern in _ADDRESS_PATTERNS:
         for match in re.finditer(pattern, text, re.IGNORECASE):
             # Patterns may have capturing groups; use the first one when available.
             candidate = match.group(1) if match.groups() else match.group(0)
             candidate = _normalize_address_candidate(candidate)
             if _looks_like_address_fragment(candidate):
-                candidates.append(candidate)
+                candidates.append((_score_address_candidate(candidate), candidate))
 
     fallback = extract_address(text)
     if fallback:
         fallback = _normalize_address_candidate(fallback)
         if _looks_like_address_fragment(fallback):
-            candidates.append(fallback)
+            candidates.append((_score_address_candidate(fallback), fallback))
 
     unique_candidates: List[str] = []
     seen = set()
-    for candidate in candidates:
+    for _score, candidate in sorted(candidates, key=lambda item: item[0], reverse=True):
         key = candidate.lower()
         if key not in seen:
             seen.add(key)
@@ -315,10 +374,36 @@ def _extract_phone_candidate(value: Any, region: str = "AR") -> Optional[str]:
 
     candidate = _ensure_string(value)
     if candidate:
+        matches: List[tuple[tuple[bool, bool, int], str]] = []
+        for match in re.finditer(r"(\+?\d[\d\s.-]{7,18}\d)", candidate):
+            raw_value = match.group(1)
+            digits = re.sub(r"\D", "", raw_value)
+            if len(digits) < 8:
+                continue
+
+            surrounding = candidate[max(0, match.start() - 25) : match.end() + 5]
+            if re.search(r"\b(dni|documento|ticket|tramite|trámite)\b", surrounding, re.IGNORECASE):
+                continue
+
+            normalized = normalize_phone(raw_value, region=region)
+            if not normalized:
+                continue
+
+            has_keyword = bool(
+                _PHONE_KEYWORD_PATTERN.search(candidate[max(0, match.start() - 25) : match.start()])
+            )
+            is_long_number = len(digits) >= 10
+            matches.append(((has_keyword, is_long_number, len(digits)), normalized))
+
+        if matches:
+            matches.sort(key=lambda item: item[0], reverse=True)
+            return matches[0][1]
+
         phone = extract_phone(candidate, region=region)
         if phone:
             normalized, _raw = phone
-            return normalized
+            if normalized:
+                return normalized
     return None
 
 
@@ -343,7 +428,28 @@ def _clean_description_text(text: str) -> str:
 
     cleaned = _CONTACT_CLAUSE_PATTERN.sub(" ", text)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-")
-    return cleaned or text.strip()
+    if not cleaned:
+        return ""
+
+    sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+    filtered_sentences: List[str] = []
+    for sentence in sentences:
+        normalized_sentence = sentence.strip(" ,.;:-")
+        if not normalized_sentence:
+            continue
+        words = re.findall(r"[A-Za-zÁÉÍÓÚÑáéíóúñ']+", normalized_sentence.lower())
+        if not words:
+            continue
+        meaningful_words = [
+            word for word in words if len(word) > 2 and word not in _DESCRIPTION_SKIP_WORDS
+        ]
+        if not meaningful_words:
+            continue
+        filtered_sentences.append(normalized_sentence)
+
+    cleaned = " ".join(filtered_sentences).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned
 
 
 def _build_short_description(text: str, max_words: int = 5) -> Optional[str]:
@@ -359,7 +465,9 @@ def _build_short_description(text: str, max_words: int = 5) -> Optional[str]:
     summary_tokens: List[str] = []
     for token in tokens:
         lower = token.lower()
-        if not summary_tokens and lower in _FILLER_START_WORDS:
+        if not summary_tokens and lower in _SUMMARY_LEADING_SKIP:
+            continue
+        if lower in _FILLER_START_WORDS and not summary_tokens:
             continue
         summary_tokens.append(token)
         if len(summary_tokens) >= max_words:
