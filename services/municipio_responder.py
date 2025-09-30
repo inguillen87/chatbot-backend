@@ -440,6 +440,9 @@ class ReclamoFlowHandler:
         return self.ask_for_contact_details()
 
     def handle_direccion(self, user_input, payload):
+        # Clear previous map preview if present
+        self.flow_context['datos_reclamo'].pop('map_search_url', None)
+
         if not payload.get("es_ubicacion") and user_input:
             link_info = _detect_location_link_info(user_input)
             if link_info:
@@ -459,24 +462,98 @@ class ReclamoFlowHandler:
 
         if payload.get("es_ubicacion") and payload.get("ubicacion_usuario"):
             location_data = payload.get("ubicacion_usuario")
-            address = location_data.get("address")
-            if not address and location_data.get("latitude") and location_data.get("longitude"):
-                from .herramientas_municipio import obtener_direccion_de_coordenadas
-                direccion_info = obtener_direccion_de_coordenadas(
-                    location_data.get("latitude"),
-                    location_data.get("longitude"),
-                )
-                if direccion_info:
-                    address = direccion_info.get("formatted_address")
-            self.flow_context['datos_reclamo']['direccion'] = (
-                address
-                if address
-                else f"Lat: {location_data.get('latitude')}, Lon: {location_data.get('longitude')}"
+
+            lat_raw = (
+                location_data.get("latitude")
+                if location_data.get("latitude") is not None
+                else location_data.get("lat")
             )
+            lon_raw = (
+                location_data.get("longitude")
+                if location_data.get("longitude") is not None
+                else location_data.get("lon")
+            )
+
+            lat_value = lon_value = None
+            try:
+                if lat_raw is not None and lon_raw is not None:
+                    lat_value = float(lat_raw)
+                    lon_value = float(lon_raw)
+            except (TypeError, ValueError):
+                lat_value = lon_value = None
+
+            address = location_data.get("address")
+            direccion_info = None
+            if lat_value is not None and lon_value is not None:
+                from .herramientas_municipio import obtener_direccion_de_coordenadas
+
+                direccion_info = obtener_direccion_de_coordenadas(lat_value, lon_value)
+                if direccion_info and direccion_info.get("formatted_address"):
+                    address = direccion_info.get("formatted_address")
+
+                self.flow_context['datos_reclamo']['coordenadas'] = {
+                    "lat": lat_value,
+                    "lng": lon_value,
+                }
+
+                map_url = f"https://www.google.com/maps/search/?api=1&query={lat_value},{lon_value}"
+                self.flow_context['datos_reclamo']['map_search_url'] = map_url
+
+                if direccion_info:
+                    componentes = {
+                        key: direccion_info.get(key)
+                        for key in ("calle", "numero", "localidad", "provincia", "codigo_postal", "barrio")
+                        if direccion_info.get(key)
+                    }
+                    if componentes:
+                        self.flow_context['datos_reclamo']['direccion_componentes'] = componentes
+
+            if not address:
+                if lat_value is not None and lon_value is not None:
+                    address = f"Lat: {lat_value}, Lon: {lon_value}"
+                else:
+                    address = "Ubicación sin dirección disponible"
+
+            self.flow_context['datos_reclamo']['direccion'] = address
         elif len(user_input) < 5:
             return {"message_body": "La dirección parece muy corta. Por favor, ingresá una dirección más completa (calle y número)."}
         else:
-            self.flow_context['datos_reclamo']['direccion'] = user_input
+            direccion_ingresada = user_input.strip()
+            self.flow_context['datos_reclamo']['direccion'] = direccion_ingresada
+
+            try:
+                from services.address_normalizer import normalize_and_geocode
+
+                municipio_cfg = self.context.get("municipio_config_actual", {})
+                normalizado = normalize_and_geocode(direccion_ingresada, municipio_cfg)
+            except Exception:
+                normalizado = None
+
+            if isinstance(normalizado, dict):
+                formatted = normalizado.get("formatted") or normalizado.get("formatted_address")
+                if formatted:
+                    self.flow_context['datos_reclamo']['direccion'] = formatted
+
+                lat_norm = normalizado.get("lat")
+                lon_norm = normalizado.get("lon") or normalizado.get("lng")
+                try:
+                    if lat_norm is not None and lon_norm is not None:
+                        lat_val = float(lat_norm)
+                        lon_val = float(lon_norm)
+                        self.flow_context['datos_reclamo']['coordenadas'] = {
+                            "lat": lat_val,
+                            "lng": lon_val,
+                        }
+                        if normalizado.get("maps_search_url"):
+                            self.flow_context['datos_reclamo']['map_search_url'] = normalizado.get("maps_search_url")
+                        else:
+                            map_url = f"https://www.google.com/maps/search/?api=1&query={lat_val},{lon_val}"
+                            self.flow_context['datos_reclamo']['map_search_url'] = map_url
+                except (TypeError, ValueError):
+                    pass
+                else:
+                    if normalizado.get("maps_search_url"):
+                        self.flow_context['datos_reclamo']['map_search_url'] = normalizado.get("maps_search_url")
 
         # If a photo was already provided earlier in the flow or exists in the
         # context (e.g. the user started the claim by sending an image), skip
@@ -485,9 +562,12 @@ class ReclamoFlowHandler:
             self.flow_context['datos_reclamo'].setdefault('foto_url', self.context.get('foto_url'))
             return self.ask_for_contact_details()
 
+        map_url_preview = self.flow_context['datos_reclamo'].get('map_search_url')
+        map_prompt = f"¿Es acá? {map_url_preview}\n\n" if map_url_preview else ""
+
         self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
         return {
-            "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
+            "message_body": f"{map_prompt}¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
             "options_list": [
                 {"texto": "Sí, agregar foto", "action_id": "reclamo_adjuntar_foto_si"},
                 {"texto": "No, omitir foto", "action_id": "reclamo_adjuntar_foto_no"},
@@ -685,6 +765,7 @@ class ReclamoFlowHandler:
                 "categoria": datos.get("categoria"),
                 "descripcion": datos.get("descripcion"),
                 "ubicacion": datos.get("direccion"),
+                "coordenadas": datos.get("coordenadas"),
                 "usuario": datos.get("nombre"),
                 "dni": datos.get("dni"),
                 "email": datos.get("email"),
@@ -2118,6 +2199,14 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     lon = context["ubicacion_usuario"].get("longitude")
                     address = context["ubicacion_usuario"].get("address")
                     valor_a_guardar = address if address else f"Lat: {lat}, Lon: {lon}"
+                    try:
+                        if lat is not None and lon is not None:
+                            datos_parciales["coordenadas"] = {
+                                "lat": float(lat),
+                                "lng": float(lon),
+                            }
+                    except (TypeError, ValueError):
+                        pass
                 else:
                     valor_a_guardar = pregunta_str
             else:
