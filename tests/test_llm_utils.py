@@ -361,5 +361,58 @@ class TestLLMUtils(unittest.TestCase):
         self.assertIn("don bosco 55", result.get("direccion_cliente", "").lower())
         self.assertNotIn("email_cliente", result)
 
+    @patch('services.llm_utils.robust_chat')
+    def test_extract_complaint_details_llm_prefers_valid_phone(self, mock_robust_chat):
+        mock_robust_chat.return_value = json.dumps({
+            "tipo_problema": "Luminaria",
+            "descripcion_problema": "tardes",
+            "telefono_cliente": "32877851",
+            "dni_cliente": "32 877 851",
+            "ubicacion_problema": "Don B esquina Sarmiento",
+        })
+
+        text = (
+            "Hola, buenas tardes. Sí, mirá, quería hacer un reclamo. Tengo un poste caído acá a mitad de cuadra en mi barrio. "
+            "Soy Marcelo Guillén, mi documento es 32 877 851. Mi dirección es en Don Bosco 55 esquina Sarmiento de Junín. "
+            "Mi número de celular es 2613168608."
+        )
+
+        result = extract_complaint_details_llm(text, default_localidad="Junín", default_provincia="Mendoza")
+
+        self.assertEqual(result.get("telefono_cliente"), "+5492613168608")
+        self.assertEqual(result.get("dni_cliente"), "32877851")
+        self.assertIn("don bosco 55", result.get("ubicacion_problema", "").lower())
+        self.assertIn("mendoza", result.get("ubicacion_problema", "").lower())
+        self.assertNotIn("tardes", result.get("descripcion_problema", "").lower())
+        self.assertIn("poste", result.get("descripcion_problema", "").lower())
+        self.assertNotEqual(result.get("descripcion_corta", "").lower(), "tardes")
+
+    @patch('services.llm_utils.robust_chat')
+    def test_extract_contact_details_llm_skips_dni_as_phone(self, mock_robust_chat):
+        mock_robust_chat.return_value = json.dumps({
+            "nombre_cliente": "Marcelo",
+            "telefono_cliente": "32877851",
+            "dni_cliente": "32877851",
+            "direccion_cliente": "Don B esquina Sarmiento"
+        })
+
+        text = (
+            "Hola, soy Marcelo Guillén. DNI 32 877 851. Vivo en Don Bosco 55 esquina Sarmiento de Junín. "
+            "Mi teléfono es 2613168608."
+        )
+        potential_fields = [
+            "nombre_cliente",
+            "telefono_cliente",
+            "direccion_cliente",
+            "dni_cliente",
+        ]
+
+        result = extract_multiple_contact_details_llm(text, potential_fields)
+
+        self.assertEqual(result.get("nombre_cliente"), "Marcelo Guillén")
+        self.assertEqual(result.get("dni_cliente"), "32877851")
+        self.assertEqual(result.get("telefono_cliente"), "+5492613168608")
+        self.assertIn("don bosco 55", result.get("direccion_cliente", "").lower())
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
