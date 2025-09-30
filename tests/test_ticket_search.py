@@ -17,18 +17,21 @@ class TicketSearchTests(unittest.TestCase):
         self.app_context.push()
         db.create_all()
 
-        self.admin = User(email='admin@test.com', name='Admin', rol='admin', municipio_id=5, tipo_chat='municipio')
+        self.admin = User(email='admin@test.com', name='Admin', rol='admin', tipo_chat='municipio')
         self.admin.set_password('password')
         self.neighbor = User(email='vecino@test.com', name='Juan Gomez')
         self.neighbor.set_password('password')
         db.session.add_all([self.admin, self.neighbor])
         db.session.commit()
 
+        self.admin.municipio_id = self.admin.id
+        db.session.commit()
+
         t1 = MunicipioTicket(id=1, nro_ticket='100', estado='nuevo', fecha=datetime.now(),
-                             categoria='luminaria rota', municipio_id=5, user_id=self.neighbor.id,
+                             categoria='luminaria rota', municipio_id=self.admin.id, user_id=self.neighbor.id,
                              nombre_vecino='Carlos Perez', dni_vecino='12345678')
         t2 = MunicipioTicket(id=2, nro_ticket='101', estado='resuelto', fecha=datetime.now(),
-                             categoria='bache', municipio_id=5, user_id=self.neighbor.id,
+                             categoria='bache', municipio_id=self.admin.id, user_id=self.neighbor.id,
                              nombre_vecino='Juan Gomez')
         db.session.add_all([t1, t2])
         db.session.commit()
@@ -81,13 +84,16 @@ class TicketSearchTests(unittest.TestCase):
         ticket = MunicipioTicket.query.get(1)
         data = serialize_ticket_to_json(ticket, 'municipio')
         self.assertEqual(data['dni'], '12345678')
+        self.assertEqual(data['tenant_type'], 'municipio')
+        self.assertEqual(data['municipio_id'], self.admin.id)
+        self.assertEqual(data['socket_room'], f'municipio_{self.admin.id}')
 
     def test_dynamic_keyword_cache(self):
         from services.herramientas_municipio import recargar_cache_keywords_para_tests
         from utils.ticket_utils import normalize_category
 
         nuevo = MunicipioTicket(id=3, nro_ticket='102', estado='nuevo', fecha=datetime.now(),
-                                 categoria='luminaria', municipio_id=5, user_id=self.neighbor.id,
+                                 categoria='luminaria', municipio_id=self.admin.id, user_id=self.neighbor.id,
                                  nombre_vecino='Ana Lopez', detalles='alumbrado publico apagado')
         db.session.add(nuevo)
         db.session.commit()
