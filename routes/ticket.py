@@ -153,6 +153,21 @@ def serialize_ticket_to_json(ticket, ticket_type):
     if dni_vecino == "No especificado" or not dni_vecino:
         dni_vecino = None
 
+    municipio_id = getattr(ticket, 'municipio_id', None) if ticket_type == 'municipio' else None
+    rubro_id = getattr(ticket, 'rubro_id', None) if ticket_type == 'pyme' else None
+
+    tenant_type = ticket_type
+    tenant_id = None
+    if ticket_type == 'municipio':
+        tenant_id = municipio_id or getattr(ticket, 'user_id', None)
+    elif ticket_type == 'pyme':
+        tenant_id = rubro_id or getattr(ticket, 'pyme_id', None) or getattr(ticket, 'user_id', None)
+
+    socket_room = None
+    if tenant_id:
+        room_prefix = 'municipio' if ticket_type == 'municipio' else 'pyme'
+        socket_room = f"{room_prefix}_{tenant_id}"
+
     serialized_data = {
         "id": ticket.id,
         "tipo": ticket_type,
@@ -180,7 +195,12 @@ def serialize_ticket_to_json(ticket, ticket_type):
             "direccion": user_data.get("direccion", "No especificada"),
             "email": user_data.get("email", "No especificado"),
             "telefono": user_data.get("telefono", "No especificado")
-        }
+        },
+        "municipio_id": municipio_id,
+        "rubro_id": rubro_id,
+        "tenant_type": tenant_type,
+        "tenant_id": tenant_id,
+        "socket_room": socket_room,
     }
     return serialized_data
 

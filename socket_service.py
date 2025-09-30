@@ -1,11 +1,12 @@
 from flask_socketio import SocketIO, join_room, emit
 from flask import current_app, request
 from config import ALLOWED_ORIGINS
-from models import User, db, TicketComentario
+from models import User, db, TicketComentario, MunicipioTicket, PymeTicket
 import jwt
 from services.ticket_service import servicio_tickets # Reutilizamos el servicio de tickets
 from services.tts_orchestrator import generar_audio
 from utils.response_utils import ensure_buttons_compatibility
+from typing import Any, Optional, Set
 
 socketio = SocketIO(
     cors_allowed_origins=ALLOWED_ORIGINS,
@@ -13,8 +14,103 @@ socketio = SocketIO(
     async_mode="eventlet"
 )
 
+
+def _get_owner_user(user: Optional[User]) -> Optional[User]:
+    if not user:
+        return None
+
+    empresa_id = getattr(user, "empresa_id", None)
+    if empresa_id:
+        owner = User.query.get(empresa_id)
+        if owner:
+            return owner
+
+    return user
+
+
+def _get_rooms_for_user(user: Optional[User]) -> list[str]:
+    rooms: Set[str] = set()
+    if not user:
+        return []
+
+    owner = _get_owner_user(user)
+
+    usuario_tipo = getattr(user, "tipo_chat", None)
+    owner_tipo = getattr(owner, "tipo_chat", None)
+
+    municipio_id = (
+        getattr(user, "municipio_id", None)
+        or getattr(owner, "municipio_id", None)
+    )
+    if not municipio_id and (owner_tipo == "municipio"):
+        municipio_id = getattr(owner, "id", None)
+    if (usuario_tipo == "municipio" or owner_tipo == "municipio") and municipio_id:
+        rooms.add(f"municipio_{municipio_id}")
+
+    rubro_id = getattr(user, "rubro_id", None) or getattr(owner, "rubro_id", None)
+    pyme_id = getattr(user, "pyme_id", None) or getattr(owner, "pyme_id", None)
+    if not pyme_id and owner_tipo == "pyme":
+        pyme_id = getattr(owner, "id", None)
+
+    if (usuario_tipo == "pyme" or owner_tipo == "pyme"):
+        if rubro_id:
+            rooms.add(f"pyme_{rubro_id}")
+        elif pyme_id:
+            rooms.add(f"pyme_{pyme_id}")
+
+    return list(rooms)
+
+
+def _resolve_ticket_room(payload: Any) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+
+    explicit_room = payload.get("socket_room")
+    if explicit_room:
+        return explicit_room
+
+    tenant_type = payload.get("tenant_type") or payload.get("tipo")
+    tenant_id = payload.get("tenant_id")
+
+    if tenant_type == "municipio":
+        municipio_id = payload.get("municipio_id") or tenant_id
+        if municipio_id:
+            return f"municipio_{municipio_id}"
+    elif tenant_type == "pyme":
+        rubro_id = payload.get("rubro_id")
+        if rubro_id:
+            return f"pyme_{rubro_id}"
+        fallback_id = tenant_id or payload.get("pyme_id")
+        if fallback_id:
+            return f"pyme_{fallback_id}"
+
+    ticket_id = payload.get("id") or payload.get("ticket_id")
+    if ticket_id and tenant_type in {"municipio", "pyme"}:
+        try:
+            if tenant_type == "municipio":
+                ticket_obj = db.session.get(MunicipioTicket, ticket_id)
+                municipio_id = getattr(ticket_obj, "municipio_id", None) if ticket_obj else None
+                if municipio_id:
+                    return f"municipio_{municipio_id}"
+            elif tenant_type == "pyme":
+                ticket_obj = db.session.get(PymeTicket, ticket_id)
+                rubro_id = getattr(ticket_obj, "rubro_id", None) if ticket_obj else None
+                if rubro_id:
+                    return f"pyme_{rubro_id}"
+        except Exception:
+            current_app.logger.exception(
+                "Error resolving socket room for ticket %s of type %s", ticket_id, tenant_type
+            )
+
+    return None
+
+
 def emit_ticket_update(data):
-    socketio.emit('ticket_update', data)
+    room = _resolve_ticket_room(data)
+    if room:
+        socketio.emit('ticket_update', data, room=room)
+    else:
+        socketio.emit('ticket_update', data)
 
 def send_welcome_message(sid, auth):
     """Sends a welcome message to a newly connected anonymous client."""
@@ -85,14 +181,60 @@ def on_connect(auth):
 
     if token:
         try:
-            jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
-            current_app.logger.info(f"Socket.IO token validated successfully for sid: {request.sid}")
+            payload = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
+            user_id = payload.get('user_id')
+            user = User.query.get(user_id) if user_id else None
+            if not user:
+                current_app.logger.warning(
+                    "Socket.IO connection rejected for sid %s due to unknown user in token.",
+                    request.sid,
+                )
+                return False
+
+            rooms = _get_rooms_for_user(user)
+            for room in rooms:
+                join_room(room)
+                current_app.logger.debug(
+                    "Socket.IO sid %s joined room %s for user %s", request.sid, room, user.id
+                )
+
+            current_app.logger.info(
+                "Socket.IO token validated successfully for sid: %s (rooms=%s)",
+                request.sid,
+                rooms,
+            )
         except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as e:
             current_app.logger.warning(f"Socket.IO connection rejected for sid {request.sid} due to invalid token: {e}")
             return False
     elif channel == 'web':
         # Defer the welcome message to a separate thread to not block the connection
         socketio.start_background_task(send_welcome_message, request.sid, auth)
+
+
+@socketio.on('subscribe_ticket_updates')
+def on_subscribe_ticket_updates(data):
+    token = (data or {}).get('token')
+    if not token:
+        emit('subscription_error', {'error': 'missing_token'})
+        return
+
+    try:
+        payload = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as exc:
+        current_app.logger.warning("Socket subscribe rejected for sid %s: %s", request.sid, exc)
+        emit('subscription_error', {'error': 'invalid_token'})
+        return
+
+    user_id = payload.get('user_id')
+    user = User.query.get(user_id) if user_id else None
+    if not user:
+        emit('subscription_error', {'error': 'unknown_user'})
+        return
+
+    rooms = _get_rooms_for_user(user)
+    for room in rooms:
+        join_room(room)
+    emit('subscribed_ticket_updates', {'rooms': rooms or []})
 
 @socketio.on('join')
 def on_join(data):
@@ -104,8 +246,6 @@ def on_join(data):
 def on_new_chat(data):
     room = data['room']
     socketio.emit('new_chat', data, room=room)
-
-from models import MunicipioTicket, PymeTicket
 
 @socketio.on('send_chat_message')
 def handle_send_chat_message(data):
