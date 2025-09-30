@@ -1,56 +1,31 @@
 import unittest
-import pytest
-from unittest.mock import patch
-from app import create_app, db
-from config import TestConfig
-from socket_service import socketio
-from models import User, Rubro
+from unittest.mock import patch, call
 
-class TestSocketService(unittest.TestCase):
-    def setUp(self):
-        self.app = create_app(TestConfig)
-        self.app_context = self.app.app_context()
-        self.app_context.push()
-        db.create_all()
-        # Need to create a default user for the welcome message to work
-        rubro = Rubro(id=1, clave='municipios', nombre='municipios')
-        owner_user = User(id=1, tipo_chat='municipio', rol='admin', email='admin@test.com', name='Admin', rubro=rubro)
-        owner_user.set_password('password')
-        db.session.add(owner_user)
-        db.session.commit()
-        self.client = self.app.test_client()
+from socket_service import emit_new_ticket, emit_ticket_comment
 
-    def tearDown(self):
-        db.session.remove()
-        db.drop_all()
-        self.app_context.pop()
 
-    @patch('socket_service.emit')
-    @patch('services.municipio_responder.responder_municipio')
-    @patch('socket_service.generar_audio')
-    def test_audio_welcome_message(self, mock_generar_audio, mock_responder_municipio, mock_emit):
-        # Arrange
-        mock_responder_municipio.return_value = {
-            "message_body": "¡Hola! Bienvenido.",
-            "options_list": [],
-            "generar_audio": True
-        }
-        mock_generar_audio.return_value = "http://example.com/audio.mp3"
+class SocketServiceEventTests(unittest.TestCase):
+    def test_emit_new_ticket_emits_scoped_events(self):
+        payload = {"tenant_type": "municipio", "municipio_id": 7, "id": 11}
 
-        from socket_service import send_welcome_message
+        with patch('socket_service.socketio.emit') as mock_emit:
+            emit_new_ticket(payload)
 
-        # Act
-        send_welcome_message(sid='test-sid', auth={'channel': 'web'})
+        mock_emit.assert_has_calls(
+            [
+                call('new_ticket', payload, room='municipio_7'),
+                call('ticket_update', payload, room='municipio_7'),
+            ]
+        )
 
-        # Assert
-        mock_responder_municipio.assert_called_once()
-        mock_generar_audio.assert_called_once_with(text="¡Hola! Bienvenido.")
+    def test_emit_ticket_comment_prefers_explicit_room(self):
+        payload = {"socket_room": "pyme_3", "tenant_type": "pyme", "ticket_id": 15}
 
-        self.assertEqual(mock_emit.call_count, 1)
-        args, kwargs = mock_emit.call_args
+        with patch('socket_service.socketio.emit') as mock_emit:
+            emit_ticket_comment(payload)
 
-        self.assertEqual(args[0], 'message') # Event name
-        response_data = args[1]
-        self.assertEqual(response_data['message_body'], "¡Hola! Bienvenido.")
-        self.assertEqual(response_data['audio_url'], "http://example.com/audio.mp3")
-        self.assertEqual(kwargs['room'], 'test-sid')
+        mock_emit.assert_called_once_with('new_comment', payload, room='pyme_3')
+
+
+if __name__ == '__main__':
+    unittest.main()

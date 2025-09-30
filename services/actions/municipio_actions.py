@@ -839,7 +839,7 @@ class ActivarPanicoActionHandler(BaseActionHandler):
             "data": {"alerta_status": "enviada"}
         }
 
-from socket_service import socketio, emit_ticket_update
+from socket_service import socketio, emit_new_ticket
 from routes.ticket import serialize_ticket_to_json
 
 class DerivarHumanoActionHandler(BaseActionHandler):
@@ -885,7 +885,7 @@ class DerivarHumanoActionHandler(BaseActionHandler):
 
             try:
                 ticket_json = serialize_ticket_to_json(sala_obj, ticket_type)
-                emit_ticket_update(ticket_json)
+                emit_new_ticket(ticket_json)
             except Exception as e_notify:
                 logger.error(f"Error enviando notificación en tiempo real para ticket #{sala_dict['nro_ticket']}: {e_notify}", exc_info=True)
 

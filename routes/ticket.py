@@ -3,7 +3,7 @@ import uuid
 import logging
 from werkzeug.utils import secure_filename
 from flask import Blueprint, request, jsonify, current_app, send_from_directory, render_template
-from socket_service import emit_ticket_update
+from socket_service import emit_ticket_update, emit_ticket_comment, emit_new_ticket
 from models import (
     MunicipioTicket,
     PymeTicket,
@@ -203,6 +203,35 @@ def serialize_ticket_to_json(ticket, ticket_type):
         "socket_room": socket_room,
     }
     return serialized_data
+
+
+def build_ticket_comment_payload(ticket, ticket_type, comment_obj, ticket_snapshot=None):
+    """Return a socket payload for comment broadcasts with consistent metadata."""
+    if ticket_snapshot is None:
+        ticket_snapshot = serialize_ticket_to_json(ticket, ticket_type)
+
+    comment_dict = comment_obj.to_dict() if hasattr(comment_obj, "to_dict") else comment_obj
+
+    payload = {
+        "ticket": ticket_snapshot,
+        "ticket_id": ticket.id,
+        "ticketId": ticket.id,
+        "nro_ticket": ticket_snapshot.get("nro_ticket"),
+        "tenant_type": ticket_snapshot.get("tenant_type"),
+        "tenant_id": ticket_snapshot.get("tenant_id"),
+        "municipio_id": ticket_snapshot.get("municipio_id"),
+        "rubro_id": ticket_snapshot.get("rubro_id"),
+        "socket_room": ticket_snapshot.get("socket_room"),
+        "estado": ticket_snapshot.get("estado"),
+        "tipo": ticket_type,
+        "comment": comment_dict,
+    }
+
+    if isinstance(comment_dict, dict):
+        payload["mensaje"] = comment_dict.get("comentario")
+        payload["actor"] = "agent" if comment_dict.get("es_admin") else "neighbor"
+
+    return payload
 
 
 def get_tickets_del_usuario_logic(current_user: User):
@@ -809,6 +838,22 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
         emit_ticket_update(ticket_json)
 
+        for comentario in comentarios_creados:
+            try:
+                comment_payload = build_ticket_comment_payload(
+                    ticket_obj,
+                    tipo,
+                    comentario,
+                    ticket_snapshot=ticket_json,
+                )
+                emit_ticket_comment(comment_payload)
+            except Exception as socket_exc:  # pragma: no cover - defensive log
+                current_app.logger.exception(
+                    "Error emitting comment event for ticket %s: %s",
+                    ticket_id,
+                    socket_exc,
+                )
+
 
     except Exception as e_notif:
         current_app.logger.error(f"Error durante el envío de notificaciones para respuesta de ticket {ticket_id}: {e_notif}", exc_info=True)
@@ -1200,6 +1245,22 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
             "comentario": nuevo_comentario.to_dict()
         }
         emit_ticket_update(data)
+
+        try:
+            ticket_snapshot = serialize_ticket_to_json(sala_de_chat, "municipio")
+            comment_payload = build_ticket_comment_payload(
+                sala_de_chat,
+                "municipio",
+                nuevo_comentario,
+                ticket_snapshot=ticket_snapshot,
+            )
+            emit_ticket_comment(comment_payload)
+        except Exception as socket_exc:  # pragma: no cover - defensive log
+            current_app.logger.exception(
+                "Error emitting citizen comment event for ticket %s: %s",
+                ticket_id,
+                socket_exc,
+            )
         return jsonify({"success": True, "mensaje_id": nuevo_comentario.id}), 201
 
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
@@ -1245,6 +1306,22 @@ def responder_cliente_a_chat(current_user: User, ticket_id: int):
             "nuevo_estado": sala_de_chat.estado
         }
         emit_ticket_update(data)
+
+        try:
+            ticket_snapshot = serialize_ticket_to_json(sala_de_chat, "pyme")
+            comment_payload = build_ticket_comment_payload(
+                sala_de_chat,
+                "pyme",
+                nuevo_comentario,
+                ticket_snapshot=ticket_snapshot,
+            )
+            emit_ticket_comment(comment_payload)
+        except Exception as socket_exc:  # pragma: no cover - defensive log
+            current_app.logger.exception(
+                "Error emitting pyme comment event for ticket %s: %s",
+                ticket_id,
+                socket_exc,
+            )
         return jsonify({"success": True, "mensaje_id": nuevo_comentario.id}), 201
 
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500

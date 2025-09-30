@@ -4,6 +4,8 @@ from typing import Dict, Any
 from .base_action_handler import BaseActionHandler
 from services.ticket_service import servicio_tickets
 from services.ticket_utils import formatear_ticket_respuesta
+from socket_service import emit_new_ticket
+from routes.ticket import serialize_ticket_to_json
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,17 @@ class DerivarHumanoAction(BaseActionHandler):
             sala = servicio_tickets.crear_nuevo_ticket(tipo_ticket=target_entity_type, ticket_data=ticket_data_cleaned)
             if not sala:
                 raise Exception("crear_nuevo_ticket devolvió None")
+
+            try:
+                ticket_json = serialize_ticket_to_json(sala, target_entity_type)
+                emit_new_ticket(ticket_json)
+            except Exception as e_notify:
+                logger.error(
+                    "Error enviando notificación en tiempo real para ticket #%s: %s",
+                    getattr(sala, 'nro_ticket', 'desconocido'),
+                    e_notify,
+                    exc_info=True,
+                )
 
             servicio_tickets.crear_comentario(
                 ticket_id=sala.id,
