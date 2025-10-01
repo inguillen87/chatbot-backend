@@ -738,7 +738,7 @@ def whatsapp_webhook():
                         template_state["disabled"] = True
                         safe_flag_modified(session_context_db_entry, "context_data")
 
-                if should_send_sticker:
+                if should_send_sticker and not is_override:
                     try:
                         twilio_client.messages.create(
                             from_=to_number_raw,
