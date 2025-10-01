@@ -3410,9 +3410,20 @@ def _parse_intersection_and_district(
     if "esquina" not in normalized:
         return None, {}
 
-    idx = normalized.find("esquina")
-    before = text[:idx].strip(" ,.-")
-    after = text[idx + len("esquina") :].strip(" ,.-")
+    before: str
+    after: str
+
+    split = re.split(r"(?i)\besquina\b", text, maxsplit=1)
+    if len(split) >= 2:
+        before = split[0].strip(" ,.-")
+        after = split[1].strip(" ,.-")
+    else:
+        idx = normalized.find("esquina")
+        before = text[:idx].strip(" ,.-")
+        after = text[idx + len("esquina") :].strip(" ,.-")
+
+    before = re.sub(r"(?i)\besquina\b\s*$", "", before).strip(" ,.-")
+    after = re.sub(r"(?i)^(?:esquina\s+)+", "", after).strip(" ,.-")
 
     street1 = None
     if before:
