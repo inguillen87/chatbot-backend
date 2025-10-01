@@ -2,10 +2,12 @@ import os
 import sys
 import types
 import importlib
+import tempfile
 import unittest
 from io import BytesIO
 from unittest.mock import patch
 from werkzeug.datastructures import FileStorage
+from flask import Flask
 
 
 class CloudinaryUploadTests(unittest.TestCase):
@@ -198,3 +200,19 @@ class CloudinaryUploadTests(unittest.TestCase):
         self.assertEqual(captured_config["api_secret"], "secret")
         self.assertIn("folder", gcs_service.CLOUDINARY_UPLOAD_OPTIONS)
         self.assertEqual(gcs_service.CLOUDINARY_UPLOAD_OPTIONS["folder"], "nested/path")
+
+    def test_local_upload_base_returns_static_when_symlink_fails(self):
+        import services.gcs_service as gcs_service
+
+        with tempfile.TemporaryDirectory() as tmp_root:
+            data_root = os.path.join(tmp_root, "data-volume")
+            default_dir = os.path.join(tmp_root, "static", "uploads")
+            app = Flask(__name__, root_path=tmp_root)
+
+            with patch.dict(os.environ, {"DATA_DIR": data_root}, clear=False):
+                with patch("os.symlink", side_effect=OSError("permission denied")):
+                    with app.app_context():
+                        resolved = gcs_service._resolve_local_upload_base()
+
+            self.assertEqual(resolved, default_dir)
+            self.assertTrue(os.path.isdir(default_dir))

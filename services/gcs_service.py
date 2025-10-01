@@ -133,7 +133,11 @@ def _resolve_local_upload_base() -> str:
         os.symlink(preferred_physical, default_serving_dir)
         return default_serving_dir
     except OSError:
-        return preferred_physical
+        try:
+            os.makedirs(default_serving_dir, exist_ok=True)
+        except OSError:
+            pass
+        return default_serving_dir
 
 
 def _get_request_base_url() -> str | None:
