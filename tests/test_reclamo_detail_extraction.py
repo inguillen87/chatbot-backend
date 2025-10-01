@@ -86,6 +86,30 @@ def test_intersection_and_district_parsing():
     assert details["distrito_dudoso"] == "Mendoza"
 
 
+def test_intersection_with_city_connector_preserves_locality_suffix():
+    details = extract_reclamo_details_from_text(
+        "Mi dirección es en Don Bosco 55 esquina Sarmiento de Junín",
+        ["Luminaria"],
+        default_localidad="Junín",
+        default_provincia="Buenos Aires",
+    )
+
+    assert details["direccion_sugerida"] == "Don Bosco 55 esquina Sarmiento de Junín"
+    assert details["direccion"] == "Don Bosco 55 esquina Sarmiento de Junín"
+    assert details.get("distrito_sugerido") == "Junín"
+
+
+def test_intersection_with_repeated_keyword_keeps_primary_street():
+    details = extract_reclamo_details_from_text(
+        "Mi dirección es en Don Bosco 55 esquina esquina Sarmiento de Junín",
+        ["Luminaria"],
+        default_localidad="Junín",
+    )
+
+    assert details["direccion_sugerida"] == "Don Bosco 55 esquina Sarmiento de Junín"
+    assert details["direccion"] == "Don Bosco 55 esquina Sarmiento de Junín"
+
+
 def test_detect_barrio_hint():
     details = extract_reclamo_details_from_text(
         "hay ramas caidas en barrio Jardín del centro",
