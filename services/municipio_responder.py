@@ -3456,10 +3456,14 @@ def _parse_intersection_and_district(
     tokens = street_candidate.split()
     normalized_tokens = [normalizar_texto(tok) for tok in tokens]
     split_idx: int | None = None
+    split_idx_reason: str | None = None
     keyword_tokens = set().union(*LOCATION_KEYWORD_TOKENS.values())
+    found_keyword_token = False
     for idx_token, normalized_token in enumerate(normalized_tokens):
         if normalized_token in keyword_tokens:
             split_idx = idx_token
+            split_idx_reason = "keyword"
+            found_keyword_token = True
             break
 
     if default_localidad:
@@ -3467,18 +3471,23 @@ def _parse_intersection_and_district(
         if pattern_tokens:
             match_idx = _find_subsequence(normalized_tokens, pattern_tokens)
             if match_idx is not None:
-                split_idx = match_idx if split_idx is None else min(split_idx, match_idx)
+                if split_idx is None or match_idx < split_idx:
+                    split_idx = match_idx
+                    split_idx_reason = "default_localidad"
 
     if default_provincia:
         pattern_tokens = normalizar_texto(default_provincia).split()
         if pattern_tokens:
             match_idx = _find_subsequence(normalized_tokens, pattern_tokens)
             if match_idx is not None:
-                split_idx = match_idx if split_idx is None else min(split_idx, match_idx)
+                if split_idx is None or match_idx < split_idx:
+                    split_idx = match_idx
+                    split_idx_reason = "default_provincia"
 
     if split_idx is not None:
         street_tokens = tokens[:split_idx]
         location_tokens = tokens[split_idx:]
+        raw_location_tokens = list(location_tokens)
 
         while (
             street_tokens
@@ -3491,7 +3500,42 @@ def _parse_intersection_and_district(
         street_candidate = _strip_leading_phrases(street_candidate)
         extra_location_text = " ".join(location_tokens).strip()
         if extra_location_text:
-            location_context = f"{extra_location_text} {location_context}".strip()
+            normalized_location_only = normalizar_texto(
+                " ".join(
+                    token
+                    for token in location_tokens
+                    if normalizar_texto(token) not in _ADDRESS_CONNECTOR_TOKENS
+                )
+            )
+            normalized_default_localidad = (
+                normalizar_texto(default_localidad) if default_localidad else ""
+            )
+            normalized_default_provincia = (
+                normalizar_texto(default_provincia) if default_provincia else ""
+            )
+
+            treat_as_street_extension = False
+            if not found_keyword_token and location_tokens:
+                if (
+                    split_idx_reason == "default_localidad"
+                    and normalized_location_only
+                    and normalized_location_only == normalized_default_localidad
+                ):
+                    treat_as_street_extension = True
+                elif (
+                    split_idx_reason == "default_provincia"
+                    and normalized_location_only
+                    and normalized_location_only == normalized_default_provincia
+                ):
+                    treat_as_street_extension = True
+
+            if treat_as_street_extension:
+                street_tokens = tokens[:split_idx] + raw_location_tokens
+                street_candidate = " ".join(street_tokens).strip()
+                street_candidate = _strip_leading_phrases(street_candidate)
+                extra_location_text = ""
+            else:
+                location_context = f"{extra_location_text} {location_context}".strip()
 
     street2 = street_candidate.strip() if street_candidate else None
     direccion = None
@@ -3510,10 +3554,9 @@ def _parse_intersection_and_district(
 
     if direccion:
         direccion = re.sub(
-            r"\b(esquina)\s+(esquina)\b",
-            r"\1",
+            r"(?i)\besquina(?:\s+esquina)+\b",
+            "esquina",
             direccion,
-            flags=re.IGNORECASE,
         )
 
     location_context = location_context.strip()

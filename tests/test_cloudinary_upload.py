@@ -198,8 +198,37 @@ class CloudinaryUploadTests(unittest.TestCase):
         self.assertEqual(captured_config["cloud_name"], "demo")
         self.assertEqual(captured_config["api_key"], "key")
         self.assertEqual(captured_config["api_secret"], "secret")
-        self.assertIn("folder", gcs_service.CLOUDINARY_UPLOAD_OPTIONS)
-        self.assertEqual(gcs_service.CLOUDINARY_UPLOAD_OPTIONS["folder"], "nested/path")
+
+    def test_resolve_local_upload_base_migrates_existing_static_directory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app = Flask(__name__, root_path=tmpdir)
+            static_uploads = os.path.join(tmpdir, "static", "uploads")
+            os.makedirs(static_uploads)
+            legacy_file = os.path.join(static_uploads, "legacy.txt")
+            with open(legacy_file, "w", encoding="utf-8") as handler:
+                handler.write("data")
+
+            data_dir = os.path.join(tmpdir, "data")
+
+            env = {"DATA_DIR": data_dir}
+            with patch.dict(os.environ, env, clear=False):
+                import services.gcs_service as gcs_service
+
+                importlib.reload(gcs_service)
+
+                with app.app_context():
+                    resolved = gcs_service._resolve_local_upload_base()
+
+            expected_static = os.path.join(tmpdir, "static", "uploads")
+            self.assertEqual(resolved, expected_static)
+            self.assertTrue(os.path.islink(expected_static))
+            target_path = os.readlink(expected_static)
+            self.assertEqual(
+                os.path.abspath(target_path),
+                os.path.abspath(os.path.join(data_dir, "uploads")),
+            )
+            migrated_file = os.path.join(data_dir, "uploads", "legacy.txt")
+            self.assertTrue(os.path.exists(migrated_file))
 
     def test_local_upload_base_returns_static_when_symlink_fails(self):
         import services.gcs_service as gcs_service

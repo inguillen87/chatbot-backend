@@ -3,6 +3,7 @@ import os
 import uuid
 import io
 import re
+import shutil
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, urljoin
 
@@ -124,10 +125,47 @@ def _resolve_local_upload_base() -> str:
                 os.unlink(default_serving_dir)
         elif os.path.exists(default_serving_dir):
             if os.path.isdir(default_serving_dir):
-                if not os.listdir(default_serving_dir):
+                existing_entries = os.listdir(default_serving_dir)
+                if not existing_entries:
                     os.rmdir(default_serving_dir)
                 else:
-                    return default_serving_dir
+                    migrated_any = False
+                    try:
+                        for entry in existing_entries:
+                            src_path = os.path.join(default_serving_dir, entry)
+                            dest_path = os.path.join(preferred_physical, entry)
+                            if os.path.exists(dest_path):
+                                base, ext = os.path.splitext(entry)
+                                suffix = 1
+                                candidate = (
+                                    f"{base}_{suffix}{ext}" if base else f"{entry}_{suffix}"
+                                )
+                                while os.path.exists(os.path.join(preferred_physical, candidate)):
+                                    suffix += 1
+                                    candidate = (
+                                        f"{base}_{suffix}{ext}" if base else f"{entry}_{suffix}"
+                                    )
+                                dest_path = os.path.join(preferred_physical, candidate)
+                            shutil.move(src_path, dest_path)
+                            migrated_any = True
+                    except Exception:
+                        logger.warning(
+                            "Failed to migrate existing uploads from '%s' to '%s'.",
+                            default_serving_dir,
+                            preferred_physical,
+                            exc_info=True,
+                        )
+                        return default_serving_dir
+                    try:
+                        os.rmdir(default_serving_dir)
+                    except OSError:
+                        pass
+                    if migrated_any:
+                        logger.info(
+                            "Migrated existing static uploads directory '%s' into persistent path '%s'.",
+                            default_serving_dir,
+                            preferred_physical,
+                        )
             else:
                 return default_serving_dir
         os.symlink(preferred_physical, default_serving_dir)

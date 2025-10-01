@@ -655,6 +655,7 @@ def whatsapp_webhook():
 
                 should_send_template = bool(template_sid) and not template_state.get("disabled", False)
                 should_send_sticker = bool(resolved_sticker_url) and not sticker_state.get("disabled", False)
+                sticker_metadata_allowed = True
                 template_variables_payload: Dict[str, str] = {"1": user_name or ""}
 
                 if client_user and getattr(client_user, "tipo_chat", None) == "pyme":
@@ -692,7 +693,13 @@ def whatsapp_webhook():
                         template_variables_payload = {}
 
                 if is_override:
+                    if should_send_sticker:
+                        current_app.logger.info(
+                            "[WELCOME] Sticker suppressed for %s due to override keyword.",
+                            from_number_cleaned,
+                        )
                     should_send_sticker = False
+                    sticker_metadata_allowed = False
 
                 last_sticker_ts = sticker_state.get("last_sent_ts")
                 if should_send_sticker and last_sticker_ts:
@@ -800,7 +807,7 @@ def whatsapp_webhook():
                         for url in [resolved_sticker_url, configured_sticker_url]
                         if url
                     ]
-                    if sticker_payload:
+                    if sticker_payload and sticker_metadata_allowed:
                         welcome_response_payload["_welcome_sticker_urls"] = sticker_payload
                     else:
                         welcome_response_payload.pop("_welcome_sticker_urls", None)
