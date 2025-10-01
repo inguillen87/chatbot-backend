@@ -78,6 +78,17 @@ LOCATION_KEYWORD_TOKENS = {
     "distrito": {"distrito", "zona", "localidad", "ciudad"},
 }
 
+_ADDRESS_CONNECTOR_TOKENS = {
+    "al",
+    "a",
+    "de",
+    "del",
+    "la",
+    "las",
+    "lo",
+    "los",
+}
+
 NAME_STOPWORDS = get_name_prefix_stopwords()
 
 PLACEHOLDER_NAMES = {"vecino", "vecina", "vecine", "vecino/a"}
@@ -2935,6 +2946,7 @@ def _strip_leading_phrases(text: str) -> str:
         r"^que\s+",
         r"^(?:ver|saber)\s+si\s+",
         r"^por\s+favor\s+",
+        r"^(?:mi|la)\s+direcci[óo]n\s+es\s+(?:en\s+)?",
     ]
 
     previous = None
@@ -3100,6 +3112,40 @@ def _looks_like_address(value: str | None) -> bool:
     return False
 
 
+def _address_candidate_score(value: str | None) -> tuple[int, int, int, int]:
+    if not value:
+        return (-1, -1, -1, -1)
+
+    candidate = str(value).strip()
+    if not candidate:
+        return (-1, -1, -1, -1)
+
+    digits = sum(ch.isdigit() for ch in candidate)
+    lowered = normalizar_texto(candidate)
+    has_intersection = 1 if ("esquina" in lowered or re.search(r"\b(?:y|e)\b", lowered)) else 0
+    tokens = re.findall(r"[A-Za-zÁÉÍÓÚÑáéíóúñ0-9]+", candidate)
+    long_tokens = sum(1 for token in tokens if len(token) > 2 or any(ch.isdigit() for ch in token))
+
+    return (digits, has_intersection, -len(candidate), long_tokens)
+
+
+def _should_update_address_candidate(current: str | None, candidate: str | None) -> bool:
+    if not candidate:
+        return False
+    if not current:
+        return True
+
+    normalized_current = str(current).strip()
+    normalized_candidate = str(candidate).strip()
+
+    if normalized_candidate.lower().startswith(normalized_current.lower()):
+        trailing = normalized_candidate[len(normalized_current) :].strip(" ,.-")
+        if trailing and not re.search(r"\d", trailing):
+            return False
+
+    return _address_candidate_score(normalized_candidate) > _address_candidate_score(normalized_current)
+
+
 def extract_reclamo_details_from_text(
     user_input: str,
     reclamo_options: list,
@@ -3192,7 +3238,13 @@ def extract_reclamo_details_from_text(
     }
     for source_key, target_key in contact_mapping.items():
         value = contact_details.get(source_key)
-        if value and target_key not in details:
+        if not value:
+            continue
+        if target_key == "direccion_sugerida":
+            existing_address = details.get(target_key)
+            if _should_update_address_candidate(existing_address, value):
+                details[target_key] = value
+        elif target_key not in details:
             details[target_key] = value
 
     direccion_candidate = details.get("direccion_sugerida")
@@ -3231,7 +3283,12 @@ def extract_reclamo_details_from_text(
             value = llm_details.get(llm_key)
             if not value:
                 continue
-            if target_key not in details or target_key in {"descripcion_sugerida", "direccion_sugerida"}:
+            if target_key == "direccion_sugerida":
+                existing = details.get(target_key)
+                if _should_update_address_candidate(existing, value):
+                    details[target_key] = value
+                continue
+            if target_key not in details or target_key == "descripcion_sugerida":
                 details[target_key] = value
 
     direccion_candidate = details.get("direccion_sugerida")
@@ -3369,6 +3426,9 @@ def _parse_intersection_and_district(
             else:
                 street1 = before
 
+    if street1:
+        street1 = _strip_leading_phrases(street1)
+
     if not after:
         direccion = street1.strip() if street1 else None
         return direccion, {}
@@ -3391,26 +3451,36 @@ def _parse_intersection_and_district(
             split_idx = idx_token
             break
 
-    if split_idx is None and default_localidad:
+    if default_localidad:
         pattern_tokens = normalizar_texto(default_localidad).split()
         if pattern_tokens:
             match_idx = _find_subsequence(normalized_tokens, pattern_tokens)
             if match_idx is not None:
-                split_idx = match_idx
+                split_idx = match_idx if split_idx is None else min(split_idx, match_idx)
 
-    if split_idx is None and default_provincia:
+    if default_provincia:
         pattern_tokens = normalizar_texto(default_provincia).split()
         if pattern_tokens:
             match_idx = _find_subsequence(normalized_tokens, pattern_tokens)
             if match_idx is not None:
-                split_idx = match_idx
+                split_idx = match_idx if split_idx is None else min(split_idx, match_idx)
 
     if split_idx is not None:
         street_tokens = tokens[:split_idx]
         location_tokens = tokens[split_idx:]
+
+        while (
+            street_tokens
+            and location_tokens
+            and normalizar_texto(street_tokens[-1]) in _ADDRESS_CONNECTOR_TOKENS
+        ):
+            location_tokens.insert(0, street_tokens.pop())
+
         street_candidate = " ".join(street_tokens).strip()
+        street_candidate = _strip_leading_phrases(street_candidate)
         extra_location_text = " ".join(location_tokens).strip()
-        location_context = f"{extra_location_text} {location_context}".strip()
+        if extra_location_text:
+            location_context = f"{extra_location_text} {location_context}".strip()
 
     street2 = street_candidate.strip() if street_candidate else None
     direccion = None
@@ -3420,6 +3490,20 @@ def _parse_intersection_and_district(
         direccion = street1.strip()
     elif street2:
         direccion = street2
+
+    if direccion and location_context:
+        lowered_direccion = direccion.lower()
+        lowered_context = location_context.lower()
+        if lowered_direccion.endswith(lowered_context):
+            direccion = direccion[: -len(location_context)].rstrip(" ,.-")
+
+    if direccion:
+        direccion = re.sub(
+            r"\b(esquina)\s+(esquina)\b",
+            r"\1",
+            direccion,
+            flags=re.IGNORECASE,
+        )
 
     location_context = location_context.strip()
     if location_context:

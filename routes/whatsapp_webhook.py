@@ -691,6 +691,9 @@ def whatsapp_webhook():
                     elif not should_send_template:
                         template_variables_payload = {}
 
+                if is_override:
+                    should_send_sticker = False
+
                 last_sticker_ts = sticker_state.get("last_sent_ts")
                 if should_send_sticker and last_sticker_ts:
                     if (now - last_sticker_ts) < max(0, sticker_cooldown):
