@@ -14,6 +14,16 @@ DESCRIPTIVE_TOKENS = VOCABULARY.descriptive_tokens
 IMPACT_TOKENS = VOCABULARY.impact_tokens
 IMPACT_KEYWORDS = VOCABULARY.impact_keywords
 IMPACT_SUBSTRINGS = VOCABULARY.impact_substrings
+GREETING_TOKEN_NORMS = {
+    "hola",
+    "buenas",
+    "buenos",
+    "buen",
+    "dias",
+    "dia",
+    "tardes",
+    "noches",
+}
 FILLER_PATTERNS = VOCABULARY.filler_patterns
 VERB_ENDINGS = VOCABULARY.verb_endings
 VERB_EXCEPTIONS = VOCABULARY.verb_exceptions
@@ -95,187 +105,252 @@ def construir_descripcion_breve(texto: str | None, max_chars: int = 80) -> str |
     if not texto:
         return texto
 
-    primera_frase = re.split(r"[\n!?\.]+", texto, maxsplit=1)[0].strip()
-    if not primera_frase:
-        primera_frase = texto
-
-    for pattern in FILLER_PATTERNS:
-        nueva = re.sub(pattern, "", primera_frase, flags=re.IGNORECASE).strip()
-        if nueva:
-            primera_frase = nueva
-
-    primera_frase = re.sub(r"^(?:y|e|pero|ademas|además)\s+", "", primera_frase, flags=re.IGNORECASE)
-
-    if len(primera_frase) <= max(max_chars - 40, 30):
-        return primera_frase.rstrip(".,; ")
-
-    primer_clausula = re.split(r",|;| - ", primera_frase, maxsplit=1)[0].strip()
-    if primer_clausula and len(primer_clausula) <= max(max_chars - 30, 30):
-        return primer_clausula.rstrip(".,; ")
-
-    esta_clause = None
-    me_clause_data: tuple[str, str] | None = None
-
-    match_esta = re.search(
-        r"est[áa]\s+([^,.\n]+?)(?:\s+me\b|[,.\n]|$)",
-        primera_frase,
-        flags=re.IGNORECASE,
-    )
-    if match_esta:
-        esta_clause = match_esta.group(1).strip()
-
-    match_me = re.search(
-        r"\bme\s+([a-záéíóúñ]+)\s+([^,.\n]+)",
-        primera_frase,
-        flags=re.IGNORECASE,
-    )
-    if match_me:
-        me_clause_data = (
-            match_me.group(1).strip(),
-            match_me.group(2).strip(),
+    def _clean_candidate(sentence: str) -> str:
+        candidate = sentence.strip()
+        if not candidate:
+            return ""
+        for pattern in FILLER_PATTERNS:
+            nueva = re.sub(pattern, "", candidate, flags=re.IGNORECASE).strip()
+            if nueva:
+                candidate = nueva
+        candidate = re.sub(
+            r"^(?:y|e|pero|ademas|además)\s+",
+            "",
+            candidate,
+            flags=re.IGNORECASE,
         )
+        return candidate.strip(" .,;\n")
 
-    tokens_matches = list(re.finditer(r"\b[\wÁÉÍÓÚáéíóúÜüÑñ]+\b", primera_frase))
-    if not tokens_matches:
-        truncado = primera_frase[:max_chars].rstrip(".,; ")
-        return truncado
+    def _summarize_phrase(phrase: str, max_chars: int) -> tuple[str | None, bool]:
+        if not phrase:
+            return None, False
 
-    issue_tokens: list[str] = []
-    issue_tokens_norm: list[str] = []
-    priority_issue_norms: list[str] = []
-    location_tokens: list[str] = []
-    location_tokens_norm: list[str] = []
+        esta_clause = None
+        me_clause_data: tuple[str, str] | None = None
 
-    for match in tokens_matches:
-        token_original = match.group()
-        token_norm = _normalize_token(token_original.lower())
-        if token_norm in STOPWORDS or token_norm.isdigit():
-            continue
-        if token_norm in issue_tokens_norm or token_norm in location_tokens_norm:
-            continue
-        if token_norm in LOCATION_TOKENS:
-            location_tokens.append(token_original)
-            location_tokens_norm.append(token_norm)
-        else:
-            issue_tokens.append(token_original)
-            issue_tokens_norm.append(token_norm)
-            if token_norm in PRIORITY_ISSUES:
-                priority_issue_norms.append(token_norm)
+        match_esta = re.search(
+            r"est[áa]\s+([^,.\n]+?)(?:\s+me\b|[,.\n]|$)",
+            phrase,
+            flags=re.IGNORECASE,
+        )
+        if match_esta:
+            esta_clause = match_esta.group(1).strip()
 
-    if issue_tokens:
-        filtered_issue_tokens: list[str] = []
-        filtered_issue_norms: list[str] = []
-        for token_original, token_norm in zip(issue_tokens, issue_tokens_norm):
-            if _looks_like_conjugated_verb(token_norm):
+        match_me = re.search(
+            r"\bme\s+([a-záéíóúñ]+)\s+([^,.\n]+)",
+            phrase,
+            flags=re.IGNORECASE,
+        )
+        if match_me:
+            me_clause_data = (
+                match_me.group(1).strip(),
+                match_me.group(2).strip(),
+            )
+
+        tokens_matches = list(re.finditer(r"\b[\wÁÉÍÓÚáéíóúÜüÑñ]+\b", phrase))
+        if not tokens_matches:
+            truncado = phrase[:max_chars].rstrip(".,; ")
+            return truncado, False
+
+        issue_tokens: list[str] = []
+        issue_tokens_norm: list[str] = []
+        priority_issue_norms: list[str] = []
+        location_tokens: list[str] = []
+        location_tokens_norm: list[str] = []
+
+        for index, match in enumerate(tokens_matches):
+            token_original = match.group()
+            token_norm = _normalize_token(token_original.lower())
+            if token_norm in STOPWORDS or token_norm.isdigit():
                 continue
-            filtered_issue_tokens.append(token_original)
-            filtered_issue_norms.append(token_norm)
-        if filtered_issue_tokens:
-            issue_tokens = filtered_issue_tokens
-            issue_tokens_norm = filtered_issue_norms
-
-    if not issue_tokens and location_tokens:
-        resumen = location_tokens[0].capitalize()
-        return resumen[:max_chars]
-
-    main_issue = None
-    if priority_issue_norms:
-        for norm in priority_issue_norms:
-            try:
-                idx = issue_tokens_norm.index(norm)
-                main_issue = issue_tokens[idx]
-                break
-            except ValueError:
+            if token_norm in issue_tokens_norm or token_norm in location_tokens_norm:
                 continue
-    if not main_issue and issue_tokens:
-        main_issue = issue_tokens[0]
+            if token_norm in LOCATION_TOKENS:
+                next_norm = None
+                if index + 1 < len(tokens_matches):
+                    next_token = tokens_matches[index + 1].group()
+                    next_norm = _normalize_token(next_token.lower())
+                if next_norm and (
+                    next_norm in DESCRIPTIVE_TOKENS
+                    or next_norm in IMPACT_TOKENS
+                    or any(next_norm.startswith(substr) for substr in IMPACT_SUBSTRINGS)
+                ):
+                    issue_tokens.append(token_original)
+                    issue_tokens_norm.append(token_norm)
+                    if token_norm in PRIORITY_ISSUES:
+                        priority_issue_norms.append(token_norm)
+                    continue
+                location_tokens.append(token_original)
+                location_tokens_norm.append(token_norm)
+            else:
+                issue_tokens.append(token_original)
+                issue_tokens_norm.append(token_norm)
+                if token_norm in PRIORITY_ISSUES:
+                    priority_issue_norms.append(token_norm)
 
-    if not main_issue:
-        truncado = primera_frase[:max_chars].rstrip(".,; ")
-        return truncado
+        if issue_tokens:
+            filtered_issue_tokens: list[str] = []
+            filtered_issue_norms: list[str] = []
+            for token_original, token_norm in zip(issue_tokens, issue_tokens_norm):
+                if _looks_like_conjugated_verb(token_norm):
+                    continue
+                filtered_issue_tokens.append(token_original)
+                filtered_issue_norms.append(token_norm)
+            if filtered_issue_tokens:
+                issue_tokens = filtered_issue_tokens
+                issue_tokens_norm = filtered_issue_norms
 
-    main_issue_norm = _normalize_token(main_issue.lower())
+        if issue_tokens and all(
+            norm in GREETING_TOKEN_NORMS for norm in issue_tokens_norm
+        ):
+            issue_tokens = []
+            issue_tokens_norm = []
 
-    secondary_issue = None
-    try:
-        main_issue_index = issue_tokens_norm.index(main_issue_norm)
-    except ValueError:
-        main_issue_index = -1
+        has_issue_tokens = bool(issue_tokens)
 
-    for idx, (token, norm) in enumerate(zip(issue_tokens, issue_tokens_norm)):
-        if norm == main_issue_norm:
-            continue
-        if (norm in DESCRIPTIVE_TOKENS or norm in IMPACT_TOKENS) and idx >= main_issue_index:
-            secondary_issue = token
-            break
+        if not has_issue_tokens and location_tokens:
+            resumen_loc = location_tokens[0].capitalize()
+            return resumen_loc[:max_chars], False
 
-    if not secondary_issue:
-        for token, norm in zip(issue_tokens, issue_tokens_norm):
+        main_issue = None
+        if priority_issue_norms:
+            for norm in priority_issue_norms:
+                try:
+                    idx = issue_tokens_norm.index(norm)
+                    main_issue = issue_tokens[idx]
+                    break
+                except ValueError:
+                    continue
+        if not main_issue and issue_tokens:
+            main_issue = issue_tokens[0]
+
+        if not main_issue:
+            truncado = phrase[:max_chars].rstrip(".,; ")
+            return truncado, False
+
+        main_issue_norm = _normalize_token(main_issue.lower())
+
+        secondary_issue = None
+        try:
+            main_issue_index = issue_tokens_norm.index(main_issue_norm)
+        except ValueError:
+            main_issue_index = -1
+
+        for idx, (token, norm) in enumerate(zip(issue_tokens, issue_tokens_norm)):
             if norm == main_issue_norm:
                 continue
-            if norm in DESCRIPTIVE_TOKENS or norm in IMPACT_TOKENS:
+            if (norm in DESCRIPTIVE_TOKENS or norm in IMPACT_TOKENS) and idx >= main_issue_index:
                 secondary_issue = token
                 break
 
-    if not secondary_issue:
-        for token, norm in zip(issue_tokens, issue_tokens_norm):
-            if norm == main_issue_norm:
-                continue
-            if any(norm.startswith(substr) for substr in IMPACT_SUBSTRINGS):
-                secondary_issue = token
-                break
+        if not secondary_issue:
+            for token, norm in zip(issue_tokens, issue_tokens_norm):
+                if norm == main_issue_norm:
+                    continue
+                if norm in DESCRIPTIVE_TOKENS or norm in IMPACT_TOKENS:
+                    secondary_issue = token
+                    break
 
-    main_location = None
-    for preferred in LOCATION_PRIORITY_ORDER:
-        for token, norm in zip(location_tokens, location_tokens_norm):
-            if norm == preferred:
-                main_location = token
+        if not secondary_issue:
+            for token, norm in zip(issue_tokens, issue_tokens_norm):
+                if norm == main_issue_norm:
+                    continue
+                if any(norm.startswith(substr) for substr in IMPACT_SUBSTRINGS):
+                    secondary_issue = token
+                    break
+
+        main_location = None
+        for preferred in LOCATION_PRIORITY_ORDER:
+            for token, norm in zip(location_tokens, location_tokens_norm):
+                if norm == preferred:
+                    main_location = token
+                    break
+            if main_location:
                 break
+        if not main_location and location_tokens:
+            main_location = location_tokens[0]
+
+        partes = [main_issue.capitalize()]
+        if secondary_issue and _normalize_token(secondary_issue.lower()) != main_issue_norm:
+            partes.append(secondary_issue.lower())
+
+        resumen = " ".join(partes)
         if main_location:
-            break
-    if not main_location and location_tokens:
-        main_location = location_tokens[0]
+            resumen += f" en {main_location}"
 
-    partes = [main_issue.capitalize()]
-    if secondary_issue and _normalize_token(secondary_issue.lower()) != main_issue_norm:
-        partes.append(secondary_issue.lower())
+        effect_texts: list[str] = []
+        cleaned_esta = _clean_clause_text(esta_clause)
+        if cleaned_esta:
+            effect_texts.append(cleaned_esta.lower())
+        if me_clause_data and main_issue:
+            verb_raw, complement_raw = me_clause_data
+            me_clause_text = _build_me_clause(
+                verb_raw,
+                complement_raw,
+                main_issue,
+                max_chars - len(main_issue) - 5,
+            )
+            if me_clause_text:
+                effect_texts.append(me_clause_text)
 
-    resumen = " ".join(partes)
-    if main_location:
-        resumen += f" en {main_location}"
+        if effect_texts:
+            effect_summary = effect_texts[0]
+            for extra in effect_texts[1:]:
+                if extra:
+                    effect_summary += f" y {extra}"
+            candidate = f"{main_issue.capitalize()} {effect_summary}".strip()
+            if main_location and main_location.lower() not in candidate.lower():
+                candidate = f"{candidate} en {main_location}".strip()
+            if len(candidate) > max_chars:
+                candidate = candidate[:max_chars].rstrip(".,; ")
+            if candidate and (len(resumen.split()) <= 3 or len(candidate) > len(resumen)):
+                resumen = candidate
 
-    effect_texts: list[str] = []
-    cleaned_esta = _clean_clause_text(esta_clause)
-    if cleaned_esta:
-        effect_texts.append(cleaned_esta.lower())
-    if me_clause_data and main_issue:
-        verb_raw, complement_raw = me_clause_data
-        me_clause_text = _build_me_clause(
-            verb_raw,
-            complement_raw,
-            main_issue,
-            max_chars - len(main_issue) - 5,
+        if len(resumen) > max_chars:
+            resumen = resumen[:max_chars].rstrip(".,; ")
+
+        resumen_clean = resumen.rstrip(".,; ")
+        meaningful_issue = has_issue_tokens and (
+            len(resumen_clean.split()) >= 2
+            or any(
+                norm in PRIORITY_ISSUES
+                or norm in DESCRIPTIVE_TOKENS
+                or norm in IMPACT_TOKENS
+                for norm in issue_tokens_norm
+            )
         )
-        if me_clause_text:
-            effect_texts.append(me_clause_text)
 
-    if effect_texts:
-        effect_summary = effect_texts[0]
-        for extra in effect_texts[1:]:
-            if extra:
-                effect_summary += f" y {extra}"
-        candidate = f"{main_issue.capitalize()} {effect_summary}".strip()
-        if main_location and main_location.lower() not in candidate.lower():
-            candidate = f"{candidate} en {main_location}".strip()
-        if len(candidate) > max_chars:
-            candidate = candidate[:max_chars].rstrip(".,; ")
-        if candidate and (len(resumen.split()) <= 3 or len(candidate) > len(resumen)):
-            resumen = candidate
+        return resumen_clean, meaningful_issue
 
-    if len(resumen) > max_chars:
-        resumen = resumen[:max_chars].rstrip(".,; ")
+    raw_sentences = re.split(r"[\n!?\.]+", texto)
+    candidate_phrases: list[str] = []
+    for sentence in raw_sentences:
+        cleaned_sentence = _clean_candidate(sentence)
+        if cleaned_sentence:
+            candidate_phrases.append(cleaned_sentence)
 
-    return resumen
+    if not candidate_phrases:
+        cleaned_text = _clean_candidate(texto)
+        candidate_phrases = [cleaned_text or texto]
+
+    fallback_summary: str | None = None
+    for phrase in candidate_phrases:
+        resumen, has_issue = _summarize_phrase(phrase, max_chars)
+        if not resumen:
+            continue
+        if not fallback_summary:
+            fallback_summary = resumen.rstrip(".,; ")
+        if has_issue and resumen.strip():
+            return resumen.rstrip(".,; ")
+
+    if fallback_summary:
+        return fallback_summary.rstrip(".,; ")
+
+    resumen_total, _ = _summarize_phrase(texto, max_chars)
+    if resumen_total:
+        return resumen_total.rstrip(".,; ")
+
+    return texto[:max_chars].rstrip(".,; ")
 
 def _remove_redundant_urls_from_message(message_body, options_list):
     """

@@ -107,6 +107,20 @@ class TestNewFeatures(unittest.TestCase):
             msg=f"Resumen poco descriptivo: {resumen}",
         )
 
+    def test_construir_descripcion_breve_descarta_saludo_inicial(self):
+        texto = (
+            "Hola, buenas tardes. Sí, mirá, quería hacer un reclamo. "
+            "Tengo un poste caído acá a mitad de cuadra en mi barrio. "
+            "Mi dirección es en Don Bosco 55 esquina Sarmiento de Junín."
+        )
+        resumen = construir_descripcion_breve(texto)
+
+        self.assertIn("Poste", resumen)
+        self.assertTrue(
+            "caido" in resumen.lower() or "caído" in resumen.lower(),
+            msg=f"Resumen debería incluir el problema detectado: {resumen}",
+        )
+
     def test_remove_redundant_footer_links(self):
         message = (
             "🔗 *Seguimiento:*\n"
