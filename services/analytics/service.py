@@ -590,16 +590,34 @@ def _generate_geo_from_tickets(tickets: Sequence, filters: AnalyticsFilters) -> 
     cells: Dict[str, Dict[str, Any]] = {}
 
     if hasattr(h3, "geo_to_h3"):
-        to_cell = h3.geo_to_h3
+        geo_to_h3 = h3.geo_to_h3  # type: ignore[attr-defined]
+
+        def to_cell(lat: float, lon: float, res: int):
+            return geo_to_h3(lat, lon, res)
+
     elif hasattr(h3, "latlng_to_cell"):
-        to_cell = h3.latlng_to_cell
+        latlng_to_cell = h3.latlng_to_cell  # type: ignore[attr-defined]
+
+        def to_cell(lat: float, lon: float, res: int):
+            """Handle both legacy (lat, lon, res) and v4 ((lat, lon), res) signatures."""
+            try:
+                return latlng_to_cell(lat, lon, res)
+            except TypeError:
+                return latlng_to_cell((lat, lon), res)
     else:  # pragma: no cover - unexpected API change
         raise AttributeError("h3 library does not expose geo_to_h3 or latlng_to_cell")
 
     if hasattr(h3, "h3_to_geo"):
-        to_latlng = h3.h3_to_geo
+        h3_to_geo = h3.h3_to_geo  # type: ignore[attr-defined]
+
+        def to_latlng(cell_id: str):
+            return h3_to_geo(cell_id)
+
     elif hasattr(h3, "cell_to_latlng"):
-        to_latlng = h3.cell_to_latlng
+        cell_to_latlng = h3.cell_to_latlng  # type: ignore[attr-defined]
+
+        def to_latlng(cell_id: str):
+            return cell_to_latlng(cell_id)
     else:  # pragma: no cover - unexpected API change
         raise AttributeError("h3 library does not expose h3_to_geo or cell_to_latlng")
 
