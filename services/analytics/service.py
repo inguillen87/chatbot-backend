@@ -564,7 +564,13 @@ def _generate_geo_from_tickets(tickets: Sequence, filters: AnalyticsFilters) -> 
             cell_id = f"fallback_{lat}_{lon}"
             cell = cells.setdefault(
                 cell_id,
-                {"cell_id": cell_id, "count": 0, "categories": defaultdict(int), "centroid_lat": lat, "centroid_lon": lon},
+                {
+                    "cell_id": cell_id,
+                    "count": 0,
+                    "categories": defaultdict(int),
+                    "centroid_lat": lat,
+                    "centroid_lon": lon,
+                },
             )
             cell["count"] += 1
             categoria = getattr(ticket, "categoria", None) or "sin_dato"
@@ -582,10 +588,25 @@ def _generate_geo_from_tickets(tickets: Sequence, filters: AnalyticsFilters) -> 
 
     resolution = filters.resolution
     cells: Dict[str, Dict[str, Any]] = {}
+
+    if hasattr(h3, "geo_to_h3"):
+        to_cell = h3.geo_to_h3
+    elif hasattr(h3, "latlng_to_cell"):
+        to_cell = h3.latlng_to_cell
+    else:  # pragma: no cover - unexpected API change
+        raise AttributeError("h3 library does not expose geo_to_h3 or latlng_to_cell")
+
+    if hasattr(h3, "h3_to_geo"):
+        to_latlng = h3.h3_to_geo
+    elif hasattr(h3, "cell_to_latlng"):
+        to_latlng = h3.cell_to_latlng
+    else:  # pragma: no cover - unexpected API change
+        raise AttributeError("h3 library does not expose h3_to_geo or cell_to_latlng")
+
     for ticket in tickets:
         if ticket.latitud is None or ticket.longitud is None:
             continue
-        cell_id = h3.geo_to_h3(ticket.latitud, ticket.longitud, resolution)
+        cell_id = to_cell(ticket.latitud, ticket.longitud, resolution)
         cell = cells.setdefault(
             cell_id,
             {"cell_id": cell_id, "count": 0, "categories": defaultdict(int)},
@@ -595,7 +616,7 @@ def _generate_geo_from_tickets(tickets: Sequence, filters: AnalyticsFilters) -> 
         cell["categories"][categoria] += 1
     results = []
     for cell_id, data in cells.items():
-        lat, lon = h3.h3_to_geo(cell_id)
+        lat, lon = to_latlng(cell_id)
         results.append(
             {
                 "cell_id": cell_id,
