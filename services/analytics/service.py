@@ -598,12 +598,57 @@ def _generate_geo_from_tickets(tickets: Sequence, filters: AnalyticsFilters) -> 
     elif hasattr(h3, "latlng_to_cell"):
         latlng_to_cell = h3.latlng_to_cell  # type: ignore[attr-defined]
 
+        def _try_call(options, lat: float, lon: float, res: int):
+            last_error: TypeError | None = None
+            for candidate in options:
+                try:
+                    return candidate(lat, lon, res)
+                except TypeError as exc:
+                    last_error = exc
+                    continue
+            if last_error is not None:
+                raise TypeError("Unsupported h3.latlng_to_cell signature") from last_error
+            raise AttributeError("No callable options supplied for h3.latlng_to_cell")
+
+        call_options = [
+            lambda lat, lon, res: latlng_to_cell(lat, lon, res),
+            lambda lat, lon, res: latlng_to_cell((lat, lon), res),
+        ]
+
+        if hasattr(h3, "LatLng"):
+            LatLng = h3.LatLng  # type: ignore[attr-defined]
+
+            call_options.append(lambda lat, lon, res: latlng_to_cell(LatLng(lat, lon), res))
+
+        # Determine which signature works once so that we don't pay the price on every call.
+        def _resolve_caller():
+            for candidate in call_options:
+                try:
+                    candidate(0.0, 0.0, 1)
+                except TypeError:
+                    continue
+                except Exception:
+                    # If the function executed but raised a different exception
+                    # (e.g. because resolution is invalid), assume the signature
+                    # itself is correct and use it.
+                    return candidate
+                else:
+                    return candidate
+            # If none of the candidates worked, let _try_call raise a helpful error.
+            def _nope(lat: float, lon: float, res: int):  # pragma: no cover - defensive guard
+                return _try_call(call_options, lat, lon, res)
+
+            return _nope
+
+        chosen = _resolve_caller()
+
         def to_cell(lat: float, lon: float, res: int):
-            """Handle both legacy (lat, lon, res) and v4 ((lat, lon), res) signatures."""
             try:
-                return latlng_to_cell(lat, lon, res)
+                return chosen(lat, lon, res)
             except TypeError:
-                return latlng_to_cell((lat, lon), res)
+                # Fallback to trying all candidates in case runtime args
+                # trigger a different valid overload (e.g. numpy scalars).
+                return _try_call(call_options, lat, lon, res)
     else:  # pragma: no cover - unexpected API change
         raise AttributeError("h3 library does not expose geo_to_h3 or latlng_to_cell")
 
@@ -621,10 +666,33 @@ def _generate_geo_from_tickets(tickets: Sequence, filters: AnalyticsFilters) -> 
     else:  # pragma: no cover - unexpected API change
         raise AttributeError("h3 library does not expose h3_to_geo or cell_to_latlng")
 
+    def normalize_latlng(raw_value: Any) -> Tuple[float, float]:
+        """Return a (lat, lon) tuple regardless of H3 API return type."""
+
+        if isinstance(raw_value, dict):
+            lat = raw_value.get("lat") or raw_value.get("latitude")
+            lon = raw_value.get("lng") or raw_value.get("lon") or raw_value.get("longitude")
+        elif hasattr(raw_value, "lat") and hasattr(raw_value, "lng"):
+            lat = getattr(raw_value, "lat")
+            lon = getattr(raw_value, "lng")
+        elif hasattr(raw_value, "latitude") and hasattr(raw_value, "longitude"):
+            lat = getattr(raw_value, "latitude")
+            lon = getattr(raw_value, "longitude")
+        else:
+            try:
+                lat, lon = raw_value  # type: ignore[misc]
+            except (TypeError, ValueError):
+                raise TypeError("Unexpected lat/lon format returned by H3 API") from None
+
+        if lat is None or lon is None:
+            raise TypeError("H3 API did not return both latitude and longitude")
+
+        return float(lat), float(lon)
+
     for ticket in tickets:
         if ticket.latitud is None or ticket.longitud is None:
             continue
-        cell_id = to_cell(ticket.latitud, ticket.longitud, resolution)
+        cell_id = str(to_cell(ticket.latitud, ticket.longitud, resolution))
         cell = cells.setdefault(
             cell_id,
             {"cell_id": cell_id, "count": 0, "categories": defaultdict(int)},
@@ -634,7 +702,7 @@ def _generate_geo_from_tickets(tickets: Sequence, filters: AnalyticsFilters) -> 
         cell["categories"][categoria] += 1
     results = []
     for cell_id, data in cells.items():
-        lat, lon = to_latlng(cell_id)
+        lat, lon = normalize_latlng(to_latlng(cell_id))
         results.append(
             {
                 "cell_id": cell_id,
