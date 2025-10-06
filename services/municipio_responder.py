@@ -38,6 +38,7 @@ from services.utils_placeholders import (
     obtener_respuesta_municipio,
 )
 from services.config_loader import cargar_configuracion_municipio
+from utils.municipio_utils import get_numeric_municipio_id
 from .actions.municipio_actions import (
     CrearReclamoActionHandler,
 )
@@ -1104,17 +1105,19 @@ def cargar_contactos_utiles(municipio_id: str = MUNICIPIO_ID):
     return cargar_configuracion_municipio(municipio_id, "contactos_utiles.json")
 
 def cargar_agenda_cultural(municipio_id: str = MUNICIPIO_ID):
-    try:
-        posts = (
-            MunicipioPost.query.filter(MunicipioPost.municipio_id == municipio_id)
-            .order_by(MunicipioPost.fecha_publicacion.desc())
-            .limit(200)
-            .all()
-        )
-        if posts:
-            return {"eventos": [post.to_dict() for post in posts]}
-    except Exception:
-        logger.exception("Error al cargar agenda cultural desde la base de datos")
+    db_municipio_id = get_numeric_municipio_id(municipio_id)
+    if db_municipio_id is not None:
+        try:
+            posts = (
+                MunicipioPost.query.filter(MunicipioPost.municipio_id == db_municipio_id)
+                .order_by(MunicipioPost.fecha_publicacion.desc())
+                .limit(200)
+                .all()
+            )
+            if posts:
+                return {"eventos": [post.to_dict() for post in posts]}
+        except Exception:
+            logger.exception("Error al cargar agenda cultural desde la base de datos")
 
     fallback = cargar_configuracion_municipio(municipio_id, "agenda_cultural.json")
     if isinstance(fallback, dict):

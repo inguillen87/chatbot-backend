@@ -8,6 +8,7 @@ from geopy.exc import GeocoderServiceError, GeocoderTimedOut
 import services.google_maps_service as google_maps_service
 from services.config_loader import cargar_configuracion_municipio
 from services.location_service import geocode_address
+from utils.municipio_utils import get_numeric_municipio_id
 from services.tts_orchestrator import generar_audio
 from models import MunicipioTicket, MunicipioPost
 from database import db
@@ -535,25 +536,28 @@ def consultar_eventos_culturales(fecha: str) -> str:
     else:
         return f"No entiendo la fecha '{fecha}'. Por favor, intentá con 'hoy' o 'mañana'."
 
-    try:
-        eventos_query = (
-            MunicipioPost.query.filter(
-                MunicipioPost.municipio_id == MUNICIPIO_ID,
-                MunicipioPost.tipo_post == "evento",
+    db_municipio_id = get_numeric_municipio_id(MUNICIPIO_ID)
+    eventos_db = []
+    if db_municipio_id is not None:
+        try:
+            eventos_query = (
+                MunicipioPost.query.filter(
+                    MunicipioPost.municipio_id == db_municipio_id,
+                    MunicipioPost.tipo_post == "evento",
+                )
+                .order_by(
+                    MunicipioPost.fecha_evento_inicio.asc(),
+                    MunicipioPost.fecha_publicacion.desc(),
+                )
+                .limit(100)
             )
-            .order_by(
-                MunicipioPost.fecha_evento_inicio.asc(),
-                MunicipioPost.fecha_publicacion.desc(),
+            eventos_db = eventos_query.all()
+        except Exception:
+            logger.exception("No se pudo consultar la agenda cultural desde la base de datos")
+            return (
+                "Lo siento, no pude acceder a la agenda cultural en este momento. "
+                "Por favor, intenta más tarde."
             )
-            .limit(100)
-        )
-        eventos_db = eventos_query.all()
-    except Exception:
-        logger.exception("No se pudo consultar la agenda cultural desde la base de datos")
-        return (
-            "Lo siento, no pude acceder a la agenda cultural en este momento. "
-            "Por favor, intenta más tarde."
-        )
 
     eventos_encontrados: list[MunicipioPost] = []
     proximos_eventos: list[MunicipioPost] = []
@@ -615,7 +619,9 @@ def consultar_noticias_municipio() -> str:
     """
     logger.info("[HERRAMIENTA NOTICIAS] Consultando noticias y eventos desde la base de datos.")
 
-    municipio_id = MUNICIPIO_ID
+    municipio_id = get_numeric_municipio_id(MUNICIPIO_ID)
+    if municipio_id is None:
+        return "No se encontraron noticias o eventos recientes en la base de datos."
     municipio_nombre = CONFIG_MUNICIPIO.get("nombre", "el municipio") if isinstance(CONFIG_MUNICIPIO, dict) else "el municipio"
 
     try:

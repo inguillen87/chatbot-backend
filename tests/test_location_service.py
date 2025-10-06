@@ -1,7 +1,9 @@
+import os
 import unittest
 from unittest.mock import patch
 
 class TestLocationService(unittest.TestCase):
+    @patch.dict(os.environ, {"MUNICIPIO_ID": "default"}, clear=False)
     @patch("services.location_service.GOOGLE_MAPS_API_KEY", "test")
     @patch("services.location_service.googlemaps.Client")
     def test_geocode_address_restricts_country(self, mock_client, *_):
@@ -14,10 +16,16 @@ class TestLocationService(unittest.TestCase):
         mock_instance.geocode.assert_called_once_with(
             "San Martin",
             region="ar",
-            components={"country": "AR"},
+            components={
+                "locality": "Junín",
+                "administrative_area": "Mendoza",
+                "country": "AR",
+            },
+            bounds=((-33.2, -68.6), (-32.9, -68.3)),
         )
         self.assertEqual(result["geometry"]["location"]["lat"], -32.89)
 
+    @patch.dict(os.environ, {"MUNICIPIO_ID": "default"}, clear=False)
     @patch("services.location_service.GOOGLE_MAPS_API_KEY", "test")
     @patch("services.location_service.googlemaps.Client")
     def test_autocomplete_address_uses_country(self, mock_client, *_):
@@ -27,11 +35,20 @@ class TestLocationService(unittest.TestCase):
             {"description": "San Martin, Mendoza, Argentina"}
         ]
         result = ls.autocomplete_address("San Martin")
-        mock_instance.places_autocomplete.assert_called_once_with(
-            input_text="San Martin",
-            language="es",
-            components={"country": "ar"},
+        mock_instance.places_autocomplete.assert_called_once()
+        kwargs = mock_instance.places_autocomplete.call_args.kwargs
+        self.assertEqual(kwargs["input_text"], "San Martin")
+        self.assertEqual(kwargs["language"], "es")
+        self.assertEqual(
+            kwargs["components"],
+            {
+                "administrative_area": "Mendoza",
+                "country": "AR",
+            },
         )
+        self.assertAlmostEqual(kwargs["location"]["lat"], -33.05, places=4)
+        self.assertAlmostEqual(kwargs["location"]["lng"], -68.45, places=4)
+        self.assertEqual(kwargs["radius"], 16650)
         self.assertEqual(result[0]["description"], "San Martin, Mendoza, Argentina")
 
 if __name__ == "__main__":
