@@ -653,6 +653,7 @@ def _generate_geo_from_tickets(tickets: Sequence, filters: AnalyticsFilters) -> 
                 else:
                     return candidate
             # If none of the candidates worked, let _try_call raise a helpful error.
+
             def _nope(lat: float, lon: float, res: int):  # pragma: no cover - defensive guard
                 return _try_call(call_options, lat, lon, res)
 
