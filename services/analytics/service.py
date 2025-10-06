@@ -615,10 +615,28 @@ def _generate_geo_from_tickets(tickets: Sequence, filters: AnalyticsFilters) -> 
             lambda lat, lon, res: latlng_to_cell((lat, lon), res),
         ]
 
-        if hasattr(h3, "LatLng"):
-            LatLng = h3.LatLng  # type: ignore[attr-defined]
+        latlng_candidate_paths = (
+            "LatLng",
+            "api.basic.LatLng",
+            "api.basic_str.LatLng",
+            "api.LatLng",
+        )
 
-            call_options.append(lambda lat, lon, res: latlng_to_cell(LatLng(lat, lon), res))
+        def _resolve_attr(path: str):
+            current = h3
+            for part in path.split("."):
+                if not hasattr(current, part):
+                    return None
+                current = getattr(current, part)
+            return current
+
+        for attr_path in latlng_candidate_paths:
+            candidate_cls = _resolve_attr(attr_path)
+            if candidate_cls is None:
+                continue
+            call_options.append(
+                lambda lat, lon, res, cls=candidate_cls: latlng_to_cell(cls(lat, lon), res)
+            )
 
         # Determine which signature works once so that we don't pay the price on every call.
         def _resolve_caller():
@@ -689,10 +707,32 @@ def _generate_geo_from_tickets(tickets: Sequence, filters: AnalyticsFilters) -> 
 
         return float(lat), float(lon)
 
+    def normalize_cell_id(raw_value: Any) -> str:
+        if isinstance(raw_value, str):
+            return raw_value
+        if isinstance(raw_value, bytes):
+            try:
+                return raw_value.decode("ascii")
+            except UnicodeDecodeError:
+                return raw_value.hex()
+
+        for method_name in ("to_string", "hex", "to_hex"):
+            method = getattr(raw_value, method_name, None)
+            if callable(method):
+                converted = method()
+                if isinstance(converted, (str, bytes)):
+                    return normalize_cell_id(converted)
+
+        value_attr = getattr(raw_value, "value", None)
+        if isinstance(value_attr, (str, bytes)):
+            return normalize_cell_id(value_attr)
+
+        return str(raw_value)
+
     for ticket in tickets:
         if ticket.latitud is None or ticket.longitud is None:
             continue
-        cell_id = str(to_cell(ticket.latitud, ticket.longitud, resolution))
+        cell_id = normalize_cell_id(to_cell(ticket.latitud, ticket.longitud, resolution))
         cell = cells.setdefault(
             cell_id,
             {"cell_id": cell_id, "count": 0, "categories": defaultdict(int)},
