@@ -564,7 +564,13 @@ def _generate_geo_from_tickets(tickets: Sequence, filters: AnalyticsFilters) -> 
             cell_id = f"fallback_{lat}_{lon}"
             cell = cells.setdefault(
                 cell_id,
-                {"cell_id": cell_id, "count": 0, "categories": defaultdict(int), "centroid_lat": lat, "centroid_lon": lon},
+                {
+                    "cell_id": cell_id,
+                    "count": 0,
+                    "categories": defaultdict(int),
+                    "centroid_lat": lat,
+                    "centroid_lon": lon,
+                },
             )
             cell["count"] += 1
             categoria = getattr(ticket, "categoria", None) or "sin_dato"
@@ -582,10 +588,155 @@ def _generate_geo_from_tickets(tickets: Sequence, filters: AnalyticsFilters) -> 
 
     resolution = filters.resolution
     cells: Dict[str, Dict[str, Any]] = {}
+
+    if hasattr(h3, "geo_to_h3"):
+        geo_to_h3 = h3.geo_to_h3  # type: ignore[attr-defined]
+
+        def to_cell(lat: float, lon: float, res: int):
+            return geo_to_h3(lat, lon, res)
+
+    elif hasattr(h3, "latlng_to_cell"):
+        latlng_to_cell = h3.latlng_to_cell  # type: ignore[attr-defined]
+
+        def _try_call(options, lat: float, lon: float, res: int):
+            last_error: TypeError | None = None
+            for candidate in options:
+                try:
+                    return candidate(lat, lon, res)
+                except TypeError as exc:
+                    last_error = exc
+                    continue
+            if last_error is not None:
+                raise TypeError("Unsupported h3.latlng_to_cell signature") from last_error
+            raise AttributeError("No callable options supplied for h3.latlng_to_cell")
+
+        call_options = [
+            lambda lat, lon, res: latlng_to_cell(lat, lon, res),
+            lambda lat, lon, res: latlng_to_cell((lat, lon), res),
+        ]
+
+        latlng_candidate_paths = (
+            "LatLng",
+            "api.basic.LatLng",
+            "api.basic_str.LatLng",
+            "api.LatLng",
+        )
+
+        def _resolve_attr(path: str):
+            current = h3
+            for part in path.split("."):
+                if not hasattr(current, part):
+                    return None
+                current = getattr(current, part)
+            return current
+
+        for attr_path in latlng_candidate_paths:
+            candidate_cls = _resolve_attr(attr_path)
+            if candidate_cls is None:
+                continue
+            call_options.append(
+                lambda lat, lon, res, cls=candidate_cls: latlng_to_cell(cls(lat, lon), res)
+            )
+
+        # Determine which signature works once so that we don't pay the price on every call.
+        def _resolve_caller():
+            for candidate in call_options:
+                try:
+                    candidate(0.0, 0.0, 1)
+                except TypeError:
+                    continue
+                except Exception:
+                    # If the function executed but raised a different exception
+                    # (e.g. because resolution is invalid), assume the signature
+                    # itself is correct and use it.
+                    return candidate
+                else:
+                    return candidate
+            # If none of the candidates worked, let _try_call raise a helpful error.
+
+            def _nope(lat: float, lon: float, res: int):  # pragma: no cover - defensive guard
+                return _try_call(call_options, lat, lon, res)
+
+            return _nope
+
+        chosen = _resolve_caller()
+
+        def to_cell(lat: float, lon: float, res: int):
+            try:
+                return chosen(lat, lon, res)
+            except TypeError:
+                # Fallback to trying all candidates in case runtime args
+                # trigger a different valid overload (e.g. numpy scalars).
+                return _try_call(call_options, lat, lon, res)
+    else:  # pragma: no cover - unexpected API change
+        raise AttributeError("h3 library does not expose geo_to_h3 or latlng_to_cell")
+
+    if hasattr(h3, "h3_to_geo"):
+        h3_to_geo = h3.h3_to_geo  # type: ignore[attr-defined]
+
+        def to_latlng(cell_id: str):
+            return h3_to_geo(cell_id)
+
+    elif hasattr(h3, "cell_to_latlng"):
+        cell_to_latlng = h3.cell_to_latlng  # type: ignore[attr-defined]
+
+        def to_latlng(cell_id: str):
+            return cell_to_latlng(cell_id)
+    else:  # pragma: no cover - unexpected API change
+        raise AttributeError("h3 library does not expose h3_to_geo or cell_to_latlng")
+
+    def normalize_latlng(raw_value: Any) -> Tuple[float, float]:
+        """Return a (lat, lon) tuple regardless of H3 API return type."""
+
+        if isinstance(raw_value, dict):
+            lat = next((raw_value[key] for key in ("lat", "latitude") if key in raw_value), None)
+            lon = next(
+                (raw_value[key] for key in ("lng", "lon", "longitude") if key in raw_value),
+                None,
+            )
+        elif hasattr(raw_value, "lat") and hasattr(raw_value, "lng"):
+            lat = getattr(raw_value, "lat")
+            lon = getattr(raw_value, "lng")
+        elif hasattr(raw_value, "latitude") and hasattr(raw_value, "longitude"):
+            lat = getattr(raw_value, "latitude")
+            lon = getattr(raw_value, "longitude")
+        else:
+            try:
+                lat, lon = raw_value  # type: ignore[misc]
+            except (TypeError, ValueError):
+                raise TypeError("Unexpected lat/lon format returned by H3 API") from None
+
+        if lat is None or lon is None:
+            raise TypeError("H3 API did not return both latitude and longitude")
+
+        return float(lat), float(lon)
+
+    def normalize_cell_id(raw_value: Any) -> str:
+        if isinstance(raw_value, str):
+            return raw_value
+        if isinstance(raw_value, bytes):
+            try:
+                return raw_value.decode("ascii")
+            except UnicodeDecodeError:
+                return raw_value.hex()
+
+        for method_name in ("to_string", "hex", "to_hex"):
+            method = getattr(raw_value, method_name, None)
+            if callable(method):
+                converted = method()
+                if isinstance(converted, (str, bytes)):
+                    return normalize_cell_id(converted)
+
+        value_attr = getattr(raw_value, "value", None)
+        if isinstance(value_attr, (str, bytes)):
+            return normalize_cell_id(value_attr)
+
+        return str(raw_value)
+
     for ticket in tickets:
         if ticket.latitud is None or ticket.longitud is None:
             continue
-        cell_id = h3.geo_to_h3(ticket.latitud, ticket.longitud, resolution)
+        cell_id = normalize_cell_id(to_cell(ticket.latitud, ticket.longitud, resolution))
         cell = cells.setdefault(
             cell_id,
             {"cell_id": cell_id, "count": 0, "categories": defaultdict(int)},
@@ -595,7 +746,7 @@ def _generate_geo_from_tickets(tickets: Sequence, filters: AnalyticsFilters) -> 
         cell["categories"][categoria] += 1
     results = []
     for cell_id, data in cells.items():
-        lat, lon = h3.h3_to_geo(cell_id)
+        lat, lon = normalize_latlng(to_latlng(cell_id))
         results.append(
             {
                 "cell_id": cell_id,
