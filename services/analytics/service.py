@@ -689,8 +689,11 @@ def _generate_geo_from_tickets(tickets: Sequence, filters: AnalyticsFilters) -> 
         """Return a (lat, lon) tuple regardless of H3 API return type."""
 
         if isinstance(raw_value, dict):
-            lat = raw_value.get("lat") or raw_value.get("latitude")
-            lon = raw_value.get("lng") or raw_value.get("lon") or raw_value.get("longitude")
+            lat = next((raw_value[key] for key in ("lat", "latitude") if key in raw_value), None)
+            lon = next(
+                (raw_value[key] for key in ("lng", "lon", "longitude") if key in raw_value),
+                None,
+            )
         elif hasattr(raw_value, "lat") and hasattr(raw_value, "lng"):
             lat = getattr(raw_value, "lat")
             lon = getattr(raw_value, "lng")
