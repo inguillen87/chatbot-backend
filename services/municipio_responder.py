@@ -493,14 +493,29 @@ class ReclamoFlowHandler:
             except (TypeError, ValueError):
                 lat_value = lon_value = None
 
-            address = location_data.get("address")
+            original_address = location_data.get("address") or location_data.get("label")
+            address = original_address
             direccion_info = None
             if lat_value is not None and lon_value is not None:
                 from .herramientas_municipio import obtener_direccion_de_coordenadas
 
                 direccion_info = obtener_direccion_de_coordenadas(lat_value, lon_value)
-                if direccion_info and direccion_info.get("formatted_address"):
-                    address = direccion_info.get("formatted_address")
+
+                formatted_address = (
+                    direccion_info.get("formatted_address")
+                    if direccion_info and direccion_info.get("formatted_address")
+                    else None
+                )
+
+                original_has_number = bool(re.search(r"\d", original_address or ""))
+                formatted_has_number = bool(re.search(r"\d", formatted_address or ""))
+
+                if formatted_address and (
+                    not original_address
+                    or not original_has_number
+                    or formatted_has_number
+                ):
+                    address = formatted_address
 
                 self.flow_context['datos_reclamo']['coordenadas'] = {
                     "lat": lat_value,
@@ -510,14 +525,41 @@ class ReclamoFlowHandler:
                 map_url = f"https://www.google.com/maps/search/?api=1&query={lat_value},{lon_value}"
                 self.flow_context['datos_reclamo']['map_search_url'] = map_url
 
+                componentes = {}
                 if direccion_info:
                     componentes = {
                         key: direccion_info.get(key)
                         for key in ("calle", "numero", "localidad", "provincia", "codigo_postal", "barrio")
                         if direccion_info.get(key)
                     }
-                    if componentes:
-                        self.flow_context['datos_reclamo']['direccion_componentes'] = componentes
+
+                if original_address:
+                    segmentos = [seg.strip() for seg in original_address.split(",") if seg.strip()]
+                    if segmentos:
+                        primera = segmentos[0]
+                        match_calle = re.match(
+                            r"^(?P<calle>.+?)\s+(?P<numero>\d+[0-9A-Za-z/-]*)\b",
+                            primera,
+                        )
+                        if match_calle:
+                            componentes["calle"] = match_calle.group("calle").strip()
+                            componentes.setdefault("numero", match_calle.group("numero").strip())
+
+                    for segmento in segmentos[1:]:
+                        if not segmento:
+                            continue
+                        if not componentes.get("codigo_postal") and re.search(r"\d", segmento):
+                            componentes["codigo_postal"] = segmento
+                            continue
+                        if not componentes.get("localidad"):
+                            componentes["localidad"] = segmento
+                            continue
+                        if not componentes.get("provincia"):
+                            componentes["provincia"] = segmento
+                            continue
+
+                if componentes:
+                    self.flow_context['datos_reclamo']['direccion_componentes'] = componentes
 
             if not address:
                 if lat_value is not None and lon_value is not None:
