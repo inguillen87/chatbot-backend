@@ -279,6 +279,22 @@ SAMPLE_TEXT = (
     "📍Club Social y Deportivo Los Barriales\n"
 )
 
+SIMPLE_SAMPLE_TEXT = (
+    "¡Buenas noches!\n"
+    "AGENDA MUNICIPAL\n\n"
+    "Jueves 28\n\n"
+    "🕑9.30 hs.\n"
+    "✅Entrega de reconocimientos a los cuatro primeros Presidentes del HCD en democracia.\n"
+    "📍HCD\n\n"
+    "Viernes 29\n"
+    "🕑10.00 hs.\n"
+    "✅Expo Educativa 2026\n"
+    "📍Centro Universitario del Este\n\n"
+    "🕑18.30 hs.\n"
+    "✅Capacitación Internacional 'Taller de Juegos' (para docentes de jardines maternales)\n"
+    "📍Casa del Bicentenario\n"
+)
+
 
 def test_bulk_create_from_text(client):
     with app.app_context():
@@ -297,6 +313,24 @@ def test_bulk_create_from_text(client):
     titles = [p['titulo'] for p in data_resp['created']]
     assert 'Expo Educativa 2026' in titles
     assert len(_get_posts_for_testing()) == 6
+
+
+def test_bulk_create_from_text_without_asterisks(client):
+    with app.app_context():
+        admin_user = User.query.filter_by(email="admin_muni@test.com").first()
+        token = generar_token(admin_user.id, admin_user.rol, admin_user.tipo_chat, admin_user.municipio_id, admin_user.pyme_id)
+
+    headers = {
+        'Authorization': f'Bearer {token}'
+    }
+
+    response = client.post('/municipal/posts/bulk', data={'text': SIMPLE_SAMPLE_TEXT}, headers=headers)
+
+    assert response.status_code == 201
+    data_resp = response.get_json()
+    assert len(data_resp['created']) == 3
+    assert data_resp['created'][0]['titulo'] == 'Entrega de reconocimientos a los cuatro primeros Presidentes del HCD en democracia.'
+    assert data_resp['created'][0]['descripcion'] == 'Entrega de reconocimientos a los cuatro primeros Presidentes del HCD en democracia.'
 
 
 def test_bulk_create_from_raw_string_with_json_header(client):

@@ -41,6 +41,25 @@ SAMPLE = """*AGENDA MUNICIPAL*
 📍 Club Social y Deportivo Los Barriales
 """
 
+SIMPLE_SAMPLE = """¡Buenas noches!
+AGENDA MUNICIPAL
+
+Jueves 28
+
+🕑9.30 hs.
+✅Entrega de reconocimientos a los cuatro primeros Presidentes del HCD en democracia.
+📍HCD
+
+Viernes 29
+🕑10.00 hs.
+✅Expo Educativa 2026
+📍Centro Universitario del Este
+
+🕑18.30 hs.
+✅Capacitación Internacional "Taller de Juegos" (para docentes de jardines maternales)
+📍Casa del Bicentenario
+"""
+
 
 class TestAgendaParser(unittest.TestCase):
     def test_parse_sample(self):
@@ -56,6 +75,13 @@ class TestAgendaParser(unittest.TestCase):
             },
         )
         self.assertEqual(events[-1]["location"], "Club Social y Deportivo Los Barriales")
+
+    def test_parse_sample_without_asterisks(self):
+        events = parse_agenda_text(SIMPLE_SAMPLE)
+        self.assertEqual(len(events), 3)
+        self.assertEqual(events[0]["day"], "Jueves 28")
+        self.assertEqual(events[0]["time"], "9.30 hs.")
+        self.assertEqual(events[0]["location"], "HCD")
 
     def test_parse_text_file(self):
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tmp:
