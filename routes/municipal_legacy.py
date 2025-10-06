@@ -1477,6 +1477,9 @@ def create_municipal_posts_bulk(current_user):
             enlace = (ev.get("enlace") or ev.get("url") or "").strip() or None
             tipo_evento = (ev.get("tipo_post") or normalized_tipo_default).strip().lower()
 
+            if not descripcion:
+                descripcion = title
+
             fecha_inicio_val = (
                 ev.get("fecha_evento_inicio")
                 or ev.get("fecha_inicio")
