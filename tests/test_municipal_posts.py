@@ -5,6 +5,7 @@ import pytest
 
 from app import app, db
 from models import User, MunicipioPost
+from services.municipio_responder import cargar_agenda_cultural
 from utils.auth_helpers import generar_token
 
 @pytest.fixture
@@ -164,6 +165,33 @@ def test_get_municipal_posts(client):
     assert 'id' in post
     assert response.headers['X-Total-Count'] == '1'
     assert response.headers['X-Limit'] == '20'
+
+
+def test_cargar_agenda_cultural_prefers_db_for_string_id(client):
+    with app.app_context():
+        admin_user = User.query.filter_by(email="admin_muni@test.com").first()
+        token = generar_token(admin_user.id, admin_user.rol, admin_user.tipo_chat, admin_user.municipio_id, admin_user.pyme_id)
+
+    headers = {
+        'Authorization': f'Bearer {token}'
+    }
+
+    client.post(
+        '/municipal/posts',
+        data={
+            'titulo': 'Evento Cultural',
+            'contenido': 'Descripción del evento cultural',
+            'tipo_post': 'evento',
+        },
+        headers=headers,
+    )
+
+    with app.app_context():
+        payload = cargar_agenda_cultural(str(admin_user.municipio_id))
+
+    assert payload["eventos"], "Se esperaba al menos un evento proveniente de la base de datos"
+    titles = {event["titulo"] for event in payload["eventos"]}
+    assert "Evento Cultural" in titles
 
 
 def test_bulk_create_municipal_posts(client):

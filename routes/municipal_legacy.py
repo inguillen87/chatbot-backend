@@ -15,6 +15,7 @@ from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
 from routes.tramites import listar_tramites, obtener_tramite
 from sqlalchemy import func, or_
 from models import Conversacion, MunicipioTicket, MunicipioPost, User, db
+from utils.municipio_utils import get_numeric_municipio_id
 from routes.ticket import TICKET_ALLOWED_STATES
 from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS
 from services.municipal_stats import build_stats_for_municipio, StatsFilters
@@ -1208,9 +1209,12 @@ def _month_bounds(month_str: str) -> tuple[datetime | None, datetime | None]:
 
 
 def _prune_old_posts(municipio_id: int, max_posts: int = 200) -> int:
+    db_municipio_id = get_numeric_municipio_id(municipio_id)
+    if db_municipio_id is None:
+        return 0
     surplus_ids = (
         db.session.query(MunicipioPost.id)
-        .filter(MunicipioPost.municipio_id == municipio_id)
+        .filter(MunicipioPost.municipio_id == db_municipio_id)
         .order_by(MunicipioPost.fecha_publicacion.desc(), MunicipioPost.id.desc())
         .offset(max_posts)
         .all()
@@ -1239,6 +1243,10 @@ def list_municipal_posts(current_user):
     if municipio_id is None:
         return jsonify({"error": "No se pudo determinar el municipio asociado al usuario."}), 400
 
+    db_municipio_id = get_numeric_municipio_id(municipio_id)
+    if db_municipio_id is None:
+        return jsonify({"error": "El identificador del municipio es inválido."}), 400
+
     limit = request.args.get("limit", type=int) or 20
     limit = max(1, min(limit, 100))
     offset = request.args.get("offset", type=int) or 0
@@ -1249,7 +1257,7 @@ def list_municipal_posts(current_user):
     to_param = request.args.get("to_date") or request.args.get("fecha_hasta")
     tipo_post = request.args.get("tipo_post")
 
-    query = MunicipioPost.query.filter(MunicipioPost.municipio_id == municipio_id)
+    query = MunicipioPost.query.filter(MunicipioPost.municipio_id == db_municipio_id)
 
     applied_filters: dict[str, Any] = {}
 
@@ -1325,6 +1333,10 @@ def create_municipal_post(current_user):
     if municipio_id is None:
         return jsonify({"error": "No se pudo determinar el municipio asociado al usuario."}), 400
 
+    db_municipio_id = get_numeric_municipio_id(municipio_id)
+    if db_municipio_id is None:
+        return jsonify({"error": "El identificador del municipio es inválido."}), 400
+
     # --- Recopilar datos del formulario ---
     titulo = request.form.get('titulo')
     subtitulo = request.form.get('subtitulo')
@@ -1376,7 +1388,7 @@ def create_municipal_post(current_user):
 
     try:
         nuevo_post = MunicipioPost(
-            municipio_id=municipio_id,
+            municipio_id=db_municipio_id,
             titulo=titulo.strip(),
             subtitulo=subtitulo.strip() if subtitulo else None,
             descripcion=contenido,
@@ -1392,7 +1404,7 @@ def create_municipal_post(current_user):
         )
         db.session.add(nuevo_post)
         db.session.flush()
-        _prune_old_posts(municipio_id)
+        _prune_old_posts(db_municipio_id)
         db.session.commit()
         persisted = MunicipioPost.query.get(nuevo_post.id)
         if not persisted:
@@ -1417,6 +1429,10 @@ def create_municipal_posts_bulk(current_user):
     municipio_id = _resolve_current_municipio_id(current_user)
     if municipio_id is None:
         return jsonify({"error": "No se pudo determinar el municipio asociado al usuario."}), 400
+
+    db_municipio_id = get_numeric_municipio_id(municipio_id)
+    if db_municipio_id is None:
+        return jsonify({"error": "El identificador del municipio es inválido."}), 400
 
     raw_payload = request.get_json(silent=True)
     payload = raw_payload if isinstance(raw_payload, dict) else {}
@@ -1516,7 +1532,7 @@ def create_municipal_posts_bulk(current_user):
                 datos_extra[key] = value
 
             post = MunicipioPost(
-                municipio_id=municipio_id,
+                municipio_id=db_municipio_id,
                 titulo=title,
                 subtitulo=subtitulo,
                 descripcion=descripcion,
@@ -1538,7 +1554,7 @@ def create_municipal_posts_bulk(current_user):
 
         db.session.flush()
         created_ids = [post.id for post in created_posts]
-        _prune_old_posts(municipio_id)
+        _prune_old_posts(db_municipio_id)
         db.session.commit()
 
         persisted_posts = (
