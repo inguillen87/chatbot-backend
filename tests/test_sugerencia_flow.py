@@ -198,6 +198,52 @@ class TestSugerenciaFlow(unittest.TestCase):
             ReclamoState.ESPERANDO_CATEGORIA.name,
         )
 
+    def test_sugerencia_con_ubicacion_no_pide_direccion(self):
+        owner_user = User.query.get(1)
+        viewer_user = User.query.get(2)
+        rubro_obj = owner_user.rubro
+        chat_context = ChatSessionContext(
+            chat_session_id='test_sugerencia_location', user_id=1, context_data={}
+        )
+        db.session.add(chat_context)
+        db.session.commit()
+
+        chat_context.context_data = {
+            'contexto_municipio_v2': {
+                'estado_conversacion': ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name,
+                'contacto_usuario': {
+                    'nombre': 'Marcelo',
+                    'dni': '32877851',
+                    'email': 'vecino@test.com',
+                    'telefono': '+5492613168608',
+                },
+                'ubicacion_contextual_sugerencia': {
+                    'address': 'San Martín 15, Junín, M5573, MZ, AR',
+                    'latitude': '-33.14436254',
+                    'longitude': '-68.48569424',
+                },
+            }
+        }
+        db.session.commit()
+
+        respuesta = responder_municipio(
+            pregunta_original="Pintar los bancos de la plaza",
+            owner_user=owner_user,
+            rubro_obj=rubro_obj,
+            viewer_user=viewer_user,
+            chat_db_context=chat_context,
+        )
+
+        self.assertIn("confirmá si los datos", respuesta["message_body"])
+        self.assertIn("San Martín 15", respuesta["message_body"])
+
+        datos = chat_context.context_data['contexto_municipio_v2']['datos_sugerencia']
+        self.assertEqual(datos.get('direccion'), 'San Martín 15, Junín, M5573, MZ, AR')
+        self.assertEqual(
+            chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
+            ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name,
+        )
+
     def test_sugerencia_preserva_nombre_existente_con_direccion(self):
         owner_user = User.query.get(1)
         rubro_obj = owner_user.rubro

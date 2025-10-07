@@ -200,6 +200,57 @@ def _ensure_sugerencia_address(datos: Dict[str, Any]) -> None:
     ubicacion = datos.get("ubicacion")
     if isinstance(ubicacion, str) and ubicacion and ubicacion != "N/A":
         datos["direccion"] = ubicacion
+        return
+    if isinstance(ubicacion, dict):
+        address = (
+            ubicacion.get("address")
+            or ubicacion.get("label")
+            or ubicacion.get("texto")
+        )
+        if address:
+            datos["direccion"] = address
+
+
+def _has_valid_sugerencia_address(datos: Dict[str, Any]) -> bool:
+    direccion = datos.get("direccion")
+    if isinstance(direccion, str) and direccion.strip():
+        return True
+    ubicacion = datos.get("ubicacion")
+    if isinstance(ubicacion, str) and ubicacion.strip() and ubicacion != "N/A":
+        return True
+    if isinstance(ubicacion, dict):
+        return any(
+            isinstance(ubicacion.get(key), str) and ubicacion.get(key).strip()
+            for key in ("address", "label", "texto")
+        )
+    return False
+
+
+def _get_missing_sugerencia_contact_fields(datos: Dict[str, Any]) -> list[str]:
+    missing: list[str] = []
+    for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
+        if campo == "direccion":
+            if not _has_valid_sugerencia_address(datos):
+                missing.append(campo)
+            continue
+        if not datos.get(campo):
+            missing.append(campo)
+    return missing
+
+
+def _format_sugerencia_address(datos: Dict[str, Any]) -> str:
+    direccion = datos.get("direccion")
+    if isinstance(direccion, str) and direccion.strip():
+        return direccion
+    ubicacion = datos.get("ubicacion")
+    if isinstance(ubicacion, dict):
+        for key in ("address", "label", "texto"):
+            value = ubicacion.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    elif isinstance(ubicacion, str) and ubicacion.strip():
+        return ubicacion
+    return ""
 
 
 def _merge_contacto_usuario(contexto: Dict[str, Any], nuevos_datos: Dict[str, Any]) -> None:
@@ -345,9 +396,9 @@ def _build_sugerencia_datos(
         datos["email"] = email.strip()
 
     direccion = _prefer_contact_value(
+        ubicacion if ubicacion and ubicacion != "N/A" else None,
         contacto_prev.get("direccion"),
         getattr(viewer_user_obj, "direccion", None) if viewer_user_obj else None,
-        ubicacion if ubicacion and ubicacion != "N/A" else None,
         placeholder_checker=_is_placeholder_address,
     )
     if direccion:
@@ -4861,11 +4912,21 @@ def responder_municipio(
                 contacto_prev,
             )
 
-            campos_faltantes = [
-                campo
-                for campo in ["nombre", "dni", "email", "direccion", "telefono"]
-                if not datos_sugerencia.get(campo)
-            ]
+            if (
+                _has_valid_sugerencia_address(datos_sugerencia)
+                and not datos_sugerencia.get("direccion")
+            ):
+                ubicacion_valida = datos_sugerencia.get("ubicacion")
+                if isinstance(ubicacion_valida, dict):
+                    datos_sugerencia["direccion"] = (
+                        ubicacion_valida.get("address")
+                        or ubicacion_valida.get("label")
+                        or ubicacion_valida.get("texto")
+                    )
+                elif isinstance(ubicacion_valida, str):
+                    datos_sugerencia["direccion"] = ubicacion_valida
+
+            campos_faltantes = _get_missing_sugerencia_contact_fields(datos_sugerencia)
             contexto_municipio_actual['datos_sugerencia'] = datos_sugerencia
             _merge_contacto_usuario(contexto_municipio_actual, datos_sugerencia)
             if campos_faltantes:
@@ -4883,7 +4944,7 @@ def responder_municipio(
                 f"- **Nombre**: {datos_sugerencia.get('nombre')}\n"
                 f"- **DNI**: {datos_sugerencia.get('dni')}\n"
                 f"- **Email**: {datos_sugerencia.get('email')}\n"
-                f"- **Dirección**: {datos_sugerencia.get('direccion')}\n"
+                f"- **Dirección**: {_format_sugerencia_address(datos_sugerencia)}\n"
                 f"- **Teléfono**: {datos_sugerencia.get('telefono') or 'No informado'}\n"
                 f"- **Sugerencia**: {sugerencia_texto}"
             )
@@ -4914,7 +4975,7 @@ def responder_municipio(
             _update_sugerencia_contact_fields(datos_guardados, nuevos_datos)
 
             # Utilizar el LLM solo si todavía faltan campos
-            campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
+            campos_faltantes = _get_missing_sugerencia_contact_fields(datos_guardados)
             if campos_faltantes:
                 try:
                     llm_datos = extract_multiple_contact_details_llm(
@@ -4924,10 +4985,10 @@ def responder_municipio(
                         _update_sugerencia_contact_fields(datos_guardados, llm_datos)
                 except Exception as e:
                     logger.error("[DATOS_SUGERENCIA] LLM fallback failed: %s", e)
-                campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
+                campos_faltantes = _get_missing_sugerencia_contact_fields(datos_guardados)
 
             _ensure_sugerencia_address(datos_guardados)
-            campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
+            campos_faltantes = _get_missing_sugerencia_contact_fields(datos_guardados)
             contexto_municipio_actual['datos_sugerencia'] = datos_guardados
             _merge_contacto_usuario(contexto_municipio_actual, datos_guardados)
             if campos_faltantes:
@@ -4943,7 +5004,7 @@ def responder_municipio(
                 f"- **Nombre**: {datos_guardados.get('nombre')}\n"
                 f"- **DNI**: {datos_guardados.get('dni')}\n"
                 f"- **Email**: {datos_guardados.get('email')}\n"
-                f"- **Dirección**: {datos_guardados.get('direccion')}\n"
+                f"- **Dirección**: {_format_sugerencia_address(datos_guardados)}\n"
                 f"- **Teléfono**: {datos_guardados.get('telefono') or 'No informado'}\n"
                 f"- **Sugerencia**: {datos_guardados.get('descripcion')}"
             )
@@ -5691,11 +5752,21 @@ def responder_municipio(
                 contacto_prev,
             )
 
-            campos_faltantes = [
-                campo
-                for campo in ["nombre", "dni", "email", "direccion", "telefono"]
-                if not datos_sugerencia.get(campo)
-            ]
+            if (
+                _has_valid_sugerencia_address(datos_sugerencia)
+                and not datos_sugerencia.get("direccion")
+            ):
+                ubicacion_valida = datos_sugerencia.get("ubicacion")
+                if isinstance(ubicacion_valida, dict):
+                    datos_sugerencia["direccion"] = (
+                        ubicacion_valida.get("address")
+                        or ubicacion_valida.get("label")
+                        or ubicacion_valida.get("texto")
+                    )
+                elif isinstance(ubicacion_valida, str):
+                    datos_sugerencia["direccion"] = ubicacion_valida
+
+            campos_faltantes = _get_missing_sugerencia_contact_fields(datos_sugerencia)
             contexto_municipio_actual['datos_sugerencia'] = datos_sugerencia
             _merge_contacto_usuario(contexto_municipio_actual, datos_sugerencia)
             if campos_faltantes:
@@ -5713,7 +5784,7 @@ def responder_municipio(
                 f"- **Nombre**: {datos_sugerencia.get('nombre')}\n"
                 f"- **DNI**: {datos_sugerencia.get('dni')}\n"
                 f"- **Email**: {datos_sugerencia.get('email')}\n"
-                f"- **Dirección**: {datos_sugerencia.get('direccion')}\n"
+                f"- **Dirección**: {_format_sugerencia_address(datos_sugerencia)}\n"
                 f"- **Teléfono**: {datos_sugerencia.get('telefono') or 'No informado'}\n"
                 f"- **Sugerencia**: {sugerencia_texto}"
             )
@@ -5743,7 +5814,7 @@ def responder_municipio(
             )
             _update_sugerencia_contact_fields(datos_guardados, nuevos_datos)
 
-            campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
+            campos_faltantes = _get_missing_sugerencia_contact_fields(datos_guardados)
 
             # Utilizar el LLM solo si todavía faltan campos
             if campos_faltantes:
@@ -5755,10 +5826,10 @@ def responder_municipio(
                         _update_sugerencia_contact_fields(datos_guardados, llm_datos)
                 except Exception as e:
                     logger.error("[DATOS_SUGERENCIA] LLM fallback failed: %s", e)
-                campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
+                campos_faltantes = _get_missing_sugerencia_contact_fields(datos_guardados)
 
             _ensure_sugerencia_address(datos_guardados)
-            campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
+            campos_faltantes = _get_missing_sugerencia_contact_fields(datos_guardados)
 
             contexto_municipio_actual['datos_sugerencia'] = datos_guardados
             _merge_contacto_usuario(contexto_municipio_actual, datos_guardados)
@@ -5775,7 +5846,7 @@ def responder_municipio(
                 f"- **Nombre**: {datos_guardados.get('nombre')}\n"
                 f"- **DNI**: {datos_guardados.get('dni')}\n"
                 f"- **Email**: {datos_guardados.get('email')}\n"
-                f"- **Dirección**: {datos_guardados.get('direccion')}\n"
+                f"- **Dirección**: {_format_sugerencia_address(datos_guardados)}\n"
                 f"- **Teléfono**: {datos_guardados.get('telefono') or 'No informado'}\n"
                 f"- **Sugerencia**: {datos_guardados.get('descripcion')}"
             )
