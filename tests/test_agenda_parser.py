@@ -60,6 +60,22 @@ Viernes 29
 📍Casa del Bicentenario
 """
 
+BULLET_SAMPLE = """Gemini_Generated_Image_tnfkiutnfkiutnfk_2.png
+• 🗞️ Noticias Recientes
+
+Nuevo parque central
+Inauguración con autoridades y vecinos.
+📅 11/10/2025 17:42 hs - 16/10/2025 21:39 hs
+
+🎭 Próximos Eventos
+Festival de Teatro Comunitario
+Entrada libre y gratuita.
+📅 08/10/2025 09:00 hs - 08/10/2025 14:00 hs
+📍Teatro Municipal
+/data/archivos/cartel_festival.png
+🔗 https://example.com/festival
+"""
+
 
 class TestAgendaParser(unittest.TestCase):
     def test_parse_sample(self):
@@ -94,6 +110,21 @@ class TestAgendaParser(unittest.TestCase):
             self.assertEqual(events[0]["day"], "Jueves 28")
         finally:
             os.remove(path)
+
+    def test_parse_bullet_template(self):
+        events = parse_agenda_text(BULLET_SAMPLE)
+        self.assertEqual(len(events), 2)
+        first, second = events
+        self.assertEqual(first["title"], "Nuevo parque central")
+        self.assertIn("17:42 hs", first["time"])
+        self.assertIn("Noticias", first.get("tags", [" "])[0])
+        self.assertEqual(first.get("tipo_post"), "noticia")
+
+        self.assertEqual(second["title"], "Festival de Teatro Comunitario")
+        self.assertEqual(second.get("tipo_post"), "evento")
+        self.assertEqual(second.get("location"), "Teatro Municipal")
+        self.assertEqual(second.get("enlace"), "https://example.com/festival")
+        self.assertTrue(second.get("imagen_url", "").endswith("cartel_festival.png"))
 
     @unittest.skipIf(Document is None, "python-docx not installed")
     def test_parse_docx_file(self):
