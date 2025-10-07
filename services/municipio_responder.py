@@ -2071,7 +2071,22 @@ def _get_posts_from_json(content_type: str, channel: str, municipio_id: str) -> 
     if not all_posts:
         return "", None
 
-    posts = [p for p in all_posts if p.get("tipo_post") == content_type]
+    tipo_post_filters: set[str]
+    if content_type == "noticia":
+        # Las publicaciones cargadas desde la solapa "Información" deben
+        # mostrarse junto con las noticias tradicionales en WhatsApp y el
+        # widget web. Se etiquetan con ``tipo_post=informacion`` y, en algunos
+        # casos, también aparecen en ``tags``.
+        tipo_post_filters = {"noticia", "informacion"}
+    else:
+        tipo_post_filters = {content_type}
+
+    posts = []
+    for post in all_posts:
+        tipo_post = (post.get("tipo_post") or "").lower()
+        tags = [str(tag).lower() for tag in post.get("tags", []) if isinstance(tag, str)]
+        if tipo_post in tipo_post_filters or any(tag in tipo_post_filters for tag in tags):
+            posts.append(post)
 
     if not posts:
         return "", None
