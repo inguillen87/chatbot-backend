@@ -1174,6 +1174,62 @@ def municipal_metrics(current_user):
 import os
 import json
 from werkzeug.utils import secure_filename
+from urllib.parse import urlparse
+
+
+def _normalize_public_media_url(raw_url: str | None) -> str | None:
+    """Return a publicly accessible URL for media stored in the data volume.
+
+    Historically the municipal backend stored image references under
+    ``/data/archivos`` – the internal mount point of the persistent volume on
+    Render.  Those paths are not reachable from WhatsApp or the public web, so
+    replies delivered through Twilio ended up with broken images.  This helper
+    rewrites those internal paths to the `/media/` blueprint that proxies files
+    from the same volume.  Absolute ``http(s)`` URLs or ``data:`` URIs are left
+    untouched so manually provided links continue to work.
+    """
+
+    if not raw_url:
+        return None
+
+    candidate = str(raw_url).strip()
+    if not candidate:
+        return None
+
+    # Allow inline images or fully qualified URLs without modification.
+    if candidate.startswith("data:"):
+        return candidate
+
+    parsed = urlparse(candidate)
+    if parsed.scheme and parsed.netloc:
+        return candidate
+
+    # Normalise Windows style backslashes that may appear when copying paths.
+    candidate = candidate.replace("\\", "/")
+
+    # Common cases coming from agenda text or form uploads.
+    if candidate.startswith("/data/archivos/"):
+        candidate = candidate.replace("/data/", "/media/", 1)
+    elif candidate.startswith("data/archivos/"):
+        candidate = "/" + candidate.replace("data/", "media/", 1)
+    elif candidate.startswith("/data/"):
+        candidate = candidate.replace("/data/", "/media/", 1)
+    elif candidate.startswith("data/"):
+        candidate = "/" + candidate.replace("data/", "media/", 1)
+    elif candidate.startswith("/archivos/"):
+        candidate = "/media" + candidate
+    elif candidate.startswith("archivos/"):
+        candidate = "/media/" + candidate
+    elif candidate.startswith("/media/"):
+        # Already normalised.
+        pass
+    else:
+        # Treat any other relative path as a file within /media/archivos so it
+        # can be resolved by the media blueprint.
+        if not candidate.startswith("/"):
+            candidate = f"/media/archivos/{candidate}"
+
+    return candidate
 
 
 def _parse_iso_datetime(value: str | None) -> datetime | None:
@@ -1363,10 +1419,10 @@ def create_municipal_post(current_user):
             os.makedirs(upload_folder, exist_ok=True)
             file_path = os.path.join(upload_folder, filename)
             file.save(file_path)
-            # Generar una URL pública para el archivo.
-            # Esto asume que 'data/archivos' es servido públicamente en '/static/archivos' o similar.
-            # Para una app en producción, esto debería ser una URL de GCS o S3.
-            flyer_image_url = f"/data/archivos/{filename}"
+            # Publicar el archivo a través del blueprint /media en lugar de la
+            # ruta interna /data para que WhatsApp y los sitios públicos puedan
+            # descargarlo correctamente.
+            flyer_image_url = _normalize_public_media_url(f"/data/archivos/{filename}") or ''
 
     fecha_publicacion = request.form.get('fecha_publicacion')
     fecha_publicacion_dt = _parse_iso_datetime(fecha_publicacion) if fecha_publicacion else get_local_now()
@@ -1394,7 +1450,7 @@ def create_municipal_post(current_user):
             descripcion=contenido,
             tipo_post=normalized_tipo,
             tags=tags_raw or [normalized_tipo],
-            imagen_url=flyer_image_url or (imagen_url_externa or None),
+            imagen_url=_normalize_public_media_url(flyer_image_url or imagen_url_externa),
             enlace=enlace,
             fecha_evento_inicio=inicio_dt,
             fecha_evento_fin=fin_dt,
@@ -1490,6 +1546,7 @@ def create_municipal_posts_bulk(current_user):
             descripcion = (ev.get("description") or ev.get("descripcion") or "").strip()
             location = (ev.get("location") or ev.get("ubicacion") or "").strip() or None
             image_url = (ev.get("imagen_url") or ev.get("imagen") or "").strip() or None
+            image_url = _normalize_public_media_url(image_url)
             enlace = (ev.get("enlace") or ev.get("url") or "").strip() or None
             tipo_evento = (ev.get("tipo_post") or normalized_tipo_default).strip().lower()
 
