@@ -25,6 +25,9 @@
                     <p style="margin: 5px 0;"><strong>Número de Ticket:</strong> {{ nro_ticket }}</p>
                     <p style="margin: 5px 0;"><strong>Categoría:</strong> {{ categoria }}</p>
                     <p style="margin: 5px 0;"><strong>Dirección:</strong> {{ direccion }}</p>
+                    {% if consulta_pin %}
+                    <p style="margin: 5px 0;"><strong>PIN de Consulta:</strong> {{ consulta_pin }}</p>
+                    {% endif %}
                     <p style="margin: 5px 0;"><strong>Descripción:</strong></p>
                     <p style="margin: 5px 0; padding-left: 10px; border-left: 3px solid #dddddd;"><em>{{ detalles }}</em></p>
                 </div>

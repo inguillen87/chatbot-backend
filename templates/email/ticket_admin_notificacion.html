@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nuevo ticket recibido</title>
+</head>
+<body style="margin:0; padding:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color:#f4f4f7;">
+    <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width:680px; margin:24px auto; background-color:#ffffff; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.08);">
+        <tr>
+            <td style="padding:28px 36px; border-bottom:1px solid #eeeeee; background-color:#0f172a; border-radius:8px 8px 0 0;">
+                <h1 style="margin:0; color:#ffffff; font-size:22px;">Nuevo ticket recibido</h1>
+                {% if admin_nombre %}
+                <p style="margin:6px 0 0; color:#cbd5f5; font-size:14px;">Hola {{ admin_nombre }}, tenés un nuevo ticket para revisar.</p>
+                {% else %}
+                <p style="margin:6px 0 0; color:#cbd5f5; font-size:14px;">Se generó un nuevo ticket en tu panel de gestión.</p>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td style="padding:28px 36px;">
+                <h2 style="margin:0 0 16px; color:#1f2937; font-size:18px;">Resumen</h2>
+                <table width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+                    <tr>
+                        <td style="padding:6px 0; color:#6b7280; font-size:14px;">ID del ticket</td>
+                        <td style="padding:6px 0; color:#111827; font-size:15px; font-weight:600; text-align:right;">{{ ticket_codigo }}</td>
+                    </tr>
+                    {% if tipo_ticket %}
+                    <tr>
+                        <td style="padding:6px 0; color:#6b7280; font-size:14px;">Tipo</td>
+                        <td style="padding:6px 0; color:#111827; font-size:15px; text-align:right;">{{ tipo_ticket | capitalize }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if categoria %}
+                    <tr>
+                        <td style="padding:6px 0; color:#6b7280; font-size:14px;">Categoría</td>
+                        <td style="padding:6px 0; color:#111827; font-size:15px; text-align:right;">{{ categoria }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if rubro_nombre %}
+                    <tr>
+                        <td style="padding:6px 0; color:#6b7280; font-size:14px;">Rubro</td>
+                        <td style="padding:6px 0; color:#111827; font-size:15px; text-align:right;">{{ rubro_nombre }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if canal_ingreso %}
+                    <tr>
+                        <td style="padding:6px 0; color:#6b7280; font-size:14px;">Canal de ingreso</td>
+                        <td style="padding:6px 0; color:#111827; font-size:15px; text-align:right;">{{ canal_ingreso }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if fecha_formateada %}
+                    <tr>
+                        <td style="padding:6px 0; color:#6b7280; font-size:14px;">Fecha</td>
+                        <td style="padding:6px 0; color:#111827; font-size:15px; text-align:right;">{{ fecha_formateada }}</td>
+                    </tr>
+                    {% endif %}
+                </table>
+
+                <div style="margin:24px 0 18px; padding:20px; border:1px solid #e5e7eb; border-radius:8px; background-color:#f9fafb;">
+                    <h3 style="margin:0 0 12px; color:#1f2937; font-size:16px;">Detalles del reclamo/pedido</h3>
+                    {% if asunto %}
+                    <p style="margin:0 0 8px; color:#111827; font-size:15px;"><strong>Asunto:</strong> {{ asunto }}</p>
+                    {% endif %}
+                    {% if direccion %}
+                    <p style="margin:0 0 8px; color:#111827; font-size:15px;"><strong>Dirección:</strong> {{ direccion }}</p>
+                    {% endif %}
+                    {% if consulta_pin %}
+                    <p style="margin:0 0 8px; color:#111827; font-size:15px;"><strong>PIN de consulta:</strong> {{ consulta_pin }}</p>
+                    {% endif %}
+                    {% if detalles %}
+                    <p style="margin:0; color:#374151; font-size:15px; line-height:1.5;"><strong>Descripción:</strong></p>
+                    <p style="margin:8px 0 0; color:#4b5563; font-size:14px; line-height:1.6; white-space:pre-wrap;">{{ detalles }}</p>
+                    {% endif %}
+                </div>
+
+                <div style="margin:0 0 18px; padding:20px; border:1px solid #e5e7eb; border-radius:8px;">
+                    <h3 style="margin:0 0 12px; color:#1f2937; font-size:16px;">Datos del contacto</h3>
+                    {% if cliente_nombre %}
+                    <p style="margin:0 0 6px; color:#111827; font-size:15px;"><strong>Nombre:</strong> {{ cliente_nombre }}</p>
+                    {% endif %}
+                    {% if email_cliente %}
+                    <p style="margin:0 0 6px; color:#111827; font-size:15px;"><strong>Email:</strong> {{ email_cliente }}</p>
+                    {% endif %}
+                    {% if telefono_cliente %}
+                    <p style="margin:0 0 6px; color:#111827; font-size:15px;"><strong>Teléfono:</strong> {{ telefono_cliente }}</p>
+                    {% endif %}
+                    {% if dni_cliente %}
+                    <p style="margin:0; color:#111827; font-size:15px;"><strong>DNI:</strong> {{ dni_cliente }}</p>
+                    {% endif %}
+                </div>
+
+                {% if panel_url %}
+                <p style="margin:24px 0 0; text-align:center;">
+                    <a href="{{ panel_url }}" style="display:inline-block; padding:12px 28px; background-color:#2563eb; color:#ffffff; text-decoration:none; border-radius:6px; font-weight:600;">Ver ticket en el panel</a>
+                </p>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td style="padding:18px 36px; background-color:#f9fafb; border-top:1px solid #e5e7eb; border-radius:0 0 8px 8px; text-align:center;">
+                <p style="margin:0; font-size:12px; color:#9ca3af;">Recibís este correo porque se generó un ticket a través del asistente virtual.</p>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>
