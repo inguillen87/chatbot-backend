@@ -3202,6 +3202,41 @@ MENU_KEYWORDS = {
     "recoleccion_residuos": ["recoleccion", "residuos", "basura", "basurero", "cuando pasa el camion", "recolector", "recogida", "recoleccion de basura"]
 }
 
+def _augment_menu_keywords_with_tramite_buttons():
+    """Add dynamic keywords for trámites based on button texts configured in tramites.json."""
+
+    try:
+        tramites_info = cargar_tramites_info()
+    except Exception:  # pragma: no cover - avoid import errors if config is missing
+        logger.warning(
+            "[MENU_KEYWORDS] No se pudo cargar tramites.json para extender palabras clave",
+            exc_info=True,
+        )
+        return
+
+    if not isinstance(tramites_info, dict):
+        return
+
+    for tramite_key, tramite_data in tramites_info.items():
+        if not isinstance(tramite_data, dict):
+            continue
+
+        keywords_list = MENU_KEYWORDS.setdefault(tramite_key, [])
+        if not isinstance(keywords_list, list):
+            continue
+
+        for boton in tramite_data.get("botones", []):
+            texto = boton.get("texto")
+            if not texto:
+                continue
+
+            normalized = normalizar_texto(texto)
+            if normalized and normalized not in keywords_list:
+                keywords_list.append(normalized)
+
+
+_augment_menu_keywords_with_tramite_buttons()
+
 from fuzzywuzzy import process
 
 def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None:
