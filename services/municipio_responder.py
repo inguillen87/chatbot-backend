@@ -12,7 +12,7 @@ from enum import Enum, auto
 import unicodedata
 import difflib
 from typing import Any, Dict, Optional
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
 from models import (
@@ -80,6 +80,7 @@ from services.ticket_utils import (
 )
 from services.vocabulary_loader import get_name_prefix_stopwords
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
+from config import BACKEND_URL as DEFAULT_BACKEND_URL, IS_HTTPS as DEFAULT_IS_HTTPS
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
@@ -1899,6 +1900,77 @@ def handle_contactos_utiles_inicio(context, chat_db_context):
         "fuente": "contactos_utiles_show_categories"
     }
 
+def _normalize_public_url(value: Any, context: Optional[dict] = None) -> Optional[str]:
+    """Return an absolute, publicly accessible URL for uploaded assets."""
+
+    if not value or not isinstance(value, str):
+        return None
+
+    candidate = value.strip()
+    if not candidate:
+        return None
+
+    lowered = candidate.lower()
+    if lowered.startswith(("http://", "https://", "mailto:", "tel:", "whatsapp:", "data:")):
+        return candidate
+
+    if candidate.startswith("//"):
+        scheme = "https" if (current_app.config.get("IS_HTTPS") or DEFAULT_IS_HTTPS) else "http"
+        return f"{scheme}:{candidate}"
+
+    if candidate.startswith("www."):
+        return f"https://{candidate}"
+
+    if candidate.startswith("/data/"):
+        candidate = "/media/" + candidate[len("/data/"):]
+    elif candidate.startswith("data/"):
+        candidate = "/media/" + candidate[len("data/"):]
+    elif candidate.startswith("/archivos/"):
+        candidate = "/media/" + candidate.lstrip("/")
+
+    base_url = None
+    municipio_cfg: Optional[dict] = None
+    if context and isinstance(context, dict):
+        municipio_cfg = context.get("municipio_config_actual")
+        if isinstance(municipio_cfg, dict):
+            base_url = (
+                municipio_cfg.get("media_base_url")
+                or municipio_cfg.get("asset_base_url")
+                or municipio_cfg.get("public_base_url")
+            )
+
+    if not base_url:
+        base_url = current_app.config.get("BACKEND_URL") or DEFAULT_BACKEND_URL
+
+    if not base_url:
+        return candidate
+
+    normalized_base = base_url.rstrip("/") + "/"
+    return urljoin(normalized_base, candidate.lstrip("/"))
+
+
+def _normalize_post_entry(post: dict, context: Optional[dict]) -> dict:
+    normalized = dict(post)
+    raw_image = post.get("imagen_url") or post.get("imagen")
+    datos_extra = post.get("datos_extra")
+    if not raw_image and isinstance(datos_extra, dict):
+        raw_image = datos_extra.get("imagen_url")
+    normalized_image = _normalize_public_url(raw_image, context)
+    if normalized_image:
+        normalized["imagen_url"] = normalized_image
+    elif raw_image and "imagen_url" not in normalized:
+        normalized["imagen_url"] = raw_image
+
+    raw_link = post.get("enlace") or post.get("link") or post.get("url")
+    normalized_link = _normalize_public_url(raw_link, context)
+    if normalized_link:
+        normalized["enlace"] = normalized_link
+    elif raw_link and "enlace" not in normalized:
+        normalized["enlace"] = raw_link
+
+    return normalized
+
+
 def _format_post(post: dict, channel: str) -> str:
     """Return a formatted string for a single news/event entry."""
 
@@ -2057,7 +2129,12 @@ def handle_contactos_utiles_mostrar_categoria(context, chat_db_context, selected
     }
 
 
-def _get_posts_from_json(content_type: str, channel: str, municipio_id: str) -> tuple[str, str | None]:
+def _get_posts_from_json(
+    content_type: str,
+    channel: str,
+    municipio_id: str,
+    context: Optional[dict] = None,
+) -> tuple[str, str | None]:
     """Helper to get formatted posts of a specific type from the JSON file.
 
     Returns a tuple with the formatted text and the first image URL found
@@ -2071,12 +2148,27 @@ def _get_posts_from_json(content_type: str, channel: str, municipio_id: str) -> 
     if not all_posts:
         return "", None
 
-    posts = [p for p in all_posts if p.get("tipo_post") == content_type]
+    tipo_post_filters: set[str]
+    if content_type == "noticia":
+        # Las publicaciones cargadas desde la solapa "Información" deben
+        # mostrarse junto con las noticias tradicionales en WhatsApp y el
+        # widget web. Se etiquetan con ``tipo_post=informacion`` y, en algunos
+        # casos, también aparecen en ``tags``.
+        tipo_post_filters = {"noticia", "informacion"}
+    else:
+        tipo_post_filters = {content_type}
+
+    posts = []
+    for post in all_posts:
+        tipo_post = (post.get("tipo_post") or "").lower()
+        tags = [str(tag).lower() for tag in post.get("tags", []) if isinstance(tag, str)]
+        if tipo_post in tipo_post_filters or any(tag in tipo_post_filters for tag in tags):
+            posts.append(_normalize_post_entry(post, context))
 
     if not posts:
         return "", None
 
-    limit = 6
+    limit = 10
 
     def _parse_date(date_str: str):
         if not date_str:
@@ -2093,23 +2185,36 @@ def _get_posts_from_json(content_type: str, channel: str, municipio_id: str) -> 
             return None
 
     if content_type == "evento":
+        now_arg = datetime.now(ARG_TZ)
+        future_posts: list[dict] = []
+        undated_posts: list[dict] = []
+        past_posts: list[dict] = []
+
         for p in posts:
-            p["_start"] = _parse_date(
+            start_dt = _parse_date(
                 p.get("fecha_evento_inicio")
                 or p.get("fecha_inicio")
                 or p.get("fecha_publicacion")
             )
-        future_posts = [p for p in posts if p.get("_start") and p["_start"] >= datetime.now(ARG_TZ)]
-        posts = future_posts or posts
-        posts.sort(key=lambda x: x.get("_start") or datetime.max)
+            p["_start"] = start_dt
+            if start_dt is None:
+                undated_posts.append(p)
+            elif start_dt >= now_arg:
+                future_posts.append(p)
+            else:
+                past_posts.append(p)
+
+        future_posts.sort(key=lambda x: x.get("_start") or datetime.max)
+        past_posts.sort(key=lambda x: x.get("_start") or datetime.min, reverse=True)
+        ordered_posts = future_posts + undated_posts + past_posts
+        posts = ordered_posts or posts
     else:
         posts.sort(key=lambda x: x.get("fecha_publicacion", ""), reverse=True)
 
-    first_image = None
     formatted: list[str] = []
-    for p in posts[:limit]:
-        if not first_image:
-            first_image = p.get("imagen_url")
+    selected_posts = posts[:limit]
+    first_image = next((p.get("imagen_url") for p in selected_posts if p.get("imagen_url")), None)
+    for p in selected_posts:
         formatted.append(_format_post(p, channel))
 
     if channel == "whatsapp":
@@ -2260,8 +2365,12 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
     if action_id == "agenda_y_noticias":
         channel = context.get("channel", "web")
         municipio_id = context.get("municipio_id", MUNICIPIO_ID)
-        noticias_body, noticias_img = _get_posts_from_json("noticia", channel, municipio_id)
-        eventos_body, eventos_img = _get_posts_from_json("evento", channel, municipio_id)
+        noticias_body, noticias_img = _get_posts_from_json(
+            "noticia", channel, municipio_id, context
+        )
+        eventos_body, eventos_img = _get_posts_from_json(
+            "evento", channel, municipio_id, context
+        )
 
         full_body = ""
         if noticias_body:

@@ -35,6 +35,8 @@ class TestAccionesMunicipio(unittest.TestCase):
     def setUp(self):
         """Set up for each test."""
         self.app = create_app(config_class=TestConfigAll)
+        self.app.config["BACKEND_URL"] = "https://api.example.com"
+        self.app.config["IS_HTTPS"] = True
         self.client = self.app.test_client()
         self.app_context = self.app.app_context()
         self.app_context.push()
@@ -561,19 +563,33 @@ class TestAccionesMunicipio(unittest.TestCase):
                     "enlace": "https://example.com/noticia1"
                 },
                 {
+                    "titulo": "Información Útil",
+                    "descripcion": "Dato cargado desde la solapa información.",
+                    "tipo_post": "informacion",
+                    "fecha_publicacion": "2025-08-23T12:00:00"
+                },
+                {
                     "titulo": "Evento Cultural de Prueba",
                     "descripcion": "Este es un evento.",
                     "tipo_post": "evento",
                     "fecha_evento_inicio": "2025-08-30T20:00:00",
                     "fecha_evento_fin": "2025-08-30T22:00:00",
                     "enlace": "https://example.com/evento",
-                    "imagen_url": "https://example.com/evento.jpg"
+                    "imagen_url": "/data/archivos/evento.jpg"
                 },
                 {
                     "titulo": "Noticia de Prueba 2",
                     "descripcion": "Este es el cuerpo de la noticia 2.",
                     "tipo_post": "noticia",
                     "fecha_publicacion": "2025-08-21"
+                },
+                {
+                    "titulo": "Evento Sin Fecha",
+                    "descripcion": "Actividad sin fecha programada.",
+                    "tipo_post": "evento",
+                    "fecha_publicacion": "2025-08-19T09:00:00",
+                    "imagen_url": "/data/archivos/evento_sin_fecha.png",
+                    "enlace": "https://example.com/evento-sin-fecha"
                 },
             ]
         }
@@ -597,14 +613,22 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertIn("Noticias Recientes", response["message_body"])
         self.assertIn("Próximos Eventos", response["message_body"])
         self.assertIn("Noticia de Prueba 1", response["message_body"])
+        self.assertIn("Información Útil", response["message_body"])
         self.assertIn("Evento Cultural de Prueba", response["message_body"])
-        self.assertIn("https://www.facebook.com/municipalidaddejunin", response["message_body"])
-        self.assertIn("<img src=\"https://example.com/flyer.jpg\"", response["message_body"])
-        self.assertIn("Ver más", response["message_body"])
+        self.assertIn("Evento Sin Fecha", response["message_body"])
+        social_urls = [opt.get("url") for opt in response.get("options_list", []) if isinstance(opt, dict)]
+        self.assertTrue(any(url and url.startswith("https://www.facebook.com/") for url in social_urls))
+        self.assertIn("https://example.com/flyer.jpg", response["message_body"])
+        self.assertIn("🔗 https://example.com/noticia1", response["message_body"])
         self.assertIn("📅 22/08/2025 10:00 hs", response["message_body"])
         self.assertIn(
             "📅 30/08/2025 20:00 hs - 30/08/2025 22:00 hs",
             response["message_body"],
+        )
+        self.assertIn("https://api.example.com/media/archivos/evento.jpg", response["message_body"])
+        self.assertEqual(
+            response.get("image_url"),
+            "https://api.example.com/media/archivos/evento.jpg",
         )
         self.assertEqual(response["fuente"], "handler_agenda_y_noticias")
 
