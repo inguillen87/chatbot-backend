@@ -95,7 +95,7 @@ class TestSugerenciaFlow(unittest.TestCase):
 
         # 4. User confirms and ticket is created
         with patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket:
-            mock_crear_ticket.return_value = {"id": 99, "nro_ticket": "S-12345"}
+            mock_crear_ticket.return_value = {"id": 99, "nro_ticket": 271497, "consulta_pin": "707165"}
             response_4 = responder_municipio(
                 pregunta_original={"action": "confirmar_sugerencia_si"},
                 owner_user=owner_user,
@@ -109,9 +109,18 @@ class TestSugerenciaFlow(unittest.TestCase):
             self.assertEqual(call_kwargs['ticket_data']['detalles'], sugerencia_texto)
             self.assertEqual(call_kwargs['ticket_data']['municipio_id'], owner_user.municipio_id)
             self.assertTrue(response_4.get("success"))
-            self.assertIn("Hemos recibido tu sugerencia", response_4["message_body"])
-            self.assertIn("S-12345", response_4["message_body"])
-            self.assertIn("¿Cómo te puedo ayudar hoy?", response_4["message_body"])
+            body = response_4["message_body"]
+            self.assertIn("¡Sugerencia recibido", body)
+            self.assertIn("📄 *Resumen:*", body)
+            self.assertIn("*Ticket:* `M-271497`", body)
+            self.assertRegex(body, r"\*PIN:\* `\d{6}`")
+            self.assertIn("Punto Limpio Junín", body)
+            opciones = response_4.get("options_list", [])
+            textos_botones = {opt.get("texto") for opt in opciones if isinstance(opt, dict)}
+            self.assertIn("💬 Ver mi Ticket", textos_botones)
+            self.assertIn("💡 Hacer otra sugerencia", textos_botones)
+            self.assertIn("delayed_payload", response_4)
+            self.assertEqual(response_4.get("delay_seconds"), 20)
             self.assertEqual(
                 chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
                 ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
