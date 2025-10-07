@@ -237,6 +237,50 @@ def test_bulk_create_municipal_posts(client):
     assert "Entrega de Certificados" in titles and "Torneo de Fútbol" in titles
 
 
+def test_bulk_create_normalizes_internal_media_paths(client):
+    with app.app_context():
+        admin_user = User.query.filter_by(email="admin_muni@test.com").first()
+        token = generar_token(
+            admin_user.id,
+            admin_user.rol,
+            admin_user.tipo_chat,
+            admin_user.municipio_id,
+            admin_user.pyme_id,
+        )
+
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Content-Type': 'application/json',
+    }
+
+    events = [
+        {
+            "title": "Expo Municipal",
+            "imagen_url": "/data/archivos/expo.png",
+        },
+        {
+            "title": "Foro de Innovación",
+            "imagen_url": "data/archivos/foro.jpg",
+        },
+    ]
+
+    response = client.post(
+        '/municipal/posts/bulk',
+        data=json.dumps({"events": events}),
+        headers=headers,
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    created = payload['created']
+    assert created[0]['imagen_url'] == '/media/archivos/expo.png'
+    assert created[1]['imagen_url'] == '/media/archivos/foro.jpg'
+
+    stored = _get_posts_for_testing()
+    assert stored[0].imagen_url == '/media/archivos/expo.png'
+    assert stored[1].imagen_url == '/media/archivos/foro.jpg'
+
+
 def test_bulk_create_municipal_posts_spanish_keys(client):
     with app.app_context():
         admin_user = User.query.filter_by(email="admin_muni@test.com").first()
