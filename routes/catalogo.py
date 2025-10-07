@@ -1,5 +1,5 @@
 import os
-from flask import Blueprint, request, jsonify, send_from_directory
+from flask import Blueprint, request, jsonify, send_from_directory, render_template, g, url_for
 from models import CatalogoItem, QA, ArchivoAdjunto
 from routes.auth import token_requerido
 from services.qdrant_search import (
@@ -30,6 +30,20 @@ catalogo_bp = Blueprint('catalogo', __name__, url_prefix='/catalogo')
 from werkzeug.utils import secure_filename
 from services.intelligent_catalog_processor import IntelligentCatalogProcessor
 import tempfile
+
+@catalogo_bp.route('/upload/form', methods=['GET'])
+@token_requerido
+def upload_catalog_form(user):
+    token_value = request.args.get("token") or getattr(g, "auth_token", None)
+    upload_endpoint = url_for('catalogo.upload_catalog')
+    list_endpoint = url_for('catalogo.listar_catalogo')
+    return render_template(
+        'admin/pyme_catalog_upload.html',
+        token=token_value,
+        upload_url=upload_endpoint,
+        list_url=list_endpoint,
+        user=user,
+    )
 
 @catalogo_bp.route('/upload', methods=['POST'])
 @token_requerido

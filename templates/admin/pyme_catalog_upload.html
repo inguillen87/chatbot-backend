@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <title>Actualizar catálogo de productos</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 2rem 1rem 4rem;
+        background: radial-gradient(circle at top left, #f5f7ff 0%, #ffffff 55%, #eef2ff 100%);
+        min-height: 100vh;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        background: rgba(255, 255, 255, 0.92);
+        backdrop-filter: blur(6px);
+        border-radius: 18px;
+        padding: 2.5rem;
+        box-shadow: 0 22px 55px -30px rgba(37, 56, 88, 0.35);
+      }
+      h1 {
+        margin-top: 0;
+        font-size: 2rem;
+        font-weight: 700;
+        color: #1e293b;
+      }
+      p {
+        color: #475569;
+        line-height: 1.6;
+      }
+      form {
+        margin-top: 2rem;
+        display: grid;
+        gap: 1.5rem;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        color: #334155;
+      }
+      input[type="file"] {
+        margin-top: 0.5rem;
+        display: block;
+        width: 100%;
+      }
+      button {
+        border: none;
+        border-radius: 999px;
+        padding: 0.85rem 1.75rem;
+        font-size: 1rem;
+        font-weight: 600;
+        color: #fff;
+        background: linear-gradient(135deg, #312e81, #4338ca);
+        cursor: pointer;
+        transition: transform 0.15s ease, box-shadow 0.2s ease;
+        width: fit-content;
+      }
+      button[disabled] {
+        opacity: 0.65;
+        cursor: progress;
+        transform: none;
+        box-shadow: none;
+      }
+      button:not([disabled]):hover {
+        transform: translateY(-1px);
+        box-shadow: 0 12px 24px -18px rgba(79, 70, 229, 0.65);
+      }
+      .status {
+        margin-top: 2.5rem;
+        padding: 1.25rem 1.5rem;
+        border-radius: 12px;
+        background: rgba(79, 70, 229, 0.08);
+        color: #1e1b4b;
+        font-size: 0.95rem;
+        min-height: 3rem;
+        white-space: pre-wrap;
+      }
+      .status.success {
+        background: rgba(34, 197, 94, 0.12);
+        color: #14532d;
+      }
+      .status.error {
+        background: rgba(239, 68, 68, 0.12);
+        color: #991b1b;
+      }
+      .tips {
+        margin-top: 2.5rem;
+        padding: 1.5rem;
+        border-radius: 14px;
+        background: rgba(15, 23, 42, 0.04);
+        color: #1f2937;
+      }
+      .tips ul {
+        padding-left: 1.2rem;
+      }
+      .tips li {
+        margin-bottom: 0.5rem;
+      }
+      a {
+        color: #4338ca;
+        font-weight: 600;
+        text-decoration: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Subí tu catálogo actualizado</h1>
+      <p>
+        Cargá tus listas de precios en PDF o Excel para que el asistente comercial responda
+        con información al instante. Cada archivo se procesa y guarda en Qdrant para que las
+        búsquedas de productos, promociones y combos mayoristas estén siempre al día.
+      </p>
+      <form id="catalog-upload-form">
+        <label for="catalog-files">
+          Seleccioná archivos PDF, XLSX o XLS
+          <input id="catalog-files" name="files" type="file" accept=".pdf,.xlsx,.xls,.csv" multiple required>
+        </label>
+        <button type="submit">Subir catálogos</button>
+      </form>
+      <div id="upload-status" class="status" role="status" aria-live="polite">
+        Seleccioná uno o más archivos y presioná “Subir catálogos”.
+      </div>
+      <section class="tips">
+        <h2>Consejos para acelerar tus ventas</h2>
+        <ul>
+          <li>Asegurate de que cada producto tenga nombre, precio por unidad y precio por caja.</li>
+          <li>Podés incluir columnas de promociones o descuentos para que el bot los ofrezca.</li>
+          <li>Repetí la carga todas las veces que necesites: el catálogo se actualiza automáticamente.</li>
+          <li><a href="{{ list_url }}?token={{ token }}" target="_blank" rel="noopener">Ver catálogo guardado</a></li>
+        </ul>
+      </section>
+    </main>
+    <script>
+      const form = document.getElementById('catalog-upload-form');
+      const fileInput = document.getElementById('catalog-files');
+      const statusBox = document.getElementById('upload-status');
+      const uploadEndpoint = '{{ upload_url }}';
+      const authToken = '{{ token or "" }}';
+
+      function updateStatus(message, variant = '') {
+        statusBox.textContent = message;
+        statusBox.classList.remove('success', 'error');
+        if (variant) {
+          statusBox.classList.add(variant);
+        }
+      }
+
+      async function uploadSingleFile(file) {
+        const targetUrl = authToken
+          ? `${uploadEndpoint}?token=${encodeURIComponent(authToken)}`
+          : uploadEndpoint;
+        const formData = new FormData();
+        formData.append('file', file, file.name);
+        const response = await fetch(targetUrl, {
+          method: 'POST',
+          body: formData,
+        });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          const message = payload.error || `Error ${response.status}: no se pudo procesar ${file.name}`;
+          throw new Error(message);
+        }
+        return response.json().catch(() => ({ mensaje: 'Catálogo subido correctamente.' }));
+      }
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const files = Array.from(fileInput.files || []);
+        if (!files.length) {
+          updateStatus('Seleccioná al menos un archivo para subir.', 'error');
+          return;
+        }
+        form.querySelector('button[type="submit"]').disabled = true;
+        updateStatus('Procesando archivos… Esto puede tardar unos segundos por catálogo.');
+        try {
+          const results = [];
+          for (const file of files) {
+            results.push(await uploadSingleFile(file));
+          }
+          const summary = results.map((res, index) => `• ${files[index].name}: ${res.mensaje || 'Procesado'}`).join('\n');
+          updateStatus(`¡Listo!\n${summary}`, 'success');
+          fileInput.value = '';
+        } catch (error) {
+          console.error(error);
+          updateStatus(error.message || 'Ocurrió un error al subir el catálogo.', 'error');
+        } finally {
+          form.querySelector('button[type="submit"]').disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

@@ -145,12 +145,21 @@ class CrearPedidoAction(BaseActionHandler):
             "sku": item.get("sku")
         } for item in current_cart_summary.get("items_detalle", [])])
 
+        monto_total_estimado = current_cart_summary.get("total_final_con_descuento")
+        if monto_total_estimado is None:
+            monto_total_estimado = current_cart_summary.get("total_original_calculado", 0.0)
+
         pedido_payload_for_model = {
-            "asunto": f"Pedido desde Chatbot para: {nombre_cliente}", "detalles": detalles_json_str, "rubro": rubro_pyme,
-            "nombre_cliente": nombre_cliente, "email_cliente": email_cliente_validado,
-            "telefono_cliente": telefono_cliente_validado, "user_id": cliente_user_id,
-            "direccion": direccion_entrega, "monto_total": current_cart_summary.get("total_final_con_descuento", 0.0),
-            "pyme_id": pyme_id
+            "asunto": f"Pedido desde Chatbot para: {nombre_cliente}",
+            "detalles": detalles_json_str,
+            "rubro": rubro_pyme,
+            "nombre_cliente": nombre_cliente,
+            "email_cliente": email_cliente_validado,
+            "telefono_cliente": telefono_cliente_validado,
+            "user_id": cliente_user_id,
+            "direccion": direccion_entrega,
+            "monto_total": monto_total_estimado,
+            "pyme_id": pyme_id,
         }
 
         try:
@@ -161,12 +170,32 @@ class CrearPedidoAction(BaseActionHandler):
             clear_pyme_cart(pyme_carts_data, pyme_id)
             logger.info(f"Pedido #{nuevo_pedido.nro_pedido} creado y carrito limpiado para pyme_id {pyme_id}.")
 
-            # Placeholder for notifications
-            # send_order_confirmation_notification(nuevo_pedido)
+            from services.pymes import formatear_carrito_desde_summary  # Local import to avoid circular dependency
 
-            return {"success": True,
-                    "message_to_user": f"¡Gracias, {nombre_cliente}! Tu pedido #{nuevo_pedido.nro_pedido} ha sido registrado exitosamente. Nos pondremos en contacto contigo para coordinar el pago y la entrega.",
-                    "data": {"nro_pedido": nuevo_pedido.nro_pedido, "pedido_id": nuevo_pedido.id, "status_pedido": "registrado"}}
+            resumen_carrito = formatear_carrito_desde_summary(current_cart_summary, self.context)
+            cliente_payload = {
+                "nombre": nombre_cliente,
+                "telefono": telefono_cliente_validado,
+                "email": email_cliente_validado,
+                "direccion": direccion_entrega,
+            }
+
+            data_payload = {
+                "nro_pedido": nuevo_pedido.nro_pedido,
+                "pedido_id": nuevo_pedido.id,
+                "status_pedido": "registrado",
+                "monto_total": monto_total_estimado,
+                "cart_summary": current_cart_summary,
+                "cliente": cliente_payload,
+                "order_summary_text": resumen_carrito,
+            }
+
+            return {
+                "success": True,
+                "message_body": resumen_carrito,
+                "data": data_payload,
+                "fuente": "pyme_pedido_registrado",
+            }
         except Exception as e:
             logger.error(f"Error crítico al crear PymePedido: {e}", exc_info=True)
             return {"success": False, "message_to_user": "Hubo un problema técnico al registrar tu pedido. Por favor, intenta de nuevo más tarde o contacta a soporte."}
