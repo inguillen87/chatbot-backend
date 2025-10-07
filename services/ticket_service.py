@@ -72,6 +72,16 @@ class PymeTicketCreator(TicketCreator):
             or ticket_data.get("lng")
             or ticket_data.get("longitude")
         )
+        telefono_contacto = (
+            ticket_data.get("telefono_cliente")
+            or ticket_data.get("telefono_vecino")
+            or ticket_data.get("telefono")
+        )
+        email_contacto = (
+            ticket_data.get("email_cliente")
+            or ticket_data.get("email_vecino")
+            or ticket_data.get("email")
+        )
         return PymeTicket(
             user_id=ticket_data.get("user_id"),
             anon_id=ticket_data.get("anon_id"),
@@ -83,8 +93,8 @@ class PymeTicketCreator(TicketCreator):
             direccion=ticket_data.get("direccion"),
             latitud=lat,
             longitud=lon,
-            telefono=ticket_data.get("telefono_vecino") or ticket_data.get("telefono"),
-            email=ticket_data.get("email_vecino") or ticket_data.get("email"),
+            telefono=telefono_contacto,
+            email=email_contacto,
             dni=ticket_data.get("dni"),
             estado=ticket_data.get("estado", "nuevo"),
             estado_cliente=ticket_data.get("estado", "nuevo")
@@ -155,6 +165,9 @@ class ServicioTickets:
                     # La integración externa no debe impedir el funcionamiento primario.
                     logger.error(f"Error durante el envío del Ticket #{ticket.nro_ticket} a SIGEM: {e_sigem}", exc_info=True)
 
+            # Notificaciones por email (admin y cliente)
+            self._notificar_ticket_por_email(ticket, tipo_ticket, ticket_data)
+
             # Notificar panel en tiempo real
             # This logic was moved to the action handlers to avoid circular imports
             # try:
@@ -195,6 +208,60 @@ class ServicioTickets:
             db.session.rollback()
             logger.error(f"Error de DB al crear ticket: {e}", exc_info=True)
             return None
+
+    def _notificar_ticket_por_email(self, ticket, tipo_ticket: str, ticket_data: Dict[str, Any]) -> None:
+        """Envía notificaciones por email al administrador y al cliente si corresponde."""
+        if not ticket:
+            return
+
+        try:
+            from services.email_service import (
+                enviar_email_ticket_admin,
+                enviar_email_ticket_cliente,
+            )
+
+            admin_user = None
+            owner_id = None
+
+            if tipo_ticket == "municipio":
+                owner_id = ticket_data.get("municipio_id") or getattr(ticket, "municipio_id", None)
+            elif tipo_ticket == "pyme":
+                owner_id = ticket_data.get("pyme_id")
+
+            if owner_id:
+                try:
+                    admin_user = db.session.get(User, owner_id)
+                except Exception:  # pragma: no cover - defensive, should not happen in tests
+                    admin_user = None
+
+            if (
+                not admin_user
+                and tipo_ticket == "pyme"
+                and getattr(ticket, "rubro_id", None)
+                and hasattr(User, "query")
+            ):
+                try:
+                    admin_user = User.query.filter_by(rubro_id=ticket.rubro_id).first()
+                except Exception:  # pragma: no cover - defensive fallback
+                    admin_user = None
+
+            enviar_email_ticket_admin(
+                ticket,
+                admin_user=admin_user,
+                tipo_ticket=tipo_ticket,
+                ticket_data=ticket_data,
+            )
+            enviar_email_ticket_cliente(
+                ticket,
+                tipo_ticket=tipo_ticket,
+                admin_user=admin_user,
+                ticket_data=ticket_data,
+            )
+        except Exception as e:  # pragma: no cover - logging only
+            logger.error(
+                f"Error enviando notificaciones por email para ticket {getattr(ticket, 'id', 'N/A')}: {e}",
+                exc_info=True,
+            )
 
     def crear_comentario(self, ticket_id: int, tipo_ticket: Literal["municipio", "pyme"], comentario_data: Dict[str, Any]) -> Union[TicketComentario, None]:
         TicketModel = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket

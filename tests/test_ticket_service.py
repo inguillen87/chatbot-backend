@@ -20,6 +20,8 @@ class _DummySession:
         pass
     def rollback(self):
         pass
+    def get(self, model, obj_id):
+        return None
 models_stub.MunicipioTicket = type('MunicipioTicket', (), {})
 models_stub.PymeTicket = type('PymeTicket', (), {})
 models_stub.TicketComentario = type('TicketComentario', (), {})
@@ -47,8 +49,14 @@ class TicketServiceTests(unittest.TestCase):
         self.mod_patch.start()
         importlib.reload(ts) # Reload to make sure it picks up the patched models
         models_stub.db.session.flush = MagicMock()
+        self.email_admin_patch = patch("services.email_service.enviar_email_ticket_admin", return_value=True)
+        self.email_cliente_patch = patch("services.email_service.enviar_email_ticket_cliente", return_value=True)
+        self.email_admin_patch.start()
+        self.email_cliente_patch.start()
 
     def tearDown(self):
+        self.email_admin_patch.stop()
+        self.email_cliente_patch.stop()
         self.mod_patch.stop()
         importlib.reload(ts) # Reload again to restore original imports for other tests
 
