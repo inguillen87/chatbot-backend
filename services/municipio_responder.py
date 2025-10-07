@@ -11,7 +11,7 @@ import json
 from enum import Enum, auto
 import unicodedata
 import difflib
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
@@ -125,6 +125,72 @@ def _is_placeholder_description(value: Any) -> bool:
     if not value or not isinstance(value, str):
         return False
     return normalizar_texto(value) in PLACEHOLDER_DESCRIPTIONS_NORMALIZED
+
+
+PLACEHOLDER_CONTACT_RESPONSES = {
+    "ya te la envie",
+    "ya te la mande",
+    "ya te la mandé",
+    "ya la envie",
+    "ya la mande",
+    "la misma",
+    "es la misma",
+    "misma direccion",
+    "misma dirección",
+    "la misma direccion",
+    "la misma dirección",
+    "la de antes",
+    "igual que antes",
+    "la anterior",
+}
+
+
+def _set_sugerencia_location_context(
+    contexto: Dict[str, Any],
+    raw_location: Optional[Dict[str, Any]] = None,
+    fallback_address: str | None = None,
+) -> None:
+    """Persist full location information for suggestion flows."""
+
+    address = fallback_address or ""
+    if isinstance(raw_location, dict):
+        address = raw_location.get("address") or raw_location.get("label") or address
+    if not address:
+        address = "N/A"
+
+    location_payload: Dict[str, Any] = {"address": address}
+    if isinstance(raw_location, dict):
+        if raw_location.get("label"):
+            location_payload["label"] = raw_location.get("label")
+        lat = raw_location.get("latitude") or raw_location.get("lat")
+        lon = raw_location.get("longitude") or raw_location.get("lon")
+        if lat:
+            location_payload["latitude"] = lat
+        if lon:
+            location_payload["longitude"] = lon
+
+    contexto["ubicacion_contextual_sugerencia"] = location_payload
+
+
+def _extract_sugerencia_location(contexto: Dict[str, Any]) -> tuple[str, Optional[Dict[str, Any]]]:
+    """Return stored suggestion location and normalized coordinates."""
+
+    raw_location = contexto.pop("ubicacion_contextual_sugerencia", None)
+    if isinstance(raw_location, dict):
+        address = (
+            raw_location.get("address")
+            or raw_location.get("label")
+            or raw_location.get("texto")
+            or "N/A"
+        )
+        lat = raw_location.get("latitude") or raw_location.get("lat")
+        lon = raw_location.get("longitude") or raw_location.get("lon")
+        if lat and lon:
+            return address, {"lat": lat, "lng": lon}
+        return address, None
+    if isinstance(raw_location, str) and raw_location:
+        return raw_location, None
+    return "N/A", None
 
 class ReclamoState(Enum):
     ESPERANDO_CATEGORIA = auto()
@@ -4530,7 +4596,11 @@ def responder_municipio(
                 return _finalize_response(response_dict)
             elif action == "enviar_sugerencia_con_ubicacion":
                 contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
-                contexto_municipio_actual['ubicacion_contextual_sugerencia'] = address
+                _set_sugerencia_location_context(
+                    contexto_municipio_actual,
+                    ubicacion_contextual,
+                    fallback_address=address,
+                )
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return _finalize_response({"message_body": f"Excelente. Por favor, escribí tu sugerencia relacionada con la ubicación: *{address}*.", "fuente": "handler_enviar_sugerencia_con_ubicacion"})
             else:
@@ -4558,13 +4628,21 @@ def responder_municipio(
             if len(sugerencia_texto) < 10:
                 return _finalize_response({"message_body": "Tu sugerencia parece un poco corta. ¿Podrías darme un poco más de detalle?", "fuente": "sugerencia_muy_corta"})
 
-            ubicacion_sugerencia = contexto_municipio_actual.pop('ubicacion_contextual_sugerencia', 'N/A')
+            ubicacion_sugerencia, coordenadas_sugerencia = _extract_sugerencia_location(
+                contexto_municipio_actual
+            )
             viewer_user_obj = context.get("viewer_user_obj")
             contacto_prev = contexto_municipio_actual.get('contacto_usuario', {})
+            direccion_contacto = (
+                getattr(viewer_user_obj, "direccion", None)
+                or contacto_prev.get("direccion")
+                or (ubicacion_sugerencia if ubicacion_sugerencia and ubicacion_sugerencia != "N/A" else None)
+            )
             datos_sugerencia = {
                 "categoria": "Sugerencia",
                 "descripcion": sugerencia_texto,
                 "ubicacion": ubicacion_sugerencia,
+                "coordenadas": coordenadas_sugerencia,
                 "nombre": (
                     getattr(viewer_user_obj, "name", None)
                     or getattr(viewer_user_obj, "nombre", None)
@@ -4572,7 +4650,7 @@ def responder_municipio(
                 ),
                 "dni": getattr(viewer_user_obj, "dni", None) or contacto_prev.get("dni"),
                 "email": getattr(viewer_user_obj, "email", None) or contacto_prev.get("email"),
-                "direccion": getattr(viewer_user_obj, "direccion", None) or contacto_prev.get("direccion"),
+                "direccion": direccion_contacto,
                 "telefono": getattr(viewer_user_obj, "telefono", None) or contacto_prev.get("telefono"),
             }
 
@@ -4582,7 +4660,13 @@ def responder_municipio(
                 if not datos_sugerencia.get(c)
             ]
             contexto_municipio_actual['datos_sugerencia'] = datos_sugerencia
-            contacto_actualizado = {}
+            contacto_actualizado: Dict[str, Any] = {}
+            for campo_prev, valor_prev in contacto_prev.items():
+                if not valor_prev:
+                    continue
+                if campo_prev == "telefono" and not validar_telefono(str(valor_prev)):
+                    continue
+                contacto_actualizado[campo_prev] = valor_prev
             for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
                 valor_campo = datos_sugerencia.get(campo)
                 if not valor_campo:
@@ -4641,6 +4725,14 @@ def responder_municipio(
                     continue
                 if campo == "telefono" and not validar_telefono(str(valor_nuevo)):
                     continue
+                existing_valor = datos_guardados.get(campo)
+                if existing_valor:
+                    valor_normalizado = normalizar_texto(str(valor_nuevo))
+                    existente_normalizado = normalizar_texto(str(existing_valor))
+                    if campo == "direccion" and valor_normalizado in PLACEHOLDER_CONTACT_RESPONSES:
+                        continue
+                    if valor_normalizado == existente_normalizado:
+                        continue
                 if campo == "nombre":
                     if re.search(r"\d", str(valor_nuevo)):
                         continue
@@ -4671,6 +4763,14 @@ def responder_municipio(
                     if llm_datos:
                         for campo, valor in llm_datos.items():
                             if valor and campo in ["nombre", "dni", "email", "direccion", "telefono"]:
+                                existing_valor = datos_guardados.get(campo)
+                                if existing_valor:
+                                    valor_normalizado = normalizar_texto(str(valor))
+                                    existente_normalizado = normalizar_texto(str(existing_valor))
+                                    if campo == "direccion" and valor_normalizado in PLACEHOLDER_CONTACT_RESPONSES:
+                                        continue
+                                    if valor_normalizado == existente_normalizado:
+                                        continue
                                 datos_guardados[campo] = valor
                 except Exception as e:
                     logger.error("[DATOS_SUGERENCIA] LLM fallback failed: %s", e)
@@ -4678,7 +4778,13 @@ def responder_municipio(
 
             contexto_municipio_actual['datos_sugerencia'] = datos_guardados
             # Persist contact info for future interactions
-            contacto_actualizado = {}
+            contacto_actualizado: Dict[str, Any] = {}
+            for campo_prev, valor_prev in contexto_municipio_actual.get('contacto_usuario', {}).items():
+                if not valor_prev:
+                    continue
+                if campo_prev == "telefono" and not validar_telefono(str(valor_prev)):
+                    continue
+                contacto_actualizado[campo_prev] = valor_prev
             for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
                 valor_campo = datos_guardados.get(campo)
                 if not valor_campo:
@@ -5337,7 +5443,11 @@ def responder_municipio(
                 return _finalize_response(response_dict)
             elif action == "enviar_sugerencia_con_ubicacion":
                 contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
-                contexto_municipio_actual['ubicacion_contextual_sugerencia'] = address
+                _set_sugerencia_location_context(
+                    contexto_municipio_actual,
+                    ubicacion_contextual,
+                    fallback_address=address,
+                )
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return _finalize_response({"message_body": f"Excelente. Por favor, escribí tu sugerencia relacionada con la ubicación: *{address}*.", "fuente": "handler_enviar_sugerencia_con_ubicacion"})
             else:
@@ -5431,13 +5541,21 @@ def responder_municipio(
             if len(sugerencia_texto) < 10:
                 return _finalize_response({"message_body": "Tu sugerencia parece un poco corta. ¿Podrías darme un poco más de detalle?", "fuente": "sugerencia_muy_corta"})
 
-            ubicacion_sugerencia = contexto_municipio_actual.pop('ubicacion_contextual_sugerencia', 'N/A')
+            ubicacion_sugerencia, coordenadas_sugerencia = _extract_sugerencia_location(
+                contexto_municipio_actual
+            )
             viewer_user_obj = context.get("viewer_user_obj")
             contacto_prev = contexto_municipio_actual.get('contacto_usuario', {})
+            direccion_contacto = (
+                getattr(viewer_user_obj, "direccion", None)
+                or contacto_prev.get("direccion")
+                or (ubicacion_sugerencia if ubicacion_sugerencia and ubicacion_sugerencia != "N/A" else None)
+            )
             datos_sugerencia = {
                 "categoria": "Sugerencia",
                 "descripcion": sugerencia_texto,
                 "ubicacion": ubicacion_sugerencia,
+                "coordenadas": coordenadas_sugerencia,
                 "nombre": (
                     getattr(viewer_user_obj, "name", None)
                     or getattr(viewer_user_obj, "nombre", None)
@@ -5445,7 +5563,7 @@ def responder_municipio(
                 ),
                 "dni": getattr(viewer_user_obj, "dni", None) or contacto_prev.get("dni"),
                 "email": getattr(viewer_user_obj, "email", None) or contacto_prev.get("email"),
-                "direccion": getattr(viewer_user_obj, "direccion", None) or contacto_prev.get("direccion"),
+                "direccion": direccion_contacto,
                 "telefono": getattr(viewer_user_obj, "telefono", None) or contacto_prev.get("telefono"),
             }
 
@@ -5455,7 +5573,13 @@ def responder_municipio(
                 if not datos_sugerencia.get(c)
             ]
             contexto_municipio_actual['datos_sugerencia'] = datos_sugerencia
-            contacto_actualizado = {}
+            contacto_actualizado: Dict[str, Any] = {}
+            for campo_prev, valor_prev in contacto_prev.items():
+                if not valor_prev:
+                    continue
+                if campo_prev == "telefono" and not validar_telefono(str(valor_prev)):
+                    continue
+                contacto_actualizado[campo_prev] = valor_prev
             for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
                 valor_campo = datos_sugerencia.get(campo)
                 if not valor_campo:
@@ -6253,10 +6377,13 @@ def responder_municipio(
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response(response_dict)
-
         elif action == "enviar_sugerencia_con_ubicacion":
             contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
-            contexto_municipio_actual['ubicacion_contextual_sugerencia'] = address
+            _set_sugerencia_location_context(
+                contexto_municipio_actual,
+                ubicacion_contextual,
+                fallback_address=address,
+            )
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response({
@@ -6264,7 +6391,7 @@ def responder_municipio(
                 "fuente": "handler_enviar_sugerencia_con_ubicacion"
             })
 
-        else: # Cancelar o no se entiende
+        else:  # Cancelar o no se entiende
             contexto_municipio_actual['estado_conversacion'] = None
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
@@ -6402,21 +6529,35 @@ def responder_municipio(
                 "fuente": "sugerencia_muy_corta"
             })
 
-        ubicacion_sugerencia = contexto_municipio_actual.pop('ubicacion_contextual_sugerencia', 'N/A')
+        ubicacion_sugerencia, coordenadas_sugerencia = _extract_sugerencia_location(
+            contexto_municipio_actual
+        )
 
         # Crear ticket para la sugerencia
-        datos_sugerencia = {
+        datos_sugerencia: Dict[str, Any] = {
             "categoria": "Sugerencia",
             "descripcion": sugerencia_texto,
             "ubicacion": ubicacion_sugerencia,
         }
+        if coordenadas_sugerencia:
+            datos_sugerencia["coordenadas"] = coordenadas_sugerencia
         contacto_prev = contexto_municipio_actual.get('contacto_usuario', {})
         if contacto_prev:
-            datos_sugerencia.update({
-                k: contacto_prev.get(k)
-                for k in ["nombre", "dni", "email", "direccion", "telefono"]
-                if contacto_prev.get(k)
-            })
+            contacto_a_usar: Dict[str, Any] = {}
+            for clave in ["nombre", "dni", "email", "direccion", "telefono"]:
+                valor_prev = contacto_prev.get(clave)
+                if not valor_prev:
+                    continue
+                if clave == "telefono" and not validar_telefono(str(valor_prev)):
+                    continue
+                contacto_a_usar[clave] = valor_prev
+            if (
+                not contacto_a_usar.get("direccion")
+                and ubicacion_sugerencia
+                and ubicacion_sugerencia != "N/A"
+            ):
+                contacto_a_usar["direccion"] = ubicacion_sugerencia
+            datos_sugerencia.update(contacto_a_usar)
 
         handler = CrearReclamoActionHandler(context)
         response = handler.execute(datos_sugerencia)
