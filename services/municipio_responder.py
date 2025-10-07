@@ -145,6 +145,226 @@ PLACEHOLDER_CONTACT_RESPONSES = {
 }
 
 
+def _prefer_contact_value(*values: Any, placeholder_checker: Optional[Any] = None) -> Any:
+    """Return the first non-empty contact value that is not a placeholder."""
+
+    for value in values:
+        if value is None:
+            continue
+        candidate = value
+        if isinstance(candidate, str):
+            candidate = candidate.strip()
+            if not candidate:
+                continue
+        if placeholder_checker and placeholder_checker(candidate):
+            continue
+        return candidate
+    return None
+
+
+def _is_placeholder_name(value: Any) -> bool:
+    if not value or not isinstance(value, str):
+        return False
+    return normalizar_texto(value) in PLACEHOLDER_NAMES
+
+
+def _is_placeholder_address(value: Any) -> bool:
+    if not value or not isinstance(value, str):
+        return False
+    return normalizar_texto(value) in PLACEHOLDER_CONTACT_RESPONSES
+
+
+def _is_placeholder_email(value: Any) -> bool:
+    if not value or not isinstance(value, str):
+        return False
+    normalized = value.strip().lower()
+    return normalized.endswith("@whatsapp.chatboc.com") or normalized.endswith("@anon.chatboc.com")
+
+
+def _normalize_phone_value(value: Any) -> Optional[str]:
+    if not value:
+        return None
+    telefono = str(value).strip()
+    if not telefono or not validar_telefono(telefono):
+        return None
+    try:
+        formatted = formatear_telefono_e164(telefono)
+    except Exception:
+        formatted = telefono
+    return formatted or telefono
+
+
+def _ensure_sugerencia_address(datos: Dict[str, Any]) -> None:
+    if datos.get("direccion"):
+        return
+    ubicacion = datos.get("ubicacion")
+    if isinstance(ubicacion, str) and ubicacion and ubicacion != "N/A":
+        datos["direccion"] = ubicacion
+
+
+def _merge_contacto_usuario(contexto: Dict[str, Any], nuevos_datos: Dict[str, Any]) -> None:
+    contacto_prev = contexto.get("contacto_usuario", {}) or {}
+    contacto_actualizado: Dict[str, Any] = {}
+
+    # Preservar valores previos válidos
+    for campo, valor_prev in contacto_prev.items():
+        if not valor_prev:
+            continue
+        if campo == "nombre" and _is_placeholder_name(valor_prev):
+            continue
+        if campo == "email" and _is_placeholder_email(valor_prev):
+            continue
+        if campo == "direccion" and _is_placeholder_address(valor_prev):
+            continue
+        if campo == "telefono":
+            valor_prev = _normalize_phone_value(valor_prev)
+            if not valor_prev:
+                continue
+        contacto_actualizado[campo] = valor_prev
+
+    # Incorporar nuevos valores válidos
+    for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
+        valor = nuevos_datos.get(campo)
+        if not valor:
+            continue
+        if campo == "nombre" and _is_placeholder_name(valor):
+            continue
+        if campo == "email" and _is_placeholder_email(valor):
+            continue
+        if campo == "direccion" and _is_placeholder_address(valor):
+            continue
+        if campo == "telefono":
+            valor = _normalize_phone_value(valor)
+            if not valor:
+                continue
+        contacto_actualizado[campo] = valor
+
+    if contacto_actualizado:
+        contexto["contacto_usuario"] = contacto_actualizado
+    elif "contacto_usuario" in contexto:
+        contexto["contacto_usuario"] = {}
+
+
+def _update_sugerencia_contact_fields(
+    datos_guardados: Dict[str, Any], nuevos_datos: Dict[str, Any]
+) -> None:
+    direccion_referencia = (
+        nuevos_datos.get("direccion")
+        or datos_guardados.get("direccion")
+        or datos_guardados.get("ubicacion")
+        or ""
+    )
+    for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
+        valor_nuevo = nuevos_datos.get(campo)
+        if not valor_nuevo:
+            continue
+        if campo == "telefono":
+            valor_nuevo = _normalize_phone_value(valor_nuevo)
+            if not valor_nuevo:
+                continue
+        elif campo == "nombre":
+            if _is_placeholder_name(valor_nuevo) or re.search(r"\d", str(valor_nuevo)):
+                continue
+            nombre_existente = datos_guardados.get("nombre")
+            nombre_existente_normalizado = (
+                normalizar_texto(nombre_existente) if nombre_existente else ""
+            )
+            valor_normalizado = normalizar_texto(str(valor_nuevo))
+            if nombre_existente and nombre_existente_normalizado == valor_normalizado:
+                continue
+            if (
+                direccion_referencia
+                and valor_normalizado in normalizar_texto(str(direccion_referencia))
+                and nombre_existente_normalizado
+                and nombre_existente_normalizado not in PLACEHOLDER_NAMES
+            ):
+                continue
+        elif campo == "email":
+            if _is_placeholder_email(valor_nuevo):
+                continue
+            valor_nuevo = str(valor_nuevo).strip()
+        elif campo == "direccion":
+            if _is_placeholder_address(valor_nuevo):
+                continue
+            valor_nuevo = str(valor_nuevo).strip()
+        else:
+            valor_nuevo = str(valor_nuevo).strip()
+
+        existing_valor = datos_guardados.get(campo)
+        if existing_valor:
+            if campo == "telefono":
+                existing_norm = _normalize_phone_value(existing_valor)
+                if existing_norm == valor_nuevo:
+                    continue
+            else:
+                valor_normalizado = normalizar_texto(str(valor_nuevo))
+                existente_normalizado = normalizar_texto(str(existing_valor))
+                if valor_normalizado == existente_normalizado:
+                    continue
+        datos_guardados[campo] = valor_nuevo
+
+
+def _build_sugerencia_datos(
+    sugerencia_texto: str,
+    ubicacion: Optional[str],
+    coordenadas: Optional[Dict[str, Any]],
+    viewer_user_obj: Any,
+    contacto_prev: Dict[str, Any],
+) -> Dict[str, Any]:
+    datos: Dict[str, Any] = {
+        "categoria": "Sugerencia",
+        "descripcion": sugerencia_texto,
+    }
+    if ubicacion:
+        datos["ubicacion"] = ubicacion
+    if coordenadas:
+        datos["coordenadas"] = coordenadas
+
+    nombre = _prefer_contact_value(
+        contacto_prev.get("nombre"),
+        getattr(viewer_user_obj, "name", None) if viewer_user_obj else None,
+        getattr(viewer_user_obj, "nombre", None) if viewer_user_obj else None,
+        placeholder_checker=_is_placeholder_name,
+    )
+    if nombre:
+        datos["nombre"] = nombre
+
+    dni = _prefer_contact_value(
+        contacto_prev.get("dni"),
+        getattr(viewer_user_obj, "dni", None) if viewer_user_obj else None,
+    )
+    if dni:
+        datos["dni"] = str(dni).strip()
+
+    email = _prefer_contact_value(
+        contacto_prev.get("email"),
+        getattr(viewer_user_obj, "email", None) if viewer_user_obj else None,
+        placeholder_checker=_is_placeholder_email,
+    )
+    if email:
+        datos["email"] = email.strip()
+
+    direccion = _prefer_contact_value(
+        contacto_prev.get("direccion"),
+        getattr(viewer_user_obj, "direccion", None) if viewer_user_obj else None,
+        ubicacion if ubicacion and ubicacion != "N/A" else None,
+        placeholder_checker=_is_placeholder_address,
+    )
+    if direccion:
+        datos["direccion"] = direccion
+
+    telefono = _prefer_contact_value(
+        contacto_prev.get("telefono"),
+        getattr(viewer_user_obj, "telefono", None) if viewer_user_obj else None,
+    )
+    telefono_normalizado = _normalize_phone_value(telefono)
+    if telefono_normalizado:
+        datos["telefono"] = telefono_normalizado
+
+    _ensure_sugerencia_address(datos)
+    return datos
+
+
 def _set_sugerencia_location_context(
     contexto: Dict[str, Any],
     raw_location: Optional[Dict[str, Any]] = None,
@@ -4632,49 +4852,22 @@ def responder_municipio(
                 contexto_municipio_actual
             )
             viewer_user_obj = context.get("viewer_user_obj")
-            contacto_prev = contexto_municipio_actual.get('contacto_usuario', {})
-            direccion_contacto = (
-                getattr(viewer_user_obj, "direccion", None)
-                or contacto_prev.get("direccion")
-                or (ubicacion_sugerencia if ubicacion_sugerencia and ubicacion_sugerencia != "N/A" else None)
+            contacto_prev = contexto_municipio_actual.get('contacto_usuario', {}) or {}
+            datos_sugerencia = _build_sugerencia_datos(
+                sugerencia_texto,
+                ubicacion_sugerencia,
+                coordenadas_sugerencia,
+                viewer_user_obj,
+                contacto_prev,
             )
-            datos_sugerencia = {
-                "categoria": "Sugerencia",
-                "descripcion": sugerencia_texto,
-                "ubicacion": ubicacion_sugerencia,
-                "coordenadas": coordenadas_sugerencia,
-                "nombre": (
-                    getattr(viewer_user_obj, "name", None)
-                    or getattr(viewer_user_obj, "nombre", None)
-                    or contacto_prev.get("nombre")
-                ),
-                "dni": getattr(viewer_user_obj, "dni", None) or contacto_prev.get("dni"),
-                "email": getattr(viewer_user_obj, "email", None) or contacto_prev.get("email"),
-                "direccion": direccion_contacto,
-                "telefono": getattr(viewer_user_obj, "telefono", None) or contacto_prev.get("telefono"),
-            }
 
             campos_faltantes = [
-                c
-                for c in ["nombre", "dni", "email", "direccion", "telefono"]
-                if not datos_sugerencia.get(c)
+                campo
+                for campo in ["nombre", "dni", "email", "direccion", "telefono"]
+                if not datos_sugerencia.get(campo)
             ]
             contexto_municipio_actual['datos_sugerencia'] = datos_sugerencia
-            contacto_actualizado: Dict[str, Any] = {}
-            for campo_prev, valor_prev in contacto_prev.items():
-                if not valor_prev:
-                    continue
-                if campo_prev == "telefono" and not validar_telefono(str(valor_prev)):
-                    continue
-                contacto_actualizado[campo_prev] = valor_prev
-            for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
-                valor_campo = datos_sugerencia.get(campo)
-                if not valor_campo:
-                    continue
-                if campo == "telefono" and not validar_telefono(str(valor_campo)):
-                    continue
-                contacto_actualizado[campo] = valor_campo
-            contexto_municipio_actual['contacto_usuario'] = contacto_actualizado
+            _merge_contacto_usuario(contexto_municipio_actual, datos_sugerencia)
             if campos_faltantes:
                 contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
                 if chat_db_context:
@@ -4718,81 +4911,25 @@ def responder_municipio(
             nuevos_datos = extract_multiple_contact_details_regex(
                 pregunta_str, campos_requeridos + ["telefono"]
             )
-            direccion_referencia = nuevos_datos.get("direccion") or datos_guardados.get("direccion") or ""
-            for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
-                valor_nuevo = nuevos_datos.get(campo)
-                if not valor_nuevo:
-                    continue
-                if campo == "telefono" and not validar_telefono(str(valor_nuevo)):
-                    continue
-                existing_valor = datos_guardados.get(campo)
-                if existing_valor:
-                    valor_normalizado = normalizar_texto(str(valor_nuevo))
-                    existente_normalizado = normalizar_texto(str(existing_valor))
-                    if campo == "direccion" and valor_normalizado in PLACEHOLDER_CONTACT_RESPONSES:
-                        continue
-                    if valor_normalizado == existente_normalizado:
-                        continue
-                if campo == "nombre":
-                    if re.search(r"\d", str(valor_nuevo)):
-                        continue
-                    nombre_existente = datos_guardados.get("nombre")
-                    nombre_existente_normalizado = (
-                        normalizar_texto(nombre_existente) if nombre_existente else ""
-                    )
-                    valor_normalizado = normalizar_texto(valor_nuevo)
-                    if nombre_existente and nombre_existente_normalizado == valor_normalizado:
-                        continue
-                    if (
-                        direccion_referencia
-                        and valor_normalizado in normalizar_texto(direccion_referencia)
-                        and nombre_existente_normalizado
-                        and nombre_existente_normalizado not in PLACEHOLDER_NAMES
-                    ):
-                        continue
-                datos_guardados[campo] = valor_nuevo
-
-            campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
+            _update_sugerencia_contact_fields(datos_guardados, nuevos_datos)
 
             # Utilizar el LLM solo si todavía faltan campos
+            campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
             if campos_faltantes:
                 try:
                     llm_datos = extract_multiple_contact_details_llm(
                         pregunta_str, campos_requeridos + ["telefono"]
                     )
                     if llm_datos:
-                        for campo, valor in llm_datos.items():
-                            if valor and campo in ["nombre", "dni", "email", "direccion", "telefono"]:
-                                existing_valor = datos_guardados.get(campo)
-                                if existing_valor:
-                                    valor_normalizado = normalizar_texto(str(valor))
-                                    existente_normalizado = normalizar_texto(str(existing_valor))
-                                    if campo == "direccion" and valor_normalizado in PLACEHOLDER_CONTACT_RESPONSES:
-                                        continue
-                                    if valor_normalizado == existente_normalizado:
-                                        continue
-                                datos_guardados[campo] = valor
+                        _update_sugerencia_contact_fields(datos_guardados, llm_datos)
                 except Exception as e:
                     logger.error("[DATOS_SUGERENCIA] LLM fallback failed: %s", e)
                 campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
 
+            _ensure_sugerencia_address(datos_guardados)
+            campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
             contexto_municipio_actual['datos_sugerencia'] = datos_guardados
-            # Persist contact info for future interactions
-            contacto_actualizado: Dict[str, Any] = {}
-            for campo_prev, valor_prev in contexto_municipio_actual.get('contacto_usuario', {}).items():
-                if not valor_prev:
-                    continue
-                if campo_prev == "telefono" and not validar_telefono(str(valor_prev)):
-                    continue
-                contacto_actualizado[campo_prev] = valor_prev
-            for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
-                valor_campo = datos_guardados.get(campo)
-                if not valor_campo:
-                    continue
-                if campo == "telefono" and not validar_telefono(str(valor_campo)):
-                    continue
-                contacto_actualizado[campo] = valor_campo
-            contexto_municipio_actual['contacto_usuario'] = contacto_actualizado
+            _merge_contacto_usuario(contexto_municipio_actual, datos_guardados)
             if campos_faltantes:
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
@@ -5545,49 +5682,22 @@ def responder_municipio(
                 contexto_municipio_actual
             )
             viewer_user_obj = context.get("viewer_user_obj")
-            contacto_prev = contexto_municipio_actual.get('contacto_usuario', {})
-            direccion_contacto = (
-                getattr(viewer_user_obj, "direccion", None)
-                or contacto_prev.get("direccion")
-                or (ubicacion_sugerencia if ubicacion_sugerencia and ubicacion_sugerencia != "N/A" else None)
+            contacto_prev = contexto_municipio_actual.get('contacto_usuario', {}) or {}
+            datos_sugerencia = _build_sugerencia_datos(
+                sugerencia_texto,
+                ubicacion_sugerencia,
+                coordenadas_sugerencia,
+                viewer_user_obj,
+                contacto_prev,
             )
-            datos_sugerencia = {
-                "categoria": "Sugerencia",
-                "descripcion": sugerencia_texto,
-                "ubicacion": ubicacion_sugerencia,
-                "coordenadas": coordenadas_sugerencia,
-                "nombre": (
-                    getattr(viewer_user_obj, "name", None)
-                    or getattr(viewer_user_obj, "nombre", None)
-                    or contacto_prev.get("nombre")
-                ),
-                "dni": getattr(viewer_user_obj, "dni", None) or contacto_prev.get("dni"),
-                "email": getattr(viewer_user_obj, "email", None) or contacto_prev.get("email"),
-                "direccion": direccion_contacto,
-                "telefono": getattr(viewer_user_obj, "telefono", None) or contacto_prev.get("telefono"),
-            }
 
             campos_faltantes = [
-                c
-                for c in ["nombre", "dni", "email", "direccion", "telefono"]
-                if not datos_sugerencia.get(c)
+                campo
+                for campo in ["nombre", "dni", "email", "direccion", "telefono"]
+                if not datos_sugerencia.get(campo)
             ]
             contexto_municipio_actual['datos_sugerencia'] = datos_sugerencia
-            contacto_actualizado: Dict[str, Any] = {}
-            for campo_prev, valor_prev in contacto_prev.items():
-                if not valor_prev:
-                    continue
-                if campo_prev == "telefono" and not validar_telefono(str(valor_prev)):
-                    continue
-                contacto_actualizado[campo_prev] = valor_prev
-            for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
-                valor_campo = datos_sugerencia.get(campo)
-                if not valor_campo:
-                    continue
-                if campo == "telefono" and not validar_telefono(str(valor_campo)):
-                    continue
-                contacto_actualizado[campo] = valor_campo
-            contexto_municipio_actual['contacto_usuario'] = contacto_actualizado
+            _merge_contacto_usuario(contexto_municipio_actual, datos_sugerencia)
             if campos_faltantes:
                 contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
                 if chat_db_context:
@@ -5631,31 +5741,7 @@ def responder_municipio(
             nuevos_datos = extract_multiple_contact_details_regex(
                 pregunta_str, campos_requeridos + ["telefono"]
             )
-            direccion_referencia = nuevos_datos.get("direccion") or datos_guardados.get("direccion") or ""
-            for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
-                valor_nuevo = nuevos_datos.get(campo)
-                if not valor_nuevo:
-                    continue
-                if campo == "telefono" and not validar_telefono(str(valor_nuevo)):
-                    continue
-                if campo == "nombre":
-                    if re.search(r"\d", str(valor_nuevo)):
-                        continue
-                    nombre_existente = datos_guardados.get("nombre")
-                    nombre_existente_normalizado = (
-                        normalizar_texto(nombre_existente) if nombre_existente else ""
-                    )
-                    valor_normalizado = normalizar_texto(valor_nuevo)
-                    if nombre_existente and nombre_existente_normalizado == valor_normalizado:
-                        continue
-                    if (
-                        direccion_referencia
-                        and valor_normalizado in normalizar_texto(direccion_referencia)
-                        and nombre_existente_normalizado
-                        and nombre_existente_normalizado not in PLACEHOLDER_NAMES
-                    ):
-                        continue
-                datos_guardados[campo] = valor_nuevo
+            _update_sugerencia_contact_fields(datos_guardados, nuevos_datos)
 
             campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
 
@@ -5666,24 +5752,16 @@ def responder_municipio(
                         pregunta_str, campos_requeridos + ["telefono"]
                     )
                     if llm_datos:
-                        for campo, valor in llm_datos.items():
-                            if valor and campo in ["nombre", "dni", "email", "direccion", "telefono"]:
-                                datos_guardados[campo] = valor
+                        _update_sugerencia_contact_fields(datos_guardados, llm_datos)
                 except Exception as e:
                     logger.error("[DATOS_SUGERENCIA] LLM fallback failed: %s", e)
                 campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
 
+            _ensure_sugerencia_address(datos_guardados)
+            campos_faltantes = [c for c in campos_requeridos if not datos_guardados.get(c)]
+
             contexto_municipio_actual['datos_sugerencia'] = datos_guardados
-            # Persist contact info for future interactions
-            contacto_actualizado = {}
-            for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
-                valor_campo = datos_guardados.get(campo)
-                if not valor_campo:
-                    continue
-                if campo == "telefono" and not validar_telefono(str(valor_campo)):
-                    continue
-                contacto_actualizado[campo] = valor_campo
-            contexto_municipio_actual['contacto_usuario'] = contacto_actualizado
+            _merge_contacto_usuario(contexto_municipio_actual, datos_guardados)
             if campos_faltantes:
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
@@ -6534,30 +6612,16 @@ def responder_municipio(
         )
 
         # Crear ticket para la sugerencia
-        datos_sugerencia: Dict[str, Any] = {
-            "categoria": "Sugerencia",
-            "descripcion": sugerencia_texto,
-            "ubicacion": ubicacion_sugerencia,
-        }
-        if coordenadas_sugerencia:
-            datos_sugerencia["coordenadas"] = coordenadas_sugerencia
-        contacto_prev = contexto_municipio_actual.get('contacto_usuario', {})
-        if contacto_prev:
-            contacto_a_usar: Dict[str, Any] = {}
-            for clave in ["nombre", "dni", "email", "direccion", "telefono"]:
-                valor_prev = contacto_prev.get(clave)
-                if not valor_prev:
-                    continue
-                if clave == "telefono" and not validar_telefono(str(valor_prev)):
-                    continue
-                contacto_a_usar[clave] = valor_prev
-            if (
-                not contacto_a_usar.get("direccion")
-                and ubicacion_sugerencia
-                and ubicacion_sugerencia != "N/A"
-            ):
-                contacto_a_usar["direccion"] = ubicacion_sugerencia
-            datos_sugerencia.update(contacto_a_usar)
+        contacto_prev = contexto_municipio_actual.get('contacto_usuario', {}) or {}
+        viewer_user_obj = context.get("viewer_user_obj")
+        datos_sugerencia = _build_sugerencia_datos(
+            sugerencia_texto,
+            ubicacion_sugerencia,
+            coordenadas_sugerencia,
+            viewer_user_obj,
+            contacto_prev,
+        )
+        _merge_contacto_usuario(contexto_municipio_actual, datos_sugerencia)
 
         handler = CrearReclamoActionHandler(context)
         response = handler.execute(datos_sugerencia)
