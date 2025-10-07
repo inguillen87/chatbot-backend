@@ -119,6 +119,12 @@ class TestMenuKeywords(unittest.TestCase):
     def test_ayuda_keyword(self):
         self.assertEqual(find_global_menu_action("ayuda"), "mostrar_menu_ayuda")
 
+    def test_tramite_button_keyword(self):
+        self.assertEqual(
+            find_global_menu_action("Requisitos y costos"),
+            "licencia_de_conducir",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
