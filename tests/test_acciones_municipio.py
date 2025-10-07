@@ -561,6 +561,12 @@ class TestAccionesMunicipio(unittest.TestCase):
                     "enlace": "https://example.com/noticia1"
                 },
                 {
+                    "titulo": "Información Útil",
+                    "descripcion": "Dato cargado desde la solapa información.",
+                    "tipo_post": "informacion",
+                    "fecha_publicacion": "2025-08-23T12:00:00"
+                },
+                {
                     "titulo": "Evento Cultural de Prueba",
                     "descripcion": "Este es un evento.",
                     "tipo_post": "evento",
@@ -597,10 +603,12 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertIn("Noticias Recientes", response["message_body"])
         self.assertIn("Próximos Eventos", response["message_body"])
         self.assertIn("Noticia de Prueba 1", response["message_body"])
+        self.assertIn("Información Útil", response["message_body"])
         self.assertIn("Evento Cultural de Prueba", response["message_body"])
-        self.assertIn("https://www.facebook.com/municipalidaddejunin", response["message_body"])
-        self.assertIn("<img src=\"https://example.com/flyer.jpg\"", response["message_body"])
-        self.assertIn("Ver más", response["message_body"])
+        social_urls = [opt.get("url") for opt in response.get("options_list", []) if isinstance(opt, dict)]
+        self.assertTrue(any(url and url.startswith("https://www.facebook.com/") for url in social_urls))
+        self.assertIn("https://example.com/flyer.jpg", response["message_body"])
+        self.assertIn("🔗 https://example.com/noticia1", response["message_body"])
         self.assertIn("📅 22/08/2025 10:00 hs", response["message_body"])
         self.assertIn(
             "📅 30/08/2025 20:00 hs - 30/08/2025 22:00 hs",
