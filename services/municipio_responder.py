@@ -38,7 +38,10 @@ from services.utils_placeholders import (
     obtener_respuesta_municipio,
 )
 from services.config_loader import cargar_configuracion_municipio
-from utils.municipio_utils import get_numeric_municipio_id
+from utils.municipio_utils import (
+    get_numeric_municipio_id,
+    resolve_municipio_identifier,
+)
 from .actions.municipio_actions import (
     CrearReclamoActionHandler,
 )
@@ -4044,7 +4047,12 @@ def responder_municipio(
 
     # Cargar config específica del municipio (si existe)
     final_municipio_config = CONFIG_MUNICIPIO.copy()  # Default global
-    owner_user_municipio_id_str = str(owner_user.municipio_id) if owner_user and hasattr(owner_user, 'municipio_id') and owner_user.municipio_id else MUNICIPIO_ID
+    owner_municipio_identifier = resolve_municipio_identifier(owner_user, MUNICIPIO_ID)
+    owner_user_municipio_id_str = (
+        str(owner_municipio_identifier)
+        if owner_municipio_identifier is not None
+        else str(MUNICIPIO_ID)
+    )
 
     # Load from JSON file
     loaded_specific_config = cargar_configuracion_municipio(owner_user_municipio_id_str, "config.json")
@@ -4902,8 +4910,9 @@ def responder_municipio(
     # --- CONTEXT INITIALIZATION ---
     # This is now at the top to ensure all parts of the function have access to the full context.
     final_municipio_config = CONFIG_MUNICIPIO
-    if owner_user and hasattr(owner_user, 'municipio_id') and owner_user.municipio_id:
-        owner_user_municipio_id_str = str(owner_user.municipio_id)
+    resolved_specific_identifier = resolve_municipio_identifier(owner_user)
+    if resolved_specific_identifier is not None:
+        owner_user_municipio_id_str = str(resolved_specific_identifier)
         loaded_specific_config = cargar_configuracion_municipio(owner_user_municipio_id_str, "config.json")
         if loaded_specific_config:
             final_municipio_config = loaded_specific_config
@@ -4956,6 +4965,7 @@ def responder_municipio(
         "rubro_obj": rubro_obj,
         "channel": channel,
         "municipio_config_actual": final_municipio_config,
+        "municipio_id": owner_user_municipio_id_str,
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
         "chat_db_context_data": chat_db_context_live_data,
         "profile_name": kwargs.get("profile_name"),
