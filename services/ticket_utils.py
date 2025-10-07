@@ -529,7 +529,8 @@ def formatear_ticket_respuesta(
         "reclamo": "Reclamo",
         "sugerencia": "Sugerencia",
         "tramite": "Trámite",
-        "chat": "Chat en vivo"
+        "chat": "Chat en vivo",
+        "pedido": "Pedido",
     }
     texto_tipo = tipos.get(tipo, "Consulta")
 

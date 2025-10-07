@@ -4,7 +4,8 @@ from unittest.mock import patch
 import pytest
 
 from models import CatalogoItem, ChatSessionContext, Rubro, User, db
-from services.pymes import responder_pyme
+from flask import current_app
+from services.pymes import responder_pyme, _build_pyme_order_success_payload
 
 
 @pytest.fixture
@@ -87,8 +88,12 @@ def test_pyme_smoke_text_to_quote_to_order(app, pyme_owner):
             channel="whatsapp",
         )
         assert confirm["fuente"] == "pyme_pedido_confirmado"
-        assert confirm["data"]["pedido"]["nro"]
-        assert confirm["data"]["pedido"]["total"] > 0
+        assert confirm["data"]["nro_pedido"]
+        assert confirm["data"]["monto_total"] > 0
+        assert any(
+            opt.get("action_id") == "pyme_hacer_pedido" for opt in confirm.get("options_list", [])
+        )
+        assert confirm.get("delayed_payload")
 
 
 def test_pyme_image_to_catalog_match(app, pyme_owner):
@@ -190,3 +195,59 @@ def test_pyme_location_to_shipping_estimate(app, pyme_owner):
         assert response["fuente"] == "pyme_delivery_estimate"
         assert "costo de envío" in response["message_body"].lower()
         assert response["data"]["delivery"]["shipping_total"] > 0
+
+
+def test_build_pyme_order_success_payload_merges_buttons(app):
+    with app.app_context():
+        current_app.config["PYME_PEDIDOS_PUBLIC_URL"] = "https://ventas.test/pedidos"
+        context = {
+            "channel": "whatsapp",
+            "rubro_nombre": "Bodega",
+            "viewer_user_obj": type("Viewer", (), {"name": "Marcelo"})(),
+        }
+        handler_response = {
+            "success": True,
+            "fuente": "pyme_pedido_registrado",
+            "message_body": "Resumen de tu carrito",
+            "options_list": [
+                {"texto": "Ver catálogo", "action_id": "pyme_productos_stock"},
+                {"texto": "💬 Ver mi Ticket", "url": "https://ventas.test/pedidos/123"},
+            ],
+            "data": {
+                "nro_pedido": "PED-123456",
+                "pedido_id": 77,
+                "monto_total": 25000,
+                "consulta_pin": "707165",
+                "cart_summary": {
+                    "items_detalle": [
+                        {"nombre_producto": "Malbec Reserva", "cantidad": 2},
+                    ],
+                    "total_final_con_descuento": 25000,
+                },
+                "cliente": {"nombre": "Marcelo"},
+                "order_summary_text": "Resumen de tu carrito",
+            },
+        }
+
+        with patch(
+            "services.pymes.promo_service.build_ticket_promo_section",
+            return_value={
+                "message_body": "♻️ Recordá sumarte al Punto Limpio.",
+                "button": {"texto": "♻️ Punto Limpio", "url": "https://junin.test/punto"},
+            },
+        ), patch(
+            "services.pymes.get_pyme_menu_payload",
+            return_value={
+                "message_body": "Menú de la bodega",
+                "options_list": [{"texto": "Menú principal", "action_id": "menu_principal"}],
+            },
+        ):
+            payload = _build_pyme_order_success_payload(context, handler_response)
+
+    assert payload["fuente"] == "pyme_pedido_confirmado"
+    assert "Pedido" in payload["message_body"]
+    assert any(btn.get("action_id") == "pyme_hacer_pedido" for btn in payload["options_list"])
+    has_url_button = any(btn.get("type") == "url" for btn in payload["options_list"])
+    expected_link = "https://ventas.test/pedidos/PED-123456?pin=707165"
+    assert has_url_button or expected_link in payload["message_body"]
+    assert payload["delayed_payload"]["message_body"] == "Menú de la bodega"

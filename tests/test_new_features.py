@@ -95,6 +95,20 @@ class TestNewFeatures(unittest.TestCase):
         self.assertIn("caido a mitad de cuadra", message)
         self.assertNotIn("tengo un poste", message)
 
+    def test_formatear_ticket_respuesta_para_pedido(self):
+        message, buttons = formatear_ticket_respuesta(
+            "pedido",
+            "Ana",
+            "Caja de espumantes brut nature",
+            "Bodega",
+            "PED-20241001",
+            base_chat_url="https://ventas.example/pedidos",
+            consulta_pin="123456",
+        )
+        self.assertIn("Pedido recibido", message)
+        self.assertIn("PED-20241001", message)
+        self.assertTrue(any(btn.get("texto") == "💬 Ver mi Ticket" for btn in buttons))
+
     def test_construir_descripcion_breve_incluye_detalle(self):
         texto = (
             "quiero pedir que corten las ramas de los arboles del barrio jardin en el centro de junin "

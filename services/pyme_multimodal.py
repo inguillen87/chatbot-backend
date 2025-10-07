@@ -360,6 +360,10 @@ class PymeFlowResult:
     options_list: List[Dict[str, Any]] = field(default_factory=list)
     source: str = "pyme_multimodal_v1"
     data: Dict[str, Any] = field(default_factory=dict)
+    delayed_payload: Optional[Dict[str, Any]] = None
+    delay_seconds: Optional[int] = None
+    audio_url: Optional[str] = None
+    audio_text: Optional[str] = None
 
 
 def _menu_response(state: PymeSessionState, context: Dict[str, Any], channel: str) -> PymeFlowResult:
@@ -529,27 +533,100 @@ def handle_keyword_intent(
             context.get("viewer_user_id"),
             request_id=request_id,
         )
+        if not pedido:
+            return PymeFlowResult(
+                message_body="No pude registrar tu pedido en este momento. Probá nuevamente o hablá con un asesor.",
+                source="pyme_pedido_error",
+                options_list=[
+                    {"texto": "🤝 Hablar con un asesor", "action_id": "pyme_hablar_agente"},
+                    {"texto": "🛒 Ver catálogo", "action_id": "pyme_productos_stock"},
+                ],
+            )
         state.last_intent = "confirmar"
         numero = getattr(pedido, "nro_pedido", None)
-        total = state.cart.get("total", state.cart.get("subtotal", 0.0))
-        body = "Pedido confirmado."
-        if numero:
-            body = f"Pedido confirmado ✅ Número {numero}."
-        body += f" Total estimado: ${total:,.2f}."
-        return PymeFlowResult(
-            message_body=body,
-            source="pyme_pedido_confirmado",
-            data={
-                "pedido": {
-                    "id": getattr(pedido, "id", None),
-                    "nro": numero,
-                    "total": total,
+
+        items_detalle: List[Dict[str, Any]] = []
+        subtotal = 0.0
+        currency = state.cart.get("currency", "ARS")
+        for item in state.cart.get("items", []):
+            qty_raw = item.get("qty", 0)
+            try:
+                qty = int(qty_raw)
+            except (TypeError, ValueError):
+                qty = 0
+            if qty <= 0:
+                continue
+            unit_price = float(item.get("unitPrice") or 0.0)
+            line_total = unit_price * qty
+            subtotal += line_total
+            metadata = item.get("metadata") or {}
+            items_detalle.append(
+                {
+                    "nombre_producto": item.get("title") or item.get("sku") or "Producto",
+                    "cantidad": qty,
+                    "precio_unitario_original": unit_price,
+                    "subtotal_con_descuento": line_total,
+                    "moneda": item.get("currency") or currency,
+                    "presentacion": metadata.get("presentacion"),
+                    "sku": item.get("sku"),
                 }
-            },
-            options_list=[
-                {"texto": "Compartir comprobante", "action_id": "enviar_comprobante"},
-                {"texto": "Ver catálogo", "action_id": "ver_catalogo"},
-            ],
+            )
+
+        envio_total = state.delivery.get("shipping_total")
+        total_estimado = subtotal + (envio_total or 0.0)
+        cart_summary = {
+            "items_detalle": items_detalle,
+            "total_original_calculado": subtotal,
+            "total_final_con_descuento": total_estimado,
+        }
+        if envio_total is not None:
+            cart_summary["envio_estimado"] = envio_total
+
+        resumen_texto = render_cart_summary(state)
+
+        cliente_payload = {
+            "nombre": context.get("nombre_cliente"),
+            "telefono": context.get("telefono_cliente"),
+            "email": context.get("email_cliente"),
+            "direccion": state.delivery.get("address"),
+        }
+        cliente_payload = {k: v for k, v in cliente_payload.items() if v}
+
+        data_payload: Dict[str, Any] = {
+            "nro_pedido": numero,
+            "pedido_id": getattr(pedido, "id", None),
+            "monto_total": total_estimado,
+            "cart_summary": cart_summary,
+            "cliente": cliente_payload,
+            "order_summary_text": resumen_texto,
+        }
+        if getattr(pedido, "consulta_pin", None):
+            data_payload["consulta_pin"] = getattr(pedido, "consulta_pin")
+
+        data_payload["pedido"] = {
+            "id": getattr(pedido, "id", None),
+            "nro_pedido": numero,
+            "total": total_estimado,
+            "cart_summary": cart_summary,
+            "cliente": cliente_payload,
+        }
+
+        # Limpiar carrito y entrega después de confirmar
+        state.cart["items"] = []
+        state.cart["subtotal"] = 0.0
+        state.cart["total"] = 0.0
+        state.delivery.clear()
+
+        opciones = [
+            {"texto": "Compartir comprobante", "action_id": "enviar_comprobante"},
+            {"texto": "Ver catálogo", "action_id": "ver_catalogo"},
+        ]
+
+        return PymeFlowResult(
+            message_body=resumen_texto,
+            source="pyme_pedido_registrado",
+            data=data_payload,
+            options_list=opciones,
         )
 
     return None

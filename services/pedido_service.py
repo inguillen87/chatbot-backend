@@ -55,10 +55,16 @@ class PedidoService:
                 logger.error("Dirección inválida")
                 return None
 
+            pyme_id = pedido_data.get("pyme_id")
+            if not pyme_id:
+                logger.error("pyme_id es requerido para registrar un pedido")
+                return None
+
             nuevo_pedido = PymePedido(
+                pyme_id=pyme_id,
                 asunto=pedido_data["asunto"],
                 detalles=pedido_data["detalles"],
-                rubro=pedido_data["rubro"],
+                monto_total=pedido_data.get("monto_total"),
                 nombre_cliente=pedido_data.get("nombre_cliente"),
                 email_cliente=pedido_data.get("email_cliente"),
                 telefono_cliente=pedido_data.get("telefono_cliente"),
@@ -67,10 +73,13 @@ class PedidoService:
                 latitud=pedido_data.get("latitud"),
                 longitud=pedido_data.get("longitud"),
             )
+            if pedido_data.get("rubro"):
+                nuevo_pedido.rubro = pedido_data.get("rubro")
             db.session.add(nuevo_pedido)
             db.session.commit()
+            rubro_log = pedido_data.get("rubro") or getattr(nuevo_pedido, "rubro", None)
             logger.info(
-                f"Nuevo pedido '{nuevo_pedido.nro_pedido}' creado para rubro '{nuevo_pedido.rubro}' por cliente '{nuevo_pedido.nombre_cliente}'"
+                f"Nuevo pedido '{nuevo_pedido.nro_pedido}' creado para rubro '{rubro_log}' por cliente '{nuevo_pedido.nombre_cliente}'"
             )
             try:
                 enviar_email_pedido_admin(nuevo_pedido)
@@ -130,6 +139,7 @@ class PedidoService:
 
         detalles_pedido_items = []
         monto_total_calculado = 0.0
+        cliente_user_id = cliente_data.get("cliente_user_id")
 
         from models import CatalogoItem  # Importación local para evitar circularidad
         from services.common_utils import parse_precio_flexible # Para parsear precios
@@ -173,8 +183,12 @@ class PedidoService:
             return None
 
         import json # Para convertir la lista de detalles a JSON string
+        asunto_base = cliente_data.get("asunto")
+        if not asunto_base:
+            asunto_base = f"Pedido desde carrito - Cliente {cliente_user_id or 'invitado'}"
+
         pedido_data = {
-            "asunto": cliente_data.get("asunto", f"Pedido desde carrito - Usuario {user_id}"),
+            "asunto": asunto_base,
             "detalles": json.dumps(detalles_pedido_items, ensure_ascii=False), # Guardar como JSON string
             "rubro": cliente_data.get("rubro", "general_pyme"), # Podría venir del perfil del usuario/pyme
             "nombre_cliente": cliente_data.get("nombre_cliente"),
@@ -184,7 +198,8 @@ class PedidoService:
             "latitud": cliente_data.get("latitud"),
             "longitud": cliente_data.get("longitud"),
             # user_id aquí es el del cliente que realiza el pedido, puede ser None para invitados
-            "user_id": cliente_data.get("cliente_user_id"),
+            "user_id": cliente_user_id,
+            "pyme_id": pyme_id,
             # "monto_total" se asignará directamente al objeto PymePedido más abajo
         }
 
@@ -216,25 +231,35 @@ class PedidoService:
         try:
             # Crear el objeto PymePedido
             # El constructor de PymePedido ya maneja _generate_nro_pedido
+            pyme_id = pedido_data.get("pyme_id") or pyme_id
+            if not pyme_id:
+                logger.error("pyme_id es requerido para crear el pedido desde carrito")
+                return None
+
             nuevo_pedido_obj = PymePedido(
+                pyme_id=pyme_id,
                 asunto=pedido_data["asunto"],
                 detalles=pedido_data["detalles"],
-                rubro=pedido_data["rubro"],
+                monto_total=monto_total_calculado,
                 nombre_cliente=pedido_data.get("nombre_cliente"),
                 email_cliente=pedido_data.get("email_cliente"),
                 telefono_cliente=pedido_data.get("telefono_cliente"),
                 user_id=pedido_data.get("user_id"),
                 direccion=pedido_data.get("direccion"),
                 latitud=pedido_data.get("latitud"),
-                longitud=pedido_data.get("longitud")
+                longitud=pedido_data.get("longitud"),
             )
-            nuevo_pedido_obj.monto_total = monto_total_calculado # Asignar el monto calculado
+            if pedido_data.get("rubro"):
+                nuevo_pedido_obj.rubro = pedido_data.get("rubro")
 
             db.session.add(nuevo_pedido_obj)
             db.session.commit()
 
             logger.info(
-                f"Nuevo pedido '{nuevo_pedido_obj.nro_pedido}' creado desde carrito para user '{user_id}'. Monto: {monto_total_calculado}"
+                "Nuevo pedido '%s' creado desde carrito para cliente '%s'. Monto: %s",
+                nuevo_pedido_obj.nro_pedido,
+                cliente_user_id or "anonimo",
+                monto_total_calculado,
             )
 
             # Enviar notificaciones (reutilizando la lógica existente)

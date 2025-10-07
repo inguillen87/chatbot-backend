@@ -1,12 +1,12 @@
 import logging
 import re
-import random
 import json
 import uuid
 import unicodedata
 from datetime import datetime
 from typing import Optional, Any
 from enum import Enum, auto
+from urllib.parse import urlparse
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import flag_modified
@@ -30,11 +30,13 @@ from services.faq_matcher_spacy import buscar_en_faq_spacy
 from services.utils_placeholders import sugerencias_por_rubro
 from services.logic import es_rubro_publico
 from services.ticket_service import servicio_tickets
+from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
 from services.webinfo import obtener_info_web
 from .common_utils import construir_respuesta_sugerir_registro # <--- NUEVA IMPORTACIÓN
 from services.preferences import add_preference
 from services import cart as cart_service
 from services.promocion_service import promocion_service
+from services import promo_service
 from services.config_loader import cargar_configuracion_pyme
 from services.pyme_menu import get_pyme_menu_payload, PYME_MENU_DISPLAY_ORDER
 from services.pyme_multimodal import (
@@ -497,6 +499,269 @@ def serializar_enum(obj):
         return [serializar_enum(v) for v in obj]
     else:
         return obj
+
+
+def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> dict:
+    """Render a rich confirmation payload for completed pyme orders."""
+
+    data = handler_response.get("data") or {}
+    if not isinstance(data, dict):
+        data = {}
+
+    pedido_block = data.get("pedido") if isinstance(data.get("pedido"), dict) else None
+    pedido_info = pedido_block or data
+
+    cart_summary = data.get("cart_summary") if isinstance(data.get("cart_summary"), dict) else None
+    if not cart_summary and pedido_block and isinstance(pedido_block.get("cart_summary"), dict):
+        cart_summary = pedido_block.get("cart_summary")
+
+    monto_total = data.get("monto_total")
+    if monto_total is None and pedido_block:
+        monto_total = pedido_block.get("total")
+    if monto_total is None and cart_summary:
+        monto_total = cart_summary.get("total_final_con_descuento") or cart_summary.get("total_original_calculado")
+    try:
+        monto_total_float = float(monto_total) if monto_total not in (None, "") else None
+    except (TypeError, ValueError):
+        monto_total_float = None
+
+    nro_pedido = (
+        data.get("nro_pedido")
+        or pedido_info.get("nro_pedido")
+        or pedido_info.get("nro")
+        or handler_response.get("nro_pedido")
+    )
+    pedido_id = (
+        data.get("pedido_id")
+        or pedido_info.get("pedido_id")
+        or pedido_info.get("id")
+    )
+
+    cliente_info = data.get("cliente")
+    if not isinstance(cliente_info, dict) and isinstance(pedido_info.get("cliente"), dict):
+        cliente_info = pedido_info.get("cliente")
+    if not isinstance(cliente_info, dict):
+        cliente_info = {}
+
+    nombre_cliente = cliente_info.get("nombre")
+    if not nombre_cliente:
+        viewer = context.get("viewer_user_obj")
+        nombre_cliente = getattr(viewer, "name", None) if viewer else None
+    if not nombre_cliente:
+        nombre_cliente = "Cliente"
+
+    telefono_cliente = cliente_info.get("telefono")
+    email_cliente = cliente_info.get("email")
+    direccion_cliente = cliente_info.get("direccion")
+
+    summary_text = (
+        data.get("order_summary_text")
+        or handler_response.get("order_summary_text")
+    )
+    if not summary_text and cart_summary:
+        summary_text = formatear_carrito_desde_summary(cart_summary, context)
+
+    items_detalle = []
+    if cart_summary and isinstance(cart_summary.get("items_detalle"), list):
+        items_detalle = cart_summary.get("items_detalle")
+
+    total_items = 0
+    destacado = None
+    for item in items_detalle:
+        if not isinstance(item, dict):
+            continue
+        cantidad_val = item.get("cantidad") or item.get("cantidad_producto") or 0
+        try:
+            cantidad_int = int(cantidad_val)
+        except (TypeError, ValueError):
+            try:
+                cantidad_int = int(float(str(cantidad_val).replace(",", ".")))
+            except Exception:
+                cantidad_int = 0
+        if cantidad_int > 0:
+            total_items += cantidad_int
+        if not destacado:
+            destacado = (
+                item.get("nombre_producto")
+                or item.get("nombre")
+                or item.get("sku")
+            )
+
+    description = data.get("order_description")
+    if not description:
+        if total_items and destacado:
+            description = f"Pedido con {total_items} ítems (destacado: {destacado})"
+        elif total_items:
+            description = f"Pedido con {total_items} ítems"
+        else:
+            description = "Pedido registrado"
+        if monto_total_float is not None:
+            description += f" — Total ${monto_total_float:,.2f}"
+
+    rubro_nombre = (
+        context.get("rubro_nombre")
+        or context.get("rubro_clave")
+        or "Pedido"
+    )
+
+    channel_value = str(context.get("channel") or "").lower()
+    include_links = not (channel_value.startswith("web") or "widget" in channel_value)
+
+    base_tracking_url = None
+    if current_app:
+        base_tracking_url = current_app.config.get("PYME_PEDIDOS_PUBLIC_URL")
+        if not base_tracking_url:
+            panel_url = current_app.config.get("PANEL_URL")
+            if panel_url:
+                base_tracking_url = f"{panel_url.rstrip('/')}/pyme/pedidos"
+        if not base_tracking_url:
+            backend_url = current_app.config.get("BACKEND_URL")
+            if backend_url:
+                base_tracking_url = f"{backend_url.rstrip('/')}/pyme/pedidos"
+    if not base_tracking_url:
+        base_tracking_url = "https://www.chatboc.ar/pyme/pedidos"
+
+    message_body, base_buttons = formatear_ticket_respuesta(
+        "pedido",
+        nombre_cliente,
+        description,
+        rubro_nombre,
+        nro_pedido,
+        {},
+        base_tracking_url,
+        dni=None,
+        consulta_pin=pedido_info.get("consulta_pin"),
+        include_links_in_message=include_links,
+    )
+
+    if summary_text:
+        message_body = f"{message_body}\n\n{summary_text}".strip()
+
+    buttons: list[dict] = []
+    seen_text_action: set[tuple[str, str]] = set()
+    seen_url_fingerprints: set[tuple[str, str, str]] = set()
+
+    def _url_fingerprint(raw_url: Optional[str]) -> Optional[tuple[str, str, str]]:
+        if not raw_url:
+            return None
+        parsed = urlparse(str(raw_url))
+        if not parsed.scheme or not parsed.netloc:
+            return None
+        path = parsed.path.rstrip("/") or "/"
+        return (parsed.scheme.lower(), parsed.netloc.lower(), path)
+
+    def _register_button(button: Any) -> None:
+        if not isinstance(button, dict):
+            return
+        candidate = dict(button)
+        text = str(candidate.get("texto") or candidate.get("title") or "").strip()
+        action_id = (
+            candidate.get("action_id")
+            or candidate.get("id")
+            or candidate.get("id_accion")
+            or ""
+        )
+        key = (text.lower(), str(action_id).lower())
+        url_fp = _url_fingerprint(candidate.get("url"))
+        if url_fp and url_fp in seen_url_fingerprints:
+            return
+        if not url_fp and key in seen_text_action:
+            return
+        if text:
+            candidate["texto"] = text
+        buttons.append(candidate)
+        seen_text_action.add(key)
+        if url_fp:
+            seen_url_fingerprints.add(url_fp)
+
+    for btn in base_buttons or []:
+        _register_button(btn)
+    for btn in handler_response.get("options_list") or []:
+        _register_button(btn)
+    for btn in handler_response.get("botones") or []:
+        _register_button(btn)
+
+    default_buttons = [
+        {"texto": "🛒 Hacer otro pedido", "action_id": "pyme_hacer_pedido"},
+        {"texto": "📦 Ver catálogo", "action_id": "pyme_productos_stock"},
+        {"texto": "🤝 Hablar con un asesor", "action_id": "pyme_hablar_agente"},
+    ]
+    for btn in default_buttons:
+        _register_button(btn)
+
+    promo_section = promo_service.build_ticket_promo_section(
+        ticket_number=nro_pedido,
+        neighbor_name=nombre_cliente,
+    )
+    image_url = handler_response.get("image_url")
+    if promo_section:
+        promo_text = promo_section.get("message_body")
+        if promo_text:
+            message_body = f"{message_body}\n\n{promo_text}".strip()
+        promo_button = promo_section.get("button")
+        if promo_button:
+            _register_button(promo_button)
+        if not image_url:
+            image_url = promo_section.get("image_url")
+
+    if include_links:
+        url_buttons_before_cleanup = [dict(btn) for btn in buttons if btn.get("url")]
+        buttons = remove_buttons_with_urls_in_message(message_body, buttons)
+        if not any(btn.get("url") for btn in buttons) and url_buttons_before_cleanup:
+            fallback_button = url_buttons_before_cleanup[0]
+            if fallback_button.get("texto") and fallback_button.get("url"):
+                fallback_button.setdefault("type", "url")
+                buttons.append(fallback_button)
+
+    delayed_payload = handler_response.get("delayed_payload")
+    if not delayed_payload:
+        delayed_payload = get_pyme_menu_payload(context, channel=context.get("channel", "web"))
+    delay_seconds = handler_response.get("delay_seconds", 20)
+
+    interactive_buttons = [btn for btn in buttons if btn.get("type") != "url"]
+    if not buttons:
+        message_type = "text"
+    elif len(interactive_buttons) == 0:
+        message_type = "text"
+    elif len(interactive_buttons) <= 3:
+        message_type = "interactive_buttons"
+    else:
+        message_type = "interactive_list"
+
+    result: dict[str, Any] = {
+        "success": True,
+        "message_body": message_body,
+        "options_list": buttons,
+        "message_type": message_type,
+        "data": data,
+        "fuente": "pyme_pedido_confirmado",
+    }
+
+    if pedido_id:
+        result["ticket_id"] = pedido_id
+    if image_url:
+        result["image_url"] = image_url
+
+    audio_url = handler_response.get("audio_url")
+    if audio_url:
+        result["audio_url"] = audio_url
+    audio_text = handler_response.get("audio_text")
+    if audio_text:
+        result["audio_text"] = audio_text
+
+    if delayed_payload:
+        result["delayed_payload"] = delayed_payload
+        result["delay_seconds"] = delay_seconds
+
+    cliente_payload = {
+        "nombre": nombre_cliente,
+        "telefono": telefono_cliente,
+        "email": email_cliente,
+        "direccion": direccion_cliente,
+    }
+    data.setdefault("cliente", cliente_payload)
+
+    return result
 
 # PROMPT_CLASIFICAR_INTENCION y _clasificar_intencion_pyme_con_llm eliminados.
 # La intención vendrá de la llamada principal al LLM.
@@ -1182,6 +1447,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     session_state = PymeSessionState(pyme_ctx_actual, getattr(owner_user, "id", None))
     pyme_ctx_actual["request_id"] = request_id
 
+    helper_context_for_success: dict[str, Any] = {}
+
     def _finalize_early_response(flow_result: PymeFlowResult, *, intent: Optional[str] = None) -> dict:
         session_state.save()
         pyme_ctx_actual[session_state.STORAGE_KEY] = session_state.raw
@@ -1191,14 +1458,22 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             flag_modified(chat_db_context, "context_data")
 
         final_payload = {
+            "success": True,
             "message_body": flow_result.message_body,
-            "options_list": flow_result.options_list,
-            "message_type": flow_result.message_type,
+            "options_list": flow_result.options_list or [],
+            "message_type": flow_result.message_type or "text",
             "fuente": flow_result.source,
             "contexto_actualizado": {CONTEXTO_PYME: contexto_serializado},
         }
         if flow_result.data:
             final_payload["data"] = flow_result.data
+        if flow_result.audio_url:
+            final_payload["audio_url"] = flow_result.audio_url
+        if flow_result.audio_text:
+            final_payload["audio_text"] = flow_result.audio_text
+        if flow_result.delayed_payload:
+            final_payload["delayed_payload"] = flow_result.delayed_payload
+            final_payload["delay_seconds"] = flow_result.delay_seconds or 20
 
         logger_actual.info(
             "[PYME_FLOW] early_response",
@@ -1208,6 +1483,35 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                 "source": flow_result.source,
             },
         )
+
+        if flow_result.source == "pyme_pedido_registrado":
+            snapshot = {
+                "success": True,
+                "fuente": flow_result.source,
+                "message_body": flow_result.message_body,
+                "options_list": flow_result.options_list or [],
+                "message_type": flow_result.message_type or "text",
+                "data": flow_result.data or {},
+            }
+            if flow_result.audio_url:
+                snapshot["audio_url"] = flow_result.audio_url
+            if flow_result.audio_text:
+                snapshot["audio_text"] = flow_result.audio_text
+            if flow_result.delayed_payload:
+                snapshot["delayed_payload"] = flow_result.delayed_payload
+                snapshot["delay_seconds"] = flow_result.delay_seconds or 20
+
+            effective_context = helper_context_for_success or {
+                CONTEXTO_PYME: pyme_ctx_actual,
+                "channel": channel,
+                "viewer_user_obj": viewer_user,
+                "user_id": getattr(owner_user, "id", None),
+                "cliente_id": getattr(viewer_user, "id", None),
+            }
+
+            enriched_payload = _build_pyme_order_success_payload(effective_context, snapshot)
+            enriched_payload["contexto_actualizado"] = final_payload["contexto_actualizado"]
+            final_payload = enriched_payload
 
         if anon_id and not viewer_user:
             try:
@@ -1300,6 +1604,20 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         if isinstance(rubro_nombre_contexto, str)
         else rubro_nombre_contexto
         or "general"
+    )
+
+    helper_context_for_success.update(
+        {
+            CONTEXTO_PYME: pyme_ctx_actual,
+            "user_id": getattr(owner_user, "id", None),
+            "cliente_id": getattr(viewer_user, "id", None),
+            "viewer_user_obj": viewer_user,
+            "nombre_pyme": nombre_pyme_display,
+            "rubro_nombre": rubro_nombre_contexto or rubro_info_value or "general",
+            "rubro_slug": rubro_slug,
+            "channel": channel,
+            "chat_session_uuid": kwargs.get("chat_session_uuid"),
+        }
     )
 
     usuario_info_for_llm = {
@@ -1764,6 +2082,19 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     else:
         orchestrator = ChatOrchestrator(global_context=global_context_for_orchestrator)
         action_handler_result = orchestrator.execute_action(llm_response_structured)
+
+    if action_handler_result.get("success"):
+        handler_source = action_handler_result.get("fuente")
+        if handler_source == "pyme_pedido_registrado":
+            enriched_payload = _build_pyme_order_success_payload(
+                global_context_for_orchestrator,
+                action_handler_result,
+            )
+            # Preserve auxiliary keys that may not be part of the enriched payload
+            for key in ("pedir_info", "contexto_actualizado"):
+                if key in action_handler_result and key not in enriched_payload:
+                    enriched_payload[key] = action_handler_result[key]
+            action_handler_result = {**action_handler_result, **enriched_payload}
 
     # --- 6. Procesar Resultado del Action Handler y Formatear Respuesta ---
     respuesta_final_texto = action_handler_result.get("message_body")

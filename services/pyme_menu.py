@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import logging
 import re
 from typing import Any, Dict, Iterable, List
 
@@ -154,11 +155,11 @@ def get_pyme_menu_payload(context: Dict[str, Any], channel: str = "web") -> Dict
     if not flat_options:
         flat_options.extend(
             [
-                {"id": "pyme_productos_stock", "texto": "Ver productos y stock"},
-                {"id": "pyme_promociones", "texto": "Promociones vigentes"},
-                {"id": "pyme_hacer_pedido", "texto": "Hacer un pedido"},
-                {"id": "pyme_estado_pedido", "texto": "Estado de mi pedido"},
-                {"id": "pyme_hablar_agente", "texto": "Hablar con un asesor"},
+                {"id": "pyme_productos_stock", "texto": "📦 Catálogo y precios"},
+                {"id": "pyme_promociones", "texto": "🔥 Promos mayoristas"},
+                {"id": "pyme_hacer_pedido", "texto": "🛒 Armar pedido"},
+                {"id": "pyme_estado_pedido", "texto": "📲 Seguir mi pedido"},
+                {"id": "pyme_hablar_agente", "texto": "🤝 Hablar con un asesor"},
             ]
         )
 
