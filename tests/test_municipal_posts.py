@@ -323,6 +323,20 @@ SIMPLE_SAMPLE_TEXT = (
     "📍Casa del Bicentenario\n"
 )
 
+BULLET_SAMPLE_TEXT = (
+    "Gemini_Generated_Image_tnfkiutnfkiutnfk_2.png\n"
+    "• 🗞️ Noticias Recientes\n\n"
+    "Nuevo parque central\n"
+    "Inauguración con autoridades y vecinos.\n"
+    "📅 11/10/2025 17:42 hs - 16/10/2025 21:39 hs\n\n"
+    "🎭 Próximos Eventos\n"
+    "Festival de Teatro Comunitario\n"
+    "Entrada libre y gratuita.\n"
+    "📅 08/10/2025 09:00 hs - 08/10/2025 14:00 hs\n"
+    "📍Teatro Municipal\n"
+    "🔗 https://example.com/festival\n"
+)
+
 
 def test_bulk_create_from_text(client):
     with app.app_context():
@@ -361,6 +375,31 @@ def test_bulk_create_from_text_without_asterisks(client):
     assert data_resp['created'][0]['descripcion'] == 'Entrega de reconocimientos a los cuatro primeros Presidentes del HCD en democracia.'
 
 
+def test_bulk_create_from_bullet_template(client):
+    with app.app_context():
+        admin_user = User.query.filter_by(email="admin_muni@test.com").first()
+        token = generar_token(admin_user.id, admin_user.rol, admin_user.tipo_chat, admin_user.municipio_id, admin_user.pyme_id)
+
+    headers = {
+        'Authorization': f'Bearer {token}'
+    }
+
+    response = client.post('/municipal/posts/bulk', data={'text': BULLET_SAMPLE_TEXT}, headers=headers)
+
+    assert response.status_code == 201
+    data_resp = response.get_json()
+    assert len(data_resp['created']) == 2
+
+    noticia, evento = data_resp['created']
+    assert noticia['titulo'] == 'Nuevo parque central'
+    assert noticia['tipo_post'] == 'noticia'
+    assert any('Noticias' in tag for tag in noticia.get('tags', []))
+    assert noticia['descripcion'] == 'Inauguración con autoridades y vecinos.'
+
+    assert evento['titulo'] == 'Festival de Teatro Comunitario'
+    assert evento['tipo_post'] == 'evento'
+    assert evento['ubicacion'] == 'Teatro Municipal'
+    assert evento['enlace'] == 'https://example.com/festival'
 def test_bulk_create_from_raw_string_with_json_header(client):
     with app.app_context():
         admin_user = User.query.filter_by(email="admin_muni@test.com").first()
