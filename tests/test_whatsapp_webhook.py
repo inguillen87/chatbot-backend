@@ -4,6 +4,7 @@ import os
 import sys
 import json
 import time
+import copy
 
 from flask import g
 
@@ -16,7 +17,7 @@ from app import create_app, db
 from config import Config
 from models import User, Rubro, WhatsappNumero, ChatSessionContext
 from services.municipio_responder import CONTEXTO_MUNICIPIO
-from routes.whatsapp_webhook import _send_delayed_payload
+from routes.whatsapp_webhook import _send_delayed_payload, _strip_duplicate_welcome_media
 # Moved model imports after app and config to ensure they are found via sys.path
 # and to avoid potential issues if models.py itself tries to import app-context related things early.
 # However, for direct use in tests, they are typically at the top. Let's try keeping them here.
@@ -355,6 +356,66 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         serialized = action_payload.split("whatsapp:", 1)[1]
         interactive_json = json.loads(serialized)
         self.assertNotIn("header", interactive_json)
+
+    @patch('routes.whatsapp_webhook.threading.Timer')
+    @patch('services.response_formatter.build_interactive_response')
+    def test_send_delayed_payload_adds_header_when_preserve_flag(self, mock_build_response, mock_timer):
+        sticker_url = "https://example.com/static/welcome/sticker.webp"
+        payload = {
+            "message_body": "Hola, este es el menú.",
+            "message_type": "interactive_menu",
+            "options_list": [{"texto": "Opción", "id": "opcion"}],
+            "_base_url": "https://example.com",
+            "_request_url_root": "https://example.com/",
+            "_welcome_sticker_urls": [sticker_url],
+            "_preserve_welcome_header": True,
+        }
+
+        mock_build_response.return_value = {
+            "type": "interactive",
+            "interactive": {
+                "type": "list",
+                "body": {"text": "Menú"},
+                "action": {"sections": []},
+            },
+        }
+
+        class ImmediateTimer:
+            def __init__(self, delay, callback):
+                self.callback = callback
+
+            def start(self):
+                self.callback()
+
+        mock_timer.side_effect = lambda delay, callback: ImmediateTimer(delay, callback)
+
+        sent_messages = []
+
+        def fake_create(**kwargs):
+            sent_messages.append(kwargs)
+            msg = MagicMock()
+            msg.sid = f"SM{len(sent_messages)}"
+            return msg
+
+        client = MagicMock()
+        client.messages.create.side_effect = fake_create
+
+        _send_delayed_payload(
+            client=client,
+            to_number="whatsapp:+111111111",
+            from_number="whatsapp:+222222222",
+            payload=payload,
+            delay=0,
+            app=self.app,
+        )
+
+        self.assertEqual(len(sent_messages), 1)
+        params = sent_messages[0]
+        self.assertIn("persistent_action", params)
+        interactive_json = json.loads(params["persistent_action"][0].split("whatsapp:", 1)[1])
+        header = interactive_json.get("header", {})
+        self.assertEqual(header.get("type"), "image")
+        self.assertEqual(header.get("image", {}).get("link"), sticker_url)
 
     def test_whatsapp_webhook_valid_request(self):
         # Arrange
@@ -792,7 +853,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         captured = {}
 
         def capture_delayed(**kwargs):
-            captured.update(kwargs)
+            for key, value in kwargs.items():
+                try:
+                    captured[key] = copy.deepcopy(value)
+                except TypeError:
+                    captured[key] = value
 
         with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed) as mock_delayed, \
              patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
@@ -827,7 +892,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         captured = {}
 
         def capture_delayed(**kwargs):
-            captured.update(kwargs)
+            for key, value in kwargs.items():
+                try:
+                    captured[key] = copy.deepcopy(value)
+                except TypeError:
+                    captured[key] = value
 
         with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed), \
              patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
@@ -861,7 +930,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         captured = {}
 
         def capture_delayed(**kwargs):
-            captured.update(kwargs)
+            for key, value in kwargs.items():
+                try:
+                    captured[key] = copy.deepcopy(value)
+                except TypeError:
+                    captured[key] = value
 
         with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed), \
              patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
@@ -895,7 +968,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         captured = {}
 
         def capture_delayed(**kwargs):
-            captured.update(kwargs)
+            for key, value in kwargs.items():
+                try:
+                    captured[key] = copy.deepcopy(value)
+                except TypeError:
+                    captured[key] = value
 
         with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed), \
              patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
@@ -929,7 +1006,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         captured = {}
 
         def capture_delayed(**kwargs):
-            captured.update(kwargs)
+            for key, value in kwargs.items():
+                try:
+                    captured[key] = copy.deepcopy(value)
+                except TypeError:
+                    captured[key] = value
 
         with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed), \
              patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
@@ -966,7 +1047,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         captured = {}
 
         def capture_delayed(**kwargs):
-            captured.update(kwargs)
+            for key, value in kwargs.items():
+                try:
+                    captured[key] = copy.deepcopy(value)
+                except TypeError:
+                    captured[key] = value
 
         with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed), \
              patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
@@ -976,46 +1061,26 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         delayed_payload = captured.get("payload", {})
         self.assertNotIn("header", delayed_payload)
 
-    def test_welcome_payload_interactive_header_matching_sticker_is_removed(self):
-        self.mock_validator.validate.return_value = True
-        self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
-        self.app.config["WELCOME_MEDIA_URL"] = "https://example.com/sticker.webp"
-
+    def test_strip_duplicate_media_preserves_header_when_flagged(self):
+        sticker_url = "https://example.com/static/welcome/sticker.webp"
         payload = {
-            "To": f"whatsapp:{self.test_whatsapp_number_str}",
-            "From": f"whatsapp:{self.test_user_number_str}",
-            "Body": "hola",
-            "ProfileName": "Tester",
-        }
-        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
-
-        self._create_confirmed_session()
-
-        response_payload = {
-            "message_body": "Menú principal",
-            "options_list": [],
             "interactive": {
                 "type": "list",
-                "body": {"text": "Contenido"},
-                "header": {"type": "image", "image": {"link": "https://example.com/sticker.webp"}},
+                "header": {"type": "image", "image": {"link": sticker_url}},
+                "body": {"text": "Menú"},
                 "action": {"sections": []},
             },
+            "_preserve_welcome_header": True,
         }
 
-        captured = {}
+        _strip_duplicate_welcome_media(
+            payload,
+            sticker_urls=[sticker_url],
+            base_url="https://example.com",
+        )
 
-        def capture_delayed(**kwargs):
-            captured.update(kwargs)
-
-        with patch("routes.whatsapp_webhook._send_delayed_payload", side_effect=capture_delayed), \
-             patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload):
-            response = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
-
-        self.assertEqual(response.status_code, 200)
-        delayed_payload = captured.get("payload", {})
-        interactive = delayed_payload.get("interactive", {})
-        self.assertIsInstance(interactive, dict)
-        self.assertNotIn("header", interactive)
+        interactive = payload.get("interactive", {})
+        self.assertIn("header", interactive)
 
     def test_welcome_template_failure_still_sends_followups(self):
         self._set_owner_tipo_chat("municipio")

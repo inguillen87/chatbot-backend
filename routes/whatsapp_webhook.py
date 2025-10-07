@@ -197,9 +197,14 @@ def _strip_duplicate_welcome_media(
             payload.pop("header", None)
 
     interactive = payload.get("interactive")
+    preserve_header = bool(payload.get("_preserve_welcome_header"))
     if isinstance(interactive, dict):
         interactive_header = interactive.get("header")
-        if isinstance(interactive_header, dict) and interactive_header.get("type") == "image":
+        if (
+            isinstance(interactive_header, dict)
+            and interactive_header.get("type") == "image"
+            and not preserve_header
+        ):
             image_data = interactive_header.get("image", {})
             image_link = image_data.get("link") if isinstance(image_data, dict) else None
             if _matches(image_link):
@@ -380,6 +385,7 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
 
             base_for_normalization = ""
             sticker_signatures: Set[str] = set()
+            preserve_welcome_header = False
             if isinstance(payload, dict):
                 base_for_normalization = (
                     payload.get("_base_url")
@@ -391,6 +397,9 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                     payload.get("_welcome_sticker_urls") or [],
                     base_for_normalization,
                 )
+                preserve_welcome_header = bool(
+                    payload.get("_preserve_welcome_header")
+                )
 
             def _is_welcome_sticker(url: Optional[str]) -> bool:
                 return _matches_signature(url, base_for_normalization, sticker_signatures)
@@ -401,6 +410,7 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                 if (
                     isinstance(header_candidate, dict)
                     and header_candidate.get("type") == "image"
+                    and not preserve_welcome_header
                 ):
                     image_payload = header_candidate.get("image")
                     header_link = None
@@ -408,6 +418,20 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                         header_link = image_payload.get("link") or image_payload.get("url")
                     if _is_welcome_sticker(header_link):
                         interactive.pop("header", None)
+                if preserve_welcome_header and not interactive.get("header"):
+                    fallback_url = None
+                    for candidate in payload.get("_welcome_sticker_urls") or []:
+                        resolved_candidate = _resolve_public_url(
+                            candidate, base_for_normalization
+                        )
+                        if resolved_candidate:
+                            fallback_url = resolved_candidate
+                            break
+                    if fallback_url:
+                        interactive["header"] = {
+                            "type": "image",
+                            "image": {"link": fallback_url},
+                        }
                 formatted["interactive"] = interactive
                 params["body"] = interactive.get("body", {}).get("text", "")
                 params["persistent_action"] = [f"whatsapp:{json.dumps(interactive)}"]
@@ -796,6 +820,8 @@ def whatsapp_webhook():
                     if request_root:
                         welcome_response_payload.setdefault("_request_url_root", request_root)
 
+                    welcome_response_payload["_preserve_welcome_header"] = True
+
                     _strip_duplicate_welcome_media(
                         welcome_response_payload,
                         sticker_urls=[resolved_sticker_url, configured_sticker_url],
@@ -809,8 +835,11 @@ def whatsapp_webhook():
                     ]
                     if sticker_payload and sticker_metadata_allowed:
                         welcome_response_payload["_welcome_sticker_urls"] = sticker_payload
+                        welcome_response_payload["_preserve_welcome_header"] = True
                     else:
                         welcome_response_payload.pop("_welcome_sticker_urls", None)
+                        if not sticker_metadata_allowed:
+                            welcome_response_payload.pop("_preserve_welcome_header", None)
 
                     remaining_image_url = welcome_response_payload.get("image_url")
                     resolved_existing_image = _resolve_public_url(
@@ -883,6 +912,8 @@ def whatsapp_webhook():
                     if request_root:
                         welcome_response_payload.setdefault("_request_url_root", request_root)
 
+                    welcome_response_payload["_preserve_welcome_header"] = True
+
                     _strip_duplicate_welcome_media(
                         welcome_response_payload,
                         sticker_urls=[resolved_sticker_url, configured_sticker_url],
@@ -896,8 +927,10 @@ def whatsapp_webhook():
                     ]
                     if sticker_payload:
                         welcome_response_payload["_welcome_sticker_urls"] = sticker_payload
+                        welcome_response_payload["_preserve_welcome_header"] = True
                     else:
                         welcome_response_payload.pop("_welcome_sticker_urls", None)
+                        welcome_response_payload.pop("_preserve_welcome_header", None)
 
                     remaining_image_url = welcome_response_payload.get("image_url")
                     resolved_existing_image = _resolve_public_url(
