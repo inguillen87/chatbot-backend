@@ -36,6 +36,7 @@ from .repository import (
     pyme_pedido_query,
     pyme_ticket_query,
 )
+from services.demo_geo import generate_demo_heatmap_cells, generate_demo_points
 
 
 def _filters_cache_key(filters: AnalyticsFilters, *extra: Any) -> Tuple:
@@ -770,24 +771,26 @@ def get_geo_heatmap(filters: AnalyticsFilters) -> Dict[str, Any]:
 def _geo_heatmap_no_cache(filters: AnalyticsFilters) -> Dict[str, Any]:
     cached_cells = fetch_geo_cells(filters)
     if cached_cells:
-        return {
-            "cells": [
-                {
-                    "cell_id": cell.cell_id,
-                    "count": cell.count,
-                    "centroid_lat": (cell.centroid or {}).get("centroid_lat") if cell.centroid else None,
-                    "centroid_lon": (cell.centroid or {}).get("centroid_lon") if cell.centroid else None,
-                    "categories": cell.categories or {},
-                }
-                for cell in cached_cells
-            ]
-        }
-
-    if filters.scope == "municipio":
-        tickets = municipio_ticket_query(filters).all()
+        payload = [
+            {
+                "cell_id": cell.cell_id,
+                "count": cell.count,
+                "centroid_lat": (cell.centroid or {}).get("centroid_lat") if cell.centroid else None,
+                "centroid_lon": (cell.centroid or {}).get("centroid_lon") if cell.centroid else None,
+                "categories": cell.categories or {},
+            }
+            for cell in cached_cells
+        ]
     else:
-        tickets = pyme_pedido_query(filters).all() if filters.scope == "pyme" else []
-    return {"cells": _generate_geo_from_tickets(tickets, filters)}
+        if filters.scope == "municipio":
+            tickets = municipio_ticket_query(filters).all()
+        else:
+            tickets = pyme_pedido_query(filters).all() if filters.scope == "pyme" else []
+        payload = _generate_geo_from_tickets(tickets, filters)
+
+    if not payload:
+        return {"cells": generate_demo_heatmap_cells(scope=filters.scope)}
+    return {"cells": payload}
 
 
 def get_geo_points(filters: AnalyticsFilters, limit: int = 500) -> Dict[str, Any]:
@@ -823,6 +826,10 @@ def _geo_points_no_cache(filters: AnalyticsFilters, limit: int) -> Dict[str, Any
             for pedido in pedidos
             if pedido.latitud is not None and pedido.longitud is not None
         ]
+    if not points:
+        demo_count = limit if limit and limit > 0 else 72
+        demo_count = min(demo_count, 180)
+        return {"points": generate_demo_points(scope=filters.scope, count=demo_count)}
     return {"points": points}
 
 
