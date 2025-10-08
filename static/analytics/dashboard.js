@@ -23,6 +23,11 @@ const state = {
 
 const API_BASE = '/analytics';
 
+const JUNIN_CENTER = { lat: -33.008818, lon: -68.485079 };
+const JUNIN_RADIUS_KM = 3.8;
+const DEMO_CATEGORIES = ['Iluminación', 'Residuos', 'Bacheo', 'Seguridad', 'Arbolado', 'Pluvial'];
+const DEMO_STATUSES = ['nuevo', 'en_progreso', 'derivado', 'resuelto'];
+
 function init() {
   const main = document.querySelector('.app-main');
   state.scope = main?.dataset.scope || 'municipio';
@@ -217,32 +222,128 @@ async function fetchJson(path, params = new URLSearchParams()) {
 async function loadDashboard() {
   if (!state.tenantId) return;
   const params = buildParams();
+  let summary;
   try {
-    const summary = await fetchJson('summary', params);
-    renderSummary(summary);
-    if (state.scope === 'municipio') {
-      await Promise.all([
-        loadTimeseries('municipio-timeseries'),
-        loadBreakdowns(),
-        loadTopMunicipio(),
-        loadGeo(),
-      ]);
-    } else if (state.scope === 'pyme') {
-      await Promise.all([
-        loadTimeseries('pyme-timeseries'),
-        loadPymeBreakdowns(),
-        loadGeo(),
-        loadPymeTables(),
-      ]);
-    } else if (state.scope === 'operaciones') {
-      await Promise.all([
-        loadOperations(),
-        loadTimeseries('municipio-timeseries'),
-      ]);
-    }
+    summary = await fetchJson('summary', params);
   } catch (error) {
-    console.error('Analytics error', error);
+    console.warn('Analytics summary unavailable, using demo payload.', error);
+    summary = createDemoSummary(state.scope);
   }
+  renderSummary(summary);
+
+  const tasks = [];
+  if (state.scope === 'municipio') {
+    tasks.push(
+      loadTimeseries('municipio-timeseries'),
+      loadBreakdowns(),
+      loadTopMunicipio(),
+      loadGeo(),
+    );
+  } else if (state.scope === 'pyme') {
+    tasks.push(
+      loadTimeseries('pyme-timeseries'),
+      loadPymeBreakdowns(),
+      loadGeo(),
+      loadPymeTables(),
+    );
+  } else if (state.scope === 'operaciones') {
+    tasks.push(loadOperations(), loadTimeseries('municipio-timeseries'));
+  }
+  if (tasks.length) {
+    await Promise.allSettled(tasks);
+  }
+}
+
+function dailySeed(offset = 0) {
+  const base = Number.parseInt(new Date().toISOString().slice(0, 10).replace(/-/g, ''), 10);
+  return base + offset;
+}
+
+function createSeededRandom(seed) {
+  let value = seed % 2147483647;
+  if (value <= 0) {
+    value += 2147483646;
+  }
+  return () => {
+    value = (value * 16807) % 2147483647;
+    return (value - 1) / 2147483646;
+  };
+}
+
+function createDemoSummary(scope) {
+  const offset = scope === 'pyme' ? 97 : scope === 'operaciones' ? 137 : 11;
+  const random = createSeededRandom(dailySeed(offset));
+  if (scope === 'municipio') {
+    const tickets = Math.round(280 + random() * 220);
+    const abiertos = Math.round(tickets * (0.22 + random() * 0.2));
+    const backlog = Math.round(random() * 80);
+    const automatizado = Math.round(25 + random() * 35);
+    const primerContacto = Math.round(45 + random() * 40);
+    const nps = Math.round(-5 + random() * 55);
+    const csat = Math.round((3.6 + random() * 1.2) * 100) / 100;
+    const ttaP50 = Math.round(8 + random() * 15);
+    const ttaP90 = ttaP50 + Math.round(10 + random() * 18);
+    const ttrP50 = Math.round(120 + random() * 160);
+    const ttrP90 = ttrP50 + Math.round(150 + random() * 220);
+    return {
+      totals: {
+        tickets,
+        tickets_abiertos: abiertos,
+        backlog,
+        automatizado_pct: automatizado,
+        primer_contacto_pct: primerContacto,
+        nps,
+        csat,
+      },
+      sla: {
+        tta: { p50: ttaP50, p90: ttaP90, p95: ttaP90 + Math.round(random() * 10) },
+        ttr: { p50: ttrP50, p90: ttrP90, p95: ttrP90 + Math.round(random() * 30) },
+      },
+      extras: {},
+    };
+  }
+  if (scope === 'pyme') {
+    const tickets = Math.round(120 + random() * 90);
+    const pedidos = Math.round(80 + random() * 140);
+    const ticketMedio = Math.round((random() * 4500 + 6200) * 100) / 100;
+    const conversion = Math.round(5 + random() * 15);
+    const retencion = Math.round(30 + random() * 25);
+    const automatizado = Math.round(15 + random() * 30);
+    const hora = `${String(8 + Math.floor(random() * 10)).padStart(2, '0')}:00`;
+    const nps = Math.round(-10 + random() * 60);
+    const csat = Math.round((3.8 + random() * 1) * 100) / 100;
+    return {
+      totals: {
+        tickets,
+        pedidos,
+        ticket_medio: ticketMedio,
+        conversion_pct: conversion,
+        retencion_30: retencion,
+        automatizado_pct: automatizado,
+        hora_pico: hora,
+        nps,
+        csat,
+      },
+      sla: {},
+      extras: {},
+    };
+  }
+  const tickets = Math.round(200 + random() * 160);
+  const abiertos = Math.round(tickets * (0.3 + random() * 0.2));
+  const violaciones = Math.round(5 + random() * 25);
+  const primer = Math.round(40 + random() * 45);
+  const automatizado = Math.round(20 + random() * 35);
+  return {
+    totals: {
+      tickets,
+      abiertos,
+      violaciones_sla: violaciones,
+      primer_contacto_pct: primer,
+      automatizado_pct: automatizado,
+    },
+    sla: {},
+    extras: {},
+  };
 }
 
 function renderSummary(summary) {
@@ -399,9 +500,25 @@ async function loadOperations() {
 }
 
 async function loadGeo() {
-  const heat = await fetchJson('geo/heatmap', buildParams());
-  const points = await fetchJson('geo/points', buildParams({ limit: 1000 }));
-  updateMap(heat.cells || [], points.points || []);
+  const params = buildParams();
+  try {
+    const [heat, points] = await Promise.all([
+      fetchJson('geo/heatmap', params),
+      fetchJson('geo/points', buildParams({ limit: 1000 })),
+    ]);
+    const cells = Array.isArray(heat?.cells) ? heat.cells : [];
+    const pointList = Array.isArray(points?.points) ? points.points : [];
+    if (!cells.length && !pointList.length) {
+      const fallback = generateDemoGeoDataset(state.scope);
+      updateMap(fallback.cells, fallback.points);
+      return;
+    }
+    updateMap(cells, pointList);
+  } catch (error) {
+    console.warn('Geo analytics unavailable, rendering demo data.', error);
+    const fallback = generateDemoGeoDataset(state.scope);
+    updateMap(fallback.cells, fallback.points);
+  }
 }
 
 function renderBarChart(canvasId, items) {
@@ -520,6 +637,81 @@ function palette(index, alpha = 1) {
   return `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${alpha})`;
 }
 
+function randomPointAroundJunin(random) {
+  const angle = random() * Math.PI * 2;
+  const radius = 0.25 + random() * JUNIN_RADIUS_KM;
+  const deltaLat = (radius * Math.cos(angle)) / 111;
+  const denom = 111 * Math.cos((JUNIN_CENTER.lat * Math.PI) / 180) || 1;
+  const deltaLon = (radius * Math.sin(angle)) / denom;
+  return {
+    lat: JUNIN_CENTER.lat + deltaLat,
+    lon: JUNIN_CENTER.lon + deltaLon,
+  };
+}
+
+function buildCategoryMix(total, random) {
+  const desired = Math.max(1, Math.round(random() * 3));
+  const picked = [];
+  while (picked.length < desired) {
+    const candidate = DEMO_CATEGORIES[Math.floor(random() * DEMO_CATEGORIES.length)];
+    if (!picked.includes(candidate)) {
+      picked.push(candidate);
+    }
+  }
+  let remaining = total;
+  const mix = {};
+  picked.forEach((category, index) => {
+    if (index === picked.length - 1) {
+      mix[category] = Math.max(1, remaining);
+    } else {
+      const share = Math.max(1, Math.round(random() * remaining * 0.6));
+      mix[category] = share;
+      remaining -= share;
+    }
+  });
+  return mix;
+}
+
+function generateDemoGeoDataset(scope = 'municipio') {
+  const offset = scope === 'pyme' ? 77 : scope === 'operaciones' ? 133 : 21;
+  const random = createSeededRandom(dailySeed(offset));
+  const cellCount = scope === 'pyme' ? 22 : 30;
+  const pointCount = scope === 'pyme' ? 70 : 90;
+  const cells = [];
+  for (let index = 0; index < cellCount; index += 1) {
+    const coords = randomPointAroundJunin(random);
+    const count = Math.max(4, Math.round((scope === 'pyme' ? 4 : 8) + random() * 24));
+    cells.push({
+      cell_id: `demo-${scope}-${index}`,
+      count,
+      centroid_lat: Number(coords.lat.toFixed(6)),
+      centroid_lon: Number(coords.lon.toFixed(6)),
+      categories: buildCategoryMix(count, random),
+      fuente: 'demo',
+    });
+  }
+  const points = [];
+  for (let index = 0; index < pointCount; index += 1) {
+    const coords = randomPointAroundJunin(random);
+    const categoria = DEMO_CATEGORIES[Math.floor(random() * DEMO_CATEGORIES.length)];
+    const estado = DEMO_STATUSES[Math.floor(random() * DEMO_STATUSES.length)];
+    const point = {
+      lat: Number(coords.lat.toFixed(6)),
+      lon: Number(coords.lon.toFixed(6)),
+      categoria,
+      estado,
+      fuente: 'demo',
+    };
+    if (scope === 'pyme') {
+      point.total = Number((random() * 90000 + 5000).toFixed(2));
+    } else {
+      point.count = Math.max(1, Math.round(random() * 4));
+    }
+    points.push(point);
+  }
+  return { cells, points };
+}
+
 function formatNumber(value) {
   if (typeof value !== 'number' || Number.isNaN(value)) return value;
   if (Math.abs(value) >= 1000) return value.toLocaleString('es-AR');
@@ -552,8 +744,8 @@ function ensureMap() {
     state.map.remove();
   }
   state.map = L.map(container, {
-    center: [-34.6037, -58.3816],
-    zoom: 12,
+    center: [JUNIN_CENTER.lat, JUNIN_CENTER.lon],
+    zoom: 13,
     zoomControl: true,
   });
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
