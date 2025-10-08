@@ -8,6 +8,7 @@ from services.ticket_service import servicio_tickets
 from services.municipal_stats import build_stats_for_municipio, StatsFilters
 from services.metricas_service import MetricasService
 from models import User
+from services.demo_geo import generate_demo_points
 
 
 estadisticas_bp = Blueprint("estadisticas", __name__, url_prefix="/estadisticas")
@@ -114,6 +115,27 @@ def _parse_bool_param(args, key: str) -> bool | None:
         return False
 
     return None
+
+
+def _demo_heatmap(scope: str) -> list[dict]:
+    demo_points = generate_demo_points(scope=scope, count=90 if scope == "municipio" else 70)
+    heatmap: list[dict] = []
+    for point in demo_points:
+        weight = point.get("count")
+        if weight is None:
+            total = point.get("total", 0)
+            weight = max(1, int(round(total / 2500))) if total else 1
+        heatmap.append(
+            {
+                "location": {"lat": point["lat"], "lng": point["lon"]},
+                "weight": weight,
+                "categoria": point.get("categoria"),
+                "estado": point.get("estado"),
+                "barrio": point.get("barrio"),
+                "fuente": "demo",
+            }
+        )
+    return heatmap
 
 
 def _parse_iso_datetime(value: str | None, *, is_end: bool = False) -> datetime | None:
@@ -287,6 +309,8 @@ def estadisticas_dashboard(current_user):
         estado=estado_param,
         satisfactorio=satisfactorio,
     )
+    if not heatmap:
+        heatmap = _demo_heatmap(tipo)
 
     metadata = {
         "municipio_id": municipio_id,
@@ -400,6 +424,9 @@ def mapa_calor_datos(current_user):
         estado=estado_param,
         satisfactorio=args.get("satisfactorio", type=lambda v: str(v).lower() == "true"),
     )
+
+    if not puntos:
+        puntos = _demo_heatmap(args.get("tipo_ticket", "municipio"))
 
     payload: dict[str, object] = {"heatmap": puntos}
 

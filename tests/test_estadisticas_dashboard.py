@@ -169,7 +169,10 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         payload = response.get_json()
 
         self.assertEqual(payload['tipo'], 'pyme')
-        self.assertEqual(payload['heatmap'], [])
+        self.assertTrue(payload['heatmap'])
+        first_point = payload['heatmap'][0]
+        self.assertIn('location', first_point)
+        self.assertEqual(first_point.get('fuente'), 'demo')
         self.assertEqual(payload['filters'], {})
         self.assertEqual(
             payload['summary'],
