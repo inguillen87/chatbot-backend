@@ -13,7 +13,14 @@ def clear_tts_cache() -> None:
     """Utility mainly for tests to clear the local TTS cache."""
     _TTS_CACHE.clear()
 
-def generar_audio_openai(text: str, speed: float = 0.9) -> str | None:
+def generar_audio_openai(
+    text: str,
+    *,
+    speed: float = 0.8,
+    voice: str | None = None,
+    model: str | None = None,
+    style: str | None = None,
+) -> str | None:
     """
     Generates audio from text using OpenAI's Text-to-Speech API.
 
@@ -28,7 +35,15 @@ def generar_audio_openai(text: str, speed: float = 0.9) -> str | None:
         logger.warning("OPENAI_API_KEY not found in environment variables.")
         return None
 
-    cache_key = f"{text}|{speed}"
+    cache_key = "|".join(
+        [
+            text,
+            str(speed),
+            voice or "",
+            model or "",
+            style or "",
+        ]
+    )
     if cache_key in _TTS_CACHE:
         return _TTS_CACHE[cache_key]
 
@@ -42,12 +57,17 @@ def generar_audio_openai(text: str, speed: float = 0.9) -> str | None:
 
         logger.info(f"Requesting OpenAI speech synthesis for text: '{text[:50]}...'")
 
-        response = client.audio.speech.create(
-            model="tts-1",
-            voice="alloy",
-            input=text,
-            speed=speed,
-        )
+        request_payload = {
+            "model": model or os.getenv("OPENAI_TTS_MODEL", "tts-1-hd"),
+            "voice": voice or os.getenv("OPENAI_TTS_VOICE", "sol"),
+            "input": text,
+            "speed": speed,
+        }
+
+        if style:
+            request_payload["style"] = style
+
+        response = client.audio.speech.create(**request_payload)
 
         # Generate a unique filename
         filename = f"{uuid.uuid4()}.mp3"
