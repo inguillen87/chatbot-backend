@@ -6,6 +6,29 @@ When WhatsApp interactive menus are not approved or available, the bot falls bac
 to a text-based menu that groups options by category and includes numeric
 selection instructions to maintain full visibility of all choices.
 
+## Accessible audio pipeline
+
+- Configure high quality text-to-speech selecting the provider priority with
+  `TTS_PROVIDER_ORDER` (for example `"cohere,openai"`). Each provider accepts
+  fine tuning via environment variables such as `OPENAI_TTS_VOICE`,
+  `OPENAI_TTS_DEFAULT_VOICE`, `OPENAI_TTS_FALLBACK_VOICE`, `OPENAI_TTS_MODEL`,
+  `COHERE_TTS_VOICE` and the `TTS_SPEECH_SPEED` multiplier.  Voices like `sol`
+  are mapped automatically to the closest option accepted by OpenAI to avoid
+  breaking existing deployments.  When no explicit voice is provided the
+  orchestrator now honours `OPENAI_TTS_DEFAULT_VOICE` and falls back to the
+  rioplatense-friendly `shimmer` timbre by default.
+- Cohere's synthesis fallback now targets the `/v1/audio/generate` endpoint and
+  decodes any of the documented payload shapes (`audio_base64`,
+  `generations[0].audio.mp3_base64`, etc.), so deployments get audio bytes even
+  if the SDK format changes.
+- Speech-to-text now also supports a provider chain using `STT_PROVIDER_ORDER`
+  so deployments can try OpenAI Whisper and then Cohere automatically. Customise
+  the target language with `OPENAI_STT_LANGUAGE` or `COHERE_STT_LANGUAGE` to keep
+  pronunciations friendly for usuarios rioplatenses.
+- The sanitizer normalises common abreviaturas argentinas (por ejemplo "Av." o
+  "CABA") y refuerza las pausas en puntos y comas para que la lectura sonorice de
+  manera pausada y entendible.
+
 ## Endpoints
 
 - `POST /ask` – generic handler that decides the logic according to the provided sector (`rubro`).

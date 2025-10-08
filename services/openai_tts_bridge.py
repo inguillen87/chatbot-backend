@@ -9,11 +9,76 @@ logger = logging.getLogger(__name__)
 
 _TTS_CACHE: TTLCache[str, str] = TTLCache(maxsize=128, ttl=3600)
 
+_OPENAI_SUPPORTED_VOICES = {
+    "alloy",
+    "ash",
+    "coral",
+    "echo",
+    "fable",
+    "onyx",
+    "sage",
+    "shimmer",
+    "nova",
+}
+
+_VOICE_ALIASES = {
+    "sol": "shimmer",
+    "latina": "shimmer",
+    "latin": "shimmer",
+    "rioplatense": "shimmer",
+    "rioplatense-femenina": "shimmer",
+    "rioplatense-masculina": "alloy",
+}
+
+
+def _normalize_voice(requested_voice: str | None) -> str:
+    """Return a voice accepted by OpenAI, applying aliases and fallbacks."""
+
+    fallback_env = os.getenv("OPENAI_TTS_FALLBACK_VOICE", "shimmer")
+    fallback_normalized = _VOICE_ALIASES.get(
+        fallback_env.strip().lower(), fallback_env.strip().lower()
+    )
+    fallback = (
+        fallback_normalized
+        if fallback_normalized in _OPENAI_SUPPORTED_VOICES
+        else "alloy"
+    )
+
+    if requested_voice:
+        candidate = _VOICE_ALIASES.get(
+            requested_voice.strip().lower(), requested_voice.strip().lower()
+        )
+        if candidate in _OPENAI_SUPPORTED_VOICES:
+            return candidate
+
+        logger.warning(
+            "OpenAI TTS voice '%s' is not supported. Falling back to '%s'.",
+            requested_voice,
+            fallback,
+        )
+
+    default_env = os.getenv("OPENAI_TTS_DEFAULT_VOICE")
+    if default_env:
+        candidate = _VOICE_ALIASES.get(
+            default_env.strip().lower(), default_env.strip().lower()
+        )
+        if candidate in _OPENAI_SUPPORTED_VOICES:
+            return candidate
+
+    return fallback
+
 def clear_tts_cache() -> None:
     """Utility mainly for tests to clear the local TTS cache."""
     _TTS_CACHE.clear()
 
-def generar_audio_openai(text: str, speed: float = 0.9) -> str | None:
+def generar_audio_openai(
+    text: str,
+    *,
+    speed: float = 0.8,
+    voice: str | None = None,
+    model: str | None = None,
+    style: str | None = None,
+) -> str | None:
     """
     Generates audio from text using OpenAI's Text-to-Speech API.
 
@@ -28,7 +93,17 @@ def generar_audio_openai(text: str, speed: float = 0.9) -> str | None:
         logger.warning("OPENAI_API_KEY not found in environment variables.")
         return None
 
-    cache_key = f"{text}|{speed}"
+    selected_voice = _normalize_voice(voice)
+
+    cache_key = "|".join(
+        [
+            text,
+            str(speed),
+            selected_voice,
+            model or "",
+            style or "",
+        ]
+    )
     if cache_key in _TTS_CACHE:
         return _TTS_CACHE[cache_key]
 
@@ -42,12 +117,17 @@ def generar_audio_openai(text: str, speed: float = 0.9) -> str | None:
 
         logger.info(f"Requesting OpenAI speech synthesis for text: '{text[:50]}...'")
 
-        response = client.audio.speech.create(
-            model="tts-1",
-            voice="alloy",
-            input=text,
-            speed=speed,
-        )
+        request_payload = {
+            "model": model or os.getenv("OPENAI_TTS_MODEL", "tts-1-hd"),
+            "voice": selected_voice,
+            "input": text,
+            "speed": speed,
+        }
+
+        if style:
+            request_payload["style"] = style
+
+        response = client.audio.speech.create(**request_payload)
 
         # Generate a unique filename
         filename = f"{uuid.uuid4()}.mp3"

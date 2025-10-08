@@ -8,6 +8,8 @@ import requests
 import httpx
 from openai import OpenAI
 
+from collections import OrderedDict
+
 # Initialize a shared OpenAI client once at import time so it can be mocked in tests.
 # If no API key is configured, fall back to a dummy key so unit tests can run without
 # external credentials. Use a custom HTTP client that ignores proxy env vars (common
@@ -35,6 +37,29 @@ def normalize_spanish_transcription(text: str) -> str:
     for short, full in replacements.items():
         text = re.sub(rf"\b{short}\b", full, text, flags=re.IGNORECASE)
     return text
+
+
+def _stt_provider_order() -> list[str]:
+    raw = os.getenv("STT_PROVIDER_ORDER", "openai,cohere")
+    normalized = [entry.strip().lower() for entry in raw.split(",") if entry.strip()]
+    if not normalized:
+        normalized = ["openai", "cohere"]
+    return list(OrderedDict.fromkeys(normalized))
+
+
+def _transcribe_with_openai(audio_bytes: bytes, filename: str) -> str | None:
+    language = os.getenv("OPENAI_STT_LANGUAGE", "es")
+    model = os.getenv("OPENAI_STT_MODEL", "whisper-1")
+
+    with io.BytesIO(audio_bytes) as audio_file:
+        audio_file.name = filename
+        transcription = openai_client.audio.transcriptions.create(
+            model=model,
+            file=audio_file,
+            language=language,
+        )
+
+    return getattr(transcription, "text", None)
 
 def transcribe_audio_from_url(url: str, mime_type: str, account_sid: str = None, auth_token: str = None) -> str | None:
     """Download an audio file and transcribe it using OpenAI Whisper.
@@ -69,18 +94,28 @@ def transcribe_audio_from_url(url: str, mime_type: str, account_sid: str = None,
         safe_extension = re.sub(r'[^a-zA-Z0-9]', '', extension)
         filename = f"audio.{safe_extension}"
 
-        # Send the audio to OpenAI's transcription endpoint
-        with io.BytesIO(audio_bytes) as audio_file:
-            # give the BytesIO object a name so the client knows the mimetype
-            audio_file.name = filename
-            transcription = openai_client.audio.transcriptions.create(
-                model="whisper-1", file=audio_file
-            )
+        for provider in _stt_provider_order():
+            if provider == "openai":
+                try:
+                    text = _transcribe_with_openai(audio_bytes, filename)
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    print(f"OpenAI STT error: {exc}")
+                    text = None
+            elif provider == "cohere":
+                try:
+                    from services.cohere_stt_bridge import transcribir_audio_cohere
 
-        text = getattr(transcription, "text", None)
-        if text:
-            text = normalize_spanish_transcription(text)
-        return text or None
+                    text = transcribir_audio_cohere(audio_bytes, mime_type)
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    print(f"Cohere STT error: {exc}")
+                    text = None
+            else:
+                text = None
+
+            if text:
+                return normalize_spanish_transcription(text)
+
+        return None
 
     except requests.exceptions.RequestException as e:
         print(f"Error downloading audio file: {e}")
