@@ -26,13 +26,15 @@ _VOICE_ALIASES = {
     "latina": "shimmer",
     "latin": "shimmer",
     "rioplatense": "shimmer",
+    "rioplatense-femenina": "shimmer",
+    "rioplatense-masculina": "alloy",
 }
 
 
 def _normalize_voice(requested_voice: str | None) -> str:
     """Return a voice accepted by OpenAI, applying aliases and fallbacks."""
 
-    fallback_env = os.getenv("OPENAI_TTS_FALLBACK_VOICE", "alloy")
+    fallback_env = os.getenv("OPENAI_TTS_FALLBACK_VOICE", "shimmer")
     fallback_normalized = _VOICE_ALIASES.get(
         fallback_env.strip().lower(), fallback_env.strip().lower()
     )

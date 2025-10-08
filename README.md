@@ -14,7 +14,13 @@ selection instructions to maintain full visibility of all choices.
   `OPENAI_TTS_DEFAULT_VOICE`, `OPENAI_TTS_FALLBACK_VOICE`, `OPENAI_TTS_MODEL`,
   `COHERE_TTS_VOICE` and the `TTS_SPEECH_SPEED` multiplier.  Voices like `sol`
   are mapped automatically to the closest option accepted by OpenAI to avoid
-  breaking existing deployments.
+  breaking existing deployments.  When no explicit voice is provided the
+  orchestrator now honours `OPENAI_TTS_DEFAULT_VOICE` and falls back to the
+  rioplatense-friendly `shimmer` timbre by default.
+- Cohere's synthesis fallback now targets the `/v1/audio/generate` endpoint and
+  decodes any of the documented payload shapes (`audio_base64`,
+  `generations[0].audio.mp3_base64`, etc.), so deployments get audio bytes even
+  if the SDK format changes.
 - Speech-to-text now also supports a provider chain using `STT_PROVIDER_ORDER`
   so deployments can try OpenAI Whisper and then Cohere automatically. Customise
   the target language with `OPENAI_STT_LANGUAGE` or `COHERE_STT_LANGUAGE` to keep
