@@ -38,6 +38,53 @@ def _build_request_payload(
     return payload
 
 
+def _extract_audio_bytes(data: dict[str, Any]) -> bytes:
+    """Return decoded audio bytes from the Cohere JSON payload."""
+
+    if not isinstance(data, dict):
+        return b""
+
+    candidates = [
+        data.get("audio_base64"),
+        data.get("audio"),
+        data.get("mp3_base64"),
+    ]
+
+    generations = data.get("generations")
+    if isinstance(generations, list) and generations:
+        generation = generations[0] or {}
+        if isinstance(generation, dict):
+            candidates.append(generation.get("audio_base64"))
+            audio_entry = generation.get("audio")
+            if isinstance(audio_entry, dict):
+                candidates.append(audio_entry.get("mp3_base64"))
+                candidates.append(audio_entry.get("base64"))
+
+    audio_field = data.get("audio")
+    if isinstance(audio_field, dict):
+        candidates.append(audio_field.get("base64"))
+        candidates.append(audio_field.get("mp3_base64"))
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+
+        if isinstance(candidate, dict):
+            base64_payload = candidate.get("base64") or candidate.get("mp3_base64")
+        else:
+            base64_payload = candidate
+
+        if not base64_payload:
+            continue
+
+        try:
+            return base64.b64decode(base64_payload)
+        except Exception:
+            continue
+
+    return b""
+
+
 def generar_audio_cohere(
     text: str,
     *,
@@ -60,7 +107,7 @@ def generar_audio_cohere(
         return None
 
     endpoint = os.getenv(
-        "COHERE_TTS_ENDPOINT", "https://api.cohere.ai/v1/audio/speech"
+        "COHERE_TTS_ENDPOINT", "https://api.cohere.ai/v1/audio/generate"
     )
     language = language or os.getenv("COHERE_TTS_LANGUAGE", "es-AR")
 
@@ -88,8 +135,7 @@ def generar_audio_cohere(
         content_type = response.headers.get("Content-Type", "")
         if "application/json" in content_type:
             data = response.json()
-            audio_base64 = data.get("audio_base64")
-            audio_bytes = base64.b64decode(audio_base64) if audio_base64 else b""
+            audio_bytes = _extract_audio_bytes(data)
         else:
             audio_bytes = response.content
 
