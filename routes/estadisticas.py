@@ -519,7 +519,9 @@ def estadisticas_tickets(current_user):
         ),
     )
 
-    respuesta: dict[str, object] = {"heatmap": puntos}
+    heatmap = puntos or _demo_heatmap(tipo)
+
+    respuesta: dict[str, object] = {"heatmap": heatmap}
 
     if tipo == "municipio":
         stats_filters = _build_stats_filters(args, estados)

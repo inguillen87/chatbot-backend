@@ -191,6 +191,35 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             satisfactorio=None,
         )
 
+    @patch('routes.estadisticas._demo_heatmap')
+    @patch('routes.estadisticas.build_stats_for_municipio')
+    @patch('routes.estadisticas.servicio_tickets')
+    def test_estadisticas_tickets_usa_fallback_demo_si_no_hay_puntos(
+        self,
+        mock_servicio,
+        mock_stats,
+        mock_demo,
+    ):
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = []
+        mock_stats.return_value = {"resumen": {}}
+        mock_demo.return_value = [
+            {
+                "location": {"lat": -33.009, "lng": -68.485},
+                "weight": 5,
+                "fuente": "demo",
+            }
+        ]
+        current_user = SimpleNamespace(municipio_id=9, rubro_id=None)
+        import routes.estadisticas as estats
+
+        with self.app.test_request_context('/estadisticas/tickets?tipo=municipio'):
+            response = estats.estadisticas_tickets(current_user)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["heatmap"], mock_demo.return_value)
+        mock_demo.assert_called_once_with('municipio')
+
 
 if __name__ == '__main__':
     unittest.main()
