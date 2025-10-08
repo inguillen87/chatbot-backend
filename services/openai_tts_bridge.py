@@ -9,6 +9,62 @@ logger = logging.getLogger(__name__)
 
 _TTS_CACHE: TTLCache[str, str] = TTLCache(maxsize=128, ttl=3600)
 
+_OPENAI_SUPPORTED_VOICES = {
+    "alloy",
+    "ash",
+    "coral",
+    "echo",
+    "fable",
+    "onyx",
+    "sage",
+    "shimmer",
+    "nova",
+}
+
+_VOICE_ALIASES = {
+    "sol": "shimmer",
+    "latina": "shimmer",
+    "latin": "shimmer",
+    "rioplatense": "shimmer",
+}
+
+
+def _normalize_voice(requested_voice: str | None) -> str:
+    """Return a voice accepted by OpenAI, applying aliases and fallbacks."""
+
+    fallback_env = os.getenv("OPENAI_TTS_FALLBACK_VOICE", "alloy")
+    fallback_normalized = _VOICE_ALIASES.get(
+        fallback_env.strip().lower(), fallback_env.strip().lower()
+    )
+    fallback = (
+        fallback_normalized
+        if fallback_normalized in _OPENAI_SUPPORTED_VOICES
+        else "alloy"
+    )
+
+    if requested_voice:
+        candidate = _VOICE_ALIASES.get(
+            requested_voice.strip().lower(), requested_voice.strip().lower()
+        )
+        if candidate in _OPENAI_SUPPORTED_VOICES:
+            return candidate
+
+        logger.warning(
+            "OpenAI TTS voice '%s' is not supported. Falling back to '%s'.",
+            requested_voice,
+            fallback,
+        )
+
+    default_env = os.getenv("OPENAI_TTS_DEFAULT_VOICE")
+    if default_env:
+        candidate = _VOICE_ALIASES.get(
+            default_env.strip().lower(), default_env.strip().lower()
+        )
+        if candidate in _OPENAI_SUPPORTED_VOICES:
+            return candidate
+
+    return fallback
+
 def clear_tts_cache() -> None:
     """Utility mainly for tests to clear the local TTS cache."""
     _TTS_CACHE.clear()
@@ -35,11 +91,13 @@ def generar_audio_openai(
         logger.warning("OPENAI_API_KEY not found in environment variables.")
         return None
 
+    selected_voice = _normalize_voice(voice)
+
     cache_key = "|".join(
         [
             text,
             str(speed),
-            voice or "",
+            selected_voice,
             model or "",
             style or "",
         ]
@@ -59,7 +117,7 @@ def generar_audio_openai(
 
         request_payload = {
             "model": model or os.getenv("OPENAI_TTS_MODEL", "tts-1-hd"),
-            "voice": voice or os.getenv("OPENAI_TTS_VOICE", "sol"),
+            "voice": selected_voice,
             "input": text,
             "speed": speed,
         }

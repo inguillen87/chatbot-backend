@@ -142,7 +142,7 @@ def generar_audio(text: str) -> str | None:
             except (ValueError, TypeError):
                 speech_speed = 0.8
 
-            voice = os.getenv("OPENAI_TTS_VOICE", "sol")
+            voice = os.getenv("OPENAI_TTS_VOICE")
             model = os.getenv("OPENAI_TTS_MODEL")
             style = os.getenv("OPENAI_TTS_STYLE")
 
