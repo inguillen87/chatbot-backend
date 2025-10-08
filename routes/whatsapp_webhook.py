@@ -774,6 +774,8 @@ def whatsapp_webhook():
                         current_app.logger.info(
                             f"[WELCOME] Sticker sent to {from_number_cleaned} using {resolved_sticker_url}."
                         )
+                        # Avoid re-attaching the same sticker through the delayed payload.
+                        sticker_metadata_allowed = False
                     except Exception as e:
                         current_app.logger.warning(
                             f"[WELCOME] Failed to send welcome sticker to {from_number_cleaned}: {e}"
