@@ -4816,6 +4816,7 @@ def _get_encuestas_menu(context: dict) -> dict:
         widget_share_url = f"{share_url}?canal=widget_chat"
         whatsapp_message = f"Participá en '{titulo}' ingresando a {share_url}"
         whatsapp_share_url = f"https://wa.me/?text={quote_plus(whatsapp_message)}"
+        whatsapp_share_display_url = f"https://wa.me/?text={quote_plus(share_url)}"
 
         short_title = _shorten_button_label(titulo)
         widget_button_title = _shorten_button_label(titulo, max_length=36)
@@ -4827,7 +4828,7 @@ def _get_encuestas_menu(context: dict) -> dict:
         line_parts.append(f"   🔗 {share_url}")
         line_parts.append(f"   🧾 {qr_url}")
         line_parts.append(f"   💬 {widget_share_url}")
-        line_parts.append(f"   📲 {whatsapp_share_url}")
+        line_parts.append(f"   📲 {whatsapp_share_display_url}")
         lines.append("\n".join(line_parts))
 
         survey_buttons.append(

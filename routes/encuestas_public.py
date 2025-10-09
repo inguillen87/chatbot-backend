@@ -262,8 +262,13 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
 
     @bp.route("/<slug>/qr")
     def qr(slug: str):
+        preview_user = None
+        token = obtener_token()
+        if token:
+            preview_user = user_from_token(token)
+
         try:
-            encuesta = get_public_encuesta(slug)
+            encuesta = get_public_encuesta(slug, allow_inactive_for_user=preview_user)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
 
