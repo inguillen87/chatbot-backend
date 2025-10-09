@@ -8,7 +8,7 @@ import re
 from threading import Lock
 from typing import Optional
 
-from flask import Blueprint, current_app, g, jsonify, request, send_file
+from flask import Blueprint, current_app, g, jsonify, redirect, request, send_file
 
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_qr_service import build_qr_png
@@ -49,6 +49,13 @@ def _feature_guard():
     if not FEATURE_ENCUESTAS:
         return jsonify({"error": "Módulo de encuestas deshabilitado"}), 404
     return None
+
+
+def _public_base_url() -> str:
+    configured = current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+    if configured:
+        return configured.rstrip("/")
+    return request.host_url.rstrip("/")
 
 
 def _extract_ip() -> str:
@@ -201,7 +208,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                 500,
             )
 
-        base_url = request.host_url.rstrip("/")
+        base_url = _public_base_url()
         payload = []
         for encuesta, slug in encuestas:
             data = serialize_public_encuesta(encuesta, slug_publico=slug)
@@ -218,8 +225,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             return jsonify(err.to_dict()), err.status_code
         return jsonify(serialize_public_encuesta(encuesta, slug_publico=slug))
 
-    @bp.route("/<slug>/responder", methods=["POST"])
-    def responder(slug: str):
+    def _handle_responder(slug: str):
         ip = _extract_ip()
         if not _rate_limit(ip):
             return (
@@ -242,6 +248,18 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             return jsonify(err.to_dict()), err.status_code
         return jsonify({"ok": True, "respuesta_id": respuesta.id}), 201
 
+    @bp.route("/<slug>/responder", methods=["POST", "OPTIONS"])
+    def responder(slug: str):
+        if request.method == "OPTIONS":
+            return "", 204
+        return _handle_responder(slug)
+
+    @bp.route("/<slug>/respuestas", methods=["POST", "OPTIONS"])
+    def responder_alias(slug: str):
+        if request.method == "OPTIONS":
+            return "", 204
+        return _handle_responder(slug)
+
     @bp.route("/<slug>/qr")
     def qr(slug: str):
         try:
@@ -250,7 +268,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             return jsonify(err.to_dict()), err.status_code
 
         size = request.args.get("size", default=320, type=int)
-        base_url = request.host_url.rstrip("/")
+        base_url = _public_base_url()
         url = f"{base_url}/e/{slug}"
         try:
             png = build_qr_png(url, size=size)
@@ -271,4 +289,32 @@ encuestas_public_bp = _create_public_blueprint(
 encuestas_public_legacy_bp = _create_public_blueprint(
     "encuestas_public_legacy_bp", "/public/encuestas"
 )
+
+
+encuestas_public_share_bp = Blueprint("encuestas_public_share_bp", __name__)
+
+
+@encuestas_public_share_bp.before_request
+def _share_check_feature():
+    guard = _feature_guard()
+    if guard:
+        return guard
+    return None
+
+
+@encuestas_public_share_bp.route("/e/<slug>", methods=["GET"])
+def share_redirect(slug: str):
+    canonical = current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+    if canonical:
+        canonical = canonical.rstrip("/")
+        target = f"{canonical}/e/{slug}"
+        request_base = request.host_url.rstrip("/")
+        if request_base != canonical:
+            return redirect(target, code=302)
+
+    try:
+        encuesta = get_public_encuesta(slug)
+    except EncuestaError as err:
+        return jsonify(err.to_dict()), err.status_code
+    return jsonify(serialize_public_encuesta(encuesta, slug_publico=slug))
 
