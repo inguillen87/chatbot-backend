@@ -4682,6 +4682,42 @@ def _resolve_encuestas_base_url(context: dict) -> str:
         base_url = municipio_config.get("encuestas_base_url")
     if isinstance(base_url, str) and base_url.strip():
         return base_url.rstrip("/")
+    canonical = None
+    backend_url = None
+    mapping: Dict[str, int] | None = None
+    is_https = DEFAULT_IS_HTTPS
+    tenant_id = _resolve_encuestas_tenant_id(context)
+
+    if has_app_context():
+        canonical = current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+        backend_url = current_app.config.get("BACKEND_URL")
+        mapping = current_app.config.get("PUBLIC_ENCUESTAS_DOMAIN_MAP")
+        is_https = current_app.config.get("IS_HTTPS", DEFAULT_IS_HTTPS)
+
+    if isinstance(canonical, str) and canonical.strip():
+        return canonical.rstrip("/")
+
+    if mapping and tenant_id is not None:
+        preferred_domains: List[str] = []
+        for domain, mapped_id in mapping.items():
+            if mapped_id != tenant_id:
+                continue
+            if not isinstance(domain, str) or not domain.strip():
+                continue
+            domain = domain.strip().lower()
+            # Prefiere dominios con www para compartir enlaces en campañas.
+            if domain.startswith("www."):
+                preferred_domains.insert(0, domain)
+            else:
+                preferred_domains.append(domain)
+
+        if preferred_domains:
+            scheme = "https" if is_https else "http"
+            return f"{scheme}://{preferred_domains[0]}".rstrip("/")
+
+    if isinstance(backend_url, str) and backend_url.strip():
+        return backend_url.rstrip("/")
+
     return DEFAULT_BACKEND_URL.rstrip("/")
 
 
