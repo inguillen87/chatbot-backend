@@ -90,3 +90,27 @@ def test_encuestas_menu_shows_empty_state_when_enabled(client):
 
     assert "por el momento no hay encuestas activas" in menu["message_body"].lower()
     assert menu["fuente"] == "submenu_encuestas_v1"
+
+
+def test_encuestas_menu_prefers_domain_map_base_url(client):
+    with client.application.app_context():
+        encuesta, slug = _create_active_encuesta(tenant_id=11)
+        app = client.application
+        app.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = None
+        app.config["PUBLIC_ENCUESTAS_DOMAIN_MAP"] = {
+            "chatbot-backend-2e14.onrender.com": 999,
+            "www.chatboc.ar": encuesta.tenant_id,
+            "chatboc.ar": encuesta.tenant_id,
+        }
+        app.config["IS_HTTPS"] = True
+        context = _base_context(tenant_id=encuesta.tenant_id or 11)
+        menu = municipio_responder._get_encuestas_menu(context)
+
+    expected_prefix = "https://www.chatboc.ar/e/"
+    assert expected_prefix + slug in menu["message_body"]
+    button_urls = [
+        option.get("url", "")
+        for option in menu["options_list"]
+        if option.get("type") == "url"
+    ]
+    assert any(url.startswith(expected_prefix) for url in button_urls)
