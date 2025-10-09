@@ -12,7 +12,9 @@ from services.encuestas_service import (
     cerrar_encuesta,
     list_encuestas,
     get_encuesta,
+    list_respuestas,
     serialize_encuesta,
+    serialize_respuesta,
 )
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
@@ -110,6 +112,31 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
         return jsonify(serialize_encuesta(encuesta)), 200
+
+    @bp.route("/<int:encuesta_id>/respuestas", methods=["GET"])
+    @token_requerido
+    @require_role("admin", "super_admin")
+    def listar_respuestas_endpoint(current_user, encuesta_id: int):
+        limit = request.args.get("limit", default=None, type=int)
+        offset = request.args.get("offset", default=None, type=int)
+        try:
+            encuesta, respuestas, total, limit_value, offset_value = list_respuestas(
+                encuesta_id,
+                current_user,
+                limit=limit,
+                offset=offset,
+            )
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+
+        payload = {
+            "encuesta_id": encuesta.id,
+            "total": total,
+            "limit": limit_value,
+            "offset": offset_value,
+            "respuestas": [serialize_respuesta(resp) for resp in respuestas],
+        }
+        return jsonify(payload), 200
 
     return bp
 

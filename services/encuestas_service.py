@@ -692,6 +692,80 @@ def save_respuesta(slug_publico: str, payload: Dict[str, Any], request_ctx: Dict
     return respuesta
 
 
+def serialize_respuesta(respuesta: EncRespuesta) -> Dict[str, Any]:
+    detalles_serializados: List[Dict[str, Any]] = []
+    for detalle in respuesta.detalles:
+        pregunta = detalle.pregunta
+        opcion = detalle.opcion
+        detalles_serializados.append(
+            {
+                "pregunta_id": detalle.pregunta_id,
+                "pregunta_texto": pregunta.texto if pregunta else None,
+                "pregunta_orden": pregunta.orden if pregunta else None,
+                "pregunta_tipo": pregunta.tipo if pregunta else None,
+                "opcion_id": detalle.opcion_id,
+                "opcion_texto": opcion.texto if opcion else None,
+                "texto_libre": detalle.texto_libre,
+            }
+        )
+
+    return {
+        "id": respuesta.id,
+        "encuesta_id": respuesta.encuesta_id,
+        "submitted_at": respuesta.submitted_at.isoformat() if respuesta.submitted_at else None,
+        "canal": respuesta.canal,
+        "utm_source": respuesta.utm_source,
+        "utm_campaign": respuesta.utm_campaign,
+        "dni": respuesta.dni,
+        "phone": respuesta.phone,
+        "ip": respuesta.ip,
+        "lat": respuesta.lat,
+        "lng": respuesta.lng,
+        "user_id": respuesta.user_id,
+        "detalles": detalles_serializados,
+    }
+
+
+def list_respuestas(
+    encuesta_id: int,
+    user: Any,
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
+) -> Tuple[EncEncuesta, List[EncRespuesta], int, int, int]:
+    encuesta = get_encuesta(encuesta_id, user=user)
+
+    try:
+        limit_value = int(limit) if limit is not None else 50
+    except (TypeError, ValueError) as exc:
+        raise EncuestaError("Parámetro 'limit' inválido") from exc
+    if limit_value <= 0:
+        raise EncuestaError("El parámetro 'limit' debe ser mayor a 0")
+    limit_value = min(limit_value, 200)
+
+    try:
+        offset_value = int(offset) if offset is not None else 0
+    except (TypeError, ValueError) as exc:
+        raise EncuestaError("Parámetro 'offset' inválido") from exc
+    if offset_value < 0:
+        raise EncuestaError("El parámetro 'offset' no puede ser negativo")
+
+    total = EncRespuesta.query.filter_by(encuesta_id=encuesta.id).count()
+
+    query = (
+        EncRespuesta.query.options(
+            joinedload(EncRespuesta.detalles).joinedload(EncRespuestaDetalle.pregunta),
+            joinedload(EncRespuesta.detalles).joinedload(EncRespuestaDetalle.opcion),
+        )
+        .filter_by(encuesta_id=encuesta.id)
+        .order_by(EncRespuesta.submitted_at.desc(), EncRespuesta.id.desc())
+        .offset(offset_value)
+        .limit(limit_value)
+    )
+
+    respuestas = query.all()
+    return encuesta, respuestas, total, limit_value, offset_value
+
+
 def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
     return {
         "id": encuesta.id,
