@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from flask import current_app
@@ -20,6 +21,7 @@ from models import (
     EncRespuesta,
     EncRespuestaDetalle,
     EncLink,
+    User,
 )
 
 
@@ -36,6 +38,27 @@ class EncuestaError(Exception):
         data = {"error": self.message}
         data.update(self.payload)
         return data
+
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    normalized = raw_value.strip().lower()
+    return normalized not in {"0", "false", "no", "off", "disabled"}
+
+
+def _parse_int(value: Optional[str]) -> Optional[int]:
+    if not value:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+_BOOTSTRAP_SAMPLE_ENABLED = _env_flag("ENCUESTAS_BOOTSTRAP_SAMPLE", default=True)
+_BOOTSTRAP_TENANT_ID = _parse_int(os.getenv("JUNIN_ENCUESTAS_TENANT_ID")) or 4
 
 
 def _slugify(value: str, fallback: Optional[str] = None) -> str:
@@ -254,7 +277,124 @@ def cerrar_encuesta(encuesta_id: int, user: Any) -> EncEncuesta:
     return encuesta
 
 
+def _find_bootstrap_user() -> Optional[User]:
+    if _BOOTSTRAP_TENANT_ID is None:
+        return None
+
+    user = (
+        User.query.filter(
+            or_(
+                User.municipio_id == _BOOTSTRAP_TENANT_ID,
+                User.id == _BOOTSTRAP_TENANT_ID,
+            )
+        )
+        .order_by(User.id.asc())
+        .first()
+    )
+    if user:
+        return user
+
+    like_pattern = "%junin%"
+    return (
+        User.query.filter(User.tipo_chat == "municipio")
+        .filter(
+            or_(
+                User.nombre_empresa.ilike(like_pattern),
+                User.name.ilike(like_pattern),
+                User.email.ilike(like_pattern),
+                User.ciudad.ilike(like_pattern),
+            )
+        )
+        .order_by(User.id.asc())
+        .first()
+    )
+
+
+def _bootstrap_sample_if_needed(tenant_id: int) -> None:
+    if not _BOOTSTRAP_SAMPLE_ENABLED or _BOOTSTRAP_TENANT_ID is None:
+        return
+    if tenant_id != _BOOTSTRAP_TENANT_ID:
+        return
+
+    existing = EncEncuesta.query.filter_by(tenant_id=tenant_id).count()
+    if existing:
+        return
+
+    user = _find_bootstrap_user()
+    if not user:
+        current_app.logger.warning(
+            "[encuestas] No se encontró un usuario municipal de Junín para crear la encuesta demo"
+        )
+        return
+
+    ahora = datetime.now(timezone.utc)
+    cierre = ahora + timedelta(days=45)
+    payload = {
+        "titulo": "Participación Ciudadana Junín 2025",
+        "slug": "junin-participa",
+        "descripcion": (
+            "Queremos conocer tus prioridades para planificar obras, seguridad y "
+            "actividades en todo Junín. Contanos qué es importante para tu barrio."
+        ),
+        "tipo": "opinion",
+        "anonimo_permitido": True,
+        "requiere_identidad": False,
+        "politica_unicidad": "por_cookie",
+        "inicio_at": ahora.isoformat(),
+        "fin_at": cierre.isoformat(),
+        "preguntas": [
+            {
+                "orden": 1,
+                "tipo": "opcion_unica",
+                "texto": "¿Qué proyecto priorizarías para tu barrio?",
+                "obligatoria": True,
+                "opciones": [
+                    {"orden": 1, "texto": "Mejoras de iluminación y seguridad"},
+                    {"orden": 2, "texto": "Pavimentación y mantenimiento de calles"},
+                    {"orden": 3, "texto": "Espacios verdes y recreativos"},
+                    {"orden": 4, "texto": "Programas deportivos y culturales"},
+                ],
+            },
+            {
+                "orden": 2,
+                "tipo": "opcion_multiple",
+                "texto": (
+                    "¿En qué acciones de participación te gustaría sumarte "
+                    "durante los próximos meses?"
+                ),
+                "obligatoria": False,
+                "max_selecciones": 3,
+                "opciones": [
+                    {"orden": 1, "texto": "Cabildos barriales"},
+                    {"orden": 2, "texto": "Jornadas de voluntariado"},
+                    {"orden": 3, "texto": "Consultas públicas digitales"},
+                    {"orden": 4, "texto": "Mesas de trabajo temáticas"},
+                ],
+            },
+            {
+                "orden": 3,
+                "tipo": "abierta",
+                "texto": "Dejanos comentarios o propuestas concretas para Junín",
+                "obligatoria": False,
+            },
+        ],
+    }
+
+    try:
+        encuesta = create_encuesta(payload, user)
+        encuesta, link = publicar_encuesta(encuesta.id, user)
+        current_app.logger.info(
+            "[encuestas] Encuesta demo de Junín publicada automáticamente con slug %s",
+            link.slug_publico,
+        )
+    except EncuestaError:
+        current_app.logger.exception(
+            "[encuestas] No se pudo crear la encuesta demo de Junín"
+        )
+
+
 def list_encuestas(tenant_id: int, estado: Optional[str] = None) -> List[EncEncuesta]:
+    _bootstrap_sample_if_needed(tenant_id)
     query = EncEncuesta.query.filter_by(tenant_id=tenant_id)
     if estado:
         query = query.filter_by(estado=estado)
@@ -267,6 +407,7 @@ def list_public_encuestas_for_tenant(
 ) -> List[Tuple[EncEncuesta, str]]:
     """Return active public surveys for a tenant along with their public slugs."""
 
+    _bootstrap_sample_if_needed(tenant_id)
     now = datetime.now(timezone.utc)
     query = (
         EncEncuesta.query.options(joinedload(EncEncuesta.links))
