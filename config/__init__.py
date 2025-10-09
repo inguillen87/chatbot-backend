@@ -431,7 +431,22 @@ class Config:
     if _encuestas_base_url:
         PUBLIC_ENCUESTAS_CANONICAL_BASE_URL = _encuestas_base_url.rstrip("/")
     else:
-        PUBLIC_ENCUESTAS_CANONICAL_BASE_URL = None
+        fallback_domain = (public_root or "").strip().lower()
+        fallback_url = None
+
+        if fallback_domain and fallback_domain not in {"localhost", "127.0.0.1"}:
+            if fallback_domain.startswith("http://") or fallback_domain.startswith("https://"):
+                fallback_url = fallback_domain
+            else:
+                normalized_domain = fallback_domain.lstrip("www.")
+                if normalized_domain.count(".") == 1:
+                    normalized_domain = f"www.{normalized_domain}"
+                fallback_url = f"https://{normalized_domain}"
+
+        if not fallback_url:
+            fallback_url = BACKEND_URL
+
+        PUBLIC_ENCUESTAS_CANONICAL_BASE_URL = str(fallback_url).rstrip("/")
 
     PYME_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("PYME_UMBRAL_SUGERENCIA_REGISTRO", "3"))
     MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", "3"))
