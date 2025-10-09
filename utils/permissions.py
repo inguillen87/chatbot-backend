@@ -1,5 +1,5 @@
 from functools import wraps
-from flask import abort
+from flask import jsonify
 
 # Roles adicionales que se mapearán a su forma canónica para simplificar
 # las verificaciones de acceso.
@@ -19,7 +19,10 @@ def require_role(*roles):
             user_role = getattr(current_user, "rol", None)
             canonical = ROLE_ALIASES.get(user_role, user_role)
             if canonical not in roles:
-                abort(403)
+                # Mantener compatibilidad con callers que esperan una respuesta JSON
+                # uniforme en lugar de la página HTML por defecto de Flask para
+                # errores 403.
+                return jsonify({"error": "Permisos insuficientes"}), 403
             return f(current_user, *args, **kwargs)
         return wrapper
     return decorator
@@ -30,6 +33,6 @@ def require_municipio_access(f):
     @wraps(f)
     def wrapper(current_user, *args, **kwargs):
         if not getattr(current_user, "municipio_id", None):
-            abort(403)
+            return jsonify({"error": "Permisos insuficientes"}), 403
         return f(current_user, *args, **kwargs)
     return wrapper

@@ -801,11 +801,19 @@ def municipal_usuarios(current_user):
         )
     )
 
-@municipal_bp.route('/categorias', methods=['GET'])
+@municipal_bp.route('/categorias', methods=['GET', 'OPTIONS'])
 @token_requerido
 @require_role('admin', 'empleado')
 def municipal_categorias(current_user):
-    return jsonify(TODAS_LAS_CATEGORIAS_UNICAS)
+    if request.method == 'OPTIONS':
+        return "", 204
+
+    categorias = list(TODAS_LAS_CATEGORIAS_UNICAS)
+    payload = {
+        "categorias": categorias,
+        "categories": categorias,
+    }
+    return jsonify(payload)
 
 @municipal_bp.route('/estados', methods=['GET', 'OPTIONS'])
 def municipal_estados():
