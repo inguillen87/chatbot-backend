@@ -778,6 +778,7 @@ def list_respuestas(
 def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
     return {
         "id": encuesta.id,
+        "tenant_id": encuesta.tenant_id,
         "slug": encuesta.slug,
         "titulo": encuesta.titulo,
         "descripcion": encuesta.descripcion,

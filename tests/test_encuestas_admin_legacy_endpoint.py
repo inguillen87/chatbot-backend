@@ -45,6 +45,7 @@ def test_admin_encuestas_alias_exposes_rest_endpoints(client, monkeypatch, admin
     encuestas = list_resp.get_json()
     assert isinstance(encuestas, list)
     assert any("Junín" in encuesta["titulo"] for encuesta in encuestas)
+    assert all(encuesta["tenant_id"] == admin_user.municipio_id for encuesta in encuestas)
 
     payload = {
         "titulo": "Encuesta piloto de servicios", 
@@ -73,6 +74,7 @@ def test_admin_encuestas_alias_exposes_rest_endpoints(client, monkeypatch, admin
     # Listing again should include both the bootstrap survey and the new one.
     refreshed = client.get("/admin/encuestas", headers=headers).get_json()
     assert len(refreshed) >= 2
+    assert all(encuesta["tenant_id"] == admin_user.municipio_id for encuesta in refreshed)
 
     public_resp = client.get("/public/encuestas")
     assert public_resp.status_code == 200
