@@ -3,12 +3,88 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 # Directorio base de la aplicación
 basedir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 TIMEZONE_OFFSET = int(os.getenv("TIMEZONE_OFFSET", "-3"))
+
+_logger = logging.getLogger(__name__)
+
+
+def _normalize_domain(value: object) -> Optional[str]:
+    """Return a sanitized host/domain value suitable for lookups."""
+
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    text = re.sub(r"^[a-zA-Z]+://", "", text)
+    text = text.split("/")[0]
+    text = text.split(":")[0]
+    text = text.strip().lower()
+    return text or None
+
+
+def _parse_public_encuestas_domain_map(raw_value: Optional[str]) -> Dict[str, int]:
+    """Parse mapping definitions for public survey tenant resolution."""
+
+    mapping: Dict[str, int] = {}
+    if not raw_value:
+        return mapping
+
+    try:
+        loaded = json.loads(raw_value)
+    except json.JSONDecodeError:
+        loaded = {}
+        for chunk in raw_value.split(","):
+            if not chunk.strip():
+                continue
+            if "=" in chunk:
+                domain_part, tenant_part = chunk.split("=", 1)
+            elif ":" in chunk:
+                domain_part, tenant_part = chunk.split(":", 1)
+            else:
+                _logger.warning(
+                    "[config] Invalid PUBLIC_ENCUESTAS_DOMAIN_MAP entry '%s'. Use 'domain=tenant_id' format.",
+                    chunk.strip(),
+                )
+                continue
+            loaded[domain_part.strip()] = tenant_part.strip()
+    else:
+        if not isinstance(loaded, dict):
+            _logger.warning(
+                "[config] PUBLIC_ENCUESTAS_DOMAIN_MAP must be a JSON object or 'domain=tenant' list."
+            )
+            loaded = {}
+
+    for domain, tenant in loaded.items():
+        normalized = _normalize_domain(domain)
+        if not normalized:
+            continue
+        try:
+            tenant_id = int(tenant)
+        except (TypeError, ValueError):
+            _logger.warning(
+                "[config] Invalid tenant id '%s' for domain '%s' in PUBLIC_ENCUESTAS_DOMAIN_MAP.",
+                tenant,
+                domain,
+            )
+            continue
+
+        mapping[normalized] = tenant_id
+        if normalized.startswith("www."):
+            bare = normalized[4:]
+            if bare:
+                mapping.setdefault(bare, tenant_id)
+        else:
+            mapping.setdefault(f"www.{normalized}", tenant_id)
+
+    return mapping
 
 # --- Variables de Entorno para Despliegue ---
 ENV = os.getenv("ENV", "dev")  # "dev" o "prod"
@@ -329,6 +405,27 @@ class Config:
     TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
 
     APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:5000")
+
+    _encuestas_default = os.getenv("PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID")
+    if _encuestas_default is None or _encuestas_default == "":
+        PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID = 4
+    else:
+        normalized_default = _encuestas_default.strip().lower()
+        if normalized_default in {"none", "null"}:
+            PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID = None
+        else:
+            try:
+                PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID = int(_encuestas_default)
+            except ValueError:
+                PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID = 4
+                _logger.warning(
+                    "[config] Ignoring invalid PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID value '%s'.",
+                    _encuestas_default,
+                )
+
+    PUBLIC_ENCUESTAS_DOMAIN_MAP = _parse_public_encuestas_domain_map(
+        os.getenv("PUBLIC_ENCUESTAS_DOMAIN_MAP")
+    )
 
     PYME_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("PYME_UMBRAL_SUGERENCIA_REGISTRO", "3"))
     MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", "3"))

@@ -998,3 +998,27 @@ class EncAnchorSnapshot(db.Model, TimestampMixin):
 
     encuesta = db.relationship("EncEncuesta", back_populates="snapshots")
     respuestas = db.relationship("EncRespuesta", back_populates="snapshot")
+
+
+class FeatureToggle(db.Model, TimestampMixin):
+    __tablename__ = "features"
+
+    id = db.Column(db.Integer, primary_key=True)
+    owner_id = db.Column(db.BigInteger, nullable=False, index=True)
+    key = db.Column(db.String(64), nullable=False, index=True)
+    value = db.Column(db.String(255), nullable=True)
+
+    __table_args__ = (
+        db.UniqueConstraint("owner_id", "key", name="uq_features_owner_key"),
+    )
+
+    @property
+    def bool_value(self) -> Optional[bool]:
+        if self.value is None:
+            return None
+        normalized = str(self.value).strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enable", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disable", "disabled"}:
+            return False
+        return None
