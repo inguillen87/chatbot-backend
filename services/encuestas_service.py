@@ -77,6 +77,35 @@ def _slugify(value: str, fallback: Optional[str] = None) -> str:
     return cleaned or (fallback or secrets.token_hex(6))
 
 
+def _slug_exists(slug: str) -> bool:
+    if not slug:
+        return False
+    return (
+        db.session.query(EncEncuesta.id)
+        .filter(EncEncuesta.slug == slug)
+        .first()
+        is not None
+    )
+
+
+def _generate_unique_slug(initial_slug: str) -> str:
+    """Return a slug that is unique in ``EncEncuesta`` by appending a counter."""
+
+    slug = initial_slug or secrets.token_hex(6)
+    if not _slug_exists(slug):
+        return slug
+
+    match = re.match(r"^(?P<stem>.+?)(?:-(?P<num>\d+))?$", slug)
+    stem = match.group("stem") if match else slug
+    counter = int(match.group("num")) + 1 if match and match.group("num") else 2
+
+    while True:
+        candidate = f"{stem}-{counter}"
+        if not _slug_exists(candidate):
+            return candidate
+        counter += 1
+
+
 def _determine_tenant_id(user: Any) -> int:
     tenant_candidate = (
         getattr(user, "municipio_id", None)
@@ -168,7 +197,7 @@ def create_encuesta(data: Dict[str, Any], user: Any) -> EncEncuesta:
         raise EncuestaError("El título es requerido")
 
     slug_seed = data.get("slug") or f"{tenant_id}-{titulo}"
-    slug = _slugify(slug_seed)
+    slug = _generate_unique_slug(_slugify(slug_seed))
 
     encuesta = EncEncuesta(
         tenant_id=tenant_id,
