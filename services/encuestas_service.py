@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import secrets
 import unicodedata
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from flask import current_app
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
@@ -59,6 +60,8 @@ def _parse_int(value: Optional[str]) -> Optional[int]:
 
 _BOOTSTRAP_SAMPLE_ENABLED = _env_flag("ENCUESTAS_BOOTSTRAP_SAMPLE", default=True)
 _BOOTSTRAP_TENANT_ID = _parse_int(os.getenv("JUNIN_ENCUESTAS_TENANT_ID")) or 4
+
+_PUBLIC_SLUG_ALIAS_RE = re.compile(r"^(?P<base>.+)-(?P<token>[0-9a-f]{6,})$")
 
 
 def _slugify(value: str, fallback: Optional[str] = None) -> str:
@@ -452,10 +455,34 @@ def get_encuesta(encuesta_id: int, tenant_id: Optional[int] = None, user: Any = 
 
 
 def get_public_encuesta(slug_publico: str) -> EncEncuesta:
-    link = EncLink.query.filter_by(slug_publico=slug_publico).first()
-    if not link:
+    normalized_slug = (slug_publico or "").strip().lower()
+    if not normalized_slug:
         raise EncuestaError("Encuesta no encontrada", status_code=404)
-    encuesta = link.encuesta
+
+    link = (
+        EncLink.query.filter(func.lower(EncLink.slug_publico) == normalized_slug)
+        .first()
+    )
+    encuesta: Optional[EncEncuesta]
+
+    if link:
+        encuesta = link.encuesta
+    else:
+        encuesta = (
+            EncEncuesta.query.filter(func.lower(EncEncuesta.slug) == normalized_slug)
+            .first()
+        )
+        if encuesta is None:
+            alias_match = _PUBLIC_SLUG_ALIAS_RE.match(normalized_slug)
+            if alias_match:
+                base_slug = alias_match.group("base")
+                encuesta = (
+                    EncEncuesta.query.filter(func.lower(EncEncuesta.slug) == base_slug)
+                    .first()
+                )
+
+    if encuesta is None:
+        raise EncuestaError("Encuesta no encontrada", status_code=404)
     if encuesta.estado != "publicada":
         raise EncuestaError("La encuesta no está activa", status_code=403)
     if not encuesta.esta_activa():

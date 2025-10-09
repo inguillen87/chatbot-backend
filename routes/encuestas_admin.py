@@ -1,7 +1,7 @@
 """Administrative endpoints for managing surveys."""
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_service import (
@@ -65,7 +65,10 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
 
-        base_url = request.host_url.rstrip("/")
+        base_url = (
+            current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+            or request.host_url.rstrip("/")
+        )
         url_publica = f"{base_url}/e/{link.slug_publico}"
         return (
             jsonify({"ok": True, "slug_publico": link.slug_publico, "url_publica": url_publica}),
