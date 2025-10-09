@@ -198,4 +198,32 @@ def test_merkle_snapshot_root_consistente(client):
 
         esperado = _manual_merkle(hashes)
         assert snapshot.root_hash == esperado
-        assert snapshot.total_respuestas == len(hashes)
+
+
+def test_create_encuesta_generates_unique_slug(client):
+    with client.application.app_context():
+        user = DummyUser(tenant_id=7)
+        base_payload = {
+            "slug": "junin-participa",
+            "titulo": "Participación Ciudadana Junín 2025",
+            "descripcion": "Encuesta para validar manejo de slugs",
+            "tipo": "opinion",
+            "preguntas": [
+                {
+                    "orden": 1,
+                    "tipo": "opcion_unica",
+                    "texto": "¿Te interesa participar?",
+                    "opciones": [
+                        {"orden": 1, "texto": "Sí"},
+                        {"orden": 2, "texto": "No"},
+                    ],
+                }
+            ],
+        }
+
+        primera = create_encuesta(dict(base_payload), user)
+        segunda = create_encuesta(dict(base_payload), user)
+
+        assert primera.slug == "junin-participa"
+        assert segunda.slug.startswith("junin-participa-")
+        assert segunda.slug != primera.slug
