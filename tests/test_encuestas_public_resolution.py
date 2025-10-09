@@ -1,6 +1,7 @@
 from database import db
 from models import EncEncuesta, EncLink
 from routes import encuestas_public
+from services.encuestas_service import list_public_encuestas_for_tenant
 
 
 class _DummyRespuesta:
@@ -151,3 +152,23 @@ def test_share_endpoint_handles_alias_without_link(client):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["slug"] == slug
+
+
+def test_list_public_encuestas_falls_back_to_slug(client):
+    with client.application.app_context():
+        encuesta = EncEncuesta(
+            tenant_id=4,
+            slug="encuesta-sin-link",
+            titulo="Participá de la consulta",
+            descripcion="Validamos fallback sin link",
+            tipo="opinion",
+            estado="publicada",
+        )
+        db.session.add(encuesta)
+        db.session.commit()
+
+        resultados = list_public_encuestas_for_tenant(encuesta.tenant_id, limit=10)
+        assert any(
+            item_encuesta.id == encuesta.id and slug == encuesta.slug
+            for item_encuesta, slug in resultados
+        )

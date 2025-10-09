@@ -462,10 +462,19 @@ def list_public_encuestas_for_tenant(
 
     for encuesta in encuestas:
         slug_publico = None
-        for link in sorted(encuesta.links, key=lambda link: (link.id or 0), reverse=True):
+        for link in sorted(
+            encuesta.links, key=lambda link: (link.id or 0), reverse=True
+        ):
             if link.slug_publico:
                 slug_publico = link.slug_publico
                 break
+
+        if not slug_publico:
+            # Legacy records might not have associated ``EncLink`` entries. In those
+            # cases we still want to expose the survey publicly using its original
+            # slug value so existing links keep working.
+            slug_publico = encuesta.slug
+
         if slug_publico:
             resultados.append((encuesta, slug_publico))
 
