@@ -48,11 +48,15 @@ from services.encuestas_service import (
     save_respuesta,
     list_respuestas,
     serialize_respuesta,
+    delete_encuesta,
+    list_encuestas,
 )
+from services.encuestas_analytics_service import get_summary
 from services.encuestas_anchor_service import compute_content_hash, build_snapshot
 
 # Make sure the feature flag is enabled during tests so helper utilities remain active.
 import config.feature_flags as feature_flags
+import services.encuestas_service as encuestas_service_module
 
 feature_flags.FEATURE_ENCUESTAS = True
 app_module = sys.modules.get("app")
@@ -66,8 +70,8 @@ class DummyUser:
         self.municipio_id = tenant_id
 
 
-def _create_active_encuesta(politica_unicidad: str = "libre"):
-    user = DummyUser()
+def _create_active_encuesta(politica_unicidad: str = "libre", tenant_id: int = 1):
+    user = DummyUser(tenant_id)
     payload = {
         "titulo": "Encuesta Test",
         "descripcion": "Prueba de módulo de encuestas",
@@ -240,6 +244,58 @@ def test_list_respuestas_paginadas_y_serializadas(client):
 
         assert offset_dos == 2
         assert len(restantes) == 1
+
+
+def test_get_summary_returns_metrics(client):
+    with client.application.app_context():
+        encuesta, slug, user = _create_active_encuesta()
+
+        payload_a = _respuesta_payload(encuesta, texto="Comentario A", opcion_index=0)
+        payload_a["phone"] = "+541111"
+        save_respuesta(slug, payload_a, _request_ctx("anon-a"))
+
+        payload_b = _respuesta_payload(encuesta, texto="Comentario B", opcion_index=1)
+        payload_b["phone"] = "+542222"
+        save_respuesta(slug, payload_b, _request_ctx("anon-b"))
+
+        incompleta = EncRespuesta(
+            encuesta_id=encuesta.id,
+            tenant_id=encuesta.tenant_id,
+            submitted_at=datetime(2025, 5, 1, tzinfo=timezone.utc),
+            canal="web",
+            ip="10.0.0.5",
+        )
+        db.session.add(incompleta)
+        db.session.commit()
+
+        preguntas_ids = [preg.id for preg in encuesta.preguntas]
+        resumen = get_summary(encuesta.id)
+
+    assert resumen["total_respuestas"] == 3
+    assert resumen["participantes_unicos"] == 3
+    assert resumen["respuestas_completas"] == 2
+    assert resumen["respuestas_incompletas"] == 1
+    assert resumen["tasa_completitud"] == pytest.approx(66.67, rel=1e-2)
+    assert len(resumen["preguntas"]) == len(preguntas_ids)
+    assert set(item["pregunta_id"] for item in resumen["preguntas"]) == set(preguntas_ids)
+    assert all(item["total_respuestas"] == 3 for item in resumen["preguntas"])
+
+
+def test_delete_encuesta_elimina_respuestas_y_salta_bootstrap(client):
+    with client.application.app_context():
+        tenant_id = encuestas_service_module._BOOTSTRAP_TENANT_ID or 4
+        encuesta, slug, user = _create_active_encuesta(tenant_id=tenant_id)
+        save_respuesta(slug, _respuesta_payload(encuesta), _request_ctx("anon-del"))
+
+        delete_encuesta(encuesta.id, user)
+
+        assert db.session.get(EncEncuesta, encuesta.id) is None
+        assert EncRespuesta.query.filter_by(encuesta_id=encuesta.id).count() == 0
+
+        restantes = list_encuestas(tenant_id)
+
+    assert all(enc.tenant_id == tenant_id for enc in restantes)
+    assert not restantes
 
 
 def test_create_encuesta_generates_unique_slug(client):

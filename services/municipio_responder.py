@@ -4765,7 +4765,7 @@ def _get_encuestas_menu(context: dict) -> dict:
         }
 
     try:
-        encuestas = list_public_encuestas_for_tenant(tenant_id, limit=5)
+        encuestas = list_public_encuestas_for_tenant(tenant_id, limit=10)
     except Exception:
         logger.exception("No se pudieron cargar las encuestas públicas para el tenant %s", tenant_id)
         encuestas = []
@@ -4824,10 +4824,10 @@ def _get_encuestas_menu(context: dict) -> dict:
         line_parts = [f"{index}. *{titulo}*"]
         if descripcion:
             line_parts.append(f"   {descripcion}")
-        line_parts.append(f"   👉 {share_url}")
-        line_parts.append(f"   🧾 QR: {qr_url}")
-        line_parts.append(f"   💬 Widget chat: {widget_share_url}")
-        line_parts.append(f"   📲 Compartir por WhatsApp: {whatsapp_share_url}")
+        line_parts.append(f"   🔗 {share_url}")
+        line_parts.append(f"   🧾 {qr_url}")
+        line_parts.append(f"   💬 {widget_share_url}")
+        line_parts.append(f"   📲 {whatsapp_share_url}")
         lines.append("\n".join(line_parts))
 
         survey_buttons.append(
@@ -4852,11 +4852,11 @@ def _get_encuestas_menu(context: dict) -> dict:
             }
         )
 
-    message_body = (
-        "*Participación Ciudadana*\n\n"
-        + "\n\n".join(lines)
-        + "\n\nSeleccioná una encuesta para participar o volvé al inicio."
+    header = (
+        "*Participación Ciudadana*\n"
+        "Últimas encuestas disponibles (máximo 10).\n"
     )
+    message_body = header + "\n".join(lines) + "\n\nSeleccioná una encuesta para participar o volvé al inicio."
 
     options = survey_buttons + base_options
     return {
