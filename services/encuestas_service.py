@@ -61,6 +61,13 @@ def _parse_int(value: Optional[str]) -> Optional[int]:
 _BOOTSTRAP_SAMPLE_ENABLED = _env_flag("ENCUESTAS_BOOTSTRAP_SAMPLE", default=True)
 _BOOTSTRAP_TENANT_ID = _parse_int(os.getenv("JUNIN_ENCUESTAS_TENANT_ID")) or 4
 
+
+def _bootstrap_skip_registry() -> set:
+    """Return the in-memory registry of tenants where bootstrap must be skipped."""
+
+    skip_registry = current_app.config.setdefault("ENCUESTAS_BOOTSTRAP_SKIP_TENANTS", set())
+    return skip_registry
+
 _PUBLIC_SLUG_ALIAS_RE = re.compile(r"^(?P<base>.+)-(?P<token>[0-9a-f]{6,})$")
 
 
@@ -309,6 +316,27 @@ def cerrar_encuesta(encuesta_id: int, user: Any) -> EncEncuesta:
     return encuesta
 
 
+def delete_encuesta(encuesta_id: int, user: Any) -> None:
+    encuesta = db.session.get(EncEncuesta, encuesta_id)
+    if not encuesta:
+        raise EncuestaError("Encuesta no encontrada", status_code=404)
+
+    _ensure_tenant_access(encuesta, user)
+    tenant_id = encuesta.tenant_id
+
+    db.session.delete(encuesta)
+    try:
+        db.session.commit()
+    except IntegrityError as exc:
+        db.session.rollback()
+        raise EncuestaError("No se pudo eliminar la encuesta") from exc
+
+    _bootstrap_skip_registry().add(tenant_id)
+    current_app.logger.info(
+        "[encuestas] Encuesta %s eliminada por %s", encuesta_id, getattr(user, "id", None)
+    )
+
+
 def _find_bootstrap_user() -> Optional[User]:
     if _BOOTSTRAP_TENANT_ID is None:
         return None
@@ -346,6 +374,9 @@ def _bootstrap_sample_if_needed(tenant_id: int) -> None:
     if not _BOOTSTRAP_SAMPLE_ENABLED or _BOOTSTRAP_TENANT_ID is None:
         return
     if tenant_id != _BOOTSTRAP_TENANT_ID:
+        return
+
+    if tenant_id in _bootstrap_skip_registry():
         return
 
     existing = EncEncuesta.query.filter_by(tenant_id=tenant_id).count()
@@ -423,6 +454,7 @@ def _bootstrap_sample_if_needed(tenant_id: int) -> None:
         current_app.logger.exception(
             "[encuestas] No se pudo crear la encuesta demo de Junín"
         )
+        _bootstrap_skip_registry().add(tenant_id)
 
 
 def list_encuestas(tenant_id: int, estado: Optional[str] = None) -> List[EncEncuesta]:
@@ -435,7 +467,7 @@ def list_encuestas(tenant_id: int, estado: Optional[str] = None) -> List[EncEncu
 
 def list_public_encuestas_for_tenant(
     tenant_id: int,
-    limit: int = 5,
+    limit: int = 10,
 ) -> List[Tuple[EncEncuesta, str]]:
     """Return active public surveys for a tenant along with their public slugs."""
 

@@ -10,6 +10,7 @@ from services.encuestas_service import (
     update_encuesta,
     publicar_encuesta,
     cerrar_encuesta,
+    delete_encuesta,
     list_encuestas,
     get_encuesta,
     list_respuestas,
@@ -57,6 +58,16 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
         return jsonify(serialize_encuesta(encuesta)), 200
+
+    @bp.route("/<int:encuesta_id>", methods=["DELETE"])
+    @token_requerido
+    @require_role("admin", "super_admin")
+    def eliminar_encuesta_endpoint(current_user, encuesta_id: int):
+        try:
+            delete_encuesta(encuesta_id, current_user)
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+        return jsonify({"ok": True, "encuesta_id": encuesta_id}), 200
 
     @bp.route("/<int:encuesta_id>/publicar", methods=["POST"])
     @token_requerido

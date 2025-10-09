@@ -48,16 +48,42 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
     textos_abiertos: Dict[int, List[str]] = defaultdict(list)
     canales = Counter()
     utm = Counter()
+    participantes_unicos: set[str] = set()
+
+    preguntas_obligatorias = {
+        pregunta.id
+        for pregunta in encuesta.preguntas
+        if getattr(pregunta, "obligatoria", False)
+    }
+    respuestas_completas = 0
 
     for respuesta in respuestas:
         canales[respuesta.canal or "sin_canal"] += 1
         utm_key = f"{respuesta.utm_source or 'n/a'}|{respuesta.utm_campaign or 'n/a'}"
         utm[utm_key] += 1
+
+        fingerprint = (
+            respuesta.huella_unica
+            or (respuesta.user_id and f"user:{respuesta.user_id}")
+            or (respuesta.dni and f"dni:{respuesta.dni.strip()}")
+            or (respuesta.phone and f"phone:{respuesta.phone.strip()}")
+            or (respuesta.ip and f"ip:{respuesta.ip}")
+        )
+        participantes_unicos.add(str(fingerprint or f"anon:{respuesta.id}"))
+
+        detalles_por_pregunta = defaultdict(list)
         for detalle in respuesta.detalles:
             if detalle.opcion_id:
                 opciones_por_pregunta[detalle.pregunta_id][detalle.opcion_id] += 1
+            detalles_por_pregunta[detalle.pregunta_id].append(detalle)
             if detalle.texto_libre:
                 textos_abiertos[detalle.pregunta_id].append(detalle.texto_libre)
+
+        if preguntas_obligatorias:
+            if all(detalles_por_pregunta.get(pid) for pid in preguntas_obligatorias):
+                respuestas_completas += 1
+        else:
+            respuestas_completas += 1
 
     preguntas_summary = []
     for pregunta in encuesta.preguntas:
@@ -92,9 +118,15 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
         source, campaign = key.split("|", 1)
         utm_data.append({"utm_source": source, "utm_campaign": campaign, "conteo": count})
 
+    tasa_completitud = (respuestas_completas / total * 100) if total else 0.0
+
     return {
         "encuesta_id": encuesta.id,
         "total_respuestas": total,
+        "participantes_unicos": len(participantes_unicos),
+        "respuestas_completas": respuestas_completas,
+        "respuestas_incompletas": max(total - respuestas_completas, 0),
+        "tasa_completitud": round(tasa_completitud, 2),
         "preguntas": preguntas_summary,
         "canales": canales_data,
         "utm": utm_data,

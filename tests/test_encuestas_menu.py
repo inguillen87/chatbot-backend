@@ -62,11 +62,14 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
         context = _base_context(tenant_id=encuesta.tenant_id or 7)
         menu = municipio_responder._get_encuestas_menu(context)
 
-    assert "Participación Ciudadana" in menu["message_body"]
-    assert slug in menu["message_body"]
-    assert "/api/public/encuestas/" in menu["message_body"]
-    assert "widget_chat" in menu["message_body"]
-    assert "wa.me" in menu["message_body"]
+    body = menu["message_body"]
+    assert "Participación Ciudadana" in body
+    assert "Últimas encuestas disponibles" in body
+    assert slug in body
+    assert "🔗 https://" in body
+    assert "🧾 https://" in body
+    assert "💬 https://" in body
+    assert "📲 https://wa.me" in body
     assert any(option.get("type") == "url" for option in menu["options_list"])
     button_urls = [
         option.get("url", "")
@@ -118,7 +121,7 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
         menu = municipio_responder._get_encuestas_menu(context)
 
     expected_prefix = "https://www.chatboc.ar/e/"
-    assert expected_prefix + slug in menu["message_body"]
+    assert f"🔗 {expected_prefix}{slug}" in menu["message_body"]
     button_urls = [
         option.get("url", "")
         for option in menu["options_list"]
