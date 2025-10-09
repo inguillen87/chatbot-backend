@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 from urllib.parse import urlparse
 
 # Directorio base de la aplicación
-basedir = os.path.abspath(os.path.dirname(__file__))
+basedir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 TIMEZONE_OFFSET = int(os.getenv("TIMEZONE_OFFSET", "-3"))
 
 # --- Variables de Entorno para Despliegue ---

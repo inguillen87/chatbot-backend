@@ -30,6 +30,7 @@ from flask_session import Session
 from sqlalchemy import event as sa_event
 
 from config import Config, ALLOWED_ORIGINS
+from config.feature_flags import FEATURE_ENCUESTAS
 from extensions import db, migrate, login_manager  # livianos
 
 # En migraciones NO importamos socket_service ni blueprints
@@ -137,6 +138,9 @@ def create_app(config_class=Config):
             # En algunas fases de inicialización aún no hay engine
             pass
 
+        if FEATURE_ENCUESTAS:
+            from models import EncEncuesta  # noqa: F401  # asegura registro de tablas
+
         # En tests, crear tablas mínimo
         if app.config.get("TESTING") and not MIGRATIONS_ONLY:
             db.create_all()
@@ -238,6 +242,12 @@ def create_app(config_class=Config):
         from routes.accessibility import accessibility_bp
         from cli_commands import register_commands
 
+        if FEATURE_ENCUESTAS:
+            from routes.encuestas_admin import encuestas_admin_bp
+            from routes.encuestas_public import encuestas_public_bp
+            from routes.encuestas_analytics import encuestas_analytics_bp
+            from routes.encuestas_anchor import encuestas_anchor_bp
+
         app.register_blueprint(config_bp)
         app.register_blueprint(auth_bp)
 
@@ -291,6 +301,11 @@ def create_app(config_class=Config):
         app.register_blueprint(media_bp)
         app.register_blueprint(accessibility_bp)
         app.register_blueprint(analytics_bp)
+        if FEATURE_ENCUESTAS:
+            app.register_blueprint(encuestas_admin_bp)
+            app.register_blueprint(encuestas_public_bp)
+            app.register_blueprint(encuestas_analytics_bp)
+            app.register_blueprint(encuestas_anchor_bp)
 
         # Comandos CLI
         register_commands(app)

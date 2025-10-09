@@ -185,3 +185,4 @@ aiohappyeyeballs==2.6.1
 h11==0.16.0
 dnspython==2.5.0
 shapely
+qrcode[pil]>=7.4.0
