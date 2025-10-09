@@ -176,14 +176,14 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             return guard
         return None
 
-    @bp.route("", methods=["GET"])
+    @bp.route("", methods=["GET", "OPTIONS"])
     def listar_publicas():
+        if request.method == "OPTIONS":
+            return "", 204
+
         tenant_id = _resolve_tenant_from_request()
         if tenant_id is None:
-            return (
-                jsonify({"error": "Falta especificar el municipio o tenant."}),
-                400,
-            )
+            tenant_id = current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID") or 4
 
         limit = request.args.get("limit", default=5, type=int) or 5
         if limit < 0:

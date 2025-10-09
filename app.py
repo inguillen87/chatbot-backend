@@ -15,7 +15,7 @@ if not MIGRATIONS_ONLY:
     import eventlet
     eventlet.monkey_patch()
 
-from flask import Flask, request, current_app, g
+from flask import Flask, request, current_app, g, jsonify
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 # Logging básico del proyecto
@@ -181,16 +181,44 @@ def create_app(config_class=Config):
     app.logger.info(f"Aplicación creada. Nivel de logging: {log_level}")
     app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
 
+    # Manejadores de errores JSON consistentes
+    @app.errorhandler(400)
+    def handle_bad_request(error):
+        detail = getattr(error, "description", None) or str(error)
+        return jsonify({"error": "bad_request", "detail": detail}), 400
+
+    @app.errorhandler(404)
+    def handle_not_found(error):
+        detail = getattr(error, "description", None) or "Recurso no encontrado"
+        return jsonify({"error": "not_found", "detail": detail}), 404
+
+    @app.errorhandler(500)
+    def handle_server_error(error):
+        app.logger.exception("Unhandled server error: %s", error)
+        return jsonify({"error": "server_error"}), 500
+
     # CORS y headers (solo runtime normal)
     if not MIGRATIONS_ONLY:
+        cors_resources = {
+            r"/public/*": {
+                "origins": ["https://www.chatboc.ar", "https://chatboc.ar"],
+            },
+            r"/admin/*": {
+                "origins": ["https://www.chatboc.ar", "https://chatboc.ar"],
+            },
+            r"/api/*": {"origins": ALLOWED_ORIGINS},
+            r"/*": {"origins": ALLOWED_ORIGINS},
+        }
+
         CORS(
             app,
-            origins=ALLOWED_ORIGINS,
+            resources=cors_resources,
             supports_credentials=True,
             methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=[
                 "Content-Type",
                 "Authorization",
+                "X-Chatboc-Token",
                 "X-Entity-Token",
                 "X-Chat-Session-Id",
                 "X-Anon-Id",
@@ -198,7 +226,12 @@ def create_app(config_class=Config):
                 "Cache-Control",
                 "token",
             ],
-            expose_headers=["X-Anon-Id", "Anon-Id"],
+            expose_headers=[
+                "Content-Type",
+                "Authorization",
+                "X-Anon-Id",
+                "Anon-Id",
+            ],
         )
 
         @app.after_request

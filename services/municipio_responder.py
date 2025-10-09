@@ -86,6 +86,7 @@ from services.encuestas_service import (
     list_public_encuestas_for_tenant,
     serialize_public_encuesta,
 )
+from services.feature_flag_service import get_feature_toggle
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
@@ -4663,6 +4664,11 @@ def _resolve_encuestas_toggle(context: dict) -> Optional[bool]:
         coerced = _coerce_bool(candidate)
         if coerced is not None:
             return coerced
+
+    tenant_id = _resolve_encuestas_tenant_id(context)
+    db_toggle = get_feature_toggle(tenant_id, "encuestas")
+    if db_toggle is not None:
+        return db_toggle
     return None
 
 
