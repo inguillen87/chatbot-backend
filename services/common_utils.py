@@ -3,7 +3,7 @@ import re
 import unicodedata
 import pandas as pd
 from typing import Dict, Any, Tuple, Optional, List
-from config.feature_flags import FEATURE_ENCUESTAS
+from config.feature_flags import is_feature_encuestas_enabled_for_tenant
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
 
 # --- PLACEHOLDER DEFINITIONS ---
@@ -609,6 +609,44 @@ if __name__ == '__main__':
     logger = logging.getLogger(__name__)
     logger.info("Common utils placeholder script executed.")
 
+
+def _resolve_encuestas_tenant_id_for_context(context: Dict[str, Any]) -> Optional[int]:
+    """Infer the tenant/municipio id associated with the current context."""
+
+    candidates: List[object] = []
+    owner = context.get("user_obj")
+    if owner is not None:
+        candidates.extend(
+            [
+                getattr(owner, "municipio_id", None),
+                getattr(owner, "empresa_id", None),
+                getattr(owner, "pyme_id", None),
+                getattr(owner, "id", None),
+            ]
+        )
+
+    candidates.append(context.get("municipio_id"))
+    candidates.append(context.get("tenant_id"))
+
+    municipio_config = context.get("municipio_config_actual")
+    if isinstance(municipio_config, dict):
+        candidates.append(municipio_config.get("tenant_id"))
+        candidates.append(municipio_config.get("municipio_id"))
+        encuestas_cfg = municipio_config.get("encuestas")
+        if isinstance(encuestas_cfg, dict):
+            candidates.append(encuestas_cfg.get("tenant_id"))
+            candidates.append(encuestas_cfg.get("municipio_id"))
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            return int(candidate)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _get_main_menu_payload(
     context: dict,
     welcome_message_override: Optional[str] = None,
@@ -620,6 +658,9 @@ def _get_main_menu_payload(
     viewer_user = context.get("viewer_user_obj")
     profile_name = context.get("profile_name")
     owner_user = context.get("user_obj")
+
+    tenant_id_for_feature = _resolve_encuestas_tenant_id_for_context(context)
+    encuestas_feature_enabled = is_feature_encuestas_enabled_for_tenant(tenant_id_for_feature)
 
     def _normalize_str(value: Optional[object]) -> str:
         if value is None:
@@ -720,7 +761,7 @@ def _get_main_menu_payload(
             {"texto": "🚗 Trámites y Turnos", "action_id": "mostrar_menu_tramites"},
             {"texto": "📰 Información del Municipio", "action_id": "mostrar_menu_informacion"},
         ]
-        if FEATURE_ENCUESTAS:
+        if encuestas_feature_enabled:
             whatsapp_buttons.append({"texto": "🗳️ Participación Ciudadana", "action_id": "mostrar_menu_encuestas"})
         whatsapp_buttons.extend([
             {"texto": "🅿️ Estacionamiento", "action_id": "mostrar_menu_estacionamiento"},
@@ -759,7 +800,7 @@ def _get_main_menu_payload(
             ]},
         ]
 
-        if FEATURE_ENCUESTAS:
+        if encuestas_feature_enabled:
             categorias.append({
                 "titulo": "🗳️ Participación Ciudadana",
                 "botones": [

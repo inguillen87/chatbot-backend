@@ -43,7 +43,17 @@ def _create_active_encuesta(tenant_id: int = 1):
 @pytest.fixture(autouse=True)
 def reset_feature_flag(monkeypatch):
     monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", False)
-    monkeypatch.setattr(municipio_responder, "FEATURE_ENCUESTAS", False)
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS_TENANTS", set())
+    monkeypatch.setattr(
+        feature_flags,
+        "is_feature_encuestas_enabled_for_tenant",
+        lambda tenant_id: False,
+    )
+    monkeypatch.setattr(
+        municipio_responder,
+        "is_feature_encuestas_enabled_for_tenant",
+        lambda tenant_id: False,
+    )
     yield
 
 

@@ -81,7 +81,7 @@ from services.ticket_utils import (
 from services.vocabulary_loader import get_name_prefix_stopwords
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
 from config import BACKEND_URL as DEFAULT_BACKEND_URL, IS_HTTPS as DEFAULT_IS_HTTPS
-from config.feature_flags import FEATURE_ENCUESTAS
+from config.feature_flags import is_feature_encuestas_enabled_for_tenant
 from services.encuestas_service import (
     list_public_encuestas_for_tenant,
     serialize_public_encuesta,
@@ -4728,7 +4728,8 @@ def _get_encuestas_menu(context: dict) -> dict:
         logger.exception("No se pudieron cargar las encuestas públicas para el tenant %s", tenant_id)
         encuestas = []
 
-    feature_enabled = FEATURE_ENCUESTAS if toggle is None else toggle
+    base_feature_enabled = is_feature_encuestas_enabled_for_tenant(tenant_id)
+    feature_enabled = base_feature_enabled if toggle is None else bool(toggle)
     if not feature_enabled and encuestas:
         feature_enabled = True
 

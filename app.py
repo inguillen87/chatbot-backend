@@ -15,7 +15,7 @@ if not MIGRATIONS_ONLY:
     import eventlet
     eventlet.monkey_patch()
 
-from flask import Flask, request, current_app, g
+from flask import Flask, request, current_app, g, jsonify
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 # Logging básico del proyecto
@@ -183,9 +183,24 @@ def create_app(config_class=Config):
 
     # CORS y headers (solo runtime normal)
     if not MIGRATIONS_ONLY:
+        widget_public_origins = [
+            "https://www.chatboc.ar",
+            "https://chatboc-demo-widget-oigs.vercel.app",
+        ]
+
+        api_origins = list(ALLOWED_ORIGINS)
+        for origin in widget_public_origins:
+            if origin not in api_origins:
+                api_origins.append(origin)
+
+        cors_resources = {
+            r"/api/*": {"origins": api_origins},
+            r"/public/*": {"origins": widget_public_origins},
+        }
+
         CORS(
             app,
-            origins=ALLOWED_ORIGINS,
+            resources=cors_resources,
             supports_credentials=True,
             methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
             allow_headers=[
@@ -197,8 +212,9 @@ def create_app(config_class=Config):
                 "Anon-Id",
                 "Cache-Control",
                 "token",
+                "X-Requested-With",
             ],
-            expose_headers=["X-Anon-Id", "Anon-Id"],
+            expose_headers=["Content-Disposition", "X-Anon-Id", "Anon-Id"],
         )
 
         @app.after_request
@@ -244,7 +260,10 @@ def create_app(config_class=Config):
 
         if FEATURE_ENCUESTAS:
             from routes.encuestas_admin import encuestas_admin_bp
-            from routes.encuestas_public import encuestas_public_bp
+            from routes.encuestas_public import (
+                encuestas_public_bp,
+                encuestas_public_legacy_bp,
+            )
             from routes.encuestas_analytics import encuestas_analytics_bp
             from routes.encuestas_anchor import encuestas_anchor_bp
 
@@ -304,6 +323,7 @@ def create_app(config_class=Config):
         if FEATURE_ENCUESTAS:
             app.register_blueprint(encuestas_admin_bp)
             app.register_blueprint(encuestas_public_bp)
+            app.register_blueprint(encuestas_public_legacy_bp)
             app.register_blueprint(encuestas_analytics_bp)
             app.register_blueprint(encuestas_anchor_bp)
 
@@ -313,6 +333,13 @@ def create_app(config_class=Config):
         # Inicializar SocketIO solo en runtime normal
         if socketio is not None:
             socketio.init_app(app)
+
+    @app.errorhandler(404)
+    def handle_not_found(error):
+        path = request.path or ""
+        if path.startswith("/api/") or path.startswith("/public/"):
+            return jsonify({"error": "not_found", "path": path}), 404
+        return error
 
     return app
 
