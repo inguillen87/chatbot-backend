@@ -2,7 +2,7 @@ import pytest
 
 from app import db
 from models import User
-from services.encuestas_service import EncEncuesta
+from services.encuestas_service import EncEncuesta, create_encuesta, publicar_encuesta, save_respuesta
 import config.feature_flags as feature_flags
 import routes.encuestas_admin as encuestas_admin_routes
 
@@ -79,3 +79,74 @@ def test_admin_encuestas_alias_exposes_rest_endpoints(client, monkeypatch, admin
     public_data = public_resp.get_json()
     assert isinstance(public_data, list)
     assert any("Junín" in encuesta.get("titulo", "") for encuesta in public_data)
+
+
+def test_admin_encuestas_listado_respuestas(client, monkeypatch, admin_user):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+
+    with client.application.app_context():
+        payload = {
+            "titulo": "Encuesta de satisfacción plazas",
+            "descripcion": "Validamos la visualización de respuestas.",
+            "tipo": "opinion",
+            "preguntas": [
+                {
+                    "orden": 1,
+                    "tipo": "opcion_unica",
+                    "texto": "¿Visitás la plaza cada semana?",
+                    "obligatoria": True,
+                    "opciones": [
+                        {"orden": 1, "texto": "Sí"},
+                        {"orden": 2, "texto": "No"},
+                    ],
+                },
+                {
+                    "orden": 2,
+                    "tipo": "abierta",
+                    "texto": "Comentarios",
+                    "obligatoria": False,
+                },
+            ],
+        }
+
+        encuesta = create_encuesta(payload, admin_user)
+        encuesta, link = publicar_encuesta(encuesta.id, admin_user)
+        encuesta = db.session.get(EncEncuesta, encuesta.id)
+        encuesta.inicio_at = None
+        encuesta.fin_at = None
+        db.session.commit()
+
+        pregunta_opcion = next(p for p in encuesta.preguntas if p.tipo == "opcion_unica")
+        pregunta_abierta = next(p for p in encuesta.preguntas if p.tipo == "abierta")
+        respuesta_payload = {
+            "respuestas": [
+                {"pregunta_id": pregunta_opcion.id, "opcion_ids": [pregunta_opcion.opciones[0].id]},
+                {"pregunta_id": pregunta_abierta.id, "texto_libre": "Muy linda iluminación"},
+            ],
+            "utm_source": "widget",
+            "utm_campaign": "lanzamiento",
+            "canal": "web",
+        }
+        request_ctx = {"ip": "10.0.0.1", "user_agent": "pytest", "anon_id": "test-admin", "canal": "web"}
+        save_respuesta(link.slug_publico, respuesta_payload, request_ctx)
+        encuesta_id = encuesta.id
+
+    login_resp = client.post(
+        "/auth/login",
+        json={"email": admin_user.email, "password": "demo1234"},
+    )
+    assert login_resp.status_code == 200
+    token = login_resp.get_json()["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    listado_resp = client.get(f"/admin/encuestas/{encuesta_id}/respuestas", headers=headers)
+    assert listado_resp.status_code == 200
+    data = listado_resp.get_json()
+    assert data["total"] >= 1
+    assert data["limit"] == 50
+    assert data["offset"] == 0
+    assert data["respuestas"]
+    primera = data["respuestas"][0]
+    assert primera["utm_source"] == "widget"
+    assert any(det.get("texto_libre") for det in primera["detalles"])

@@ -46,6 +46,8 @@ from services.encuestas_service import (
     create_encuesta,
     publicar_encuesta,
     save_respuesta,
+    list_respuestas,
+    serialize_respuesta,
 )
 from services.encuestas_anchor_service import compute_content_hash, build_snapshot
 
@@ -198,6 +200,46 @@ def test_merkle_snapshot_root_consistente(client):
 
         esperado = _manual_merkle(hashes)
         assert snapshot.root_hash == esperado
+
+
+def test_list_respuestas_paginadas_y_serializadas(client):
+    with client.application.app_context():
+        encuesta, slug, user = _create_active_encuesta()
+        base_time = datetime(2025, 3, 10, 9, 0, tzinfo=timezone.utc)
+
+        for idx in range(3):
+            payload = _respuesta_payload(encuesta, texto=f"Comentario {idx}")
+            respuesta = save_respuesta(slug, payload, _request_ctx(f"anon-{idx}"))
+            respuesta.submitted_at = base_time + timedelta(minutes=idx)
+        db.session.commit()
+
+        encuesta_obj, primeras, total, limit_value, offset_value = list_respuestas(
+            encuesta.id,
+            user,
+            limit=2,
+            offset=0,
+        )
+
+        assert encuesta_obj.id == encuesta.id
+        assert total == 3
+        assert limit_value == 2
+        assert offset_value == 0
+        assert len(primeras) == 2
+        assert primeras[0].submitted_at >= primeras[1].submitted_at
+
+        serializadas = [serialize_respuesta(r) for r in primeras]
+        assert all("detalles" in item for item in serializadas)
+        assert any(detalle.get("texto_libre") for detalle in serializadas[0]["detalles"])
+
+        _, restantes, _, _, offset_dos = list_respuestas(
+            encuesta.id,
+            user,
+            limit=2,
+            offset=2,
+        )
+
+        assert offset_dos == 2
+        assert len(restantes) == 1
 
 
 def test_create_encuesta_generates_unique_slug(client):
