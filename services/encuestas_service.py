@@ -8,7 +8,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from flask import current_app
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import joinedload
 
 from database import db
 from models import (
@@ -257,6 +259,44 @@ def list_encuestas(tenant_id: int, estado: Optional[str] = None) -> List[EncEncu
     if estado:
         query = query.filter_by(estado=estado)
     return query.order_by(EncEncuesta.created_at.desc()).all()
+
+
+def list_public_encuestas_for_tenant(
+    tenant_id: int,
+    limit: int = 5,
+) -> List[Tuple[EncEncuesta, str]]:
+    """Return active public surveys for a tenant along with their public slugs."""
+
+    now = datetime.now(timezone.utc)
+    query = (
+        EncEncuesta.query.options(joinedload(EncEncuesta.links))
+        .filter(EncEncuesta.tenant_id == tenant_id)
+        .filter(EncEncuesta.estado == "publicada")
+        .filter(or_(EncEncuesta.inicio_at.is_(None), EncEncuesta.inicio_at <= now))
+        .filter(or_(EncEncuesta.fin_at.is_(None), EncEncuesta.fin_at >= now))
+        .order_by(
+            EncEncuesta.fin_at.is_(None).desc(),
+            EncEncuesta.fin_at.asc(),
+            EncEncuesta.inicio_at.desc(),
+            EncEncuesta.created_at.desc(),
+        )
+    )
+    if limit and limit > 0:
+        query = query.limit(limit)
+
+    encuestas = query.all()
+    resultados: List[Tuple[EncEncuesta, str]] = []
+
+    for encuesta in encuestas:
+        slug_publico = None
+        for link in sorted(encuesta.links, key=lambda link: (link.id or 0), reverse=True):
+            if link.slug_publico:
+                slug_publico = link.slug_publico
+                break
+        if slug_publico:
+            resultados.append((encuesta, slug_publico))
+
+    return resultados
 
 
 def get_encuesta(encuesta_id: int, tenant_id: Optional[int] = None, user: Any = None) -> EncEncuesta:
