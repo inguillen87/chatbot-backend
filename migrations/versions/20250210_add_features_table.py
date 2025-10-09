@@ -1,7 +1,7 @@
 """add features table
 
 Revision ID: 20250210_add_features_table
-Revises: 20251008_add_encuestas_core
+Revises: 20251008a1b2
 Create Date: 2025-02-10 00:00:00.000000
 """
 
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "20250210_add_features_table"
-down_revision = "20251008_add_encuestas_core"
+down_revision = "20251008a1b2"
 branch_labels = None
 depends_on = None
 
