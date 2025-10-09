@@ -64,7 +64,18 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
 
     assert "Participación Ciudadana" in menu["message_body"]
     assert slug in menu["message_body"]
+    assert "/api/public/encuestas/" in menu["message_body"]
+    assert "widget_chat" in menu["message_body"]
+    assert "wa.me" in menu["message_body"]
     assert any(option.get("type") == "url" for option in menu["options_list"])
+    button_urls = [
+        option.get("url", "")
+        for option in menu["options_list"]
+        if option.get("type") == "url"
+    ]
+    assert any(url.endswith(f"/e/{slug}") for url in button_urls)
+    assert any(url.endswith(f"/e/{slug}?canal=widget_chat") for url in button_urls)
+    assert any(url.startswith("https://wa.me/") for url in button_urls)
 
 
 def test_encuestas_menu_respects_explicit_disable(client):
@@ -114,3 +125,5 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
         if option.get("type") == "url"
     ]
     assert any(url.startswith(expected_prefix) for url in button_urls)
+    assert any(url.startswith(expected_prefix) and "widget_chat" in url for url in button_urls)
+    assert any(url.startswith("https://wa.me/") for url in button_urls)
