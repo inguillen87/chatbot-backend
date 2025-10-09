@@ -8,7 +8,18 @@ import re
 from threading import Lock
 from typing import Optional
 
-from flask import Blueprint, current_app, g, jsonify, redirect, request, send_file
+from flask import (
+    Blueprint,
+    current_app,
+    g,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    url_for,
+)
+from urllib.parse import quote_plus
 
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_qr_service import build_qr_png
@@ -56,6 +67,42 @@ def _public_base_url() -> str:
     if configured:
         return configured.rstrip("/")
     return request.host_url.rstrip("/")
+
+
+_SHARE_IMAGE_CANDIDATE_KEYS = (
+    "share_image_url",
+    "imagen_portada_url",
+    "portada_url",
+    "banner_url",
+    "image_url",
+    "thumbnail_url",
+)
+
+
+def _resolve_share_image(encuesta: Optional[dict]) -> Optional[str]:
+    """Select an appropriate hero/share image for the public landing page."""
+
+    def _clean(value: Optional[str]) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    if isinstance(encuesta, dict):
+        for key in _SHARE_IMAGE_CANDIDATE_KEYS:
+            candidate = _clean(encuesta.get(key))
+            if candidate:
+                return candidate
+
+        metadata = encuesta.get("metadata")
+        if isinstance(metadata, dict):
+            for key in _SHARE_IMAGE_CANDIDATE_KEYS:
+                candidate = _clean(metadata.get(key))
+                if candidate:
+                    return candidate
+
+    fallback = current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL")
+    return _clean(fallback)
 
 
 def _extract_ip() -> str:
@@ -317,9 +364,51 @@ def share_redirect(slug: str):
         if request_base != canonical:
             return redirect(target, code=302)
 
+    accept = request.accept_mimetypes
+    wants_json = accept.best == "application/json" and accept[accept.best] >= accept["text/html"]
+
     try:
         encuesta = get_public_encuesta(slug)
     except EncuestaError as err:
-        return jsonify(err.to_dict()), err.status_code
-    return jsonify(serialize_public_encuesta(encuesta, slug_publico=slug))
+        if wants_json:
+            return jsonify(err.to_dict()), err.status_code
+        return (
+            render_template(
+                "encuestas/share.html",
+                encuesta=None,
+                error=err.to_dict(),
+                status_code=err.status_code,
+                share_url=None,
+                qr_url=None,
+                widget_url=None,
+                whatsapp_url=None,
+                whatsapp_message=None,
+                share_image_url=_resolve_share_image(None),
+            ),
+            err.status_code,
+        )
+
+    data = serialize_public_encuesta(encuesta, slug_publico=slug)
+    base_url = _public_base_url()
+    share_url = f"{base_url}/e/{slug}"
+    qr_url = url_for("encuestas_public_bp.qr", slug=slug, _external=True)
+    widget_url = f"{share_url}?canal=widget_chat"
+    titulo = data.get("titulo") or "Encuesta ciudadana"
+    whatsapp_message = f"Participá en '{titulo}' ingresando a {share_url}"
+    whatsapp_url = f"https://wa.me/?text={quote_plus(whatsapp_message)}"
+    share_image_url = _resolve_share_image(data)
+
+    if wants_json:
+        return jsonify(data)
+
+    return render_template(
+        "encuestas/share.html",
+        encuesta=data,
+        share_url=share_url,
+        qr_url=qr_url,
+        widget_url=widget_url,
+        whatsapp_url=whatsapp_url,
+        whatsapp_message=whatsapp_message,
+        share_image_url=share_image_url,
+    )
 

@@ -107,7 +107,7 @@ def test_share_returns_payload_without_canonical(client, monkeypatch):
         lambda encuesta, slug_publico: {"slug": slug_publico},
     )
 
-    response = client.get("/e/demo-slug")
+    response = client.get("/e/demo-slug", headers={"Accept": "application/json"})
     assert response.status_code == 200
     assert response.get_json() == {"slug": "demo-slug"}
 
@@ -138,7 +138,7 @@ def test_share_endpoint_handles_alias_without_link(client):
     client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = None
     _create_public_encuesta(slug, slug_publico)
 
-    response = client.get(f"/e/{slug_publico}")
+    response = client.get(f"/e/{slug_publico}", headers={"Accept": "application/json"})
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["slug"] == slug_publico
@@ -147,15 +147,80 @@ def test_share_endpoint_handles_alias_without_link(client):
     db.session.delete(link)
     db.session.commit()
 
-    response = client.get(f"/e/{slug_publico}")
+    response = client.get(f"/e/{slug_publico}", headers={"Accept": "application/json"})
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["slug"] == slug_publico
 
-    response = client.get(f"/e/{slug}")
+    response = client.get(f"/e/{slug}", headers={"Accept": "application/json"})
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["slug"] == slug
+
+
+def test_share_endpoint_renders_accessible_html(client, monkeypatch):
+    client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = None
+
+    def fake_get(slug):
+        encuesta = EncEncuesta(
+            tenant_id=4,
+            slug=slug,
+            titulo="Encuesta Demo",
+            descripcion="Descripción corta",
+            tipo="opinion",
+            estado="publicada",
+        )
+        return encuesta
+
+    monkeypatch.setattr("routes.encuestas_public.get_public_encuesta", fake_get)
+    monkeypatch.setattr(
+        "routes.encuestas_public.serialize_public_encuesta",
+        lambda encuesta, slug_publico: {
+            "slug": slug_publico,
+            "titulo": encuesta.titulo,
+            "descripcion": encuesta.descripcion,
+        },
+    )
+
+    response = client.get("/e/demo-slug", headers={"Accept": "text/html"})
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "Encuestas ciudadanas" in html
+    assert "Copiar enlace" in html
+    assert "Código QR listo para imprimir" in html
+    assert "/api/public/encuestas/demo-slug/qr" in html
+
+
+def test_share_endpoint_uses_default_share_image(client, monkeypatch):
+    client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = None
+    client.application.config["PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"] = "https://cdn.example.com/share.png"
+
+    def fake_get(slug):
+        encuesta = EncEncuesta(
+            tenant_id=4,
+            slug=slug,
+            titulo="Encuesta Demo",
+            descripcion="Descripción corta",
+            tipo="opinion",
+            estado="publicada",
+        )
+        return encuesta
+
+    monkeypatch.setattr("routes.encuestas_public.get_public_encuesta", fake_get)
+    monkeypatch.setattr(
+        "routes.encuestas_public.serialize_public_encuesta",
+        lambda encuesta, slug_publico: {
+            "slug": slug_publico,
+            "titulo": encuesta.titulo,
+            "descripcion": encuesta.descripcion,
+        },
+    )
+
+    response = client.get("/e/demo-share", headers={"Accept": "text/html"})
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "https://cdn.example.com/share.png" in html
+    assert '<meta property="og:image" content="https://cdn.example.com/share.png" />' in html
 
 
 def test_list_public_encuestas_falls_back_to_slug(client):

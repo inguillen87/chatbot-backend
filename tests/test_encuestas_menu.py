@@ -66,10 +66,10 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
     assert "Participación Ciudadana" in body
     assert "Últimas encuestas disponibles" in body
     assert slug in body
-    assert "🔗 https://" in body
-    assert "🧾 https://" in body
-    assert "💬 https://" in body
-    assert "📲 https://wa.me" in body
+    assert "Abrir la encuesta en la web:" in body
+    assert "Descargar el código QR" in body
+    assert "Usar el asistente virtual en la web" in body
+    assert "Compartir con un mensaje listo para WhatsApp" in body
     assert any(option.get("type") == "url" for option in menu["options_list"])
     button_urls = [
         option.get("url", "")
@@ -79,6 +79,8 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
     assert any(url.endswith(f"/e/{slug}") for url in button_urls)
     assert any(url.endswith(f"/e/{slug}?canal=widget_chat") for url in button_urls)
     assert any(url.startswith("https://wa.me/") for url in button_urls)
+    assert any(url.endswith(f"/api/public/encuestas/{slug}/qr") for url in button_urls)
+    assert "image_url" not in menu
 
 
 def test_encuestas_menu_respects_explicit_disable(client):
@@ -121,7 +123,7 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
         menu = municipio_responder._get_encuestas_menu(context)
 
     expected_prefix = "https://www.chatboc.ar/e/"
-    assert f"🔗 {expected_prefix}{slug}" in menu["message_body"]
+    assert f"Abrir la encuesta en la web: {expected_prefix}{slug}" in menu["message_body"]
     button_urls = [
         option.get("url", "")
         for option in menu["options_list"]
@@ -130,3 +132,15 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
     assert any(url.startswith(expected_prefix) for url in button_urls)
     assert any(url.startswith(expected_prefix) and "widget_chat" in url for url in button_urls)
     assert any(url.startswith("https://wa.me/") for url in button_urls)
+
+
+def test_encuestas_menu_includes_configured_image(client):
+    with client.application.app_context():
+        encuesta, _ = _create_active_encuesta(tenant_id=9)
+        context = _base_context(
+            tenant_id=encuesta.tenant_id or 9,
+            extra_config={"encuestas": {"menu_image_url": "https://cdn.example.com/encuestas/banner.png"}},
+        )
+        menu = municipio_responder._get_encuestas_menu(context)
+
+    assert menu.get("image_url") == "https://cdn.example.com/encuestas/banner.png"
