@@ -1,7 +1,19 @@
 from datetime import datetime, timezone
+from typing import Optional
+
 from utils.time_utils import get_local_now
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text
-from sqlalchemy import Index
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Text,
+    Index,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import validates
 from sqlalchemy.dialects.sqlite import JSON as SQLITE_JSON
 from sqlalchemy.dialects.postgresql import JSONB
@@ -18,6 +30,22 @@ from services.gcs_service import resolve_attachment_thumb_url
 JSONType = JSONB().with_variant(SQLITE_JSON, "sqlite")
 
 print("Importing models.py")
+
+
+class TimestampMixin:
+    """Mixin providing created/updated timestamps compatible with UTC."""
+
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
 
 class Rubro(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -787,3 +815,186 @@ class LlmInteractionLog(db.Model):
 
     def __repr__(self):
         return f"<LlmInteractionLog id={self.id} session_id={self.chat_session_id} status='{self.status}'>"
+
+
+class EncEncuesta(db.Model, TimestampMixin):
+    __tablename__ = "enc_encuesta"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, nullable=False, index=True)
+    slug = db.Column(db.String(160), unique=True, nullable=False)
+    titulo = db.Column(db.String(255), nullable=False)
+    descripcion = db.Column(db.Text, nullable=True)
+    tipo = db.Column(db.String(50), nullable=False, default="opinion")
+    estado = db.Column(db.String(30), nullable=False, default="borrador")
+    inicio_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    fin_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    requiere_identidad = db.Column(db.Boolean, default=False, nullable=False)
+    politica_unicidad = db.Column(db.String(30), nullable=False, default="libre")
+    anonimo_permitido = db.Column(db.Boolean, default=True, nullable=False)
+    created_by = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+
+    preguntas = db.relationship(
+        "EncPregunta",
+        back_populates="encuesta",
+        cascade="all, delete-orphan",
+        order_by="EncPregunta.orden",
+    )
+    respuestas = db.relationship(
+        "EncRespuesta",
+        back_populates="encuesta",
+        cascade="all, delete-orphan",
+        lazy="dynamic",
+    )
+    segmentos = db.relationship("EncSegmento", back_populates="encuesta", cascade="all, delete-orphan")
+    links = db.relationship("EncLink", back_populates="encuesta", cascade="all, delete-orphan")
+    snapshots = db.relationship("EncAnchorSnapshot", back_populates="encuesta", cascade="all, delete-orphan")
+
+    def esta_activa(self, at: Optional[datetime] = None) -> bool:
+        if self.estado != "publicada":
+            return False
+        at = at or datetime.now(timezone.utc)
+        if self.inicio_at and at < self.inicio_at:
+            return False
+        if self.fin_at and at > self.fin_at:
+            return False
+        return True
+
+
+class EncPregunta(db.Model, TimestampMixin):
+    __tablename__ = "enc_pregunta"
+    __table_args__ = (
+        UniqueConstraint("encuesta_id", "orden", name="uq_enc_pregunta_encuesta_orden"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    encuesta_id = db.Column(db.Integer, db.ForeignKey("enc_encuesta.id", ondelete="CASCADE"), nullable=False)
+    orden = db.Column(db.Integer, nullable=False)
+    tipo = db.Column(db.String(30), nullable=False)
+    texto = db.Column(db.Text, nullable=False)
+    obligatoria = db.Column(db.Boolean, default=False, nullable=False)
+    min_selecciones = db.Column(db.Integer, nullable=True)
+    max_selecciones = db.Column(db.Integer, nullable=True)
+
+    encuesta = db.relationship("EncEncuesta", back_populates="preguntas")
+    opciones = db.relationship(
+        "EncOpcion",
+        back_populates="pregunta",
+        cascade="all, delete-orphan",
+        order_by="EncOpcion.orden",
+    )
+
+
+class EncOpcion(db.Model, TimestampMixin):
+    __tablename__ = "enc_opcion"
+    __table_args__ = (
+        UniqueConstraint("pregunta_id", "orden", name="uq_enc_opcion_pregunta_orden"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    pregunta_id = db.Column(db.Integer, db.ForeignKey("enc_pregunta.id", ondelete="CASCADE"), nullable=False)
+    orden = db.Column(db.Integer, nullable=False)
+    texto = db.Column(db.Text, nullable=False)
+    valor = db.Column(db.String(120), nullable=True)
+
+    pregunta = db.relationship("EncPregunta", back_populates="opciones")
+
+
+class EncRespuesta(db.Model, TimestampMixin):
+    __tablename__ = "enc_respuesta"
+    __table_args__ = (
+        UniqueConstraint("encuesta_id", "huella_unica", name="uq_enc_respuesta_huella"),
+        Index("ix_enc_respuesta_encuesta_submitted", "encuesta_id", "submitted_at"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    encuesta_id = db.Column(db.Integer, db.ForeignKey("enc_encuesta.id", ondelete="CASCADE"), nullable=False)
+    tenant_id = db.Column(db.Integer, nullable=False, index=True)
+    huella_unica = db.Column(db.String(255), nullable=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    dni = db.Column(db.String(32), nullable=True)
+    phone = db.Column(db.String(32), nullable=True)
+    ip = db.Column(db.String(64), nullable=True)
+    ua = db.Column(db.String(255), nullable=True)
+    lat = db.Column(db.Float, nullable=True)
+    lng = db.Column(db.Float, nullable=True)
+    utm_source = db.Column(db.String(120), nullable=True)
+    utm_campaign = db.Column(db.String(120), nullable=True)
+    canal = db.Column(db.String(64), nullable=True)
+    submitted_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    content_hash = db.Column(db.String(128), nullable=True)
+    snapshot_id = db.Column(db.Integer, db.ForeignKey("enc_anchor_snapshot.id"), nullable=True)
+
+    encuesta = db.relationship("EncEncuesta", back_populates="respuestas")
+    detalles = db.relationship(
+        "EncRespuestaDetalle",
+        back_populates="respuesta",
+        cascade="all, delete-orphan",
+        order_by="EncRespuestaDetalle.id",
+    )
+    snapshot = db.relationship("EncAnchorSnapshot", back_populates="respuestas")
+
+
+class EncRespuestaDetalle(db.Model, TimestampMixin):
+    __tablename__ = "enc_respuesta_detalle"
+
+    id = db.Column(db.Integer, primary_key=True)
+    respuesta_id = db.Column(db.Integer, db.ForeignKey("enc_respuesta.id", ondelete="CASCADE"), nullable=False)
+    pregunta_id = db.Column(db.Integer, db.ForeignKey("enc_pregunta.id", ondelete="CASCADE"), nullable=False)
+    opcion_id = db.Column(db.Integer, db.ForeignKey("enc_opcion.id", ondelete="SET NULL"), nullable=True)
+    texto_libre = db.Column(db.Text, nullable=True)
+
+    respuesta = db.relationship("EncRespuesta", back_populates="detalles")
+    pregunta = db.relationship("EncPregunta")
+    opcion = db.relationship("EncOpcion")
+
+
+class EncSegmento(db.Model, TimestampMixin):
+    __tablename__ = "enc_segmento"
+    __table_args__ = (
+        UniqueConstraint("encuesta_id", "clave", "valor", name="uq_enc_segmento_clave_valor"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    encuesta_id = db.Column(db.Integer, db.ForeignKey("enc_encuesta.id", ondelete="CASCADE"), nullable=False)
+    clave = db.Column(db.String(120), nullable=False)
+    valor = db.Column(db.String(255), nullable=False)
+
+    encuesta = db.relationship("EncEncuesta", back_populates="segmentos")
+
+
+class EncLink(db.Model, TimestampMixin):
+    __tablename__ = "enc_link"
+    __table_args__ = (
+        UniqueConstraint("encuesta_id", "slug_publico", name="uq_enc_link_slug"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    encuesta_id = db.Column(db.Integer, db.ForeignKey("enc_encuesta.id", ondelete="CASCADE"), nullable=False)
+    slug_publico = db.Column(db.String(160), nullable=False, index=True)
+    canal = db.Column(db.String(64), nullable=True)
+    utm_source = db.Column(db.String(120), nullable=True)
+    utm_campaign = db.Column(db.String(120), nullable=True)
+
+    encuesta = db.relationship("EncEncuesta", back_populates="links")
+
+
+class EncAnchorSnapshot(db.Model, TimestampMixin):
+    __tablename__ = "enc_anchor_snapshot"
+
+    id = db.Column(db.Integer, primary_key=True)
+    encuesta_id = db.Column(db.Integer, db.ForeignKey("enc_encuesta.id", ondelete="CASCADE"), nullable=False)
+    tenant_id = db.Column(db.Integer, nullable=False, index=True)
+    algo = db.Column(db.String(40), nullable=False, default="sha256")
+    root_hash = db.Column(db.String(128), nullable=False)
+    total_respuestas = db.Column(db.Integer, nullable=False)
+    desde_at = db.Column(db.DateTime(timezone=True), nullable=False)
+    hasta_at = db.Column(db.DateTime(timezone=True), nullable=False)
+    chain = db.Column(db.String(40), nullable=True)
+    tx_id = db.Column(db.String(120), nullable=True)
+    anchor_status = db.Column(db.String(30), nullable=False, default="draft")
+    anchor_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_by = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+
+    encuesta = db.relationship("EncEncuesta", back_populates="snapshots")
+    respuestas = db.relationship("EncRespuesta", back_populates="snapshot")

@@ -26,6 +26,10 @@ class TestMenuKeywords(unittest.TestCase):
     def test_vacunas_keyword(self):
         self.assertEqual(find_global_menu_action("vacunas"), "veterinaria_bromatologia")
 
+    def test_encuesta_keyword(self):
+        self.assertEqual(find_global_menu_action("encuesta"), "mostrar_menu_encuestas")
+        self.assertEqual(find_global_menu_action("participacion ciudadana"), "mostrar_menu_encuestas")
+
     def test_keyword_overrides_location_state(self):
         owner = SimpleNamespace(municipio_id="default", id=1)
         rubro = SimpleNamespace()
