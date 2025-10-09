@@ -283,6 +283,7 @@ def create_app(config_class=Config):
             from routes.encuestas_public import (
                 encuestas_public_bp,
                 encuestas_public_legacy_bp,
+                encuestas_public_share_bp,
             )
             from routes.encuestas_analytics import encuestas_analytics_bp
             from routes.encuestas_anchor import encuestas_anchor_bp
@@ -345,6 +346,7 @@ def create_app(config_class=Config):
             app.register_blueprint(encuestas_admin_legacy_bp)
             app.register_blueprint(encuestas_public_bp)
             app.register_blueprint(encuestas_public_legacy_bp)
+            app.register_blueprint(encuestas_public_share_bp)
             app.register_blueprint(encuestas_analytics_bp)
             app.register_blueprint(encuestas_anchor_bp)
 

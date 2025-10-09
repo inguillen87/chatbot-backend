@@ -427,6 +427,12 @@ class Config:
         os.getenv("PUBLIC_ENCUESTAS_DOMAIN_MAP")
     )
 
+    _encuestas_base_url = os.getenv("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+    if _encuestas_base_url:
+        PUBLIC_ENCUESTAS_CANONICAL_BASE_URL = _encuestas_base_url.rstrip("/")
+    else:
+        PUBLIC_ENCUESTAS_CANONICAL_BASE_URL = None
+
     PYME_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("PYME_UMBRAL_SUGERENCIA_REGISTRO", "3"))
     MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", "3"))
 
