@@ -4799,6 +4799,18 @@ def _get_encuestas_menu(context: dict) -> dict:
         }
 
     base_url = _resolve_encuestas_base_url(context)
+    municipio_config = context.get("municipio_config_actual") or {}
+    encuestas_cfg = {}
+    if isinstance(municipio_config.get("encuestas"), dict):
+        encuestas_cfg = municipio_config["encuestas"]
+
+    raw_image_url = encuestas_cfg.get("menu_image_url") or encuestas_cfg.get("image_url")
+    menu_image_url = None
+    if isinstance(raw_image_url, str):
+        cleaned = raw_image_url.strip()
+        if cleaned:
+            menu_image_url = cleaned
+
     lines: List[str] = []
     survey_buttons: List[Dict[str, Any]] = []
 
@@ -4825,30 +4837,37 @@ def _get_encuestas_menu(context: dict) -> dict:
         line_parts = [f"{index}. *{titulo}*"]
         if descripcion:
             line_parts.append(f"   {descripcion}")
-        line_parts.append(f"   🔗 {share_url}")
-        line_parts.append(f"   🧾 {qr_url}")
-        line_parts.append(f"   💬 {widget_share_url}")
-        line_parts.append(f"   📲 {whatsapp_share_display_url}")
+        line_parts.append(f"   • Abrir la encuesta en la web: {share_url}")
+        line_parts.append(f"   • Descargar el código QR (imagen PNG): {qr_url}")
+        line_parts.append(f"   • Usar el asistente virtual en la web: {widget_share_url}")
+        line_parts.append(f"   • Compartir con un mensaje listo para WhatsApp: {whatsapp_share_display_url}")
         lines.append("\n".join(line_parts))
 
         survey_buttons.append(
             {
-                "texto": f"🗳️ {short_title}",
+                "texto": f"Abrir {short_title}",
                 "url": share_url,
                 "type": "url",
             }
         )
         survey_buttons.append(
             {
-                "texto": f"💬 Widget {widget_button_title}",
+                "texto": f"Widget web {widget_button_title}",
                 "url": widget_share_url,
                 "type": "url",
             }
         )
         survey_buttons.append(
             {
-                "texto": f"📲 WhatsApp {whatsapp_button_title}",
+                "texto": f"Compartir WhatsApp {whatsapp_button_title}",
                 "url": whatsapp_share_url,
+                "type": "url",
+            }
+        )
+        survey_buttons.append(
+            {
+                "texto": f"Descargar QR {short_title}",
+                "url": qr_url,
                 "type": "url",
             }
         )
@@ -4860,13 +4879,18 @@ def _get_encuestas_menu(context: dict) -> dict:
     message_body = header + "\n".join(lines) + "\n\nSeleccioná una encuesta para participar o volvé al inicio."
 
     options = survey_buttons + base_options
-    return {
+    payload = {
         "message_body": message_body.strip(),
         "message_type": "interactive_buttons",
         "options_list": options,
         "fuente": "submenu_encuestas_v1",
         "generar_audio": True,
     }
+
+    if menu_image_url:
+        payload["image_url"] = menu_image_url
+
+    return payload
 
 
 def _get_estacionamiento_menu():

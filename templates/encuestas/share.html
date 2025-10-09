@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    {% set hero_image = share_image_url %}
+    {% if encuesta %}
+      {% set page_title = encuesta.titulo ~ ' · Encuestas ciudadanas' %}
+      {% set page_description = (encuesta.descripcion or 'Sumá tu voz para mejorar tu barrio participando de esta encuesta ciudadana.')|striptags %}
+    {% else %}
+      {% set page_title = 'Encuesta no disponible · Encuestas ciudadanas' %}
+      {% set page_description = 'No encontramos la encuesta solicitada. Revisá el enlace o consultá con el municipio.' %}
+    {% endif %}
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ page_title }}</title>
+    <meta name="description" content="{{ page_description }}" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="{{ page_title }}" />
+    <meta property="og:description" content="{{ page_description }}" />
+    {% if hero_image %}
+      <meta property="og:image" content="{{ hero_image }}" />
+      <meta name="twitter:card" content="summary_large_image" />
+      <meta name="twitter:title" content="{{ page_title }}" />
+      <meta name="twitter:description" content="{{ page_description }}" />
+      <meta name="twitter:image" content="{{ hero_image }}" />
+    {% else %}
+      <meta name="twitter:card" content="summary" />
+    {% endif %}
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #0d1524;
+        --fg: #f7fbff;
+        --card: rgba(255, 255, 255, 0.08);
+        --card-border: rgba(255, 255, 255, 0.2);
+        --accent: #ffd54f;
+        --accent-text: #16233b;
+        --secondary: #81d4fa;
+        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: radial-gradient(circle at top right, rgba(129, 212, 250, 0.2), transparent 45%), var(--bg);
+        color: var(--fg);
+        min-height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: stretch;
+        padding: 32px 16px 48px;
+      }
+      a {
+        color: inherit;
+      }
+      .page {
+        width: min(960px, 100%);
+        background: rgba(12, 22, 38, 0.82);
+        border-radius: 28px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        padding: 32px clamp(24px, 5vw, 48px);
+        box-shadow: 0 20px 45px rgba(5, 12, 24, 0.35);
+        backdrop-filter: blur(24px);
+      }
+      header {
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+        align-items: flex-start;
+      }
+      header img.hero {
+        width: 100%;
+        border-radius: 24px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        box-shadow: 0 18px 36px rgba(5, 10, 24, 0.4);
+      }
+      header .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        background: var(--accent);
+        color: var(--accent-text);
+        padding: 8px 18px;
+        border-radius: 999px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        font-size: 0.85rem;
+      }
+      header h1 {
+        font-size: clamp(2.4rem, 5vw, 3.2rem);
+        margin: 0;
+        line-height: 1.1;
+      }
+      header p.description {
+        font-size: 1.1rem;
+        margin: 0;
+        color: rgba(255, 255, 255, 0.85);
+      }
+      .actions {
+        margin-top: 24px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+      }
+      .actions a.button,
+      .actions button.button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: 14px 22px;
+        border-radius: 16px;
+        border: none;
+        font-size: 1rem;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        cursor: pointer;
+        text-decoration: none;
+        transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+      }
+      .actions a.button.primary,
+      .actions button.button.primary {
+        background: linear-gradient(120deg, var(--accent), #ffb74d);
+        color: var(--accent-text);
+        box-shadow: 0 14px 28px rgba(255, 213, 79, 0.35);
+      }
+      .actions a.button.secondary,
+      .actions button.button.secondary {
+        background: rgba(255, 255, 255, 0.14);
+        color: var(--fg);
+        border: 1px solid rgba(255, 255, 255, 0.24);
+      }
+      .actions a.button:hover,
+      .actions button.button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 18px 36px rgba(5, 10, 24, 0.45);
+      }
+      .actions button[disabled] {
+        cursor: not-allowed;
+        opacity: 0.7;
+        box-shadow: none;
+      }
+      main {
+        margin-top: 32px;
+        display: grid;
+        gap: 32px;
+      }
+      section.card {
+        background: var(--card);
+        border: 1px solid var(--card-border);
+        border-radius: 24px;
+        padding: clamp(20px, 4vw, 32px);
+      }
+      section.card h2 {
+        margin-top: 0;
+        font-size: 1.4rem;
+        margin-bottom: 18px;
+      }
+      section.card p {
+        margin: 0 0 12px 0;
+        color: rgba(255, 255, 255, 0.82);
+        line-height: 1.6;
+      }
+      section.card ul {
+        margin: 0;
+        padding-left: 20px;
+        color: rgba(255, 255, 255, 0.82);
+      }
+      section.card li + li {
+        margin-top: 8px;
+      }
+      .qr-wrapper {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 24px;
+        align-items: center;
+      }
+      .qr-wrapper img {
+        width: min(260px, 100%);
+        border-radius: 24px;
+        background: rgba(255, 255, 255, 0.92);
+        padding: 16px;
+        box-shadow: 0 18px 30px rgba(0, 0, 0, 0.35);
+      }
+      .qr-wrapper .qr-info {
+        flex: 1 1 260px;
+      }
+      .qr-wrapper .qr-info a {
+        color: var(--secondary);
+        font-weight: 600;
+        text-decoration: underline;
+      }
+      code.share-link {
+        display: block;
+        background: rgba(0, 0, 0, 0.35);
+        padding: 12px 16px;
+        border-radius: 12px;
+        word-break: break-all;
+        font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+        font-size: 0.9rem;
+        margin-top: 8px;
+      }
+      footer {
+        margin-top: 48px;
+        font-size: 0.85rem;
+        color: rgba(255, 255, 255, 0.6);
+        text-align: center;
+      }
+      footer a {
+        color: var(--secondary);
+        text-decoration: none;
+      }
+      .error-state {
+        text-align: center;
+        padding: 48px 16px;
+      }
+      .error-state h1 {
+        font-size: clamp(2.6rem, 6vw, 3.4rem);
+        margin-bottom: 12px;
+      }
+      .error-state p {
+        font-size: 1.1rem;
+        color: rgba(255, 255, 255, 0.78);
+      }
+      @media (max-width: 640px) {
+        body {
+          padding: 16px;
+        }
+        .page {
+          padding: 24px;
+        }
+        .actions {
+          flex-direction: column;
+          align-items: stretch;
+        }
+        header img.hero {
+          border-radius: 20px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page" role="main">
+      {% if not encuesta %}
+        <div class="error-state" role="alert">
+          <div class="badge">Encuestas Ciudadanas</div>
+          <h1>La encuesta no está disponible</h1>
+          <p>{{ error.message if error else 'No encontramos la encuesta solicitada. Revisá el enlace o consultá con tu municipio.' }}</p>
+        </div>
+      {% else %}
+        <header>
+          <div class="badge" aria-hidden="true">Encuestas Ciudadanas</div>
+          {% if hero_image %}
+            <img
+              class="hero"
+              src="{{ hero_image }}"
+              alt="Ilustración con el texto Encuestas ciudadanas"
+              loading="lazy"
+            />
+          {% endif %}
+          <h1>{{ encuesta.titulo }}</h1>
+          {% if encuesta.descripcion %}
+            <p class="description">{{ encuesta.descripcion }}</p>
+          {% endif %}
+          <div class="actions">
+            <a class="button primary" href="{{ widget_url }}" target="_blank" rel="noopener noreferrer">Responder en el asistente virtual</a>
+            <a class="button secondary" href="{{ share_url }}" target="_blank" rel="noopener noreferrer">Abrir versión web completa</a>
+            <button class="button secondary" id="copy-link" data-url="{{ share_url }}" type="button">Copiar enlace</button>
+            <a class="button secondary" href="{{ whatsapp_url }}" target="_blank" rel="noopener noreferrer">Enviar por WhatsApp</a>
+          </div>
+        </header>
+        <main>
+          <section class="card">
+            <h2>¿Cómo participar?</h2>
+            <p>Podés responder la encuesta desde el asistente virtual o ingresando al formulario web. También podés compartir el enlace con tu familia, amigas y vecinos.</p>
+            <ul>
+              <li>Respondé en línea usando el botón <strong>Responder en el asistente virtual</strong>.</li>
+              <li>Compartí el acceso directo copiando el enlace o enviando un mensaje por WhatsApp.</li>
+              <li>Descargá el código QR para imprimirlo y difundir la encuesta en tu barrio.</li>
+            </ul>
+            <code class="share-link" id="share-link">{{ share_url }}</code>
+          </section>
+          <section class="card">
+            <h2>Código QR listo para imprimir</h2>
+            <div class="qr-wrapper">
+              <img src="{{ qr_url }}?size=360" alt="Código QR de la encuesta {{ encuesta.titulo }}" loading="lazy" />
+              <div class="qr-info">
+                <p>Escaneá el código con la cámara de tu celular para abrir la encuesta al instante. También podés descargarlo en alta calidad para colocarlo en afiches o redes sociales.</p>
+                <p>
+                  <a href="{{ qr_url }}?size=900" download>Descargar código QR en alta calidad</a>
+                </p>
+              </div>
+            </div>
+          </section>
+          <section class="card">
+            <h2>Opciones para compartir</h2>
+            <ul>
+              <li><a href="{{ whatsapp_url }}" target="_blank" rel="noopener noreferrer">Abrir WhatsApp con un mensaje listo para enviar</a></li>
+              <li>Enviá el enlace directo: <strong>{{ share_url }}</strong></li>
+              {% if whatsapp_message %}
+                <li>Mensaje sugerido: “{{ whatsapp_message }}”</li>
+              {% endif %}
+            </ul>
+          </section>
+        </main>
+        <footer>
+          Creado por Chatboc para potenciar la participación ciudadana. ¿Necesitás ayuda? Escribinos por el asistente virtual.
+        </footer>
+      {% endif %}
+    </div>
+    <script>
+      (function () {
+        const copyButton = document.getElementById('copy-link');
+        const shareLink = document.getElementById('share-link');
+        if (!copyButton || !shareLink) {
+          return;
+        }
+        const url = copyButton.getAttribute('data-url');
+        copyButton.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(url);
+            copyButton.textContent = '¡Enlace copiado!';
+            setTimeout(() => {
+              copyButton.textContent = 'Copiar enlace';
+            }, 3200);
+          } catch (err) {
+            copyButton.textContent = 'Copiá manualmente';
+            shareLink.focus();
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>
