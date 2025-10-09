@@ -524,7 +524,9 @@ def get_encuesta(encuesta_id: int, tenant_id: Optional[int] = None, user: Any = 
     return encuesta
 
 
-def get_public_encuesta(slug_publico: str) -> EncEncuesta:
+def get_public_encuesta(
+    slug_publico: str, *, allow_inactive_for_user: Optional[Any] = None
+) -> EncEncuesta:
     normalized_slug = (slug_publico or "").strip().lower()
     if not normalized_slug:
         raise EncuestaError("Encuesta no encontrada", status_code=404)
@@ -553,6 +555,16 @@ def get_public_encuesta(slug_publico: str) -> EncEncuesta:
 
     if encuesta is None:
         raise EncuestaError("Encuesta no encontrada", status_code=404)
+
+    preview_user = allow_inactive_for_user
+    if preview_user is not None:
+        try:
+            _ensure_tenant_access(encuesta, preview_user)
+        except EncuestaError:
+            preview_user = None
+        else:
+            return encuesta
+
     if encuesta.estado != "publicada":
         raise EncuestaError("La encuesta no está activa", status_code=403)
     if not encuesta.esta_activa():

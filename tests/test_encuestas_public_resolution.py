@@ -1,5 +1,7 @@
 from database import db
-from models import EncEncuesta, EncLink
+import pytest
+
+from models import EncEncuesta, EncLink, User
 from routes import encuestas_public
 from services.encuestas_service import list_public_encuestas_for_tenant
 
@@ -110,14 +112,14 @@ def test_share_returns_payload_without_canonical(client, monkeypatch):
     assert response.get_json() == {"slug": "demo-slug"}
 
 
-def _create_public_encuesta(slug: str, slug_publico: str) -> None:
+def _create_public_encuesta(slug: str, slug_publico: str, estado: str = "publicada") -> EncEncuesta:
     encuesta = EncEncuesta(
         tenant_id=4,
         slug=slug,
         titulo="Encuesta Demo",
         descripcion="Demo",
         tipo="opinion",
-        estado="publicada",
+        estado=estado,
     )
     link = EncLink(
         encuesta=encuesta,
@@ -127,11 +129,13 @@ def _create_public_encuesta(slug: str, slug_publico: str) -> None:
     db.session.add(encuesta)
     db.session.add(link)
     db.session.commit()
+    return encuesta
 
 
 def test_share_endpoint_handles_alias_without_link(client):
     slug = "junin-participa"
     slug_publico = "junin-participa-abcdef"
+    client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = None
     _create_public_encuesta(slug, slug_publico)
 
     response = client.get(f"/e/{slug_publico}")
@@ -172,3 +176,57 @@ def test_list_public_encuestas_falls_back_to_slug(client):
             item_encuesta.id == encuesta.id and slug == encuesta.slug
             for item_encuesta, slug in resultados
         )
+
+
+def test_qr_endpoint_returns_png_for_public_encuesta(client):
+    slug = "encuesta-qr-publica"
+    slug_publico = f"{slug}-abcdef"
+    _create_public_encuesta(slug, slug_publico)
+
+    response = client.get(f"/api/public/encuestas/{slug_publico}/qr")
+    assert response.status_code == 200
+    assert response.mimetype == "image/png"
+    assert response.data  # Non-empty payload
+
+
+def test_qr_endpoint_allows_preview_for_authorized_user(client):
+    slug = "encuesta-qr-preview"
+    slug_publico = f"{slug}-123abc"
+    encuesta = _create_public_encuesta(slug, slug_publico, estado="borrador")
+
+    # Public access should be rejected while the survey is unpublished.
+    blocked = client.get(f"/api/public/encuestas/{slug_publico}/qr")
+    assert blocked.status_code == 403
+
+    admin = User(
+        email="preview-admin@example.com",
+        name="Preview Admin",
+        rol="admin",
+        municipio_id=encuesta.tenant_id,
+        tipo_chat="municipio",
+    )
+    admin.set_password("demo1234")
+    db.session.add(admin)
+    db.session.commit()
+
+    login = client.post(
+        "/auth/login",
+        json={"email": admin.email, "password": "demo1234"},
+    )
+    assert login.status_code == 200
+    token = login.get_json()["token"]
+
+    headers = {"Authorization": f"Bearer {token}"}
+    preview = client.get(
+        f"/api/public/encuestas/{slug_publico}/qr",
+        headers=headers,
+    )
+    assert preview.status_code == 200
+    assert preview.mimetype == "image/png"
+    assert preview.data
+@pytest.fixture(autouse=True)
+def restore_canonical_base(client):
+    original = client.application.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+    yield
+    client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = original
+
