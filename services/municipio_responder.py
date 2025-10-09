@@ -12,7 +12,7 @@ from enum import Enum, auto
 import unicodedata
 import difflib
 from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qs, unquote, urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse, quote_plus
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
 from models import (
@@ -4812,16 +4812,42 @@ def _get_encuestas_menu(context: dict) -> dict:
                 descripcion = descripcion[:177].rstrip() + "…"
 
         share_url = urljoin(f"{base_url}/", f"e/{slug_publico}")
+        qr_url = urljoin(f"{base_url}/", f"api/public/encuestas/{slug_publico}/qr")
+        widget_share_url = f"{share_url}?canal=widget_chat"
+        whatsapp_message = f"Participá en '{titulo}' ingresando a {share_url}"
+        whatsapp_share_url = f"https://wa.me/?text={quote_plus(whatsapp_message)}"
+
+        short_title = _shorten_button_label(titulo)
+        widget_button_title = _shorten_button_label(titulo, max_length=36)
+        whatsapp_button_title = _shorten_button_label(titulo, max_length=30)
+
         line_parts = [f"{index}. *{titulo}*"]
         if descripcion:
             line_parts.append(f"   {descripcion}")
         line_parts.append(f"   👉 {share_url}")
+        line_parts.append(f"   🧾 QR: {qr_url}")
+        line_parts.append(f"   💬 Widget chat: {widget_share_url}")
+        line_parts.append(f"   📲 Compartir por WhatsApp: {whatsapp_share_url}")
         lines.append("\n".join(line_parts))
 
         survey_buttons.append(
             {
-                "texto": f"🗳️ {_shorten_button_label(titulo)}",
+                "texto": f"🗳️ {short_title}",
                 "url": share_url,
+                "type": "url",
+            }
+        )
+        survey_buttons.append(
+            {
+                "texto": f"💬 Widget {widget_button_title}",
+                "url": widget_share_url,
+                "type": "url",
+            }
+        )
+        survey_buttons.append(
+            {
+                "texto": f"📲 WhatsApp {whatsapp_button_title}",
+                "url": whatsapp_share_url,
                 "type": "url",
             }
         )
