@@ -3,6 +3,7 @@ import re
 import unicodedata
 import pandas as pd
 from typing import Dict, Any, Tuple, Optional, List
+from config.feature_flags import FEATURE_ENCUESTAS
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
 
 # --- PLACEHOLDER DEFINITIONS ---
@@ -714,15 +715,21 @@ def _get_main_menu_payload(
     channel = context.get("channel", "web")
     if channel == "whatsapp":
         # Simplified menu for WhatsApp: only top-level categories
+        whatsapp_buttons = [
+            {"texto": "🗣️ Reclamos y Consultas", "action_id": "mostrar_menu_reclamos"},
+            {"texto": "🚗 Trámites y Turnos", "action_id": "mostrar_menu_tramites"},
+            {"texto": "📰 Información del Municipio", "action_id": "mostrar_menu_informacion"},
+        ]
+        if FEATURE_ENCUESTAS:
+            whatsapp_buttons.append({"texto": "🗳️ Participación Ciudadana", "action_id": "mostrar_menu_encuestas"})
+        whatsapp_buttons.extend([
+            {"texto": "🅿️ Estacionamiento", "action_id": "mostrar_menu_estacionamiento"},
+            {"texto": "❓ Ayuda", "action_id": "mostrar_menu_ayuda"},
+        ])
+
         categorias = [{
             "titulo": "*Categorías*",
-            "botones": [
-                {"texto": "🗣️ Reclamos y Consultas", "action_id": "mostrar_menu_reclamos"},
-                {"texto": "🚗 Trámites y Turnos", "action_id": "mostrar_menu_tramites"},
-                {"texto": "📰 Información del Municipio", "action_id": "mostrar_menu_informacion"},
-                {"texto": "🅿️ Estacionamiento", "action_id": "mostrar_menu_estacionamiento"},
-                {"texto": "❓ Ayuda", "action_id": "mostrar_menu_ayuda"},
-            ]
+            "botones": whatsapp_buttons,
         }]
 
         flat_buttons = []
@@ -750,13 +757,24 @@ def _get_main_menu_payload(
                 {"texto": "🏗️ Obras", "action_id": "obras"},
                 {"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"},
             ]},
+        ]
+
+        if FEATURE_ENCUESTAS:
+            categorias.append({
+                "titulo": "🗳️ Participación Ciudadana",
+                "botones": [
+                    {"texto": "🗳️ Encuestas Activas", "action_id": "mostrar_menu_encuestas"},
+                ],
+            })
+
+        categorias.extend([
             {"titulo": "🅿️ Estacionamiento", "botones": [
                 {"texto": "🅿️ Buscar Estacionamiento Libre", "action_id": "buscar_estacionamiento"},
             ]},
             {"titulo": "❓ Ayuda", "botones": [
                 {"texto": "ℹ️ Cómo usar el bot", "action_id": "mostrar_menu_ayuda"},
-            ]}
-        ]
+            ]},
+        ])
 
         flat_buttons = []
         for categoria in categorias:

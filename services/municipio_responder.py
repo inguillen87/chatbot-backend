@@ -11,7 +11,7 @@ import json
 from enum import Enum, auto
 import unicodedata
 import difflib
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
@@ -81,6 +81,11 @@ from services.ticket_utils import (
 from services.vocabulary_loader import get_name_prefix_stopwords
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
 from config import BACKEND_URL as DEFAULT_BACKEND_URL, IS_HTTPS as DEFAULT_IS_HTTPS
+from config.feature_flags import FEATURE_ENCUESTAS
+from services.encuestas_service import (
+    list_public_encuestas_for_tenant,
+    serialize_public_encuesta,
+)
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
@@ -2322,6 +2327,23 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             flag_modified(chat_db_context, "context_data")
         return submenu
 
+    if action_id == "mostrar_menu_encuestas":
+        submenu = _get_encuestas_menu(context)
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+        opciones_accionables = [
+            opcion
+            for opcion in submenu.get("options_list", [])
+            if opcion.get("action_id")
+        ]
+        if opciones_accionables:
+            contexto_municipio_actual["menu_opciones"] = opciones_accionables
+        else:
+            contexto_municipio_actual.pop("menu_opciones", None)
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return submenu
+
     if action_id == "mostrar_menu_estacionamiento":
         submenu = _get_estacionamiento_menu()
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
@@ -3260,6 +3282,22 @@ MENU_KEYWORDS = {
         "tengo un comentario",
         "me gustaria hacer una sugerencia",
     ],
+    "mostrar_menu_encuestas": [
+        "encuesta",
+        "encuestas",
+        "participacion",
+        "participación",
+        "participacion ciudadana",
+        "participación ciudadana",
+        "consulta ciudadana",
+        "consulta popular",
+        "sondeo",
+        "sondeos",
+        "votar",
+        "votacion",
+        "votación",
+        "participar",
+    ],
     "limpiar_contexto": [
         "cancelar",
         "volver al inicio",
@@ -3550,6 +3588,7 @@ EMOJI_MAIN_MENU_ACTIONS = {
     "\U0001F43E": "veterinaria_bromatologia", # 🐾
     "\U0001F3D7": "obras", # 🏗️
     "\u267B": "punto_limpio", # ♻️
+    "\U0001F5F3": "mostrar_menu_encuestas", # 🗳️
     "\U0001F17F": "buscar_estacionamiento", # 🅿️
     "\U0001F3DB": "menu_principal", # 🏛️
     "\U0001F5E3": "mostrar_menu_reclamos", # 🗣️
@@ -4552,6 +4591,144 @@ def _get_informacion_menu():
         "message_type": "interactive_buttons",
         "options_list": opciones,
         "fuente": "submenu_informacion_v1",
+        "generar_audio": True,
+    }
+
+
+def _resolve_encuestas_tenant_id(context: dict) -> Optional[int]:
+    """Infer the tenant/municipio identifier for survey queries."""
+
+    owner = context.get("user_obj")
+    candidates = []
+    if owner is not None:
+        candidates.extend(
+            [
+                getattr(owner, "municipio_id", None),
+                getattr(owner, "empresa_id", None),
+                getattr(owner, "pyme_id", None),
+                getattr(owner, "id", None),
+            ]
+        )
+    candidates.append(context.get("municipio_id"))
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            return int(candidate)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _resolve_encuestas_base_url(context: dict) -> str:
+    municipio_config = context.get("municipio_config_actual") or {}
+    base_url = municipio_config.get("encuestas_base_url")
+    if isinstance(base_url, str) and base_url.strip():
+        return base_url.rstrip("/")
+    return DEFAULT_BACKEND_URL.rstrip("/")
+
+
+def _shorten_button_label(text: str, max_length: int = 42) -> str:
+    if not isinstance(text, str):
+        return "Encuesta"
+    trimmed = text.strip()
+    if len(trimmed) <= max_length:
+        return trimmed
+    return trimmed[: max_length - 1].rstrip() + "…"
+
+
+def _get_encuestas_menu(context: dict) -> dict:
+    """Build the participatory surveys submenu for the chatbot."""
+
+    base_options = [
+        {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
+        {"texto": "Cancelar", "action_id": "cancelar"},
+    ]
+
+    if not FEATURE_ENCUESTAS:
+        return {
+            "message_body": (
+                "Las encuestas de participación ciudadana todavía no están habilitadas "
+                "en este municipio. Volvé al inicio para continuar con otras gestiones."
+            ),
+            "message_type": "interactive_buttons",
+            "options_list": list(base_options),
+            "fuente": "submenu_encuestas_v1",
+            "generar_audio": True,
+        }
+
+    tenant_id = _resolve_encuestas_tenant_id(context)
+    if tenant_id is None:
+        return {
+            "message_body": (
+                "No pudimos identificar el municipio para mostrar encuestas activas. "
+                "Volvé al menú principal e intentá nuevamente."
+            ),
+            "message_type": "interactive_buttons",
+            "options_list": list(base_options),
+            "fuente": "submenu_encuestas_v1",
+            "generar_audio": True,
+        }
+
+    try:
+        encuestas = list_public_encuestas_for_tenant(tenant_id, limit=5)
+    except Exception:
+        logger.exception("No se pudieron cargar las encuestas públicas para el tenant %s", tenant_id)
+        encuestas = []
+
+    if not encuestas:
+        return {
+            "message_body": (
+                "Por el momento no hay encuestas activas. Te avisaremos cuando "
+                "se abra una nueva instancia de participación."
+            ),
+            "message_type": "interactive_buttons",
+            "options_list": list(base_options),
+            "fuente": "submenu_encuestas_v1",
+            "generar_audio": True,
+        }
+
+    base_url = _resolve_encuestas_base_url(context)
+    lines: List[str] = []
+    survey_buttons: List[Dict[str, Any]] = []
+
+    for index, (encuesta, slug_publico) in enumerate(encuestas, start=1):
+        data = serialize_public_encuesta(encuesta, slug_publico=slug_publico)
+        titulo = data.get("titulo") or "Encuesta ciudadana"
+        descripcion = (data.get("descripcion") or "").strip()
+        if descripcion:
+            descripcion = re.sub(r"\s+", " ", descripcion)
+            if len(descripcion) > 180:
+                descripcion = descripcion[:177].rstrip() + "…"
+
+        share_url = urljoin(f"{base_url}/", f"e/{slug_publico}")
+        line_parts = [f"{index}. *{titulo}*"]
+        if descripcion:
+            line_parts.append(f"   {descripcion}")
+        line_parts.append(f"   👉 {share_url}")
+        lines.append("\n".join(line_parts))
+
+        survey_buttons.append(
+            {
+                "texto": f"🗳️ {_shorten_button_label(titulo)}",
+                "url": share_url,
+                "type": "url",
+            }
+        )
+
+    message_body = (
+        "*Participación Ciudadana*\n\n"
+        + "\n\n".join(lines)
+        + "\n\nSeleccioná una encuesta para participar o volvé al inicio."
+    )
+
+    options = survey_buttons + base_options
+    return {
+        "message_body": message_body.strip(),
+        "message_type": "interactive_buttons",
+        "options_list": options,
+        "fuente": "submenu_encuestas_v1",
         "generar_audio": True,
     }
 
