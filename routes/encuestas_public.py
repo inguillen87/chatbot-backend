@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import time
 from collections import defaultdict, deque
+import re
 from threading import Lock
 from typing import Optional
 
@@ -24,6 +25,24 @@ _RATE_LIMIT = 30
 _RATE_PERIOD = 60
 _rate_buckets: defaultdict[str, deque] = defaultdict(deque)
 _rate_lock = Lock()
+
+
+def _normalize_host(value: Optional[str]) -> Optional[str]:
+    """Normalize host/header values for domain mapping lookups."""
+
+    if not value:
+        return None
+
+    text = value.strip()
+    if not text:
+        return None
+
+    text = re.sub(r"^[a-zA-Z]+://", "", text)
+    text = text.split("/")[0]
+    text = text.split(",")[-1]
+    text = text.split(":")[0]
+    text = text.strip().lower()
+    return text or None
 
 
 def _feature_guard():
@@ -86,17 +105,63 @@ def _resolve_tenant_from_request() -> Optional[int]:
         if user is not None:
             owner_candidate = user
 
-    if owner_candidate is None:
-        return None
+    if owner_candidate is not None:
+        for attr in ("municipio_id", "empresa_id", "pyme_id", "id"):
+            value = getattr(owner_candidate, attr, None)
+            if value is None:
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
 
-    for attr in ("municipio_id", "empresa_id", "pyme_id", "id"):
-        value = getattr(owner_candidate, attr, None)
-        if value is None:
-            continue
+    mapping = current_app.config.get("PUBLIC_ENCUESTAS_DOMAIN_MAP") or {}
+    if mapping:
+        host_candidates = []
+        forwarded = request.headers.get("X-Forwarded-Host")
+        if forwarded:
+            host_candidates.extend(part.strip() for part in forwarded.split(",") if part.strip())
+        host_candidates.extend(
+            [
+                request.headers.get("Host"),
+                request.host,
+                request.headers.get("Origin"),
+                request.headers.get("Referer"),
+            ]
+        )
+
+        for candidate in host_candidates:
+            normalized = _normalize_host(candidate)
+            if not normalized:
+                continue
+            variants = [normalized]
+            if normalized.startswith("www."):
+                variants.append(normalized[4:])
+            else:
+                variants.append(f"www.{normalized}")
+
+            for variant in variants:
+                tenant_value = mapping.get(variant)
+                if tenant_value is None:
+                    continue
+                try:
+                    return int(tenant_value)
+                except (TypeError, ValueError):
+                    current_app.logger.warning(
+                        "[encuestas] Invalid tenant id '%s' configured for domain '%s'.",
+                        tenant_value,
+                        variant,
+                    )
+
+    default_tenant = current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID")
+    if default_tenant not in (None, ""):
         try:
-            return int(value)
+            return int(default_tenant)
         except (TypeError, ValueError):
-            continue
+            current_app.logger.warning(
+                "[encuestas] Invalid PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID value '%s'.",
+                default_tenant,
+            )
 
     return None
 
