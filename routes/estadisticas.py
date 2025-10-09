@@ -469,7 +469,7 @@ def get_user_locations(current_user):
 @estadisticas_bp.route("/tickets", methods=["OPTIONS"])
 def tickets_options():
     """Preflight CORS para /estadisticas/tickets."""
-    return "", 200
+    return "", 204
 
 
 @estadisticas_bp.route("/tickets", methods=["GET"])

@@ -4682,6 +4682,18 @@ def _resolve_encuestas_base_url(context: dict) -> str:
         base_url = municipio_config.get("encuestas_base_url")
     if isinstance(base_url, str) and base_url.strip():
         return base_url.rstrip("/")
+    canonical = None
+    backend_url = None
+    if has_app_context():
+        canonical = current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+        backend_url = current_app.config.get("BACKEND_URL")
+
+    if isinstance(canonical, str) and canonical.strip():
+        return canonical.rstrip("/")
+
+    if isinstance(backend_url, str) and backend_url.strip():
+        return backend_url.rstrip("/")
+
     return DEFAULT_BACKEND_URL.rstrip("/")
 
 
