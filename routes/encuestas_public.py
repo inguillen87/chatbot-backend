@@ -17,7 +17,6 @@ from flask import (
     render_template,
     request,
     send_file,
-    url_for,
 )
 from urllib.parse import quote_plus
 
@@ -66,6 +65,18 @@ def _public_base_url() -> str:
     configured = current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
     if configured:
         return configured.rstrip("/")
+    return request.host_url.rstrip("/")
+
+
+def _public_api_base_url() -> str:
+    api_base = current_app.config.get("PUBLIC_ENCUESTAS_API_BASE_URL")
+    if isinstance(api_base, str) and api_base.strip():
+        return api_base.rstrip("/")
+
+    backend = current_app.config.get("BACKEND_URL")
+    if isinstance(backend, str) and backend.strip():
+        return backend.rstrip("/")
+
     return request.host_url.rstrip("/")
 
 
@@ -391,7 +402,8 @@ def share_redirect(slug: str):
     data = serialize_public_encuesta(encuesta, slug_publico=slug)
     base_url = _public_base_url()
     share_url = f"{base_url}/e/{slug}"
-    qr_url = url_for("encuestas_public_bp.qr", slug=slug, _external=True)
+    api_base_url = _public_api_base_url()
+    qr_url = f"{api_base_url}/api/public/encuestas/{slug}/qr"
     widget_url = f"{share_url}?canal=widget_chat"
     titulo = data.get("titulo") or "Encuesta ciudadana"
     whatsapp_message = f"Participá en '{titulo}' ingresando a {share_url}"

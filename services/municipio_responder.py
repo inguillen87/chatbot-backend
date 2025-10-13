@@ -4721,6 +4721,32 @@ def _resolve_encuestas_base_url(context: dict) -> str:
     return DEFAULT_BACKEND_URL.rstrip("/")
 
 
+def _resolve_encuestas_api_base_url(context: dict) -> str:
+    municipio_config = context.get("municipio_config_actual") or {}
+    encuestas_cfg = municipio_config.get("encuestas")
+    api_base = None
+    if isinstance(encuestas_cfg, dict):
+        api_base = encuestas_cfg.get("public_api_base_url") or encuestas_cfg.get("api_base_url")
+    if not api_base:
+        api_base = municipio_config.get("encuestas_api_base_url")
+    if isinstance(api_base, str) and api_base.strip():
+        return api_base.rstrip("/")
+
+    configured_api = None
+    backend_url = None
+    if has_app_context():
+        configured_api = current_app.config.get("PUBLIC_ENCUESTAS_API_BASE_URL")
+        backend_url = current_app.config.get("BACKEND_URL")
+
+    if isinstance(configured_api, str) and configured_api.strip():
+        return configured_api.rstrip("/")
+
+    if isinstance(backend_url, str) and backend_url.strip():
+        return backend_url.rstrip("/")
+
+    return DEFAULT_BACKEND_URL.rstrip("/")
+
+
 def _shorten_button_label(text: str, max_length: int = 42) -> str:
     if not isinstance(text, str):
         return "Encuesta"
@@ -4799,6 +4825,7 @@ def _get_encuestas_menu(context: dict) -> dict:
         }
 
     base_url = _resolve_encuestas_base_url(context)
+    api_base_url = _resolve_encuestas_api_base_url(context)
     municipio_config = context.get("municipio_config_actual") or {}
     encuestas_cfg = {}
     if isinstance(municipio_config.get("encuestas"), dict):
@@ -4824,7 +4851,7 @@ def _get_encuestas_menu(context: dict) -> dict:
                 descripcion = descripcion[:177].rstrip() + "…"
 
         share_url = urljoin(f"{base_url}/", f"e/{slug_publico}")
-        qr_url = urljoin(f"{base_url}/", f"api/public/encuestas/{slug_publico}/qr")
+        qr_url = urljoin(f"{api_base_url}/", f"api/public/encuestas/{slug_publico}/qr")
         widget_share_url = f"{share_url}?canal=widget_chat"
         whatsapp_message = f"Participá en '{titulo}' ingresando a {share_url}"
         whatsapp_share_url = f"https://wa.me/?text={quote_plus(whatsapp_message)}"
