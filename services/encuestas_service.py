@@ -6,13 +6,14 @@ import os
 import re
 import secrets
 import unicodedata
+from collections import Counter
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from flask import current_app
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, load_only
 
 from database import db
 from models import (
@@ -59,7 +60,192 @@ def _parse_int(value: Optional[str]) -> Optional[int]:
 
 
 _BOOTSTRAP_SAMPLE_ENABLED = _env_flag("ENCUESTAS_BOOTSTRAP_SAMPLE", default=True)
-_BOOTSTRAP_TENANT_ID = _parse_int(os.getenv("JUNIN_ENCUESTAS_TENANT_ID")) or 4
+
+
+def _build_junin_bootstrap_payload(inicio: datetime, fin: datetime) -> Dict[str, Any]:
+    return {
+        "titulo": "Participación Ciudadana Junín 2025",
+        "slug": "junin-participa",
+        "descripcion": (
+            "Queremos conocer tus prioridades para planificar obras, seguridad y "
+            "actividades en todo Junín. Contanos qué es importante para tu barrio."
+        ),
+        "tipo": "opinion",
+        "anonimo_permitido": True,
+        "requiere_identidad": False,
+        "politica_unicidad": "por_cookie",
+        "inicio_at": inicio.isoformat(),
+        "fin_at": fin.isoformat(),
+        "preguntas": [
+            {
+                "orden": 1,
+                "tipo": "opcion_unica",
+                "texto": "¿Qué proyecto priorizarías para tu barrio?",
+                "obligatoria": True,
+                "opciones": [
+                    {"orden": 1, "texto": "Mejoras de iluminación y seguridad"},
+                    {"orden": 2, "texto": "Pavimentación y mantenimiento de calles"},
+                    {"orden": 3, "texto": "Espacios verdes y recreativos"},
+                    {"orden": 4, "texto": "Programas deportivos y culturales"},
+                ],
+            },
+            {
+                "orden": 2,
+                "tipo": "opcion_multiple",
+                "texto": (
+                    "¿En qué acciones de participación te gustaría sumarte durante "
+                    "los próximos meses?"
+                ),
+                "obligatoria": False,
+                "max_selecciones": 3,
+                "opciones": [
+                    {"orden": 1, "texto": "Cabildos barriales"},
+                    {"orden": 2, "texto": "Jornadas de voluntariado"},
+                    {"orden": 3, "texto": "Consultas públicas digitales"},
+                    {"orden": 4, "texto": "Mesas de trabajo temáticas"},
+                ],
+            },
+            {
+                "orden": 3,
+                "tipo": "abierta",
+                "texto": "Dejanos comentarios o propuestas concretas para Junín",
+                "obligatoria": False,
+            },
+        ],
+    }
+
+
+def _build_san_martin_bootstrap_payload(inicio: datetime, fin: datetime) -> Dict[str, Any]:
+    return {
+        "titulo": "Plan Estratégico San Martín 2025",
+        "slug": "san-martin-ideas",
+        "descripcion": (
+            "Queremos escuchar a los vecinos de San Martín para definir obras, "
+            "movilidad y actividades comunitarias que mejoren cada distrito."
+        ),
+        "tipo": "opinion",
+        "anonimo_permitido": True,
+        "requiere_identidad": False,
+        "politica_unicidad": "por_cookie",
+        "inicio_at": inicio.isoformat(),
+        "fin_at": fin.isoformat(),
+        "preguntas": [
+            {
+                "orden": 1,
+                "tipo": "opcion_unica",
+                "texto": "¿Qué obra considerás más urgente para tu distrito?",
+                "obligatoria": True,
+                "opciones": [
+                    {"orden": 1, "texto": "Repavimentación y cordón-cuneta"},
+                    {"orden": 2, "texto": "Nuevas luminarias LED y seguridad"},
+                    {"orden": 3, "texto": "Espacios verdes y plazas inclusivas"},
+                    {"orden": 4, "texto": "Centros deportivos y recreativos"},
+                ],
+            },
+            {
+                "orden": 2,
+                "tipo": "opcion_multiple",
+                "texto": "¿Qué servicios municipales querés reforzar?",
+                "obligatoria": False,
+                "max_selecciones": 3,
+                "opciones": [
+                    {"orden": 1, "texto": "Recolección de residuos y reciclaje"},
+                    {"orden": 2, "texto": "Seguridad ciudadana y prevención"},
+                    {"orden": 3, "texto": "Movilidad y transporte público"},
+                    {"orden": 4, "texto": "Programas culturales en los barrios"},
+                ],
+            },
+            {
+                "orden": 3,
+                "tipo": "abierta",
+                "texto": "Contanos otras propuestas o reclamos para San Martín",
+                "obligatoria": False,
+            },
+        ],
+    }
+
+
+def _build_rivadavia_bootstrap_payload(inicio: datetime, fin: datetime) -> Dict[str, Any]:
+    return {
+        "titulo": "Agenda Comunitaria Rivadavia 2025",
+        "slug": "rivadavia-encuesta",
+        "descripcion": (
+            "Ayudanos a priorizar obras hídricas, servicios urbanos y actividades "
+            "para los distritos de Rivadavia. Tu opinión define el plan de trabajo."
+        ),
+        "tipo": "opinion",
+        "anonimo_permitido": True,
+        "requiere_identidad": False,
+        "politica_unicidad": "por_cookie",
+        "inicio_at": inicio.isoformat(),
+        "fin_at": fin.isoformat(),
+        "preguntas": [
+            {
+                "orden": 1,
+                "tipo": "opcion_unica",
+                "texto": "¿Cuál es la principal necesidad de tu zona?",
+                "obligatoria": True,
+                "opciones": [
+                    {"orden": 1, "texto": "Mejoras de agua potable y riego"},
+                    {"orden": 2, "texto": "Mantenimiento de calles y accesos"},
+                    {"orden": 3, "texto": "Seguridad y luminarias"},
+                    {"orden": 4, "texto": "Centros comunitarios y salud"},
+                ],
+            },
+            {
+                "orden": 2,
+                "tipo": "opcion_multiple",
+                "texto": (
+                    "¿En qué iniciativas te gustaría participar durante el año?"
+                ),
+                "obligatoria": False,
+                "max_selecciones": 2,
+                "opciones": [
+                    {"orden": 1, "texto": "Mesas de agua y saneamiento"},
+                    {"orden": 2, "texto": "Ferias productivas y emprendedoras"},
+                    {"orden": 3, "texto": "Patrullas ciudadanas y alarmas"},
+                    {"orden": 4, "texto": "Talleres para jóvenes y adultos mayores"},
+                ],
+            },
+            {
+                "orden": 3,
+                "tipo": "abierta",
+                "texto": "Comentarios sobre tu distrito o ideas para Rivadavia",
+                "obligatoria": False,
+            },
+        ],
+    }
+
+
+_BOOTSTRAP_PROFILES: List[Dict[str, Any]] = [
+    {
+        "key": "junin",
+        "tenant_env": "JUNIN_ENCUESTAS_TENANT_ID",
+        "fallback_tenant_id": 4,
+        "keywords": ("junin",),
+        "payload_builder": _build_junin_bootstrap_payload,
+        "auto_publish": True,
+        "tenant_id": None,
+    },
+    {
+        "key": "san_martin",
+        "tenant_env": "SANMARTIN_ENCUESTAS_TENANT_ID",
+        "fallback_tenant_id": None,
+        "keywords": ("san martin", "san martín"),
+        "payload_builder": _build_san_martin_bootstrap_payload,
+        "auto_publish": True,
+        "tenant_id": None,
+    },
+    {
+        "key": "rivadavia",
+        "tenant_env": "RIVADAVIA_ENCUESTAS_TENANT_ID",
+        "fallback_tenant_id": None,
+        "keywords": ("rivadavia",),
+        "payload_builder": _build_rivadavia_bootstrap_payload,
+        "auto_publish": True,
+        "tenant_id": None,
+    },
+]
 
 
 def _bootstrap_skip_registry() -> set:
@@ -337,43 +523,98 @@ def delete_encuesta(encuesta_id: int, user: Any) -> None:
     )
 
 
-def _find_bootstrap_user() -> Optional[User]:
-    if _BOOTSTRAP_TENANT_ID is None:
+def _resolve_profile_tenant_id(profile: Dict[str, Any]) -> Optional[int]:
+    tenant_id = profile.get("tenant_id")
+    if tenant_id:
+        return int(tenant_id)
+
+    env_name = profile.get("tenant_env")
+    if env_name:
+        env_value = _parse_int(os.getenv(env_name))
+        if env_value:
+            profile["tenant_id"] = env_value
+            return env_value
+
+    fallback = profile.get("fallback_tenant_id")
+    if fallback:
+        profile["tenant_id"] = fallback
+        return fallback
+
+    return None
+
+
+def _get_bootstrap_user_for_profile(profile: Dict[str, Any], tenant_id: int) -> Optional[User]:
+    candidate_tenant = _resolve_profile_tenant_id(profile) or tenant_id
+
+    base_query = User.query.filter(User.tipo_chat == "municipio")
+    if candidate_tenant:
+        user = (
+            base_query.filter(
+                or_(
+                    User.municipio_id == candidate_tenant,
+                    User.id == candidate_tenant,
+                )
+            )
+            .order_by(User.id.asc())
+            .first()
+        )
+        if user:
+            profile["tenant_id"] = _determine_tenant_id(user)
+            return user
+
+    keywords: Sequence[str] = profile.get("keywords") or ()
+    if not keywords:
         return None
 
-    user = (
-        User.query.filter(
-            or_(
-                User.municipio_id == _BOOTSTRAP_TENANT_ID,
-                User.id == _BOOTSTRAP_TENANT_ID,
-            )
+    like_filters = []
+    for keyword in keywords:
+        like = f"%{keyword}%"
+        like_filters.extend(
+            [
+                User.nombre_empresa.ilike(like),
+                User.name.ilike(like),
+                User.email.ilike(like),
+                User.ciudad.ilike(like),
+            ]
         )
-        .order_by(User.id.asc())
-        .first()
-    )
+
+    keyword_query = User.query.filter(User.tipo_chat == "municipio")
+    if tenant_id:
+        keyword_query = keyword_query.filter(
+            or_(User.municipio_id == tenant_id, User.id == tenant_id)
+        )
+    if like_filters:
+        keyword_query = keyword_query.filter(or_(*like_filters))
+
+    user = keyword_query.order_by(User.id.asc()).first()
     if user:
+        profile["tenant_id"] = _determine_tenant_id(user)
         return user
 
-    like_pattern = "%junin%"
-    return (
-        User.query.filter(User.tipo_chat == "municipio")
-        .filter(
-            or_(
-                User.nombre_empresa.ilike(like_pattern),
-                User.name.ilike(like_pattern),
-                User.email.ilike(like_pattern),
-                User.ciudad.ilike(like_pattern),
-            )
-        )
-        .order_by(User.id.asc())
-        .first()
-    )
+    return None
+
+
+def _match_bootstrap_profile(tenant_id: int) -> Optional[Dict[str, Any]]:
+    for profile in _BOOTSTRAP_PROFILES:
+        resolved = _resolve_profile_tenant_id(profile)
+        if resolved is not None and resolved == tenant_id:
+            return profile
+
+    for profile in _BOOTSTRAP_PROFILES:
+        if profile.get("tenant_id") is not None:
+            continue
+        user = _get_bootstrap_user_for_profile(profile, tenant_id)
+        if user and _determine_tenant_id(user) == tenant_id:
+            return profile
+    return None
 
 
 def _bootstrap_sample_if_needed(tenant_id: int) -> None:
-    if not _BOOTSTRAP_SAMPLE_ENABLED or _BOOTSTRAP_TENANT_ID is None:
+    if not _BOOTSTRAP_SAMPLE_ENABLED:
         return
-    if tenant_id != _BOOTSTRAP_TENANT_ID:
+
+    profile = _match_bootstrap_profile(tenant_id)
+    if not profile:
         return
 
     if tenant_id in _bootstrap_skip_registry():
@@ -383,83 +624,59 @@ def _bootstrap_sample_if_needed(tenant_id: int) -> None:
     if existing:
         return
 
-    user = _find_bootstrap_user()
+    user = _get_bootstrap_user_for_profile(profile, tenant_id)
     if not user:
         current_app.logger.warning(
-            "[encuestas] No se encontró un usuario municipal de Junín para crear la encuesta demo"
+            "[encuestas] No se encontró un usuario municipal de %s para crear la encuesta demo",
+            profile.get("key", "desconocido"),
         )
+        _bootstrap_skip_registry().add(tenant_id)
         return
 
-    ahora = datetime.now(timezone.utc)
-    cierre = ahora + timedelta(days=45)
-    payload = {
-        "titulo": "Participación Ciudadana Junín 2025",
-        "slug": "junin-participa",
-        "descripcion": (
-            "Queremos conocer tus prioridades para planificar obras, seguridad y "
-            "actividades en todo Junín. Contanos qué es importante para tu barrio."
-        ),
-        "tipo": "opinion",
-        "anonimo_permitido": True,
-        "requiere_identidad": False,
-        "politica_unicidad": "por_cookie",
-        "inicio_at": ahora.isoformat(),
-        "fin_at": cierre.isoformat(),
-        "preguntas": [
-            {
-                "orden": 1,
-                "tipo": "opcion_unica",
-                "texto": "¿Qué proyecto priorizarías para tu barrio?",
-                "obligatoria": True,
-                "opciones": [
-                    {"orden": 1, "texto": "Mejoras de iluminación y seguridad"},
-                    {"orden": 2, "texto": "Pavimentación y mantenimiento de calles"},
-                    {"orden": 3, "texto": "Espacios verdes y recreativos"},
-                    {"orden": 4, "texto": "Programas deportivos y culturales"},
-                ],
-            },
-            {
-                "orden": 2,
-                "tipo": "opcion_multiple",
-                "texto": (
-                    "¿En qué acciones de participación te gustaría sumarte "
-                    "durante los próximos meses?"
-                ),
-                "obligatoria": False,
-                "max_selecciones": 3,
-                "opciones": [
-                    {"orden": 1, "texto": "Cabildos barriales"},
-                    {"orden": 2, "texto": "Jornadas de voluntariado"},
-                    {"orden": 3, "texto": "Consultas públicas digitales"},
-                    {"orden": 4, "texto": "Mesas de trabajo temáticas"},
-                ],
-            },
-            {
-                "orden": 3,
-                "tipo": "abierta",
-                "texto": "Dejanos comentarios o propuestas concretas para Junín",
-                "obligatoria": False,
-            },
-        ],
-    }
+    inicio = datetime.now(timezone.utc)
+    fin = inicio + timedelta(days=45)
+    payload_builder: Callable[[datetime, datetime], Dict[str, Any]] = profile["payload_builder"]
+    payload = payload_builder(inicio, fin)
 
     try:
         encuesta = create_encuesta(payload, user)
-        encuesta, link = publicar_encuesta(encuesta.id, user)
-        current_app.logger.info(
-            "[encuestas] Encuesta demo de Junín publicada automáticamente con slug %s",
-            link.slug_publico,
-        )
+        if profile.get("auto_publish", True):
+            encuesta, link = publicar_encuesta(encuesta.id, user)
+            current_app.logger.info(
+                "[encuestas] Encuesta demo de %s publicada automáticamente con slug %s",
+                profile.get("key"),
+                link.slug_publico,
+            )
+        else:
+            current_app.logger.info(
+                "[encuestas] Encuesta demo de %s creada automáticamente con id %s",
+                profile.get("key"),
+                encuesta.id,
+            )
     except EncuestaError:
         current_app.logger.exception(
-            "[encuestas] No se pudo crear la encuesta demo de Junín"
+            "[encuestas] No se pudo crear la encuesta demo de %s",
+            profile.get("key"),
         )
         _bootstrap_skip_registry().add(tenant_id)
 
 
+def _resolve_public_slug(encuesta: EncEncuesta) -> Optional[str]:
+    slug_publico = None
+    for link in sorted(encuesta.links, key=lambda link: (link.id or 0), reverse=True):
+        if link.slug_publico:
+            slug_publico = link.slug_publico
+            break
+
+    if not slug_publico and encuesta.estado == "publicada":
+        slug_publico = encuesta.slug
+
+    return slug_publico
+
+
 def list_encuestas(tenant_id: int, estado: Optional[str] = None) -> List[EncEncuesta]:
     _bootstrap_sample_if_needed(tenant_id)
-    query = EncEncuesta.query.filter_by(tenant_id=tenant_id)
+    query = EncEncuesta.query.options(joinedload(EncEncuesta.links)).filter_by(tenant_id=tenant_id)
     if estado:
         query = query.filter_by(estado=estado)
     return query.order_by(EncEncuesta.created_at.desc()).all()
@@ -493,20 +710,7 @@ def list_public_encuestas_for_tenant(
     resultados: List[Tuple[EncEncuesta, str]] = []
 
     for encuesta in encuestas:
-        slug_publico = None
-        for link in sorted(
-            encuesta.links, key=lambda link: (link.id or 0), reverse=True
-        ):
-            if link.slug_publico:
-                slug_publico = link.slug_publico
-                break
-
-        if not slug_publico:
-            # Legacy records might not have associated ``EncLink`` entries. In those
-            # cases we still want to expose the survey publicly using its original
-            # slug value so existing links keep working.
-            slug_publico = encuesta.slug
-
+        slug_publico = _resolve_public_slug(encuesta)
         if slug_publico:
             resultados.append((encuesta, slug_publico))
 
@@ -743,6 +947,193 @@ def save_respuesta(slug_publico: str, payload: Dict[str, Any], request_ctx: Dict
         ip,
     )
     return respuesta
+
+
+def _ensure_timezone(dt: Optional[datetime]) -> Optional[datetime]:
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _is_encuesta_activa(encuesta: EncEncuesta) -> bool:
+    if encuesta.estado != "publicada":
+        return False
+    now = datetime.now(timezone.utc)
+    inicio = _ensure_timezone(encuesta.inicio_at)
+    fin = _ensure_timezone(encuesta.fin_at)
+    if inicio and now < inicio:
+        return False
+    if fin and now > fin:
+        return False
+    return True
+
+
+def _collect_admin_panel_stats(
+    encuestas: Sequence[EncEncuesta],
+) -> Dict[int, Dict[str, Any]]:
+    encuesta_ids = [encuesta.id for encuesta in encuestas if encuesta.id]
+    if not encuesta_ids:
+        return {}
+
+    raw_stats = {
+        encuesta_id: {
+            "total_respuestas": 0,
+            "respuestas_ultimas_24h": 0,
+            "respuestas_con_coordenadas": 0,
+            "participantes_unicos": set(),
+            "ultima_respuesta_at": None,
+            "canales": Counter(),
+            "utm": Counter(),
+        }
+        for encuesta_id in encuesta_ids
+    }
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    respuestas = (
+        EncRespuesta.query.options(
+            load_only(
+                EncRespuesta.id,
+                EncRespuesta.encuesta_id,
+                EncRespuesta.submitted_at,
+                EncRespuesta.lat,
+                EncRespuesta.lng,
+                EncRespuesta.huella_unica,
+                EncRespuesta.user_id,
+                EncRespuesta.dni,
+                EncRespuesta.phone,
+                EncRespuesta.ip,
+                EncRespuesta.canal,
+                EncRespuesta.utm_source,
+                EncRespuesta.utm_campaign,
+            )
+        )
+        .filter(EncRespuesta.encuesta_id.in_(encuesta_ids))
+        .all()
+    )
+
+    for respuesta in respuestas:
+        stats = raw_stats.get(respuesta.encuesta_id)
+        if not stats:
+            continue
+
+        stats["total_respuestas"] += 1
+
+        submitted_at = respuesta.submitted_at
+        if submitted_at and submitted_at >= cutoff:
+            stats["respuestas_ultimas_24h"] += 1
+        if submitted_at and (
+            stats["ultima_respuesta_at"] is None
+            or submitted_at > stats["ultima_respuesta_at"]
+        ):
+            stats["ultima_respuesta_at"] = submitted_at
+
+        if respuesta.lat is not None and respuesta.lng is not None:
+            stats["respuestas_con_coordenadas"] += 1
+
+        fingerprint = (
+            respuesta.huella_unica
+            or (respuesta.user_id and f"user:{respuesta.user_id}")
+            or (
+                respuesta.dni
+                and respuesta.dni.strip()
+                and f"dni:{respuesta.dni.strip()}"
+            )
+            or (
+                respuesta.phone
+                and respuesta.phone.strip()
+                and f"phone:{respuesta.phone.strip()}"
+            )
+            or (respuesta.ip and f"ip:{respuesta.ip}")
+        )
+        stats["participantes_unicos"].add(
+            fingerprint or f"anon:{respuesta.encuesta_id}:{respuesta.id}"
+        )
+
+        canal = respuesta.canal or "sin_canal"
+        stats["canales"][canal] += 1
+        utm_key = (respuesta.utm_source or "n/a", respuesta.utm_campaign or "n/a")
+        stats["utm"][utm_key] += 1
+
+    result: Dict[int, Dict[str, Any]] = {}
+    for encuesta_id, data in raw_stats.items():
+        ultima_dt = data["ultima_respuesta_at"]
+        ultima = _ensure_timezone(ultima_dt).isoformat() if ultima_dt else None
+        result[encuesta_id] = {
+            "total_respuestas": data["total_respuestas"],
+            "respuestas_ultimas_24h": data["respuestas_ultimas_24h"],
+            "respuestas_con_coordenadas": data["respuestas_con_coordenadas"],
+            "participantes_unicos": len(data["participantes_unicos"]),
+            "ultima_respuesta_at": ultima,
+            "canales": {canal: count for canal, count in data["canales"].items()},
+            "utm": [
+                {
+                    "utm_source": source,
+                    "utm_campaign": campaign,
+                    "conteo": count,
+                }
+                for (source, campaign), count in sorted(
+                    data["utm"].items(), key=lambda item: item[1], reverse=True
+                )
+            ],
+        }
+
+    return result
+
+
+def _empty_panel_metrics() -> Dict[str, Any]:
+    return {
+        "total_respuestas": 0,
+        "respuestas_ultimas_24h": 0,
+        "respuestas_con_coordenadas": 0,
+        "participantes_unicos": 0,
+        "ultima_respuesta_at": None,
+        "canales": {},
+        "utm": [],
+    }
+
+
+def build_admin_list_payload(
+    encuestas: Sequence[EncEncuesta],
+) -> Dict[str, Any]:
+    stats_map = _collect_admin_panel_stats(encuestas)
+    encuestas_payload: List[Dict[str, Any]] = []
+    estados = Counter()
+    total_respuestas = 0
+    total_geo = 0
+    total_24h = 0
+    activas = 0
+    con_respuestas = 0
+
+    for encuesta in encuestas:
+        data = serialize_encuesta(encuesta)
+        metricas = stats_map.get(encuesta.id or -1, _empty_panel_metrics())
+        data["metricas"] = metricas
+        data["esta_activa"] = _is_encuesta_activa(encuesta)
+        data["slug_publico"] = _resolve_public_slug(encuesta)
+        encuestas_payload.append(data)
+
+        estados[encuesta.estado] += 1
+        total_respuestas += metricas["total_respuestas"]
+        total_geo += metricas["respuestas_con_coordenadas"]
+        total_24h += metricas["respuestas_ultimas_24h"]
+        if metricas["total_respuestas"] > 0:
+            con_respuestas += 1
+        if data["esta_activa"]:
+            activas += 1
+
+    resumen = {
+        "total": len(encuestas_payload),
+        "por_estado": dict(estados),
+        "activas": activas,
+        "con_respuestas": con_respuestas,
+        "total_respuestas": total_respuestas,
+        "respuestas_con_coordenadas": total_geo,
+        "respuestas_ultimas_24h": total_24h,
+    }
+
+    return {"encuestas": encuestas_payload, "resumen": resumen}
 
 
 def serialize_respuesta(respuesta: EncRespuesta) -> Dict[str, Any]:

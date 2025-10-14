@@ -16,6 +16,7 @@ from services.encuestas_service import (
     list_respuestas,
     serialize_encuesta,
     serialize_respuesta,
+    build_admin_list_payload,
 )
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
@@ -112,7 +113,10 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
             encuestas = list_encuestas(tenant_id, estado)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
-        return jsonify([serialize_encuesta(e) for e in encuestas]), 200
+        if (request.args.get("legacy") or "").lower() in {"1", "true", "yes"}:
+            return jsonify([serialize_encuesta(e) for e in encuestas]), 200
+        payload = build_admin_list_payload(encuestas)
+        return jsonify(payload), 200
 
     @bp.route("/<int:encuesta_id>", methods=["GET"])
     @token_requerido
