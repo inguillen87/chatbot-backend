@@ -22,6 +22,16 @@ def admin_user():
     return admin
 
 
+def _auth_headers(client, admin_user):
+    login_resp = client.post(
+        "/auth/login",
+        json={"email": admin_user.email, "password": "demo1234"},
+    )
+    assert login_resp.status_code == 200
+    token = login_resp.get_json()["token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 def test_admin_encuestas_alias_exposes_rest_endpoints(client, monkeypatch, admin_user):
     monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
     monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
@@ -31,13 +41,7 @@ def test_admin_encuestas_alias_exposes_rest_endpoints(client, monkeypatch, admin
     assert options_resp.status_code in {200, 204}
     assert "Access-Control-Allow-Origin" in options_resp.headers
 
-    login_resp = client.post(
-        "/auth/login",
-        json={"email": admin_user.email, "password": "demo1234"},
-    )
-    assert login_resp.status_code == 200
-    token = login_resp.get_json()["token"]
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = _auth_headers(client, admin_user)
 
     # The legacy alias should reuse the admin handlers and automatically bootstrap the Junín sample survey.
     list_resp = client.get("/admin/encuestas", headers=headers)
@@ -150,13 +154,7 @@ def test_admin_encuestas_listado_respuestas(client, monkeypatch, admin_user):
         save_respuesta(link.slug_publico, respuesta_payload, request_ctx)
         encuesta_id = encuesta.id
 
-    login_resp = client.post(
-        "/auth/login",
-        json={"email": admin_user.email, "password": "demo1234"},
-    )
-    assert login_resp.status_code == 200
-    token = login_resp.get_json()["token"]
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = _auth_headers(client, admin_user)
 
     listado_resp = client.get(f"/admin/encuestas/{encuesta_id}/respuestas", headers=headers)
     assert listado_resp.status_code == 200
@@ -168,3 +166,119 @@ def test_admin_encuestas_listado_respuestas(client, monkeypatch, admin_user):
     primera = data["respuestas"][0]
     assert primera["utm_source"] == "widget"
     assert any(det.get("texto_libre") for det in primera["detalles"])
+
+
+def test_admin_encuestas_permite_actualizar_publicada_sin_respuestas(client, monkeypatch, admin_user):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+
+    with client.application.app_context():
+        payload = {
+            "titulo": "Encuesta de actualización",
+            "descripcion": "Contenido inicial",
+            "tipo": "opinion",
+            "preguntas": [
+                {
+                    "orden": 1,
+                    "tipo": "opcion_unica",
+                    "texto": "¿Usás el chatbot?",
+                    "obligatoria": True,
+                    "opciones": [
+                        {"orden": 1, "texto": "Sí"},
+                        {"orden": 2, "texto": "No"},
+                    ],
+                }
+            ],
+        }
+
+        encuesta = create_encuesta(payload, admin_user)
+        publicar_encuesta(encuesta.id, admin_user)
+        encuesta_id = encuesta.id
+
+    headers = _auth_headers(client, admin_user)
+
+    update_payload = {
+        "descripcion": "Contenido actualizado",
+        "preguntas": [
+            {
+                "orden": 1,
+                "tipo": "opcion_unica",
+                "texto": "¿Recomendarías el chatbot?",
+                "obligatoria": True,
+                "opciones": [
+                    {"orden": 1, "texto": "Claro que sí"},
+                    {"orden": 2, "texto": "Aún no"},
+                ],
+            }
+        ],
+    }
+
+    resp = client.put(f"/admin/encuestas/{encuesta_id}", json=update_payload, headers=headers)
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["descripcion"] == "Contenido actualizado"
+    assert data["preguntas"][0]["texto"] == "¿Recomendarías el chatbot?"
+
+
+def test_admin_encuestas_publicada_con_respuestas_bloquea_cambio_estructura(
+    client, monkeypatch, admin_user
+):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+
+    with client.application.app_context():
+        payload = {
+            "titulo": "Encuesta con respuestas",
+            "tipo": "opinion",
+            "preguntas": [
+                {
+                    "orden": 1,
+                    "tipo": "opcion_unica",
+                    "texto": "¿Te gusta el servicio?",
+                    "obligatoria": True,
+                    "opciones": [
+                        {"orden": 1, "texto": "Sí"},
+                        {"orden": 2, "texto": "No"},
+                    ],
+                }
+            ],
+        }
+
+        encuesta = create_encuesta(payload, admin_user)
+        encuesta, link = publicar_encuesta(encuesta.id, admin_user)
+        encuesta = db.session.get(EncEncuesta, encuesta.id)
+        encuesta.inicio_at = None
+        encuesta.fin_at = None
+        db.session.commit()
+        pregunta = encuesta.preguntas[0]
+        respuesta_payload = {
+            "respuestas": [
+                {"pregunta_id": pregunta.id, "opcion_ids": [pregunta.opciones[0].id]},
+            ],
+            "canal": "web",
+        }
+        request_ctx = {"ip": "127.0.0.1", "user_agent": "pytest", "anon_id": "test", "canal": "web"}
+        save_respuesta(link.slug_publico, respuesta_payload, request_ctx)
+        encuesta_id = encuesta.id
+
+    headers = _auth_headers(client, admin_user)
+
+    update_payload = {
+        "preguntas": [
+            {
+                "orden": 1,
+                "tipo": "opcion_unica",
+                "texto": "¿Quieres actualizar la respuesta?",
+                "obligatoria": True,
+                "opciones": [
+                    {"orden": 1, "texto": "Sí"},
+                    {"orden": 2, "texto": "No"},
+                ],
+            }
+        ]
+    }
+
+    resp = client.put(f"/admin/encuestas/{encuesta_id}", json=update_payload, headers=headers)
+    assert resp.status_code == 409
+    data = resp.get_json()
+    assert "No se puede modificar la estructura" in data["error"]
