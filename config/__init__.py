@@ -454,6 +454,12 @@ class Config:
     else:
         PUBLIC_ENCUESTAS_API_BASE_URL = str(BACKEND_URL).rstrip("/")
 
+    _encuestas_qr_target_base_url = os.getenv("PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL")
+    if _encuestas_qr_target_base_url:
+        PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL = _encuestas_qr_target_base_url.rstrip("/")
+    else:
+        PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL = PUBLIC_ENCUESTAS_CANONICAL_BASE_URL
+
     PYME_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("PYME_UMBRAL_SUGERENCIA_REGISTRO", "3"))
     MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", "3"))
 

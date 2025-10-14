@@ -80,6 +80,18 @@ def _public_api_base_url() -> str:
     return request.host_url.rstrip("/")
 
 
+def _public_target_base_url() -> str:
+    target = current_app.config.get("PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL")
+    if isinstance(target, str) and target.strip():
+        return target.rstrip("/")
+
+    canonical = current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+    if isinstance(canonical, str) and canonical.strip():
+        return canonical.rstrip("/")
+
+    return request.host_url.rstrip("/")
+
+
 _SHARE_IMAGE_CANDIDATE_KEYS = (
     "share_image_url",
     "imagen_portada_url",
@@ -266,7 +278,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                 500,
             )
 
-        base_url = _public_base_url()
+        base_url = _public_target_base_url()
         payload = []
         for encuesta, slug in encuestas:
             data = serialize_public_encuesta(encuesta, slug_publico=slug)
@@ -331,7 +343,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             return jsonify(err.to_dict()), err.status_code
 
         size = request.args.get("size", default=320, type=int)
-        base_url = _public_base_url()
+        base_url = _public_target_base_url()
         url = f"{base_url}/e/{slug}"
         try:
             png = build_qr_png(url, size=size)
@@ -400,7 +412,7 @@ def share_redirect(slug: str):
         )
 
     data = serialize_public_encuesta(encuesta, slug_publico=slug)
-    base_url = _public_base_url()
+    base_url = _public_target_base_url()
     share_url = f"{base_url}/e/{slug}"
     api_base_url = _public_api_base_url()
     qr_url = f"{api_base_url}/api/public/encuestas/{slug}/qr"
