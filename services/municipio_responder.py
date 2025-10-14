@@ -4677,9 +4677,18 @@ def _resolve_encuestas_base_url(context: dict) -> str:
     encuestas_cfg = municipio_config.get("encuestas")
     base_url = None
     if isinstance(encuestas_cfg, dict):
-        base_url = encuestas_cfg.get("public_base_url") or encuestas_cfg.get("base_url")
+        base_url = (
+            encuestas_cfg.get("qr_target_base_url")
+            or encuestas_cfg.get("public_share_base_url")
+            or encuestas_cfg.get("public_base_url")
+            or encuestas_cfg.get("base_url")
+        )
     if not base_url:
-        base_url = municipio_config.get("encuestas_base_url")
+        base_url = (
+            municipio_config.get("encuestas_qr_target_base_url")
+            or municipio_config.get("encuestas_share_base_url")
+            or municipio_config.get("encuestas_base_url")
+        )
     if isinstance(base_url, str) and base_url.strip():
         return base_url.rstrip("/")
     canonical = None
@@ -4689,7 +4698,7 @@ def _resolve_encuestas_base_url(context: dict) -> str:
     tenant_id = _resolve_encuestas_tenant_id(context)
 
     if has_app_context():
-        canonical = current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+        canonical = current_app.config.get("PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL") or current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
         backend_url = current_app.config.get("BACKEND_URL")
         mapping = current_app.config.get("PUBLIC_ENCUESTAS_DOMAIN_MAP")
         is_https = current_app.config.get("IS_HTTPS", DEFAULT_IS_HTTPS)
@@ -4840,6 +4849,8 @@ def _get_encuestas_menu(context: dict) -> dict:
 
     lines: List[str] = []
     survey_buttons: List[Dict[str, Any]] = []
+    first_qr_url: Optional[str] = None
+    first_qr_title: Optional[str] = None
 
     for index, (encuesta, slug_publico) in enumerate(encuestas, start=1):
         data = serialize_public_encuesta(encuesta, slug_publico=slug_publico)
@@ -4869,6 +4880,10 @@ def _get_encuestas_menu(context: dict) -> dict:
         line_parts.append(f"   • Usar el asistente virtual en la web: {widget_share_url}")
         line_parts.append(f"   • Compartir con un mensaje listo para WhatsApp: {whatsapp_share_display_url}")
         lines.append("\n".join(line_parts))
+
+        if first_qr_url is None:
+            first_qr_url = qr_url
+            first_qr_title = titulo
 
         survey_buttons.append(
             {
@@ -4903,7 +4918,15 @@ def _get_encuestas_menu(context: dict) -> dict:
         "*Participación Ciudadana*\n"
         "Últimas encuestas disponibles (máximo 10).\n"
     )
-    message_body = header + "\n".join(lines) + "\n\nSeleccioná una encuesta para participar o volvé al inicio."
+    message_body = header + "\n".join(lines)
+
+    if first_qr_url and first_qr_title:
+        message_body += (
+            f"\n\nAdjuntamos el código QR de *{first_qr_title}* para que puedas compartirlo "
+            "al instante desde WhatsApp."
+        )
+
+    message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
 
     options = survey_buttons + base_options
     payload = {
@@ -4916,6 +4939,9 @@ def _get_encuestas_menu(context: dict) -> dict:
 
     if menu_image_url:
         payload["image_url"] = menu_image_url
+
+    if first_qr_url:
+        payload["media_urls"] = [first_qr_url]
 
     return payload
 

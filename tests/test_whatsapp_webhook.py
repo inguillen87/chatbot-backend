@@ -1170,6 +1170,63 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         first_call = sent_messages[0]
         self.assertEqual(first_call.get("media_url"), ["https://chatboc.ar/static/welcome/sticker.png"])
 
+    @patch('routes.whatsapp_webhook.threading.Timer')
+    @patch('services.response_formatter.build_interactive_response')
+    def test_delayed_payload_supports_media_urls(self, mock_build_response, mock_timer):
+        self.app.config["APP_BASE_URL"] = "http://api.chatboc.ar"
+
+        payload = {
+            "message_body": "Hola",
+            "options_list": [],
+            "message_type": "text",
+            "media_urls": [
+                "/static/qr/demo.png",
+                "http://cdn.example.com/banner.jpg",
+            ],
+            "_base_url": "http://api.chatboc.ar",
+            "_request_url_root": "http://api.chatboc.ar",
+        }
+
+        mock_build_response.return_value = {
+            "type": "text",
+            "text": {"body": "Hola"},
+        }
+
+        class ImmediateTimer:
+            def __init__(self, delay, callback):
+                self.callback = callback
+
+            def start(self):
+                self.callback()
+
+        mock_timer.side_effect = lambda delay, callback: ImmediateTimer(delay, callback)
+
+        sent_messages = []
+
+        def fake_create(**kwargs):
+            sent_messages.append(kwargs)
+            msg = MagicMock()
+            msg.sid = f"SM{len(sent_messages)}"
+            return msg
+
+        client = MagicMock()
+        client.messages.create.side_effect = fake_create
+
+        _send_delayed_payload(
+            client=client,
+            to_number="whatsapp:+111",
+            from_number="whatsapp:+222",
+            payload=payload,
+            delay=0,
+            app=self.app,
+        )
+
+        self.assertTrue(sent_messages)
+        media_urls = sent_messages[0].get("media_url")
+        self.assertEqual(len(media_urls), 2)
+        self.assertIn("https://api.chatboc.ar/static/qr/demo.png", media_urls)
+        self.assertIn("https://cdn.example.com/banner.jpg", media_urls)
+
     def test_welcome_skips_generic_profile_name(self):
         """Generic profile names should trigger a name request."""
         self._set_owner_tipo_chat("municipio")

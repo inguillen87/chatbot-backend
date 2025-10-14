@@ -70,6 +70,7 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
     assert "Descargar el código QR" in body
     assert "Usar el asistente virtual en la web" in body
     assert "Compartir con un mensaje listo para WhatsApp" in body
+    assert "Adjuntamos el código QR" in body
     assert any(option.get("type") == "url" for option in menu["options_list"])
     button_urls = [
         option.get("url", "")
@@ -80,6 +81,10 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
     assert any(url.endswith(f"/e/{slug}?canal=widget_chat") for url in button_urls)
     assert any(url.startswith("https://wa.me/") for url in button_urls)
     assert any(url.endswith(f"/api/public/encuestas/{slug}/qr") for url in button_urls)
+    media_urls = menu.get("media_urls")
+    assert isinstance(media_urls, list) and len(media_urls) == 1
+    assert media_urls[0].startswith("http")
+    assert media_urls[0].endswith(f"/api/public/encuestas/{slug}/qr")
     assert "image_url" not in menu
 
 
@@ -113,6 +118,7 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
         encuesta, slug = _create_active_encuesta(tenant_id=11)
         app = client.application
         app.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = None
+        app.config["PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL"] = None
         app.config["PUBLIC_ENCUESTAS_DOMAIN_MAP"] = {
             "chatbot-backend-2e14.onrender.com": 999,
             "www.chatboc.ar": encuesta.tenant_id,
@@ -144,3 +150,5 @@ def test_encuestas_menu_includes_configured_image(client):
         menu = municipio_responder._get_encuestas_menu(context)
 
     assert menu.get("image_url") == "https://cdn.example.com/encuestas/banner.png"
+    media_urls = menu.get("media_urls")
+    assert media_urls and media_urls[0].endswith("/qr")
