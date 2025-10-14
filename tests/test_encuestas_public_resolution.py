@@ -43,6 +43,7 @@ def test_resolve_tenant_uses_default(app):
 
 def test_public_urls_use_canonical_base(client, monkeypatch):
     client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = "https://www.chatboc.ar"
+    client.application.config["PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL"] = "https://www.chatboc.ar"
 
     def fake_list(_tenant_id, limit):
         assert limit == 5
@@ -61,6 +62,29 @@ def test_public_urls_use_canonical_base(client, monkeypatch):
     assert response.status_code == 200
     data = response.get_json()
     assert data[0]["url_publica"] == "https://www.chatboc.ar/e/slug-demo"
+
+
+def test_public_urls_honor_custom_target_base(client, monkeypatch):
+    client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = "https://www.chatboc.ar"
+    client.application.config["PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL"] = "https://participa.junin.ar"
+
+    def fake_list(_tenant_id, limit):
+        assert limit == 5
+        return [({"id": 1}, "slug-demo")]
+
+    monkeypatch.setattr(
+        "routes.encuestas_public.list_public_encuestas_for_tenant",
+        fake_list,
+    )
+    monkeypatch.setattr(
+        "routes.encuestas_public.serialize_public_encuesta",
+        lambda encuesta, slug_publico: {"slug": slug_publico},
+    )
+
+    response = client.get("/public/encuestas")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data[0]["url_publica"] == "https://participa.junin.ar/e/slug-demo"
 
 
 def test_respuestas_alias_reuses_handler(client, monkeypatch):
@@ -89,6 +113,7 @@ def test_respuestas_alias_reuses_handler(client, monkeypatch):
 
 def test_share_redirects_to_canonical(client):
     client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = "https://www.chatboc.ar"
+    client.application.config["PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL"] = "https://www.chatboc.ar"
 
     response = client.get("/e/demo-slug")
     assert response.status_code == 302
@@ -97,6 +122,7 @@ def test_share_redirects_to_canonical(client):
 
 def test_share_returns_payload_without_canonical(client, monkeypatch):
     client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = None
+    client.application.config["PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL"] = None
 
     monkeypatch.setattr(
         "routes.encuestas_public.get_public_encuesta",
@@ -136,6 +162,7 @@ def test_share_endpoint_handles_alias_without_link(client):
     slug = "junin-participa"
     slug_publico = "junin-participa-abcdef"
     client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = None
+    client.application.config["PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL"] = None
     _create_public_encuesta(slug, slug_publico)
 
     response = client.get(f"/e/{slug_publico}", headers={"Accept": "application/json"})
@@ -159,7 +186,21 @@ def test_share_endpoint_handles_alias_without_link(client):
 
 
 def test_share_endpoint_renders_accessible_html(client, monkeypatch):
-    client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = None
+    monkeypatch.setitem(
+        client.application.config,
+        "PUBLIC_ENCUESTAS_CANONICAL_BASE_URL",
+        "https://www.chatboc.ar",
+    )
+    monkeypatch.setitem(
+        client.application.config,
+        "PUBLIC_ENCUESTAS_API_BASE_URL",
+        "https://api.chatboc.ar",
+    )
+    monkeypatch.setitem(
+        client.application.config,
+        "PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL",
+        "https://www.chatboc.ar",
+    )
 
     def fake_get(slug):
         encuesta = EncEncuesta(
@@ -182,13 +223,17 @@ def test_share_endpoint_renders_accessible_html(client, monkeypatch):
         },
     )
 
-    response = client.get("/e/demo-slug", headers={"Accept": "text/html"})
+    response = client.get(
+        "/e/demo-slug",
+        headers={"Accept": "text/html"},
+        base_url="https://www.chatboc.ar",
+    )
     assert response.status_code == 200
     html = response.get_data(as_text=True)
     assert "Encuestas ciudadanas" in html
     assert "Copiar enlace" in html
     assert "Código QR listo para imprimir" in html
-    assert "/api/public/encuestas/demo-slug/qr" in html
+    assert "https://api.chatboc.ar/api/public/encuestas/demo-slug/qr" in html
 
 
 def test_share_endpoint_uses_default_share_image(client, monkeypatch):

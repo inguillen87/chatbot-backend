@@ -7,7 +7,7 @@ import io
 import json
 import threading
 import re
-from typing import Any, Dict, Iterable, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urlsplit, urlunsplit
 from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
@@ -440,16 +440,19 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
 
             sticker_signatures = sticker_signatures or set()
 
-            image_url = formatted.get("image_url")
-            if image_url and "persistent_action" not in params:
-                resolved_image_url = image_url
-                base_candidates = [
-                    (payload.get("_base_url") or "").rstrip("/"),
-                    (payload.get("_request_url_root") or "").rstrip("/"),
-                    (app.config.get("APP_BASE_URL") or "").rstrip("/"),
-                ]
+            base_candidates = [
+                (payload.get("_base_url") or "").rstrip("/"),
+                (payload.get("_request_url_root") or "").rstrip("/"),
+                (app.config.get("APP_BASE_URL") or "").rstrip("/"),
+            ]
 
-                if resolved_image_url.startswith("/"):
+            def _resolve_media_link(raw: Optional[str]) -> Optional[str]:
+                if not raw:
+                    return None
+                resolved = str(raw).strip()
+                if not resolved:
+                    return None
+                if resolved.startswith("/"):
                     for base in base_candidates:
                         if base:
                             https_base = (
@@ -457,13 +460,43 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                                 if base.startswith("http://")
                                 else base
                             )
-                            resolved_image_url = f"{https_base}{resolved_image_url}"
+                            resolved = f"{https_base}{resolved}"
                             break
-                elif resolved_image_url.startswith("http://"):
-                    resolved_image_url = resolved_image_url.replace("http://", "https://", 1)
+                elif resolved.startswith("http://"):
+                    resolved = resolved.replace("http://", "https://", 1)
 
-                if not _is_welcome_sticker(resolved_image_url):
-                    params["media_url"] = [resolved_image_url]
+                if not resolved or _is_welcome_sticker(resolved):
+                    return None
+                return resolved
+
+            raw_media_urls = payload.get("media_urls") or payload.get("media_url")
+            resolved_media_urls: List[str] = []
+            if isinstance(raw_media_urls, (list, tuple, set)):
+                candidates = raw_media_urls
+            elif raw_media_urls:
+                candidates = [raw_media_urls]
+            else:
+                candidates = []
+
+            for candidate in candidates:
+                resolved_candidate = _resolve_media_link(candidate)
+                if resolved_candidate:
+                    resolved_media_urls.append(resolved_candidate)
+
+            if resolved_media_urls:
+                params["media_url"] = resolved_media_urls
+
+            image_url = formatted.get("image_url")
+            if image_url and "persistent_action" not in params:
+                resolved_image_url = _resolve_media_link(image_url)
+                if resolved_image_url:
+                    existing_media = params.get("media_url")
+                    if isinstance(existing_media, list):
+                        if resolved_image_url not in existing_media:
+                            existing_media.append(resolved_image_url)
+                        params["media_url"] = existing_media
+                    else:
+                        params["media_url"] = [resolved_image_url]
 
             try:
                 message = client.messages.create(**params)
