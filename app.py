@@ -285,8 +285,14 @@ def create_app(config_class=Config):
                 encuestas_public_legacy_bp,
                 encuestas_public_share_bp,
             )
-            from routes.encuestas_analytics import encuestas_analytics_bp
-            from routes.encuestas_anchor import encuestas_anchor_bp
+        from routes.encuestas_analytics import (
+            encuestas_analytics_bp,
+            encuestas_analytics_legacy_bp,
+        )
+        from routes.encuestas_anchor import (
+            encuestas_anchor_bp,
+            encuestas_anchor_legacy_bp,
+        )
 
         app.register_blueprint(config_bp)
         app.register_blueprint(auth_bp)
@@ -348,7 +354,9 @@ def create_app(config_class=Config):
             app.register_blueprint(encuestas_public_legacy_bp)
             app.register_blueprint(encuestas_public_share_bp)
             app.register_blueprint(encuestas_analytics_bp)
+            app.register_blueprint(encuestas_analytics_legacy_bp)
             app.register_blueprint(encuestas_anchor_bp)
+            app.register_blueprint(encuestas_anchor_legacy_bp)
 
         # Comandos CLI
         register_commands(app)
