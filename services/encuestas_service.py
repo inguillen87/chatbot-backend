@@ -426,13 +426,37 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
     if not encuesta:
         raise EncuestaError("Encuesta no encontrada", status_code=404)
     _ensure_tenant_access(encuesta, user)
-    if encuesta.estado != "borrador":
-        raise EncuestaError("Solo se puede modificar encuestas en borrador", status_code=409)
+
+    if encuesta.estado == "cerrada":
+        raise EncuestaError(
+            "La encuesta está cerrada y no se puede modificar",
+            status_code=409,
+        )
+
+    if encuesta.estado not in {"borrador", "publicada"}:
+        raise EncuestaError("La encuesta no se puede modificar", status_code=409)
+
+    puede_actualizar_estructura = True
+    if encuesta.estado == "publicada" and "preguntas" in data:
+        respuestas_registradas = encuesta.respuestas.count()
+        puede_actualizar_estructura = respuestas_registradas == 0
+        if not puede_actualizar_estructura:
+            raise EncuestaError(
+                "No se puede modificar la estructura de una encuesta con respuestas registradas",
+                status_code=409,
+                payload={"encuesta_id": encuesta.id, "respuestas": respuestas_registradas},
+            )
 
     _apply_common_updates(encuesta, data)
 
     if "preguntas" in data:
+        if not puede_actualizar_estructura:
+            raise EncuestaError(
+                "No se puede modificar la estructura de una encuesta con respuestas registradas",
+                status_code=409,
+            )
         encuesta.preguntas.clear()
+        db.session.flush()
         nuevas_preguntas = _build_pregunta_entities(encuesta, data.get("preguntas") or [])
         encuesta.preguntas.extend(nuevas_preguntas)
 
