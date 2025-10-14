@@ -42,10 +42,17 @@ def test_admin_encuestas_alias_exposes_rest_endpoints(client, monkeypatch, admin
     # The legacy alias should reuse the admin handlers and automatically bootstrap the Junín sample survey.
     list_resp = client.get("/admin/encuestas", headers=headers)
     assert list_resp.status_code == 200
-    encuestas = list_resp.get_json()
+    listado = list_resp.get_json()
+    assert isinstance(listado, dict)
+    assert "encuestas" in listado
+    assert "resumen" in listado
+    encuestas = listado["encuestas"]
     assert isinstance(encuestas, list)
     assert any("Junín" in encuesta["titulo"] for encuesta in encuestas)
     assert all(encuesta["tenant_id"] == admin_user.municipio_id for encuesta in encuestas)
+    resumen = listado["resumen"]
+    assert resumen["total"] == len(encuestas)
+    assert resumen["activas"] <= resumen["total"]
 
     payload = {
         "titulo": "Encuesta piloto de servicios", 
@@ -73,8 +80,17 @@ def test_admin_encuestas_alias_exposes_rest_endpoints(client, monkeypatch, admin
 
     # Listing again should include both the bootstrap survey and the new one.
     refreshed = client.get("/admin/encuestas", headers=headers).get_json()
-    assert len(refreshed) >= 2
-    assert all(encuesta["tenant_id"] == admin_user.municipio_id for encuesta in refreshed)
+    assert refreshed["resumen"]["total"] >= 2
+    assert all(
+        encuesta["tenant_id"] == admin_user.municipio_id for encuesta in refreshed["encuestas"]
+    )
+    assert refreshed["resumen"]["con_respuestas"] >= 0
+
+    legacy_resp = client.get("/admin/encuestas?legacy=1", headers=headers)
+    assert legacy_resp.status_code == 200
+    legacy_payload = legacy_resp.get_json()
+    assert isinstance(legacy_payload, list)
+    assert len(legacy_payload) == refreshed["resumen"]["total"]
 
     public_resp = client.get("/public/encuestas")
     assert public_resp.status_code == 200
