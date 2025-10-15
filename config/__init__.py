@@ -460,6 +460,18 @@ class Config:
     else:
         PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL = PUBLIC_ENCUESTAS_CANONICAL_BASE_URL
 
+    _encuestas_default_share_image = os.getenv("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL")
+    if isinstance(_encuestas_default_share_image, str) and _encuestas_default_share_image.strip():
+        PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = _encuestas_default_share_image.strip()
+    else:
+        base_for_assets = (PUBLIC_ENCUESTAS_CANONICAL_BASE_URL or str(BACKEND_URL)).rstrip("/")
+        if base_for_assets:
+            PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = (
+                f"{base_for_assets}/static/encuestas/participacion_ciudadana.png"
+            )
+        else:
+            PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = None
+
     PYME_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("PYME_UMBRAL_SUGERENCIA_REGISTRO", "3"))
     MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", "3"))
 
