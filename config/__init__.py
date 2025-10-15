@@ -464,7 +464,7 @@ class Config:
     if isinstance(_encuestas_default_share_image, str) and _encuestas_default_share_image.strip():
         PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = _encuestas_default_share_image.strip()
     else:
-
+        base_for_assets = (PUBLIC_ENCUESTAS_API_BASE_URL or str(BACKEND_URL)).rstrip("/")
         if base_for_assets:
             PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = (
                 f"{base_for_assets}/static/encuestas/participacion_ciudadana.png"
@@ -484,7 +484,7 @@ class Config:
     # WhatsApp Welcome Message Configuration
     WELCOME_TEMPLATE_SID = os.getenv("WELCOME_TEMPLATE_SID", "HXaf135ced6edd005551a456bbb2258d4a")
     WELCOME_MESSAGE_DELAY_SECONDS = int(os.getenv("WELCOME_MESSAGE_DELAY_SECONDS", "5"))
-    WELCOME_MEDIA_URL = os.getenv(
+    WELCOME_MEDIA_URL = os.getenv(s
         "WELCOME_MEDIA_URL",
         "https://chatboc-demo-widget-oigs.vercel.app/stickerJuni2.webp",
     )
