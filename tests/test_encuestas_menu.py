@@ -98,9 +98,10 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
     assert any(url.startswith("https://wa.me/") for url in button_urls)
     assert any(url.endswith(f"/api/public/encuestas/{slug}/qr") for url in button_urls)
     media_urls = menu.get("media_urls")
-    assert isinstance(media_urls, list) and len(media_urls) == 1
-    assert media_urls[0].startswith("http")
-    assert media_urls[0].endswith(f"/api/public/encuestas/{slug}/qr")
+    assert isinstance(media_urls, list) and len(media_urls) == 2
+    assert media_urls[0] == fallback_image
+    assert media_urls[1].startswith("http")
+    assert media_urls[1].endswith(f"/api/public/encuestas/{slug}/qr")
     assert menu.get("image_url") == fallback_image
 
 
@@ -167,4 +168,6 @@ def test_encuestas_menu_includes_configured_image(client):
 
     assert menu.get("image_url") == "https://cdn.example.com/encuestas/banner.png"
     media_urls = menu.get("media_urls")
-    assert media_urls and media_urls[0].endswith("/qr")
+    assert media_urls and media_urls[0] == "https://cdn.example.com/encuestas/banner.png"
+    assert len(media_urls) >= 2
+    assert media_urls[1].endswith("/qr")
