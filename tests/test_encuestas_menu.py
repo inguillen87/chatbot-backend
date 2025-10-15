@@ -60,7 +60,23 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
     with client.application.app_context():
         encuesta, slug = _create_active_encuesta(tenant_id=7)
         context = _base_context(tenant_id=encuesta.tenant_id or 7)
-        menu = municipio_responder._get_encuestas_menu(context)
+        app = client.application
+        previous_default_image = app.config.get(
+            "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"
+        )
+        fallback_image = (
+            "https://cdn.chatboc.ar/static/encuestas/participacion_ciudadana.png"
+        )
+        app.config["PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"] = fallback_image
+        try:
+            menu = municipio_responder._get_encuestas_menu(context)
+        finally:
+            if previous_default_image is None:
+                app.config.pop("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None)
+            else:
+                app.config["PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"] = (
+                    previous_default_image
+                )
 
     body = menu["message_body"]
     assert "Participación Ciudadana" in body
@@ -85,7 +101,7 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
     assert isinstance(media_urls, list) and len(media_urls) == 1
     assert media_urls[0].startswith("http")
     assert media_urls[0].endswith(f"/api/public/encuestas/{slug}/qr")
-    assert "image_url" not in menu
+    assert menu.get("image_url") == fallback_image
 
 
 def test_encuestas_menu_respects_explicit_disable(client):

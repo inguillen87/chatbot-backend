@@ -464,7 +464,7 @@ class Config:
     if isinstance(_encuestas_default_share_image, str) and _encuestas_default_share_image.strip():
         PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = _encuestas_default_share_image.strip()
     else:
-        base_for_assets = (PUBLIC_ENCUESTAS_CANONICAL_BASE_URL or str(BACKEND_URL)).rstrip("/")
+
         if base_for_assets:
             PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = (
                 f"{base_for_assets}/static/encuestas/participacion_ciudadana.png"
