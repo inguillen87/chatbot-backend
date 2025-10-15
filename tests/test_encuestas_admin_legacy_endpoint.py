@@ -3,8 +3,11 @@ import pytest
 from app import db
 from models import User
 from services.encuestas_service import EncEncuesta, create_encuesta, publicar_encuesta, save_respuesta
+from services.encuestas_anchor_service import build_snapshot
 import config.feature_flags as feature_flags
 import routes.encuestas_admin as encuestas_admin_routes
+import routes.encuestas_analytics as encuestas_analytics_routes
+import routes.encuestas_anchor as encuestas_anchor_routes
 
 
 @pytest.fixture
@@ -106,6 +109,8 @@ def test_admin_encuestas_alias_exposes_rest_endpoints(client, monkeypatch, admin
 def test_admin_encuestas_listado_respuestas(client, monkeypatch, admin_user):
     monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
     monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_analytics_routes, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_anchor_routes, "FEATURE_ENCUESTAS", True)
 
     with client.application.app_context():
         payload = {
@@ -166,6 +171,90 @@ def test_admin_encuestas_listado_respuestas(client, monkeypatch, admin_user):
     primera = data["respuestas"][0]
     assert primera["utm_source"] == "widget"
     assert any(det.get("texto_libre") for det in primera["detalles"])
+
+
+def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, admin_user):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_analytics_routes, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_anchor_routes, "FEATURE_ENCUESTAS", True)
+
+    with client.application.app_context():
+        payload = {
+            "titulo": "Encuesta analítica",
+            "descripcion": "Validamos alias legacy de analytics.",
+            "tipo": "opinion",
+            "preguntas": [
+                {
+                    "orden": 1,
+                    "tipo": "opcion_unica",
+                    "texto": "¿Te gusta el panel?",
+                    "obligatoria": True,
+                    "opciones": [
+                        {"orden": 1, "texto": "Sí"},
+                        {"orden": 2, "texto": "No"},
+                    ],
+                }
+            ],
+        }
+
+        encuesta = create_encuesta(payload, admin_user)
+        encuesta, link = publicar_encuesta(encuesta.id, admin_user)
+        encuesta = db.session.get(EncEncuesta, encuesta.id)
+        encuesta.inicio_at = None
+        encuesta.fin_at = None
+        db.session.commit()
+
+        respuesta_payload = {
+            "respuestas": [
+                {
+                    "pregunta_id": encuesta.preguntas[0].id,
+                    "opcion_ids": [encuesta.preguntas[0].opciones[0].id],
+                }
+            ],
+            "utm_source": "widget",
+            "utm_campaign": "analytics-test",
+            "canal": "web",
+        }
+        request_ctx = {"ip": "10.0.0.2", "user_agent": "pytest", "anon_id": "analytics", "canal": "web"}
+        save_respuesta(link.slug_publico, respuesta_payload, request_ctx)
+
+        build_snapshot(
+            encuesta.id,
+            "2020-01-01T00:00:00Z",
+            "2030-01-01T00:00:00Z",
+            admin_user,
+        )
+
+        encuesta_id = encuesta.id
+
+    headers = _auth_headers(client, admin_user)
+
+    resumen_resp = client.get(f"/admin/encuestas/{encuesta_id}/analytics/resumen", headers=headers)
+    assert resumen_resp.status_code == 200
+    resumen_data = resumen_resp.get_json()
+    assert resumen_data["encuesta_id"] == encuesta_id
+    assert resumen_data["total_respuestas"] >= 1
+
+    series_resp = client.get(f"/admin/encuestas/{encuesta_id}/analytics/series", headers=headers)
+    assert series_resp.status_code == 200
+    series_data = series_resp.get_json()
+    assert isinstance(series_data, list)
+    assert series_data
+    assert {"fecha", "total"}.issubset(series_data[0].keys())
+
+    heatmap_resp = client.get(f"/admin/encuestas/{encuesta_id}/analytics/heatmap", headers=headers)
+    assert heatmap_resp.status_code == 200
+    heatmap_data = heatmap_resp.get_json()
+    assert "points" in heatmap_data
+
+    snapshots_resp = client.get(f"/admin/encuestas/{encuesta_id}/snapshots", headers=headers)
+    assert snapshots_resp.status_code == 200
+    snapshots_data = snapshots_resp.get_json()
+    assert snapshots_data["encuesta_id"] == encuesta_id
+    assert snapshots_data["snapshots"]
+    snapshot = snapshots_data["snapshots"][0]
+    assert snapshot["total_respuestas"] >= 1
 
 
 def test_admin_encuestas_permite_actualizar_publicada_sin_respuestas(client, monkeypatch, admin_user):

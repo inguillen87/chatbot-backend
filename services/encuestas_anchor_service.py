@@ -184,3 +184,37 @@ def generate_merkle_proof(snapshot_id: int, respuesta_id: int) -> Dict[str, obje
         "content_hash": hashes[target_index],
         "proof": proof,
     }
+
+
+def list_snapshots(encuesta_id: int, user: object) -> Dict[str, object]:
+    """Return the anchor snapshots associated with a survey ordered by recency."""
+
+    encuesta = get_encuesta(encuesta_id, user=user)
+    snapshots = (
+        EncAnchorSnapshot.query.filter_by(encuesta_id=encuesta.id)
+        .order_by(EncAnchorSnapshot.created_at.desc())
+        .all()
+    )
+
+    payload: List[Dict[str, object]] = []
+    for snapshot in snapshots:
+        payload.append(
+            {
+                "id": snapshot.id,
+                "encuesta_id": snapshot.encuesta_id,
+                "tenant_id": snapshot.tenant_id,
+                "algo": snapshot.algo,
+                "root_hash": snapshot.root_hash,
+                "total_respuestas": snapshot.total_respuestas,
+                "desde_at": snapshot.desde_at.isoformat(),
+                "hasta_at": snapshot.hasta_at.isoformat(),
+                "anchor_status": snapshot.anchor_status,
+                "anchor_at": snapshot.anchor_at.isoformat() if snapshot.anchor_at else None,
+                "tx_id": snapshot.tx_id,
+                "chain": snapshot.chain,
+                "created_at": snapshot.created_at.isoformat() if snapshot.created_at else None,
+                "created_by": snapshot.created_by,
+            }
+        )
+
+    return {"encuesta_id": encuesta.id, "snapshots": payload}
