@@ -80,7 +80,11 @@ from services.ticket_utils import (
 )
 from services.vocabulary_loader import get_name_prefix_stopwords
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
-from config import BACKEND_URL as DEFAULT_BACKEND_URL, IS_HTTPS as DEFAULT_IS_HTTPS
+from config import (
+    BACKEND_URL as DEFAULT_BACKEND_URL,
+    IS_HTTPS as DEFAULT_IS_HTTPS,
+    Config as AppConfig,
+)
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_service import (
     list_public_encuestas_for_tenant,
@@ -4840,12 +4844,36 @@ def _get_encuestas_menu(context: dict) -> dict:
     if isinstance(municipio_config.get("encuestas"), dict):
         encuestas_cfg = municipio_config["encuestas"]
 
-    raw_image_url = encuestas_cfg.get("menu_image_url") or encuestas_cfg.get("image_url")
+    raw_image_url = (
+        encuestas_cfg.get("menu_image_url")
+        or encuestas_cfg.get("image_url")
+        or encuestas_cfg.get("share_image_url")
+        or encuestas_cfg.get("default_share_image_url")
+        or municipio_config.get("encuestas_menu_image_url")
+        or municipio_config.get("encuestas_image_url")
+        or municipio_config.get("encuestas_share_image_url")
+        or municipio_config.get("encuestas_default_share_image_url")
+    )
     menu_image_url = None
     if isinstance(raw_image_url, str):
         cleaned = raw_image_url.strip()
         if cleaned:
             menu_image_url = cleaned
+
+    if not menu_image_url:
+        fallback_image_url = None
+        if has_app_context():
+            fallback_image_url = current_app.config.get(
+                "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"
+            )
+        if not fallback_image_url:
+            fallback_image_url = getattr(
+                AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None
+            )
+        if isinstance(fallback_image_url, str):
+            cleaned = fallback_image_url.strip()
+            if cleaned:
+                menu_image_url = cleaned
 
     lines: List[str] = []
     survey_buttons: List[Dict[str, Any]] = []
@@ -4940,8 +4968,14 @@ def _get_encuestas_menu(context: dict) -> dict:
     if menu_image_url:
         payload["image_url"] = menu_image_url
 
-    if first_qr_url:
-        payload["media_urls"] = [first_qr_url]
+    media_attachments: List[str] = []
+    if menu_image_url:
+        media_attachments.append(menu_image_url)
+    if first_qr_url and first_qr_url not in media_attachments:
+        media_attachments.append(first_qr_url)
+
+    if media_attachments:
+        payload["media_urls"] = media_attachments
 
     return payload
 
