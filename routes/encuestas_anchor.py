@@ -7,6 +7,7 @@ from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_anchor_service import (
     build_snapshot,
     generate_merkle_proof,
+    list_snapshots,
     publish_snapshot,
 )
 from services.encuestas_service import EncuestaError
@@ -15,6 +16,9 @@ from utils.permissions import require_role
 
 
 encuestas_anchor_bp = Blueprint("encuestas_anchor_bp", __name__, url_prefix="/api/encuestas/<int:encuesta_id>/anchor")
+encuestas_anchor_legacy_bp = Blueprint(
+    "encuestas_anchor_legacy_bp", __name__, url_prefix="/admin/encuestas/<int:encuesta_id>"
+)
 
 
 def _feature_guard():
@@ -29,6 +33,22 @@ def _check_feature():
     if guard:
         return guard
     return None
+
+
+@encuestas_anchor_legacy_bp.before_request
+def _check_feature_legacy():
+    guard = _feature_guard()
+    if guard:
+        return guard
+    return None
+
+
+def _snapshots_response(encuesta_id: int, current_user):
+    try:
+        data = list_snapshots(encuesta_id, current_user)
+    except EncuestaError as err:
+        return jsonify(err.to_dict()), err.status_code
+    return jsonify(data), 200
 
 
 @encuestas_anchor_bp.route("/snapshot", methods=["POST"])
@@ -75,3 +95,17 @@ def verify(current_user, encuesta_id: int, snapshot_id: int):
     except EncuestaError as err:
         return jsonify(err.to_dict()), err.status_code
     return jsonify({"ok": True, **data})
+
+
+@encuestas_anchor_bp.route("/snapshots", methods=["GET"])
+@token_requerido
+@require_role("admin", "super_admin", "empleado")
+def list_snapshots_api(current_user, encuesta_id: int):
+    return _snapshots_response(encuesta_id, current_user)
+
+
+@encuestas_anchor_legacy_bp.route("/snapshots", methods=["GET"])
+@token_requerido
+@require_role("admin", "super_admin", "empleado")
+def list_snapshots_legacy(current_user, encuesta_id: int):
+    return _snapshots_response(encuesta_id, current_user)
