@@ -4968,8 +4968,14 @@ def _get_encuestas_menu(context: dict) -> dict:
     if menu_image_url:
         payload["image_url"] = menu_image_url
 
-    if first_qr_url:
-        payload["media_urls"] = [first_qr_url]
+    media_attachments: List[str] = []
+    if menu_image_url:
+        media_attachments.append(menu_image_url)
+    if first_qr_url and first_qr_url not in media_attachments:
+        media_attachments.append(first_qr_url)
+
+    if media_attachments:
+        payload["media_urls"] = media_attachments
 
     return payload
 
