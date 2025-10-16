@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import secrets
 import unicodedata
 from collections import Counter
 from datetime import datetime, timezone, timedelta
+from copy import deepcopy
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from flask import current_app
@@ -62,246 +66,112 @@ def _parse_int(value: Optional[str]) -> Optional[int]:
         return None
 
 
+def _current_app_logger():
+    try:
+        return current_app.logger
+    except RuntimeError:
+        return None
+
+
 _BOOTSTRAP_SAMPLE_ENABLED = _env_flag("ENCUESTAS_BOOTSTRAP_SAMPLE", default=True)
 
 
-_DEFAULT_BOOTSTRAP_TEMPLATES: Sequence[Dict[str, Any]] = [
-    {
-        "slug": "servicios-publicos",
-        "titulo": "Encuesta sobre servicios públicos en {{municipality}}",
-        "descripcion": (
-            "Queremos conocer la experiencia de los vecinos y vecinas con los "
-            "servicios urbanos para planificar mejoras."
-        ),
-        "tipo": "opinion",
-        "politica_unicidad": "por_dni",
-        "anonimato": False,
-        "requiere_datos_contacto": True,
-        "preguntas": [
-            {
-                "orden": 1,
-                "tipo": "opcion_unica",
-                "texto": "¿Cómo calificás la limpieza urbana en {{municipality}}?",
-                "obligatoria": True,
-                "opciones": [
-                    {"orden": 1, "texto": "Muy buena"},
-                    {"orden": 2, "texto": "Buena"},
-                    {"orden": 3, "texto": "Regular"},
-                    {"orden": 4, "texto": "Mala"},
-                ],
-            },
-            {
-                "orden": 2,
-                "tipo": "multiple",
-                "texto": "¿Qué aspectos deberían reforzarse prioritariamente?",
-                "obligatoria": True,
-                "min_selecciones": 1,
-                "max_selecciones": 3,
-                "opciones": [
-                    {"orden": 1, "texto": "Recolección de residuos"},
-                    {"orden": 2, "texto": "Iluminación pública"},
-                    {"orden": 3, "texto": "Mantenimiento de calles"},
-                    {"orden": 4, "texto": "Espacios verdes"},
-                ],
-            },
-            {
-                "orden": 5,
-                "tipo": "abierta",
-                "texto": "¿Qué propuesta concreta sugerís para mejorar los servicios públicos?",
-                "obligatoria": False,
-            },
-        ],
-    },
-    {
-        "slug": "seguridad-ciudadana",
-        "titulo": "Sondeo de seguridad ciudadana en {{municipality}}",
-        "descripcion": (
-            "Medimos la percepción de seguridad barrial para coordinar acciones con fuerzas locales."
-        ),
-        "tipo": "sondeo",
-        "politica_unicidad": "por_phone",
-        "anonimato": False,
-        "requiere_datos_contacto": True,
-        "preguntas": [
-            {
-                "orden": 1,
-                "tipo": "opcion_unica",
-                "texto": "¿Con qué frecuencia ves patrullajes o controles preventivos?",
-                "obligatoria": True,
-                "opciones": [
-                    {"orden": 1, "texto": "Todos los días"},
-                    {"orden": 2, "texto": "Varias veces por semana"},
-                    {"orden": 3, "texto": "Pocas veces al mes"},
-                    {"orden": 4, "texto": "Nunca"},
-                ],
-            },
-            {
-                "orden": 2,
-                "tipo": "opcion_unica",
-                "texto": "¿Cómo evaluás la iluminación nocturna en tu cuadra?",
-                "obligatoria": True,
-                "opciones": [
-                    {"orden": 1, "texto": "Muy adecuada"},
-                    {"orden": 2, "texto": "Adecuada"},
-                    {"orden": 3, "texto": "Insuficiente"},
-                    {"orden": 4, "texto": "Muy insuficiente"},
-                ],
-            },
-            {
-                "orden": 3,
-                "tipo": "abierta",
-                "texto": "Comentá situaciones o zonas específicas donde te gustaría ver más presencia preventiva.",
-                "obligatoria": False,
-            },
-        ],
-    },
-    {
-        "slug": "movilidad-y-transporte",
-        "titulo": "Consulta sobre movilidad y transporte en {{municipality}}",
-        "descripcion": (
-            "Identificamos necesidades de infraestructura vial y transporte público para priorizar inversiones."
-        ),
-        "tipo": "opinion",
-        "politica_unicidad": "por_ip",
-        "anonimato": True,
-        "requiere_datos_contacto": False,
-        "preguntas": [
-            {
-                "orden": 1,
-                "tipo": "multiple",
-                "texto": "¿Qué medios de transporte utilizás semanalmente?",
-                "obligatoria": True,
-                "min_selecciones": 1,
-                "max_selecciones": 4,
-                "opciones": [
-                    {"orden": 1, "texto": "Colectivo"},
-                    {"orden": 2, "texto": "Bicicleta"},
-                    {"orden": 3, "texto": "Motocicleta"},
-                    {"orden": 4, "texto": "Auto particular"},
-                    {"orden": 5, "texto": "Caminata"},
-                ],
-            },
-            {
-                "orden": 2,
-                "tipo": "opcion_unica",
-                "texto": "¿Cuál es la principal dificultad para moverte por {{municipality}}?",
-                "obligatoria": True,
-                "opciones": [
-                    {"orden": 1, "texto": "Frecuencia del transporte público"},
-                    {"orden": 2, "texto": "Estado de las calles"},
-                    {"orden": 3, "texto": "Falta de ciclovías"},
-                    {"orden": 4, "texto": "Congestión vehicular"},
-                    {"orden": 5, "texto": "Inseguridad vial"},
-                ],
-            },
-            {
-                "orden": 3,
-                "tipo": "abierta",
-                "texto": "¿Qué obra o mejora puntual priorizarías para facilitar la movilidad?",
-                "obligatoria": False,
-            },
-        ],
-    },
-    {
-        "slug": "agenda-cultural",
-        "titulo": "Encuesta de agenda cultural para {{municipality}}",
-        "descripcion": (
-            "Definimos programación cultural y turística en base a los intereses de la comunidad."
-        ),
-        "tipo": "opinion",
-        "politica_unicidad": "por_cookie",
-        "anonimato": True,
-        "requiere_datos_contacto": False,
-        "preguntas": [
-            {
-                "orden": 1,
-                "tipo": "multiple",
-                "texto": "¿Qué actividades culturales te gustaría ver con más frecuencia?",
-                "obligatoria": True,
-                "min_selecciones": 1,
-                "max_selecciones": 3,
-                "opciones": [
-                    {"orden": 1, "texto": "Festivales musicales"},
-                    {"orden": 2, "texto": "Ferias gastronómicas"},
-                    {"orden": 3, "texto": "Talleres para familias"},
-                    {"orden": 4, "texto": "Cine al aire libre"},
-                    {"orden": 5, "texto": "Muestras de artes visuales"},
-                ],
-            },
-            {
-                "orden": 2,
-                "tipo": "opcion_unica",
-                "texto": "¿Qué franja horaria preferís para participar de actividades culturales municipales?",
-                "obligatoria": True,
-                "opciones": [
-                    {"orden": 1, "texto": "Mañana"},
-                    {"orden": 2, "texto": "Tarde"},
-                    {"orden": 3, "texto": "Noche"},
-                ],
-            },
-            {
-                "orden": 4,
-                "tipo": "opcion_multiple",
-                "texto": "¿Qué obras públicas concretas son prioritarias en tu distrito?",
-                "obligatoria": False,
-                "max_selecciones": 3,
-                "opciones": [
-                    {
-                        "orden": 1,
-                        "texto": "Repavimentación y cordón cuneta",
-                    },
-                    {
-                        "orden": 2,
-                        "texto": "Nuevas plazas, juegos y polideportivos",
-                    },
-                    {
-                        "orden": 3,
-                        "texto": "Semáforos inteligentes y señalización",
-                    },
-                    {
-                        "orden": 4,
-                        "texto": "Lomas de burro y mejoras de tránsito",
-                    },
-                ],
-            },
-            {
-                "orden": 5,
-                "tipo": "abierta",
-                "texto": "Sugerí un evento o iniciativa cultural que te gustaría sumar a la agenda local.",
-                "obligatoria": False,
-            },
-        ],
-    },
-]
+_BOOTSTRAP_CONFIG_ENV_VAR = "ENCUESTAS_BOOTSTRAP_CONFIG_PATH"
+_BOOTSTRAP_CONFIG_DEFAULT_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "data"
+    / "encuestas_bootstrap"
+    / "templates.json"
+)
 
 
-def _render_municipality_placeholder(value: Any, municipality: str) -> Any:
-    if isinstance(value, str):
-        return value.replace("{{municipality}}", municipality)
-    return value
+def _bootstrap_config_path() -> Path:
+    env_override = os.getenv(_BOOTSTRAP_CONFIG_ENV_VAR)
+    if env_override:
+        return Path(env_override)
+
+    try:
+        config_override = current_app.config.get(_BOOTSTRAP_CONFIG_ENV_VAR)  # type: ignore[attr-defined]
+    except RuntimeError:
+        config_override = None
+
+    if config_override:
+        return Path(config_override)
+
+    return _BOOTSTRAP_CONFIG_DEFAULT_PATH
 
 
-def _build_default_bootstrap_payloads(
-    municipality: str, inicio: datetime, fin: datetime
+@lru_cache(maxsize=1)
+def _load_bootstrap_data(path: str) -> Dict[str, Any]:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError:
+        _log = _current_app_logger()
+        if _log:
+            _log.warning(
+                "[encuestas] No se encontró el archivo de plantillas demo en %s", path
+            )
+        return {"templates": [], "profiles": []}
+    except json.JSONDecodeError:
+        _log = _current_app_logger()
+        if _log:
+            _log.exception(
+                "[encuestas] Error al parsear el archivo de plantillas demo %s", path
+            )
+        return {"templates": [], "profiles": []}
+
+    if not isinstance(data, dict):
+        return {"templates": [], "profiles": []}
+
+    data.setdefault("templates", [])
+    data.setdefault("profiles", [])
+    return data
+
+
+def _get_bootstrap_data() -> Dict[str, Any]:
+    path = _bootstrap_config_path()
+    return _load_bootstrap_data(str(path))
+
+
+def _bootstrap_templates() -> Sequence[Dict[str, Any]]:
+    templates = _get_bootstrap_data().get("templates", [])
+    if not isinstance(templates, list):
+        return ()
+    return tuple(templates)
+
+
+def _build_bootstrap_payloads(
+    municipality: str,
+    inicio: datetime,
+    fin: datetime,
+    templates: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
+    source_templates = templates or _bootstrap_templates()
     municipality_slug = _slugify(municipality)
     payloads: List[Dict[str, Any]] = []
-    for template in _DEFAULT_BOOTSTRAP_TEMPLATES:
+    for template in source_templates:
+        template_copy = deepcopy(template)
         payload: Dict[str, Any] = {
-            "titulo": _render_municipality_placeholder(template.get("titulo", ""), municipality),
-            "slug": f"{template.get('slug', 'encuesta')}-{municipality_slug}",
-            "descripcion": _render_municipality_placeholder(
-                template.get("descripcion", ""), municipality
+            "titulo": _render_municipality_placeholder(
+                template_copy.get("titulo", ""), municipality
             ),
-            "tipo": template.get("tipo", "opinion"),
-            "anonimo_permitido": bool(template.get("anonimato", True)),
-            "requiere_identidad": bool(template.get("requiere_datos_contacto", False)),
-            "politica_unicidad": template.get("politica_unicidad", "libre"),
+            "slug": f"{template_copy.get('slug', 'encuesta')}-{municipality_slug}",
+            "descripcion": _render_municipality_placeholder(
+                template_copy.get("descripcion", ""), municipality
+            ),
+            "tipo": template_copy.get("tipo", "opinion"),
+            "anonimo_permitido": bool(template_copy.get("anonimato", True)),
+            "requiere_identidad": bool(
+                template_copy.get("requiere_datos_contacto", False)
+            ),
+            "politica_unicidad": template_copy.get("politica_unicidad", "libre"),
             "inicio_at": inicio.isoformat(),
             "fin_at": fin.isoformat(),
         }
+
         preguntas: List[Dict[str, Any]] = []
-        for pregunta_tpl in template.get("preguntas", []):
+        for pregunta_tpl in template_copy.get("preguntas", []):
             pregunta_tipo = pregunta_tpl.get("tipo", "opcion_unica")
             if pregunta_tipo == "multiple":
                 pregunta_tipo = "opcion_multiple"
@@ -317,8 +187,9 @@ def _build_default_bootstrap_payloads(
                 pregunta["min_selecciones"] = pregunta_tpl["min_selecciones"]
             if "max_selecciones" in pregunta_tpl:
                 pregunta["max_selecciones"] = pregunta_tpl["max_selecciones"]
-            opciones_payload = pregunta_tpl.get("opciones") or []
+
             if pregunta_tipo in {"opcion_unica", "opcion_multiple"}:
+                opciones_payload = pregunta_tpl.get("opciones") or []
                 opciones: List[Dict[str, Any]] = []
                 for opcion_tpl in opciones_payload:
                     opcion: Dict[str, Any] = {
@@ -332,52 +203,135 @@ def _build_default_bootstrap_payloads(
                     opciones.append(opcion)
                 pregunta["opciones"] = opciones
             preguntas.append(pregunta)
+
         payload["preguntas"] = preguntas
         payloads.append(payload)
+
     return payloads
 
 
+def _render_municipality_placeholder(value: Any, municipality: str) -> Any:
+    if isinstance(value, str):
+        return value.replace("{{municipality}}", municipality)
+    return value
+
+
 def _build_junin_bootstrap_payload(inicio: datetime, fin: datetime) -> List[Dict[str, Any]]:
-    return _build_default_bootstrap_payloads("Junín", inicio, fin)
+    return _build_bootstrap_payloads("Junín", inicio, fin)
 
 
 def _build_san_martin_bootstrap_payload(inicio: datetime, fin: datetime) -> List[Dict[str, Any]]:
-    return _build_default_bootstrap_payloads("San Martín", inicio, fin)
+    return _build_bootstrap_payloads("San Martín", inicio, fin)
 
 
 def _build_rivadavia_bootstrap_payload(inicio: datetime, fin: datetime) -> List[Dict[str, Any]]:
-    return _build_default_bootstrap_payloads("Rivadavia", inicio, fin)
+    return _build_bootstrap_payloads("Rivadavia", inicio, fin)
 
 
-_BOOTSTRAP_PROFILES: List[Dict[str, Any]] = [
-    {
-        "key": "junin",
-        "tenant_env": "JUNIN_ENCUESTAS_TENANT_ID",
-        "fallback_tenant_id": 4,
-        "keywords": ("junin",),
-        "payload_builder": _build_junin_bootstrap_payload,
-        "auto_publish": True,
-        "tenant_id": None,
-    },
-    {
-        "key": "san_martin",
-        "tenant_env": "SANMARTIN_ENCUESTAS_TENANT_ID",
-        "fallback_tenant_id": None,
-        "keywords": ("san martin", "san martín"),
-        "payload_builder": _build_san_martin_bootstrap_payload,
-        "auto_publish": True,
-        "tenant_id": None,
-    },
-    {
-        "key": "rivadavia",
-        "tenant_env": "RIVADAVIA_ENCUESTAS_TENANT_ID",
-        "fallback_tenant_id": None,
-        "keywords": ("rivadavia",),
-        "payload_builder": _build_rivadavia_bootstrap_payload,
-        "auto_publish": True,
-        "tenant_id": None,
-    },
-]
+def _build_mendoza_bootstrap_payload(inicio: datetime, fin: datetime) -> List[Dict[str, Any]]:
+    return _build_bootstrap_payloads("Mendoza", inicio, fin)
+
+
+def _build_godoy_cruz_bootstrap_payload(inicio: datetime, fin: datetime) -> List[Dict[str, Any]]:
+    return _build_bootstrap_payloads("Godoy Cruz", inicio, fin)
+
+
+def _select_templates_by_slugs(
+    templates: Sequence[Dict[str, Any]],
+    template_slugs: Sequence[str],
+) -> List[Dict[str, Any]]:
+    slug_set = {slug for slug in template_slugs if slug}
+    if not slug_set:
+        return list(templates)
+    return [template for template in templates if template.get("slug") in slug_set]
+
+
+def _make_profile_builder(
+    municipality: str, template_slugs: Optional[Sequence[str]] = None
+) -> Callable[[datetime, datetime], List[Dict[str, Any]]]:
+    def _builder(inicio: datetime, fin: datetime) -> List[Dict[str, Any]]:
+        templates = _bootstrap_templates()
+        if template_slugs:
+            payload_templates = _select_templates_by_slugs(templates, template_slugs)
+        else:
+            payload_templates = list(templates)
+        return _build_bootstrap_payloads(
+            municipality,
+            inicio,
+            fin,
+            templates=payload_templates,
+        )
+
+    return _builder
+
+
+def _load_bootstrap_profiles() -> List[Dict[str, Any]]:
+    data = _get_bootstrap_data()
+    profiles: List[Dict[str, Any]] = []
+
+    default_builders = {
+        "junin": _build_junin_bootstrap_payload,
+        "san_martin": _build_san_martin_bootstrap_payload,
+        "rivadavia": _build_rivadavia_bootstrap_payload,
+        "mendoza": _build_mendoza_bootstrap_payload,
+        "godoy_cruz": _build_godoy_cruz_bootstrap_payload,
+    }
+
+    for raw_profile in data.get("profiles", []):
+        if not isinstance(raw_profile, dict):
+            continue
+
+        key = raw_profile.get("key")
+        municipality = raw_profile.get("municipality")
+        if not key and municipality:
+            key = _slugify(municipality)
+        if not key:
+            continue
+
+        template_slugs = raw_profile.get("template_slugs") or []
+
+        builder = None
+        if template_slugs and municipality:
+            builder = _make_profile_builder(municipality, template_slugs)
+        elif template_slugs:
+            builder = _make_profile_builder(key, template_slugs)
+        elif key in default_builders:
+            builder = default_builders[key]
+        elif municipality:
+            builder = _make_profile_builder(municipality)
+
+        if builder is None:
+            fallback_label = municipality or key
+            builder = _make_profile_builder(fallback_label)
+
+        profile: Dict[str, Any] = {
+            "key": key,
+            "tenant_env": raw_profile.get("tenant_env"),
+            "fallback_tenant_id": raw_profile.get("fallback_tenant_id"),
+            "keywords": tuple(raw_profile.get("keywords", [])),
+            "payload_builder": builder,
+            "auto_publish": bool(raw_profile.get("auto_publish", True)),
+            "tenant_id": raw_profile.get("tenant_id"),
+        }
+
+        profiles.append(profile)
+
+    if not profiles:
+        profiles = [
+            {
+                "key": "junin",
+                "tenant_env": "JUNIN_ENCUESTAS_TENANT_ID",
+                "fallback_tenant_id": 4,
+                "keywords": ("junin",),
+                "payload_builder": _build_junin_bootstrap_payload,
+                "auto_publish": True,
+                "tenant_id": None,
+            }
+        ]
+
+    return profiles
+
+_BOOTSTRAP_PROFILES: List[Dict[str, Any]] = _load_bootstrap_profiles()
 
 
 def _bootstrap_skip_registry() -> set:
