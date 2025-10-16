@@ -929,6 +929,7 @@ class EncRespuesta(db.Model, TimestampMixin):
     ciudad = db.Column(db.String(120), nullable=True)
     provincia = db.Column(db.String(120), nullable=True)
     pais = db.Column(db.String(120), nullable=True)
+    metadata_payload = db.Column(JSONType, nullable=True)
     submitted_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     content_hash = db.Column(db.String(128), nullable=True)
     snapshot_id = db.Column(db.Integer, db.ForeignKey("enc_anchor_snapshot.id"), nullable=True)
