@@ -530,10 +530,16 @@ def test_get_summary_returns_metrics(client):
     demografia = resumen["demografia"]
     assert demografia["genero"]["femenino"] == 1
     assert demografia["genero"]["masculino"] == 1
+    assert demografia["genero_map"]["femenino"] == 1
+    assert demografia["genero_map"]["masculino"] == 1
+    generos_labels = {entry["label"] for entry in demografia["genero_series"]}
+    assert {"femenino", "masculino"}.issubset(generos_labels)
     assert demografia["edad"]["muestra"] == 2
     assert demografia["edad"]["promedio"] is not None
     assert demografia["edad"]["promedio"] >= 29
     assert any(entry["label"] == "Centro" for entry in demografia["territorio"]["barrios"])
+    assert demografia["rango_etario_map"] == demografia["rango_etario"]
+    assert all(item.keys() >= {"label", "value"} for item in demografia["rango_etario_series"])
 
 
 def test_delete_encuesta_elimina_respuestas_y_salta_bootstrap(client):

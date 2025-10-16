@@ -69,6 +69,18 @@ def _top_counter(counter: Counter, limit: int = 10) -> List[Dict[str, Any]]:
     ]
 
 
+def _counter_to_list(counter: Counter) -> List[Dict[str, Any]]:
+    """Return a stable list representation for chart-friendly payloads."""
+
+    # ``Counter`` preserves insertion order starting from Python 3.7, but we
+    # still sort descending to match the behaviour of ``most_common`` which the
+    # frontend was already using for other widgets.
+    return [
+        {"label": label, "value": counter[label]}
+        for label in sorted(counter.keys(), key=lambda key: counter[key], reverse=True)
+    ]
+
+
 def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     encuesta = get_encuesta(encuesta_id)
     respuestas = _collect_respuestas(encuesta, filtros)
@@ -199,8 +211,20 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
     edad_p90 = _percentile(edades_ordenadas, 90.0)
 
     demografia = {
+        # ``genero`` and ``rango_etario`` keep the legacy dictionary payload so
+        # existing dashboards that expect a mapping continue to function. New
+        # chart components can rely on the ``*_series`` keys which expose the
+        # data as ``[{"label": ..., "value": ...}]`` items ready to be
+        # consumed by array-based visualisations.  The ``*_map`` aliases are
+        # kept for backwards compatibility with the regression tests added in
+        # the previous change while allowing consumers to progressively adopt
+        # the series helpers.
         "genero": dict(generos),
+        "genero_series": _counter_to_list(generos),
+        "genero_map": dict(generos),
         "rango_etario": dict(rangos_etarios),
+        "rango_etario_series": _counter_to_list(rangos_etarios),
+        "rango_etario_map": dict(rangos_etarios),
         "edad": {
             "promedio": edad_promedio,
             "mediana": edad_mediana,
