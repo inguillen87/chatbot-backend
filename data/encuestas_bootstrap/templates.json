@@ -328,6 +328,13 @@
       "tenant_env": "GODOYCRUZ_ENCUESTAS_TENANT_ID",
       "keywords": ["godoy cruz"],
       "auto_publish": true
+    },
+    {
+      "key": "lavalle",
+      "municipality": "Lavalle",
+      "tenant_env": "LAVALLE_ENCUESTAS_TENANT_ID",
+      "keywords": ["lavalle"],
+      "auto_publish": true
     }
   ],
   "geo_catalog": {
@@ -470,6 +477,36 @@
         { "lat": -32.9307, "lng": -68.8462, "barrio": "Trapiche" },
         { "lat": -32.9102, "lng": -68.8355, "barrio": "La Estanzuela" },
         { "lat": -32.9426, "lng": -68.8674, "barrio": "Bº Presidente Perón" }
+      ]
+    },
+    "lavalle": {
+      "municipality": "Lavalle",
+      "state": "Mendoza",
+      "country": "AR",
+      "center": [-32.7395, -68.3427],
+      "bounds": [-68.5752, -32.9958, -68.1084, -32.4081],
+      "districts": [
+        "Villa Tulumaya",
+        "Costa de Araujo",
+        "El Vergel",
+        "Jocolí",
+        "Tres de Mayo",
+        "Lagunas del Rosario"
+      ],
+      "neighborhoods": [
+        "Barrio Virgen del Rosario",
+        "Barrio La Palmera",
+        "Barrio Carsi",
+        "Barrio Solares del Centro",
+        "Barrio Jarilleros",
+        "Barrio Colonia Italia"
+      ],
+      "otros_label": "Otro punto de Lavalle",
+      "coordinates": [
+        { "lat": -32.7379, "lng": -68.3391, "barrio": "Villa Tulumaya" },
+        { "lat": -32.6734, "lng": -68.2439, "barrio": "Costa de Araujo" },
+        { "lat": -32.8127, "lng": -68.4136, "barrio": "Tres de Mayo" },
+        { "lat": -32.5998, "lng": -68.1584, "barrio": "Lagunas del Rosario" }
       ]
     }
   }

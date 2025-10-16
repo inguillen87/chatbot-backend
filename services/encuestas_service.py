@@ -402,6 +402,8 @@ def list_template_catalog(
         templates = _select_templates_by_slugs(templates, template_slugs)
 
     rendered: List[Dict[str, Any]] = []
+    geo_profile_key = _slugify(municipality) if municipality else None
+
     for template in templates:
         template_copy = deepcopy(template)
         slug = template_copy.get("slug")
@@ -435,6 +437,13 @@ def list_template_catalog(
                 }
             )
 
+        demo_seed = {
+            "label": "Emular 100 respuestas demo",
+            "cantidad": 100,
+            "geo_profile_key": geo_profile_key,
+            "municipality_label": municipality,
+        }
+
         rendered.append(
             {
                 "slug": slug,
@@ -448,6 +457,16 @@ def list_template_catalog(
                 "requiere_datos_contacto": bool(template_copy.get("requiere_datos_contacto", False)),
                 "tags": list(template_copy.get("tags") or []),
                 "preguntas": preguntas_rendered,
+                "demo_seed": demo_seed,
+                "quick_actions": [
+                    {
+                        "key": "demo_seed",
+                        "label": demo_seed["label"],
+                        "cantidad": demo_seed["cantidad"],
+                        "geo_profile_key": demo_seed["geo_profile_key"],
+                        "municipality_label": demo_seed["municipality_label"],
+                    }
+                ],
             }
         )
 
@@ -489,6 +508,14 @@ def build_template_draft_from_slug(
         raise EncuestaError("No se pudo generar la plantilla solicitada", status_code=500)
 
     payload = payloads[0]
+    geo_profile_key = _slugify(municipality)
+    auto_seed_demo = {
+        "enabled": True,
+        "cantidad": 100,
+        "label": "Emular 100 respuestas demo",
+        "geo_profile_key": geo_profile_key,
+        "municipality_label": municipality,
+    }
     requiere_identidad = bool(payload.get("requiere_identidad", False))
     anonimato_habilitado = bool(payload.get("anonimo_permitido", True)) and not requiere_identidad
 
@@ -526,6 +553,16 @@ def build_template_draft_from_slug(
         "requiere_datos_contacto": requiere_identidad,
         "tags": payload.get("tags") or [],
         "preguntas": preguntas,
+        "auto_seed_demo": auto_seed_demo,
+        "quick_actions": [
+            {
+                "key": "demo_seed",
+                "label": auto_seed_demo["label"],
+                "cantidad": auto_seed_demo["cantidad"],
+                "geo_profile_key": auto_seed_demo["geo_profile_key"],
+                "municipality_label": auto_seed_demo["municipality_label"],
+            }
+        ],
     }
 
 
@@ -815,32 +852,36 @@ def create_encuesta(data: Dict[str, Any], user: Any) -> EncEncuesta:
     if not data:
         raise EncuestaError("Payload vacío")
 
+    payload = deepcopy(data)
+    auto_seed_cfg = payload.pop("auto_seed_demo", None)
+    payload.pop("quick_actions", None)
+
     tenant_id = _determine_tenant_id(user)
-    titulo = (data.get("titulo") or "").strip()
+    titulo = (payload.get("titulo") or "").strip()
     if not titulo:
         raise EncuestaError("El título es requerido")
 
-    slug_seed = data.get("slug") or f"{tenant_id}-{titulo}"
+    slug_seed = payload.get("slug") or f"{tenant_id}-{titulo}"
     slug = _generate_unique_slug(_slugify(slug_seed))
 
     encuesta = EncEncuesta(
         tenant_id=tenant_id,
         slug=slug,
         titulo=titulo,
-        descripcion=data.get("descripcion"),
-        tipo=data.get("tipo", "opinion"),
+        descripcion=payload.get("descripcion"),
+        tipo=payload.get("tipo", "opinion"),
         estado="borrador",
-        inicio_at=_parse_datetime(data.get("inicio_at")),
-        fin_at=_parse_datetime(data.get("fin_at")),
-        requiere_identidad=bool(data.get("requiere_identidad", False)),
-        politica_unicidad=data.get("politica_unicidad", "libre"),
-        anonimo_permitido=bool(data.get("anonimo_permitido", True)),
+        inicio_at=_parse_datetime(payload.get("inicio_at")),
+        fin_at=_parse_datetime(payload.get("fin_at")),
+        requiere_identidad=bool(payload.get("requiere_identidad", False)),
+        politica_unicidad=payload.get("politica_unicidad", "libre"),
+        anonimo_permitido=bool(payload.get("anonimo_permitido", True)),
         created_by=getattr(user, "id", None),
     )
 
-    preguntas_payload = data.get("preguntas") or []
+    preguntas_payload = payload.get("preguntas") or []
     encuesta.preguntas = _build_pregunta_entities(encuesta, preguntas_payload)
-    _sync_encuesta_tags(encuesta, data.get("tags"))
+    _sync_encuesta_tags(encuesta, payload.get("tags"))
 
     db.session.add(encuesta)
     try:
@@ -850,6 +891,34 @@ def create_encuesta(data: Dict[str, Any], user: Any) -> EncEncuesta:
         raise EncuestaError("No se pudo crear la encuesta (slug duplicado?)") from exc
 
     current_app.logger.info("[encuestas] Encuesta %s creada por %s", encuesta.id, getattr(user, "id", None))
+
+    if auto_seed_cfg:
+        enabled = auto_seed_cfg.get("enabled", True)
+        if enabled:
+            cantidad_raw = (
+                auto_seed_cfg.get("cantidad")
+                or auto_seed_cfg.get("count")
+                or auto_seed_cfg.get("responses")
+                or 100
+            )
+            try:
+                cantidad_int = int(cantidad_raw)
+            except (TypeError, ValueError):
+                cantidad_int = 100
+
+            geo_profile_key = auto_seed_cfg.get("geo_profile_key")
+            municipality_label = auto_seed_cfg.get("municipality_label") or auto_seed_cfg.get("municipality")
+            if not geo_profile_key and municipality_label:
+                geo_profile_key = _slugify(municipality_label)
+
+            seed_encuesta_respuestas_demo(
+                encuesta.id,
+                user,
+                cantidad=cantidad_int,
+                geo_profile_key=geo_profile_key,
+                municipality_label=municipality_label,
+            )
+
     return encuesta
 
 
@@ -1809,6 +1878,9 @@ def seed_encuesta_respuestas_demo(
     encuesta_id: int,
     user: Any,
     cantidad: int = 50,
+    *,
+    geo_profile_key: Optional[str] = None,
+    municipality_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     if cantidad <= 0:
         raise EncuestaError("Debe solicitar al menos una respuesta demo")
@@ -1816,6 +1888,10 @@ def seed_encuesta_respuestas_demo(
     encuesta = get_encuesta(encuesta_id, user=user)
     tenant_id = encuesta.tenant_id
     geo_metadata = _resolve_geo_metadata_for_tenant(tenant_id)
+    if not geo_metadata and geo_profile_key:
+        geo_metadata = _resolve_geo_metadata(profile_key=geo_profile_key)
+    if not geo_metadata and municipality_label:
+        geo_metadata = _resolve_geo_metadata(municipality=municipality_label)
     rng = random.Random()
 
     location_question = None
