@@ -19,6 +19,7 @@ from services.encuestas_service import (
     build_admin_list_payload,
     list_template_catalog,
     build_template_draft_from_slug,
+    seed_encuesta_respuestas_demo,
 )
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role

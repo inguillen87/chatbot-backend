@@ -171,25 +171,45 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
                     }
                 )
             pregunta_data["opciones"] = opciones
+            pregunta_data["series"] = [
+                {"label": opcion["texto"], "value": opcion["conteo"]}
+                for opcion in opciones
+            ]
         else:
             muestras = textos_abiertos.get(pregunta.id, [])[:20]
             pregunta_data["muestras_texto"] = muestras
+            # Frontend widgets expect ``opciones`` to exist so they can iterate
+            # without special casing preguntas de texto libre.
+            pregunta_data["opciones"] = []
+            pregunta_data["series"] = []
         preguntas_summary.append(pregunta_data)
 
-    canales_list = [
-        {
+    canales_list = []
+    for canal, count in sorted(canales.items(), key=lambda item: item[1], reverse=True):
+        entry = {
             "canal": canal,
             "label": canal,
             "conteo": count,
             "value": count,
+            "respuestas": count,
         }
-        for canal, count in sorted(canales.items(), key=lambda item: item[1], reverse=True)
-    ]
+        canales_list.append(entry)
     canales_map = {canal: count for canal, count in canales.items()}
     utm_data = []
     for key, count in utm.items():
         source, campaign = key.split("|", 1)
-        utm_data.append({"utm_source": source, "utm_campaign": campaign, "conteo": count})
+        utm_data.append(
+            {
+                "utm_source": source,
+                "utm_campaign": campaign,
+                "fuente": source,
+                "campania": campaign,
+                "label": f"{source} / {campaign}".strip(),
+                "conteo": count,
+                "value": count,
+                "respuestas": count,
+            }
+        )
 
     tasa_completitud = (respuestas_completas / total * 100) if total else 0.0
 
@@ -211,18 +231,13 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
     edad_p90 = _percentile(edades_ordenadas, 90.0)
 
     demografia = {
-        # ``genero`` and ``rango_etario`` keep the legacy dictionary payload so
-        # existing dashboards that expect a mapping continue to function. New
-        # chart components can rely on the ``*_series`` keys which expose the
-        # data as ``[{"label": ..., "value": ...}]`` items ready to be
-        # consumed by array-based visualisations.  The ``*_map`` aliases are
-        # kept for backwards compatibility with the regression tests added in
-        # the previous change while allowing consumers to progressively adopt
-        # the series helpers.
-        "genero": dict(generos),
+        # ``genero`` and ``rango_etario`` now expose array payloads to align
+        # with the modern admin dashboard, while the ``*_map`` aliases keep the
+        # dictionary structure for legacy consumers and regression tests.
+        "genero": _counter_to_list(generos),
         "genero_series": _counter_to_list(generos),
         "genero_map": dict(generos),
-        "rango_etario": dict(rangos_etarios),
+        "rango_etario": _counter_to_list(rangos_etarios),
         "rango_etario_series": _counter_to_list(rangos_etarios),
         "rango_etario_map": dict(rangos_etarios),
         "edad": {

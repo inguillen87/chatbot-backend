@@ -526,20 +526,37 @@ def test_get_summary_returns_metrics(client):
     assert resumen["canales_map"]["qr"] == 2
     canales_labels = {entry["label"] for entry in resumen["canales"]}
     assert "qr" in canales_labels
+    primer_canal = resumen["canales"][0]
+    assert primer_canal["respuestas"] == primer_canal["conteo"] == primer_canal["value"]
 
     demografia = resumen["demografia"]
-    assert demografia["genero"]["femenino"] == 1
-    assert demografia["genero"]["masculino"] == 1
     assert demografia["genero_map"]["femenino"] == 1
     assert demografia["genero_map"]["masculino"] == 1
-    generos_labels = {entry["label"] for entry in demografia["genero_series"]}
+    generos_labels = {entry["label"] for entry in demografia["genero"]}
     assert {"femenino", "masculino"}.issubset(generos_labels)
+    assert all(
+        demografia["genero_map"][entry["label"]] == entry["value"]
+        for entry in demografia["genero"]
+    )
     assert demografia["edad"]["muestra"] == 2
     assert demografia["edad"]["promedio"] is not None
     assert demografia["edad"]["promedio"] >= 29
     assert any(entry["label"] == "Centro" for entry in demografia["territorio"]["barrios"])
-    assert demografia["rango_etario_map"] == demografia["rango_etario"]
-    assert all(item.keys() >= {"label", "value"} for item in demografia["rango_etario_series"])
+    assert {
+        entry["label"] for entry in demografia["rango_etario"]
+    } == set(demografia["rango_etario_map"].keys())
+    assert all(
+        demografia["rango_etario_map"][entry["label"]] == entry["value"]
+        for entry in demografia["rango_etario"]
+    )
+    assert all(item.keys() >= {"label", "value"} for item in demografia["rango_etario"])
+
+    utm_items = resumen["utm"]
+    assert utm_items
+    first_utm = utm_items[0]
+    assert first_utm["respuestas"] == first_utm["conteo"] == first_utm["value"]
+    assert first_utm["fuente"] == first_utm["utm_source"]
+    assert first_utm["campania"] == first_utm["utm_campaign"]
 
 
 def test_delete_encuesta_elimina_respuestas_y_salta_bootstrap(client):

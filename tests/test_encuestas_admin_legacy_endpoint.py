@@ -2,7 +2,13 @@ import pytest
 
 from app import db
 from models import User
-from services.encuestas_service import EncEncuesta, create_encuesta, publicar_encuesta, save_respuesta
+from services.encuestas_service import (
+    EncEncuesta,
+    EncRespuesta,
+    create_encuesta,
+    publicar_encuesta,
+    save_respuesta,
+)
 import services.encuestas_service as encuestas_service_module
 from services.encuestas_anchor_service import build_snapshot
 import config.feature_flags as feature_flags
