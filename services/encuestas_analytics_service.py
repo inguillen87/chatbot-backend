@@ -218,6 +218,22 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
 
     edad_p90 = _percentile(edades_ordenadas, 90.0)
 
+    territorio_breakdown = {
+        "barrios": _top_counter(barrios),
+        "ciudades": _top_counter(ciudades),
+        "provincias": _top_counter(provincias),
+        "paises": _top_counter(paises),
+    }
+
+    territorio_sections = [
+        {
+            "key": key,
+            "label": key.capitalize(),
+            "series": values,
+        }
+        for key, values in territorio_breakdown.items()
+    ]
+
     demografia = {
         # ``genero`` and ``rango_etario`` now expose array payloads to align
         # with the modern admin dashboard, while the ``*_map`` aliases keep the
@@ -234,12 +250,12 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
             "p90": edad_p90,
             "muestra": len(edades_ordenadas),
         },
-        "territorio": {
-            "barrios": _top_counter(barrios),
-            "ciudades": _top_counter(ciudades),
-            "provincias": _top_counter(provincias),
-            "paises": _top_counter(paises),
-        },
+        # ``territorio`` now follows the array-first contract expected by the
+        # modern admin dashboard (each entry already exposes ``series`` so the
+        # frontend can map safely), while ``territorio_map`` keeps backwards
+        # compatibility for legacy consumers and regression tests.
+        "territorio": territorio_sections,
+        "territorio_map": territorio_breakdown,
     }
 
     return {
