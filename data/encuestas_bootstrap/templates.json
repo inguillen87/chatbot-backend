@@ -5,7 +5,7 @@
       "titulo": "Encuesta sobre servicios públicos en {{municipality}}",
       "descripcion": "Queremos conocer la experiencia de los vecinos y vecinas con los servicios urbanos para planificar mejoras.",
       "tipo": "opinion",
-      "politica_unicidad": "por_dni",
+      "politica_unicidad": "por_dni_o_phone",
       "anonimato": false,
       "requiere_datos_contacto": true,
       "preguntas": [
@@ -48,7 +48,7 @@
       "titulo": "Sondeo de seguridad ciudadana en {{municipality}}",
       "descripcion": "Medimos la percepción de seguridad barrial para coordinar acciones con fuerzas locales.",
       "tipo": "sondeo",
-      "politica_unicidad": "por_phone",
+      "politica_unicidad": "por_dni_o_phone",
       "anonimato": false,
       "requiere_datos_contacto": true,
       "preguntas": [
@@ -89,9 +89,9 @@
       "titulo": "Consulta sobre movilidad y transporte en {{municipality}}",
       "descripcion": "Identificamos necesidades de infraestructura vial y transporte público para priorizar inversiones.",
       "tipo": "opinion",
-      "politica_unicidad": "por_ip",
-      "anonimato": true,
-      "requiere_datos_contacto": false,
+      "politica_unicidad": "por_dni_o_phone",
+      "anonimato": false,
+      "requiere_datos_contacto": true,
       "preguntas": [
         {
           "orden": 1,
@@ -134,9 +134,9 @@
       "titulo": "Encuesta de agenda cultural para {{municipality}}",
       "descripcion": "Definimos programación cultural y turística en base a los intereses de la comunidad.",
       "tipo": "opinion",
-      "politica_unicidad": "por_cookie",
-      "anonimato": true,
-      "requiere_datos_contacto": false,
+      "politica_unicidad": "por_dni_o_phone",
+      "anonimato": false,
+      "requiere_datos_contacto": true,
       "preguntas": [
         {
           "orden": 1,
@@ -210,5 +210,148 @@
       "keywords": ["godoy cruz"],
       "auto_publish": true
     }
-  ]
+  ],
+  "geo_catalog": {
+    "junin": {
+      "municipality": "Junín",
+      "state": "Mendoza",
+      "country": "AR",
+      "center": [-33.0985, -68.476],
+      "bounds": [-68.598, -33.216, -68.312, -33.002],
+      "districts": [
+        "Ciudad",
+        "Los Barriales",
+        "Medrano",
+        "Philipson",
+        "Rodríguez Peña",
+        "La Colonia"
+      ],
+      "neighborhoods": [
+        "Centro",
+        "Alto Verde",
+        "La Florida",
+        "Belgrano",
+        "San Cayetano",
+        "Bartolomé Mitre"
+      ],
+      "otros_label": "Otro barrio / dirección",
+      "coordinates": [
+        { "lat": -33.0912, "lng": -68.4796, "barrio": "Centro" },
+        { "lat": -33.1044, "lng": -68.4625, "barrio": "Belgrano" },
+        { "lat": -33.0868, "lng": -68.4982, "barrio": "San Cayetano" },
+        { "lat": -33.0755, "lng": -68.4459, "barrio": "Los Barriales" },
+        { "lat": -33.0634, "lng": -68.4212, "barrio": "La Colonia" },
+        { "lat": -33.1203, "lng": -68.5051, "barrio": "Rodríguez Peña" }
+      ]
+    },
+    "san_martin": {
+      "municipality": "San Martín",
+      "state": "Mendoza",
+      "country": "AR",
+      "center": [-33.0808, -68.4895],
+      "bounds": [-68.6501, -33.2102, -68.2914, -32.9207],
+      "districts": [
+        "Palmira",
+        "El Central",
+        "Tres Porteñas",
+        "Chapanay",
+        "Montecaseros"
+      ],
+      "neighborhoods": [
+        "San Pedro",
+        "Libertador",
+        "Ferroviario",
+        "Canota",
+        "La Primavera"
+      ],
+      "otros_label": "Otro distrito / barrio",
+      "coordinates": [
+        { "lat": -33.0801, "lng": -68.4822, "barrio": "San Pedro" },
+        { "lat": -33.0983, "lng": -68.4589, "barrio": "Libertador" },
+        { "lat": -33.0567, "lng": -68.4954, "barrio": "Palmira" },
+        { "lat": -32.9923, "lng": -68.5231, "barrio": "Tres Porteñas" },
+        { "lat": -33.1214, "lng": -68.4362, "barrio": "Montecaseros" }
+      ]
+    },
+    "rivadavia": {
+      "municipality": "Rivadavia",
+      "state": "Mendoza",
+      "country": "AR",
+      "center": [-33.1869, -68.4682],
+      "bounds": [-68.7004, -33.3412, -68.2267, -33.0215],
+      "districts": [
+        "Ciudad",
+        "La Libertad",
+        "Santa María de Oro",
+        "La Central",
+        "Medrano Este"
+      ],
+      "neighborhoods": [
+        "Lencinas",
+        "Fuerte San Carlos",
+        "Marcial Pérez",
+        "B° Rivadavia",
+        "Posta de los Andes"
+      ],
+      "otros_label": "Otro punto del departamento",
+      "coordinates": [
+        { "lat": -33.1861, "lng": -68.4655, "barrio": "Lencinas" },
+        { "lat": -33.2104, "lng": -68.4451, "barrio": "Fuerte San Carlos" },
+        { "lat": -33.1672, "lng": -68.4928, "barrio": "Posta de los Andes" }
+      ]
+    },
+    "mendoza": {
+      "municipality": "Mendoza",
+      "state": "Mendoza",
+      "country": "AR",
+      "center": [-32.8898, -68.8459],
+      "bounds": [-68.9342, -33.0842, -68.7305, -32.7718],
+      "districts": [
+        "1ra Sección",
+        "2da Sección",
+        "3ra Sección",
+        "4ta Sección",
+        "5ta Sección"
+      ],
+      "neighborhoods": [
+        "Bombal",
+        "Cívica",
+        "La Favorita",
+        "San Martín",
+        "Cerro de la Gloria"
+      ],
+      "otros_label": "Otra referencia en la Ciudad",
+      "coordinates": [
+        { "lat": -32.8904, "lng": -68.8431, "barrio": "Cívica" },
+        { "lat": -32.8891, "lng": -68.8565, "barrio": "Bombal" },
+        { "lat": -32.8968, "lng": -68.8787, "barrio": "La Favorita" }
+      ]
+    },
+    "godoy_cruz": {
+      "municipality": "Godoy Cruz",
+      "state": "Mendoza",
+      "country": "AR",
+      "center": [-32.9236, -68.8451],
+      "bounds": [-68.9127, -32.9836, -68.7695, -32.8482],
+      "districts": [
+        "Gobernador Benegas",
+        "Las Tortugas",
+        "Presidente Sarmiento",
+        "San Francisco del Monte"
+      ],
+      "neighborhoods": [
+        "Trapiche",
+        "La Estanzuela",
+        "Bº Palmares",
+        "Bº Presidente Perón",
+        "Bº Arizu"
+      ],
+      "otros_label": "Otro barrio de Godoy Cruz",
+      "coordinates": [
+        { "lat": -32.9307, "lng": -68.8462, "barrio": "Trapiche" },
+        { "lat": -32.9102, "lng": -68.8355, "barrio": "La Estanzuela" },
+        { "lat": -32.9426, "lng": -68.8674, "barrio": "Bº Presidente Perón" }
+      ]
+    }
+  }
 }

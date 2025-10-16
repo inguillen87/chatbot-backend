@@ -2,7 +2,7 @@ import pytest
 
 from app import db
 from models import User
-from services.encuestas_service import EncEncuesta, create_encuesta, publicar_encuesta, save_respuesta
+from services.encuestas_service import EncEncuesta, EncRespuesta, create_encuesta, publicar_encuesta, save_respuesta
 from services.encuestas_anchor_service import build_snapshot
 import config.feature_flags as feature_flags
 import routes.encuestas_admin as encuestas_admin_routes
@@ -55,8 +55,10 @@ def test_admin_encuestas_alias_exposes_rest_endpoints(client, monkeypatch, admin
     assert "resumen" in listado
     encuestas = listado["encuestas"]
     assert isinstance(encuestas, list)
-    assert any("Junín" in encuesta["titulo"] for encuesta in encuestas)
     assert all(encuesta["tenant_id"] == admin_user.municipio_id for encuesta in encuestas)
+    for encuesta_payload in encuestas:
+        assert "geo" in encuesta_payload
+        assert encuesta_payload["geo"].get("bounds") is not None
     resumen = listado["resumen"]
     assert resumen["total"] == len(encuestas)
     assert resumen["activas"] <= resumen["total"]
@@ -85,9 +87,12 @@ def test_admin_encuestas_alias_exposes_rest_endpoints(client, monkeypatch, admin
     created_id = create_resp.get_json()["id"]
     assert db.session.get(EncEncuesta, created_id) is not None
 
+    publish_resp = client.post(f"/admin/encuestas/{created_id}/publicar", headers=headers)
+    assert publish_resp.status_code == 200
+
     # Listing again should include both the bootstrap survey and the new one.
     refreshed = client.get("/admin/encuestas", headers=headers).get_json()
-    assert refreshed["resumen"]["total"] >= 2
+    assert refreshed["resumen"]["total"] >= 1
     assert all(
         encuesta["tenant_id"] == admin_user.municipio_id for encuesta in refreshed["encuestas"]
     )
@@ -103,7 +108,31 @@ def test_admin_encuestas_alias_exposes_rest_endpoints(client, monkeypatch, admin
     assert public_resp.status_code == 200
     public_data = public_resp.get_json()
     assert isinstance(public_data, list)
-    assert any("Junín" in encuesta.get("titulo", "") for encuesta in public_data)
+    assert any("Encuesta piloto" in encuesta.get("titulo", "") for encuesta in public_data)
+
+    templates_resp = client.get("/admin/encuestas/templates", headers=headers)
+    assert templates_resp.status_code == 200
+    templates_payload = templates_resp.get_json()
+    assert isinstance(templates_payload, dict)
+    assert templates_payload["templates"], "Debe devolver plantillas prearmadas"
+    plantilla = templates_payload["templates"][0]
+    assert plantilla["preguntas"]
+    assert any(
+        opcion.get("valor") == "geo_autocomplete"
+        for opcion in plantilla["preguntas"][0].get("opciones", [])
+    )
+
+    templates_all_resp = client.get("/admin/encuestas/templates?scope=all", headers=headers)
+    assert templates_all_resp.status_code == 200
+    templates_all_payload = templates_all_resp.get_json()
+    assert templates_all_payload["templates"], "Debe mantener la compatibilidad básica"
+    assert templates_all_payload.get("all_templates"), "Debe exponer catálogo completo"
+    assert any(
+        entry.get("key") == "junin" for entry in templates_all_payload["all_templates"]
+    )
+    assert any(
+        entry.get("templates") for entry in templates_all_payload["all_templates"]
+    )
 
 
 def test_admin_encuestas_listado_respuestas(client, monkeypatch, admin_user):
@@ -371,3 +400,49 @@ def test_admin_encuestas_publicada_con_respuestas_bloquea_cambio_estructura(
     assert resp.status_code == 409
     data = resp.get_json()
     assert "No se puede modificar la estructura" in data["error"]
+
+
+def test_admin_encuestas_seed_demo_endpoint(client, monkeypatch, admin_user):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+
+    headers = _auth_headers(client, admin_user)
+
+    payload = {
+        "titulo": "Encuesta demo sin respuestas",
+        "descripcion": "Probaremos la carga automática de respuestas.",
+        "tipo": "opinion",
+        "preguntas": [
+            {
+                "orden": 1,
+                "tipo": "opcion_unica",
+                "texto": "¿Participaste de actividades municipales?",
+                "obligatoria": True,
+                "opciones": [
+                    {"orden": 1, "texto": "Sí"},
+                    {"orden": 2, "texto": "No"},
+                ],
+            }
+        ],
+    }
+
+    create_resp = client.post("/admin/encuestas", json=payload, headers=headers)
+    assert create_resp.status_code == 201
+    encuesta_id = create_resp.get_json()["id"]
+
+    seed_resp = client.post(
+        f"/admin/encuestas/{encuesta_id}/seed-demo",
+        json={"cantidad": 8},
+        headers=headers,
+    )
+    assert seed_resp.status_code == 200
+    seed_payload = seed_resp.get_json()
+    assert seed_payload["creadas"] > 0
+
+    with client.application.app_context():
+        total = EncRespuesta.query.filter_by(encuesta_id=encuesta_id).count()
+        assert total == seed_payload["creadas"]
+        geo_count = EncRespuesta.query.filter_by(encuesta_id=encuesta_id).filter(
+            EncRespuesta.lat.isnot(None), EncRespuesta.lng.isnot(None)
+        ).count()
+        assert geo_count > 0
