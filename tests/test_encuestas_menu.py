@@ -103,6 +103,9 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
     assert media_urls[1].startswith("http")
     assert media_urls[1].endswith(f"/api/public/encuestas/{slug}/qr")
     assert menu.get("image_url") == fallback_image
+    assert menu.get("_base_url") == client.application.config.get(
+        "PUBLIC_ENCUESTAS_API_BASE_URL"
+    )
 
 
 def test_encuestas_menu_respects_explicit_disable(client):
@@ -171,3 +174,26 @@ def test_encuestas_menu_includes_configured_image(client):
     assert media_urls and media_urls[0] == "https://cdn.example.com/encuestas/banner.png"
     assert len(media_urls) >= 2
     assert media_urls[1].endswith("/qr")
+
+
+def test_encuestas_menu_defaults_to_backend_banner(client, monkeypatch):
+    with client.application.app_context():
+        encuesta, slug = _create_active_encuesta(tenant_id=13)
+        context = _base_context(tenant_id=encuesta.tenant_id or 13)
+        app = client.application
+        app.config.pop("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None)
+        app.config["PUBLIC_ENCUESTAS_API_BASE_URL"] = "https://api.chatboc.ar"
+        monkeypatch.setattr(
+            municipio_responder.AppConfig,
+            "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL",
+            None,
+            raising=False,
+        )
+        menu = municipio_responder._get_encuestas_menu(context)
+
+    expected_banner = "https://api.chatboc.ar/static/encuestas/participacion_ciudadana.png"
+    assert menu.get("image_url") == expected_banner
+    media_urls = menu.get("media_urls")
+    assert media_urls and media_urls[0] == expected_banner
+    assert menu.get("_base_url") == "https://api.chatboc.ar"
+    assert slug in menu["message_body"]
