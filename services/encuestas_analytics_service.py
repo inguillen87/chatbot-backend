@@ -5,6 +5,7 @@ import csv
 import io
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+from statistics import mean, median
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from sqlalchemy.orm import joinedload
@@ -30,6 +31,28 @@ def _apply_filters(query, filtros: Optional[Dict[str, Any]]):
         query = query.filter(EncRespuesta.utm_source == filtros["utm_source"])
     if filtros.get("utm_campaign"):
         query = query.filter(EncRespuesta.utm_campaign == filtros["utm_campaign"])
+
+    def _apply_text_filter(column, key: str):
+        values = filtros.get(key)
+        if not values:
+            return
+        if isinstance(values, str):
+            query_local = query.filter(column == values)
+        else:
+            query_local = query.filter(column.in_(list(values)))
+        return query_local
+
+    for column, key in (
+        (EncRespuesta.genero, "genero"),
+        (EncRespuesta.rango_etario, "rango_etario"),
+        (EncRespuesta.barrio, "barrio"),
+        (EncRespuesta.ciudad, "ciudad"),
+        (EncRespuesta.provincia, "provincia"),
+        (EncRespuesta.pais, "pais"),
+    ):
+        filtered = _apply_text_filter(column, key)
+        if filtered is not None:
+            query = filtered
     return query
 
 
@@ -37,6 +60,13 @@ def _collect_respuestas(encuesta: EncEncuesta, filtros: Optional[Dict[str, Any]]
     query = EncRespuesta.query.options(joinedload(EncRespuesta.detalles)).filter_by(encuesta_id=encuesta.id)
     query = _apply_filters(query, filtros)
     return query.order_by(EncRespuesta.submitted_at.asc()).all()
+
+
+def _top_counter(counter: Counter, limit: int = 10) -> List[Dict[str, Any]]:
+    return [
+        {"label": label, "value": count}
+        for label, count in counter.most_common(limit)
+    ]
 
 
 def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -49,6 +79,13 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
     canales = Counter()
     utm = Counter()
     participantes_unicos: set[str] = set()
+    generos = Counter()
+    rangos_etarios = Counter()
+    barrios = Counter()
+    ciudades = Counter()
+    provincias = Counter()
+    paises = Counter()
+    edades: List[int] = []
 
     preguntas_obligatorias = {
         pregunta.id
@@ -70,6 +107,21 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
             or (respuesta.ip and f"ip:{respuesta.ip}")
         )
         participantes_unicos.add(str(fingerprint or f"anon:{respuesta.id}"))
+
+        if respuesta.genero:
+            generos[respuesta.genero] += 1
+        if respuesta.rango_etario:
+            rangos_etarios[respuesta.rango_etario] += 1
+        if respuesta.barrio:
+            barrios[respuesta.barrio] += 1
+        if respuesta.ciudad:
+            ciudades[respuesta.ciudad] += 1
+        if respuesta.provincia:
+            provincias[respuesta.provincia] += 1
+        if respuesta.pais:
+            paises[respuesta.pais] += 1
+        if isinstance(respuesta.edad, int):
+            edades.append(respuesta.edad)
 
         detalles_por_pregunta = defaultdict(list)
         for detalle in respuesta.detalles:
@@ -120,6 +172,40 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
 
     tasa_completitud = (respuestas_completas / total * 100) if total else 0.0
 
+    edades_ordenadas = sorted(edades)
+    edad_promedio = round(mean(edades_ordenadas), 2) if edades_ordenadas else None
+    edad_mediana = median(edades_ordenadas) if edades_ordenadas else None
+
+    def _percentile(values: List[int], pct: float) -> Optional[float]:
+        if not values:
+            return None
+        if len(values) == 1:
+            return float(values[0])
+        index = (len(values) - 1) * pct / 100.0
+        lower = int(index)
+        upper = min(lower + 1, len(values) - 1)
+        fraction = index - lower
+        return round(values[lower] + (values[upper] - values[lower]) * fraction, 2)
+
+    edad_p90 = _percentile(edades_ordenadas, 90.0)
+
+    demografia = {
+        "genero": dict(generos),
+        "rango_etario": dict(rangos_etarios),
+        "edad": {
+            "promedio": edad_promedio,
+            "mediana": edad_mediana,
+            "p90": edad_p90,
+            "muestra": len(edades_ordenadas),
+        },
+        "territorio": {
+            "barrios": _top_counter(barrios),
+            "ciudades": _top_counter(ciudades),
+            "provincias": _top_counter(provincias),
+            "paises": _top_counter(paises),
+        },
+    }
+
     return {
         "encuesta_id": encuesta.id,
         "total_respuestas": total,
@@ -130,6 +216,7 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
         "preguntas": preguntas_summary,
         "canales": canales_data,
         "utm": utm_data,
+        "demografia": demografia,
     }
 
 
@@ -190,6 +277,14 @@ def export_csv(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> It
         "canal",
         "utm_source",
         "utm_campaign",
+        "genero",
+        "rango_etario",
+        "edad",
+        "anio_nacimiento",
+        "barrio",
+        "ciudad",
+        "provincia",
+        "pais",
         "ip",
         "lat",
         "lng",
@@ -211,6 +306,14 @@ def export_csv(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> It
             "canal": respuesta.canal,
             "utm_source": respuesta.utm_source,
             "utm_campaign": respuesta.utm_campaign,
+            "genero": respuesta.genero,
+            "rango_etario": respuesta.rango_etario,
+            "edad": respuesta.edad,
+            "anio_nacimiento": respuesta.anio_nacimiento,
+            "barrio": respuesta.barrio,
+            "ciudad": respuesta.ciudad,
+            "provincia": respuesta.provincia,
+            "pais": respuesta.pais,
             "ip": _mask_ip(respuesta.ip),
             "lat": respuesta.lat,
             "lng": respuesta.lng,

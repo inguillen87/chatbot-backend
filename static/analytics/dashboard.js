@@ -230,6 +230,11 @@ async function loadDashboard() {
     summary = createDemoSummary(state.scope);
   }
   renderSummary(summary);
+  if (state.scope === 'municipio') {
+    renderDemografia(summary.demografia || null);
+  } else {
+    renderDemografia(null);
+  }
 
   const tasks = [];
   if (state.scope === 'municipio') {
@@ -285,6 +290,24 @@ function createDemoSummary(scope) {
     const ttaP90 = ttaP50 + Math.round(10 + random() * 18);
     const ttrP50 = Math.round(120 + random() * 160);
     const ttrP90 = ttrP50 + Math.round(150 + random() * 220);
+    const respuestas = Math.max(Math.round(180 + random() * 160), 1);
+    const generoFem = Math.round(respuestas * (0.45 + random() * 0.1));
+    const generoMasc = Math.round(respuestas * (0.4 + random() * 0.08));
+    const generoNb = Math.max(respuestas - generoFem - generoMasc, 0);
+    const ageBuckets = ['18-24', '25-34', '35-44', '45-54', '55-64', '65+'];
+    const demoAges = {};
+    let remaining = respuestas;
+    ageBuckets.forEach((bucket, index) => {
+      const weight = 0.3 - index * 0.03 + random() * 0.05;
+      const value = Math.max(Math.round(respuestas * Math.max(weight, 0.05)), 0);
+      demoAges[bucket] = value;
+      remaining -= value;
+    });
+    if (remaining > 0) {
+      demoAges['18-24'] += remaining;
+    }
+    const barrioLabels = ['Centro', 'Sur', 'Norte', 'Este', 'Oeste'];
+    const demoBarrios = barrioLabels.map((label, idx) => ({ label, value: Math.max(Math.round(respuestas * (0.12 + random() * 0.1) * (1 - idx * 0.1)), 1) }));
     return {
       totals: {
         tickets,
@@ -300,6 +323,17 @@ function createDemoSummary(scope) {
         ttr: { p50: ttrP50, p90: ttrP90, p95: ttrP90 + Math.round(random() * 30) },
       },
       extras: {},
+      demografia: {
+        genero: { femenino: generoFem, masculino: generoMasc, no_binario: generoNb },
+        rango_etario: demoAges,
+        edad: {
+          promedio: Math.round((28 + random() * 18) * 10) / 10,
+          mediana: 35,
+          p90: 58,
+          muestra: respuestas,
+        },
+        territorio: { barrios: demoBarrios },
+      },
     };
   }
   if (scope === 'pyme') {
@@ -326,6 +360,7 @@ function createDemoSummary(scope) {
       },
       sla: {},
       extras: {},
+      demografia: null,
     };
   }
   const tickets = Math.round(200 + random() * 160);
@@ -343,6 +378,7 @@ function createDemoSummary(scope) {
     },
     sla: {},
     extras: {},
+    demografia: null,
   };
 }
 
@@ -599,6 +635,14 @@ function renderChart(canvas, config) {
   if (state.charts.has(canvas.id)) {
     state.charts.get(canvas.id).destroy();
   }
+  canvas.style.display = '';
+  const container = canvas.parentElement;
+  if (container) {
+    const placeholder = container.querySelector('.empty-state');
+    if (placeholder) {
+      placeholder.remove();
+    }
+  }
   const context = canvas.getContext('2d');
   if (!config.data.labels && config.data.datasets?.[0]?.data?.[0]?.x !== undefined) {
     const labels = Array.from(
@@ -611,6 +655,90 @@ function renderChart(canvas, config) {
   }
   const chart = new window.Chart(context, config);
   state.charts.set(canvas.id, chart);
+}
+
+function updateEmptyState(canvasId, hasData, message = 'Sin datos disponibles') {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const container = canvas.parentElement;
+  if (!container) return;
+  if (hasData) {
+    canvas.style.display = '';
+    const placeholder = container.querySelector('.empty-state');
+    if (placeholder) placeholder.remove();
+    return;
+  }
+  if (state.charts.has(canvasId)) {
+    state.charts.get(canvasId).destroy();
+    state.charts.delete(canvasId);
+  }
+  canvas.style.display = 'none';
+  let placeholder = container.querySelector('.empty-state');
+  if (!placeholder) {
+    placeholder = document.createElement('p');
+    placeholder.className = 'empty-state';
+    container.appendChild(placeholder);
+  }
+  placeholder.textContent = message;
+}
+
+function renderDemografia(data) {
+  const resumenContainer = document.getElementById('municipio-demografia-resumen');
+  if (!data) {
+    updateEmptyState('municipio-demografia-genero', false, 'Sin datos de género');
+    updateEmptyState('municipio-demografia-edad', false, 'Sin datos etarios');
+    updateEmptyState('municipio-demografia-barrios', false, 'Sin datos por barrio');
+    if (resumenContainer) {
+      resumenContainer.innerHTML = '<p class="empty-state">Sin datos demográficos suficientes</p>';
+    }
+    return;
+  }
+
+  const generoEntries = Object.entries(data.genero || {}).map(([label, value]) => ({ label, value }));
+  updateEmptyState('municipio-demografia-genero', generoEntries.length > 0, 'Sin datos de género');
+  if (generoEntries.length) {
+    renderDonutChart('municipio-demografia-genero', generoEntries);
+  }
+
+  const ageOrder = ['0-12', '13-17', '18-24', '25-34', '35-44', '45-54', '55-64', '65+'];
+  const ageCounts = data.rango_etario || {};
+  const ageItems = ageOrder
+    .map((bucket) => ({ label: bucket, value: ageCounts[bucket] || 0 }))
+    .filter((item) => item.value > 0);
+  updateEmptyState('municipio-demografia-edad', ageItems.length > 0, 'Sin datos etarios');
+  if (ageItems.length) {
+    renderBarChart('municipio-demografia-edad', ageItems);
+  }
+
+  const barriosItems = Array.isArray(data.territorio?.barrios) ? data.territorio.barrios.slice(0, 8) : [];
+  updateEmptyState('municipio-demografia-barrios', barriosItems.length > 0, 'Sin datos por barrio');
+  if (barriosItems.length) {
+    renderBarChart('municipio-demografia-barrios', barriosItems);
+  }
+
+  if (resumenContainer) {
+    const edad = data.edad || {};
+    const metrics = [
+      {
+        label: 'Promedio',
+        value:
+          edad.promedio != null ? formatNumber(Math.round(Number(edad.promedio) * 10) / 10) : '—',
+      },
+      { label: 'Mediana', value: edad.mediana != null ? formatNumber(Number(edad.mediana)) : '—' },
+      { label: 'P90', value: edad.p90 != null ? formatNumber(Number(edad.p90)) : '—' },
+      { label: 'Muestra', value: edad.muestra != null ? edad.muestra : 0 },
+    ];
+    if (!metrics.length) {
+      resumenContainer.innerHTML = '<p class="empty-state">Sin datos demográficos suficientes</p>';
+    } else {
+      resumenContainer.innerHTML = metrics
+        .map(
+          (metric) =>
+            `<div class="metric"><span>${metric.label}</span><strong>${metric.value}</strong></div>`
+        )
+        .join('');
+    }
+  }
 }
 
 function groupSeries(series) {

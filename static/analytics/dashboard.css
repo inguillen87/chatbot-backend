@@ -192,6 +192,33 @@ button.ghost {
   margin-top: 24px;
 }
 
+.demografia-resumen {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.demografia-resumen .metric {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.demografia-resumen .metric span {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted-color);
+}
+
+.demografia-resumen .metric strong {
+  font-size: clamp(18px, 2vw, 24px);
+}
+
 .card {
   background: var(--bg-alt);
   padding: 20px;
@@ -202,6 +229,13 @@ button.ghost {
   flex-direction: column;
   gap: 16px;
   min-height: 240px;
+}
+
+.card .empty-state {
+  margin-top: auto;
+  color: var(--muted-color);
+  font-size: 0.9rem;
+  text-align: center;
 }
 
 .card header {

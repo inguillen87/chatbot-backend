@@ -27,6 +27,15 @@ def _parse_filtros() -> dict:
         value = request.args.get(key)
         if value:
             filtros[key] = value
+
+    for key in ("genero", "rango_etario", "barrio", "ciudad", "provincia", "pais"):
+        raw_value = request.args.get(key)
+        if not raw_value:
+            continue
+        parts = [part.strip() for part in raw_value.split(",") if part.strip()]
+        if not parts:
+            continue
+        filtros[key] = parts if len(parts) > 1 else parts[0]
     return filtros
 
 
