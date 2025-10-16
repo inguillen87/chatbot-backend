@@ -3,66 +3,363 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Confirmación de Ticket</title>
+    <title>{{ header_title or 'Detalle del ticket' }}</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #f3f4f6;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            color: #111827;
+        }
+        .wrapper {
+            max-width: 720px;
+            margin: 32px auto;
+            background-color: #ffffff;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 20px 45px rgba(15, 23, 42, 0.12);
+        }
+        .header {
+            background: linear-gradient(135deg, #2563eb, #1d4ed8);
+            color: #ffffff;
+            padding: 32px;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 26px;
+            font-weight: 600;
+        }
+        .header p {
+            margin: 8px 0 0;
+            font-size: 15px;
+            color: rgba(255,255,255,0.85);
+        }
+        .content {
+            padding: 32px;
+        }
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+        .summary-item {
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            padding: 16px;
+            background-color: #f9fafb;
+        }
+        .summary-item span {
+            display: block;
+            font-size: 12px;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: #6b7280;
+            margin-bottom: 6px;
+        }
+        .summary-item strong {
+            font-size: 16px;
+            color: #111827;
+        }
+        .callout {
+            border-radius: 10px;
+            border: 1px solid rgba(37, 99, 235, 0.2);
+            background: rgba(37, 99, 235, 0.08);
+            padding: 18px 20px;
+            margin-bottom: 24px;
+        }
+        .callout h3 {
+            margin: 0 0 8px;
+            font-size: 16px;
+            color: #1d4ed8;
+        }
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin: 0 0 16px;
+            color: #111827;
+        }
+        .two-columns {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 20px;
+            margin-bottom: 28px;
+        }
+        .card {
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            padding: 18px 20px;
+            background-color: #f9fafb;
+        }
+        .card h4 {
+            margin: 0 0 10px;
+            font-size: 15px;
+            color: #1f2937;
+        }
+        .card p {
+            margin: 4px 0;
+            font-size: 14px;
+            color: #374151;
+        }
+        .card a {
+            color: #2563eb;
+        }
+        .map-container {
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid #e5e7eb;
+            margin-bottom: 28px;
+        }
+        .map-container img {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+        .attachments {
+            margin-bottom: 28px;
+        }
+        .attachments ul {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+        .attachments li {
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+        .attachments a {
+            color: #2563eb;
+            text-decoration: none;
+        }
+        .timeline {
+            border-left: 2px solid #e5e7eb;
+            padding-left: 18px;
+            margin: 0;
+        }
+        .timeline-item {
+            position: relative;
+            margin-bottom: 20px;
+            padding: 16px 18px;
+            background-color: #f9fafb;
+            border-radius: 10px;
+            border: 1px solid #e5e7eb;
+        }
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -28px;
+            top: 18px;
+            width: 12px;
+            height: 12px;
+            background-color: #2563eb;
+            border-radius: 50%;
+        }
+        .timeline-meta {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #6b7280;
+            margin-bottom: 10px;
+        }
+        .timeline-message {
+            font-size: 14px;
+            color: #1f2937;
+            white-space: pre-wrap;
+        }
+        .cta {
+            text-align: center;
+            margin: 32px 0 12px;
+        }
+        .cta a {
+            display: inline-block;
+            padding: 14px 28px;
+            background: linear-gradient(135deg, #2563eb, #1d4ed8);
+            color: #ffffff;
+            text-decoration: none;
+            border-radius: 999px;
+            font-weight: 600;
+        }
+        .footer {
+            background-color: #f9fafb;
+            padding: 20px 32px;
+            font-size: 12px;
+            color: #6b7280;
+            text-align: center;
+        }
+        .update-card {
+            border-radius: 10px;
+            border: 1px solid rgba(16, 185, 129, 0.25);
+            background: rgba(16, 185, 129, 0.08);
+            padding: 20px;
+            margin-bottom: 24px;
+        }
+        .update-card h3 {
+            margin: 0 0 8px;
+            font-size: 16px;
+            color: #047857;
+        }
+        .update-card .meta {
+            font-size: 12px;
+            color: #047857;
+            margin-bottom: 12px;
+        }
+    </style>
 </head>
-<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f4f4f7;">
-    <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 600px; margin: 20px auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
-        <tr>
-            <td style="padding: 30px 40px; border-bottom: 1px solid #eeeeee; text-align: center;">
-                <!-- Aquí podrías poner el logo de tu municipio -->
-                <!-- <img src="URL_DEL_LOGO" alt="Logo Municipio" style="max-width: 150px;"> -->
-                <h1 style="margin: 10px 0 0; color: #1a1a1a; font-size: 24px; font-weight: 600;">Ticket de Reclamo Recibido</h1>
-            </td>
-        </tr>
-        <tr>
-            <td style="padding: 30px 40px;">
-                <p style="margin: 0 0 15px; color: #444444; font-size: 16px; line-height: 1.6;">Hola {{ nombre_vecino }},</p>
-                <p style="margin: 0 0 20px; color: #444444; font-size: 16px; line-height: 1.6;">
-                    Hemos recibido tu reclamo y ya lo estamos gestionando. A continuación, te dejamos un resumen de los detalles:
-                </p>
-                <div style="background-color: #f9f9f9; border: 1px solid #eeeeee; border-radius: 5px; padding: 20px; margin-bottom: 20px;">
-                    <h3 style="margin-top: 0; color: #333;">Detalles del Ticket</h3>
-                    <p style="margin: 5px 0;"><strong>Número de Ticket:</strong> {{ nro_ticket }}</p>
-                    <p style="margin: 5px 0;"><strong>Categoría:</strong> {{ categoria }}</p>
-                    <p style="margin: 5px 0;"><strong>Dirección:</strong> {{ direccion }}</p>
-                    {% if consulta_pin %}
-                    <p style="margin: 5px 0;"><strong>PIN de Consulta:</strong> {{ consulta_pin }}</p>
-                    {% endif %}
-                    <p style="margin: 5px 0;"><strong>Descripción:</strong></p>
-                    <p style="margin: 5px 0; padding-left: 10px; border-left: 3px solid #dddddd;"><em>{{ detalles }}</em></p>
+<body>
+    <div class="wrapper">
+        <div class="header">
+            <h1>{{ header_title or 'Detalle del ticket' }}</h1>
+            {% if header_intro %}<p>{{ header_intro }}</p>{% endif %}
+            {% if header_subtitle %}<p>{{ header_subtitle }}</p>{% endif %}
+        </div>
+        <div class="content">
+            <div class="summary-grid">
+                <div class="summary-item">
+                    <span>Ticket</span>
+                    <strong>{{ ticket_codigo or ticket_numero or 'No asignado' }}</strong>
                 </div>
-
-                {% if foto_url %}
-                <div style="margin-bottom: 20px;">
-                    <p style="margin: 5px 0; color: #444444;"><strong>Imagen adjunta:</strong></p>
-                    <img src="{{ foto_url }}" alt="Foto del reclamo" style="max-width: 100%; height: auto; border-radius: 5px;">
+                <div class="summary-item">
+                    <span>Estado</span>
+                    <strong>{{ estado or 'En revisión' }}</strong>
+                </div>
+                <div class="summary-item">
+                    <span>Categoría</span>
+                    <strong>{{ categoria or 'General' }}</strong>
+                </div>
+                <div class="summary-item">
+                    <span>Creado</span>
+                    <strong>{{ fecha_creacion or 'Pendiente' }}</strong>
+                </div>
+                {% if ultima_actualizacion %}
+                <div class="summary-item">
+                    <span>Última actualización</span>
+                    <strong>{{ ultima_actualizacion }}</strong>
                 </div>
                 {% endif %}
+                {% if consulta_pin %}
+                <div class="summary-item">
+                    <span>PIN de consulta</span>
+                    <strong>{{ consulta_pin }}</strong>
+                </div>
+                {% endif %}
+                {% if canal_ingreso %}
+                <div class="summary-item">
+                    <span>Canal</span>
+                    <strong>{{ canal_ingreso }}</strong>
+                </div>
+                {% endif %}
+            </div>
 
-                  <p style="margin: 0; text-align: center;">
-                      <a href="{{ chat_url }}" style="background-color: #007bff; color: #ffffff; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;">Ver Estado del Ticket</a>
-                  </p>
-                  {% if telefono_contacto %}
-                  <p style="margin: 20px 0 5px; color: #444444;"><strong>Teléfono de contacto:</strong> {{ telefono_contacto }}</p>
-                  {% endif %}
-                  {% if horario_contacto %}
-                  <p style="margin: 5px 0; color: #444444;"><strong>Horario de atención:</strong> {{ horario_contacto }}</p>
-                  {% endif %}
-                  {% if enlace_contacto %}
-                  <p style="margin: 5px 0;"><a href="{{ enlace_contacto }}" style="color: #007bff;">Enlace de interés</a></p>
-                  {% endif %}
-              </td>
-          </tr>
-          <tr>
-              <td style="padding: 20px 40px; text-align: center; background-color: #f9f9f9; border-top: 1px solid #eeeeee; border-radius: 0 0 8px 8px;">
-                  <p style="margin: 0; color: #888888; font-size: 12px;">
-                      Te mantendremos informado sobre cualquier novedad. Gracias por tu colaboración.
-                  </p>
-                  <p style="margin: 5px 0 0; color: #888888; font-size: 12px;">
-                      Este es un mensaje automático, por favor no respondas a este correo.
-                  </p>
-              </td>
-          </tr>
-      </table>
- </body>
- </html>
+            {% if es_actualizacion and comentario_reciente %}
+            <div class="update-card">
+                <h3>Última novedad</h3>
+                <div class="meta">{{ comentario_reciente.autor }} · {{ comentario_reciente.fecha or 'Hace instantes' }}</div>
+                <div class="timeline-message">{{ comentario_reciente.mensaje }}</div>
+                {% if comentario_reciente.adjunto %}
+                <p style="margin-top: 12px; font-size: 13px;">
+                    <strong>Adjunto:</strong>
+                    <a href="{{ comentario_reciente.adjunto.url }}" target="_blank">{{ comentario_reciente.adjunto.nombre }}</a>
+                </p>
+                {% endif %}
+            </div>
+            {% elif mensaje_destacado %}
+            <div class="callout">
+                <h3>Resumen</h3>
+                <p style="margin:0; font-size: 14px; color: #1f2937;">{{ mensaje_destacado }}</p>
+            </div>
+            {% endif %}
+
+            <h2 class="section-title">Detalles del reclamo</h2>
+            <div class="card" style="margin-bottom: 24px;">
+                <p style="margin:0; font-size: 15px; color:#1f2937;">{{ descripcion or 'Sin descripción registrada.' }}</p>
+            </div>
+
+            <div class="two-columns">
+                <div class="card">
+                    <h4>Ubicación</h4>
+                    <p><strong>Dirección:</strong> {{ direccion or 'No especificada' }}</p>
+                    {% if mapa_link %}
+                    <p><a href="{{ mapa_link }}" target="_blank">Abrir en Google Maps</a></p>
+                    {% endif %}
+                </div>
+                <div class="card">
+                    <h4>Tus datos</h4>
+                    <p><strong>Nombre:</strong> {{ cliente.nombre or 'No informado' }}</p>
+                    <p><strong>Email:</strong> {{ cliente.email or 'No informado' }}</p>
+                    <p><strong>Teléfono:</strong> {{ cliente.telefono or 'No informado' }}</p>
+                    {% if cliente.dni %}<p><strong>DNI:</strong> {{ cliente.dni }}</p>{% endif %}
+                </div>
+                <div class="card">
+                    <h4>Contacto del equipo</h4>
+                    {% if contacto_institucion.telefono %}<p><strong>Teléfono:</strong> {{ contacto_institucion.telefono }}</p>{% endif %}
+                    {% if contacto_institucion.horario %}<p><strong>Horario:</strong> {{ contacto_institucion.horario }}</p>{% endif %}
+                    {% if contacto_institucion.enlace %}<p><a href="{{ contacto_institucion.enlace }}" target="_blank">Ver más información</a></p>{% endif %}
+                    {% if soporte_email %}<p><strong>Soporte:</strong> {{ soporte_email }}</p>{% endif %}
+                </div>
+            </div>
+
+            {% if mapa_url %}
+            <div class="map-container">
+                <a href="{{ mapa_link or mapa_url }}" target="_blank">
+                    <img src="{{ mapa_url }}" alt="{{ mapa_alt or 'Mapa de la ubicación del ticket' }}">
+                </a>
+            </div>
+            {% endif %}
+
+            {% if adjuntos_ticket %}
+            <div class="attachments">
+                <h2 class="section-title">Archivos y evidencias</h2>
+                <ul>
+                    {% for adj in adjuntos_ticket %}
+                    <li>
+                        <a href="{{ adj.url }}" target="_blank">{{ adj.nombre }}</a>
+                        {% if adj.es_imagen %}
+                        <div style="margin-top:8px;"><img src="{{ adj.url }}" alt="{{ adj.nombre }}" style="max-width: 160px; border-radius: 8px; border:1px solid #e5e7eb;"></div>
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+
+            {% if historial %}
+            <h2 class="section-title">Historial reciente</h2>
+            <div class="timeline">
+                {% for item in historial %}
+                <div class="timeline-item">
+                    <div class="timeline-meta">
+                        <span>{{ item.autor }} · {{ item.rol }}</span>
+                        <span>{{ item.fecha or '' }}</span>
+                    </div>
+                    <div class="timeline-message">{{ item.mensaje }}</div>
+                    {% if item.estado %}
+                    <p style="margin-top: 10px; font-size: 12px; color: #6b7280;">Estado registrado: {{ item.estado }}</p>
+                    {% endif %}
+                    {% if item.adjunto %}
+                    <p style="margin-top: 12px; font-size: 13px;">
+                        <strong>Adjunto:</strong>
+                        <a href="{{ item.adjunto.url }}" target="_blank">{{ item.adjunto.nombre }}</a>
+                    </p>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {% if cta_url %}
+            <div class="cta">
+                <a href="{{ cta_url }}" target="_blank">{{ cta_label or 'Ver ticket en línea' }}</a>
+            </div>
+            {% endif %}
+        </div>
+        <div class="footer">
+            {% if destinatario == 'ciudadano' %}
+            <p>Este correo es automático. Responder a este mensaje no garantiza seguimiento inmediato, pero podés escribirnos a {{ soporte_email or 'info@chatboc.ar' }}.</p>
+            {% else %}
+            <p>Recibís este resumen porque administrás tickets en ChatBoc.</p>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>
