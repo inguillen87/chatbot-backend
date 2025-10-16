@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import re
 import secrets
 import unicodedata
@@ -126,6 +127,7 @@ def _load_bootstrap_data(path: str) -> Dict[str, Any]:
 
     data.setdefault("templates", [])
     data.setdefault("profiles", [])
+    data.setdefault("geo_catalog", {})
     return data
 
 
@@ -141,14 +143,157 @@ def _bootstrap_templates() -> Sequence[Dict[str, Any]]:
     return tuple(templates)
 
 
+def _geo_catalog() -> Dict[str, Any]:
+    catalog = _get_bootstrap_data().get("geo_catalog", {})
+    if isinstance(catalog, dict):
+        return catalog
+    return {}
+
+
+def _resolve_geo_metadata(
+    municipality: Optional[str] = None,
+    profile_key: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    catalog = _geo_catalog()
+    candidates: List[str] = []
+    if profile_key:
+        candidates.append(_slugify(profile_key))
+    if municipality:
+        candidates.append(_slugify(municipality))
+    for candidate in candidates:
+        entry = catalog.get(candidate)
+        if isinstance(entry, dict):
+            return entry
+    # Fallback: return first catalog entry if available.
+    if catalog:
+        first_key = next(iter(catalog))
+        entry = catalog.get(first_key)
+        if isinstance(entry, dict):
+            return entry
+    return None
+
+
+def _build_location_question(
+    geo_metadata: Dict[str, Any],
+    municipality: str,
+) -> Optional[Dict[str, Any]]:
+    barrios = list(geo_metadata.get("neighborhoods") or [])
+    distritos = list(geo_metadata.get("districts") or [])
+    options_labels: List[str] = []
+    seen: set[str] = set()
+
+    for label in distritos + barrios:
+        normalized = (label or "").strip()
+        if not normalized:
+            continue
+        lowered = normalized.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        options_labels.append(normalized)
+
+    if not options_labels:
+        return None
+
+    opciones: List[Dict[str, Any]] = [
+        {"orden": idx + 1, "texto": label}
+        for idx, label in enumerate(options_labels)
+    ]
+
+    otros_label = geo_metadata.get("otros_label") or "Otros (especificar ubicación)"
+    opciones.append(
+        {
+            "orden": len(opciones) + 1,
+            "texto": str(otros_label),
+            "valor": "geo_autocomplete",
+        }
+    )
+
+    question_text = (
+        "¿En qué distrito o barrio de {municipio} residís?"
+    ).format(municipio=municipality)
+
+    return {
+        "orden": 1,
+        "tipo": "opcion_unica",
+        "texto": question_text,
+        "obligatoria": True,
+        "opciones": opciones,
+    }
+
+
+def _augment_payload_with_geo(
+    payload: Dict[str, Any],
+    geo_metadata: Optional[Dict[str, Any]],
+    municipality: str,
+) -> Dict[str, Any]:
+    if not geo_metadata:
+        return payload
+
+    preguntas = list(payload.get("preguntas") or [])
+    has_geo_option = any(
+        any((opcion.get("valor") == "geo_autocomplete") for opcion in pregunta.get("opciones", []))
+        for pregunta in preguntas
+    )
+
+    if not has_geo_option:
+        location_question = _build_location_question(geo_metadata, municipality)
+        if location_question:
+            preguntas = [location_question] + preguntas
+
+    for index, pregunta in enumerate(preguntas, start=1):
+        pregunta["orden"] = index
+    payload["preguntas"] = preguntas
+
+    geo_payload = {
+        "center": geo_metadata.get("center"),
+        "bounds": geo_metadata.get("bounds"),
+        "coordinates": geo_metadata.get("coordinates"),
+        "districts": geo_metadata.get("districts"),
+        "neighborhoods": geo_metadata.get("neighborhoods"),
+    }
+    payload.setdefault("metadata", {})["geo"] = geo_payload
+    return payload
+
+
+def _pick_geo_point(
+    geo_metadata: Optional[Dict[str, Any]],
+    rng: random.Random,
+) -> Tuple[Optional[float], Optional[float], Optional[str]]:
+    if not geo_metadata:
+        return None, None, None
+
+    coordinates = list(geo_metadata.get("coordinates") or [])
+    if coordinates:
+        sample = rng.choice(coordinates)
+        return sample.get("lat"), sample.get("lng"), sample.get("barrio")
+
+    bounds = geo_metadata.get("bounds")
+    if isinstance(bounds, (list, tuple)) and len(bounds) == 4:
+        west, south, east, north = bounds
+        lat = rng.uniform(min(south, north), max(south, north))
+        lng = rng.uniform(min(west, east), max(west, east))
+        return lat, lng, None
+
+    center = geo_metadata.get("center")
+    if isinstance(center, (list, tuple)) and len(center) == 2:
+        lat = center[0] + rng.uniform(-0.01, 0.01)
+        lng = center[1] + rng.uniform(-0.01, 0.01)
+        return lat, lng, None
+
+    return None, None, None
+
+
 def _build_bootstrap_payloads(
     municipality: str,
     inicio: datetime,
     fin: datetime,
     templates: Optional[Sequence[Dict[str, Any]]] = None,
+    geo_metadata: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     source_templates = templates or _bootstrap_templates()
     municipality_slug = _slugify(municipality)
+    geo_info = geo_metadata or _resolve_geo_metadata(municipality)
     payloads: List[Dict[str, Any]] = []
     for template in source_templates:
         template_copy = deepcopy(template)
@@ -205,6 +350,7 @@ def _build_bootstrap_payloads(
             preguntas.append(pregunta)
 
         payload["preguntas"] = preguntas
+        payload = _augment_payload_with_geo(payload, geo_info, municipality)
         payloads.append(payload)
 
     return payloads
@@ -312,6 +458,8 @@ def _load_bootstrap_profiles() -> List[Dict[str, Any]]:
             "payload_builder": builder,
             "auto_publish": bool(raw_profile.get("auto_publish", True)),
             "tenant_id": raw_profile.get("tenant_id"),
+            "municipality_label": municipality or key.replace("_", " ") if key else None,
+            "geo_key": raw_profile.get("geo_key") or key,
         }
 
         profiles.append(profile)
@@ -326,6 +474,8 @@ def _load_bootstrap_profiles() -> List[Dict[str, Any]]:
                 "payload_builder": _build_junin_bootstrap_payload,
                 "auto_publish": True,
                 "tenant_id": None,
+                "municipality_label": "Junín",
+                "geo_key": "junin",
             }
         ]
 
@@ -719,6 +869,16 @@ def _match_bootstrap_profile(tenant_id: int) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _resolve_geo_metadata_for_tenant(tenant_id: int) -> Optional[Dict[str, Any]]:
+    profile = _match_bootstrap_profile(tenant_id)
+    if profile:
+        return _resolve_geo_metadata(
+            municipality=profile.get("municipality_label"),
+            profile_key=profile.get("geo_key") or profile.get("key"),
+        )
+    return None
+
+
 def _bootstrap_sample_if_needed(tenant_id: int) -> None:
     if not _BOOTSTRAP_SAMPLE_ENABLED:
         return
@@ -789,6 +949,107 @@ def _bootstrap_sample_if_needed(tenant_id: int) -> None:
 
     if not created:
         _bootstrap_skip_registry().add(tenant_id)
+
+
+def _prepare_template_payloads(
+    raw_payloads: Sequence[Dict[str, Any]] | Dict[str, Any],
+    municipio_label: str,
+    geo_metadata: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    if isinstance(raw_payloads, dict):
+        payloads = [deepcopy(raw_payloads)]
+    else:
+        payloads = [deepcopy(item) for item in raw_payloads]
+
+    if geo_metadata:
+        for idx, payload in enumerate(payloads):
+            payloads[idx] = _augment_payload_with_geo(payload, geo_metadata, municipio_label)
+
+    return payloads
+
+
+def _collect_all_template_payloads(
+    inicio: datetime, fin: datetime
+) -> List[Dict[str, Any]]:
+    catalog: List[Dict[str, Any]] = []
+    seen_keys: set[str] = set()
+
+    for profile in _BOOTSTRAP_PROFILES:
+        key = profile.get("key")
+        municipio_label = (
+            profile.get("municipality_label")
+            or (key.replace("_", " ") if isinstance(key, str) else None)
+            or "Tu municipio"
+        )
+        builder: Callable[[datetime, datetime], Sequence[Dict[str, Any]]] = profile["payload_builder"]
+        raw_payloads = builder(inicio, fin)
+        geo_metadata = _resolve_geo_metadata(
+            municipality=profile.get("municipality_label"),
+            profile_key=profile.get("geo_key") or key,
+        )
+        payloads = _prepare_template_payloads(raw_payloads, municipio_label, geo_metadata)
+        catalog.append(
+            {
+                "key": key,
+                "municipality": municipio_label,
+                "templates": payloads,
+                "geo": geo_metadata,
+            }
+        )
+        if key:
+            seen_keys.add(key)
+
+    if "generic" not in seen_keys:
+        generic_geo = _resolve_geo_metadata(municipality="Tu municipio")
+        generic_payloads = _prepare_template_payloads(
+            _build_bootstrap_payloads("Tu municipio", inicio, fin, geo_metadata=generic_geo),
+            "Tu municipio",
+            generic_geo,
+        )
+        catalog.append(
+            {
+                "key": "generic",
+                "municipality": "Tu municipio",
+                "templates": generic_payloads,
+                "geo": generic_geo,
+            }
+        )
+
+    return catalog
+
+
+def list_template_payloads(tenant_id: int, scope: Optional[str] = None) -> Dict[str, Any]:
+    inicio = datetime.now(timezone.utc)
+    fin = inicio + timedelta(days=45)
+    profile = _match_bootstrap_profile(tenant_id)
+    geo_metadata = _resolve_geo_metadata_for_tenant(tenant_id)
+
+    if profile:
+        builder: Callable[[datetime, datetime], Sequence[Dict[str, Any]]] = profile["payload_builder"]
+        raw_payloads = builder(inicio, fin)
+        municipio_label = profile.get("municipality_label") or profile.get("key") or "Tu municipio"
+    else:
+        municipio_label = "Tu municipio"
+        raw_payloads = _build_bootstrap_payloads(
+            municipio_label,
+            inicio,
+            fin,
+            geo_metadata=geo_metadata,
+        )
+
+    payloads = _prepare_template_payloads(raw_payloads, municipio_label, geo_metadata)
+
+    response: Dict[str, Any] = {
+        "templates": payloads,
+        "municipality": municipio_label,
+        "geo": geo_metadata,
+    }
+
+    scope_key = (scope or "").strip().lower()
+    if scope_key in {"all", "todos", "todas", "full"}:
+        response["all_templates"] = _collect_all_template_payloads(inicio, fin)
+
+    return response
 
 
 def _resolve_public_slug(encuesta: EncEncuesta) -> Optional[str]:
@@ -1129,6 +1390,34 @@ def _normalize_genero(value: Optional[Any]) -> Optional[str]:
     return text[:30]
 
 
+def _persist_respuesta_entity(
+    respuesta: EncRespuesta,
+    detalles: Sequence[EncRespuestaDetalle],
+) -> EncRespuesta:
+    db.session.add(respuesta)
+    try:
+        db.session.flush()
+    except IntegrityError as exc:
+        db.session.rollback()
+        if "uq_enc_respuesta_huella" in str(exc.orig):
+            raise EncuestaError("Respuesta duplicada", status_code=409) from exc
+        raise EncuestaError("No se pudo guardar la respuesta") from exc
+
+    for detalle in detalles:
+        detalle.respuesta = respuesta
+        db.session.add(detalle)
+
+    try:
+        db.session.commit()
+    except IntegrityError as exc:
+        db.session.rollback()
+        if "uq_enc_respuesta_huella" in str(exc.orig):
+            raise EncuestaError("Respuesta duplicada", status_code=409) from exc
+        raise EncuestaError("No se pudo guardar la respuesta") from exc
+
+    return respuesta
+
+
 def save_respuesta(slug_publico: str, payload: Dict[str, Any], request_ctx: Dict[str, Any]) -> EncRespuesta:
     encuesta = get_public_encuesta(slug_publico)
     respuestas_payload = payload.get("respuestas") or []
@@ -1190,16 +1479,7 @@ def save_respuesta(slug_publico: str, payload: Dict[str, Any], request_ctx: Dict
         content_hash=None,
     )
 
-    respuesta.detalles = detalles
-
-    db.session.add(respuesta)
-    try:
-        db.session.commit()
-    except IntegrityError as exc:
-        db.session.rollback()
-        if "uq_enc_respuesta_huella" in str(exc.orig):
-            raise EncuestaError("Respuesta duplicada", status_code=409) from exc
-        raise EncuestaError("No se pudo guardar la respuesta") from exc
+    respuesta = _persist_respuesta_entity(respuesta, detalles)
 
     current_app.logger.info(
         "[encuestas] Nueva respuesta %s para encuesta %s desde %s",
@@ -1229,6 +1509,290 @@ def _is_encuesta_activa(encuesta: EncEncuesta) -> bool:
     if fin and now > fin:
         return False
     return True
+
+
+def seed_encuesta_respuestas_demo(
+    encuesta_id: int,
+    user: Any,
+    cantidad: int = 50,
+) -> Dict[str, Any]:
+    if cantidad <= 0:
+        raise EncuestaError("Debe solicitar al menos una respuesta demo")
+
+    encuesta = get_encuesta(encuesta_id, user=user)
+    tenant_id = encuesta.tenant_id
+    geo_metadata = _resolve_geo_metadata_for_tenant(tenant_id)
+    rng = random.Random()
+
+    location_question = None
+    otros_option = None
+    standard_location_options: List[EncOpcion] = []
+    for pregunta in encuesta.preguntas:
+        if pregunta.tipo == "opcion_unica":
+            for opcion in pregunta.opciones:
+                if opcion.valor == "geo_autocomplete":
+                    location_question = pregunta
+                    otros_option = opcion
+                    standard_location_options = [
+                        opt for opt in pregunta.opciones if opt.id != opcion.id
+                    ]
+                    break
+            if location_question:
+                break
+
+    comentarios = [
+        "Gracias por escucharnos",
+        "Sería bueno reforzar la iluminación en mi cuadra",
+        "Excelente iniciativa para planificar mejoras",
+        "Ojalá sigan estas encuestas participativas",
+        "Necesitamos más controles y presencia ciudadana",
+    ]
+    generos = ["femenino", "masculino", "no_binario", None]
+    canales = ["web", "whatsapp", "presencial"]
+    utm_sources = ["web", "qr", "campana"]
+    utm_campaigns = ["demo", "lanzamiento", "presentacion", "inversionistas"]
+
+    barrios_catalogo = list((geo_metadata or {}).get("neighborhoods") or [])
+    distritos_catalogo = list((geo_metadata or {}).get("districts") or [])
+    posibles_barrios = barrios_catalogo + distritos_catalogo
+
+    created = 0
+    skipped = 0
+    attempts = 0
+    dni_usados: set[str] = set()
+    phone_usados: set[str] = set()
+    fingerprints: set[str] = set()
+
+    while created < cantidad and attempts < cantidad * 6:
+        attempts += 1
+
+        dni = f"{rng.randint(20000000, 49999999):08d}"
+        if dni in dni_usados:
+            continue
+        phone = f"+549261{rng.randint(4000000, 9999999):07d}"
+        if phone in phone_usados:
+            continue
+
+        genero = rng.choice(generos)
+        edad = rng.randint(18, 72)
+        anio_nacimiento = datetime.now(timezone.utc).year - edad
+        rango_etario = _compute_age_group(edad)
+
+        lat, lng, barrio_hint = _pick_geo_point(geo_metadata, rng)
+        barrio_label = barrio_hint or (rng.choice(posibles_barrios) if posibles_barrios else None)
+
+        if lat is None or lng is None:
+            # Fallback coordinates around Gran Mendoza to asegurar mapa visible.
+            lat = rng.uniform(-33.2, -32.8)
+            lng = rng.uniform(-68.9, -68.3)
+
+        submitted_at = datetime.now(timezone.utc) - timedelta(
+            days=rng.randint(0, 28), minutes=rng.randint(0, 1440)
+        )
+
+        respuestas_items: List[Dict[str, Any]] = []
+        for pregunta in encuesta.preguntas:
+            if pregunta is location_question:
+                opcion_ids: List[int] = []
+                if standard_location_options and rng.random() > 0.2:
+                    opcion = rng.choice(standard_location_options)
+                    opcion_ids = [opcion.id]
+                    barrio_label = barrio_label or opcion.texto
+                elif otros_option is not None:
+                    opcion_ids = [otros_option.id]
+                    if not barrio_label:
+                        barrio_label = f"Barrio sin registrar {rng.randint(1, 90)}"
+                elif pregunta.opciones:
+                    opcion = rng.choice(pregunta.opciones)
+                    opcion_ids = [opcion.id]
+                    barrio_label = barrio_label or opcion.texto
+                if opcion_ids:
+                    respuestas_items.append({"pregunta_id": pregunta.id, "opcion_ids": opcion_ids})
+                continue
+
+            if pregunta.tipo == "opcion_unica" and pregunta.opciones:
+                opcion = rng.choice(pregunta.opciones)
+                respuestas_items.append({"pregunta_id": pregunta.id, "opcion_ids": [opcion.id]})
+                continue
+
+            if pregunta.tipo == "opcion_multiple" and pregunta.opciones:
+                opciones = list(pregunta.opciones)
+                max_sel = pregunta.max_selecciones or len(opciones)
+                max_sel = min(max_sel, len(opciones))
+                min_sel = pregunta.min_selecciones or (1 if pregunta.obligatoria else 0)
+                min_sel = max(0, min_sel)
+                if max_sel <= 0:
+                    continue
+                cantidad_sel = rng.randint(max(1, min_sel), max_sel)
+                seleccionadas = rng.sample(opciones, k=cantidad_sel)
+                respuestas_items.append({
+                    "pregunta_id": pregunta.id,
+                    "opcion_ids": [op.id for op in seleccionadas],
+                })
+                continue
+
+            texto = rng.choice(comentarios)
+            respuestas_items.append({
+                "pregunta_id": pregunta.id,
+                "texto_libre": texto,
+            })
+
+        if not respuestas_items:
+            skipped += 1
+            continue
+
+        payload_data = {
+            "dni": dni,
+            "phone": phone,
+            "respuestas": respuestas_items,
+            "genero": genero,
+            "edad": edad,
+            "anio_nacimiento": anio_nacimiento,
+            "rango_etario": rango_etario,
+            "lat": lat,
+            "lng": lng,
+            "barrio": barrio_label,
+            "ciudad": (geo_metadata or {}).get("municipality"),
+            "provincia": (geo_metadata or {}).get("state"),
+            "pais": (geo_metadata or {}).get("country"),
+            "utm_source": rng.choice(utm_sources),
+            "utm_campaign": rng.choice(utm_campaigns),
+            "canal": rng.choice(canales),
+        }
+
+        request_ctx = {
+            "ip": f"10.0.0.{rng.randint(1, 254)}",
+            "anon_id": f"seed-{encuesta.id}-{attempts}",
+            "user_agent": "demo-seed",
+            "canal": payload_data["canal"],
+        }
+
+        try:
+            detalles = _validate_respuesta_payload(encuesta, payload_data["respuestas"])
+        except EncuestaError:
+            skipped += 1
+            continue
+
+        fingerprint = build_unique_fingerprint(
+            encuesta,
+            tenant_id,
+            dni=dni,
+            phone=phone,
+            ip=request_ctx["ip"],
+            anon_cookie=request_ctx["anon_id"],
+        )
+
+        if fingerprint:
+            if fingerprint in fingerprints:
+                skipped += 1
+                continue
+            existing = EncRespuesta.query.filter_by(
+                encuesta_id=encuesta.id,
+                huella_unica=fingerprint,
+            ).first()
+            if existing:
+                skipped += 1
+                continue
+
+        respuesta = EncRespuesta(
+            encuesta_id=encuesta.id,
+            tenant_id=tenant_id,
+            huella_unica=fingerprint,
+            dni=dni,
+            phone=phone,
+            ip=request_ctx["ip"],
+            ua=request_ctx.get("user_agent"),
+            lat=payload_data["lat"],
+            lng=payload_data["lng"],
+            utm_source=payload_data["utm_source"],
+            utm_campaign=payload_data["utm_campaign"],
+            canal=payload_data["canal"],
+            genero=_normalize_genero(payload_data.get("genero")),
+            edad=payload_data.get("edad"),
+            anio_nacimiento=payload_data.get("anio_nacimiento"),
+            rango_etario=payload_data.get("rango_etario"),
+            barrio=_clean_str(payload_data.get("barrio"), max_length=120),
+            ciudad=_clean_str(payload_data.get("ciudad"), max_length=120),
+            provincia=_clean_str(payload_data.get("provincia"), max_length=120),
+            pais=_clean_str(payload_data.get("pais"), max_length=120),
+            submitted_at=submitted_at,
+        )
+
+        try:
+            _persist_respuesta_entity(respuesta, detalles)
+        except EncuestaError:
+            skipped += 1
+            continue
+
+        dni_usados.add(dni)
+        phone_usados.add(phone)
+        if fingerprint:
+            fingerprints.add(fingerprint)
+        created += 1
+
+    current_app.logger.info(
+        "[encuestas] Seed demo agregó %s respuestas a la encuesta %s (saltadas=%s)",
+        created,
+        encuesta.id,
+        skipped,
+    )
+
+    return {
+        "encuesta_id": encuesta.id,
+        "creadas": created,
+        "omitidas": skipped,
+        "objetivo": cantidad,
+    }
+
+
+def _collect_recent_geo_points(
+    encuestas: Sequence[EncEncuesta],
+    limit_per_encuesta: int = 200,
+) -> Dict[int, List[Dict[str, Any]]]:
+    encuesta_ids = [encuesta.id for encuesta in encuestas if encuesta.id]
+    if not encuesta_ids:
+        return {}
+
+    max_rows = limit_per_encuesta * len(encuesta_ids)
+    query = (
+        EncRespuesta.query.options(
+            load_only(
+                EncRespuesta.encuesta_id,
+                EncRespuesta.lat,
+                EncRespuesta.lng,
+                EncRespuesta.barrio,
+                EncRespuesta.ciudad,
+                EncRespuesta.provincia,
+                EncRespuesta.submitted_at,
+            )
+        )
+        .filter(EncRespuesta.encuesta_id.in_(encuesta_ids))
+        .filter(EncRespuesta.lat.isnot(None))
+        .filter(EncRespuesta.lng.isnot(None))
+        .order_by(EncRespuesta.submitted_at.desc(), EncRespuesta.id.desc())
+        .limit(max_rows)
+    )
+
+    points: Dict[int, List[Dict[str, Any]]] = {encuesta_id: [] for encuesta_id in encuesta_ids}
+    for respuesta in query:
+        bucket = points.get(respuesta.encuesta_id)
+        if bucket is None:
+            continue
+        if len(bucket) >= limit_per_encuesta:
+            continue
+        bucket.append(
+            {
+                "lat": respuesta.lat,
+                "lng": respuesta.lng,
+                "barrio": respuesta.barrio,
+                "ciudad": respuesta.ciudad,
+                "provincia": respuesta.provincia,
+                "submitted_at": respuesta.submitted_at.isoformat()
+                if respuesta.submitted_at
+                else None,
+            }
+        )
+    return points
 
 
 def _collect_admin_panel_stats(
@@ -1359,6 +1923,7 @@ def build_admin_list_payload(
     encuestas: Sequence[EncEncuesta],
 ) -> Dict[str, Any]:
     stats_map = _collect_admin_panel_stats(encuestas)
+    geo_points = _collect_recent_geo_points(encuestas)
     encuestas_payload: List[Dict[str, Any]] = []
     estados = Counter()
     total_respuestas = 0
@@ -1373,6 +1938,12 @@ def build_admin_list_payload(
         data["metricas"] = metricas
         data["esta_activa"] = _is_encuesta_activa(encuesta)
         data["slug_publico"] = _resolve_public_slug(encuesta)
+        geo_metadata = _resolve_geo_metadata_for_tenant(encuesta.tenant_id)
+        data["geo"] = {
+            "points": geo_points.get(encuesta.id or -1, []),
+            "bounds": geo_metadata.get("bounds") if geo_metadata else None,
+            "center": geo_metadata.get("center") if geo_metadata else None,
+        }
         encuestas_payload.append(data)
 
         estados[encuesta.estado] += 1

@@ -53,6 +53,7 @@ from services.encuestas_service import (
     list_encuestas,
     _build_mendoza_bootstrap_payload,
     _build_godoy_cruz_bootstrap_payload,
+    seed_encuesta_respuestas_demo,
 )
 from services.encuestas_analytics_service import get_summary
 from services.encuestas_anchor_service import compute_content_hash, build_snapshot
@@ -80,9 +81,15 @@ def test_bootstrap_templates_match_frontend_config():
     assert servicios["titulo"] == "Encuesta sobre servicios públicos en Junín"
     assert servicios["anonimo_permitido"] is False
     assert servicios["requiere_identidad"] is True
-    assert servicios["politica_unicidad"] == "por_dni"
+    assert servicios["politica_unicidad"] == "por_dni_o_phone"
     assert servicios["inicio_at"] == inicio.isoformat()
     assert servicios["fin_at"] == fin.isoformat()
+
+    primera_pregunta = servicios["preguntas"][0]
+    assert "distrito" in primera_pregunta["texto"].lower()
+    assert any(opt.get("valor") == "geo_autocomplete" for opt in primera_pregunta["opciones"])
+
+    assert servicios.get("metadata", {}).get("geo", {}).get("center")
 
     pregunta_multiple = next(
         pregunta for pregunta in servicios["preguntas"] if pregunta["tipo"] == "opcion_multiple"
@@ -114,6 +121,19 @@ def test_bootstrap_templates_match_frontend_config():
 
     profile_keys = {profile["key"] for profile in encuestas_service_module._BOOTSTRAP_PROFILES}
     assert {"junin", "san_martin", "rivadavia", "mendoza", "godoy_cruz"}.issubset(profile_keys)
+
+
+def test_list_template_payloads_scope_all_returns_catalog(client):
+    with client.application.app_context():
+        payload = encuestas_service_module.list_template_payloads(tenant_id=4, scope="all")
+
+    assert payload["templates"], "La respuesta estándar debe incluir plantillas"
+    catalogo = payload.get("all_templates")
+    assert catalogo, "Debe exponer un catálogo extendido"
+    claves = {entrada.get("key") for entrada in catalogo}
+    assert "junin" in claves
+    assert "san_martin" in claves
+    assert any(entrada.get("templates") for entrada in catalogo)
 
 
 class DummyUser:
@@ -221,6 +241,24 @@ def test_respuesta_por_ip_sin_datos_no_bloquea(client):
         ctx_sin_ip_otro = {"ip": None, "user_agent": "pytest", "anon_id": "anon-b", "canal": "web"}
         segunda = save_respuesta(slug, payload, ctx_sin_ip_otro)
         assert segunda.id is not None
+
+
+def test_seed_encuesta_respuestas_demo_creates_geo_data(client):
+    with client.application.app_context():
+        encuesta, slug, user = _create_active_encuesta(politica_unicidad="por_dni_o_phone")
+        db.session.refresh(encuesta)
+
+        result = seed_encuesta_respuestas_demo(encuesta.id, user, cantidad=10)
+        assert result["creadas"] > 0
+        total = EncRespuesta.query.filter_by(encuesta_id=encuesta.id).count()
+        assert total == result["creadas"]
+
+        geo_respuestas = (
+            EncRespuesta.query.filter_by(encuesta_id=encuesta.id)
+            .filter(EncRespuesta.lat.isnot(None), EncRespuesta.lng.isnot(None))
+            .all()
+        )
+        assert geo_respuestas, "Las respuestas demo deben incluir coordenadas"
 
 
 def test_compute_content_hash_es_deterministico(client):

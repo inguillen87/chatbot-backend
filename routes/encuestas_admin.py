@@ -17,6 +17,8 @@ from services.encuestas_service import (
     serialize_encuesta,
     serialize_respuesta,
     build_admin_list_payload,
+    list_template_payloads,
+    seed_encuesta_respuestas_demo,
 )
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
@@ -118,6 +120,22 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
         payload = build_admin_list_payload(encuestas)
         return jsonify(payload), 200
 
+    @bp.route("/templates", methods=["GET"])
+    @token_requerido
+    @require_role("admin", "super_admin")
+    def listar_plantillas_endpoint(current_user):
+        try:
+            tenant_id = (
+                getattr(current_user, "municipio_id", None)
+                or getattr(current_user, "empresa_id", None)
+                or current_user.id
+            )
+            scope = request.args.get("scope")
+            payload = list_template_payloads(int(tenant_id), scope=scope)
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+        return jsonify(payload), 200
+
     @bp.route("/<int:encuesta_id>", methods=["GET"])
     @token_requerido
     @require_role("admin", "super_admin")
@@ -127,6 +145,23 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
         return jsonify(serialize_encuesta(encuesta)), 200
+
+    @bp.route("/<int:encuesta_id>/seed-demo", methods=["POST"])
+    @token_requerido
+    @require_role("admin", "super_admin")
+    def seed_demo_endpoint(current_user, encuesta_id: int):
+        data = request.get_json(silent=True) or {}
+        cantidad = data.get("cantidad") or 50
+        try:
+            cantidad_int = int(cantidad)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Cantidad inválida"}), 400
+
+        try:
+            result = seed_encuesta_respuestas_demo(encuesta_id, current_user, cantidad=cantidad_int)
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+        return jsonify(result), 200
 
     @bp.route("/<int:encuesta_id>/respuestas", methods=["GET"])
     @token_requerido
