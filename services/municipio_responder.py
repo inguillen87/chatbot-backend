@@ -5030,7 +5030,7 @@ def _get_encuestas_menu(context: dict) -> dict:
             qr_url = urljoin(
                 f"{api_base_url}/", f"api/public/encuestas/{slug_publico}/qr"
             )
-        share_message = f"Participá en '{titulo}' ingresando a {share_short_url}"
+        share_message = f"Participá en {titulo}: {share_short_url}"
         share_action_id = f"encuesta_compartir::{slug_publico}"
 
         short_title = _shorten_button_label(titulo)
@@ -5041,10 +5041,10 @@ def _get_encuestas_menu(context: dict) -> dict:
         line_parts = [f"{index}. *{titulo}*"]
         if descripcion:
             line_parts.append(f"   {descripcion}")
-        line_parts.append(f"   • Abrir la encuesta en la web: {display_share_url}")
+        line_parts.append(f"   • Abrir: {display_share_url}")
         line_parts.append(
-            "   • Compartir desde este chat: tocá 'Compartir "
-            f"{share_button_title}' para reenviar el mensaje sugerido."
+            "   • Compartir: tocá 'Compartir "
+            f"{share_button_title}'"
         )
         lines.append("\n".join(line_parts))
 
@@ -5169,7 +5169,7 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
                 else share_short_url
             )
             share_message = share_message or (
-                f"Participá en '{titulo}' ingresando a {share_short_url or share_url}"
+                f"Participá en {titulo}: {share_short_url or share_url}"
                 if (share_short_url or share_url)
                 else None
             )
@@ -5187,7 +5187,7 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
 
     if not share_message and (share_short_url or share_url) and titulo:
         target_url = share_short_url or share_url
-        share_message = f"Participá en '{titulo}' ingresando a {target_url}"
+        share_message = f"Participá en {titulo}: {target_url}"
 
     share_followup_options = [
         {"texto": "Volver a encuestas", "action_id": "mostrar_menu_encuestas"},

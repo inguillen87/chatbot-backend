@@ -7026,15 +7026,15 @@ def responder_municipio(
             else:
                 app.config["PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"] = (
                     previous_default_image
-                )
+
 
     body = menu["message_body"]
     assert "Participación Ciudadana" in body
     assert "Últimas encuestas disponibles" in body
     short_token = slug.rsplit("-", 1)[-1]
     assert short_token in body
-    assert "Abrir la encuesta en la web:" in body
-    assert "Compartir desde este chat" in body
+    assert "Abrir:" in body
+    assert "Compartir: tocá" in body
     assert "Descargar el código QR" not in body
     assert "Usar el asistente virtual en la web" not in body
     assert any(option.get("type") == "url" for option in menu["options_list"])
@@ -7068,6 +7068,7 @@ def responder_municipio(
     assert first_meta["share_short_url"].endswith(f"/e/{short_token}")
     assert first_meta["share_message"].startswith("Participá en")
     assert first_meta["share_message"].endswith(f"/e/{short_token}")
+    assert "ingresando a" not in first_meta["share_message"]
     assert "https://www." not in first_meta["share_message"]
     assert first_meta["share_action_id"].startswith("encuesta_compartir::")
     assert first_meta["qr_url"].endswith(f"/api/public/encuestas/{slug}/qr")
