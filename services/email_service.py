@@ -1,13 +1,17 @@
 # import os # No es necesario si usamos current_app.config
 import logging
 import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+from datetime import datetime
 from email.mime.application import MIMEApplication # Para adjuntos
-from twilio.rest import Client
-from flask import current_app # Para acceder a la configuración
-from services.config_loader import cargar_configuracion_municipio
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from math import isfinite
 from typing import Any, Dict, List, Optional
+
+from flask import current_app, render_template # Para acceder a la configuración
+from twilio.rest import Client
+
+from services.config_loader import cargar_configuracion_municipio
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +35,461 @@ def _get_config_val(key, default=None, campaign_specific=False):
         val = current_app.config.get(f"{key}_CAMPAIGN", None)
         if val is not None:
             return val
-    return current_app.config.get(key, default)
+    value = current_app.config.get(key, default)
+    if value is None and key == "MAIL_FROM_ADDRESS":
+        return "info@chatboc.ar"
+    return value
 
+
+def _coalesce(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _format_datetime(dt: Any) -> Optional[str]:
+    if not dt:
+        return None
+    try:
+        if isinstance(dt, datetime):
+            if dt.tzinfo is not None:
+                try:
+                    dt = dt.astimezone()
+                except ValueError:
+                    pass
+            return dt.strftime("%d/%m/%Y %H:%M")
+        if hasattr(dt, "strftime"):
+            return dt.strftime("%d/%m/%Y %H:%M")
+        return str(dt)
+    except Exception:  # pragma: no cover - formatting fallback
+        return str(dt)
+
+
+def _sanitize_coordinate(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        coord = float(value)
+        if isfinite(coord):
+            return coord
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        return None
+    return None
+
+
+def _build_map_assets(lat: Optional[float], lon: Optional[float]) -> tuple[Optional[str], Optional[str]]:
+    if lat is None or lon is None:
+        return None, None
+    lat_str = f"{lat:.6f}"
+    lon_str = f"{lon:.6f}"
+    map_image = (
+        "https://staticmap.openstreetmap.de/staticmap.php?center="
+        f"{lat_str},{lon_str}&zoom=16&size=640x320&markers={lat_str},{lon_str},red-pushpin"
+    )
+    map_link = f"https://maps.google.com/?q={lat_str},{lon_str}"
+    return map_image, map_link
+
+
+def _format_attachment(adjunto) -> Optional[Dict[str, Any]]:
+    if not adjunto:
+        return None
+    nombre = (
+        getattr(adjunto, "nombre_original", None)
+        or getattr(adjunto, "filename", None)
+        or "Archivo adjunto"
+    )
+    url = getattr(adjunto, "url", None)
+    mime = getattr(adjunto, "mime", None)
+    tamano = getattr(adjunto, "tamano", None)
+    es_imagen = bool(mime and str(mime).lower().startswith("image"))
+    return {
+        "id": getattr(adjunto, "id", None),
+        "nombre": nombre,
+        "url": url,
+        "mime": mime,
+        "tamano": tamano,
+        "es_imagen": es_imagen,
+    }
+
+
+def _collect_ticket_attachments(ticket) -> List[Dict[str, Any]]:
+    adjuntos: List[Dict[str, Any]] = []
+    archivos_rel = getattr(ticket, "archivos", None)
+    archivos_iterable = []
+    if archivos_rel is not None:
+        try:
+            archivos_iterable = archivos_rel.all()
+        except Exception:
+            try:
+                archivos_iterable = list(archivos_rel)
+            except TypeError:
+                archivos_iterable = []
+    for adj in archivos_iterable:
+        adj_dict = _format_attachment(adj)
+        if adj_dict:
+            adjuntos.append(adj_dict)
+
+    foto_directa = getattr(ticket, "foto_url_directa", None)
+    if foto_directa:
+        if not any(a.get("url") == foto_directa for a in adjuntos):
+            adjuntos.insert(
+                0,
+                {
+                    "id": None,
+                    "nombre": "Imagen inicial del reclamo",
+                    "url": foto_directa,
+                    "mime": None,
+                    "tamano": None,
+                    "es_imagen": True,
+                    "es_foto_inicial": True,
+                },
+            )
+    return adjuntos
+
+
+def _resolve_comment_author(comentario) -> tuple[str, str]:
+    if getattr(comentario, "origen", None) == "sistema":
+        return "Sistema", "sistema"
+
+    if getattr(comentario, "es_admin", False):
+        base_nombre = "Equipo del Municipio" if getattr(comentario, "municipio_ticket_id", None) else "Equipo de la PyME"
+        try:
+            user_id = getattr(comentario, "user_id", None)
+            if user_id:
+                from models import User, db  # Import local para evitar ciclos
+
+                usuario = db.session.get(User, user_id)
+                if usuario:
+                    if getattr(usuario, "name", None):
+                        base_nombre = usuario.name
+                    elif getattr(usuario, "email", None):
+                        base_nombre = usuario.email
+        except Exception:  # pragma: no cover - fallback genérico
+            pass
+        return base_nombre, "admin"
+
+    nombre_vecino = None
+    try:
+        ticket_rel = getattr(comentario, "municipio_ticket", None) or getattr(comentario, "pyme_ticket", None)
+        if ticket_rel:
+            nombre_vecino = (
+                getattr(ticket_rel, "nombre_vecino", None)
+                or getattr(ticket_rel, "nombre_cliente", None)
+            )
+    except Exception:  # pragma: no cover - fallback
+        nombre_vecino = None
+    return nombre_vecino or "Vecino/a", "vecino"
+
+
+def _format_comment(comentario) -> Optional[Dict[str, Any]]:
+    if comentario is None:
+        return None
+    autor_nombre, autor_rol = _resolve_comment_author(comentario)
+    adjuntos: List[Dict[str, Any]] = []
+    if getattr(comentario, "archivo_adjunto", None):
+        adj_dict = _format_attachment(comentario.archivo_adjunto)
+        if adj_dict:
+            adjuntos.append(adj_dict)
+    mensaje = getattr(comentario, "comentario", "") or ""
+    fecha = getattr(comentario, "fecha", None)
+    return {
+        "autor": autor_nombre,
+        "rol": autor_rol,
+        "mensaje": mensaje,
+        "fecha": fecha,
+        "fecha_formateada": _format_datetime(fecha),
+        "estado": getattr(comentario, "estado_ticket", None),
+        "adjuntos": adjuntos,
+    }
+
+
+def _collect_ticket_history(ticket) -> List[Dict[str, Any]]:
+    comentarios_rel = getattr(ticket, "comentarios", None)
+    if comentarios_rel is None:
+        return []
+    comentarios = []
+    try:
+        from models import TicketComentario  # Import local para evitar ciclos
+
+        comentarios = comentarios_rel.order_by(TicketComentario.fecha.asc()).all()
+    except Exception:
+        try:
+            comentarios = list(comentarios_rel)
+        except TypeError:
+            comentarios = []
+    historial: List[Dict[str, Any]] = []
+    for comentario in comentarios:
+        comentario_fmt = _format_comment(comentario)
+        if comentario_fmt:
+            historial.append(comentario_fmt)
+    return historial
+
+
+def _build_ticket_common_context(
+    ticket,
+    *,
+    tipo_ticket: Optional[str] = None,
+    admin_user=None,
+    ticket_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    datos_ticket = ticket_data or {}
+    tipo_ticket = tipo_ticket or (
+        "municipio" if getattr(ticket, "municipio_id", None) else "pyme"
+    )
+
+    ticket_numero = str(
+        _coalesce(getattr(ticket, "nro_ticket", None), datos_ticket.get("nro_ticket"), "")
+        or ""
+    )
+    prefijo = "M" if tipo_ticket == "municipio" else "P"
+    ticket_codigo = f"{prefijo}-{ticket_numero}" if ticket_numero else ticket_numero
+
+    categoria = _coalesce(
+        getattr(ticket, "categoria", None), datos_ticket.get("categoria"), "General"
+    )
+    asunto_ticket = _coalesce(
+        getattr(ticket, "asunto", None), datos_ticket.get("asunto"), categoria
+    )
+    detalles_ticket = _coalesce(
+        getattr(ticket, "detalles", None),
+        getattr(ticket, "pregunta", None),
+        datos_ticket.get("detalles"),
+        datos_ticket.get("pregunta"),
+        "Sin descripción.",
+    )
+    direccion = _coalesce(
+        getattr(ticket, "direccion", None), datos_ticket.get("direccion"), "No especificada"
+    )
+    consulta_pin = _coalesce(
+        getattr(ticket, "consulta_pin", None), datos_ticket.get("consulta_pin")
+    )
+    canal_ingreso = _coalesce(
+        getattr(ticket, "canal_ingreso", None), datos_ticket.get("canal_ingreso")
+    )
+    estado_actual = _coalesce(
+        getattr(ticket, "estado", None), datos_ticket.get("estado"), "nuevo"
+    )
+    fecha_formateada = _format_datetime(getattr(ticket, "fecha", None))
+
+    lat = _sanitize_coordinate(
+        _coalesce(
+            getattr(ticket, "latitud", None),
+            datos_ticket.get("latitud"),
+            datos_ticket.get("lat"),
+            datos_ticket.get("latitude"),
+        )
+    )
+    lon = _sanitize_coordinate(
+        _coalesce(
+            getattr(ticket, "longitud", None),
+            datos_ticket.get("longitud"),
+            datos_ticket.get("lon"),
+            datos_ticket.get("lng"),
+            datos_ticket.get("longitude"),
+        )
+    )
+    map_image_url, map_link_url = _build_map_assets(lat, lon)
+
+    cliente_nombre = _coalesce(
+        getattr(ticket, "nombre_vecino", None),
+        datos_ticket.get("nombre_vecino"),
+        datos_ticket.get("nombre_cliente"),
+        getattr(ticket, "nombre_cliente", None),
+        "Vecino/a",
+    )
+    email_cliente = _coalesce(
+        getattr(ticket, "email_vecino", None),
+        getattr(ticket, "email", None),
+        datos_ticket.get("email_cliente"),
+        getattr(ticket, "email_cliente", None),
+    )
+    telefono_cliente = _coalesce(
+        getattr(ticket, "telefono_vecino", None),
+        getattr(ticket, "telefono", None),
+        datos_ticket.get("telefono_cliente"),
+        getattr(ticket, "telefono_cliente", None),
+    )
+    dni_cliente = _coalesce(
+        getattr(ticket, "dni_vecino", None), getattr(ticket, "dni", None), datos_ticket.get("dni")
+    )
+
+    base_url = current_app.config.get("APP_BASE_URL", "https://www.chatboc.ar")
+    chat_url = (
+        f"{base_url}/chat/{getattr(ticket, 'id', '')}"
+        if getattr(ticket, "id", None)
+        else base_url
+    )
+    if tipo_ticket == "pyme":
+        chat_url = (
+            f"{base_url}/pyme/chat/{getattr(ticket, 'id', '')}"
+            if getattr(ticket, "id", None)
+            else base_url
+        )
+
+    panel_url = current_app.config.get("ADMIN_PORTAL_URL")
+    if not panel_url:
+        if tipo_ticket == "municipio":
+            panel_url = (
+                f"{base_url}/panel/municipio/tickets/{getattr(ticket, 'id', '')}"
+                if getattr(ticket, "id", None)
+                else base_url
+            )
+        else:
+            panel_url = (
+                f"{base_url}/panel/pyme/tickets/{getattr(ticket, 'id', '')}"
+                if getattr(ticket, "id", None)
+                else base_url
+            )
+
+    telefono_contacto = getattr(admin_user, "telefono", None) if admin_user else None
+    horario_contacto = getattr(admin_user, "horario", None) if admin_user else None
+    enlace_contacto = getattr(admin_user, "link_web", None) if admin_user else None
+
+    if tipo_ticket == "municipio" and getattr(ticket, "municipio_id", None):
+        cfg = cargar_configuracion_municipio(ticket.municipio_id, "config.json")
+        if isinstance(cfg, dict):
+            enlace_contacto = enlace_contacto or cfg.get("web_url")
+            telefono_contacto = telefono_contacto or cfg.get("telefono")
+            horario_contacto = horario_contacto or cfg.get("horario")
+
+    rubro_nombre = None
+    if tipo_ticket == "pyme":
+        if admin_user and getattr(admin_user, "rubro", None):
+            rubro_nombre = getattr(admin_user.rubro, "nombre", None)
+        if not rubro_nombre and getattr(ticket, "rubro_id", None):
+            try:
+                from models import Rubro  # Import local para evitar ciclos
+
+                rubro = Rubro.query.get(ticket.rubro_id)
+                rubro_nombre = getattr(rubro, "nombre", None)
+            except Exception:  # pragma: no cover - fallback silencioso
+                rubro_nombre = None
+
+    adjuntos_ticket = _collect_ticket_attachments(ticket)
+    historial = _collect_ticket_history(ticket)
+
+    return {
+        "tipo_ticket": tipo_ticket,
+        "ticket_codigo": ticket_codigo,
+        "ticket_numero": ticket_numero,
+        "categoria": categoria,
+        "asunto": asunto_ticket,
+        "detalles": detalles_ticket,
+        "direccion": direccion,
+        "consulta_pin": consulta_pin,
+        "canal_ingreso": canal_ingreso,
+        "estado": estado_actual,
+        "fecha_formateada": fecha_formateada,
+        "map_image_url": map_image_url,
+        "map_link_url": map_link_url,
+        "latitud": lat,
+        "longitud": lon,
+        "cliente_info": {
+            "nombre": cliente_nombre,
+            "email": email_cliente,
+            "telefono": telefono_cliente,
+            "dni": dni_cliente,
+        },
+        "contacto_info": {
+            "telefono": telefono_contacto,
+            "horario": horario_contacto,
+            "enlace": enlace_contacto,
+        },
+        "panel_url": panel_url,
+        "chat_url": chat_url,
+        "adjuntos": adjuntos_ticket,
+        "historial": historial,
+        "rubro_nombre": rubro_nombre,
+    }
+
+
+def _build_ticket_email_context(
+    ticket,
+    *,
+    tipo_ticket: Optional[str],
+    audience: str,
+    header_title: str,
+    intro_text: str,
+    admin_user=None,
+    ticket_data: Optional[Dict[str, Any]] = None,
+    highlight_message: Optional[str] = None,
+    comentario=None,
+    extra_adjuntos: Optional[List[Any]] = None,
+    primary_button_text: Optional[str] = None,
+    primary_button_url: Optional[str] = None,
+    secondary_button_text: Optional[str] = None,
+    secondary_button_url: Optional[str] = None,
+    footer_text: Optional[str] = None,
+) -> Dict[str, Any]:
+    context = _build_ticket_common_context(
+        ticket,
+        tipo_ticket=tipo_ticket,
+        admin_user=admin_user,
+        ticket_data=ticket_data,
+    )
+    context.update(
+        {
+            "audience": audience,
+            "header_title": header_title,
+            "intro_text": intro_text,
+            "primary_button": (
+                {"text": primary_button_text, "url": primary_button_url}
+                if primary_button_text and primary_button_url
+                else None
+            ),
+            "secondary_button": (
+                {"text": secondary_button_text, "url": secondary_button_url}
+                if secondary_button_text and secondary_button_url
+                else None
+            ),
+            "footer_text": footer_text,
+        }
+    )
+
+    highlight_block = None
+    comentario_formateado = _format_comment(comentario) if comentario is not None else None
+    if comentario_formateado:
+        highlight_block = comentario_formateado
+    if highlight_message:
+        if highlight_block:
+            highlight_block["mensaje"] = highlight_message
+        else:
+            highlight_block = {
+                "autor": None,
+                "rol": None,
+                "mensaje": highlight_message,
+                "fecha": None,
+                "fecha_formateada": _format_datetime(datetime.utcnow()),
+                "estado": None,
+                "adjuntos": [],
+            }
+
+    formatted_extra_adjuntos: List[Dict[str, Any]] = []
+    if extra_adjuntos:
+        for adj in extra_adjuntos:
+            adj_dict = _format_attachment(adj)
+            if adj_dict:
+                formatted_extra_adjuntos.append(adj_dict)
+    if formatted_extra_adjuntos:
+        if highlight_block:
+            highlight_block.setdefault("adjuntos", []).extend(formatted_extra_adjuntos)
+        else:
+            highlight_block = {
+                "autor": None,
+                "rol": None,
+                "mensaje": highlight_message
+                or "Se agregaron nuevos archivos adjuntos al ticket.",
+                "fecha": None,
+                "fecha_formateada": _format_datetime(datetime.utcnow()),
+                "estado": None,
+                "adjuntos": formatted_extra_adjuntos,
+            }
+
+    context["highlight"] = highlight_block
+    context["mostrar_historial"] = bool(context.get("historial"))
+    context["total_adjuntos"] = len(context.get("adjuntos", []))
+    return context
 
 def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str = "", es_campana: bool = False) -> bool:
     """
@@ -198,8 +655,12 @@ def enviar_email_ticket_admin(
     admin_user=None,
     tipo_ticket: Optional[str] = None,
     ticket_data: Optional[Dict[str, Any]] = None,
+    mensaje_destacado: Optional[str] = None,
+    comentario=None,
+    adjuntos: Optional[List[Any]] = None,
+    es_creacion: Optional[bool] = None,
 ) -> bool:
-    """Envía un correo al administrador con la información completa del ticket."""
+    """Envía un correo al administrador con la información del ticket."""
 
     destino = None
     if admin_user and getattr(admin_user, "email", None):
@@ -214,113 +675,83 @@ def enviar_email_ticket_admin(
         )
         return False
 
-    datos_ticket = ticket_data or {}
-    tipo_ticket = (
-        tipo_ticket
-        or ("municipio" if getattr(ticket, "municipio_id", None) else "pyme")
+    tipo_ticket = tipo_ticket or (
+        "municipio" if getattr(ticket, "municipio_id", None) else "pyme"
     )
 
-    ticket_numero = str(getattr(ticket, "nro_ticket", ""))
-    prefijo = "M" if tipo_ticket == "municipio" else "P"
-    ticket_codigo = f"{prefijo}-{ticket_numero}" if ticket_numero else ticket_numero
-
-    categoria = (
-        getattr(ticket, "categoria", None)
-        or datos_ticket.get("categoria")
-        or "General"
-    )
-    asunto_ticket = getattr(ticket, "asunto", None) or categoria
-    detalles_ticket = (
-        getattr(ticket, "detalles", None)
-        or getattr(ticket, "pregunta", None)
-        or datos_ticket.get("detalles")
-        or ""
-    )
-    direccion = getattr(ticket, "direccion", None) or datos_ticket.get("direccion")
-    consulta_pin = getattr(ticket, "consulta_pin", None) or datos_ticket.get("consulta_pin")
-    canal_ingreso = (
-        getattr(ticket, "canal_ingreso", None) or datos_ticket.get("canal_ingreso")
-    )
-
-    cliente_nombre = (
-        getattr(ticket, "nombre_vecino", None)
-        or datos_ticket.get("nombre_vecino")
-        or datos_ticket.get("nombre_cliente")
-        or getattr(ticket, "nombre_cliente", None)
-        or "Usuario"
-    )
-    email_cliente = (
-        getattr(ticket, "email_vecino", None)
-        or getattr(ticket, "email", None)
-        or datos_ticket.get("email_cliente")
-    )
-    telefono_cliente = (
-        getattr(ticket, "telefono_vecino", None)
-        or getattr(ticket, "telefono", None)
-        or datos_ticket.get("telefono_cliente")
-    )
-    dni_cliente = (
-        getattr(ticket, "dni_vecino", None)
-        or getattr(ticket, "dni", None)
-        or datos_ticket.get("dni")
-    )
-
-    fecha_ticket = getattr(ticket, "fecha", None)
-    fecha_formateada = (
-        fecha_ticket.strftime("%d/%m/%Y %H:%M") if fecha_ticket else None
-    )
-
-    rubro_nombre = None
-    if tipo_ticket == "pyme":
-        if admin_user and getattr(admin_user, "rubro", None):
-            rubro_nombre = getattr(admin_user.rubro, "nombre", None)
-        if not rubro_nombre and getattr(ticket, "rubro_id", None):
-            try:
-                from models import Rubro  # Import local to avoid circular imports
-
-                rubro = Rubro.query.get(ticket.rubro_id)
-                rubro_nombre = getattr(rubro, "nombre", None)
-            except Exception:  # pragma: no cover - logging handled later
-                rubro_nombre = None
-
-    base_url = current_app.config.get("APP_BASE_URL", "https://www.chatboc.ar")
-    panel_url = current_app.config.get("ADMIN_PORTAL_URL")
-    if not panel_url:
-        if tipo_ticket == "municipio":
-            panel_url = (
-                f"{base_url}/panel/municipio/tickets/{getattr(ticket, 'id', '')}"
-                if getattr(ticket, "id", None)
-                else base_url
-            )
-        else:
-            panel_url = (
-                f"{base_url}/panel/pyme/tickets/{getattr(ticket, 'id', '')}"
-                if getattr(ticket, "id", None)
-                else base_url
-            )
-
-    asunto_email = f"Nuevo ticket {ticket_codigo or ticket_numero}".strip()
-
-    cuerpo_html_ticket = render_template(
-        "email/ticket_admin_notificacion.html",
-        ticket_codigo=ticket_codigo or ticket_numero,
-        categoria=categoria,
-        asunto=asunto_ticket,
-        detalles=detalles_ticket,
-        direccion=direccion,
-        consulta_pin=consulta_pin,
-        canal_ingreso=canal_ingreso,
-        cliente_nombre=cliente_nombre,
-        email_cliente=email_cliente,
-        telefono_cliente=telefono_cliente,
-        dni_cliente=dni_cliente,
-        fecha_formateada=fecha_formateada,
+    base_context = _build_ticket_common_context(
+        ticket,
         tipo_ticket=tipo_ticket,
-        rubro_nombre=rubro_nombre,
-        admin_nombre=getattr(admin_user, "name", None),
-        panel_url=panel_url,
+        admin_user=admin_user,
+        ticket_data=ticket_data,
     )
 
+    ticket_codigo = base_context.get("ticket_codigo") or base_context.get("ticket_numero")
+    es_creacion = (
+        es_creacion
+        if es_creacion is not None
+        else comentario is None and not mensaje_destacado and not adjuntos
+    )
+
+    if es_creacion:
+        asunto_email = f"Nuevo ticket {ticket_codigo or ''}".strip() or "Nuevo ticket"
+        header_title = "Nuevo ticket recibido"
+        if admin_user and getattr(admin_user, "name", None):
+            intro_text = (
+                f"Hola {admin_user.name}, se registró un nuevo ticket "
+                f"{ticket_codigo or ''}."
+            ).strip()
+        else:
+            intro_text = "Se generó un nuevo ticket en tu panel de gestión."
+        highlight_text = (
+            mensaje_destacado
+            or "Revisá los detalles completos para asignarlo y darle seguimiento."
+        )
+    else:
+        asunto_email = (
+            f"Actualización ticket {ticket_codigo or ''}".strip()
+            or "Actualización de ticket"
+        )
+        if comentario is not None and getattr(comentario, "estado_ticket", None):
+            header_title = "Cambio de estado del ticket"
+        else:
+            header_title = "Nueva actividad en el ticket"
+        intro_text = (
+            f"Hay novedades en el ticket {ticket_codigo or ''}. "
+            "Te compartimos el resumen actualizado."
+        ).strip()
+        highlight_text = (
+            mensaje_destacado or "Se registró una nueva actividad en el ticket."
+        )
+
+    primary_button_text = (
+        "Ver ticket en el panel" if base_context.get("panel_url") else None
+    )
+    primary_button_url = base_context.get("panel_url")
+    secondary_button_text = (
+        "Ver ubicación" if base_context.get("map_link_url") else None
+    )
+    secondary_button_url = base_context.get("map_link_url")
+
+    context = _build_ticket_email_context(
+        ticket,
+        tipo_ticket=tipo_ticket,
+        audience="admin",
+        header_title=header_title,
+        intro_text=intro_text,
+        admin_user=admin_user,
+        ticket_data=ticket_data,
+        highlight_message=highlight_text,
+        comentario=comentario,
+        extra_adjuntos=adjuntos,
+        primary_button_text=primary_button_text,
+        primary_button_url=primary_button_url,
+        secondary_button_text=secondary_button_text,
+        secondary_button_url=secondary_button_url,
+        footer_text="Recibís este correo porque estás configurado como administrador del asistente virtual.",
+    )
+
+    cuerpo_html_ticket = render_template("email/ticket_resumen.html", **context)
     return enviar_email(destino, asunto_email, cuerpo_html_ticket)
 
 
@@ -393,7 +824,6 @@ def enviar_email_con_multiples_adjuntos(destinos: List[str], asunto: str, cuerpo
         logger.error(f"[EMAIL_MULTI_ADJ] Error enviando correo con múltiples adjuntos: {e}", exc_info=True)
         return False
 
-from flask import render_template
 
 def enviar_email_ticket_cliente(
     ticket,
@@ -401,98 +831,118 @@ def enviar_email_ticket_cliente(
     tipo_ticket: Optional[str] = None,
     admin_user=None,
     ticket_data: Optional[Dict[str, Any]] = None,
+    mensaje_destacado: Optional[str] = None,
+    comentario=None,
+    adjuntos: Optional[List[Any]] = None,
+    es_creacion: Optional[bool] = None,
 ) -> bool:
-    """Confirma al cliente que su reclamo o pedido fue recibido."""
+    """Envía un correo al vecino/cliente con el resumen del ticket."""
 
+    datos_ticket = ticket_data or {}
     destino = (
         getattr(ticket, "email_vecino", None)
         or getattr(ticket, "email", None)
-        or (ticket_data or {}).get("email_cliente")
+        or datos_ticket.get("email_cliente")
     )
+    if not destino and getattr(ticket, "user_id", None):
+        try:
+            from models import User, db  # Import local para evitar ciclos
+
+            usuario = db.session.get(User, ticket.user_id)
+            if usuario and getattr(usuario, "email", None):
+                destino = usuario.email
+        except Exception:  # pragma: no cover - fallback silencioso
+            destino = destino
+
     if not destino:
-        logger.warning(f"[EMAIL] Ticket {getattr(ticket, 'id', 'N/A')} sin email de cliente.")
+        logger.warning(
+            f"[EMAIL] Ticket {getattr(ticket, 'id', 'N/A')} sin email de cliente."
+        )
         return False
 
-    datos_ticket = ticket_data or {}
-    tipo_ticket = (
-        tipo_ticket
-        or ("municipio" if getattr(ticket, "municipio_id", None) else "pyme")
+    tipo_ticket = tipo_ticket or (
+        "municipio" if getattr(ticket, "municipio_id", None) else "pyme"
     )
 
-    ticket_numero = str(getattr(ticket, "nro_ticket", ""))
-    prefijo = "M" if tipo_ticket == "municipio" else "P"
-    ticket_codigo = f"{prefijo}-{ticket_numero}" if ticket_numero else ticket_numero
-
-    asunto_ticket = getattr(ticket, "asunto", None) or datos_ticket.get("asunto")
-    if not asunto_ticket:
-        asunto_ticket = "Reclamo registrado" if tipo_ticket == "municipio" else "Pedido recibido"
-
-    asunto = f"Ticket #{ticket_codigo or ticket_numero} Recibido: {asunto_ticket}".strip()
-
-    base_url = current_app.config.get("APP_BASE_URL", "https://www.chatboc.ar")
-    chat_url = f"{base_url}/chat/{getattr(ticket, 'id', '')}" if getattr(ticket, "id", None) else base_url
-
-    if tipo_ticket == "pyme":
-        chat_url = f"{base_url}/pyme/chat/{getattr(ticket, 'id', '')}" if getattr(ticket, "id", None) else base_url
-
-    telefono_contacto = None
-    horario_contacto = None
-    enlace_contacto = None
-
-    if admin_user:
-        telefono_contacto = getattr(admin_user, "telefono", None)
-        horario_contacto = getattr(admin_user, "horario", None)
-        enlace_contacto = getattr(admin_user, "link_web", None)
-
-    if tipo_ticket == "municipio" and not enlace_contacto and getattr(ticket, "municipio_id", None):
-        cfg = cargar_configuracion_municipio(ticket.municipio_id, "config.json")
-        if isinstance(cfg, dict):
-            enlace_contacto = cfg.get("web_url")
-
-    detalles_ticket = (
-        getattr(ticket, "detalles", None)
-        or getattr(ticket, "pregunta", None)
-        or datos_ticket.get("detalles")
-        or "Sin descripción."
+    base_context = _build_ticket_common_context(
+        ticket,
+        tipo_ticket=tipo_ticket,
+        admin_user=admin_user,
+        ticket_data=ticket_data,
     )
 
-    direccion_ticket = (
-        getattr(ticket, "direccion", None)
-        or datos_ticket.get("direccion")
-        or "No especificada"
+    ticket_codigo = base_context.get("ticket_codigo") or base_context.get("ticket_numero")
+    nombre_vecino = base_context.get("cliente_info", {}).get("nombre") or "Vecino/a"
+    asunto_ticket = base_context.get("asunto") or (
+        "Reclamo registrado" if tipo_ticket == "municipio" else "Pedido recibido"
     )
 
-    nombre_vecino = (
-        getattr(ticket, "nombre_vecino", None)
-        or datos_ticket.get("nombre_vecino")
-        or datos_ticket.get("nombre_cliente")
-        or "Vecino/a"
+    es_creacion = (
+        es_creacion
+        if es_creacion is not None
+        else comentario is None and not mensaje_destacado and not adjuntos
     )
 
-    categoria_ticket = (
-        getattr(ticket, "categoria", None)
-        or datos_ticket.get("categoria")
-        or "No especificada"
-    )
+    if es_creacion:
+        asunto = (
+            f"Ticket #{ticket_codigo or ''} Recibido: {asunto_ticket}".strip()
+            or "Ticket recibido"
+        )
+        header_title = "Tu reclamo está en marcha" if tipo_ticket == "municipio" else "Tu pedido fue registrado"
+        intro_text = (
+            f"Hola {nombre_vecino}, recibimos tu ticket {ticket_codigo or ''} "
+            "y ya lo estamos gestionando."
+        ).strip()
+        highlight_text = (
+            mensaje_destacado
+            or "Podés seguir el estado y responder desde el portal en cualquier momento."
+        )
+    else:
+        asunto = (
+            f"Actualización de tu ticket {ticket_codigo or ''}".strip()
+            or "Actualización de tu ticket"
+        )
+        if comentario is not None and getattr(comentario, "estado_ticket", None):
+            header_title = "El estado de tu ticket cambió"
+        else:
+            header_title = "Tenemos novedades sobre tu ticket"
+        intro_text = (
+            f"Hola {nombre_vecino}, hay novedades en tu ticket {ticket_codigo or ''}."
+        ).strip()
+        highlight_text = (
+            mensaje_destacado
+            or "Revisá la actualización y respondé si necesitás sumar más información."
+        )
 
-    consulta_pin = getattr(ticket, "consulta_pin", None) or datos_ticket.get("consulta_pin")
+    primary_button_text = (
+        "Ver estado del ticket" if base_context.get("chat_url") else None
+    )
+    primary_button_url = base_context.get("chat_url")
+    secondary_button_text = (
+        "Ver ubicación" if base_context.get("map_link_url") else None
+    )
+    secondary_button_url = base_context.get("map_link_url")
+
+    context = _build_ticket_email_context(
+        ticket,
+        tipo_ticket=tipo_ticket,
+        audience="cliente",
+        header_title=header_title,
+        intro_text=intro_text,
+        admin_user=admin_user,
+        ticket_data=ticket_data,
+        highlight_message=highlight_text,
+        comentario=comentario,
+        extra_adjuntos=adjuntos,
+        primary_button_text=primary_button_text,
+        primary_button_url=primary_button_url,
+        secondary_button_text=secondary_button_text,
+        secondary_button_url=secondary_button_url,
+        footer_text="Este es un mensaje automático. Te avisaremos ante cada novedad del ticket.",
+    )
 
     try:
-        cuerpo_html = render_template(
-            "email/ticket_creado.html",
-            nombre_vecino=nombre_vecino,
-            nro_ticket=ticket_codigo or ticket_numero,
-            categoria=categoria_ticket,
-            direccion=direccion_ticket,
-            detalles=detalles_ticket,
-            foto_url=getattr(ticket, "foto_url_directa", None),
-            chat_url=chat_url,
-            telefono_contacto=telefono_contacto,
-            horario_contacto=horario_contacto,
-            enlace_contacto=enlace_contacto,
-            consulta_pin=consulta_pin,
-            tipo_ticket=tipo_ticket,
-        )
+        cuerpo_html = render_template("email/ticket_resumen.html", **context)
         return enviar_email(destino, asunto, cuerpo_html)
     except Exception as e:  # pragma: no cover - logged only
         logger.error(
@@ -502,61 +952,24 @@ def enviar_email_ticket_cliente(
         return False
 
 
-def enviar_email_ticket_novedad(ticket, mensaje: str) -> bool:
-    """Notifica al cliente que su ticket tiene una novedad con una plantilla HTML mejorada."""
-    destino = getattr(ticket, "email", None)
-    if not destino and getattr(ticket, "user_id", None):
-        from models import User # Importar User aquí para evitar importación circular a nivel de módulo
-        usuario = User.query.get(ticket.user_id)
-        destino = getattr(usuario, "email", None)
-    if not destino:
-        logger.warning("[EMAIL] Ticket sin email para notificar novedad.")
-        return False
+def enviar_email_ticket_novedad(
+    ticket,
+    mensaje: str,
+    *,
+    comentario=None,
+    adjuntos: Optional[List[Any]] = None,
+) -> bool:
+    """Notifica al cliente que su ticket tiene una novedad."""
 
-    asunto = f"Actualización en tu ticket {ticket.nro_ticket}"
-
-    # --- Plantilla HTML Mejorada ---
-    cuerpo_html_novedad = f"""\
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{asunto}</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f4f4f7;">
-    <table align="center" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 600px; margin: 20px auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
-        <tr>
-            <td style="padding: 30px 40px; border-bottom: 1px solid #eeeeee;">
-                <h1 style="margin: 0; color: #1a1a1a; font-size: 24px; font-weight: 600;">Actualización de tu Ticket</h1>
-            </td>
-        </tr>
-        <tr>
-            <td style="padding: 30px 40px;">
-                <p style="margin: 0 0 15px; color: #444444; font-size: 16px; line-height: 1.6;">Hola,</p>
-                <p style="margin: 0 0 20px; color: #444444; font-size: 16px; line-height: 1.6;">
-                    Se registró una nueva actividad en tu ticket <strong>#{ticket.nro_ticket}</strong>.
-                </p>
-                <div style="background-color: #f9f9f9; border-left: 4px solid #007bff; padding: 15px 20px; margin-bottom: 20px;">
-                    <p style="margin: 0; color: #333333; font-size: 16px; font-style: italic;">"{mensaje}"</p>
-                </div>
-                <p style="margin: 0; color: #444444; font-size: 16px; line-height: 1.6;">
-                    Puedes ver el estado de tu ticket y responder ingresando a nuestro portal.
-                </p>
-            </td>
-        </tr>
-        <tr>
-            <td style="padding: 20px 40px; text-align: center; background-color: #f9f9f9; border-top: 1px solid #eeeeee; border-radius: 0 0 8px 8px;">
-                <p style="margin: 0; color: #888888; font-size: 12px;">
-                    Este es un mensaje automático. Por favor, no respondas a este correo.
-                </p>
-            </td>
-        </tr>
-    </table>
-</body>
-</html>
-"""
-    return enviar_email(destino, asunto, cuerpo_html_novedad)
+    tipo_ticket = "municipio" if getattr(ticket, "municipio_id", None) else "pyme"
+    return enviar_email_ticket_cliente(
+        ticket,
+        tipo_ticket=tipo_ticket,
+        mensaje_destacado=mensaje,
+        comentario=comentario,
+        adjuntos=adjuntos,
+        es_creacion=False,
+    )
 
 
 def enviar_sms(destino: str, mensaje: str) -> bool:

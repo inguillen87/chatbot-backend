@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ header_title or 'Resumen de ticket' }}</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #f3f4f6;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            color: #1f2937;
+        }
+        .wrapper {
+            width: 100%;
+            padding: 24px 12px;
+            box-sizing: border-box;
+        }
+        .card {
+            max-width: 720px;
+            margin: 0 auto;
+            background-color: #ffffff;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
+        }
+        .header {
+            background: linear-gradient(135deg, #1d4ed8, #0f172a);
+            padding: 32px 36px;
+            color: #ffffff;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 700;
+        }
+        .header p {
+            margin: 12px 0 0;
+            font-size: 15px;
+            color: rgba(255, 255, 255, 0.85);
+        }
+        .content {
+            padding: 32px 36px;
+        }
+        .summary-grid {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 0 0 24px;
+        }
+        .summary-grid td {
+            padding: 6px 0;
+            font-size: 14px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .summary-grid td.label {
+            color: #6b7280;
+            width: 45%;
+        }
+        .summary-grid td.value {
+            color: #1f2937;
+            font-weight: 600;
+            text-align: right;
+        }
+        .section-title {
+            font-size: 16px;
+            font-weight: 700;
+            margin: 28px 0 12px;
+            color: #111827;
+        }
+        .section-box {
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            padding: 18px 20px;
+            background-color: #f9fafb;
+            margin-bottom: 24px;
+        }
+        .section-box p {
+            margin: 4px 0;
+            font-size: 14px;
+            color: #374151;
+        }
+        .highlight {
+            border-left: 4px solid #2563eb;
+            background-color: #eff6ff;
+        }
+        .highlight p {
+            margin: 6px 0;
+            font-size: 15px;
+            line-height: 1.6;
+        }
+        .map-container {
+            margin: 18px 0 24px;
+            text-align: center;
+        }
+        .map-container img {
+            max-width: 100%;
+            border-radius: 10px;
+            border: 1px solid #d1d5db;
+        }
+        .cta-buttons {
+            margin: 32px 0 12px;
+            text-align: center;
+        }
+        .cta-buttons a {
+            display: inline-block;
+            padding: 12px 28px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-weight: 600;
+            margin: 6px 8px;
+        }
+        .cta-primary {
+            background-color: #2563eb;
+            color: #ffffff !important;
+        }
+        .cta-secondary {
+            background-color: #e0e7ff;
+            color: #1e3a8a !important;
+        }
+        .attachments ul,
+        .history ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .attachments li,
+        .history-item {
+            padding: 14px 16px;
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            margin-bottom: 14px;
+            background-color: #ffffff;
+        }
+        .attachments li strong,
+        .history-item strong {
+            display: block;
+            margin-bottom: 4px;
+            color: #111827;
+        }
+        .history-item .meta {
+            font-size: 12px;
+            color: #6b7280;
+            margin-bottom: 6px;
+        }
+        .history-item p {
+            margin: 6px 0;
+            font-size: 14px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+        .history-item .state-pill {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background-color: #dbeafe;
+            color: #1e40af;
+            font-size: 12px;
+            margin-top: 8px;
+        }
+        .footer {
+            padding: 24px 0 0;
+            font-size: 12px;
+            color: #6b7280;
+            text-align: center;
+        }
+        a.link {
+            color: #2563eb;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="wrapper">
+        <div class="card">
+            <div class="header">
+                <h1>{{ header_title or 'Resumen del ticket' }}</h1>
+                {% if intro_text %}
+                <p>{{ intro_text }}</p>
+                {% endif %}
+            </div>
+            <div class="content">
+                <table class="summary-grid">
+                    {% if ticket_codigo or ticket_numero %}
+                    <tr>
+                        <td class="label">Ticket</td>
+                        <td class="value">#{{ ticket_codigo or ticket_numero }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if estado %}
+                    <tr>
+                        <td class="label">Estado actual</td>
+                        <td class="value">{{ estado|capitalize }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if categoria %}
+                    <tr>
+                        <td class="label">Categoría</td>
+                        <td class="value">{{ categoria }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if fecha_formateada %}
+                    <tr>
+                        <td class="label">Creado</td>
+                        <td class="value">{{ fecha_formateada }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if canal_ingreso %}
+                    <tr>
+                        <td class="label">Canal de ingreso</td>
+                        <td class="value">{{ canal_ingreso }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if direccion %}
+                    <tr>
+                        <td class="label">Dirección</td>
+                        <td class="value">{{ direccion }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if consulta_pin %}
+                    <tr>
+                        <td class="label">PIN de consulta</td>
+                        <td class="value">{{ consulta_pin }}</td>
+                    </tr>
+                    {% endif %}
+                </table>
+
+                {% if highlight %}
+                <div class="section-box highlight">
+                    <strong>Última novedad</strong>
+                    {% if highlight.autor %}
+                    <p style="color:#1d4ed8; font-weight:600;">{{ highlight.autor }}</p>
+                    {% endif %}
+                    <p>{{ highlight.mensaje or '' }}</p>
+                    {% if highlight.estado %}
+                    <div class="state-pill">Estado: {{ highlight.estado|capitalize }}</div>
+                    {% endif %}
+                    {% if highlight.adjuntos %}
+                    <div style="margin-top:12px;">
+                        <strong style="font-size:13px; color:#1f2937;">Adjuntos destacados:</strong>
+                        <ul style="margin-top:8px;">
+                            {% for adj in highlight.adjuntos %}
+                            <li style="font-size:13px; color:#374151; margin-bottom:4px;">
+                                {% if adj.url %}
+                                <a href="{{ adj.url }}" class="link">{{ adj.nombre or 'Archivo adjunto' }}</a>
+                                {% else %}
+                                {{ adj.nombre or 'Archivo adjunto' }}
+                                {% endif %}
+                                {% if adj.mime %}
+                                <span style="color:#9ca3af;">({{ adj.mime }})</span>
+                                {% endif %}
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                    {% endif %}
+                </div>
+                {% endif %}
+
+                <div class="section-box">
+                    <strong>Descripción</strong>
+                    <p>{{ detalles or 'Sin descripción.' }}</p>
+                </div>
+
+                {% if map_image_url %}
+                <div class="map-container">
+                    <img src="{{ map_image_url }}" alt="Mapa de la ubicación del ticket">
+                    {% if map_link_url %}
+                    <p style="margin-top:8px; font-size:13px;">
+                        <a href="{{ map_link_url }}" class="link">Ver en el mapa</a>
+                    </p>
+                    {% endif %}
+                </div>
+                {% endif %}
+
+                {% if audience == 'admin' %}
+                <div class="section-box">
+                    <strong>Datos del vecino/cliente</strong>
+                    <p><strong>Nombre:</strong> {{ cliente_info.nombre or 'No informado' }}</p>
+                    {% if cliente_info.email %}<p><strong>Email:</strong> {{ cliente_info.email }}</p>{% endif %}
+                    {% if cliente_info.telefono %}<p><strong>Teléfono:</strong> {{ cliente_info.telefono }}</p>{% endif %}
+                    {% if cliente_info.dni %}<p><strong>DNI:</strong> {{ cliente_info.dni }}</p>{% endif %}
+                    {% if rubro_nombre %}<p><strong>Rubro:</strong> {{ rubro_nombre }}</p>{% endif %}
+                </div>
+                {% else %}
+                <div class="section-box">
+                    <strong>Contacto del equipo</strong>
+                    {% if contacto_info.telefono %}<p><strong>Teléfono:</strong> {{ contacto_info.telefono }}</p>{% endif %}
+                    {% if contacto_info.horario %}<p><strong>Horario de atención:</strong> {{ contacto_info.horario }}</p>{% endif %}
+                    {% if contacto_info.enlace %}
+                    <p><a href="{{ contacto_info.enlace }}" class="link">Más información</a></p>
+                    {% endif %}
+                    {% if not contacto_info.telefono and not contacto_info.enlace %}
+                    <p>Responder a este correo si necesitás sumar información adicional.</p>
+                    {% endif %}
+                </div>
+                {% endif %}
+
+                {% if adjuntos and adjuntos|length > 0 %}
+                <div class="attachments">
+                    <div class="section-title">Archivos vinculados ({{ total_adjuntos }})</div>
+                    <ul>
+                        {% for adj in adjuntos %}
+                        <li>
+                            <strong>{{ adj.nombre or 'Archivo adjunto' }}</strong>
+                            {% if adj.url %}
+                            <a href="{{ adj.url }}" class="link" style="display:inline-block; margin-top:4px;">Descargar</a>
+                            {% endif %}
+                            {% if adj.mime %}
+                            <p style="font-size:12px; color:#9ca3af;">Tipo: {{ adj.mime }}</p>
+                            {% endif %}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+
+                {% if mostrar_historial %}
+                <div class="history">
+                    <div class="section-title">Historial completo</div>
+                    <ul>
+                        {% for item in historial %}
+                        <li class="history-item" style="border-left:4px solid {% if item.rol == 'admin' %}#2563eb{% elif item.rol == 'sistema' %}#0f172a{% else %}#10b981{% endif %};">
+                            <div class="meta">
+                                {% if item.autor %}<strong>{{ item.autor }}</strong>{% endif %}
+                                {% if item.fecha_formateada %} · {{ item.fecha_formateada }}{% endif %}
+                            </div>
+                            {% if item.mensaje %}
+                            <p>{{ item.mensaje }}</p>
+                            {% elif item.mensaje is not defined or not item.mensaje %}
+                            <p></p>
+                            {% endif %}
+                            {% if item.estado %}
+                            <div class="state-pill">Estado: {{ item.estado|capitalize }}</div>
+                            {% endif %}
+                            {% if item.adjuntos %}
+                            <div style="margin-top:12px;">
+                                <strong style="font-size:12px; color:#1f2937;">Adjuntos:</strong>
+                                <ul style="margin-top:6px;">
+                                    {% for adj in item.adjuntos %}
+                                    <li style="font-size:13px; margin-bottom:4px;">
+                                        {% if adj.url %}
+                                        <a href="{{ adj.url }}" class="link">{{ adj.nombre or 'Archivo' }}</a>
+                                        {% else %}
+                                        {{ adj.nombre or 'Archivo' }}
+                                        {% endif %}
+                                        {% if adj.mime %}
+                                        <span style="color:#9ca3af;">({{ adj.mime }})</span>
+                                        {% endif %}
+                                    </li>
+                                    {% endfor %}
+                                </ul>
+                            </div>
+                            {% endif %}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                {% endif %}
+
+                {% if primary_button or secondary_button %}
+                <div class="cta-buttons">
+                    {% if primary_button %}
+                    <a href="{{ primary_button.url }}" class="cta-primary">{{ primary_button.text }}</a>
+                    {% endif %}
+                    {% if secondary_button %}
+                    <a href="{{ secondary_button.url }}" class="cta-secondary">{{ secondary_button.text }}</a>
+                    {% endif %}
+                </div>
+                {% endif %}
+
+                {% if footer_text %}
+                <div class="footer">{{ footer_text }}</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</body>
+</html>

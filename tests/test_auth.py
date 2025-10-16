@@ -626,7 +626,13 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
             enviar_whatsapp_ticket_novedad,
         )
         # Email siempre se envía si hay email
-        enviar_email_ticket_novedad(ticket_obj, mensaje_notificacion_base) # TODO: Email con adjuntos? Por ahora solo texto.
+        comentario_destacado = comentarios_creados[0] if comentarios_creados else None
+        enviar_email_ticket_novedad(
+            ticket_obj,
+            mensaje_notificacion_base,
+            comentario=comentario_destacado,
+            adjuntos=archivos_adjuntados_db if archivos_adjuntados_db else None,
+        )
 
         # SMS siempre se envía si hay teléfono (solo texto)
         enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion_base)
@@ -734,7 +740,11 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         )
         mensaje_notificacion = f"El estado de tu ticket #{ticket_obj.nro_ticket} ha sido actualizado a: '{nuevo_estado}'."
 
-        enviar_email_ticket_novedad(ticket_obj, mensaje_notificacion)
+        enviar_email_ticket_novedad(
+            ticket_obj,
+            mensaje_notificacion,
+            comentario=comentario_estado,
+        )
         enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion)
         if tipo == "municipio": # Por ahora, WhatsApp solo para municipio
             enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion)

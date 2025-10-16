@@ -321,7 +321,11 @@ def handle_send_chat_message(data):
                 )
                 mensaje_notificacion = f"Un agente ha respondido a tu ticket #{ticket_obj.nro_ticket}: \"{message_text}\""
 
-                enviar_email_ticket_novedad(ticket_obj, mensaje_notificacion)
+                enviar_email_ticket_novedad(
+                    ticket_obj,
+                    mensaje_notificacion,
+                    comentario=nuevo_comentario,
+                )
                 enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion)
                 if ticket_type == "municipio":
                     enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion)

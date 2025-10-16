@@ -245,17 +245,39 @@ class ServicioTickets:
                 except Exception:  # pragma: no cover - defensive fallback
                     admin_user = None
 
+            ticket_codigo_valor = str(getattr(ticket, "nro_ticket", "") or "")
+            if ticket_codigo_valor:
+                mensaje_admin_creacion = (
+                    f"Se registró el ticket #{ticket_codigo_valor}. "
+                    "Revisá los detalles para asignarlo."
+                )
+                mensaje_cliente_creacion = (
+                    f"Registramos tu ticket #{ticket_codigo_valor}. "
+                    "Nuestro equipo ya está trabajando en tu caso."
+                )
+            else:
+                mensaje_admin_creacion = (
+                    "Se registró un nuevo ticket. Revisá los detalles para asignarlo."
+                )
+                mensaje_cliente_creacion = (
+                    "Registramos tu ticket y comenzamos a gestionarlo."
+                )
+
             enviar_email_ticket_admin(
                 ticket,
                 admin_user=admin_user,
                 tipo_ticket=tipo_ticket,
                 ticket_data=ticket_data,
+                mensaje_destacado=mensaje_admin_creacion,
+                es_creacion=True,
             )
             enviar_email_ticket_cliente(
                 ticket,
                 tipo_ticket=tipo_ticket,
                 admin_user=admin_user,
                 ticket_data=ticket_data,
+                mensaje_destacado=mensaje_cliente_creacion,
+                es_creacion=True,
             )
         except Exception as e:  # pragma: no cover - logging only
             logger.error(
@@ -291,13 +313,30 @@ class ServicioTickets:
                     enviar_email_ticket_admin,
                 )
                 mensaje_notificacion = f"Nuevo comentario en tu ticket #{ticket.nro_ticket}: {comentario_data.get('comentario', '')[:50]}..."
+                adjunto_unico = (
+                    [nuevo_comentario.archivo_adjunto]
+                    if getattr(nuevo_comentario, "archivo_adjunto", None)
+                    else None
+                )
                 if nuevo_comentario.es_admin: # Notificar al usuario/cliente
-                    enviar_email_ticket_novedad(ticket, mensaje_notificacion)
+                    enviar_email_ticket_novedad(
+                        ticket,
+                        mensaje_notificacion,
+                        comentario=nuevo_comentario,
+                        adjuntos=adjunto_unico,
+                    )
                     enviar_sms_ticket_novedad(ticket, mensaje_notificacion)
                     if tipo_ticket == "municipio": # Por ahora, WhatsApp solo para municipio
                         enviar_whatsapp_ticket_novedad(ticket, mensaje_notificacion)
                 else: # Notificar al admin/empleado
-                    enviar_email_ticket_admin(ticket) # Email al admin es suficiente por ahora
+                    enviar_email_ticket_admin(
+                        ticket,
+                        tipo_ticket=tipo_ticket,
+                        mensaje_destacado=mensaje_notificacion,
+                        comentario=nuevo_comentario,
+                        adjuntos=adjunto_unico,
+                        es_creacion=False,
+                    )
             except Exception as e:  # pragma: no cover - not essential for tests
                 logger.error(f"Error enviando notificaciones tras crear comentario para ticket {ticket.id if ticket else 'N/A'}: {e}", exc_info=True)
             return nuevo_comentario

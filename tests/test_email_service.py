@@ -69,6 +69,7 @@ class EmailServiceAdminTests(unittest.TestCase):
 
         self.assertTrue(result)
         mock_render.assert_called_once()
+        self.assertEqual(mock_render.call_args[0][0], "email/ticket_resumen.html")
         mock_send.assert_called_once()
 
     def test_enviar_email_ticket_cliente_envia_correo(self):
@@ -94,6 +95,7 @@ class EmailServiceAdminTests(unittest.TestCase):
 
         self.assertTrue(result)
         mock_render.assert_called_once()
+        self.assertEqual(mock_render.call_args[0][0], "email/ticket_resumen.html")
         mock_send.assert_called_once()
 
 if __name__ == "__main__":
