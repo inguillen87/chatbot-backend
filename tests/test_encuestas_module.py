@@ -1,4 +1,5 @@
 import hashlib
+import json
 import sys
 import types
 from datetime import datetime, timedelta, timezone
@@ -41,7 +42,7 @@ if "qrcode" not in sys.modules:
 
 import models  # noqa: F401  # ensure models are registered
 from database import db
-from models import EncEncuesta, EncRespuesta
+from models import EncEncuesta, EncRespuesta, EncSegmento
 from services.encuestas_service import (
     EncuestaError,
     create_encuesta,
@@ -54,6 +55,7 @@ from services.encuestas_service import (
     list_encuestas,
     _build_mendoza_bootstrap_payload,
     _build_godoy_cruz_bootstrap_payload,
+    build_template_draft_from_slug,
     seed_encuesta_respuestas_demo,
 )
 from services.encuestas_analytics_service import get_summary
@@ -75,7 +77,7 @@ def test_bootstrap_templates_match_frontend_config():
 
     payloads = encuestas_service_module._build_junin_bootstrap_payload(inicio, fin)
     assert isinstance(payloads, list)
-    assert len(payloads) == 6
+    assert len(payloads) == 9
 
     servicios = payloads[0]
     assert servicios["slug"].startswith("servicios-publicos-junin")
@@ -112,6 +114,42 @@ def test_bootstrap_templates_match_frontend_config():
     assert obras["politica_unicidad"] == "por_phone"
     assert obras["requiere_identidad"] is True
 
+    intencion = next(
+        template
+        for template in payloads
+        if template["slug"].startswith("sondeo-intencion-voto-2025-junin")
+    )
+    assert intencion["tipo"] == "sondeo"
+    assert len(intencion["preguntas"]) == 4
+    location_question = intencion["preguntas"][0]
+    assert any(
+        opcion.get("valor") == "geo_autocomplete"
+        for opcion in location_question.get("opciones", [])
+    )
+    contenido_intencion = intencion["preguntas"][1:]
+    assert len(contenido_intencion) == 3
+    opciones_voto = contenido_intencion[0]["opciones"]
+    assert any(opt["texto"] == "Frente oficialista local" for opt in opciones_voto)
+
+    pulso = next(
+        template
+        for template in payloads
+        if template["slug"].startswith("pulso-economico-2025-junin")
+    )
+    assert pulso["anonimo_permitido"] is True
+    assert pulso["requiere_identidad"] is False
+    contenido_pulso = pulso["preguntas"][1:]
+    assert any(pregunta["tipo"] == "abierta" for pregunta in contenido_pulso)
+
+    agenda = next(
+        template
+        for template in payloads
+        if template["slug"].startswith("agenda-gobierno-2026-junin")
+    )
+    assert agenda["tipo"] == "planificacion"
+    assert agenda["politica_unicidad"] == "por_dni_o_phone"
+    assert any("agenda" in tag.lower() or "planificación" in tag.lower() for tag in agenda.get("tags", []))
+
     san_martin_payloads = encuestas_service_module._build_san_martin_bootstrap_payload(inicio, fin)
     assert san_martin_payloads[0]["slug"].startswith("servicios-publicos-san-martin")
     assert "San Martín" in san_martin_payloads[0]["titulo"]
@@ -129,7 +167,15 @@ def test_bootstrap_templates_match_frontend_config():
     assert "Godoy Cruz" in godoy_cruz_payloads[0]["titulo"]
 
     profile_keys = {profile["key"] for profile in encuestas_service_module._BOOTSTRAP_PROFILES}
-    assert {"junin", "san_martin", "rivadavia", "mendoza", "godoy_cruz"}.issubset(profile_keys)
+    assert {"junin", "san_martin", "rivadavia", "mendoza", "godoy_cruz", "lavalle"}.issubset(profile_keys)
+
+    draft_payload = build_template_draft_from_slug("servicios-publicos", "Junín")
+    auto_seed = draft_payload.get("auto_seed_demo")
+    assert auto_seed is not None
+    assert auto_seed["enabled"] is True
+    assert auto_seed["cantidad"] == 100
+    assert auto_seed["geo_profile_key"] == "junin"
+    assert any(action["key"] == "demo_seed" for action in draft_payload.get("quick_actions", []))
 
 
 def test_list_template_payloads_scope_all_returns_catalog(client):
@@ -142,7 +188,76 @@ def test_list_template_payloads_scope_all_returns_catalog(client):
     claves = {entrada.get("key") for entrada in catalogo}
     assert "junin" in claves
     assert "san_martin" in claves
+    assert "lavalle" in claves
     assert any(entrada.get("templates") for entrada in catalogo)
+
+    render = encuestas_service_module.list_template_catalog(municipality="Lavalle")
+    assert render, "Debe renderizar plantillas para Lavalle"
+    for template in render:
+        demo_seed = template.get("demo_seed")
+        assert demo_seed, "Cada plantilla debe exponer demo_seed"
+        assert demo_seed["cantidad"] == 100
+        assert demo_seed.get("geo_profile_key") == "lavalle"
+
+
+def test_create_encuesta_auto_seed_demo_creates_responses(client):
+    with client.application.app_context():
+        user = DummyUser(tenant_id=4)
+        draft_payload = build_template_draft_from_slug("servicios-publicos", "Junín")
+
+        encuesta = create_encuesta(draft_payload, user)
+
+        respuestas_count = EncRespuesta.query.filter_by(encuesta_id=encuesta.id).count()
+        assert respuestas_count == draft_payload["auto_seed_demo"]["cantidad"]
+
+        barrios = {
+            respuesta.barrio for respuesta in EncRespuesta.query.filter_by(encuesta_id=encuesta.id).all()
+        }
+        assert barrios, "Las respuestas demo deben incluir barrios/distritos"
+
+        segmento = EncSegmento.query.filter_by(encuesta_id=encuesta.id, clave="auto_seed_demo").first()
+        assert segmento is not None
+        seed_cfg = json.loads(segmento.valor)
+        assert seed_cfg["cantidad"] == draft_payload["auto_seed_demo"]["cantidad"]
+        assert seed_cfg["geo_profile_key"] == "junin"
+        assert seed_cfg["municipality_label"] == "Junín"
+
+
+def test_publicar_encuesta_auto_seed_when_no_responses(monkeypatch, client):
+    with client.application.app_context():
+        user = DummyUser(tenant_id=4)
+        draft_payload = build_template_draft_from_slug("servicios-publicos", "Junín")
+
+        calls = []
+
+        def _fake_seed(encuesta_id, user_arg, cantidad, *, geo_profile_key=None, municipality_label=None):
+            calls.append(
+                {
+                    "encuesta_id": encuesta_id,
+                    "cantidad": cantidad,
+                    "geo_profile_key": geo_profile_key,
+                    "municipality_label": municipality_label,
+                }
+            )
+            return {
+                "encuesta_id": encuesta_id,
+                "creadas": cantidad,
+                "omitidas": 0,
+                "objetivo": cantidad,
+            }
+
+        monkeypatch.setattr(encuestas_service_module, "seed_encuesta_respuestas_demo", _fake_seed)
+
+        encuesta = create_encuesta(draft_payload, user)
+        assert len(calls) == 1, "Debe invocar seed al crear la encuesta"
+        assert EncRespuesta.query.filter_by(encuesta_id=encuesta.id).count() == 0
+
+        encuesta, _ = publicar_encuesta(encuesta.id, user)
+        assert len(calls) == 2, "Debe invocar seed nuevamente al publicar"
+        publish_call = calls[-1]
+        assert publish_call["cantidad"] == draft_payload["auto_seed_demo"]["cantidad"]
+        assert publish_call["geo_profile_key"] == "junin"
+        assert publish_call["municipality_label"] == "Junín"
 
 
 class DummyUser:
@@ -539,7 +654,10 @@ def test_get_summary_returns_metrics(client):
     assert demografia["edad"]["muestra"] == 2
     assert demografia["edad"]["promedio"] is not None
     assert demografia["edad"]["promedio"] >= 29
-    assert any(entry["label"] == "Centro" for entry in demografia["territorio"]["barrios"])
+    territorio_map = demografia["territorio_map"]
+    assert any(entry["label"] == "Centro" for entry in territorio_map["barrios"])
+    territorio_sections = {section["key"]: section for section in demografia["territorio"]}
+    assert territorio_sections["barrios"]["series"] == territorio_map["barrios"]
     assert {
         entry["label"] for entry in demografia["rango_etario"]
     } == set(demografia["rango_etario_map"].keys())

@@ -78,6 +78,10 @@ def _current_app_logger():
 _BOOTSTRAP_SAMPLE_ENABLED = _env_flag("ENCUESTAS_BOOTSTRAP_SAMPLE", default=True)
 
 
+_AUTO_SEED_SEGMENT_KEY = "auto_seed_demo"
+_AUTO_SEED_DEFAULT_LABEL = "Emular 100 respuestas demo"
+
+
 _BOOTSTRAP_CONFIG_ENV_VAR = "ENCUESTAS_BOOTSTRAP_CONFIG_PATH"
 _BOOTSTRAP_CONFIG_DEFAULT_PATH = (
     Path(__file__).resolve().parent.parent
@@ -402,6 +406,8 @@ def list_template_catalog(
         templates = _select_templates_by_slugs(templates, template_slugs)
 
     rendered: List[Dict[str, Any]] = []
+    geo_profile_key = _slugify(municipality) if municipality else None
+
     for template in templates:
         template_copy = deepcopy(template)
         slug = template_copy.get("slug")
@@ -435,6 +441,13 @@ def list_template_catalog(
                 }
             )
 
+        demo_seed = {
+            "label": "Emular 100 respuestas demo",
+            "cantidad": 100,
+            "geo_profile_key": geo_profile_key,
+            "municipality_label": municipality,
+        }
+
         rendered.append(
             {
                 "slug": slug,
@@ -448,6 +461,16 @@ def list_template_catalog(
                 "requiere_datos_contacto": bool(template_copy.get("requiere_datos_contacto", False)),
                 "tags": list(template_copy.get("tags") or []),
                 "preguntas": preguntas_rendered,
+                "demo_seed": demo_seed,
+                "quick_actions": [
+                    {
+                        "key": "demo_seed",
+                        "label": demo_seed["label"],
+                        "cantidad": demo_seed["cantidad"],
+                        "geo_profile_key": demo_seed["geo_profile_key"],
+                        "municipality_label": demo_seed["municipality_label"],
+                    }
+                ],
             }
         )
 
@@ -489,6 +512,14 @@ def build_template_draft_from_slug(
         raise EncuestaError("No se pudo generar la plantilla solicitada", status_code=500)
 
     payload = payloads[0]
+    geo_profile_key = _slugify(municipality)
+    auto_seed_demo = {
+        "enabled": True,
+        "cantidad": 100,
+        "label": "Emular 100 respuestas demo",
+        "geo_profile_key": geo_profile_key,
+        "municipality_label": municipality,
+    }
     requiere_identidad = bool(payload.get("requiere_identidad", False))
     anonimato_habilitado = bool(payload.get("anonimo_permitido", True)) and not requiere_identidad
 
@@ -526,6 +557,16 @@ def build_template_draft_from_slug(
         "requiere_datos_contacto": requiere_identidad,
         "tags": payload.get("tags") or [],
         "preguntas": preguntas,
+        "auto_seed_demo": auto_seed_demo,
+        "quick_actions": [
+            {
+                "key": "demo_seed",
+                "label": auto_seed_demo["label"],
+                "cantidad": auto_seed_demo["cantidad"],
+                "geo_profile_key": auto_seed_demo["geo_profile_key"],
+                "municipality_label": auto_seed_demo["municipality_label"],
+            }
+        ],
     }
 
 
@@ -811,36 +852,232 @@ def _sync_encuesta_tags(encuesta: EncEncuesta, tags: Optional[Sequence[Any]]) ->
         encuesta.segmentos.append(EncSegmento(encuesta=encuesta, clave="tag", valor=tag))
 
 
+def _guess_auto_seed_defaults(
+    *,
+    municipality_label: Optional[str],
+    slug_hint: Optional[str],
+    tenant_id: Optional[int],
+) -> Tuple[Optional[str], Optional[str]]:
+    geo_key: Optional[str] = None
+    municipality_value: Optional[str] = (municipality_label or None)
+
+    catalog = _geo_catalog()
+    if slug_hint:
+        parts = [part for part in slug_hint.split("-") if part]
+        for part in reversed(parts):
+            if part.isdigit():
+                continue
+            entry = catalog.get(part)
+            if entry:
+                geo_key = part
+                if not municipality_value:
+                    municipality_value = (
+                        entry.get("municipality")
+                        or entry.get("label")
+                        or entry.get("name")
+                    )
+                break
+
+    if geo_key is None and tenant_id is not None:
+        profile = _match_bootstrap_profile(tenant_id)
+        if profile:
+            geo_key = profile.get("geo_key") or profile.get("key") or geo_key
+            if not municipality_value:
+                municipality_value = profile.get("municipality_label")
+
+    if geo_key is None and municipality_value:
+        normalized = _slugify(str(municipality_value))
+        if normalized:
+            geo_key = normalized
+
+    return geo_key, municipality_value
+
+
+def _normalize_auto_seed_config(
+    raw_cfg: Optional[Dict[str, Any]],
+    *,
+    municipality_label: Optional[str],
+    slug_hint: Optional[str],
+    tenant_id: Optional[int],
+) -> Optional[Dict[str, Any]]:
+    config = raw_cfg if isinstance(raw_cfg, dict) else None
+    default_geo, default_municipality = _guess_auto_seed_defaults(
+        municipality_label=municipality_label,
+        slug_hint=slug_hint,
+        tenant_id=tenant_id,
+    )
+
+    if config is None:
+        geo_key = default_geo
+        municipality_value = default_municipality
+        if not geo_key and municipality_value:
+            geo_key = _slugify(str(municipality_value))
+        if geo_key or municipality_value:
+            return {
+                "enabled": True,
+                "cantidad": 100,
+                "geo_profile_key": geo_key,
+                "municipality_label": municipality_value,
+                "label": _AUTO_SEED_DEFAULT_LABEL,
+            }
+        return None
+
+    enabled = bool(config.get("enabled", True))
+    cantidad_raw = (
+        config.get("cantidad")
+        or config.get("count")
+        or config.get("responses")
+    )
+    try:
+        cantidad = int(cantidad_raw) if cantidad_raw is not None else 100
+    except (TypeError, ValueError):
+        cantidad = 100
+    if cantidad < 0:
+        cantidad = 0
+
+    municipality_value = (
+        config.get("municipality_label")
+        or config.get("municipality")
+        or config.get("city")
+        or default_municipality
+    )
+    geo_key = (
+        config.get("geo_profile_key")
+        or config.get("geo_key")
+        or config.get("geo")
+        or default_geo
+    )
+    if not geo_key and municipality_value:
+        geo_key = _slugify(str(municipality_value))
+
+    normalized = {
+        "enabled": enabled,
+        "cantidad": cantidad,
+        "geo_profile_key": geo_key,
+        "municipality_label": municipality_value,
+        "label": config.get("label") or _AUTO_SEED_DEFAULT_LABEL,
+    }
+
+    if not enabled or cantidad <= 0:
+        return None
+
+    return normalized
+
+
+def _persist_auto_seed_config(
+    encuesta: EncEncuesta, config: Optional[Dict[str, Any]]
+) -> None:
+    existing = [
+        segmento
+        for segmento in encuesta.segmentos
+        if segmento.clave == _AUTO_SEED_SEGMENT_KEY
+    ]
+    for segmento in existing:
+        encuesta.segmentos.remove(segmento)
+
+    if not config:
+        return
+
+    serialized = json.dumps(config, ensure_ascii=False)
+    encuesta.segmentos.append(
+        EncSegmento(
+            encuesta=encuesta,
+            clave=_AUTO_SEED_SEGMENT_KEY,
+            valor=serialized,
+        )
+    )
+
+
+def _get_auto_seed_config(encuesta: EncEncuesta) -> Optional[Dict[str, Any]]:
+    for segmento in encuesta.segmentos:
+        if segmento.clave != _AUTO_SEED_SEGMENT_KEY:
+            continue
+        try:
+            raw_value = json.loads(segmento.valor or "{}")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(raw_value, dict):
+            continue
+
+        enabled = bool(raw_value.get("enabled", True))
+        cantidad_raw = (
+            raw_value.get("cantidad")
+            or raw_value.get("count")
+            or raw_value.get("responses")
+        )
+        try:
+            cantidad = int(cantidad_raw) if cantidad_raw is not None else 100
+        except (TypeError, ValueError):
+            cantidad = 100
+
+        if not enabled or cantidad <= 0:
+            return None
+
+        config = dict(raw_value)
+        config["enabled"] = True
+        config["cantidad"] = cantidad
+        config.setdefault("label", _AUTO_SEED_DEFAULT_LABEL)
+        return config
+
+    geo_key, municipality_value = _guess_auto_seed_defaults(
+        municipality_label=None,
+        slug_hint=getattr(encuesta, "slug", None),
+        tenant_id=getattr(encuesta, "tenant_id", None),
+    )
+    if geo_key or municipality_value:
+        return {
+            "enabled": True,
+            "cantidad": 100,
+            "geo_profile_key": geo_key,
+            "municipality_label": municipality_value,
+            "label": _AUTO_SEED_DEFAULT_LABEL,
+        }
+    return None
+
+
 def create_encuesta(data: Dict[str, Any], user: Any) -> EncEncuesta:
     if not data:
         raise EncuestaError("Payload vacío")
 
+    payload = deepcopy(data)
+    raw_auto_seed_cfg = payload.pop("auto_seed_demo", None)
+    payload.pop("quick_actions", None)
+    municipality_hint = payload.get("municipality") or payload.get("municipio")
+
     tenant_id = _determine_tenant_id(user)
-    titulo = (data.get("titulo") or "").strip()
+    titulo = (payload.get("titulo") or "").strip()
     if not titulo:
         raise EncuestaError("El título es requerido")
 
-    slug_seed = data.get("slug") or f"{tenant_id}-{titulo}"
+    slug_seed = payload.get("slug") or f"{tenant_id}-{titulo}"
     slug = _generate_unique_slug(_slugify(slug_seed))
+
+    auto_seed_cfg = _normalize_auto_seed_config(
+        raw_auto_seed_cfg,
+        municipality_label=municipality_hint,
+        slug_hint=slug_seed,
+        tenant_id=tenant_id,
+    )
 
     encuesta = EncEncuesta(
         tenant_id=tenant_id,
         slug=slug,
         titulo=titulo,
-        descripcion=data.get("descripcion"),
-        tipo=data.get("tipo", "opinion"),
+        descripcion=payload.get("descripcion"),
+        tipo=payload.get("tipo", "opinion"),
         estado="borrador",
-        inicio_at=_parse_datetime(data.get("inicio_at")),
-        fin_at=_parse_datetime(data.get("fin_at")),
-        requiere_identidad=bool(data.get("requiere_identidad", False)),
-        politica_unicidad=data.get("politica_unicidad", "libre"),
-        anonimo_permitido=bool(data.get("anonimo_permitido", True)),
+        inicio_at=_parse_datetime(payload.get("inicio_at")),
+        fin_at=_parse_datetime(payload.get("fin_at")),
+        requiere_identidad=bool(payload.get("requiere_identidad", False)),
+        politica_unicidad=payload.get("politica_unicidad", "libre"),
+        anonimo_permitido=bool(payload.get("anonimo_permitido", True)),
         created_by=getattr(user, "id", None),
     )
 
-    preguntas_payload = data.get("preguntas") or []
+    preguntas_payload = payload.get("preguntas") or []
     encuesta.preguntas = _build_pregunta_entities(encuesta, preguntas_payload)
-    _sync_encuesta_tags(encuesta, data.get("tags"))
+    _sync_encuesta_tags(encuesta, payload.get("tags"))
+    _persist_auto_seed_config(encuesta, auto_seed_cfg)
 
     db.session.add(encuesta)
     try:
@@ -850,6 +1087,16 @@ def create_encuesta(data: Dict[str, Any], user: Any) -> EncEncuesta:
         raise EncuestaError("No se pudo crear la encuesta (slug duplicado?)") from exc
 
     current_app.logger.info("[encuestas] Encuesta %s creada por %s", encuesta.id, getattr(user, "id", None))
+
+    if auto_seed_cfg:
+        seed_encuesta_respuestas_demo(
+            encuesta.id,
+            user,
+            cantidad=auto_seed_cfg.get("cantidad", 100),
+            geo_profile_key=auto_seed_cfg.get("geo_profile_key"),
+            municipality_label=auto_seed_cfg.get("municipality_label"),
+        )
+
     return encuesta
 
 
@@ -869,6 +1116,10 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
         raise EncuestaError("La encuesta no se puede modificar", status_code=409)
 
     puede_actualizar_estructura = True
+    municipality_hint = data.get("municipality") or data.get("municipio")
+    has_auto_seed_update = "auto_seed_demo" in data
+    raw_auto_seed_cfg = data.get("auto_seed_demo") if has_auto_seed_update else None
+
     if encuesta.estado == "publicada" and "preguntas" in data:
         respuestas_registradas = encuesta.respuestas.count()
         puede_actualizar_estructura = respuestas_registradas == 0
@@ -891,6 +1142,15 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
         db.session.flush()
         nuevas_preguntas = _build_pregunta_entities(encuesta, data.get("preguntas") or [])
         encuesta.preguntas.extend(nuevas_preguntas)
+
+    if has_auto_seed_update:
+        auto_seed_cfg = _normalize_auto_seed_config(
+            raw_auto_seed_cfg,
+            municipality_label=municipality_hint,
+            slug_hint=encuesta.slug,
+            tenant_id=encuesta.tenant_id,
+        )
+        _persist_auto_seed_config(encuesta, auto_seed_cfg)
 
     try:
         db.session.commit()
@@ -931,6 +1191,20 @@ def publicar_encuesta(encuesta_id: int, user: Any) -> Tuple[EncEncuesta, EncLink
     )
     encuesta.links.append(link)
 
+    auto_seed_cfg = _get_auto_seed_config(encuesta)
+    auto_seed_params: Optional[Dict[str, Any]] = None
+    if auto_seed_cfg and auto_seed_cfg.get("enabled", True):
+        try:
+            cantidad_int = int(auto_seed_cfg.get("cantidad", 0))
+        except (TypeError, ValueError):
+            cantidad_int = 0
+        if cantidad_int > 0 and encuesta.respuestas.count() == 0:
+            auto_seed_params = {
+                "cantidad": cantidad_int,
+                "geo_profile_key": auto_seed_cfg.get("geo_profile_key"),
+                "municipality_label": auto_seed_cfg.get("municipality_label"),
+            }
+
     try:
         db.session.commit()
     except IntegrityError as exc:
@@ -943,6 +1217,26 @@ def publicar_encuesta(encuesta_id: int, user: Any) -> Tuple[EncEncuesta, EncLink
         slug_publico,
         getattr(user, "id", None),
     )
+
+    if auto_seed_params:
+        try:
+            seed_encuesta_respuestas_demo(
+                encuesta.id,
+                user,
+                cantidad=auto_seed_params["cantidad"],
+                geo_profile_key=auto_seed_params.get("geo_profile_key"),
+                municipality_label=auto_seed_params.get("municipality_label"),
+            )
+            current_app.logger.info(
+                "[encuestas] Respuestas demo generadas automáticamente al publicar encuesta %s",
+                encuesta.id,
+            )
+        except EncuestaError:
+            current_app.logger.exception(
+                "[encuestas] Error al generar respuestas demo para la encuesta %s tras publicarla",
+                encuesta.id,
+            )
+
     return encuesta, link
 
 
@@ -1290,10 +1584,8 @@ def list_public_encuestas_for_tenant(
         .filter(or_(EncEncuesta.inicio_at.is_(None), EncEncuesta.inicio_at <= now))
         .filter(or_(EncEncuesta.fin_at.is_(None), EncEncuesta.fin_at >= now))
         .order_by(
-            EncEncuesta.fin_at.is_(None).desc(),
-            EncEncuesta.fin_at.asc(),
-            EncEncuesta.inicio_at.desc(),
             EncEncuesta.created_at.desc(),
+            EncEncuesta.id.desc(),
         )
     )
     if limit and limit > 0:
@@ -1809,6 +2101,9 @@ def seed_encuesta_respuestas_demo(
     encuesta_id: int,
     user: Any,
     cantidad: int = 50,
+    *,
+    geo_profile_key: Optional[str] = None,
+    municipality_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     if cantidad <= 0:
         raise EncuestaError("Debe solicitar al menos una respuesta demo")
@@ -1816,6 +2111,10 @@ def seed_encuesta_respuestas_demo(
     encuesta = get_encuesta(encuesta_id, user=user)
     tenant_id = encuesta.tenant_id
     geo_metadata = _resolve_geo_metadata_for_tenant(tenant_id)
+    if not geo_metadata and geo_profile_key:
+        geo_metadata = _resolve_geo_metadata(profile_key=geo_profile_key)
+    if not geo_metadata and municipality_label:
+        geo_metadata = _resolve_geo_metadata(municipality=municipality_label)
     rng = random.Random()
 
     location_question = None

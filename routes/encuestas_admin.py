@@ -189,8 +189,17 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
         except (TypeError, ValueError):
             return jsonify({"error": "Cantidad inválida"}), 400
 
+        geo_profile_key = data.get("geo_profile_key") or data.get("geo_key")
+        municipality_label = data.get("municipality_label") or data.get("municipality")
+
         try:
-            result = seed_encuesta_respuestas_demo(encuesta_id, current_user, cantidad=cantidad_int)
+            result = seed_encuesta_respuestas_demo(
+                encuesta_id,
+                current_user,
+                cantidad=cantidad_int,
+                geo_profile_key=geo_profile_key,
+                municipality_label=municipality_label,
+            )
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
         return jsonify(result), 200
