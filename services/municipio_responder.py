@@ -4941,6 +4941,7 @@ def _get_encuestas_menu(context: dict) -> dict:
 
     lines: List[str] = []
     survey_buttons: List[Dict[str, Any]] = []
+    survey_metadata: List[Dict[str, Any]] = []
     for index, (encuesta, slug_publico) in enumerate(encuestas, start=1):
         data = serialize_public_encuesta(encuesta, slug_publico=slug_publico)
         titulo = data.get("titulo") or "Encuesta ciudadana"
@@ -4951,6 +4952,11 @@ def _get_encuestas_menu(context: dict) -> dict:
                 descripcion = descripcion[:177].rstrip() + "…"
 
         share_url = urljoin(f"{base_url}/", f"e/{slug_publico}")
+        qr_url: Optional[str] = None
+        if api_base_url:
+            qr_url = urljoin(
+                f"{api_base_url}/", f"api/public/encuestas/{slug_publico}/qr"
+            )
         whatsapp_message = f"Participá en '{titulo}' ingresando a {share_url}"
         whatsapp_share_url = f"https://wa.me/?text={quote_plus(whatsapp_message)}"
 
@@ -4967,14 +4973,8 @@ def _get_encuestas_menu(context: dict) -> dict:
         line_parts = [f"{index}. *{titulo}*"]
         if descripcion:
             line_parts.append(f"   {descripcion}")
-        line_parts.append(
-            "   • Abrir la encuesta en la web: "
-            f"{share_url if share_url else web_display}"
-        )
-        line_parts.append(
-            "   • Compartir con un mensaje listo para WhatsApp: "
-            f"{whatsapp_share_display_url}"
-        )
+        line_parts.append(f"   • Abrir la encuesta en la web: {share_url}")
+        line_parts.append(f"   • Compartir con un mensaje listo para WhatsApp: {whatsapp_share_display_url}")
         lines.append("\n".join(line_parts))
 
         survey_buttons.append(
@@ -4989,6 +4989,16 @@ def _get_encuestas_menu(context: dict) -> dict:
                 "texto": f"Compartir WhatsApp {whatsapp_button_title}",
                 "url": whatsapp_share_url,
                 "type": "url",
+            }
+        )
+
+        survey_metadata.append(
+            {
+                "slug": slug_publico,
+                "titulo": titulo,
+                "share_url": share_url,
+                "whatsapp_share_url": whatsapp_share_url,
+                "qr_url": qr_url,
             }
         )
 
@@ -5020,6 +5030,9 @@ def _get_encuestas_menu(context: dict) -> dict:
         media_attachments.append(menu_image_url)
     if media_attachments:
         payload["media_urls"] = media_attachments
+
+    if survey_metadata:
+        payload["surveys"] = survey_metadata
 
     return payload
 
