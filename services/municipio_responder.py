@@ -12,7 +12,7 @@ from enum import Enum, auto
 import unicodedata
 import difflib
 from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qs, unquote, urljoin, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
 from models import (
@@ -5031,10 +5031,11 @@ def _get_encuestas_menu(context: dict) -> dict:
                 f"{api_base_url}/", f"api/public/encuestas/{slug_publico}/qr"
             )
         share_message = f"Participá en {titulo}: {share_short_url}"
+        whatsapp_share_url = f"https://wa.me/?text={quote_plus(share_message)}"
+        widget_share_url = f"{share_url}?canal=widget_chat" if share_url else None
         share_action_id = f"encuesta_compartir::{slug_publico}"
 
         short_title = _shorten_button_label(titulo)
-        share_button_title = _shorten_button_label(titulo, max_length=30)
 
         display_share_url = share_short_url
 
@@ -5043,9 +5044,14 @@ def _get_encuestas_menu(context: dict) -> dict:
             line_parts.append(f"   {descripcion}")
         line_parts.append(f"   • Abrir: {display_share_url}")
         line_parts.append(
-            "   • Compartir: tocá 'Compartir "
-            f"{share_button_title}'"
+            "   • Compartir con un mensaje listo para WhatsApp: "
+            f"{whatsapp_share_url}"
         )
+        if widget_share_url:
+            line_parts.append(
+                "   • Compartir desde el widget web: "
+                f"{widget_share_url}"
+            )
         lines.append("\n".join(line_parts))
 
         survey_buttons.append(
@@ -5053,12 +5059,6 @@ def _get_encuestas_menu(context: dict) -> dict:
                 "texto": f"Abrir {short_title}",
                 "url": share_url,
                 "type": "url",
-            }
-        )
-        survey_buttons.append(
-            {
-                "texto": f"Compartir {share_button_title}",
-                "action_id": share_action_id,
             }
         )
 
@@ -5072,6 +5072,8 @@ def _get_encuestas_menu(context: dict) -> dict:
                 "share_action_id": share_action_id,
                 "qr_url": qr_url,
                 "short_slug": short_slug,
+                "share_whatsapp_url": whatsapp_share_url,
+                "share_widget_url": widget_share_url,
             }
         )
 
@@ -5128,6 +5130,8 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
     share_url = None
     share_short_url = None
     share_message = None
+    share_whatsapp_url = None
+    share_widget_url = None
     titulo = "Encuesta ciudadana"
 
     if share_meta:
@@ -5137,6 +5141,8 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
             "share_url"
         )
         share_message = share_meta.get("share_message")
+        share_whatsapp_url = share_meta.get("share_whatsapp_url")
+        share_widget_url = share_meta.get("share_widget_url")
 
     if not share_url and normalized_slug:
         base_url = _resolve_encuestas_base_url(context)
@@ -5181,13 +5187,28 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
                 "share_message": share_message,
                 "share_action_id": f"encuesta_compartir::{normalized_slug}",
                 "qr_url": None,
+                "share_whatsapp_url": None,
+                "share_widget_url": None,
             }
             stored_meta.append(new_meta)
             contexto_municipio_actual["encuestas_menu_surveys"] = stored_meta
+            share_meta = new_meta
 
     if not share_message and (share_short_url or share_url) and titulo:
         target_url = share_short_url or share_url
         share_message = f"Participá en {titulo}: {target_url}"
+
+    if share_message and not share_whatsapp_url:
+        share_whatsapp_url = f"https://wa.me/?text={quote_plus(share_message)}"
+
+    if share_url and not share_widget_url:
+        share_widget_url = f"{share_url}?canal=widget_chat"
+
+    if share_meta is not None:
+        if share_whatsapp_url:
+            share_meta["share_whatsapp_url"] = share_whatsapp_url
+        if share_widget_url:
+            share_meta["share_widget_url"] = share_widget_url
 
     share_followup_options = [
         {"texto": "Volver a encuestas", "action_id": "mostrar_menu_encuestas"},
@@ -5219,12 +5240,29 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
             "generar_audio": True,
         }
 
-    message_body = (
-        "*Compartir encuesta*\n"
-        f"Reenviá este mensaje para invitar a participar en *{titulo}*:\n\n"
-        f"{share_message}\n\n"
+    message_lines = [
+        "*Compartir encuesta*",
+        f"Reenviá este mensaje para invitar a participar en *{titulo}*:",
+        "",
+        share_message,
+        "",
+    ]
+
+    if share_whatsapp_url:
+        message_lines.append(
+            f"• Compartir con un mensaje listo para WhatsApp: {share_whatsapp_url}"
+        )
+
+    if share_widget_url:
+        message_lines.append(
+            f"• Compartir desde el widget web: {share_widget_url}"
+        )
+
+    message_lines.append(
         "Podés copiarlo o reenviarlo directamente sin salir de esta conversación."
     )
+
+    message_body = "\n".join(message_lines)
 
     return {
         "message_body": message_body,
@@ -5235,6 +5273,8 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
         "share_message": share_message,
         "share_url": share_url,
         "share_short_url": share_short_url or share_url,
+        "share_whatsapp_url": share_whatsapp_url,
+        "share_widget_url": share_widget_url,
     }
 
 
