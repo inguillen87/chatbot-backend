@@ -105,33 +105,6 @@ _DEFAULT_BOOTSTRAP_TEMPLATES: Sequence[Dict[str, Any]] = [
                 ],
             },
             {
-                "orden": 3,
-                "tipo": "opcion_multiple",
-                "texto": (
-                    "Pensando en una ciudad sustentable, ¿qué proyectos priorizarías para cuidar el ambiente y reducir consumos?"
-                ),
-                "obligatoria": False,
-                "max_selecciones": 3,
-                "opciones": [
-                    {
-                        "orden": 1,
-                        "texto": "Campañas para reducir el consumo de agua, luz y gas en los hogares",
-                    },
-                    {
-                        "orden": 2,
-                        "texto": "Ampliar puntos limpios y la economía circular en los barrios",
-                    },
-                    {
-                        "orden": 3,
-                        "texto": "Crear cuadernos, libros y historietas educativos con IA y materiales reciclados",
-                    },
-                    {
-                        "orden": 4,
-                        "texto": "Instalar paneles solares y eficiencia energética en edificios públicos",
-                    },
-                ],
-            },
-            {
                 "orden": 4,
                 "tipo": "opcion_multiple",
                 "texto": "¿Qué obras públicas puntuales te gustaría que avancemos en tu zona?",
@@ -201,58 +174,6 @@ _DEFAULT_BOOTSTRAP_TEMPLATES: Sequence[Dict[str, Any]] = [
             },
             {
                 "orden": 3,
-                "tipo": "opcion_multiple",
-                "texto": (
-                    "Pensando en sostenibilidad, ¿qué iniciativas impulsarías en tu distrito?"
-                ),
-                "obligatoria": False,
-                "max_selecciones": 3,
-                "opciones": [
-                    {
-                        "orden": 1,
-                        "texto": "Programas para reducir consumos de agua, energía y gas en hogares y fincas",
-                    },
-                    {
-                        "orden": 2,
-                        "texto": "Puntos limpios y reciclaje con producción de materiales educativos",
-                    },
-                    {
-                        "orden": 3,
-                        "texto": "Libros y cuadernos sobre próceres locales hechos con IA y reciclados",
-                    },
-                    {
-                        "orden": 4,
-                        "texto": "Energías renovables y eficiencia en edificios públicos",
-                    },
-                ],
-            },
-            {
-                "orden": 4,
-                "tipo": "opcion_multiple",
-                "texto": "¿Qué obras públicas concretas necesitás que se prioricen?",
-                "obligatoria": False,
-                "max_selecciones": 3,
-                "opciones": [
-                    {
-                        "orden": 1,
-                        "texto": "Mejoras de caminos rurales y accesos",
-                    },
-                    {
-                        "orden": 2,
-                        "texto": "Canales, defensas aluvionales y redes de riego",
-                    },
-                    {
-                        "orden": 3,
-                        "texto": "Iluminación LED y seguridad comunitaria",
-                    },
-                    {
-                        "orden": 4,
-                        "texto": "Plazas, playones deportivos y espacios de encuentro",
-                    },
-                ],
-            },
-            {
-                "orden": 5,
                 "tipo": "abierta",
                 "texto": "Comentá situaciones o zonas específicas donde te gustaría ver más presencia preventiva.",
                 "obligatoria": False,
@@ -393,58 +314,6 @@ _DEFAULT_BOOTSTRAP_TEMPLATES: Sequence[Dict[str, Any]] = [
                     {"orden": 1, "texto": "Mañana"},
                     {"orden": 2, "texto": "Tarde"},
                     {"orden": 3, "texto": "Noche"},
-                ],
-            },
-            {
-                "orden": 3,
-                "tipo": "opcion_multiple",
-                "texto": (
-                    "Pensando en sostenibilidad, ¿qué iniciativas impulsarías en tu distrito?"
-                ),
-                "obligatoria": False,
-                "max_selecciones": 3,
-                "opciones": [
-                    {
-                        "orden": 1,
-                        "texto": "Programas para reducir consumos de agua, energía y gas en hogares y fincas",
-                    },
-                    {
-                        "orden": 2,
-                        "texto": "Puntos limpios y reciclaje con producción de materiales educativos",
-                    },
-                    {
-                        "orden": 3,
-                        "texto": "Libros y cuadernos sobre próceres locales hechos con IA y reciclados",
-                    },
-                    {
-                        "orden": 4,
-                        "texto": "Energías renovables y eficiencia en edificios públicos",
-                    },
-                ],
-            },
-            {
-                "orden": 4,
-                "tipo": "opcion_multiple",
-                "texto": "¿Qué obras públicas concretas necesitás que se prioricen?",
-                "obligatoria": False,
-                "max_selecciones": 3,
-                "opciones": [
-                    {
-                        "orden": 1,
-                        "texto": "Mejoras de caminos rurales y accesos",
-                    },
-                    {
-                        "orden": 2,
-                        "texto": "Canales, defensas aluvionales y redes de riego",
-                    },
-                    {
-                        "orden": 3,
-                        "texto": "Iluminación LED y seguridad comunitaria",
-                    },
-                    {
-                        "orden": 4,
-                        "texto": "Plazas, playones deportivos y espacios de encuentro",
-                    },
                 ],
             },
             {
