@@ -1,7 +1,7 @@
 """Add demographic fields to survey responses.
 
-Revision ID: 20251115_add_demografia_encuestas
-Revises: 20251010_merge_encuestas_features_heads
+Revision ID: 20251115_demografia_encuestas
+Revises: 20251010_merge_heads
 Create Date: 2024-05-21
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = "20251115_add_demografia_encuestas"
+revision = "20251115_demografia_encuestas"
 down_revision = "20251010_merge_heads"
 branch_labels = None
 depends_on = None
