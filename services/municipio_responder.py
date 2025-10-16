@@ -4955,12 +4955,11 @@ def _get_encuestas_menu(context: dict) -> dict:
         whatsapp_share_url = f"https://wa.me/?text={quote_plus(whatsapp_message)}"
 
         web_display = _format_url_for_display(share_url)
-        qr_display = _format_url_for_display(qr_url)
-        widget_display = _format_url_for_display(widget_share_url, widget=True)
         whatsapp_display = _format_url_for_display(
             whatsapp_share_url,
             prefer_text_param=True,
         )
+        whatsapp_share_display_url = whatsapp_display or whatsapp_share_url
 
         short_title = _shorten_button_label(titulo)
         whatsapp_button_title = _shorten_button_label(titulo, max_length=30)
@@ -4968,8 +4967,14 @@ def _get_encuestas_menu(context: dict) -> dict:
         line_parts = [f"{index}. *{titulo}*"]
         if descripcion:
             line_parts.append(f"   {descripcion}")
-        line_parts.append(f"   • Abrir la encuesta en la web: {share_url}")
-        line_parts.append(f"   • Compartir con un mensaje listo para WhatsApp: {whatsapp_share_display_url}")
+        line_parts.append(
+            "   • Abrir la encuesta en la web: "
+            f"{share_url if share_url else web_display}"
+        )
+        line_parts.append(
+            "   • Compartir con un mensaje listo para WhatsApp: "
+            f"{whatsapp_share_display_url}"
+        )
         lines.append("\n".join(line_parts))
 
         survey_buttons.append(
