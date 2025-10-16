@@ -60,7 +60,23 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
     with client.application.app_context():
         encuesta, slug = _create_active_encuesta(tenant_id=7)
         context = _base_context(tenant_id=encuesta.tenant_id or 7)
-        menu = municipio_responder._get_encuestas_menu(context)
+        app = client.application
+        previous_default_image = app.config.get(
+            "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"
+        )
+        fallback_image = (
+            "https://cdn.chatboc.ar/static/encuestas/participacion_ciudadana.png"
+        )
+        app.config["PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"] = fallback_image
+        try:
+            menu = municipio_responder._get_encuestas_menu(context)
+        finally:
+            if previous_default_image is None:
+                app.config.pop("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None)
+            else:
+                app.config["PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"] = (
+                    previous_default_image
+                )
 
     body = menu["message_body"]
     assert "Participación Ciudadana" in body
@@ -82,10 +98,14 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
     assert any(url.startswith("https://wa.me/") for url in button_urls)
     assert any(url.endswith(f"/api/public/encuestas/{slug}/qr") for url in button_urls)
     media_urls = menu.get("media_urls")
-    assert isinstance(media_urls, list) and len(media_urls) == 1
-    assert media_urls[0].startswith("http")
-    assert media_urls[0].endswith(f"/api/public/encuestas/{slug}/qr")
-    assert "image_url" not in menu
+    assert isinstance(media_urls, list) and len(media_urls) == 2
+    assert media_urls[0] == fallback_image
+    assert media_urls[1].startswith("http")
+    assert media_urls[1].endswith(f"/api/public/encuestas/{slug}/qr")
+    assert menu.get("image_url") == fallback_image
+    assert menu.get("_base_url") == client.application.config.get(
+        "PUBLIC_ENCUESTAS_API_BASE_URL"
+    )
 
 
 def test_encuestas_menu_respects_explicit_disable(client):
@@ -151,4 +171,29 @@ def test_encuestas_menu_includes_configured_image(client):
 
     assert menu.get("image_url") == "https://cdn.example.com/encuestas/banner.png"
     media_urls = menu.get("media_urls")
-    assert media_urls and media_urls[0].endswith("/qr")
+    assert media_urls and media_urls[0] == "https://cdn.example.com/encuestas/banner.png"
+    assert len(media_urls) >= 2
+    assert media_urls[1].endswith("/qr")
+
+
+def test_encuestas_menu_defaults_to_backend_banner(client, monkeypatch):
+    with client.application.app_context():
+        encuesta, slug = _create_active_encuesta(tenant_id=13)
+        context = _base_context(tenant_id=encuesta.tenant_id or 13)
+        app = client.application
+        app.config.pop("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None)
+        app.config["PUBLIC_ENCUESTAS_API_BASE_URL"] = "https://api.chatboc.ar"
+        monkeypatch.setattr(
+            municipio_responder.AppConfig,
+            "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL",
+            None,
+            raising=False,
+        )
+        menu = municipio_responder._get_encuestas_menu(context)
+
+    expected_banner = "https://api.chatboc.ar/static/encuestas/participacion_ciudadana.png"
+    assert menu.get("image_url") == expected_banner
+    media_urls = menu.get("media_urls")
+    assert media_urls and media_urls[0] == expected_banner
+    assert menu.get("_base_url") == "https://api.chatboc.ar"
+    assert slug in menu["message_body"]

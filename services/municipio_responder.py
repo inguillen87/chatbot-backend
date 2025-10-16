@@ -80,7 +80,11 @@ from services.ticket_utils import (
 )
 from services.vocabulary_loader import get_name_prefix_stopwords
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
-from config import BACKEND_URL as DEFAULT_BACKEND_URL, IS_HTTPS as DEFAULT_IS_HTTPS
+from config import (
+    BACKEND_URL as DEFAULT_BACKEND_URL,
+    IS_HTTPS as DEFAULT_IS_HTTPS,
+    Config as AppConfig,
+)
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_service import (
     list_public_encuestas_for_tenant,
@@ -4765,6 +4769,51 @@ def _shorten_button_label(text: str, max_length: int = 42) -> str:
     return trimmed[: max_length - 1].rstrip() + "…"
 
 
+def _resolve_encuestas_menu_image_url(
+    context: dict, api_base_url: Optional[str]
+) -> Optional[str]:
+    """Return the banner image URL for participatory survey menus."""
+
+    municipio_config = context.get("municipio_config_actual") or {}
+    encuestas_cfg = {}
+    if isinstance(municipio_config.get("encuestas"), dict):
+        encuestas_cfg = municipio_config["encuestas"]
+
+    raw_image_url = (
+        encuestas_cfg.get("menu_image_url")
+        or encuestas_cfg.get("image_url")
+        or encuestas_cfg.get("share_image_url")
+        or encuestas_cfg.get("default_share_image_url")
+        or municipio_config.get("encuestas_menu_image_url")
+        or municipio_config.get("encuestas_image_url")
+        or municipio_config.get("encuestas_share_image_url")
+        or municipio_config.get("encuestas_default_share_image_url")
+    )
+
+    normalized_image = _normalize_public_url(raw_image_url, context)
+    if normalized_image:
+        return normalized_image
+
+    fallback_image_url = None
+    if has_app_context():
+        fallback_image_url = current_app.config.get(
+            "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"
+        )
+    if not fallback_image_url:
+        fallback_image_url = getattr(
+            AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None
+        )
+
+    if isinstance(fallback_image_url, str) and fallback_image_url.strip():
+        return fallback_image_url.strip()
+
+    if api_base_url:
+        base = api_base_url.rstrip("/")
+        return f"{base}/static/encuestas/participacion_ciudadana.png"
+
+    return None
+
+
 def _get_encuestas_menu(context: dict) -> dict:
     """Build the participatory surveys submenu for the chatbot."""
 
@@ -4835,17 +4884,7 @@ def _get_encuestas_menu(context: dict) -> dict:
 
     base_url = _resolve_encuestas_base_url(context)
     api_base_url = _resolve_encuestas_api_base_url(context)
-    municipio_config = context.get("municipio_config_actual") or {}
-    encuestas_cfg = {}
-    if isinstance(municipio_config.get("encuestas"), dict):
-        encuestas_cfg = municipio_config["encuestas"]
-
-    raw_image_url = encuestas_cfg.get("menu_image_url") or encuestas_cfg.get("image_url")
-    menu_image_url = None
-    if isinstance(raw_image_url, str):
-        cleaned = raw_image_url.strip()
-        if cleaned:
-            menu_image_url = cleaned
+    menu_image_url = _resolve_encuestas_menu_image_url(context, api_base_url)
 
     lines: List[str] = []
     survey_buttons: List[Dict[str, Any]] = []
@@ -4940,8 +4979,17 @@ def _get_encuestas_menu(context: dict) -> dict:
     if menu_image_url:
         payload["image_url"] = menu_image_url
 
-    if first_qr_url:
-        payload["media_urls"] = [first_qr_url]
+    if api_base_url:
+        payload.setdefault("_base_url", api_base_url)
+
+    media_attachments: List[str] = []
+    if menu_image_url:
+        media_attachments.append(menu_image_url)
+    if first_qr_url and first_qr_url not in media_attachments:
+        media_attachments.append(first_qr_url)
+
+    if media_attachments:
+        payload["media_urls"] = media_attachments
 
     return payload
 
