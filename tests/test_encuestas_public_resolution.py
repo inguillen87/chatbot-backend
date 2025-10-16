@@ -126,7 +126,7 @@ def test_share_returns_payload_without_canonical(client, monkeypatch):
 
     monkeypatch.setattr(
         "routes.encuestas_public.get_public_encuesta",
-        lambda slug: {"slug": slug},
+        lambda slug, **_: {"slug": slug},
     )
     monkeypatch.setattr(
         "routes.encuestas_public.serialize_public_encuesta",
@@ -202,7 +202,7 @@ def test_share_endpoint_renders_accessible_html(client, monkeypatch):
         "https://www.chatboc.ar",
     )
 
-    def fake_get(slug):
+    def fake_get(slug, **_):
         encuesta = EncEncuesta(
             tenant_id=4,
             slug=slug,
@@ -240,7 +240,7 @@ def test_share_endpoint_uses_default_share_image(client, monkeypatch):
     client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = None
     client.application.config["PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"] = "https://cdn.example.com/share.png"
 
-    def fake_get(slug):
+    def fake_get(slug, **_):
         encuesta = EncEncuesta(
             tenant_id=4,
             slug=slug,
@@ -331,6 +331,33 @@ def test_qr_endpoint_allows_preview_for_authorized_user(client):
         f"/api/public/encuestas/{slug_publico}/qr",
         headers=headers,
     )
+    assert preview.status_code == 200
+    assert preview.mimetype == "image/png"
+    assert preview.data
+
+
+def test_qr_endpoint_allows_preview_with_session_user(client, monkeypatch):
+    slug = "encuesta-qr-session-preview"
+    slug_publico = f"{slug}-xyz987"
+    encuesta = _create_public_encuesta(slug, slug_publico, estado="borrador")
+
+    session_admin = User(
+        email="session-admin@example.com",
+        name="Session Admin",
+        rol="admin",
+        municipio_id=encuesta.tenant_id,
+        tipo_chat="municipio",
+    )
+    session_admin.set_password("demo1234")
+    db.session.add(session_admin)
+    db.session.commit()
+
+    monkeypatch.setattr(
+        "routes.encuestas_public._resolve_preview_user",
+        lambda: session_admin,
+    )
+
+    preview = client.get(f"/api/public/encuestas/{slug_publico}/qr")
     assert preview.status_code == 200
     assert preview.mimetype == "image/png"
     assert preview.data
