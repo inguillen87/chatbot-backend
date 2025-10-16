@@ -82,9 +82,10 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
     body = menu["message_body"]
     assert "Participación Ciudadana" in body
     assert "Últimas encuestas disponibles" in body
-    assert slug in body
-    assert "Abrir la encuesta en la web:" in body
-    assert "Compartir con un mensaje listo para WhatsApp" in body
+    short_token = slug.rsplit("-", 1)[-1]
+    assert short_token in body
+    assert "Abrir:" in body
+    assert "Compartir: tocá" in body
     assert "Descargar el código QR" not in body
     assert "Usar el asistente virtual en la web" not in body
     assert any(option.get("type") == "url" for option in menu["options_list"])
@@ -94,7 +95,13 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
         if option.get("type") == "url"
     ]
     assert any(url.endswith(f"/e/{slug}") for url in button_urls)
-    assert any(url.startswith("https://wa.me/") for url in button_urls)
+    assert not any(url.startswith("https://wa.me/") for url in button_urls)
+    share_actions = [
+        option.get("action_id")
+        for option in menu["options_list"]
+        if option.get("action_id")
+    ]
+    assert any(action.startswith("encuesta_compartir::") for action in share_actions)
     assert not any(url.endswith(f"/e/{slug}?canal=widget_chat") for url in button_urls)
     assert not any(url.endswith(f"/api/public/encuestas/{slug}/qr") for url in button_urls)
     media_urls = menu.get("media_urls")
@@ -109,7 +116,12 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
     first_meta = surveys_meta[0]
     assert first_meta["slug"] == slug
     assert first_meta["share_url"].endswith(f"/e/{slug}")
-    assert first_meta["whatsapp_share_url"].startswith("https://wa.me/")
+    assert first_meta["share_short_url"].endswith(f"/e/{short_token}")
+    assert first_meta["share_message"].startswith("Participá en")
+    assert first_meta["share_message"].endswith(f"/e/{short_token}")
+    assert "ingresando a" not in first_meta["share_message"]
+    assert "https://www." not in first_meta["share_message"]
+    assert first_meta["share_action_id"].startswith("encuesta_compartir::")
     assert first_meta["qr_url"].endswith(f"/api/public/encuestas/{slug}/qr")
 
 
@@ -156,17 +168,21 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
         menu = municipio_responder._get_encuestas_menu(context)
 
     expected_prefix = "https://www.chatboc.ar/e/"
-    expected_display_prefix = (
-        expected_prefix.replace("https://", "").replace("http://", "").replace("www.", "")
-    )
-    assert f"Web: {expected_display_prefix}{slug}" in menu["message_body"]
+    short_token = slug.rsplit("-", 1)[-1]
+    assert f"https://chatboc.ar/e/{short_token}" in menu["message_body"]
     button_urls = [
         option.get("url", "")
         for option in menu["options_list"]
         if option.get("type") == "url"
     ]
     assert any(url.startswith(expected_prefix) for url in button_urls)
-    assert any(url.startswith("https://wa.me/") for url in button_urls)
+    assert not any(url.startswith("https://wa.me/") for url in button_urls)
+    share_actions = [
+        option.get("action_id")
+        for option in menu["options_list"]
+        if option.get("action_id")
+    ]
+    assert any(action.startswith("encuesta_compartir::") for action in share_actions)
 
 
 def test_encuestas_menu_includes_configured_image(client):
@@ -181,6 +197,34 @@ def test_encuestas_menu_includes_configured_image(client):
     assert menu.get("image_url") == "https://cdn.example.com/encuestas/banner.png"
     media_urls = menu.get("media_urls")
     assert media_urls and media_urls[0] == "https://cdn.example.com/encuestas/banner.png"
+
+
+def test_encuesta_share_payload_uses_short_url(client):
+    with client.application.app_context():
+        encuesta, slug = _create_active_encuesta(tenant_id=5)
+        context = _base_context(tenant_id=encuesta.tenant_id or 5)
+        menu = municipio_responder._get_encuestas_menu(context)
+
+    context["chat_db_context_data"] = {
+        municipio_responder.CONTEXTO_MUNICIPIO: {
+            "encuestas_menu_surveys": menu.get("surveys"),
+            "encuestas_menu_options": [
+                option
+                for option in menu.get("options_list", [])
+                if option.get("action_id")
+            ],
+        }
+    }
+
+    payload = municipio_responder._build_encuesta_share_payload(
+        slug, context, chat_db_context=None
+    )
+
+    short_token = slug.rsplit("-", 1)[-1]
+    assert payload["share_url"].endswith(f"/e/{slug}")
+    assert payload["share_short_url"].endswith(f"/e/{short_token}")
+    assert payload["share_message"].endswith(f"/e/{short_token}")
+    assert "https://www." not in payload["share_message"]
 
 
 def test_encuestas_menu_defaults_to_backend_banner(client, monkeypatch):
@@ -203,7 +247,8 @@ def test_encuestas_menu_defaults_to_backend_banner(client, monkeypatch):
     media_urls = menu.get("media_urls")
     assert media_urls and media_urls[0] == expected_banner
     assert menu.get("_base_url") == "https://api.chatboc.ar"
-    assert slug in menu["message_body"]
+    short_token = slug.rsplit("-", 1)[-1]
+    assert short_token in menu["message_body"]
 
 
 def test_encuestas_menu_orders_newest_first(client):
@@ -218,4 +263,6 @@ def test_encuestas_menu_orders_newest_first(client):
         menu = municipio_responder._get_encuestas_menu(context)
 
     body = menu["message_body"]
-    assert body.index(slug_new) < body.index(slug_old)
+    token_new = slug_new.rsplit("-", 1)[-1]
+    token_old = slug_old.rsplit("-", 1)[-1]
+    assert body.index(token_new) < body.index(token_old)
