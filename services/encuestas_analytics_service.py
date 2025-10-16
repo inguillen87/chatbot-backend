@@ -164,7 +164,16 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
             pregunta_data["muestras_texto"] = muestras
         preguntas_summary.append(pregunta_data)
 
-    canales_data = {canal: count for canal, count in canales.items()}
+    canales_list = [
+        {
+            "canal": canal,
+            "label": canal,
+            "conteo": count,
+            "value": count,
+        }
+        for canal, count in sorted(canales.items(), key=lambda item: item[1], reverse=True)
+    ]
+    canales_map = {canal: count for canal, count in canales.items()}
     utm_data = []
     for key, count in utm.items():
         source, campaign = key.split("|", 1)
@@ -214,7 +223,8 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
         "respuestas_incompletas": max(total - respuestas_completas, 0),
         "tasa_completitud": round(tasa_completitud, 2),
         "preguntas": preguntas_summary,
-        "canales": canales_data,
+        "canales": canales_list,
+        "canales_map": canales_map,
         "utm": utm_data,
         "demografia": demografia,
     }

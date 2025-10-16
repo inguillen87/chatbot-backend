@@ -522,6 +522,11 @@ def test_get_summary_returns_metrics(client):
     assert len(resumen["preguntas"]) == len(preguntas_ids)
     assert set(item["pregunta_id"] for item in resumen["preguntas"]) == set(preguntas_ids)
     assert all(item["total_respuestas"] == 3 for item in resumen["preguntas"])
+    assert resumen["canales"]
+    assert resumen["canales_map"]["qr"] == 2
+    canales_labels = {entry["label"] for entry in resumen["canales"]}
+    assert "qr" in canales_labels
+
     demografia = resumen["demografia"]
     assert demografia["genero"]["femenino"] == 1
     assert demografia["genero"]["masculino"] == 1
