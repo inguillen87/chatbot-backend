@@ -12,7 +12,7 @@ from enum import Enum, auto
 import unicodedata
 import difflib
 from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qs, unquote, urljoin, urlparse, quote_plus
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
 from models import (
@@ -89,6 +89,7 @@ from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_service import (
     list_public_encuestas_for_tenant,
     serialize_public_encuesta,
+    get_public_encuesta,
 )
 from services.feature_flag_service import get_feature_toggle
 
@@ -2343,11 +2344,22 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         ]
         if opciones_accionables:
             contexto_municipio_actual["menu_opciones"] = opciones_accionables
+            contexto_municipio_actual["encuestas_menu_options"] = opciones_accionables
         else:
             contexto_municipio_actual.pop("menu_opciones", None)
+            contexto_municipio_actual.pop("encuestas_menu_options", None)
+        surveys_meta = submenu.get("surveys")
+        if surveys_meta:
+            contexto_municipio_actual["encuestas_menu_surveys"] = surveys_meta
+        else:
+            contexto_municipio_actual.pop("encuestas_menu_surveys", None)
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return submenu
+
+    if action_id.startswith("encuesta_compartir::"):
+        slug_publico = action_id.split("::", 1)[1] if "::" in action_id else ""
+        return _build_encuesta_share_payload(slug_publico, context, chat_db_context)
 
     if action_id == "mostrar_menu_estacionamiento":
         submenu = _get_estacionamiento_menu()
@@ -4957,24 +4969,20 @@ def _get_encuestas_menu(context: dict) -> dict:
             qr_url = urljoin(
                 f"{api_base_url}/", f"api/public/encuestas/{slug_publico}/qr"
             )
-        whatsapp_message = f"Participá en '{titulo}' ingresando a {share_url}"
-        whatsapp_share_url = f"https://wa.me/?text={quote_plus(whatsapp_message)}"
-
-        web_display = _format_url_for_display(share_url)
-        whatsapp_display = _format_url_for_display(
-            whatsapp_share_url,
-            prefer_text_param=True,
-        )
-        whatsapp_share_display_url = whatsapp_display or whatsapp_share_url
+        share_message = f"Participá en '{titulo}' ingresando a {share_url}"
+        share_action_id = f"encuesta_compartir::{slug_publico}"
 
         short_title = _shorten_button_label(titulo)
-        whatsapp_button_title = _shorten_button_label(titulo, max_length=30)
+        share_button_title = _shorten_button_label(titulo, max_length=30)
 
         line_parts = [f"{index}. *{titulo}*"]
         if descripcion:
             line_parts.append(f"   {descripcion}")
         line_parts.append(f"   • Abrir la encuesta en la web: {share_url}")
-        line_parts.append(f"   • Compartir con un mensaje listo para WhatsApp: {whatsapp_share_display_url}")
+        line_parts.append(
+            "   • Compartir desde este chat: tocá 'Compartir "
+            f"{share_button_title}' para reenviar el mensaje sugerido."
+        )
         lines.append("\n".join(line_parts))
 
         survey_buttons.append(
@@ -4986,9 +4994,8 @@ def _get_encuestas_menu(context: dict) -> dict:
         )
         survey_buttons.append(
             {
-                "texto": f"Compartir WhatsApp {whatsapp_button_title}",
-                "url": whatsapp_share_url,
-                "type": "url",
+                "texto": f"Compartir {share_button_title}",
+                "action_id": share_action_id,
             }
         )
 
@@ -4997,7 +5004,8 @@ def _get_encuestas_menu(context: dict) -> dict:
                 "slug": slug_publico,
                 "titulo": titulo,
                 "share_url": share_url,
-                "whatsapp_share_url": whatsapp_share_url,
+                "share_message": share_message,
+                "share_action_id": share_action_id,
                 "qr_url": qr_url,
             }
         )
@@ -5035,6 +5043,111 @@ def _get_encuestas_menu(context: dict) -> dict:
         payload["surveys"] = survey_metadata
 
     return payload
+
+
+def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_context) -> dict:
+    """Create a payload with a ready-to-forward survey share message."""
+
+    normalized_slug = (slug_publico or "").strip().lower()
+    contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(
+        CONTEXTO_MUNICIPIO, {}
+    )
+
+    stored_meta = contexto_municipio_actual.get("encuestas_menu_surveys") or []
+    share_meta = None
+    for meta in stored_meta:
+        if (meta.get("slug") or "").strip().lower() == normalized_slug:
+            share_meta = meta
+            break
+
+    share_url = None
+    share_message = None
+    titulo = "Encuesta ciudadana"
+
+    if share_meta:
+        titulo = share_meta.get("titulo") or titulo
+        share_url = share_meta.get("share_url")
+        share_message = share_meta.get("share_message")
+
+    if not share_url and normalized_slug:
+        base_url = _resolve_encuestas_base_url(context)
+        share_url = urljoin(f"{base_url}/", f"e/{normalized_slug}")
+
+    if not share_meta and normalized_slug:
+        try:
+            encuesta = get_public_encuesta(normalized_slug)
+        except Exception:
+            logger.exception(
+                "[encuestas] No se pudo cargar la encuesta '%s' para compartir",
+                normalized_slug,
+            )
+        else:
+            data = serialize_public_encuesta(encuesta, slug_publico=normalized_slug)
+            titulo = data.get("titulo") or titulo
+            share_message = share_message or (
+                f"Participá en '{titulo}' ingresando a {share_url}"
+                if share_url
+                else None
+            )
+            new_meta = {
+                "slug": normalized_slug,
+                "titulo": titulo,
+                "share_url": share_url,
+                "share_message": share_message,
+                "share_action_id": f"encuesta_compartir::{normalized_slug}",
+                "qr_url": None,
+            }
+            stored_meta.append(new_meta)
+            contexto_municipio_actual["encuestas_menu_surveys"] = stored_meta
+
+    if not share_message and share_url and titulo:
+        share_message = f"Participá en '{titulo}' ingresando a {share_url}"
+
+    share_followup_options = [
+        {"texto": "Volver a encuestas", "action_id": "mostrar_menu_encuestas"},
+        {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
+        {"texto": "Cancelar", "action_id": "cancelar"},
+    ]
+
+    stored_options = (
+        contexto_municipio_actual.get("encuestas_menu_options") or share_followup_options
+    )
+    contexto_municipio_actual["estado_conversacion"] = (
+        ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+    )
+    contexto_municipio_actual["menu_opciones"] = stored_options
+    contexto_municipio_actual.setdefault("encuestas_menu_options", stored_options)
+
+    if chat_db_context:
+        flag_modified(chat_db_context, "context_data")
+
+    if not normalized_slug or not share_message:
+        return {
+            "message_body": (
+                "No pudimos preparar el mensaje para compartir esta encuesta. "
+                "Volvé al menú de encuestas e intentá nuevamente."
+            ),
+            "message_type": "interactive_buttons",
+            "options_list": stored_options,
+            "fuente": "submenu_encuestas_share_error_v1",
+            "generar_audio": True,
+        }
+
+    message_body = (
+        "*Compartir encuesta*\n"
+        f"Reenviá este mensaje para invitar a participar en *{titulo}*:\n\n"
+        f"{share_message}\n\n"
+        "Podés copiarlo o reenviarlo directamente sin salir de esta conversación."
+    )
+
+    return {
+        "message_body": message_body,
+        "message_type": "interactive_buttons",
+        "options_list": stored_options,
+        "fuente": "submenu_encuestas_share_v1",
+        "generar_audio": True,
+        "share_message": share_message,
+    }
 
 
 def _get_estacionamiento_menu():
