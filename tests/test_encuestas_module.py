@@ -528,8 +528,10 @@ def test_get_summary_returns_metrics(client):
     assert "qr" in canales_labels
 
     demografia = resumen["demografia"]
-    assert demografia["genero"]["femenino"] == 1
-    assert demografia["genero"]["masculino"] == 1
+    assert demografia["genero_map"]["femenino"] == 1
+    assert demografia["genero_map"]["masculino"] == 1
+    generos_labels = {entry["label"] for entry in demografia["genero"]}
+    assert {"femenino", "masculino"}.issubset(generos_labels)
     assert demografia["edad"]["muestra"] == 2
     assert demografia["edad"]["promedio"] is not None
     assert demografia["edad"]["promedio"] >= 29
