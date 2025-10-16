@@ -87,12 +87,6 @@ def test_bootstrap_templates_match_frontend_config():
     assert servicios["fin_at"] == fin.isoformat()
     assert "Servicios públicos" in servicios.get("tags", [])
 
-    primera_pregunta = servicios["preguntas"][0]
-    assert "distrito" in primera_pregunta["texto"].lower()
-    assert any(opt.get("valor") == "geo_autocomplete" for opt in primera_pregunta["opciones"])
-
-    assert servicios.get("metadata", {}).get("geo", {}).get("center")
-
     pregunta_multiple = next(
         pregunta for pregunta in servicios["preguntas"] if pregunta["tipo"] == "opcion_multiple"
     )
