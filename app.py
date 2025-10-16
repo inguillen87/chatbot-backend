@@ -268,6 +268,7 @@ def create_app(config_class=Config):
         from routes.ai import ai_bp as ai_suggest_bp
         from routes.promociones import promociones_bp
         from routes.catalog_mappings import catalog_mappings_bp
+        from routes.catalog_vector_sync import catalog_vector_sync_bp
         from routes.whatsapp_webhook import webhook_bp as whatsapp_webhook_bp
         from routes.whatsapp_promocionar import whatsapp_promocionar_bp
         from routes.estacionamiento import bp_est
@@ -341,6 +342,7 @@ def create_app(config_class=Config):
         app.register_blueprint(ai_suggest_bp)
         app.register_blueprint(promociones_bp)
         app.register_blueprint(catalog_mappings_bp)
+        app.register_blueprint(catalog_vector_sync_bp)
         app.register_blueprint(whatsapp_webhook_bp)
         app.register_blueprint(whatsapp_promocionar_bp)
         app.register_blueprint(bp_est)
