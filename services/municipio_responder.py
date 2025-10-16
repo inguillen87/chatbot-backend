@@ -4769,6 +4769,59 @@ def _shorten_button_label(text: str, max_length: int = 42) -> str:
     return trimmed[: max_length - 1].rstrip() + "…"
 
 
+def _format_url_for_display(
+    url: str,
+    *,
+    max_length: int = 70,
+    prefer_text_param: bool = False,
+    widget: bool = False,
+) -> str:
+    """Return a compact, human-friendly representation of a public URL."""
+
+    if not isinstance(url, str):
+        return ""
+
+    normalized = url.strip()
+    if not normalized:
+        return ""
+
+    parsed = urlparse(normalized)
+    netloc = parsed.netloc or ""
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+
+    path = parsed.path or ""
+    display = f"{netloc}{path}".strip()
+
+    if prefer_text_param:
+        params = parse_qs(parsed.query)
+        text_values = params.get("text") or []
+        decoded = unquote(text_values[0]).strip() if text_values else ""
+        if decoded:
+            decoded = decoded.replace("https://", "").replace("http://", "")
+            display = f"{netloc} → {decoded}" if netloc else decoded
+            if len(display) > max_length:
+                display = display[: max_length - 1].rstrip() + "…"
+            return display
+
+    if widget and "canal=widget_chat" in parsed.query:
+        display = f"{display}?widget" if display else "?widget"
+    elif parsed.query:
+        display = f"{display}?{parsed.query}" if display else parsed.query
+
+    if parsed.fragment:
+        display = f"{display}#{parsed.fragment}"
+
+    display = display.strip("/")
+    if not display:
+        display = normalized
+
+    if len(display) > max_length:
+        display = display[: max_length - 1].rstrip() + "…"
+
+    return display
+
+
 def _resolve_encuestas_menu_image_url(
     context: dict, api_base_url: Optional[str]
 ) -> Optional[str]:
@@ -4888,9 +4941,6 @@ def _get_encuestas_menu(context: dict) -> dict:
 
     lines: List[str] = []
     survey_buttons: List[Dict[str, Any]] = []
-    first_qr_url: Optional[str] = None
-    first_qr_title: Optional[str] = None
-
     for index, (encuesta, slug_publico) in enumerate(encuestas, start=1):
         data = serialize_public_encuesta(encuesta, slug_publico=slug_publico)
         titulo = data.get("titulo") or "Encuesta ciudadana"
@@ -4901,28 +4951,26 @@ def _get_encuestas_menu(context: dict) -> dict:
                 descripcion = descripcion[:177].rstrip() + "…"
 
         share_url = urljoin(f"{base_url}/", f"e/{slug_publico}")
-        qr_url = urljoin(f"{api_base_url}/", f"api/public/encuestas/{slug_publico}/qr")
-        widget_share_url = f"{share_url}?canal=widget_chat"
         whatsapp_message = f"Participá en '{titulo}' ingresando a {share_url}"
         whatsapp_share_url = f"https://wa.me/?text={quote_plus(whatsapp_message)}"
-        whatsapp_share_display_url = f"https://wa.me/?text={quote_plus(share_url)}"
+
+        web_display = _format_url_for_display(share_url)
+        qr_display = _format_url_for_display(qr_url)
+        widget_display = _format_url_for_display(widget_share_url, widget=True)
+        whatsapp_display = _format_url_for_display(
+            whatsapp_share_url,
+            prefer_text_param=True,
+        )
 
         short_title = _shorten_button_label(titulo)
-        widget_button_title = _shorten_button_label(titulo, max_length=36)
         whatsapp_button_title = _shorten_button_label(titulo, max_length=30)
 
         line_parts = [f"{index}. *{titulo}*"]
         if descripcion:
             line_parts.append(f"   {descripcion}")
         line_parts.append(f"   • Abrir la encuesta en la web: {share_url}")
-        line_parts.append(f"   • Descargar el código QR (imagen PNG): {qr_url}")
-        line_parts.append(f"   • Usar el asistente virtual en la web: {widget_share_url}")
         line_parts.append(f"   • Compartir con un mensaje listo para WhatsApp: {whatsapp_share_display_url}")
         lines.append("\n".join(line_parts))
-
-        if first_qr_url is None:
-            first_qr_url = qr_url
-            first_qr_title = titulo
 
         survey_buttons.append(
             {
@@ -4933,22 +4981,8 @@ def _get_encuestas_menu(context: dict) -> dict:
         )
         survey_buttons.append(
             {
-                "texto": f"Widget web {widget_button_title}",
-                "url": widget_share_url,
-                "type": "url",
-            }
-        )
-        survey_buttons.append(
-            {
                 "texto": f"Compartir WhatsApp {whatsapp_button_title}",
                 "url": whatsapp_share_url,
-                "type": "url",
-            }
-        )
-        survey_buttons.append(
-            {
-                "texto": f"Descargar QR {short_title}",
-                "url": qr_url,
                 "type": "url",
             }
         )
@@ -4958,12 +4992,6 @@ def _get_encuestas_menu(context: dict) -> dict:
         "Últimas encuestas disponibles (máximo 10).\n"
     )
     message_body = header + "\n".join(lines)
-
-    if first_qr_url and first_qr_title:
-        message_body += (
-            f"\n\nAdjuntamos el código QR de *{first_qr_title}* para que puedas compartirlo "
-            "al instante desde WhatsApp."
-        )
 
     message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
 
@@ -4985,9 +5013,6 @@ def _get_encuestas_menu(context: dict) -> dict:
     media_attachments: List[str] = []
     if menu_image_url:
         media_attachments.append(menu_image_url)
-    if first_qr_url and first_qr_url not in media_attachments:
-        media_attachments.append(first_qr_url)
-
     if media_attachments:
         payload["media_urls"] = media_attachments
 
