@@ -2,6 +2,7 @@ import hashlib
 import sys
 import types
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 
@@ -109,11 +110,16 @@ def _create_active_encuesta(politica_unicidad: str = "libre", tenant_id: int = 1
     return encuesta, link.slug_publico, user
 
 
-def _respuesta_payload(encuesta: EncEncuesta, texto: str = "Todo bien", opcion_index: int = 0):
+def _respuesta_payload(
+    encuesta: EncEncuesta,
+    texto: str = "Todo bien",
+    opcion_index: int = 0,
+    **extra: Any,
+):
     pregunta_opcion = next(p for p in encuesta.preguntas if p.tipo == "opcion_unica")
     pregunta_abierta = next(p for p in encuesta.preguntas if p.tipo == "abierta")
     opcion = pregunta_opcion.opciones[opcion_index]
-    return {
+    payload = {
         "dni": None,
         "phone": None,
         "respuestas": [
@@ -124,6 +130,8 @@ def _respuesta_payload(encuesta: EncEncuesta, texto: str = "Todo bien", opcion_i
         "utm_campaign": "test",
         "canal": "qr",
     }
+    payload.update(extra)
+    return payload
 
 
 def _request_ctx(anon: str) -> dict:
@@ -211,8 +219,18 @@ def test_list_respuestas_paginadas_y_serializadas(client):
         encuesta, slug, user = _create_active_encuesta()
         base_time = datetime(2025, 3, 10, 9, 0, tzinfo=timezone.utc)
 
+        generos = ["femenino", "masculino", "no_binario"]
         for idx in range(3):
-            payload = _respuesta_payload(encuesta, texto=f"Comentario {idx}")
+            payload = _respuesta_payload(
+                encuesta,
+                texto=f"Comentario {idx}",
+                genero=generos[idx % len(generos)],
+                edad=25 + idx,
+                barrio="Centro" if idx % 2 == 0 else "Sur",
+                ciudad="Junín",
+                provincia="Buenos Aires",
+                pais="Argentina",
+            )
             respuesta = save_respuesta(slug, payload, _request_ctx(f"anon-{idx}"))
             respuesta.submitted_at = base_time + timedelta(minutes=idx)
         db.session.commit()
@@ -234,6 +252,8 @@ def test_list_respuestas_paginadas_y_serializadas(client):
         serializadas = [serialize_respuesta(r) for r in primeras]
         assert all("detalles" in item for item in serializadas)
         assert any(detalle.get("texto_libre") for detalle in serializadas[0]["detalles"])
+        assert all(item.get("genero") for item in serializadas)
+        assert all(item.get("barrio") for item in serializadas)
 
         _, restantes, _, _, offset_dos = list_respuestas(
             encuesta.id,
@@ -250,11 +270,31 @@ def test_get_summary_returns_metrics(client):
     with client.application.app_context():
         encuesta, slug, user = _create_active_encuesta()
 
-        payload_a = _respuesta_payload(encuesta, texto="Comentario A", opcion_index=0)
+        payload_a = _respuesta_payload(
+            encuesta,
+            texto="Comentario A",
+            opcion_index=0,
+            genero="femenino",
+            edad=29,
+            barrio="Centro",
+            ciudad="Junín",
+            provincia="Buenos Aires",
+            pais="Argentina",
+        )
         payload_a["phone"] = "+541111"
         save_respuesta(slug, payload_a, _request_ctx("anon-a"))
 
-        payload_b = _respuesta_payload(encuesta, texto="Comentario B", opcion_index=1)
+        payload_b = _respuesta_payload(
+            encuesta,
+            texto="Comentario B",
+            opcion_index=1,
+            genero="masculino",
+            anio_nacimiento=1988,
+            barrio="Sur",
+            ciudad="Junín",
+            provincia="Buenos Aires",
+            pais="Argentina",
+        )
         payload_b["phone"] = "+542222"
         save_respuesta(slug, payload_b, _request_ctx("anon-b"))
 
@@ -279,6 +319,13 @@ def test_get_summary_returns_metrics(client):
     assert len(resumen["preguntas"]) == len(preguntas_ids)
     assert set(item["pregunta_id"] for item in resumen["preguntas"]) == set(preguntas_ids)
     assert all(item["total_respuestas"] == 3 for item in resumen["preguntas"])
+    demografia = resumen["demografia"]
+    assert demografia["genero"]["femenino"] == 1
+    assert demografia["genero"]["masculino"] == 1
+    assert demografia["edad"]["muestra"] == 2
+    assert demografia["edad"]["promedio"] is not None
+    assert demografia["edad"]["promedio"] >= 29
+    assert any(entry["label"] == "Centro" for entry in demografia["territorio"]["barrios"])
 
 
 def test_delete_encuesta_elimina_respuestas_y_salta_bootstrap(client):

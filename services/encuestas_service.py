@@ -27,6 +27,9 @@ from models import (
 )
 
 
+_BOOTSTRAP_TENANT_ID: Optional[int] = None
+
+
 class EncuestaError(Exception):
     """Base exception for survey service errors."""
 
@@ -915,6 +918,88 @@ def _validate_respuesta_payload(
     return detalles
 
 
+def _clean_str(value: Optional[Any], *, max_length: Optional[int] = None) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+    else:
+        cleaned = str(value).strip()
+    if not cleaned:
+        return None
+    if max_length is not None:
+        return cleaned[:max_length]
+    return cleaned
+
+
+def _coerce_int(value: Optional[Any]) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _infer_age_from_birth_year(year: Optional[int]) -> Optional[int]:
+    if not year:
+        return None
+    now_year = datetime.now(timezone.utc).year
+    age = now_year - year
+    if age < 0 or age > 120:
+        return None
+    return age
+
+
+def _infer_birth_year_from_age(age: Optional[int]) -> Optional[int]:
+    if age is None:
+        return None
+    if age < 0 or age > 120:
+        return None
+    return datetime.now(timezone.utc).year - age
+
+
+def _compute_age_group(age: Optional[int]) -> Optional[str]:
+    if age is None:
+        return None
+    buckets = (
+        (12, "0-12"),
+        (17, "13-17"),
+        (24, "18-24"),
+        (34, "25-34"),
+        (44, "35-44"),
+        (54, "45-54"),
+        (64, "55-64"),
+    )
+    for max_age, label in buckets:
+        if age <= max_age:
+            return label
+    return "65+"
+
+
+def _normalize_genero(value: Optional[Any]) -> Optional[str]:
+    text = _clean_str(value, max_length=30)
+    if not text:
+        return None
+    lowered = text.lower()
+    mapping = {
+        "f": "femenino",
+        "fem": "femenino",
+        "female": "femenino",
+        "m": "masculino",
+        "masc": "masculino",
+        "male": "masculino",
+        "nb": "no_binario",
+        "non binary": "no_binario",
+    }
+    if lowered in mapping:
+        return mapping[lowered]
+    for key, mapped in mapping.items():
+        if lowered == key:
+            return mapped
+    return text[:30]
+
+
 def save_respuesta(slug_publico: str, payload: Dict[str, Any], request_ctx: Dict[str, Any]) -> EncRespuesta:
     encuesta = get_public_encuesta(slug_publico)
     respuestas_payload = payload.get("respuestas") or []
@@ -935,6 +1020,21 @@ def save_respuesta(slug_publico: str, payload: Dict[str, Any], request_ctx: Dict
         if existing:
             raise EncuestaError("Ya registramos tu participación", status_code=409)
 
+    genero = _normalize_genero(payload.get("genero") or payload.get("sexo"))
+    edad = _coerce_int(payload.get("edad"))
+    anio_nacimiento = _coerce_int(payload.get("anio_nacimiento"))
+    if anio_nacimiento is None and payload.get("fecha_nacimiento"):
+        fecha = _parse_datetime(payload["fecha_nacimiento"])
+        if fecha:
+            anio_nacimiento = fecha.year
+    if edad is None:
+        edad = _coerce_int(payload.get("edad_aproximada"))
+    if edad is None:
+        edad = _infer_age_from_birth_year(anio_nacimiento)
+    if anio_nacimiento is None:
+        anio_nacimiento = _infer_birth_year_from_age(edad)
+    rango_etario = _clean_str(payload.get("rango_etario"), max_length=30) or _compute_age_group(edad)
+
     respuesta = EncRespuesta(
         encuesta_id=encuesta.id,
         tenant_id=tenant_id,
@@ -949,6 +1049,14 @@ def save_respuesta(slug_publico: str, payload: Dict[str, Any], request_ctx: Dict
         utm_source=payload.get("utm_source"),
         utm_campaign=payload.get("utm_campaign"),
         canal=payload.get("canal") or request_ctx.get("canal") or "web",
+        genero=genero,
+        edad=edad,
+        anio_nacimiento=anio_nacimiento,
+        rango_etario=rango_etario,
+        barrio=_clean_str(payload.get("barrio"), max_length=120),
+        ciudad=_clean_str(payload.get("ciudad"), max_length=120),
+        provincia=_clean_str(payload.get("provincia"), max_length=120),
+        pais=_clean_str(payload.get("pais"), max_length=120),
         submitted_at=datetime.now(timezone.utc),
         content_hash=None,
     )
@@ -1190,6 +1298,14 @@ def serialize_respuesta(respuesta: EncRespuesta) -> Dict[str, Any]:
         "lat": respuesta.lat,
         "lng": respuesta.lng,
         "user_id": respuesta.user_id,
+        "genero": respuesta.genero,
+        "edad": respuesta.edad,
+        "anio_nacimiento": respuesta.anio_nacimiento,
+        "rango_etario": respuesta.rango_etario,
+        "barrio": respuesta.barrio,
+        "ciudad": respuesta.ciudad,
+        "provincia": respuesta.provincia,
+        "pais": respuesta.pais,
         "detalles": detalles_serializados,
     }
 
