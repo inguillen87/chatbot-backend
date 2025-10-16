@@ -18,6 +18,7 @@ from flask import (
     request,
     send_file,
 )
+from flask_login import current_user
 from urllib.parse import quote_plus
 
 from config.feature_flags import FEATURE_ENCUESTAS
@@ -58,6 +59,24 @@ def _normalize_host(value: Optional[str]) -> Optional[str]:
 def _feature_guard():
     if not FEATURE_ENCUESTAS:
         return jsonify({"error": "Módulo de encuestas deshabilitado"}), 404
+    return None
+
+
+def _resolve_preview_user():
+    """Return an authenticated user allowed to preview unpublished surveys."""
+
+    token = obtener_token()
+    if token:
+        user = user_from_token(token)
+        if user is not None:
+            return user
+
+    try:
+        if getattr(current_user, "is_authenticated", False):
+            return current_user
+    except Exception:  # pragma: no cover - extremely defensive
+        current_app.logger.exception("[encuestas] Failed to resolve preview user from session")
+
     return None
 
 
@@ -289,8 +308,9 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
 
     @bp.route("/<slug>", methods=["GET"])
     def obtener_encuesta(slug: str):
+        preview_user = _resolve_preview_user()
         try:
-            encuesta = get_public_encuesta(slug)
+            encuesta = get_public_encuesta(slug, allow_inactive_for_user=preview_user)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
         return jsonify(serialize_public_encuesta(encuesta, slug_publico=slug))
@@ -332,10 +352,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
 
     @bp.route("/<slug>/qr")
     def qr(slug: str):
-        preview_user = None
-        token = obtener_token()
-        if token:
-            preview_user = user_from_token(token)
+        preview_user = _resolve_preview_user()
 
         try:
             encuesta = get_public_encuesta(slug, allow_inactive_for_user=preview_user)
@@ -390,8 +407,9 @@ def share_redirect(slug: str):
     accept = request.accept_mimetypes
     wants_json = accept.best == "application/json" and accept[accept.best] >= accept["text/html"]
 
+    preview_user = _resolve_preview_user()
     try:
-        encuesta = get_public_encuesta(slug)
+        encuesta = get_public_encuesta(slug, allow_inactive_for_user=preview_user)
     except EncuestaError as err:
         if wants_json:
             return jsonify(err.to_dict()), err.status_code
