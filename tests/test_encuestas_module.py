@@ -51,6 +51,8 @@ from services.encuestas_service import (
     serialize_respuesta,
     delete_encuesta,
     list_encuestas,
+    _build_mendoza_bootstrap_payload,
+    _build_godoy_cruz_bootstrap_payload,
 )
 from services.encuestas_analytics_service import get_summary
 from services.encuestas_anchor_service import compute_content_hash, build_snapshot
@@ -63,6 +65,55 @@ feature_flags.FEATURE_ENCUESTAS = True
 app_module = sys.modules.get("app")
 if app_module is not None:
     app_module.FEATURE_ENCUESTAS = True
+
+
+def test_bootstrap_templates_match_frontend_config():
+    inicio = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    fin = inicio + timedelta(days=45)
+
+    payloads = encuestas_service_module._build_junin_bootstrap_payload(inicio, fin)
+    assert isinstance(payloads, list)
+    assert len(payloads) == 4
+
+    servicios = payloads[0]
+    assert servicios["slug"].startswith("servicios-publicos-junin")
+    assert servicios["titulo"] == "Encuesta sobre servicios públicos en Junín"
+    assert servicios["anonimo_permitido"] is False
+    assert servicios["requiere_identidad"] is True
+    assert servicios["politica_unicidad"] == "por_dni"
+    assert servicios["inicio_at"] == inicio.isoformat()
+    assert servicios["fin_at"] == fin.isoformat()
+
+    pregunta_multiple = next(
+        pregunta for pregunta in servicios["preguntas"] if pregunta["tipo"] == "opcion_multiple"
+    )
+    assert pregunta_multiple.get("min_selecciones") == 1
+    assert pregunta_multiple.get("max_selecciones") == 3
+    assert any(opt["texto"] == "Recolección de residuos" for opt in pregunta_multiple["opciones"])
+
+    for pregunta in servicios["preguntas"]:
+        assert "{{municipality}}" not in pregunta["texto"]
+        for opcion in pregunta.get("opciones", []):
+            assert "{{municipality}}" not in opcion["texto"]
+
+    san_martin_payloads = encuestas_service_module._build_san_martin_bootstrap_payload(inicio, fin)
+    assert san_martin_payloads[0]["slug"].startswith("servicios-publicos-san-martin")
+    assert "San Martín" in san_martin_payloads[0]["titulo"]
+
+    rivadavia_payloads = encuestas_service_module._build_rivadavia_bootstrap_payload(inicio, fin)
+    assert rivadavia_payloads[0]["slug"].startswith("servicios-publicos-rivadavia")
+    assert "Rivadavia" in rivadavia_payloads[0]["titulo"]
+
+    mendoza_payloads = _build_mendoza_bootstrap_payload(inicio, fin)
+    assert mendoza_payloads[0]["slug"].startswith("servicios-publicos-mendoza")
+    assert "Mendoza" in mendoza_payloads[0]["titulo"]
+
+    godoy_cruz_payloads = _build_godoy_cruz_bootstrap_payload(inicio, fin)
+    assert godoy_cruz_payloads[0]["slug"].startswith("servicios-publicos-godoy-cruz")
+    assert "Godoy Cruz" in godoy_cruz_payloads[0]["titulo"]
+
+    profile_keys = {profile["key"] for profile in encuestas_service_module._BOOTSTRAP_PROFILES}
+    assert {"junin", "san_martin", "rivadavia", "mendoza", "godoy_cruz"}.issubset(profile_keys)
 
 
 class DummyUser:

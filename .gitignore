@@ -12,6 +12,8 @@ instance/*
 !data/demo_scripts/*.json
 !data/product_synonyms.json
 !data/vocabulary/ticket_vocabulary.json
+!data/encuestas_bootstrap/
+!data/encuestas_bootstrap/templates.json
 !data/estacionamiento/camaras.json
 !data/estacionamiento/parking_spots.json
 !data/municipios/**
