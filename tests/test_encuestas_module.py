@@ -157,6 +157,21 @@ def test_respuesta_unica_por_cookie(client):
         assert "Ya registramos" in error.value.message or "Respuesta duplicada" in error.value.message
 
 
+def test_respuesta_por_ip_sin_datos_no_bloquea(client):
+    with client.application.app_context():
+        encuesta, slug, _ = _create_active_encuesta(politica_unicidad="por_ip")
+        payload = _respuesta_payload(encuesta)
+
+        ctx_sin_ip = {"ip": None, "user_agent": "pytest", "anon_id": "anon-a", "canal": "web"}
+        primera = save_respuesta(slug, payload, ctx_sin_ip)
+        assert primera.id is not None
+
+        # Si no tenemos IP disponible, no debemos generar la misma huella y bloquear respuestas posteriores.
+        ctx_sin_ip_otro = {"ip": None, "user_agent": "pytest", "anon_id": "anon-b", "canal": "web"}
+        segunda = save_respuesta(slug, payload, ctx_sin_ip_otro)
+        assert segunda.id is not None
+
+
 def test_compute_content_hash_es_deterministico(client):
     with client.application.app_context():
         encuesta, slug, _ = _create_active_encuesta()

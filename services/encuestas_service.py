@@ -815,30 +815,56 @@ def build_unique_fingerprint(
     if policy == "libre":
         return None
 
-    source_parts: List[str] = [f"encuesta:{encuesta.id}", f"tenant:{tenant_id}", f"policy:{policy}"]
-    if policy in {"por_dni", "dni"} and dni:
-        source_parts.append(f"dni:{dni.strip()}")
-    elif policy in {"por_phone", "phone"} and phone:
-        source_parts.append(f"phone:{phone.strip()}")
-    elif policy in {"por_cookie", "cookie"} and anon_cookie:
-        source_parts.append(f"cookie:{anon_cookie}")
-    elif policy in {"por_ip", "ip"} and ip:
-        source_parts.append(f"ip:{ip}" )
+    def _clean_identifier(value: Optional[Any]) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            cleaned = value.strip()
+        else:
+            cleaned = str(value).strip()
+        return cleaned or None
+
+    dni_clean = _clean_identifier(dni)
+    phone_clean = _clean_identifier(phone)
+    cookie_clean = _clean_identifier(anon_cookie)
+    ip_clean = _clean_identifier(ip)
+
+    source_parts: List[str] = [
+        f"encuesta:{encuesta.id}",
+        f"tenant:{tenant_id}",
+        f"policy:{policy}",
+    ]
+
+    appended = False
+
+    def _append(tag: str, value: Optional[str]):
+        nonlocal appended
+        if value is None:
+            return
+        source_parts.append(f"{tag}:{value}")
+        appended = True
+
+    if policy in {"por_dni", "dni"}:
+        _append("dni", dni_clean)
+    elif policy in {"por_phone", "phone"}:
+        _append("phone", phone_clean)
+    elif policy in {"por_cookie", "cookie"}:
+        _append("cookie", cookie_clean)
+    elif policy in {"por_ip", "ip"}:
+        _append("ip", ip_clean)
     elif policy in {"por_dni_o_phone", "dni_o_phone"}:
-        if dni:
-            source_parts.append(f"dni:{dni.strip()}")
-        if phone:
-            source_parts.append(f"phone:{phone.strip()}")
+        _append("dni", dni_clean)
+        _append("phone", phone_clean)
     else:
         # fallback usa todo lo disponible
-        if dni:
-            source_parts.append(f"dni:{dni.strip()}")
-        if phone:
-            source_parts.append(f"phone:{phone.strip()}")
-        if anon_cookie:
-            source_parts.append(f"cookie:{anon_cookie}")
-        if ip:
-            source_parts.append(f"ip:{ip}")
+        _append("dni", dni_clean)
+        _append("phone", phone_clean)
+        _append("cookie", cookie_clean)
+        _append("ip", ip_clean)
+
+    if not appended:
+        # No contamos con la información necesaria para construir una huella estable.
+        return None
 
     canonical = "|".join(source_parts)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
