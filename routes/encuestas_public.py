@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import io
+import os
 import time
 from collections import defaultdict, deque
 import re
 from threading import Lock
-from typing import Optional
+from typing import Iterator, Optional, Pattern, Union
 
 from flask import (
     Blueprint,
@@ -21,6 +22,7 @@ from flask import (
 from flask_login import current_user
 from urllib.parse import quote_plus
 
+from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_qr_service import build_qr_png
 from services.encuestas_service import (
@@ -36,6 +38,8 @@ _RATE_LIMIT = 30
 _RATE_PERIOD = 60
 _rate_buckets: defaultdict[str, deque] = defaultdict(deque)
 _rate_lock = Lock()
+
+AllowedOrigin = Union[str, Pattern[str]]
 
 
 def _normalize_host(value: Optional[str]) -> Optional[str]:
@@ -166,6 +170,65 @@ def _rate_limit(ip: str) -> bool:
         return True
 
 
+def _iter_allowed_origins() -> Iterator[AllowedOrigin]:
+    """Yield allowed CORS origins honoring environment overrides."""
+
+    env_value = os.getenv("CORS_ALLOWED_ORIGINS")
+    if env_value is not None:
+        stripped = env_value.strip()
+        if stripped == "*":
+            yield "*"
+            return
+
+        seen: set[str] = set()
+        for raw in stripped.split(","):
+            candidate = raw.strip().rstrip("/")
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            yield candidate
+
+        if seen:
+            return
+
+    for origin in DEFAULT_ALLOWED_ORIGINS:
+        yield origin
+
+
+def _resolve_cors_origin(origin: Optional[str]) -> tuple[Optional[str], bool]:
+    """Return the value for Access-Control-Allow-Origin and credentials flag."""
+
+    if not origin:
+        return None, False
+
+    normalized = origin.rstrip("/")
+    for allowed in _iter_allowed_origins():
+        if allowed == "*":
+            return "*", False
+        if isinstance(allowed, str):
+            if normalized == allowed.rstrip("/"):
+                return origin, True
+        elif hasattr(allowed, "match") and allowed.match(origin):
+            return origin, True
+
+    return None, False
+
+
+def _merge_header_values(response, header_name: str, values: list[str]) -> None:
+    """Ensure comma-separated headers include the provided values."""
+
+    existing = response.headers.get(header_name, "")
+    items = [item.strip() for item in existing.split(",") if item.strip()]
+
+    updated = list(items)
+    for value in values:
+        if value not in updated:
+            updated.append(value)
+
+    if updated:
+        response.headers[header_name] = ", ".join(updated)
+
+
 def _resolve_tenant_from_request() -> Optional[int]:
     """Infer the tenant/municipio identifier for a public survey listing."""
 
@@ -271,6 +334,47 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         if guard:
             return guard
         return None
+
+    @bp.after_request
+    def _apply_cors(response):
+        allowed_origin, allow_credentials = _resolve_cors_origin(
+            request.headers.get("Origin")
+        )
+
+        if allowed_origin:
+            response.headers["Access-Control-Allow-Origin"] = allowed_origin
+
+            if allowed_origin != "*":
+                _merge_header_values(response, "Vary", ["Origin"])
+                if allow_credentials:
+                    response.headers["Access-Control-Allow-Credentials"] = "true"
+            else:
+                response.headers.pop("Access-Control-Allow-Credentials", None)
+
+            _merge_header_values(
+                response,
+                "Access-Control-Allow-Headers",
+                [
+                    "Authorization",
+                    "Content-Type",
+                    "Origin",
+                    "Accept",
+                    "X-Entity-Token",
+                    "X-Chat-Session-Id",
+                    "X-Anon-Id",
+                    "Anon-Id",
+                ],
+            )
+
+            _merge_header_values(
+                response,
+                "Access-Control-Allow-Methods",
+                ["GET", "POST", "OPTIONS"],
+            )
+        else:
+            response.headers.pop("Access-Control-Allow-Credentials", None)
+
+        return response
 
     @bp.route("", methods=["GET", "OPTIONS"])
     def listar_publicas():

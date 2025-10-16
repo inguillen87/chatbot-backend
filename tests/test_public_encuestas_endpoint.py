@@ -10,8 +10,29 @@ def test_public_encuestas_defaults_to_config_owner(client):
 
 
 def test_public_encuestas_options_is_handled(client):
-    response = client.options("/public/encuestas")
+    origin = "http://localhost:8080"
+    response = client.options(
+        "/public/encuestas", headers={"Origin": origin}
+    )
     assert response.status_code == 204
+    assert response.headers.get("Access-Control-Allow-Origin") == origin
+    allow_methods = response.headers.get("Access-Control-Allow-Methods", "")
+    assert "OPTIONS" in allow_methods
+    assert "GET" in allow_methods
+    allow_headers = response.headers.get("Access-Control-Allow-Headers", "")
+    assert "Content-Type" in allow_headers
+
+
+def test_public_encuestas_get_includes_cors_headers(client):
+    origin = "http://localhost:8080"
+    response = client.get(
+        "/public/encuestas", headers={"Origin": origin}
+    )
+    assert response.status_code == 200
+    assert response.headers.get("Access-Control-Allow-Origin") == origin
+    assert response.headers.get("Access-Control-Allow-Credentials") == "true"
+    vary_header = response.headers.get("Vary", "")
+    assert "Origin" in [item.strip() for item in vary_header.split(",") if item.strip()]
 
 
 def test_not_found_returns_json(client):
