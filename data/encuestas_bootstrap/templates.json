@@ -8,6 +8,7 @@
       "politica_unicidad": "por_dni",
       "anonimato": false,
       "requiere_datos_contacto": true,
+      "tags": ["Servicios públicos", "Mantenimiento urbano"],
       "preguntas": [
         {
           "orden": 1,
@@ -51,6 +52,7 @@
       "politica_unicidad": "por_phone",
       "anonimato": false,
       "requiere_datos_contacto": true,
+      "tags": ["Seguridad", "Prevención"],
       "preguntas": [
         {
           "orden": 1,
@@ -92,6 +94,7 @@
       "politica_unicidad": "por_ip",
       "anonimato": true,
       "requiere_datos_contacto": false,
+      "tags": ["Movilidad", "Transporte"],
       "preguntas": [
         {
           "orden": 1,
@@ -124,50 +127,166 @@
         {
           "orden": 3,
           "tipo": "abierta",
-          "texto": "¿Qué obra o mejora puntual priorizarías para facilitar la movilidad?",
+          "texto": "¿Qué cambio puntual ayudaría a mejorar tu traslado diario?",
           "obligatoria": false
         }
       ]
     },
     {
-      "slug": "agenda-cultural",
-      "titulo": "Encuesta de agenda cultural para {{municipality}}",
-      "descripcion": "Definimos programación cultural y turística en base a los intereses de la comunidad.",
+      "slug": "agenda-cultural-2025",
+      "titulo": "Agenda cultural y turística 2025 para {{municipality}}",
+      "descripcion": "Priorizamos actividades, festivales y experiencias turísticas locales que potencien la identidad regional.",
       "tipo": "opinion",
       "politica_unicidad": "por_cookie",
       "anonimato": true,
       "requiere_datos_contacto": false,
+      "tags": ["Cultura", "Turismo"],
       "preguntas": [
         {
           "orden": 1,
           "tipo": "multiple",
-          "texto": "¿Qué actividades culturales te gustaría ver con más frecuencia?",
+          "texto": "¿Qué tipo de eventos te gustaría que se multipliquen en {{municipality}}?",
           "obligatoria": true,
           "min_selecciones": 1,
           "max_selecciones": 3,
           "opciones": [
-            { "orden": 1, "texto": "Festivales musicales" },
-            { "orden": 2, "texto": "Ferias gastronómicas" },
-            { "orden": 3, "texto": "Talleres para familias" },
-            { "orden": 4, "texto": "Cine al aire libre" },
-            { "orden": 5, "texto": "Muestras de artes visuales" }
+            { "orden": 1, "texto": "Festivales gastronómicos" },
+            { "orden": 2, "texto": "Ferias de emprendedores" },
+            { "orden": 3, "texto": "Shows musicales al aire libre" },
+            { "orden": 4, "texto": "Actividades deportivas" },
+            { "orden": 5, "texto": "Recorridos turísticos guiados" }
           ]
         },
         {
           "orden": 2,
           "tipo": "opcion_unica",
-          "texto": "¿Qué franja horaria preferís para participar de actividades culturales municipales?",
+          "texto": "¿Cuál es tu principal motivación para asistir a eventos culturales locales?",
           "obligatoria": true,
           "opciones": [
-            { "orden": 1, "texto": "Mañana" },
-            { "orden": 2, "texto": "Tarde" },
-            { "orden": 3, "texto": "Noche" }
+            { "orden": 1, "texto": "Aprender y descubrir propuestas nuevas" },
+            { "orden": 2, "texto": "Compartir tiempo en familia o con amistades" },
+            { "orden": 3, "texto": "Apoyar a artistas y emprendedores locales" },
+            { "orden": 4, "texto": "Turismo y recreación" }
           ]
         },
         {
           "orden": 3,
           "tipo": "abierta",
-          "texto": "Sugerí un evento o iniciativa cultural que te gustaría sumar a la agenda local.",
+          "texto": "Comentá una idea innovadora para sumar a la agenda cultural.",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "ciudad-sustentable-2025",
+      "titulo": "Encuesta 2025 de ciudad sustentable para {{municipality}}",
+      "descripcion": "Priorizamos acciones sobre energía, agua, residuos y economía circular con foco educativo.",
+      "tipo": "planificacion",
+      "politica_unicidad": "por_dni",
+      "anonimato": false,
+      "requiere_datos_contacto": true,
+      "tags": ["Sustentabilidad", "Planificación"],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "multiple",
+          "texto": "¿Qué iniciativas sustentables debería impulsar primero {{municipality}}?",
+          "obligatoria": true,
+          "min_selecciones": 1,
+          "max_selecciones": 3,
+          "opciones": [
+            { "orden": 1, "texto": "Programas para reducir el consumo de agua" },
+            { "orden": 2, "texto": "Eficiencia energética y luminarias LED" },
+            { "orden": 3, "texto": "Capacitaciones sobre uso responsable de gas" },
+            { "orden": 4, "texto": "Fortalecer puntos limpios y reciclaje" },
+            { "orden": 5, "texto": "Huertas urbanas y compostaje comunitario" }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "opcion_unica",
+          "texto": "¿Qué tan útil sería que el punto limpio produzca materiales educativos con IA y reciclados para escuelas y jardines?",
+          "obligatoria": true,
+          "opciones": [
+            { "orden": 1, "texto": "Muy útil, debería ser una prioridad" },
+            { "orden": 2, "texto": "Útil como complemento de otras acciones" },
+            { "orden": 3, "texto": "Poco útil frente a otras necesidades" },
+            { "orden": 4, "texto": "No es necesario" }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "opcion_unica",
+          "texto": "¿Preferís materiales educativos reciclados en formato libros, historietas o recursos digitales?",
+          "obligatoria": true,
+          "opciones": [
+            { "orden": 1, "texto": "Libros y cuadernos impresos" },
+            { "orden": 2, "texto": "Historietas y cuentos ilustrados" },
+            { "orden": 3, "texto": "Recursos digitales interactivos" },
+            { "orden": 4, "texto": "Combinación de formatos" }
+          ]
+        },
+        {
+          "orden": 4,
+          "tipo": "abierta",
+          "texto": "Compartí ideas para reutilizar materiales reciclados en proyectos educativos o comunitarios.",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "obras-publicas-2025",
+      "titulo": "Prioridades 2025 de obras públicas en {{municipality}}",
+      "descripcion": "Identificamos intervenciones clave en pavimentación, plazas y seguridad vial.",
+      "tipo": "planificacion",
+      "politica_unicidad": "por_phone",
+      "anonimato": false,
+      "requiere_datos_contacto": true,
+      "tags": ["Obras públicas", "Infraestructura"],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "multiple",
+          "texto": "¿Qué proyectos de obra pública deberían priorizarse en tu barrio?",
+          "obligatoria": true,
+          "min_selecciones": 1,
+          "max_selecciones": 3,
+          "opciones": [
+            { "orden": 1, "texto": "Pavimentación y bacheo de calles" },
+            { "orden": 2, "texto": "Renovación y mantenimiento de plazas" },
+            { "orden": 3, "texto": "Modernización de semáforos" },
+            { "orden": 4, "texto": "Construcción de lomas de burro" },
+            { "orden": 5, "texto": "Mejoras en desagües pluviales" }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "opcion_unica",
+          "texto": "¿Cómo evaluás el estado actual de las veredas y accesos peatonales en tu zona?",
+          "obligatoria": true,
+          "opciones": [
+            { "orden": 1, "texto": "Muy bueno" },
+            { "orden": 2, "texto": "Aceptable" },
+            { "orden": 3, "texto": "Deficiente" },
+            { "orden": 4, "texto": "Muy deficiente" }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "opcion_unica",
+          "texto": "¿Cuál debería ser el principal criterio para definir el cronograma de obras?",
+          "obligatoria": true,
+          "opciones": [
+            { "orden": 1, "texto": "Cantidad de reclamos registrados" },
+            { "orden": 2, "texto": "Impacto en la seguridad vial" },
+            { "orden": 3, "texto": "Beneficio para escuelas y espacios comunitarios" },
+            { "orden": 4, "texto": "Sincronización con otras obras de infraestructura" }
+          ]
+        },
+        {
+          "orden": 4,
+          "tipo": "abierta",
+          "texto": "Indicá calles, plazas o cruces específicos donde debería focalizarse la próxima etapa de obras.",
           "obligatoria": false
         }
       ]

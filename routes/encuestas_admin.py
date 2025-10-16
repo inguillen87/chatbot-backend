@@ -17,6 +17,8 @@ from services.encuestas_service import (
     serialize_encuesta,
     serialize_respuesta,
     build_admin_list_payload,
+    list_template_catalog,
+    build_template_draft_from_slug,
 )
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
@@ -117,6 +119,53 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
             return jsonify([serialize_encuesta(e) for e in encuestas]), 200
         payload = build_admin_list_payload(encuestas)
         return jsonify(payload), 200
+
+    @bp.route("/templates", methods=["GET"])
+    @token_requerido
+    @require_role("admin", "super_admin")
+    def listar_plantillas_endpoint(current_user):
+        municipality = request.args.get("municipality") or request.args.get("municipio")
+        slugs_param = request.args.get("slugs")
+        template_slugs = None
+        if slugs_param:
+            template_slugs = [slug.strip() for slug in slugs_param.split(",") if slug.strip()]
+
+        include_draft = (request.args.get("include_draft") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+        try:
+            catalog = list_template_catalog(municipality=municipality, template_slugs=template_slugs)
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+
+        if include_draft:
+            if not municipality:
+                return (
+                    jsonify({"error": "Debés indicar una localidad para generar borradores"}),
+                    400,
+                )
+            start_at = request.args.get("start_at") or request.args.get("inicio_at")
+            end_at = request.args.get("end_at") or request.args.get("fin_at")
+            for template in catalog:
+                slug = template.get("slug")
+                if not slug:
+                    continue
+                try:
+                    draft = build_template_draft_from_slug(
+                        slug,
+                        municipality,
+                        start=start_at,
+                        end=end_at,
+                    )
+                except EncuestaError as err:
+                    return jsonify(err.to_dict()), err.status_code
+                template["draft"] = draft
+
+        return jsonify({"templates": catalog}), 200
 
     @bp.route("/<int:encuesta_id>", methods=["GET"])
     @token_requerido

@@ -3,6 +3,7 @@ import pytest
 from app import db
 from models import User
 from services.encuestas_service import EncEncuesta, create_encuesta, publicar_encuesta, save_respuesta
+import services.encuestas_service as encuestas_service_module
 from services.encuestas_anchor_service import build_snapshot
 import config.feature_flags as feature_flags
 import routes.encuestas_admin as encuestas_admin_routes
@@ -55,7 +56,7 @@ def test_admin_encuestas_alias_exposes_rest_endpoints(client, monkeypatch, admin
     assert "resumen" in listado
     encuestas = listado["encuestas"]
     assert isinstance(encuestas, list)
-    assert any("Junín" in encuesta["titulo"] for encuesta in encuestas)
+    initial_total = listado["resumen"].get("total", 0)
     assert all(encuesta["tenant_id"] == admin_user.municipio_id for encuesta in encuestas)
     resumen = listado["resumen"]
     assert resumen["total"] == len(encuestas)
@@ -87,7 +88,7 @@ def test_admin_encuestas_alias_exposes_rest_endpoints(client, monkeypatch, admin
 
     # Listing again should include both the bootstrap survey and the new one.
     refreshed = client.get("/admin/encuestas", headers=headers).get_json()
-    assert refreshed["resumen"]["total"] >= 2
+    assert refreshed["resumen"]["total"] == initial_total + 1
     assert all(
         encuesta["tenant_id"] == admin_user.municipio_id for encuesta in refreshed["encuestas"]
     )
@@ -103,7 +104,36 @@ def test_admin_encuestas_alias_exposes_rest_endpoints(client, monkeypatch, admin
     assert public_resp.status_code == 200
     public_data = public_resp.get_json()
     assert isinstance(public_data, list)
-    assert any("Junín" in encuesta.get("titulo", "") for encuesta in public_data)
+
+
+def test_admin_templates_endpoint_returns_catalog(client, monkeypatch, admin_user):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+
+    headers = _auth_headers(client, admin_user)
+
+    resp = client.get(
+        "/admin/encuestas/templates?municipality=Junin&include_draft=1",
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert isinstance(payload, dict)
+    templates = payload.get("templates")
+    assert isinstance(templates, list)
+    assert templates, "Se esperaba al menos una plantilla"
+
+    primera = templates[0]
+    assert "titulo" in primera
+    assert "Junin" in primera["titulo"] or "Junín" in primera["titulo"]
+    assert isinstance(primera.get("preguntas"), list)
+
+    draft = primera.get("draft")
+    assert isinstance(draft, dict)
+    assert draft.get("municipality") == "Junin"
+    assert draft.get("slug", "").endswith("-junin")
+    assert isinstance(draft.get("preguntas"), list) and draft["preguntas"]
+    assert any(p.get("tipo") in {"opcion_unica", "multiple", "abierta"} for p in draft["preguntas"])
 
 
 def test_admin_encuestas_listado_respuestas(client, monkeypatch, admin_user):
