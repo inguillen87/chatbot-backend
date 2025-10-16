@@ -65,159 +65,419 @@ def _parse_int(value: Optional[str]) -> Optional[int]:
 _BOOTSTRAP_SAMPLE_ENABLED = _env_flag("ENCUESTAS_BOOTSTRAP_SAMPLE", default=True)
 
 
-def _build_junin_bootstrap_payload(inicio: datetime, fin: datetime) -> Dict[str, Any]:
-    return {
-        "titulo": "Participación Ciudadana Junín 2025",
-        "slug": "junin-participa",
+_DEFAULT_BOOTSTRAP_TEMPLATES: Sequence[Dict[str, Any]] = [
+    {
+        "slug": "servicios-publicos",
+        "titulo": "Encuesta sobre servicios públicos en {{municipality}}",
         "descripcion": (
-            "Queremos conocer tus prioridades para planificar obras, seguridad y "
-            "actividades en todo Junín. Contanos qué es importante para tu barrio."
+            "Queremos conocer la experiencia de los vecinos y vecinas con los "
+            "servicios urbanos para planificar mejoras."
         ),
         "tipo": "opinion",
-        "anonimo_permitido": True,
-        "requiere_identidad": False,
-        "politica_unicidad": "por_cookie",
-        "inicio_at": inicio.isoformat(),
-        "fin_at": fin.isoformat(),
+        "politica_unicidad": "por_dni",
+        "anonimato": False,
+        "requiere_datos_contacto": True,
         "preguntas": [
             {
                 "orden": 1,
                 "tipo": "opcion_unica",
-                "texto": "¿Qué proyecto priorizarías para tu barrio?",
+                "texto": "¿Cómo calificás la limpieza urbana en {{municipality}}?",
                 "obligatoria": True,
                 "opciones": [
-                    {"orden": 1, "texto": "Mejoras de iluminación y seguridad"},
-                    {"orden": 2, "texto": "Pavimentación y mantenimiento de calles"},
-                    {"orden": 3, "texto": "Espacios verdes y recreativos"},
-                    {"orden": 4, "texto": "Programas deportivos y culturales"},
+                    {"orden": 1, "texto": "Muy buena"},
+                    {"orden": 2, "texto": "Buena"},
+                    {"orden": 3, "texto": "Regular"},
+                    {"orden": 4, "texto": "Mala"},
                 ],
             },
             {
                 "orden": 2,
+                "tipo": "multiple",
+                "texto": "¿Qué aspectos deberían reforzarse prioritariamente?",
+                "obligatoria": True,
+                "min_selecciones": 1,
+                "max_selecciones": 3,
+                "opciones": [
+                    {"orden": 1, "texto": "Recolección de residuos"},
+                    {"orden": 2, "texto": "Iluminación pública"},
+                    {"orden": 3, "texto": "Mantenimiento de calles"},
+                    {"orden": 4, "texto": "Espacios verdes"},
+                ],
+            },
+            {
+                "orden": 3,
                 "tipo": "opcion_multiple",
                 "texto": (
-                    "¿En qué acciones de participación te gustaría sumarte durante "
-                    "los próximos meses?"
+                    "Pensando en una ciudad sustentable, ¿qué proyectos priorizarías para cuidar el ambiente y reducir consumos?"
                 ),
                 "obligatoria": False,
                 "max_selecciones": 3,
                 "opciones": [
-                    {"orden": 1, "texto": "Cabildos barriales"},
-                    {"orden": 2, "texto": "Jornadas de voluntariado"},
-                    {"orden": 3, "texto": "Consultas públicas digitales"},
-                    {"orden": 4, "texto": "Mesas de trabajo temáticas"},
+                    {
+                        "orden": 1,
+                        "texto": "Campañas para reducir el consumo de agua, luz y gas en los hogares",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Ampliar puntos limpios y la economía circular en los barrios",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Crear cuadernos, libros y historietas educativos con IA y materiales reciclados",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Instalar paneles solares y eficiencia energética en edificios públicos",
+                    },
                 ],
             },
             {
-                "orden": 3,
-                "tipo": "abierta",
-                "texto": "Dejanos comentarios o propuestas concretas para Junín",
-                "obligatoria": False,
-            },
-        ],
-    }
-
-
-def _build_san_martin_bootstrap_payload(inicio: datetime, fin: datetime) -> Dict[str, Any]:
-    return {
-        "titulo": "Plan Estratégico San Martín 2025",
-        "slug": "san-martin-ideas",
-        "descripcion": (
-            "Queremos escuchar a los vecinos de San Martín para definir obras, "
-            "movilidad y actividades comunitarias que mejoren cada distrito."
-        ),
-        "tipo": "opinion",
-        "anonimo_permitido": True,
-        "requiere_identidad": False,
-        "politica_unicidad": "por_cookie",
-        "inicio_at": inicio.isoformat(),
-        "fin_at": fin.isoformat(),
-        "preguntas": [
-            {
-                "orden": 1,
-                "tipo": "opcion_unica",
-                "texto": "¿Qué obra considerás más urgente para tu distrito?",
-                "obligatoria": True,
-                "opciones": [
-                    {"orden": 1, "texto": "Repavimentación y cordón-cuneta"},
-                    {"orden": 2, "texto": "Nuevas luminarias LED y seguridad"},
-                    {"orden": 3, "texto": "Espacios verdes y plazas inclusivas"},
-                    {"orden": 4, "texto": "Centros deportivos y recreativos"},
-                ],
-            },
-            {
-                "orden": 2,
+                "orden": 4,
                 "tipo": "opcion_multiple",
-                "texto": "¿Qué servicios municipales querés reforzar?",
+                "texto": "¿Qué obras públicas puntuales te gustaría que avancemos en tu zona?",
                 "obligatoria": False,
                 "max_selecciones": 3,
                 "opciones": [
-                    {"orden": 1, "texto": "Recolección de residuos y reciclaje"},
-                    {"orden": 2, "texto": "Seguridad ciudadana y prevención"},
-                    {"orden": 3, "texto": "Movilidad y transporte público"},
-                    {"orden": 4, "texto": "Programas culturales en los barrios"},
+                    {
+                        "orden": 1,
+                        "texto": "Pavimentación, bacheo y mantenimiento integral de calles",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Nuevas plazas, juegos y espacios recreativos inclusivos",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Modernización de semáforos y cruces seguros",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Construcción de lomas de burro y señalización vial",
+                    },
                 ],
             },
             {
-                "orden": 3,
+                "orden": 5,
                 "tipo": "abierta",
-                "texto": "Contanos otras propuestas o reclamos para San Martín",
+                "texto": "¿Qué propuesta concreta sugerís para mejorar los servicios públicos?",
                 "obligatoria": False,
             },
         ],
-    }
-
-
-def _build_rivadavia_bootstrap_payload(inicio: datetime, fin: datetime) -> Dict[str, Any]:
-    return {
-        "titulo": "Agenda Comunitaria Rivadavia 2025",
-        "slug": "rivadavia-encuesta",
+    },
+    {
+        "slug": "seguridad-ciudadana",
+        "titulo": "Sondeo de seguridad ciudadana en {{municipality}}",
         "descripcion": (
-            "Ayudanos a priorizar obras hídricas, servicios urbanos y actividades "
-            "para los distritos de Rivadavia. Tu opinión define el plan de trabajo."
+            "Medimos la percepción de seguridad barrial para coordinar acciones con fuerzas locales."
         ),
-        "tipo": "opinion",
-        "anonimo_permitido": True,
-        "requiere_identidad": False,
-        "politica_unicidad": "por_cookie",
-        "inicio_at": inicio.isoformat(),
-        "fin_at": fin.isoformat(),
+        "tipo": "sondeo",
+        "politica_unicidad": "por_phone",
+        "anonimato": False,
+        "requiere_datos_contacto": True,
         "preguntas": [
             {
                 "orden": 1,
                 "tipo": "opcion_unica",
-                "texto": "¿Cuál es la principal necesidad de tu zona?",
+                "texto": "¿Con qué frecuencia ves patrullajes o controles preventivos?",
                 "obligatoria": True,
                 "opciones": [
-                    {"orden": 1, "texto": "Mejoras de agua potable y riego"},
-                    {"orden": 2, "texto": "Mantenimiento de calles y accesos"},
-                    {"orden": 3, "texto": "Seguridad y luminarias"},
-                    {"orden": 4, "texto": "Centros comunitarios y salud"},
+                    {"orden": 1, "texto": "Todos los días"},
+                    {"orden": 2, "texto": "Varias veces por semana"},
+                    {"orden": 3, "texto": "Pocas veces al mes"},
+                    {"orden": 4, "texto": "Nunca"},
                 ],
             },
             {
                 "orden": 2,
-                "tipo": "opcion_multiple",
-                "texto": (
-                    "¿En qué iniciativas te gustaría participar durante el año?"
-                ),
-                "obligatoria": False,
-                "max_selecciones": 2,
+                "tipo": "opcion_unica",
+                "texto": "¿Cómo evaluás la iluminación nocturna en tu cuadra?",
+                "obligatoria": True,
                 "opciones": [
-                    {"orden": 1, "texto": "Mesas de agua y saneamiento"},
-                    {"orden": 2, "texto": "Ferias productivas y emprendedoras"},
-                    {"orden": 3, "texto": "Patrullas ciudadanas y alarmas"},
-                    {"orden": 4, "texto": "Talleres para jóvenes y adultos mayores"},
+                    {"orden": 1, "texto": "Muy adecuada"},
+                    {"orden": 2, "texto": "Adecuada"},
+                    {"orden": 3, "texto": "Insuficiente"},
+                    {"orden": 4, "texto": "Muy insuficiente"},
                 ],
             },
             {
                 "orden": 3,
                 "tipo": "abierta",
-                "texto": "Comentarios sobre tu distrito o ideas para Rivadavia",
+                "texto": "Comentá situaciones o zonas específicas donde te gustaría ver más presencia preventiva.",
                 "obligatoria": False,
             },
         ],
-    }
+    },
+    {
+        "slug": "movilidad-y-transporte",
+        "titulo": "Consulta sobre movilidad y transporte en {{municipality}}",
+        "descripcion": (
+            "Identificamos necesidades de infraestructura vial y transporte público para priorizar inversiones."
+        ),
+        "tipo": "opinion",
+        "politica_unicidad": "por_ip",
+        "anonimato": True,
+        "requiere_datos_contacto": False,
+        "preguntas": [
+            {
+                "orden": 1,
+                "tipo": "multiple",
+                "texto": "¿Qué medios de transporte utilizás semanalmente?",
+                "obligatoria": True,
+                "min_selecciones": 1,
+                "max_selecciones": 4,
+                "opciones": [
+                    {"orden": 1, "texto": "Colectivo"},
+                    {"orden": 2, "texto": "Bicicleta"},
+                    {"orden": 3, "texto": "Motocicleta"},
+                    {"orden": 4, "texto": "Auto particular"},
+                    {"orden": 5, "texto": "Caminata"},
+                ],
+            },
+            {
+                "orden": 2,
+                "tipo": "opcion_unica",
+                "texto": "¿Cuál es la principal dificultad para moverte por {{municipality}}?",
+                "obligatoria": True,
+                "opciones": [
+                    {"orden": 1, "texto": "Frecuencia del transporte público"},
+                    {"orden": 2, "texto": "Estado de las calles"},
+                    {"orden": 3, "texto": "Falta de ciclovías"},
+                    {"orden": 4, "texto": "Congestión vehicular"},
+                    {"orden": 5, "texto": "Inseguridad vial"},
+                ],
+            },
+            {
+                "orden": 3,
+                "tipo": "opcion_multiple",
+                "texto": (
+                    "¿Qué iniciativas sustentables deberían escalarse en tu zona?"
+                ),
+                "obligatoria": False,
+                "max_selecciones": 3,
+                "opciones": [
+                    {
+                        "orden": 1,
+                        "texto": "Programas para reducir consumos de agua, luz y gas",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Puntos verdes móviles y reciclaje con economía circular",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Material educativo con IA sobre identidad barrial",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Corredores verdes y movilidad sostenible",
+                    },
+                ],
+            },
+            {
+                "orden": 4,
+                "tipo": "opcion_multiple",
+                "texto": "¿Qué obras públicas concretas son prioritarias en tu distrito?",
+                "obligatoria": False,
+                "max_selecciones": 3,
+                "opciones": [
+                    {
+                        "orden": 1,
+                        "texto": "Repavimentación y cordón cuneta",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Nuevas plazas, juegos y polideportivos",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Semáforos inteligentes y señalización",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Lomas de burro y mejoras de tránsito",
+                    },
+                ],
+            },
+            {
+                "orden": 5,
+                "tipo": "abierta",
+                "texto": "¿Qué obra o mejora puntual priorizarías para facilitar la movilidad?",
+                "obligatoria": False,
+            },
+        ],
+    },
+    {
+        "slug": "agenda-cultural",
+        "titulo": "Encuesta de agenda cultural para {{municipality}}",
+        "descripcion": (
+            "Definimos programación cultural y turística en base a los intereses de la comunidad."
+        ),
+        "tipo": "opinion",
+        "politica_unicidad": "por_cookie",
+        "anonimato": True,
+        "requiere_datos_contacto": False,
+        "preguntas": [
+            {
+                "orden": 1,
+                "tipo": "multiple",
+                "texto": "¿Qué actividades culturales te gustaría ver con más frecuencia?",
+                "obligatoria": True,
+                "min_selecciones": 1,
+                "max_selecciones": 3,
+                "opciones": [
+                    {"orden": 1, "texto": "Festivales musicales"},
+                    {"orden": 2, "texto": "Ferias gastronómicas"},
+                    {"orden": 3, "texto": "Talleres para familias"},
+                    {"orden": 4, "texto": "Cine al aire libre"},
+                    {"orden": 5, "texto": "Muestras de artes visuales"},
+                ],
+            },
+            {
+                "orden": 2,
+                "tipo": "opcion_unica",
+                "texto": "¿Qué franja horaria preferís para participar de actividades culturales municipales?",
+                "obligatoria": True,
+                "opciones": [
+                    {"orden": 1, "texto": "Mañana"},
+                    {"orden": 2, "texto": "Tarde"},
+                    {"orden": 3, "texto": "Noche"},
+                ],
+            },
+            {
+                "orden": 3,
+                "tipo": "opcion_multiple",
+                "texto": (
+                    "Pensando en sostenibilidad, ¿qué iniciativas impulsarías en tu distrito?"
+                ),
+                "obligatoria": False,
+                "max_selecciones": 3,
+                "opciones": [
+                    {
+                        "orden": 1,
+                        "texto": "Programas para reducir consumos de agua, energía y gas en hogares y fincas",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Puntos limpios y reciclaje con producción de materiales educativos",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Libros y cuadernos sobre próceres locales hechos con IA y reciclados",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Energías renovables y eficiencia en edificios públicos",
+                    },
+                ],
+            },
+            {
+                "orden": 4,
+                "tipo": "opcion_multiple",
+                "texto": "¿Qué obras públicas concretas necesitás que se prioricen?",
+                "obligatoria": False,
+                "max_selecciones": 3,
+                "opciones": [
+                    {
+                        "orden": 1,
+                        "texto": "Mejoras de caminos rurales y accesos",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Canales, defensas aluvionales y redes de riego",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Iluminación LED y seguridad comunitaria",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Plazas, playones deportivos y espacios de encuentro",
+                    },
+                ],
+            },
+            {
+                "orden": 5,
+                "tipo": "abierta",
+                "texto": "Sugerí un evento o iniciativa cultural que te gustaría sumar a la agenda local.",
+                "obligatoria": False,
+            },
+        ],
+    },
+]
+
+
+def _render_municipality_placeholder(value: Any, municipality: str) -> Any:
+    if isinstance(value, str):
+        return value.replace("{{municipality}}", municipality)
+    return value
+
+
+def _build_default_bootstrap_payloads(
+    municipality: str, inicio: datetime, fin: datetime
+) -> List[Dict[str, Any]]:
+    municipality_slug = _slugify(municipality)
+    payloads: List[Dict[str, Any]] = []
+    for template in _DEFAULT_BOOTSTRAP_TEMPLATES:
+        payload: Dict[str, Any] = {
+            "titulo": _render_municipality_placeholder(template.get("titulo", ""), municipality),
+            "slug": f"{template.get('slug', 'encuesta')}-{municipality_slug}",
+            "descripcion": _render_municipality_placeholder(
+                template.get("descripcion", ""), municipality
+            ),
+            "tipo": template.get("tipo", "opinion"),
+            "anonimo_permitido": bool(template.get("anonimato", True)),
+            "requiere_identidad": bool(template.get("requiere_datos_contacto", False)),
+            "politica_unicidad": template.get("politica_unicidad", "libre"),
+            "inicio_at": inicio.isoformat(),
+            "fin_at": fin.isoformat(),
+        }
+        preguntas: List[Dict[str, Any]] = []
+        for pregunta_tpl in template.get("preguntas", []):
+            pregunta_tipo = pregunta_tpl.get("tipo", "opcion_unica")
+            if pregunta_tipo == "multiple":
+                pregunta_tipo = "opcion_multiple"
+            pregunta: Dict[str, Any] = {
+                "orden": int(pregunta_tpl.get("orden", len(preguntas) + 1)),
+                "tipo": pregunta_tipo,
+                "texto": _render_municipality_placeholder(
+                    pregunta_tpl.get("texto", ""), municipality
+                ),
+                "obligatoria": bool(pregunta_tpl.get("obligatoria", False)),
+            }
+            if "min_selecciones" in pregunta_tpl:
+                pregunta["min_selecciones"] = pregunta_tpl["min_selecciones"]
+            if "max_selecciones" in pregunta_tpl:
+                pregunta["max_selecciones"] = pregunta_tpl["max_selecciones"]
+            opciones_payload = pregunta_tpl.get("opciones") or []
+            if pregunta_tipo in {"opcion_unica", "opcion_multiple"}:
+                opciones: List[Dict[str, Any]] = []
+                for opcion_tpl in opciones_payload:
+                    opcion: Dict[str, Any] = {
+                        "orden": int(opcion_tpl.get("orden", len(opciones) + 1)),
+                        "texto": _render_municipality_placeholder(
+                            opcion_tpl.get("texto", ""), municipality
+                        ),
+                    }
+                    if "valor" in opcion_tpl:
+                        opcion["valor"] = opcion_tpl["valor"]
+                    opciones.append(opcion)
+                pregunta["opciones"] = opciones
+            preguntas.append(pregunta)
+        payload["preguntas"] = preguntas
+        payloads.append(payload)
+    return payloads
+
+
+def _build_junin_bootstrap_payload(inicio: datetime, fin: datetime) -> List[Dict[str, Any]]:
+    return _build_default_bootstrap_payloads("Junín", inicio, fin)
+
+
+def _build_san_martin_bootstrap_payload(inicio: datetime, fin: datetime) -> List[Dict[str, Any]]:
+    return _build_default_bootstrap_payloads("San Martín", inicio, fin)
+
+
+def _build_rivadavia_bootstrap_payload(inicio: datetime, fin: datetime) -> List[Dict[str, Any]]:
+    return _build_default_bootstrap_payloads("Rivadavia", inicio, fin)
 
 
 _BOOTSTRAP_PROFILES: List[Dict[str, Any]] = [
@@ -662,13 +922,35 @@ def _bootstrap_sample_if_needed(tenant_id: int) -> None:
 
     inicio = datetime.now(timezone.utc)
     fin = inicio + timedelta(days=45)
-    payload_builder: Callable[[datetime, datetime], Dict[str, Any]] = profile["payload_builder"]
-    payload = payload_builder(inicio, fin)
+    payload_builder: Callable[[datetime, datetime], Sequence[Dict[str, Any]]] = profile[
+        "payload_builder"
+    ]
+    raw_payloads = payload_builder(inicio, fin)
+    if isinstance(raw_payloads, dict):
+        payloads = [raw_payloads]
+    else:
+        payloads = list(raw_payloads)
 
-    try:
-        encuesta = create_encuesta(payload, user)
+    created = 0
+    for payload in payloads:
+        try:
+            encuesta = create_encuesta(payload, user)
+        except EncuestaError:
+            current_app.logger.exception(
+                "[encuestas] No se pudo crear la encuesta demo de %s",
+                profile.get("key"),
+            )
+            continue
+
         if profile.get("auto_publish", True):
-            encuesta, link = publicar_encuesta(encuesta.id, user)
+            try:
+                encuesta, link = publicar_encuesta(encuesta.id, user)
+            except EncuestaError:
+                current_app.logger.exception(
+                    "[encuestas] No se pudo publicar la encuesta demo de %s",
+                    profile.get("key"),
+                )
+                continue
             current_app.logger.info(
                 "[encuestas] Encuesta demo de %s publicada automáticamente con slug %s",
                 profile.get("key"),
@@ -680,11 +962,9 @@ def _bootstrap_sample_if_needed(tenant_id: int) -> None:
                 profile.get("key"),
                 encuesta.id,
             )
-    except EncuestaError:
-        current_app.logger.exception(
-            "[encuestas] No se pudo crear la encuesta demo de %s",
-            profile.get("key"),
-        )
+        created += 1
+
+    if not created:
         _bootstrap_skip_registry().add(tenant_id)
 
 
@@ -815,30 +1095,56 @@ def build_unique_fingerprint(
     if policy == "libre":
         return None
 
-    source_parts: List[str] = [f"encuesta:{encuesta.id}", f"tenant:{tenant_id}", f"policy:{policy}"]
-    if policy in {"por_dni", "dni"} and dni:
-        source_parts.append(f"dni:{dni.strip()}")
-    elif policy in {"por_phone", "phone"} and phone:
-        source_parts.append(f"phone:{phone.strip()}")
-    elif policy in {"por_cookie", "cookie"} and anon_cookie:
-        source_parts.append(f"cookie:{anon_cookie}")
-    elif policy in {"por_ip", "ip"} and ip:
-        source_parts.append(f"ip:{ip}" )
+    def _clean_identifier(value: Optional[Any]) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            cleaned = value.strip()
+        else:
+            cleaned = str(value).strip()
+        return cleaned or None
+
+    dni_clean = _clean_identifier(dni)
+    phone_clean = _clean_identifier(phone)
+    cookie_clean = _clean_identifier(anon_cookie)
+    ip_clean = _clean_identifier(ip)
+
+    source_parts: List[str] = [
+        f"encuesta:{encuesta.id}",
+        f"tenant:{tenant_id}",
+        f"policy:{policy}",
+    ]
+
+    appended = False
+
+    def _append(tag: str, value: Optional[str]):
+        nonlocal appended
+        if value is None:
+            return
+        source_parts.append(f"{tag}:{value}")
+        appended = True
+
+    if policy in {"por_dni", "dni"}:
+        _append("dni", dni_clean)
+    elif policy in {"por_phone", "phone"}:
+        _append("phone", phone_clean)
+    elif policy in {"por_cookie", "cookie"}:
+        _append("cookie", cookie_clean)
+    elif policy in {"por_ip", "ip"}:
+        _append("ip", ip_clean)
     elif policy in {"por_dni_o_phone", "dni_o_phone"}:
-        if dni:
-            source_parts.append(f"dni:{dni.strip()}")
-        if phone:
-            source_parts.append(f"phone:{phone.strip()}")
+        _append("dni", dni_clean)
+        _append("phone", phone_clean)
     else:
         # fallback usa todo lo disponible
-        if dni:
-            source_parts.append(f"dni:{dni.strip()}")
-        if phone:
-            source_parts.append(f"phone:{phone.strip()}")
-        if anon_cookie:
-            source_parts.append(f"cookie:{anon_cookie}")
-        if ip:
-            source_parts.append(f"ip:{ip}")
+        _append("dni", dni_clean)
+        _append("phone", phone_clean)
+        _append("cookie", cookie_clean)
+        _append("ip", ip_clean)
+
+    if not appended:
+        # No contamos con la información necesaria para construir una huella estable.
+        return None
 
     canonical = "|".join(source_parts)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
