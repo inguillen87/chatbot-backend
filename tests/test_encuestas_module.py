@@ -51,6 +51,8 @@ from services.encuestas_service import (
     serialize_respuesta,
     delete_encuesta,
     list_encuestas,
+    _build_mendoza_bootstrap_payload,
+    _build_godoy_cruz_bootstrap_payload,
 )
 from services.encuestas_analytics_service import get_summary
 from services.encuestas_anchor_service import compute_content_hash, build_snapshot
@@ -101,6 +103,17 @@ def test_bootstrap_templates_match_frontend_config():
     rivadavia_payloads = encuestas_service_module._build_rivadavia_bootstrap_payload(inicio, fin)
     assert rivadavia_payloads[0]["slug"].startswith("servicios-publicos-rivadavia")
     assert "Rivadavia" in rivadavia_payloads[0]["titulo"]
+
+    mendoza_payloads = _build_mendoza_bootstrap_payload(inicio, fin)
+    assert mendoza_payloads[0]["slug"].startswith("servicios-publicos-mendoza")
+    assert "Mendoza" in mendoza_payloads[0]["titulo"]
+
+    godoy_cruz_payloads = _build_godoy_cruz_bootstrap_payload(inicio, fin)
+    assert godoy_cruz_payloads[0]["slug"].startswith("servicios-publicos-godoy-cruz")
+    assert "Godoy Cruz" in godoy_cruz_payloads[0]["titulo"]
+
+    profile_keys = {profile["key"] for profile in encuestas_service_module._BOOTSTRAP_PROFILES}
+    assert {"junin", "san_martin", "rivadavia", "mendoza", "godoy_cruz"}.issubset(profile_keys)
 
 
 class DummyUser:
