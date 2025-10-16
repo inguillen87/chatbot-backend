@@ -105,31 +105,6 @@ _DEFAULT_BOOTSTRAP_TEMPLATES: Sequence[Dict[str, Any]] = [
                 ],
             },
             {
-                "orden": 4,
-                "tipo": "opcion_multiple",
-                "texto": "¿Qué obras públicas puntuales te gustaría que avancemos en tu zona?",
-                "obligatoria": False,
-                "max_selecciones": 3,
-                "opciones": [
-                    {
-                        "orden": 1,
-                        "texto": "Pavimentación, bacheo y mantenimiento integral de calles",
-                    },
-                    {
-                        "orden": 2,
-                        "texto": "Nuevas plazas, juegos y espacios recreativos inclusivos",
-                    },
-                    {
-                        "orden": 3,
-                        "texto": "Modernización de semáforos y cruces seguros",
-                    },
-                    {
-                        "orden": 4,
-                        "texto": "Construcción de lomas de burro y señalización vial",
-                    },
-                ],
-            },
-            {
                 "orden": 5,
                 "tipo": "abierta",
                 "texto": "¿Qué propuesta concreta sugerís para mejorar los servicios públicos?",
@@ -221,58 +196,6 @@ _DEFAULT_BOOTSTRAP_TEMPLATES: Sequence[Dict[str, Any]] = [
             },
             {
                 "orden": 3,
-                "tipo": "opcion_multiple",
-                "texto": (
-                    "¿Qué iniciativas sustentables deberían escalarse en tu zona?"
-                ),
-                "obligatoria": False,
-                "max_selecciones": 3,
-                "opciones": [
-                    {
-                        "orden": 1,
-                        "texto": "Programas para reducir consumos de agua, luz y gas",
-                    },
-                    {
-                        "orden": 2,
-                        "texto": "Puntos verdes móviles y reciclaje con economía circular",
-                    },
-                    {
-                        "orden": 3,
-                        "texto": "Material educativo con IA sobre identidad barrial",
-                    },
-                    {
-                        "orden": 4,
-                        "texto": "Corredores verdes y movilidad sostenible",
-                    },
-                ],
-            },
-            {
-                "orden": 4,
-                "tipo": "opcion_multiple",
-                "texto": "¿Qué obras públicas concretas son prioritarias en tu distrito?",
-                "obligatoria": False,
-                "max_selecciones": 3,
-                "opciones": [
-                    {
-                        "orden": 1,
-                        "texto": "Repavimentación y cordón cuneta",
-                    },
-                    {
-                        "orden": 2,
-                        "texto": "Nuevas plazas, juegos y polideportivos",
-                    },
-                    {
-                        "orden": 3,
-                        "texto": "Semáforos inteligentes y señalización",
-                    },
-                    {
-                        "orden": 4,
-                        "texto": "Lomas de burro y mejoras de tránsito",
-                    },
-                ],
-            },
-            {
-                "orden": 5,
                 "tipo": "abierta",
                 "texto": "¿Qué obra o mejora puntual priorizarías para facilitar la movilidad?",
                 "obligatoria": False,
@@ -314,6 +237,31 @@ _DEFAULT_BOOTSTRAP_TEMPLATES: Sequence[Dict[str, Any]] = [
                     {"orden": 1, "texto": "Mañana"},
                     {"orden": 2, "texto": "Tarde"},
                     {"orden": 3, "texto": "Noche"},
+                ],
+            },
+            {
+                "orden": 4,
+                "tipo": "opcion_multiple",
+                "texto": "¿Qué obras públicas concretas son prioritarias en tu distrito?",
+                "obligatoria": False,
+                "max_selecciones": 3,
+                "opciones": [
+                    {
+                        "orden": 1,
+                        "texto": "Repavimentación y cordón cuneta",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Nuevas plazas, juegos y polideportivos",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Semáforos inteligentes y señalización",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Lomas de burro y mejoras de tránsito",
+                    },
                 ],
             },
             {
