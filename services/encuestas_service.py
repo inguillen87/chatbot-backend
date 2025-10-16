@@ -1642,6 +1642,17 @@ def get_public_encuesta(
                     .first()
                 )
 
+    if encuesta is None and re.fullmatch(r"[0-9a-z]{5,12}", normalized_slug):
+        short_link = (
+            EncLink.query.filter(
+                EncLink.slug_publico.ilike(f"%-{normalized_slug}")
+            )
+            .order_by(EncLink.id.desc())
+            .first()
+        )
+        if short_link:
+            encuesta = short_link.encuesta
+
     if encuesta is None:
         raise EncuestaError("Encuesta no encontrada", status_code=404)
 
