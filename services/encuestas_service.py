@@ -70,8 +70,9 @@ def _build_junin_bootstrap_payload(inicio: datetime, fin: datetime) -> Dict[str,
         "titulo": "Participación Ciudadana Junín 2025",
         "slug": "junin-participa",
         "descripcion": (
-            "Queremos conocer tus prioridades para planificar obras, seguridad y "
-            "actividades en todo Junín. Contanos qué es importante para tu barrio."
+            "Queremos conocer tus prioridades para planificar obras, transformación "
+            "digital, ciudad sustentable y actividades en todo Junín. Contanos qué "
+            "es importante para tu barrio."
         ),
         "tipo": "opinion",
         "anonimo_permitido": True,
@@ -83,33 +84,109 @@ def _build_junin_bootstrap_payload(inicio: datetime, fin: datetime) -> Dict[str,
             {
                 "orden": 1,
                 "tipo": "opcion_unica",
-                "texto": "¿Qué proyecto priorizarías para tu barrio?",
+                "texto": "¿Qué eje estratégico deberíamos priorizar en tu barrio en 2025?",
                 "obligatoria": True,
                 "opciones": [
-                    {"orden": 1, "texto": "Mejoras de iluminación y seguridad"},
-                    {"orden": 2, "texto": "Pavimentación y mantenimiento de calles"},
-                    {"orden": 3, "texto": "Espacios verdes y recreativos"},
-                    {"orden": 4, "texto": "Programas deportivos y culturales"},
+                    {
+                        "orden": 1,
+                        "texto": "Innovación y atención ciudadana inteligente (chatbots, turnos digitales)",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Seguridad e iluminación en calles y espacios públicos",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Pavimentación y movilidad segura",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Programas culturales, deportivos y comunitarios",
+                    },
                 ],
             },
             {
                 "orden": 2,
                 "tipo": "opcion_multiple",
                 "texto": (
-                    "¿En qué acciones de participación te gustaría sumarte durante "
-                    "los próximos meses?"
+                    "¿Qué herramientas digitales e iniciativas de IA te gustaría que el municipio implemente para mejorar "
+                    "la atención ciudadana?"
                 ),
                 "obligatoria": False,
                 "max_selecciones": 3,
                 "opciones": [
-                    {"orden": 1, "texto": "Cabildos barriales"},
-                    {"orden": 2, "texto": "Jornadas de voluntariado"},
-                    {"orden": 3, "texto": "Consultas públicas digitales"},
-                    {"orden": 4, "texto": "Mesas de trabajo temáticas"},
+                    {
+                        "orden": 1,
+                        "texto": "Chatbots municipales 24/7 para consultas rápidas",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Plataformas de encuestas y foros digitales permanentes",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Tableros abiertos con seguimiento de reclamos y obras",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Asistentes virtuales con IA para trámites complejos",
+                    },
                 ],
             },
             {
                 "orden": 3,
+                "tipo": "opcion_multiple",
+                "texto": (
+                    "Pensando en una ciudad sustentable, ¿qué proyectos priorizarías para cuidar el ambiente y reducir consumos?"
+                ),
+                "obligatoria": False,
+                "max_selecciones": 3,
+                "opciones": [
+                    {
+                        "orden": 1,
+                        "texto": "Campañas para reducir el consumo de agua, luz y gas en los hogares",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Ampliar puntos limpios y la economía circular en los barrios",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Crear cuadernos, libros y historietas educativos con IA y materiales reciclados",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Instalar paneles solares y eficiencia energética en edificios públicos",
+                    },
+                ],
+            },
+            {
+                "orden": 4,
+                "tipo": "opcion_multiple",
+                "texto": "¿Qué obras públicas puntuales te gustaría que avancemos en tu zona?",
+                "obligatoria": False,
+                "max_selecciones": 3,
+                "opciones": [
+                    {
+                        "orden": 1,
+                        "texto": "Pavimentación, bacheo y mantenimiento integral de calles",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Nuevas plazas, juegos y espacios recreativos inclusivos",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Modernización de semáforos y cruces seguros",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Construcción de lomas de burro y señalización vial",
+                    },
+                ],
+            },
+            {
+                "orden": 5,
                 "tipo": "abierta",
                 "texto": "Dejanos comentarios o propuestas concretas para Junín",
                 "obligatoria": False,
@@ -124,7 +201,8 @@ def _build_san_martin_bootstrap_payload(inicio: datetime, fin: datetime) -> Dict
         "slug": "san-martin-ideas",
         "descripcion": (
             "Queremos escuchar a los vecinos de San Martín para definir obras, "
-            "movilidad y actividades comunitarias que mejoren cada distrito."
+            "movilidad, innovación digital y actividades comunitarias que "
+            "mejoren cada distrito."
         ),
         "tipo": "opinion",
         "anonimo_permitido": True,
@@ -136,30 +214,108 @@ def _build_san_martin_bootstrap_payload(inicio: datetime, fin: datetime) -> Dict
             {
                 "orden": 1,
                 "tipo": "opcion_unica",
-                "texto": "¿Qué obra considerás más urgente para tu distrito?",
+                "texto": "¿Qué eje estratégico debería liderar la agenda de San Martín en 2025?",
                 "obligatoria": True,
                 "opciones": [
-                    {"orden": 1, "texto": "Repavimentación y cordón-cuneta"},
-                    {"orden": 2, "texto": "Nuevas luminarias LED y seguridad"},
-                    {"orden": 3, "texto": "Espacios verdes y plazas inclusivas"},
-                    {"orden": 4, "texto": "Centros deportivos y recreativos"},
+                    {
+                        "orden": 1,
+                        "texto": "Transformación digital y atención multicanal",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Movilidad segura e iluminación LED",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Obras barriales y espacios públicos",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Cultura, deporte y comunidad",
+                    },
                 ],
             },
             {
                 "orden": 2,
                 "tipo": "opcion_multiple",
-                "texto": "¿Qué servicios municipales querés reforzar?",
+                "texto": (
+                    "¿Qué soluciones tecnológicas te ayudarían a relacionarte mejor con el municipio?"
+                ),
                 "obligatoria": False,
                 "max_selecciones": 3,
                 "opciones": [
-                    {"orden": 1, "texto": "Recolección de residuos y reciclaje"},
-                    {"orden": 2, "texto": "Seguridad ciudadana y prevención"},
-                    {"orden": 3, "texto": "Movilidad y transporte público"},
-                    {"orden": 4, "texto": "Programas culturales en los barrios"},
+                    {
+                        "orden": 1,
+                        "texto": "Chatbots y asistentes virtuales para trámites",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Aplicación móvil para reportes y seguimiento de reclamos",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Paneles abiertos con datos de obras y presupuestos",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Kioscos digitales en barrios para gestiones rápidas",
+                    },
                 ],
             },
             {
                 "orden": 3,
+                "tipo": "opcion_multiple",
+                "texto": (
+                    "¿Qué iniciativas sustentables deberían escalarse en tu zona?"
+                ),
+                "obligatoria": False,
+                "max_selecciones": 3,
+                "opciones": [
+                    {
+                        "orden": 1,
+                        "texto": "Programas para reducir consumos de agua, luz y gas",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Puntos verdes móviles y reciclaje con economía circular",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Material educativo con IA sobre identidad barrial",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Corredores verdes y movilidad sostenible",
+                    },
+                ],
+            },
+            {
+                "orden": 4,
+                "tipo": "opcion_multiple",
+                "texto": "¿Qué obras públicas concretas son prioritarias en tu distrito?",
+                "obligatoria": False,
+                "max_selecciones": 3,
+                "opciones": [
+                    {
+                        "orden": 1,
+                        "texto": "Repavimentación y cordón cuneta",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Nuevas plazas, juegos y polideportivos",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Semáforos inteligentes y señalización",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Lomas de burro y mejoras de tránsito",
+                    },
+                ],
+            },
+            {
+                "orden": 5,
                 "tipo": "abierta",
                 "texto": "Contanos otras propuestas o reclamos para San Martín",
                 "obligatoria": False,
@@ -173,8 +329,9 @@ def _build_rivadavia_bootstrap_payload(inicio: datetime, fin: datetime) -> Dict[
         "titulo": "Agenda Comunitaria Rivadavia 2025",
         "slug": "rivadavia-encuesta",
         "descripcion": (
-            "Ayudanos a priorizar obras hídricas, servicios urbanos y actividades "
-            "para los distritos de Rivadavia. Tu opinión define el plan de trabajo."
+            "Ayudanos a priorizar obras hídricas, servicios urbanos, innovación "
+            "digital y actividades para los distritos de Rivadavia. Tu opinión "
+            "define el plan de trabajo."
         ),
         "tipo": "opinion",
         "anonimo_permitido": True,
@@ -186,32 +343,108 @@ def _build_rivadavia_bootstrap_payload(inicio: datetime, fin: datetime) -> Dict[
             {
                 "orden": 1,
                 "tipo": "opcion_unica",
-                "texto": "¿Cuál es la principal necesidad de tu zona?",
+                "texto": "¿Qué eje de desarrollo debería encabezar la agenda de Rivadavia en 2025?",
                 "obligatoria": True,
                 "opciones": [
-                    {"orden": 1, "texto": "Mejoras de agua potable y riego"},
-                    {"orden": 2, "texto": "Mantenimiento de calles y accesos"},
-                    {"orden": 3, "texto": "Seguridad y luminarias"},
-                    {"orden": 4, "texto": "Centros comunitarios y salud"},
+                    {
+                        "orden": 1,
+                        "texto": "Gestión del agua, riego y producción sustentable",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Obras viales, caminos rurales y conectividad",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Transformación digital y atención ciudadana",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Salud, educación y centros comunitarios",
+                    },
                 ],
             },
             {
                 "orden": 2,
                 "tipo": "opcion_multiple",
                 "texto": (
-                    "¿En qué iniciativas te gustaría participar durante el año?"
+                    "¿Qué herramientas digitales e innovaciones quisieras sumar para mejorar los servicios municipales?"
                 ),
                 "obligatoria": False,
-                "max_selecciones": 2,
+                "max_selecciones": 3,
                 "opciones": [
-                    {"orden": 1, "texto": "Mesas de agua y saneamiento"},
-                    {"orden": 2, "texto": "Ferias productivas y emprendedoras"},
-                    {"orden": 3, "texto": "Patrullas ciudadanas y alarmas"},
-                    {"orden": 4, "texto": "Talleres para jóvenes y adultos mayores"},
+                    {
+                        "orden": 1,
+                        "texto": "Chatbots y canales de WhatsApp para reclamos rurales",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Encuestas digitales y sensores para monitorear servicios",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Oficinas móviles con IA para asistencia a productores",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Tableros de gestión abiertos con datos territoriales",
+                    },
                 ],
             },
             {
                 "orden": 3,
+                "tipo": "opcion_multiple",
+                "texto": (
+                    "Pensando en sostenibilidad, ¿qué iniciativas impulsarías en tu distrito?"
+                ),
+                "obligatoria": False,
+                "max_selecciones": 3,
+                "opciones": [
+                    {
+                        "orden": 1,
+                        "texto": "Programas para reducir consumos de agua, energía y gas en hogares y fincas",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Puntos limpios y reciclaje con producción de materiales educativos",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Libros y cuadernos sobre próceres locales hechos con IA y reciclados",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Energías renovables y eficiencia en edificios públicos",
+                    },
+                ],
+            },
+            {
+                "orden": 4,
+                "tipo": "opcion_multiple",
+                "texto": "¿Qué obras públicas concretas necesitás que se prioricen?",
+                "obligatoria": False,
+                "max_selecciones": 3,
+                "opciones": [
+                    {
+                        "orden": 1,
+                        "texto": "Mejoras de caminos rurales y accesos",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Canales, defensas aluvionales y redes de riego",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Iluminación LED y seguridad comunitaria",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Plazas, playones deportivos y espacios de encuentro",
+                    },
+                ],
+            },
+            {
+                "orden": 5,
                 "tipo": "abierta",
                 "texto": "Comentarios sobre tu distrito o ideas para Rivadavia",
                 "obligatoria": False,
