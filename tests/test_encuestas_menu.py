@@ -1,4 +1,5 @@
 import pytest
+from datetime import timedelta
 from types import SimpleNamespace
 
 import config.feature_flags as feature_flags
@@ -82,10 +83,10 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
     assert "Participación Ciudadana" in body
     assert "Últimas encuestas disponibles" in body
     assert slug in body
-    assert "Abrir la encuesta en la web:" in body
-    assert "Descargar el código QR" in body
-    assert "Usar el asistente virtual en la web" in body
-    assert "Compartir con un mensaje listo para WhatsApp" in body
+    assert "• Web:" in body
+    assert "• QR:" in body
+    assert "• Widget:" in body
+    assert "• WhatsApp:" in body
     assert "Adjuntamos el código QR" in body
     assert any(option.get("type") == "url" for option in menu["options_list"])
     button_urls = [
@@ -149,7 +150,10 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
         menu = municipio_responder._get_encuestas_menu(context)
 
     expected_prefix = "https://www.chatboc.ar/e/"
-    assert f"Abrir la encuesta en la web: {expected_prefix}{slug}" in menu["message_body"]
+    expected_display_prefix = (
+        expected_prefix.replace("https://", "").replace("http://", "").replace("www.", "")
+    )
+    assert f"Web: {expected_display_prefix}{slug}" in menu["message_body"]
     button_urls = [
         option.get("url", "")
         for option in menu["options_list"]
@@ -197,3 +201,18 @@ def test_encuestas_menu_defaults_to_backend_banner(client, monkeypatch):
     assert media_urls and media_urls[0] == expected_banner
     assert menu.get("_base_url") == "https://api.chatboc.ar"
     assert slug in menu["message_body"]
+
+
+def test_encuestas_menu_orders_newest_first(client):
+    with client.application.app_context():
+        encuesta_old, slug_old = _create_active_encuesta(tenant_id=21)
+        encuesta_new, slug_new = _create_active_encuesta(tenant_id=21)
+
+        encuesta_old.created_at = (encuesta_old.created_at or encuesta_new.created_at) - timedelta(days=7)
+        db.session.commit()
+
+        context = _base_context(tenant_id=encuesta_new.tenant_id or 21)
+        menu = municipio_responder._get_encuestas_menu(context)
+
+    body = menu["message_body"]
+    assert body.index(slug_new) < body.index(slug_old)
