@@ -201,6 +201,58 @@ _DEFAULT_BOOTSTRAP_TEMPLATES: Sequence[Dict[str, Any]] = [
             },
             {
                 "orden": 3,
+                "tipo": "opcion_multiple",
+                "texto": (
+                    "Pensando en sostenibilidad, ¿qué iniciativas impulsarías en tu distrito?"
+                ),
+                "obligatoria": False,
+                "max_selecciones": 3,
+                "opciones": [
+                    {
+                        "orden": 1,
+                        "texto": "Programas para reducir consumos de agua, energía y gas en hogares y fincas",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Puntos limpios y reciclaje con producción de materiales educativos",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Libros y cuadernos sobre próceres locales hechos con IA y reciclados",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Energías renovables y eficiencia en edificios públicos",
+                    },
+                ],
+            },
+            {
+                "orden": 4,
+                "tipo": "opcion_multiple",
+                "texto": "¿Qué obras públicas concretas necesitás que se prioricen?",
+                "obligatoria": False,
+                "max_selecciones": 3,
+                "opciones": [
+                    {
+                        "orden": 1,
+                        "texto": "Mejoras de caminos rurales y accesos",
+                    },
+                    {
+                        "orden": 2,
+                        "texto": "Canales, defensas aluvionales y redes de riego",
+                    },
+                    {
+                        "orden": 3,
+                        "texto": "Iluminación LED y seguridad comunitaria",
+                    },
+                    {
+                        "orden": 4,
+                        "texto": "Plazas, playones deportivos y espacios de encuentro",
+                    },
+                ],
+            },
+            {
+                "orden": 5,
                 "tipo": "abierta",
                 "texto": "Comentá situaciones o zonas específicas donde te gustaría ver más presencia preventiva.",
                 "obligatoria": False,
