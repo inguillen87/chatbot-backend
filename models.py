@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from utils.time_utils import get_local_now
@@ -19,6 +19,7 @@ from sqlalchemy.dialects.sqlite import JSON as SQLITE_JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from database import db
 from werkzeug.security import generate_password_hash, check_password_hash
+import secrets
 from flask_login import UserMixin
 import uuid
 import json
@@ -88,6 +89,9 @@ class User(db.Model, UserMixin):
     token = db.Column(db.String(255), nullable=True)
     rol = db.Column(db.String(30), default="usuario")
     tipo_chat = db.Column(db.String(20), nullable=True)
+    password_reset_selector = db.Column(db.String(64), unique=True, index=True, nullable=True)
+    password_reset_verifier_hash = db.Column(db.String(255), nullable=True)
+    password_reset_sent_at = db.Column(db.DateTime(timezone=True), nullable=True)
     # Alias de conveniencia para frameworks externos
     @property
     def role(self):
@@ -141,6 +145,45 @@ class User(db.Model, UserMixin):
 
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
+
+    def generate_password_reset_token(self) -> str:
+        """Generate a secure password reset token and persist its metadata."""
+
+        selector = secrets.token_urlsafe(16)
+        verifier = secrets.token_urlsafe(32)
+        self.password_reset_selector = selector
+        self.password_reset_verifier_hash = generate_password_hash(verifier)
+        self.password_reset_sent_at = datetime.now(timezone.utc)
+        return f"{selector}.{verifier}"
+
+    def verify_password_reset_token(self, verifier: str, max_age_seconds: int) -> bool:
+        """Return True when the provided verifier matches the stored token."""
+
+        if not verifier or not self.password_reset_verifier_hash:
+            return False
+
+        if not check_password_hash(self.password_reset_verifier_hash, verifier):
+            return False
+
+        if not self.password_reset_sent_at:
+            return False
+
+        current_time = datetime.now(timezone.utc)
+        sent_at = self.password_reset_sent_at
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+
+        if current_time - sent_at > timedelta(seconds=max_age_seconds):
+            return False
+
+        return True
+
+    def clear_password_reset_token(self) -> None:
+        """Remove any persisted password reset token information."""
+
+        self.password_reset_selector = None
+        self.password_reset_verifier_hash = None
+        self.password_reset_sent_at = None
 
     @property
     def horario_json(self):

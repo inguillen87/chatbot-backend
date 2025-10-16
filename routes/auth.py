@@ -27,6 +27,14 @@ from services.plan_config import (
     serialize_plan_catalog,
     serialize_plan_for_response,
 )
+from services.user_service import (
+    change_user_email,
+    change_user_password,
+    create_password_reset_request,
+    reset_password_with_token,
+    split_password_reset_token,
+    update_user_profile,
+)
 
 
 _OWNER_TOKEN_RESOLVER: Optional[Callable[[User], Optional[str]]] = None
@@ -1137,7 +1145,6 @@ def me_perfil(user):
         return jsonify({k: v for k, v in profile_data.items() if v is not None})
 
     elif request.method == 'PUT':
-        from services.user_service import update_user_profile
         data = request.get_json(silent=True) or {}
         if not data:
             return jsonify({"error": "No se recibieron datos."}), 400
@@ -1146,7 +1153,8 @@ def me_perfil(user):
         if update_user_profile(user, data):
             return jsonify({"mensaje": "Perfil actualizado correctamente."})
         else:
-            return jsonify({"error": "Error interno al guardar el perfil."}), 500
+            message, status = getattr(g, "profile_update_error", ("Error interno al guardar el perfil.", 500))
+            return jsonify({"error": message}), status
 
 @auth_bp.route('/update_personal_data', methods=['POST'])
 @token_requerido
@@ -1159,7 +1167,18 @@ def update_personal_data(current_user: User):
         return jsonify({"error": "No se recibieron datos."}), 400
 
     # Campos que se pueden actualizar
-    allowed_fields = ['name', 'telefono', 'email', 'direccion']
+    email_value = data.get('email')
+    if email_value is not None and email_value != current_user.email:
+        success, message, status = change_user_email(
+            current_user,
+            email_value,
+            data.get('current_password'),
+            commit=False,
+        )
+        if not success:
+            return jsonify({"error": message}), status
+
+    allowed_fields = ['name', 'telefono', 'direccion']
 
     for field in allowed_fields:
         if field in data:
@@ -1174,3 +1193,105 @@ def update_personal_data(current_user: User):
             f"Error al actualizar datos personales para {current_user.email}: {e}", exc_info=True
         )
         return jsonify({"error": "Error interno al guardar los datos."}), 500
+
+
+@auth_bp.route('/password/reset/request', methods=['POST'])
+def request_password_reset():
+    data = request.get_json(silent=True) or {}
+    email = (data.get('email') or '').strip().lower()
+
+    if not email:
+        return jsonify({"error": "El email es requerido."}), 400
+
+    try:
+        user = User.query.filter(func.lower(User.email) == email).first()
+    except Exception:
+        current_app.logger.exception("[auth] Error buscando usuario para reset de contraseña")
+        return jsonify({"error": "No se pudo iniciar el reseteo de contraseña."}), 500
+
+    generic_message = "Si el email está registrado, enviaremos las instrucciones para restablecer la contraseña."
+    response_payload = {"mensaje": generic_message}
+
+    if not user:
+        return jsonify(response_payload)
+
+    try:
+        reset_token = create_password_reset_request(user)
+    except Exception:
+        current_app.logger.exception(
+            "[auth] Error generando el token de reseteo para el usuario %s", getattr(user, 'id', None)
+        )
+        return jsonify({"error": "No se pudo iniciar el reseteo de contraseña."}), 500
+
+    if current_app.config.get('TESTING'):
+        response_payload['reset_token'] = reset_token
+        response_payload['user_id'] = user.id
+    else:
+        current_app.logger.info(
+            "[auth] Token de reseteo generado para %s. Pendiente de envío de email.", user.email
+        )
+
+    return jsonify(response_payload)
+
+
+@auth_bp.route('/password/reset/confirm', methods=['POST'])
+def confirm_password_reset():
+    data = request.get_json(silent=True) or {}
+    raw_token = data.get('token')
+    new_password = data.get('new_password')
+    confirm_password = data.get('confirm_password')
+
+    if not raw_token or not new_password:
+        return jsonify({"error": "Token y nueva contraseña son requeridos."}), 400
+
+    if confirm_password and confirm_password != new_password:
+        return jsonify({"error": "La confirmación de contraseña no coincide."}), 400
+
+    token_parts = split_password_reset_token(raw_token)
+    if not token_parts:
+        return jsonify({"error": "Token inválido."}), 400
+
+    selector, verifier = token_parts
+    success, message, status = reset_password_with_token(selector, verifier, new_password)
+    if not success:
+        return jsonify({"error": message}), status
+
+    return jsonify({"mensaje": message})
+
+
+@auth_bp.route('/password/change', methods=['POST'])
+@token_requerido
+def change_password(current_user: User):
+    data = request.get_json(silent=True) or {}
+    current_password = data.get('current_password')
+    new_password = data.get('new_password')
+    confirm_password = data.get('confirm_password')
+
+    if not current_password or not new_password:
+        return jsonify({"error": "Debes indicar la contraseña actual y la nueva contraseña."}), 400
+
+    if confirm_password and confirm_password != new_password:
+        return jsonify({"error": "La confirmación de contraseña no coincide."}), 400
+
+    success, message, status = change_user_password(current_user, current_password, new_password)
+    if not success:
+        return jsonify({"error": message}), status
+
+    return jsonify({"mensaje": message})
+
+
+@auth_bp.route('/email/change', methods=['POST'])
+@token_requerido
+def change_email(current_user: User):
+    data = request.get_json(silent=True) or {}
+    new_email = data.get('new_email')
+    current_password = data.get('current_password')
+
+    if not new_email or not current_password:
+        return jsonify({"error": "Debes indicar el nuevo email y tu contraseña actual."}), 400
+
+    success, message, status = change_user_email(current_user, new_email, current_password)
+    if not success:
+        return jsonify({"error": message}), status
+
+    return jsonify({"mensaje": message, "email": current_user.email})
