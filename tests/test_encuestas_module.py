@@ -539,7 +539,10 @@ def test_get_summary_returns_metrics(client):
     assert demografia["edad"]["muestra"] == 2
     assert demografia["edad"]["promedio"] is not None
     assert demografia["edad"]["promedio"] >= 29
-    assert any(entry["label"] == "Centro" for entry in demografia["territorio"]["barrios"])
+    territorio_map = demografia["territorio_map"]
+    assert any(entry["label"] == "Centro" for entry in territorio_map["barrios"])
+    territorio_sections = {section["key"]: section for section in demografia["territorio"]}
+    assert territorio_sections["barrios"]["series"] == territorio_map["barrios"]
     assert {
         entry["label"] for entry in demografia["rango_etario"]
     } == set(demografia["rango_etario_map"].keys())
