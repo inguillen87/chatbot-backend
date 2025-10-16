@@ -1584,10 +1584,8 @@ def list_public_encuestas_for_tenant(
         .filter(or_(EncEncuesta.inicio_at.is_(None), EncEncuesta.inicio_at <= now))
         .filter(or_(EncEncuesta.fin_at.is_(None), EncEncuesta.fin_at >= now))
         .order_by(
-            EncEncuesta.fin_at.is_(None).desc(),
-            EncEncuesta.fin_at.asc(),
-            EncEncuesta.inicio_at.desc(),
             EncEncuesta.created_at.desc(),
+            EncEncuesta.id.desc(),
         )
     )
     if limit and limit > 0:
