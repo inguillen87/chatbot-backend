@@ -104,6 +104,13 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
     assert menu.get("_base_url") == client.application.config.get(
         "PUBLIC_ENCUESTAS_API_BASE_URL"
     )
+    surveys_meta = menu.get("surveys")
+    assert isinstance(surveys_meta, list) and surveys_meta
+    first_meta = surveys_meta[0]
+    assert first_meta["slug"] == slug
+    assert first_meta["share_url"].endswith(f"/e/{slug}")
+    assert first_meta["whatsapp_share_url"].startswith("https://wa.me/")
+    assert first_meta["qr_url"].endswith(f"/api/public/encuestas/{slug}/qr")
 
 
 def test_encuestas_menu_respects_explicit_disable(client):
@@ -117,6 +124,7 @@ def test_encuestas_menu_respects_explicit_disable(client):
 
     assert "todavía no están habilitadas" in menu["message_body"].lower()
     assert menu["options_list"][-1]["action_id"] == "cancelar"
+    assert "surveys" not in menu
 
 
 def test_encuestas_menu_shows_empty_state_when_enabled(client):
@@ -129,6 +137,7 @@ def test_encuestas_menu_shows_empty_state_when_enabled(client):
 
     assert "por el momento no hay encuestas activas" in menu["message_body"].lower()
     assert menu["fuente"] == "submenu_encuestas_v1"
+    assert "surveys" not in menu
 
 
 def test_encuestas_menu_prefers_domain_map_base_url(client):
