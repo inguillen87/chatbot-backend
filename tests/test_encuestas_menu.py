@@ -83,10 +83,9 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
     assert "Últimas encuestas disponibles" in body
     assert slug in body
     assert "Abrir la encuesta en la web:" in body
-    assert "Descargar el código QR" in body
-    assert "Usar el asistente virtual en la web" in body
     assert "Compartir con un mensaje listo para WhatsApp" in body
-    assert "Adjuntamos el código QR" in body
+    assert "Descargar el código QR" not in body
+    assert "Usar el asistente virtual en la web" not in body
     assert any(option.get("type") == "url" for option in menu["options_list"])
     button_urls = [
         option.get("url", "")
@@ -94,18 +93,23 @@ def test_encuestas_menu_auto_enabled_by_active_surveys(client):
         if option.get("type") == "url"
     ]
     assert any(url.endswith(f"/e/{slug}") for url in button_urls)
-    assert any(url.endswith(f"/e/{slug}?canal=widget_chat") for url in button_urls)
     assert any(url.startswith("https://wa.me/") for url in button_urls)
-    assert any(url.endswith(f"/api/public/encuestas/{slug}/qr") for url in button_urls)
+    assert not any(url.endswith(f"/e/{slug}?canal=widget_chat") for url in button_urls)
+    assert not any(url.endswith(f"/api/public/encuestas/{slug}/qr") for url in button_urls)
     media_urls = menu.get("media_urls")
-    assert isinstance(media_urls, list) and len(media_urls) == 2
+    assert isinstance(media_urls, list) and len(media_urls) == 1
     assert media_urls[0] == fallback_image
-    assert media_urls[1].startswith("http")
-    assert media_urls[1].endswith(f"/api/public/encuestas/{slug}/qr")
     assert menu.get("image_url") == fallback_image
     assert menu.get("_base_url") == client.application.config.get(
         "PUBLIC_ENCUESTAS_API_BASE_URL"
     )
+    surveys_meta = menu.get("surveys")
+    assert isinstance(surveys_meta, list) and surveys_meta
+    first_meta = surveys_meta[0]
+    assert first_meta["slug"] == slug
+    assert first_meta["share_url"].endswith(f"/e/{slug}")
+    assert first_meta["whatsapp_share_url"].startswith("https://wa.me/")
+    assert first_meta["qr_url"].endswith(f"/api/public/encuestas/{slug}/qr")
 
 
 def test_encuestas_menu_respects_explicit_disable(client):
@@ -119,6 +123,7 @@ def test_encuestas_menu_respects_explicit_disable(client):
 
     assert "todavía no están habilitadas" in menu["message_body"].lower()
     assert menu["options_list"][-1]["action_id"] == "cancelar"
+    assert "surveys" not in menu
 
 
 def test_encuestas_menu_shows_empty_state_when_enabled(client):
@@ -131,6 +136,7 @@ def test_encuestas_menu_shows_empty_state_when_enabled(client):
 
     assert "por el momento no hay encuestas activas" in menu["message_body"].lower()
     assert menu["fuente"] == "submenu_encuestas_v1"
+    assert "surveys" not in menu
 
 
 def test_encuestas_menu_prefers_domain_map_base_url(client):
@@ -156,7 +162,6 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
         if option.get("type") == "url"
     ]
     assert any(url.startswith(expected_prefix) for url in button_urls)
-    assert any(url.startswith(expected_prefix) and "widget_chat" in url for url in button_urls)
     assert any(url.startswith("https://wa.me/") for url in button_urls)
 
 
@@ -172,8 +177,6 @@ def test_encuestas_menu_includes_configured_image(client):
     assert menu.get("image_url") == "https://cdn.example.com/encuestas/banner.png"
     media_urls = menu.get("media_urls")
     assert media_urls and media_urls[0] == "https://cdn.example.com/encuestas/banner.png"
-    assert len(media_urls) >= 2
-    assert media_urls[1].endswith("/qr")
 
 
 def test_encuestas_menu_defaults_to_backend_banner(client, monkeypatch):

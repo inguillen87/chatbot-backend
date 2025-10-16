@@ -4888,9 +4888,7 @@ def _get_encuestas_menu(context: dict) -> dict:
 
     lines: List[str] = []
     survey_buttons: List[Dict[str, Any]] = []
-    first_qr_url: Optional[str] = None
-    first_qr_title: Optional[str] = None
-
+    survey_metadata: List[Dict[str, Any]] = []
     for index, (encuesta, slug_publico) in enumerate(encuestas, start=1):
         data = serialize_public_encuesta(encuesta, slug_publico=slug_publico)
         titulo = data.get("titulo") or "Encuesta ciudadana"
@@ -4901,28 +4899,24 @@ def _get_encuestas_menu(context: dict) -> dict:
                 descripcion = descripcion[:177].rstrip() + "…"
 
         share_url = urljoin(f"{base_url}/", f"e/{slug_publico}")
-        qr_url = urljoin(f"{api_base_url}/", f"api/public/encuestas/{slug_publico}/qr")
-        widget_share_url = f"{share_url}?canal=widget_chat"
+        qr_url: Optional[str] = None
+        if api_base_url:
+            qr_url = urljoin(
+                f"{api_base_url}/", f"api/public/encuestas/{slug_publico}/qr"
+            )
         whatsapp_message = f"Participá en '{titulo}' ingresando a {share_url}"
         whatsapp_share_url = f"https://wa.me/?text={quote_plus(whatsapp_message)}"
         whatsapp_share_display_url = f"https://wa.me/?text={quote_plus(share_url)}"
 
         short_title = _shorten_button_label(titulo)
-        widget_button_title = _shorten_button_label(titulo, max_length=36)
         whatsapp_button_title = _shorten_button_label(titulo, max_length=30)
 
         line_parts = [f"{index}. *{titulo}*"]
         if descripcion:
             line_parts.append(f"   {descripcion}")
         line_parts.append(f"   • Abrir la encuesta en la web: {share_url}")
-        line_parts.append(f"   • Descargar el código QR (imagen PNG): {qr_url}")
-        line_parts.append(f"   • Usar el asistente virtual en la web: {widget_share_url}")
         line_parts.append(f"   • Compartir con un mensaje listo para WhatsApp: {whatsapp_share_display_url}")
         lines.append("\n".join(line_parts))
-
-        if first_qr_url is None:
-            first_qr_url = qr_url
-            first_qr_title = titulo
 
         survey_buttons.append(
             {
@@ -4933,23 +4927,19 @@ def _get_encuestas_menu(context: dict) -> dict:
         )
         survey_buttons.append(
             {
-                "texto": f"Widget web {widget_button_title}",
-                "url": widget_share_url,
-                "type": "url",
-            }
-        )
-        survey_buttons.append(
-            {
                 "texto": f"Compartir WhatsApp {whatsapp_button_title}",
                 "url": whatsapp_share_url,
                 "type": "url",
             }
         )
-        survey_buttons.append(
+
+        survey_metadata.append(
             {
-                "texto": f"Descargar QR {short_title}",
-                "url": qr_url,
-                "type": "url",
+                "slug": slug_publico,
+                "titulo": titulo,
+                "share_url": share_url,
+                "whatsapp_share_url": whatsapp_share_url,
+                "qr_url": qr_url,
             }
         )
 
@@ -4958,12 +4948,6 @@ def _get_encuestas_menu(context: dict) -> dict:
         "Últimas encuestas disponibles (máximo 10).\n"
     )
     message_body = header + "\n".join(lines)
-
-    if first_qr_url and first_qr_title:
-        message_body += (
-            f"\n\nAdjuntamos el código QR de *{first_qr_title}* para que puedas compartirlo "
-            "al instante desde WhatsApp."
-        )
 
     message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
 
@@ -4985,11 +4969,11 @@ def _get_encuestas_menu(context: dict) -> dict:
     media_attachments: List[str] = []
     if menu_image_url:
         media_attachments.append(menu_image_url)
-    if first_qr_url and first_qr_url not in media_attachments:
-        media_attachments.append(first_qr_url)
-
     if media_attachments:
         payload["media_urls"] = media_attachments
+
+    if survey_metadata:
+        payload["surveys"] = survey_metadata
 
     return payload
 
