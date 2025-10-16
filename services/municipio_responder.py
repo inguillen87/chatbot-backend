@@ -4886,21 +4886,6 @@ def _get_encuestas_menu(context: dict) -> dict:
     api_base_url = _resolve_encuestas_api_base_url(context)
     menu_image_url = _resolve_encuestas_menu_image_url(context, api_base_url)
 
-    if not menu_image_url:
-        fallback_image_url = None
-        if has_app_context():
-            fallback_image_url = current_app.config.get(
-                "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"
-            )
-        if not fallback_image_url:
-            fallback_image_url = getattr(
-                AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None
-            )
-        if isinstance(fallback_image_url, str):
-            cleaned = fallback_image_url.strip()
-            if cleaned:
-                menu_image_url = cleaned
-
     lines: List[str] = []
     survey_buttons: List[Dict[str, Any]] = []
     first_qr_url: Optional[str] = None
