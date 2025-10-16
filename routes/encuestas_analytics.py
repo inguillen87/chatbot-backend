@@ -97,7 +97,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
 
         def generate():
             try:
-                for chunk in export_csv(encuesta_id, filtros):
+                for chunk in export_csv_stream(encuesta_id, filtros):
                     yield chunk
             except EncuestaError as err:
                 yield "error,{}\n".format(err.message)
