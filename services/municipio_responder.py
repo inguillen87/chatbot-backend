@@ -4781,6 +4781,64 @@ def _shorten_button_label(text: str, max_length: int = 42) -> str:
     return trimmed[: max_length - 1].rstrip() + "…"
 
 
+def _extract_short_public_slug(slug_publico: str) -> str:
+    """Return the short token for a public survey slug when available."""
+
+    if not isinstance(slug_publico, str):
+        return ""
+
+    normalized = slug_publico.strip().lower()
+    if not normalized:
+        return ""
+
+    if "-" in normalized:
+        candidate = normalized.rsplit("-", 1)[-1]
+        if re.fullmatch(r"[0-9a-z]{5,12}", candidate or ""):
+            return candidate
+
+    if re.fullmatch(r"[0-9a-z]{5,12}", normalized):
+        return normalized
+
+    compact = re.sub(r"[^0-9a-z]", "", normalized)
+    if re.fullmatch(r"[0-9a-z]{5,12}", compact):
+        return compact
+
+    return normalized
+
+
+def _resolve_encuestas_short_base_url(context: dict, base_url: str) -> str:
+    """Prefer a shorter public base URL for share messages when available."""
+
+    municipio_config = context.get("municipio_config_actual") or {}
+    encuestas_cfg = municipio_config.get("encuestas") if isinstance(
+        municipio_config.get("encuestas"), dict
+    ) else {}
+
+    candidate_urls = [
+        encuestas_cfg.get("short_share_base_url"),
+        encuestas_cfg.get("short_base_url"),
+        municipio_config.get("encuestas_short_share_base_url"),
+        municipio_config.get("encuestas_short_base_url"),
+    ]
+
+    for candidate in candidate_urls:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip().rstrip("/")
+
+    if has_app_context():
+        configured_short = current_app.config.get("PUBLIC_ENCUESTAS_SHORT_BASE_URL")
+        if isinstance(configured_short, str) and configured_short.strip():
+            return configured_short.strip().rstrip("/")
+
+    short_base = base_url.strip()
+    if short_base.startswith("https://www."):
+        return "https://" + short_base[len("https://www.") :].rstrip("/")
+    if short_base.startswith("http://www."):
+        return "http://" + short_base[len("http://www.") :].rstrip("/")
+
+    return short_base.rstrip("/")
+
+
 def _format_url_for_display(
     url: str,
     *,
@@ -4964,21 +5022,26 @@ def _get_encuestas_menu(context: dict) -> dict:
                 descripcion = descripcion[:177].rstrip() + "…"
 
         share_url = urljoin(f"{base_url}/", f"e/{slug_publico}")
+        short_slug = _extract_short_public_slug(slug_publico)
+        short_base_url = _resolve_encuestas_short_base_url(context, base_url)
+        share_short_url = urljoin(f"{short_base_url}/", f"e/{short_slug}")
         qr_url: Optional[str] = None
         if api_base_url:
             qr_url = urljoin(
                 f"{api_base_url}/", f"api/public/encuestas/{slug_publico}/qr"
             )
-        share_message = f"Participá en '{titulo}' ingresando a {share_url}"
+        share_message = f"Participá en '{titulo}' ingresando a {share_short_url}"
         share_action_id = f"encuesta_compartir::{slug_publico}"
 
         short_title = _shorten_button_label(titulo)
         share_button_title = _shorten_button_label(titulo, max_length=30)
 
+        display_share_url = share_short_url
+
         line_parts = [f"{index}. *{titulo}*"]
         if descripcion:
             line_parts.append(f"   {descripcion}")
-        line_parts.append(f"   • Abrir la encuesta en la web: {share_url}")
+        line_parts.append(f"   • Abrir la encuesta en la web: {display_share_url}")
         line_parts.append(
             "   • Compartir desde este chat: tocá 'Compartir "
             f"{share_button_title}' para reenviar el mensaje sugerido."
@@ -5004,9 +5067,11 @@ def _get_encuestas_menu(context: dict) -> dict:
                 "slug": slug_publico,
                 "titulo": titulo,
                 "share_url": share_url,
+                "share_short_url": share_short_url,
                 "share_message": share_message,
                 "share_action_id": share_action_id,
                 "qr_url": qr_url,
+                "short_slug": short_slug,
             }
         )
 
@@ -5061,17 +5126,27 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
             break
 
     share_url = None
+    share_short_url = None
     share_message = None
     titulo = "Encuesta ciudadana"
 
     if share_meta:
         titulo = share_meta.get("titulo") or titulo
         share_url = share_meta.get("share_url")
+        share_short_url = share_meta.get("share_short_url") or share_meta.get(
+            "share_url"
+        )
         share_message = share_meta.get("share_message")
 
     if not share_url and normalized_slug:
         base_url = _resolve_encuestas_base_url(context)
         share_url = urljoin(f"{base_url}/", f"e/{normalized_slug}")
+
+    if not share_short_url and normalized_slug:
+        canonical_base = _resolve_encuestas_base_url(context)
+        short_base_url = _resolve_encuestas_short_base_url(context, canonical_base)
+        short_slug = _extract_short_public_slug(normalized_slug)
+        share_short_url = urljoin(f"{short_base_url}/", f"e/{short_slug}")
 
     if not share_meta and normalized_slug:
         try:
@@ -5084,15 +5159,25 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
         else:
             data = serialize_public_encuesta(encuesta, slug_publico=normalized_slug)
             titulo = data.get("titulo") or titulo
+            short_slug = _extract_short_public_slug(normalized_slug)
+            canonical_base = _resolve_encuestas_base_url(context)
+            short_base_url = _resolve_encuestas_short_base_url(context, canonical_base)
+            share_short_url = (
+                share_short_url
+                or urljoin(f"{short_base_url}/", f"e/{short_slug}")
+                if short_base_url
+                else share_short_url
+            )
             share_message = share_message or (
-                f"Participá en '{titulo}' ingresando a {share_url}"
-                if share_url
+                f"Participá en '{titulo}' ingresando a {share_short_url or share_url}"
+                if (share_short_url or share_url)
                 else None
             )
             new_meta = {
                 "slug": normalized_slug,
                 "titulo": titulo,
                 "share_url": share_url,
+                "share_short_url": share_short_url or share_url,
                 "share_message": share_message,
                 "share_action_id": f"encuesta_compartir::{normalized_slug}",
                 "qr_url": None,
@@ -5100,8 +5185,9 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
             stored_meta.append(new_meta)
             contexto_municipio_actual["encuestas_menu_surveys"] = stored_meta
 
-    if not share_message and share_url and titulo:
-        share_message = f"Participá en '{titulo}' ingresando a {share_url}"
+    if not share_message and (share_short_url or share_url) and titulo:
+        target_url = share_short_url or share_url
+        share_message = f"Participá en '{titulo}' ingresando a {target_url}"
 
     share_followup_options = [
         {"texto": "Volver a encuestas", "action_id": "mostrar_menu_encuestas"},
@@ -5147,6 +5233,8 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
         "fuente": "submenu_encuestas_share_v1",
         "generar_audio": True,
         "share_message": share_message,
+        "share_url": share_url,
+        "share_short_url": share_short_url or share_url,
     }
 
 
