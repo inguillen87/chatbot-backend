@@ -1510,6 +1510,32 @@ def _validate_respuesta_payload(
     return detalles
 
 
+def _persist_respuesta_entity(
+    respuesta: EncRespuesta,
+    detalles: Sequence[EncRespuestaDetalle],
+) -> EncRespuesta:
+    if not detalles:
+        raise EncuestaError("Debe enviar respuestas")
+
+    respuesta.detalles = list(detalles)
+    db.session.add(respuesta)
+
+    try:
+        db.session.commit()
+    except IntegrityError as exc:
+        db.session.rollback()
+        message = str(getattr(exc, "orig", exc)).lower()
+        if "uq_enc_respuesta_huella" in message or "huella_unica" in message:
+            raise EncuestaError("Ya registramos tu participación", status_code=409) from exc
+
+        logger = _current_app_logger()
+        if logger:
+            logger.exception("[encuestas] Error al guardar respuesta")
+        raise EncuestaError("No se pudo guardar la respuesta", status_code=500) from exc
+
+    return respuesta
+
+
 def _clean_str(value: Optional[Any], *, max_length: Optional[int] = None) -> Optional[str]:
     if value is None:
         return None
