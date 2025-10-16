@@ -290,6 +290,144 @@
           "obligatoria": false
         }
       ]
+    },
+    {
+      "slug": "sondeo-intencion-voto-2025",
+      "titulo": "Sondeo de intención de voto legislativo 2025 en {{municipality}}",
+      "descripcion": "Permite medir la preferencia electoral local rumbo a las legislativas 2025 y los factores que inciden en la decisión.",
+      "tipo": "sondeo",
+      "politica_unicidad": "por_dni",
+      "anonimato": false,
+      "requiere_datos_contacto": true,
+      "tags": ["Elecciones 2025", "Política"],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "opcion_unica",
+          "texto": "Si la elección legislativa provincial fuera hoy, ¿a qué espacio votarías?",
+          "obligatoria": true,
+          "opciones": [
+            { "orden": 1, "texto": "Frente oficialista local" },
+            { "orden": 2, "texto": "Opción opositora principal" },
+            { "orden": 3, "texto": "Espacio vecinal o independiente" },
+            { "orden": 4, "texto": "Aún no lo decidí" }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "opcion_unica",
+          "texto": "¿Qué tan definido está tu voto?",
+          "obligatoria": true,
+          "opciones": [
+            { "orden": 1, "texto": "Totalmente decidido" },
+            { "orden": 2, "texto": "Probablemente mantenga mi voto" },
+            { "orden": 3, "texto": "Estoy evaluando alternativas" },
+            { "orden": 4, "texto": "No tengo ninguna preferencia" }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "multiple",
+          "texto": "¿Qué temas pesan más en tu decisión de voto?",
+          "obligatoria": true,
+          "min_selecciones": 1,
+          "max_selecciones": 3,
+          "opciones": [
+            { "orden": 1, "texto": "Empleo y desarrollo económico" },
+            { "orden": 2, "texto": "Seguridad ciudadana" },
+            { "orden": 3, "texto": "Servicios e infraestructura urbana" },
+            { "orden": 4, "texto": "Educación y salud" },
+            { "orden": 5, "texto": "Gestión ambiental y clima" }
+          ]
+        }
+      ]
+    },
+    {
+      "slug": "pulso-economico-2025",
+      "titulo": "Pulso económico y precios 2025 en {{municipality}}",
+      "descripcion": "Consulta express para conocer el clima económico local, los precios que más preocupan y las medidas de alivio preferidas.",
+      "tipo": "opinion",
+      "politica_unicidad": "por_cookie",
+      "anonimato": true,
+      "requiere_datos_contacto": false,
+      "tags": ["Economía", "Inflación"],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "opcion_unica",
+          "texto": "¿Cómo describirías la situación económica de tu hogar en los últimos tres meses?",
+          "obligatoria": true,
+          "opciones": [
+            { "orden": 1, "texto": "Mejoró" },
+            { "orden": 2, "texto": "Se mantiene igual" },
+            { "orden": 3, "texto": "Empeoró levemente" },
+            { "orden": 4, "texto": "Empeoró mucho" }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "opcion_unica",
+          "texto": "¿Qué medida aliviaría más tu economía cotidiana en {{municipality}}?",
+          "obligatoria": true,
+          "opciones": [
+            { "orden": 1, "texto": "Descuentos en alimentos y canasta escolar" },
+            { "orden": 2, "texto": "Créditos blandos para comercios y pymes" },
+            { "orden": 3, "texto": "Subsidios o tarifa social de energía y transporte" },
+            { "orden": 4, "texto": "Reducción de tasas e impuestos locales" }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "abierta",
+          "texto": "Comentá brevemente qué precios o servicios te preocupan más para 2025.",
+          "obligatoria": false
+        }
+      ]
+    },
+    {
+      "slug": "agenda-gobierno-2026",
+      "titulo": "Agenda de gobierno 2026 para {{municipality}} y Mendoza",
+      "descripcion": "Identificamos prioridades estratégicas para la planificación provincial 2026-2027 y el desarrollo local.",
+      "tipo": "planificacion",
+      "politica_unicidad": "por_dni_o_phone",
+      "anonimato": false,
+      "requiere_datos_contacto": true,
+      "tags": ["Planificación 2026", "Gestión provincial"],
+      "preguntas": [
+        {
+          "orden": 1,
+          "tipo": "multiple",
+          "texto": "¿Qué iniciativas deberían liderar la agenda 2026 en {{municipality}} y Mendoza?",
+          "obligatoria": true,
+          "min_selecciones": 1,
+          "max_selecciones": 3,
+          "opciones": [
+            { "orden": 1, "texto": "Modernizar hospitales y centros de salud" },
+            { "orden": 2, "texto": "Seguridad hídrica y obras de agua potable" },
+            { "orden": 3, "texto": "Programas de empleo joven y economía del conocimiento" },
+            { "orden": 4, "texto": "Transporte metropolitano integrado" },
+            { "orden": 5, "texto": "Energía limpia y eficiencia en edificios públicos" }
+          ]
+        },
+        {
+          "orden": 2,
+          "tipo": "opcion_unica",
+          "texto": "¿Cómo evaluás el ritmo de ejecución de proyectos estratégicos en {{municipality}} durante 2024?",
+          "obligatoria": true,
+          "opciones": [
+            { "orden": 1, "texto": "Muy bueno, se avanzó como estaba previsto" },
+            { "orden": 2, "texto": "Aceptable, aunque faltan hitos clave" },
+            { "orden": 3, "texto": "Lento, requiere mayor coordinación" },
+            { "orden": 4, "texto": "No se observan avances concretos" }
+          ]
+        },
+        {
+          "orden": 3,
+          "tipo": "abierta",
+          "texto": "Sumá propuestas específicas para 2026 que deberían priorizarse en tu barrio o sector productivo.",
+          "obligatoria": false
+        }
+      ]
     }
   ],
   "profiles": [
