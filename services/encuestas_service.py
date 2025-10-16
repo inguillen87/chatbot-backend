@@ -28,6 +28,7 @@ from models import (
     EncRespuesta,
     EncRespuestaDetalle,
     EncLink,
+    EncSegmento,
     User,
 )
 
@@ -311,6 +312,7 @@ def _build_bootstrap_payloads(
                 template_copy.get("requiere_datos_contacto", False)
             ),
             "politica_unicidad": template_copy.get("politica_unicidad", "libre"),
+            "tags": list(template_copy.get("tags") or []),
             "inicio_at": inicio.isoformat(),
             "fin_at": fin.isoformat(),
         }
@@ -380,6 +382,151 @@ def _build_mendoza_bootstrap_payload(inicio: datetime, fin: datetime) -> List[Di
 
 def _build_godoy_cruz_bootstrap_payload(inicio: datetime, fin: datetime) -> List[Dict[str, Any]]:
     return _build_bootstrap_payloads("Godoy Cruz", inicio, fin)
+
+
+def _find_template_definition(slug: str) -> Optional[Dict[str, Any]]:
+    if not slug:
+        return None
+    for template in _bootstrap_templates():
+        if template.get("slug") == slug:
+            return deepcopy(template)
+    return None
+
+
+def list_template_catalog(
+    municipality: Optional[str] = None,
+    template_slugs: Optional[Sequence[str]] = None,
+) -> List[Dict[str, Any]]:
+    templates = _bootstrap_templates()
+    if template_slugs:
+        templates = _select_templates_by_slugs(templates, template_slugs)
+
+    rendered: List[Dict[str, Any]] = []
+    for template in templates:
+        template_copy = deepcopy(template)
+        slug = template_copy.get("slug")
+
+        def _render(value: Any) -> Any:
+            return _render_municipality_placeholder(value, municipality) if municipality else value
+
+        preguntas_rendered: List[Dict[str, Any]] = []
+        for pregunta in template_copy.get("preguntas", []):
+            opciones_rendered: List[Dict[str, Any]] = []
+            for opcion in pregunta.get("opciones", []):
+                opciones_rendered.append(
+                    {
+                        "orden": opcion.get("orden"),
+                        "texto": _render(opcion.get("texto")),
+                        "texto_template": opcion.get("texto"),
+                        "valor": opcion.get("valor"),
+                    }
+                )
+
+            preguntas_rendered.append(
+                {
+                    "orden": pregunta.get("orden"),
+                    "tipo": pregunta.get("tipo", "opcion_unica"),
+                    "texto": _render(pregunta.get("texto")),
+                    "texto_template": pregunta.get("texto"),
+                    "obligatoria": bool(pregunta.get("obligatoria", False)),
+                    "min_selecciones": pregunta.get("min_selecciones"),
+                    "max_selecciones": pregunta.get("max_selecciones"),
+                    "opciones": opciones_rendered,
+                }
+            )
+
+        rendered.append(
+            {
+                "slug": slug,
+                "titulo": _render(template_copy.get("titulo")),
+                "titulo_template": template_copy.get("titulo"),
+                "descripcion": _render(template_copy.get("descripcion")),
+                "descripcion_template": template_copy.get("descripcion"),
+                "tipo": template_copy.get("tipo", "opinion"),
+                "politica_unicidad": template_copy.get("politica_unicidad", "libre"),
+                "anonimato": bool(template_copy.get("anonimato", True)),
+                "requiere_datos_contacto": bool(template_copy.get("requiere_datos_contacto", False)),
+                "tags": list(template_copy.get("tags") or []),
+                "preguntas": preguntas_rendered,
+            }
+        )
+
+    return rendered
+
+
+def build_template_draft_from_slug(
+    slug: str,
+    municipality: Optional[str],
+    *,
+    start: Optional[Any] = None,
+    end: Optional[Any] = None,
+) -> Dict[str, Any]:
+    template = _find_template_definition(slug)
+    if not template:
+        raise EncuestaError("Plantilla no encontrada", status_code=404)
+
+    if not municipality:
+        raise EncuestaError("La localidad es requerida para generar la plantilla", status_code=400)
+
+    def _ensure_datetime(value: Optional[Any]) -> Optional[datetime]:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc)
+        if isinstance(value, str):
+            return _parse_datetime(value)
+        return None
+
+    inicio = _ensure_datetime(start) or datetime.now(timezone.utc)
+    fin = _ensure_datetime(end)
+    if fin is None:
+        fin = inicio + timedelta(days=30)
+
+    payloads = _build_bootstrap_payloads(municipality, inicio, fin, templates=[template])
+    if not payloads:
+        raise EncuestaError("No se pudo generar la plantilla solicitada", status_code=500)
+
+    payload = payloads[0]
+    requiere_identidad = bool(payload.get("requiere_identidad", False))
+    anonimato_habilitado = bool(payload.get("anonimo_permitido", True)) and not requiere_identidad
+
+    preguntas = []
+    for pregunta in payload.get("preguntas", []):
+        preguntas.append(
+            {
+                "orden": pregunta.get("orden"),
+                "tipo": "multiple" if pregunta.get("tipo") == "opcion_multiple" else pregunta.get("tipo"),
+                "texto": pregunta.get("texto"),
+                "obligatoria": bool(pregunta.get("obligatoria", False)),
+                "min_selecciones": pregunta.get("min_selecciones"),
+                "max_selecciones": pregunta.get("max_selecciones"),
+                "opciones": [
+                    {
+                        "orden": opcion.get("orden"),
+                        "texto": opcion.get("texto"),
+                        "valor": opcion.get("valor"),
+                    }
+                    for opcion in pregunta.get("opciones", [])
+                ],
+            }
+        )
+
+    return {
+        "slug": payload.get("slug"),
+        "municipality": municipality,
+        "titulo": payload.get("titulo"),
+        "descripcion": payload.get("descripcion"),
+        "tipo": payload.get("tipo", "opinion"),
+        "inicio_at": payload.get("inicio_at"),
+        "fin_at": payload.get("fin_at"),
+        "politica_unicidad": payload.get("politica_unicidad", "libre"),
+        "anonimato": anonimato_habilitado,
+        "requiere_datos_contacto": requiere_identidad,
+        "tags": payload.get("tags") or [],
+        "preguntas": preguntas,
+    }
 
 
 def _select_templates_by_slugs(
@@ -571,7 +718,11 @@ def _validate_pregunta_payload(pregunta: Dict[str, Any], index: int) -> Dict[str
     if missing:
         raise EncuestaError(f"Pregunta #{index + 1} incompleta: falta {', '.join(missing)}")
     opciones = pregunta.get("opciones") or []
-    if pregunta["tipo"] in {"opcion_unica", "opcion_multiple"} and not opciones:
+    tipo = pregunta.get("tipo")
+    if tipo in {"multiple"}:
+        tipo = "opcion_multiple"
+        pregunta["tipo"] = tipo
+    if tipo in {"opcion_unica", "opcion_multiple"} and not opciones:
         raise EncuestaError(f"Pregunta #{index + 1} requiere opciones")
     return pregunta
 
@@ -588,16 +739,21 @@ def _apply_common_updates(encuesta: EncEncuesta, data: Dict[str, Any]) -> None:
         encuesta.politica_unicidad = data["politica_unicidad"]
     if "anonimo_permitido" in data:
         encuesta.anonimo_permitido = bool(data["anonimo_permitido"])
+    if "tags" in data:
+        _sync_encuesta_tags(encuesta, data.get("tags"))
 
 
 def _build_pregunta_entities(encuesta: EncEncuesta, preguntas_payload: Sequence[Dict[str, Any]]) -> List[EncPregunta]:
     preguntas: List[EncPregunta] = []
     for idx, pregunta_payload in enumerate(preguntas_payload):
         payload = _validate_pregunta_payload(pregunta_payload, idx)
+        pregunta_tipo = payload.get("tipo", "opcion_unica")
+        if pregunta_tipo == "multiple":
+            pregunta_tipo = "opcion_multiple"
         pregunta = EncPregunta(
             encuesta=encuesta,
             orden=int(payload.get("orden", idx + 1)),
-            tipo=payload.get("tipo", "opcion_unica"),
+            tipo=pregunta_tipo,
             texto=(payload.get("texto") or "").strip(),
             obligatoria=bool(payload.get("obligatoria", False)),
             min_selecciones=payload.get("min_selecciones"),
@@ -614,6 +770,45 @@ def _build_pregunta_entities(encuesta: EncEncuesta, preguntas_payload: Sequence[
             pregunta.opciones.append(opcion)
         preguntas.append(pregunta)
     return preguntas
+
+
+def _normalize_tags(tags: Optional[Sequence[Any]]) -> List[str]:
+    if not tags:
+        return []
+    normalized: List[str] = []
+    seen: set = set()
+    for raw in tags:
+        cleaned = _clean_str(raw, max_length=120)
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(cleaned)
+    return normalized
+
+
+def _sync_encuesta_tags(encuesta: EncEncuesta, tags: Optional[Sequence[Any]]) -> None:
+    normalized = _normalize_tags(tags)
+    target_keys = {tag.lower() for tag in normalized}
+    existing: List[EncSegmento] = [seg for seg in encuesta.segmentos if seg.clave == "tag"]
+    existing_lookup = {str(seg.valor or "").lower(): seg for seg in existing}
+
+    # Remove segmentos that are no longer present.
+    for seg in list(existing):
+        value_key = str(seg.valor or "").lower()
+        if value_key not in target_keys:
+            encuesta.segmentos.remove(seg)
+
+    for tag in normalized:
+        key = tag.lower()
+        existing_segment = existing_lookup.get(key)
+        if existing_segment and existing_segment in encuesta.segmentos:
+            if (existing_segment.valor or "") != tag:
+                existing_segment.valor = tag
+            continue
+        encuesta.segmentos.append(EncSegmento(encuesta=encuesta, clave="tag", valor=tag))
 
 
 def create_encuesta(data: Dict[str, Any], user: Any) -> EncEncuesta:
@@ -645,6 +840,7 @@ def create_encuesta(data: Dict[str, Any], user: Any) -> EncEncuesta:
 
     preguntas_payload = data.get("preguntas") or []
     encuesta.preguntas = _build_pregunta_entities(encuesta, preguntas_payload)
+    _sync_encuesta_tags(encuesta, data.get("tags"))
 
     db.session.add(encuesta)
     try:
@@ -1067,7 +1263,13 @@ def _resolve_public_slug(encuesta: EncEncuesta) -> Optional[str]:
 
 def list_encuestas(tenant_id: int, estado: Optional[str] = None) -> List[EncEncuesta]:
     _bootstrap_sample_if_needed(tenant_id)
-    query = EncEncuesta.query.options(joinedload(EncEncuesta.links)).filter_by(tenant_id=tenant_id)
+    query = (
+        EncEncuesta.query.options(
+            joinedload(EncEncuesta.links),
+            joinedload(EncEncuesta.segmentos),
+        )
+        .filter_by(tenant_id=tenant_id)
+    )
     if estado:
         query = query.filter_by(estado=estado)
     return query.order_by(EncEncuesta.created_at.desc()).all()
@@ -1331,6 +1533,15 @@ def _coerce_int(value: Optional[Any]) -> Optional[int]:
         return None
 
 
+def _coerce_float(value: Optional[Any]) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _infer_age_from_birth_year(year: Optional[int]) -> Optional[int]:
     if not year:
         return None
@@ -1376,11 +1587,15 @@ def _normalize_genero(value: Optional[Any]) -> Optional[str]:
         "f": "femenino",
         "fem": "femenino",
         "female": "femenino",
+        "femenino": "femenino",
         "m": "masculino",
         "masc": "masculino",
         "male": "masculino",
+        "masculino": "masculino",
         "nb": "no_binario",
         "non binary": "no_binario",
+        "no binario": "no_binario",
+        "no_binario": "no_binario",
     }
     if lowered in mapping:
         return mapping[lowered]
@@ -1390,32 +1605,24 @@ def _normalize_genero(value: Optional[Any]) -> Optional[str]:
     return text[:30]
 
 
-def _persist_respuesta_entity(
-    respuesta: EncRespuesta,
-    detalles: Sequence[EncRespuestaDetalle],
-) -> EncRespuesta:
-    db.session.add(respuesta)
+def _normalize_metadata(value: Optional[Any]) -> Optional[Any]:
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        normalized_list = [_normalize_metadata(item) for item in value]
+        return normalized_list
+    if isinstance(value, dict):
+        normalized_dict: Dict[str, Any] = {}
+        for key, item in value.items():
+            normalized_dict[str(key)] = _normalize_metadata(item)
+        return normalized_dict
     try:
-        db.session.flush()
-    except IntegrityError as exc:
-        db.session.rollback()
-        if "uq_enc_respuesta_huella" in str(exc.orig):
-            raise EncuestaError("Respuesta duplicada", status_code=409) from exc
-        raise EncuestaError("No se pudo guardar la respuesta") from exc
-
-    for detalle in detalles:
-        detalle.respuesta = respuesta
-        db.session.add(detalle)
-
-    try:
-        db.session.commit()
-    except IntegrityError as exc:
-        db.session.rollback()
-        if "uq_enc_respuesta_huella" in str(exc.orig):
-            raise EncuestaError("Respuesta duplicada", status_code=409) from exc
-        raise EncuestaError("No se pudo guardar la respuesta") from exc
-
-    return respuesta
+        json_value = json.loads(json.dumps(value))
+    except (TypeError, ValueError):
+        return None
+    return json_value
 
 
 def save_respuesta(slug_publico: str, payload: Dict[str, Any], request_ctx: Dict[str, Any]) -> EncRespuesta:
@@ -1425,6 +1632,10 @@ def save_respuesta(slug_publico: str, payload: Dict[str, Any], request_ctx: Dict
         raise EncuestaError("Debe enviar respuestas")
 
     detalles = _validate_respuesta_payload(encuesta, respuestas_payload)
+    metadata_raw = payload.get("metadata")
+    metadata = _normalize_metadata(metadata_raw)
+    metadata_dict = metadata if isinstance(metadata, dict) else None
+    metadata_payload = metadata if isinstance(metadata, (dict, list)) else None
 
     tenant_id = encuesta.tenant_id
     dni = payload.get("dni")
@@ -1441,6 +1652,60 @@ def save_respuesta(slug_publico: str, payload: Dict[str, Any], request_ctx: Dict
     genero = _normalize_genero(payload.get("genero") or payload.get("sexo"))
     edad = _coerce_int(payload.get("edad"))
     anio_nacimiento = _coerce_int(payload.get("anio_nacimiento"))
+    rango_etario = _clean_str(payload.get("rango_etario"), max_length=30)
+
+    lat = _coerce_float(payload.get("lat"))
+    lng = _coerce_float(payload.get("lng"))
+    barrio = _clean_str(payload.get("barrio"), max_length=120)
+    ciudad = _clean_str(payload.get("ciudad"), max_length=120)
+    provincia = _clean_str(payload.get("provincia"), max_length=120)
+    pais = _clean_str(payload.get("pais"), max_length=120)
+
+    canal = _clean_str(payload.get("canal"), max_length=64)
+    request_canal = _clean_str(request_ctx.get("canal"), max_length=64)
+    canal = canal or request_canal or "web"
+
+    submitted_override = None
+    metadata_rango = None
+
+    if metadata_dict:
+        metadata_canal = _clean_str(metadata_dict.get("canal"), max_length=64)
+        if metadata_canal:
+            canal = metadata_canal
+
+        submitted_raw = metadata_dict.get("submittedAt") or metadata_dict.get("submitted_at")
+        if submitted_raw:
+            submitted_override = _parse_datetime(str(submitted_raw))
+
+        demographics = metadata_dict.get("demographics")
+        if isinstance(demographics, dict):
+            genero = genero or _normalize_genero(
+                demographics.get("genero")
+                or demographics.get("gender")
+                or demographics.get("sexo")
+            )
+            metadata_rango = _clean_str(
+                demographics.get("rangoEtario") or demographics.get("rango_etario"),
+                max_length=30,
+            )
+            if edad is None:
+                edad = _coerce_int(demographics.get("edad"))
+            if anio_nacimiento is None:
+                anio_nacimiento = _coerce_int(
+                    demographics.get("anioNacimiento")
+                    or demographics.get("anio_nacimiento")
+                )
+            ubicacion = demographics.get("ubicacion") or demographics.get("ubicación")
+            if isinstance(ubicacion, dict):
+                if lat is None:
+                    lat = _coerce_float(ubicacion.get("lat"))
+                if lng is None:
+                    lng = _coerce_float(ubicacion.get("lng"))
+                barrio = barrio or _clean_str(ubicacion.get("barrio"), max_length=120)
+                ciudad = ciudad or _clean_str(ubicacion.get("ciudad"), max_length=120)
+                provincia = provincia or _clean_str(ubicacion.get("provincia"), max_length=120)
+                pais = pais or _clean_str(ubicacion.get("pais"), max_length=120)
+
     if anio_nacimiento is None and payload.get("fecha_nacimiento"):
         fecha = _parse_datetime(payload["fecha_nacimiento"])
         if fecha:
@@ -1451,7 +1716,9 @@ def save_respuesta(slug_publico: str, payload: Dict[str, Any], request_ctx: Dict
         edad = _infer_age_from_birth_year(anio_nacimiento)
     if anio_nacimiento is None:
         anio_nacimiento = _infer_birth_year_from_age(edad)
-    rango_etario = _clean_str(payload.get("rango_etario"), max_length=30) or _compute_age_group(edad)
+    rango_etario = rango_etario or metadata_rango or _compute_age_group(edad)
+
+    submitted_at = submitted_override or datetime.now(timezone.utc)
 
     respuesta = EncRespuesta(
         encuesta_id=encuesta.id,
@@ -1462,20 +1729,21 @@ def save_respuesta(slug_publico: str, payload: Dict[str, Any], request_ctx: Dict
         phone=phone,
         ip=ip,
         ua=request_ctx.get("user_agent"),
-        lat=payload.get("lat"),
-        lng=payload.get("lng"),
+        lat=lat,
+        lng=lng,
         utm_source=payload.get("utm_source"),
         utm_campaign=payload.get("utm_campaign"),
-        canal=payload.get("canal") or request_ctx.get("canal") or "web",
+        canal=canal,
         genero=genero,
         edad=edad,
         anio_nacimiento=anio_nacimiento,
         rango_etario=rango_etario,
-        barrio=_clean_str(payload.get("barrio"), max_length=120),
-        ciudad=_clean_str(payload.get("ciudad"), max_length=120),
-        provincia=_clean_str(payload.get("provincia"), max_length=120),
-        pais=_clean_str(payload.get("pais"), max_length=120),
-        submitted_at=datetime.now(timezone.utc),
+        barrio=barrio,
+        ciudad=ciudad,
+        provincia=provincia,
+        pais=pais,
+        metadata_payload=metadata_payload,
+        submitted_at=submitted_at,
         content_hash=None,
     )
 
@@ -2006,6 +2274,7 @@ def serialize_respuesta(respuesta: EncRespuesta) -> Dict[str, Any]:
         "ciudad": respuesta.ciudad,
         "provincia": respuesta.provincia,
         "pais": respuesta.pais,
+        "metadata": respuesta.metadata_payload,
         "detalles": detalles_serializados,
     }
 
@@ -2050,6 +2319,27 @@ def list_respuestas(
     return encuesta, respuestas, total, limit_value, offset_value
 
 
+def _collect_encuesta_tags(encuesta: EncEncuesta) -> List[str]:
+    tags: List[str] = []
+    seen: set = set()
+    ordered_segmentos = sorted(
+        encuesta.segmentos,
+        key=lambda segmento: (str(segmento.valor or "").lower(), segmento.id or 0),
+    )
+    for segmento in ordered_segmentos:
+        if segmento.clave != "tag":
+            continue
+        value = _clean_str(segmento.valor, max_length=120)
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        tags.append(value)
+    return tags
+
+
 def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
     return {
         "id": encuesta.id,
@@ -2064,6 +2354,7 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
         "requiere_identidad": encuesta.requiere_identidad,
         "politica_unicidad": encuesta.politica_unicidad,
         "anonimo_permitido": encuesta.anonimo_permitido,
+        "tags": _collect_encuesta_tags(encuesta),
         "preguntas": [
             {
                 "id": pregunta.id,

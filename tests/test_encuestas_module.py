@@ -2,7 +2,7 @@ import hashlib
 import sys
 import types
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional, Sequence
 
 import pytest
 
@@ -49,6 +49,7 @@ from services.encuestas_service import (
     save_respuesta,
     list_respuestas,
     serialize_respuesta,
+    serialize_public_encuesta,
     delete_encuesta,
     list_encuestas,
     _build_mendoza_bootstrap_payload,
@@ -74,7 +75,7 @@ def test_bootstrap_templates_match_frontend_config():
 
     payloads = encuestas_service_module._build_junin_bootstrap_payload(inicio, fin)
     assert isinstance(payloads, list)
-    assert len(payloads) == 4
+    assert len(payloads) == 6
 
     servicios = payloads[0]
     assert servicios["slug"].startswith("servicios-publicos-junin")
@@ -84,6 +85,7 @@ def test_bootstrap_templates_match_frontend_config():
     assert servicios["politica_unicidad"] == "por_dni_o_phone"
     assert servicios["inicio_at"] == inicio.isoformat()
     assert servicios["fin_at"] == fin.isoformat()
+    assert "Servicios públicos" in servicios.get("tags", [])
 
     primera_pregunta = servicios["preguntas"][0]
     assert "distrito" in primera_pregunta["texto"].lower()
@@ -102,6 +104,19 @@ def test_bootstrap_templates_match_frontend_config():
         assert "{{municipality}}" not in pregunta["texto"]
         for opcion in pregunta.get("opciones", []):
             assert "{{municipality}}" not in opcion["texto"]
+
+    sustentable = next(
+        template for template in payloads if template["slug"].startswith("ciudad-sustentable-2025-junin")
+    )
+    assert sustentable["tipo"] == "planificacion"
+    assert sustentable["politica_unicidad"] == "por_dni"
+    assert any("reciclados" in pregunta["texto"].lower() for pregunta in sustentable["preguntas"])
+
+    obras = next(
+        template for template in payloads if template["slug"].startswith("obras-publicas-2025-junin")
+    )
+    assert obras["politica_unicidad"] == "por_phone"
+    assert obras["requiere_identidad"] is True
 
     san_martin_payloads = encuestas_service_module._build_san_martin_bootstrap_payload(inicio, fin)
     assert san_martin_payloads[0]["slug"].startswith("servicios-publicos-san-martin")
@@ -142,7 +157,11 @@ class DummyUser:
         self.municipio_id = tenant_id
 
 
-def _create_active_encuesta(politica_unicidad: str = "libre", tenant_id: int = 1):
+def _create_active_encuesta(
+    politica_unicidad: str = "libre",
+    tenant_id: int = 1,
+    tags: Optional[Sequence[str]] = None,
+):
     user = DummyUser(tenant_id)
     payload = {
         "titulo": "Encuesta Test",
@@ -170,6 +189,8 @@ def _create_active_encuesta(politica_unicidad: str = "libre", tenant_id: int = 1
             },
         ],
     }
+    if tags:
+        payload["tags"] = list(tags)
 
     encuesta = create_encuesta(payload, user)
     encuesta, link = publicar_encuesta(encuesta.id, user)
@@ -243,22 +264,106 @@ def test_respuesta_por_ip_sin_datos_no_bloquea(client):
         assert segunda.id is not None
 
 
-def test_seed_encuesta_respuestas_demo_creates_geo_data(client):
+def test_respuesta_con_metadata_completa_geolocaliza(client):
     with client.application.app_context():
-        encuesta, slug, user = _create_active_encuesta(politica_unicidad="por_dni_o_phone")
-        db.session.refresh(encuesta)
+        encuesta, slug, _ = _create_active_encuesta(politica_unicidad="por_dni")
+        pregunta_opcion = next(p for p in encuesta.preguntas if p.tipo == "opcion_unica")
+        opcion = pregunta_opcion.opciones[0]
+        pregunta_abierta = next(p for p in encuesta.preguntas if p.tipo == "abierta")
 
-        result = seed_encuesta_respuestas_demo(encuesta.id, user, cantidad=10)
-        assert result["creadas"] > 0
-        total = EncRespuesta.query.filter_by(encuesta_id=encuesta.id).count()
-        assert total == result["creadas"]
+        submitted_at = datetime(2025, 4, 20, 14, 30, tzinfo=timezone.utc)
 
-        geo_respuestas = (
-            EncRespuesta.query.filter_by(encuesta_id=encuesta.id)
-            .filter(EncRespuesta.lat.isnot(None), EncRespuesta.lng.isnot(None))
-            .all()
-        )
-        assert geo_respuestas, "Las respuestas demo deben incluir coordenadas"
+        payload = {
+            "dni": "32165498",
+            "respuestas": [
+                {"pregunta_id": pregunta_opcion.id, "opcion_ids": [opcion.id]},
+                {"pregunta_id": pregunta_abierta.id, "texto_libre": "Todo muy ordenado"},
+            ],
+            "metadata": {
+                "canal": "qr",
+                "submittedAt": submitted_at.isoformat(),
+                "demographics": {
+                    "genero": "Femenino",
+                    "rangoEtario": "25-34",
+                    "ubicacion": {
+                        "lat": -34.5912,
+                        "lng": -58.4103,
+                        "ciudad": "Junín",
+                        "barrio": "Centro",
+                        "provincia": "Buenos Aires",
+                        "pais": "Argentina",
+                        "origen": "gps",
+                        "precision": "gps",
+                    },
+                },
+            },
+        }
+
+        respuesta = save_respuesta(slug, payload, _request_ctx("meta-demo"))
+
+        assert respuesta.canal == "qr"
+        assert respuesta.genero == "femenino"
+        assert respuesta.rango_etario == "25-34"
+        assert respuesta.lat == pytest.approx(-34.5912)
+        assert respuesta.lng == pytest.approx(-58.4103)
+        assert respuesta.barrio == "Centro"
+        assert respuesta.ciudad == "Junín"
+        assert respuesta.provincia == "Buenos Aires"
+        assert respuesta.pais == "Argentina"
+        assert respuesta.metadata_payload and respuesta.metadata_payload.get("demographics")
+        assert respuesta.submitted_at is not None
+        almacenada = respuesta.submitted_at
+        if almacenada.tzinfo is None:
+            almacenada = almacenada.replace(tzinfo=timezone.utc)
+        else:
+            almacenada = almacenada.astimezone(timezone.utc)
+        assert almacenada == submitted_at
+
+        serializado = serialize_respuesta(respuesta)
+        assert serializado.get("metadata", {}).get("demographics")
+
+
+def test_respuesta_metadata_invalida_no_rompe_guardado(client):
+    with client.application.app_context():
+        encuesta, slug, _ = _create_active_encuesta()
+        payload = _respuesta_payload(encuesta, metadata=object())
+
+        respuesta = save_respuesta(slug, payload, _request_ctx("meta-invalid"))
+
+        assert respuesta.metadata_payload is None
+        assert respuesta.lat is None
+        assert respuesta.ciudad is None
+
+
+def test_respuesta_metadata_ubicacion_incompleta(client):
+    with client.application.app_context():
+        encuesta, slug, _ = _create_active_encuesta()
+        metadata = {
+            "demographics": {
+                "ubicacion": {
+                    "lat": "",
+                    "lng": None,
+                    "ciudad": "Junín",
+                }
+            }
+        }
+        payload = _respuesta_payload(encuesta, metadata=metadata)
+
+        respuesta = save_respuesta(slug, payload, _request_ctx("meta-ubicacion"))
+
+        assert respuesta.lat is None
+        assert respuesta.lng is None
+        assert respuesta.ciudad == "Junín"
+        assert respuesta.metadata_payload and respuesta.metadata_payload.get("demographics")
+
+
+def test_serialize_public_encuesta_incluye_tags(client):
+    with client.application.app_context():
+        tags = ["Servicios públicos", "Infraestructura"]
+        encuesta, slug, _ = _create_active_encuesta(tags=tags)
+        data = serialize_public_encuesta(encuesta, slug)
+
+        assert data.get("tags") == sorted(tags, key=lambda value: value.lower())
 
 
 def test_compute_content_hash_es_deterministico(client):
