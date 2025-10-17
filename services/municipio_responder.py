@@ -5155,6 +5155,7 @@ def _get_encuestas_menu(context: dict) -> dict:
     share_image_default = menu_image_url or (
         share_media_defaults[0] if share_media_defaults else None
     )
+    banner_image_url = share_image_default
 
     lines: List[str] = []
     survey_buttons: List[Dict[str, Any]] = []
@@ -5251,8 +5252,8 @@ def _get_encuestas_menu(context: dict) -> dict:
         "generar_audio": True,
     }
 
-    if menu_image_url:
-        payload["image_url"] = menu_image_url
+    if banner_image_url:
+        payload["image_url"] = banner_image_url
 
     if api_base_url:
         payload.setdefault("_base_url", api_base_url)
@@ -5280,6 +5281,8 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
     share_image_url, share_media_urls = _resolve_encuestas_menu_media_urls(
         context, api_base_url
     )
+    if not share_image_url and share_media_urls:
+        share_image_url = share_media_urls[0]
 
     stored_meta = contexto_municipio_actual.get("encuestas_menu_surveys") or []
     share_meta = None
