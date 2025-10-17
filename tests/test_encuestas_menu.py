@@ -7223,6 +7223,14 @@ def test_encuesta_share_payload_uses_short_url(client):
     short_token = slug.rsplit("-", 1)[-1]
     image_url = menu.get("image_url")
     assert image_url
+    assert payload["message_type"] == "interactive_buttons"
+    expected_followup_ids = [
+        "mostrar_menu_encuestas",
+        "menu_principal",
+        "cancelar",
+    ]
+    options_list = payload["options_list"]
+    assert [opt.get("action_id") for opt in options_list] == expected_followup_ids
     assert payload["share_url"].endswith(f"/e/{slug}")
     assert payload["share_short_url"].endswith(f"/e/{short_token}")
     assert payload["share_message"].endswith(f"/e/{short_token}")
@@ -7240,6 +7248,13 @@ def test_encuesta_share_payload_uses_short_url(client):
     assert payload["image_url"] == first_meta["share_image_url"]
     assert payload["media_urls"][0] == first_meta["share_media_urls"][0]
     assert payload.get("_base_url") == menu.get("_base_url")
+    contexto_municipio = context["chat_db_context_data"][municipio_responder.CONTEXTO_MUNICIPIO]
+    assert contexto_municipio["encuestas_menu_options"] == options_list
+    previous_options = contexto_municipio.get("_encuestas_menu_previous_options")
+    assert previous_options and any(
+        opt.get("action_id", "").startswith("encuesta_compartir::")
+        for opt in previous_options
+    )
 
 
 def test_encuestas_menu_defaults_to_backend_banner(client, monkeypatch):

@@ -5379,14 +5379,16 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
         {"texto": "Cancelar", "action_id": "cancelar"},
     ]
 
-    stored_options = (
-        contexto_municipio_actual.get("encuestas_menu_options") or share_followup_options
-    )
+    previous_menu_options = contexto_municipio_actual.get("encuestas_menu_options")
+    if previous_menu_options:
+        contexto_municipio_actual["_encuestas_menu_previous_options"] = previous_menu_options
+
+    stored_options = list(share_followup_options)
     contexto_municipio_actual["estado_conversacion"] = (
         ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
     )
     contexto_municipio_actual["menu_opciones"] = stored_options
-    contexto_municipio_actual.setdefault("encuestas_menu_options", stored_options)
+    contexto_municipio_actual["encuestas_menu_options"] = stored_options
 
     if chat_db_context:
         flag_modified(chat_db_context, "context_data")
