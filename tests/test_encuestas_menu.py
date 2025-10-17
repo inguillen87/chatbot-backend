@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
+from config import ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH
 from models import (
     MunicipioTicket,
     TicketComentario,
@@ -7073,7 +7074,7 @@ def responder_municipio(
     short_token = slug.rsplit("-", 1)[-1]
     assert short_token in body
     assert "Abrir:" in body
-    assert "Compartir con un mensaje listo para WhatsApp" in body
+    assert "Compartir: tocá 'Compartir" in body
     assert "Compartir desde el widget web" not in body
     assert "Descargar el código QR" not in body
     assert "Usar el asistente virtual en la web" not in body
@@ -7090,12 +7091,13 @@ def responder_municipio(
         for option in menu["options_list"]
         if option.get("action_id")
     ]
-    assert not any(action.startswith("encuesta_compartir::") for action in share_actions)
+    assert any(action.startswith("encuesta_compartir::") for action in share_actions)
     assert not any(url.endswith(f"/e/{slug}?canal=widget_chat") for url in button_urls)
     assert not any(url.endswith(f"/api/public/encuestas/{slug}/qr") for url in button_urls)
     media_urls = menu.get("media_urls")
-    assert isinstance(media_urls, list) and len(media_urls) == 1
+    assert isinstance(media_urls, list) and media_urls
     assert media_urls[0] == fallback_image
+    assert fallback_image in media_urls
     assert menu.get("image_url") == fallback_image
     assert menu.get("_base_url") == client.application.config.get(
         "PUBLIC_ENCUESTAS_API_BASE_URL"
@@ -7161,6 +7163,7 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
     expected_prefix = "https://www.chatboc.ar/e/"
     short_token = slug.rsplit("-", 1)[-1]
     assert f"https://chatboc.ar/e/{short_token}" in menu["message_body"]
+    assert "Compartir: tocá 'Compartir" in menu["message_body"]
     button_urls = [
         option.get("url", "")
         for option in menu["options_list"]
@@ -7173,7 +7176,7 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
         for option in menu["options_list"]
         if option.get("action_id")
     ]
-    assert not any(action.startswith("encuesta_compartir::") for action in share_actions)
+    assert any(action.startswith("encuesta_compartir::") for action in share_actions)
 
 
 def test_encuestas_menu_includes_configured_image(client):
@@ -7187,7 +7190,9 @@ def test_encuestas_menu_includes_configured_image(client):
 
     assert menu.get("image_url") == "https://cdn.example.com/encuestas/banner.png"
     media_urls = menu.get("media_urls")
-    assert media_urls and media_urls[0] == "https://cdn.example.com/encuestas/banner.png"
+    assert isinstance(media_urls, list) and media_urls
+    assert media_urls[0] == "https://cdn.example.com/encuestas/banner.png"
+    assert "https://cdn.example.com/encuestas/banner.png" in media_urls
 
 
 def test_encuesta_share_payload_uses_short_url(client):
@@ -7223,7 +7228,10 @@ def test_encuesta_share_payload_uses_short_url(client):
     assert "Compartir con un mensaje listo para WhatsApp" in payload["message_body"]
     assert "Compartir desde el widget web" not in payload["message_body"]
     assert payload.get("image_url") == image_url
-    assert payload.get("media_urls") == [image_url]
+    media_urls = payload.get("media_urls")
+    assert isinstance(media_urls, list) and media_urls
+    assert image_url in media_urls
+    assert media_urls[0] == image_url
     assert payload.get("_base_url") == menu.get("_base_url")
 
 
@@ -7242,10 +7250,17 @@ def test_encuestas_menu_defaults_to_backend_banner(client, monkeypatch):
         )
         menu = municipio_responder._get_encuestas_menu(context)
 
-    expected_banner = "https://api.chatboc.ar/static/encuestas/participacion_ciudadana.png"
+    canonical_base = client.application.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+    fallback_base = canonical_base.rstrip("/") if canonical_base else "https://chatboc.ar"
+    if ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH.startswith(("http://", "https://")):
+        expected_banner = ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH
+    else:
+        expected_banner = f"{fallback_base}{ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH}"
     assert menu.get("image_url") == expected_banner
     media_urls = menu.get("media_urls")
-    assert media_urls and media_urls[0] == expected_banner
+    assert isinstance(media_urls, list) and media_urls
+    assert media_urls[0] == expected_banner
+    assert expected_banner in media_urls
     assert menu.get("_base_url") == "https://api.chatboc.ar"
     short_token = slug.rsplit("-", 1)[-1]
     assert short_token in menu["message_body"]

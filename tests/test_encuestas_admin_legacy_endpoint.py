@@ -215,6 +215,76 @@ def test_admin_encuestas_listado_respuestas(client, monkeypatch, admin_user):
     assert any(det.get("texto_libre") for det in primera["detalles"])
 
 
+def test_update_encuesta_accepts_multiple_choice_edit(client, monkeypatch, admin_user):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+
+    headers = _auth_headers(client, admin_user)
+
+    create_payload = {
+        "titulo": "Encuesta editable",
+        "descripcion": "Versión base",
+        "tipo": "opinion",
+        "preguntas": [
+            {
+                "orden": 1,
+                "tipo": "abierta",
+                "texto": "Comentario inicial",
+                "obligatoria": False,
+            }
+        ],
+    }
+
+    create_resp = client.post("/admin/encuestas", json=create_payload, headers=headers)
+    assert create_resp.status_code == 201
+    encuesta_id = create_resp.get_json()["id"]
+
+    update_payload = {
+        "titulo": "Encuesta editable",
+        "preguntas": [
+            {
+                "orden": 1,
+                "tipo": "multiple_choice",
+                "texto": "¿Qué iniciativas priorizarías?",
+                "obligatoria": True,
+                "minSeleccion": "1",
+                "maxSeleccion": "3",
+                "opciones": [
+                    {"texto": "Reducir residuos"},
+                    "Programas de reciclaje",
+                    {"label": "Educación ambiental", "valor": "educacion"},
+                ],
+            }
+        ],
+    }
+
+    update_resp = client.put(
+        f"/admin/encuestas/{encuesta_id}", json=update_payload, headers=headers
+    )
+    assert update_resp.status_code == 200
+    updated = update_resp.get_json()
+
+    assert updated["preguntas"] and updated["preguntas"][0]["tipo"] == "opcion_multiple"
+    pregunta = updated["preguntas"][0]
+    assert pregunta["min_selecciones"] == 1
+    assert pregunta["max_selecciones"] == 3
+    assert len(pregunta["opciones"]) == 3
+    assert [opt["texto"] for opt in pregunta["opciones"]] == [
+        "Reducir residuos",
+        "Programas de reciclaje",
+        "Educación ambiental",
+    ]
+
+    detail_resp = client.get(f"/admin/encuestas/{encuesta_id}", headers=headers)
+    assert detail_resp.status_code == 200
+    detalle = detail_resp.get_json()
+    detalle_pregunta = detalle["preguntas"][0]
+    assert detalle_pregunta["tipo"] == "opcion_multiple"
+    assert detalle_pregunta["min_selecciones"] == 1
+    assert detalle_pregunta["max_selecciones"] == 3
+    assert len(detalle_pregunta["opciones"]) == 3
+
+
 def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, admin_user):
     monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
     monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
