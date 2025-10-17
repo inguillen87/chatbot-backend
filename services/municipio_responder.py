@@ -1276,11 +1276,6 @@ class ReclamoFlowHandler:
             payload["image_alt_text"] = "Mapa de la ubicación"
         return payload
 
-        if datos.get('foto_url'):
-            response['image_url'] = datos.get('foto_url')
-
-        return response
-
     def handle_confirmacion(self, user_input, payload):
         action = payload.get("action") or payload.get("action_id") or ""
         normalized_plain = normalizar_texto(user_input or "")
