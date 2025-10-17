@@ -998,9 +998,16 @@ class EncEncuesta(db.Model, TimestampMixin):
         if self.estado != "publicada":
             return False
         at = at or datetime.now(timezone.utc)
-        if self.inicio_at and at < self.inicio_at:
+        inicio = self.inicio_at
+        if inicio and inicio.tzinfo is None:
+            inicio = inicio.replace(tzinfo=timezone.utc)
+        fin = self.fin_at
+        if fin and fin.tzinfo is None:
+            fin = fin.replace(tzinfo=timezone.utc)
+
+        if inicio and at < inicio:
             return False
-        if self.fin_at and at > self.fin_at:
+        if fin and at > fin:
             return False
         return True
 
