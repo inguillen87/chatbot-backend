@@ -5083,6 +5083,9 @@ def _get_encuestas_menu(context: dict) -> dict:
         {"texto": "Cancelar", "action_id": "cancelar"},
     ]
 
+    channel_value = (context.get("channel") or "").strip().lower()
+    is_widget_channel = "widget" in channel_value
+
     tenant_id = _resolve_encuestas_tenant_id(context)
     toggle = _resolve_encuestas_toggle(context)
     if toggle is False:
@@ -5152,6 +5155,7 @@ def _get_encuestas_menu(context: dict) -> dict:
     share_image_default = menu_image_url or (
         share_media_defaults[0] if share_media_defaults else None
     )
+    banner_image_url = share_image_default
 
     lines: List[str] = []
     survey_buttons: List[Dict[str, Any]] = []
@@ -5181,16 +5185,18 @@ def _get_encuestas_menu(context: dict) -> dict:
         short_title = _shorten_button_label(titulo)
         share_button_title = _shorten_button_label(titulo, max_length=30)
 
-        display_share_url = share_short_url
+        display_share_url = share_short_url or share_url
 
         line_parts = [f"{index}. *{titulo}*"]
         if descripcion:
             line_parts.append(f"   {descripcion}")
-        line_parts.append(f"   • Abrir: {display_share_url}")
-        line_parts.append(
-            "   • Compartir: tocá 'Compartir "
-            f"{share_button_title}'"
-        )
+        if display_share_url:
+            line_parts.append(f"   • Abrir: {display_share_url}")
+        if whatsapp_share_url:
+            line_parts.append(
+                "   • Compartir con un mensaje listo para WhatsApp: "
+                f"{whatsapp_share_url}"
+            )
         lines.append("\n".join(line_parts))
 
         survey_buttons.append(
@@ -5201,12 +5207,15 @@ def _get_encuestas_menu(context: dict) -> dict:
             }
         )
 
-        survey_buttons.append(
-            {
-                "texto": f"Compartir {share_button_title}",
-                "action_id": share_action_id,
-            }
-        )
+        share_button: Dict[str, Any] = {
+            "texto": f"Compartir {share_button_title}",
+            "action_id": share_action_id,
+        }
+        if is_widget_channel and whatsapp_share_url:
+            share_button["url"] = whatsapp_share_url
+            share_button["type"] = "url"
+
+        survey_buttons.append(share_button)
 
         survey_metadata.append(
             {
@@ -5243,8 +5252,8 @@ def _get_encuestas_menu(context: dict) -> dict:
         "generar_audio": True,
     }
 
-    if menu_image_url:
-        payload["image_url"] = menu_image_url
+    if banner_image_url:
+        payload["image_url"] = banner_image_url
 
     if api_base_url:
         payload.setdefault("_base_url", api_base_url)
@@ -5270,6 +5279,8 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
     share_image_url, share_media_urls = _resolve_encuestas_menu_media_urls(
         context, api_base_url
     )
+    if not share_image_url and share_media_urls:
+        share_image_url = share_media_urls[0]
 
     stored_meta = contexto_municipio_actual.get("encuestas_menu_surveys") or []
     share_meta = None
