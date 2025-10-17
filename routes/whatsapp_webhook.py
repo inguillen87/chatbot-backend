@@ -293,6 +293,89 @@ def _render_template_variables(
     return resolved
 
 
+def _dispatch_twilio_pre_messages(
+    client,
+    to_number: str,
+    from_number: str,
+    payload: Optional[dict],
+    resolve_media_link,
+    *,
+    channel: str = "whatsapp",
+) -> None:
+    """Send auxiliary Twilio messages declared in the payload metadata."""
+
+    if not client or not isinstance(payload, dict):
+        return
+
+    entries = payload.get("_twilio_pre_messages")
+    if not entries:
+        return
+
+    normalized_channel = (channel or "whatsapp").strip().lower() or "whatsapp"
+
+    for entry in entries if isinstance(entries, (list, tuple)) else [entries]:
+        if not isinstance(entry, dict):
+            continue
+
+        channels = entry.get("channels")
+        if channels:
+            normalized_channels = {
+                str(ch).strip().lower()
+                for ch in channels
+                if isinstance(ch, str) and ch.strip()
+            }
+            if normalized_channel not in normalized_channels:
+                continue
+
+        params: Dict[str, Any] = {"from_": to_number, "to": from_number}
+        content_sid = entry.get("content_sid")
+
+        if content_sid:
+            params["content_sid"] = content_sid
+            content_variables = entry.get("content_variables")
+            if content_variables is not None:
+                if isinstance(content_variables, str):
+                    params["content_variables"] = content_variables
+                else:
+                    try:
+                        params["content_variables"] = json.dumps(content_variables or {})
+                    except TypeError:
+                        params["content_variables"] = json.dumps({})
+        else:
+            body = entry.get("body")
+            if body is not None:
+                params["body"] = str(body)
+
+            media_urls: List[str] = []
+            for candidate in entry.get("media_urls") or []:
+                resolved = resolve_media_link(candidate)
+                if not resolved:
+                    continue
+                if isinstance(resolved, (list, tuple, set)):
+                    for item in resolved:
+                        if item and item not in media_urls:
+                            media_urls.append(item)
+                else:
+                    if resolved not in media_urls:
+                        media_urls.append(resolved)
+
+            if media_urls:
+                params["media_url"] = media_urls
+
+            if "body" not in params and "media_url" not in params:
+                continue
+
+            if "body" not in params:
+                params["body"] = ""
+
+        try:
+            client.messages.create(**params)
+        except Exception as exc:
+            current_app.logger.warning(
+                "[whatsapp] Failed to send pre-message via Twilio: %s", exc,
+            )
+
+
 def _normalize_whatsapp_address(value: Optional[str]) -> Optional[str]:
     """Normalize WhatsApp numbers to ``+<digits>`` for consistent lookups."""
 
@@ -468,6 +551,14 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                 if not resolved or _is_welcome_sticker(resolved):
                     return None
                 return resolved
+
+            _dispatch_twilio_pre_messages(
+                client,
+                to_number,
+                from_number,
+                payload,
+                _resolve_media_link,
+            )
 
             raw_media_urls = payload.get("media_urls") or payload.get("media_url")
             resolved_media_urls: List[str] = []
@@ -1372,6 +1463,27 @@ def whatsapp_webhook():
                 'from_': to_number_raw,
                 'to': from_number_raw,
             }
+
+            def _resolve_pre_media_link(raw: Optional[str]) -> Optional[str]:
+                if not raw:
+                    return None
+                resolved = str(raw).strip()
+                if not resolved:
+                    return None
+                if resolved.startswith('/'):
+                    base_url = request.url_root.rstrip('/')
+                    resolved = f"{base_url}{resolved}"
+                elif resolved.startswith('http://'):
+                    resolved = resolved.replace('http://', 'https://', 1)
+                return resolved
+
+            _dispatch_twilio_pre_messages(
+                twilio_client,
+                to_number_raw,
+                from_number_raw,
+                bot_response_dict,
+                _resolve_pre_media_link,
+            )
 
             if formatted_whatsapp_payload.get("type") == "interactive":
                 interactive_payload = formatted_whatsapp_payload.get("interactive")
