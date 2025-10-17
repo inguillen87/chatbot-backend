@@ -5076,7 +5076,6 @@ def _get_encuestas_menu(context: dict) -> dict:
 
     header = (
         "*Participación Ciudadana*\n"
-        "Últimas encuestas disponibles (máximo 10).\n"
     )
     message_body = header + "\n".join(lines)
 
