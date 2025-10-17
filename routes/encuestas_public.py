@@ -301,10 +301,14 @@ def _resolve_share_image(encuesta: Optional[dict]) -> Optional[str]:
     if not base:
         base = _clean(request.host_url)
 
-    if base:
-        return f"{base.rstrip('/')}{ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH}"
+    asset_candidate = ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH
+    if isinstance(asset_candidate, str) and asset_candidate.startswith(("http://", "https://")):
+        return asset_candidate
 
-    return None
+    if base and asset_candidate:
+        return f"{base.rstrip('/')}{asset_candidate}"
+
+    return asset_candidate or None
 
 
 def _extract_ip() -> str:

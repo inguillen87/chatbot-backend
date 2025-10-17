@@ -4963,12 +4963,16 @@ def _resolve_encuestas_menu_image_url(
 
     base_candidates.append(_clean(DEFAULT_BACKEND_URL))
 
-    for base in base_candidates:
-        if not base:
-            continue
-        return f"{base.rstrip('/')}{ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH}"
+    asset_candidate = ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH
+    if isinstance(asset_candidate, str) and asset_candidate.startswith(("http://", "https://")):
+        return asset_candidate
 
-    return None
+    for base in base_candidates:
+        if not base or not asset_candidate:
+            continue
+        return f"{base.rstrip('/')}{asset_candidate}"
+
+    return asset_candidate or None
 
 
 def _get_encuestas_menu(context: dict) -> dict:

@@ -7245,7 +7245,10 @@ def test_encuestas_menu_defaults_to_backend_banner(client, monkeypatch):
 
     canonical_base = client.application.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
     fallback_base = canonical_base.rstrip("/") if canonical_base else "https://chatboc.ar"
-    expected_banner = f"{fallback_base}{ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH}"
+    if ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH.startswith(("http://", "https://")):
+        expected_banner = ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH
+    else:
+        expected_banner = f"{fallback_base}{ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH}"
     assert menu.get("image_url") == expected_banner
     media_urls = menu.get("media_urls")
     assert media_urls and media_urls[0] == expected_banner

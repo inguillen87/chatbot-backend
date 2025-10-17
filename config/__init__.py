@@ -96,7 +96,9 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 BACKEND_URL = os.getenv("BACKEND_URL", RENDER_EXTERNAL_URL or "http://localhost:5000")
 
 # Public participation surveys share image (also used for WhatsApp thumbnails)
-ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH = "/static/encuestas/participacion_ciudadana.png"
+ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH = (
+    "https://chatboc-demo-widget-oigs.vercel.app/junin/participacion_ciudadana.png"
+)
 
 PANEL_URL = os.getenv("PANEL_URL", "http://localhost:8080")
 WIDGET_URL = os.getenv("WIDGET_URL", "http://localhost:8080")
@@ -467,18 +469,22 @@ class Config:
     if isinstance(_encuestas_default_share_image, str) and _encuestas_default_share_image.strip():
         PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = _encuestas_default_share_image.strip()
     else:
-        base_for_assets = (
-            PUBLIC_ENCUESTAS_CANONICAL_BASE_URL
-            or PUBLIC_ENCUESTAS_API_BASE_URL
-            or str(BACKEND_URL)
-        )
-        if base_for_assets:
-            PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = (
-                f"{base_for_assets.rstrip('/')}"
-                f"{ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH}"
-            )
+        asset_candidate = ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH
+        if isinstance(asset_candidate, str) and asset_candidate.startswith(("http://", "https://")):
+            PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = asset_candidate
         else:
-            PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = None
+            base_for_assets = (
+                PUBLIC_ENCUESTAS_CANONICAL_BASE_URL
+                or PUBLIC_ENCUESTAS_API_BASE_URL
+                or str(BACKEND_URL)
+            )
+            if base_for_assets and asset_candidate:
+                PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = (
+                    f"{base_for_assets.rstrip('/')}"
+                    f"{asset_candidate}"
+                )
+            else:
+                PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = None
 
     PYME_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("PYME_UMBRAL_SUGERENCIA_REGISTRO", "3"))
     MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", "3"))
