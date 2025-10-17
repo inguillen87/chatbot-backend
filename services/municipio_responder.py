@@ -5038,29 +5038,6 @@ def _resolve_encuestas_menu_image_url(
     if fallback_candidate:
         return fallback_candidate
 
-    def _append(candidate: Optional[str]) -> None:
-        resolved = _resolve_candidate_against_bases(candidate, base_candidates, context)
-        if resolved and resolved not in media_urls:
-            media_urls.append(resolved)
-
-    _append(primary_url)
-
-    if has_app_context():
-        _append(current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"))
-        _append(
-            current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL")
-        )
-
-    _append(getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None))
-    _append(
-        getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL", None)
-    )
-
-    _append(ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH)
-    _append(ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH)
-
-    return primary_url, media_urls
-
 
 def _resolve_encuestas_menu_media_urls(
     context: dict, api_base_url: Optional[str]
@@ -5107,9 +5084,11 @@ def _resolve_encuestas_menu_media_urls(
     media_urls: List[str] = []
 
     def _append(candidate: Optional[str]) -> None:
-        resolved = _resolve_candidate_against_bases(candidate, base_candidates, context)
-        if resolved and resolved not in media_urls:
-            media_urls.append(resolved)
+        for resolved in _resolve_candidate_across_bases(
+            candidate, base_candidates, context
+        ):
+            if resolved and resolved not in media_urls:
+                media_urls.append(resolved)
 
     _append(primary_url)
 
@@ -5338,6 +5317,7 @@ def _get_encuestas_menu(context: dict) -> dict:
         share_action_id = f"encuesta_compartir::{slug_publico}"
 
         short_title = _shorten_button_label(titulo)
+        share_button_title = _shorten_button_label(titulo, max_length=30)
 
         display_share_url = share_short_url
 
@@ -5346,8 +5326,8 @@ def _get_encuestas_menu(context: dict) -> dict:
             line_parts.append(f"   {descripcion}")
         line_parts.append(f"   • Abrir: {display_share_url}")
         line_parts.append(
-            "   • Compartir con un mensaje listo para WhatsApp: "
-            f"{whatsapp_share_url}"
+            "   • Compartir: tocá 'Compartir "
+            f"{share_button_title}'"
         )
         lines.append("\n".join(line_parts))
 
@@ -5356,6 +5336,13 @@ def _get_encuestas_menu(context: dict) -> dict:
                 "texto": f"Abrir {short_title}",
                 "url": share_url,
                 "type": "url",
+            }
+        )
+
+        survey_buttons.append(
+            {
+                "texto": f"Compartir {share_button_title}",
+                "action_id": share_action_id,
             }
         )
 
