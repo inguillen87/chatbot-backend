@@ -7116,6 +7116,10 @@ def responder_municipio(
     assert first_meta["share_whatsapp_url"].startswith("https://wa.me/?text=")
     assert first_meta["share_widget_url"].endswith("?canal=widget_chat")
     assert first_meta["qr_url"].endswith(f"/api/public/encuestas/{slug}/qr")
+    assert first_meta["share_image_url"]
+    assert first_meta["share_media_urls"]
+    assert first_meta["share_media_urls"][0] == first_meta["share_image_url"]
+    assert first_meta["share_image_url"] == menu.get("image_url")
 
 
 def test_encuestas_menu_respects_explicit_disable(client):
@@ -7232,6 +7236,9 @@ def test_encuesta_share_payload_uses_short_url(client):
     assert isinstance(media_urls, list) and media_urls
     assert image_url in media_urls
     assert media_urls[0] == image_url
+    first_meta = menu["surveys"][0]
+    assert payload["image_url"] == first_meta["share_image_url"]
+    assert payload["media_urls"][0] == first_meta["share_media_urls"][0]
     assert payload.get("_base_url") == menu.get("_base_url")
 
 
