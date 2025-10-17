@@ -99,6 +99,13 @@ BACKEND_URL = os.getenv("BACKEND_URL", RENDER_EXTERNAL_URL or "http://localhost:
 ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH = (
     "https://chatboc-demo-widget-oigs.vercel.app/junin/participacion_ciudadana.png"
 )
+# Local/static fallback used when WhatsApp needs an asset hosted on the backend
+ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH = (
+    os.getenv(
+        "ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH",
+        "/static/encuestas/participacion_ciudadana.png",
+    )
+)``
 
 PANEL_URL = os.getenv("PANEL_URL", "http://localhost:8080")
 WIDGET_URL = os.getenv("WIDGET_URL", "http://localhost:8080")
@@ -485,6 +492,42 @@ class Config:
                 )
             else:
                 PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL = None
+
+    _encuestas_media_fallback_url = os.getenv(
+        "PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL"
+    )
+    if (
+        isinstance(_encuestas_media_fallback_url, str)
+        and _encuestas_media_fallback_url.strip()
+    ):
+        PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL = (
+            _encuestas_media_fallback_url.strip()
+        )
+    else:
+        fallback_candidate = ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH
+        fallback_candidate = fallback_candidate.strip() if isinstance(
+            fallback_candidate, str
+        ) else ""
+        if fallback_candidate:
+            if fallback_candidate.startswith(("http://", "https://")):
+                PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL = fallback_candidate
+            else:
+                base_for_media = (
+                    PUBLIC_ENCUESTAS_CANONICAL_BASE_URL
+                    or PUBLIC_ENCUESTAS_API_BASE_URL
+                    or str(BACKEND_URL)
+                )
+                if base_for_media:
+                    if not fallback_candidate.startswith("/"):
+                        fallback_candidate = "/" + fallback_candidate
+                    PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL = (
+                        f"{base_for_media.rstrip('/')}"
+                        f"{fallback_candidate}"
+                    )
+                else:
+                    PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL = None
+        else:
+            PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL = None
 
     PYME_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("PYME_UMBRAL_SUGERENCIA_REGISTRO", "3"))
     MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", "3"))
