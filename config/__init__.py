@@ -105,7 +105,7 @@ ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH = (
         "ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH",
         "/static/encuestas/participacion_ciudadana.png",
     )
-)``
+)
 
 PANEL_URL = os.getenv("PANEL_URL", "http://localhost:8080")
 WIDGET_URL = os.getenv("WIDGET_URL", "http://localhost:8080")
