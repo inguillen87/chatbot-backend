@@ -794,6 +794,20 @@ def _normalize_pregunta_tipo(raw_tipo: Any) -> str:
     return mapping.get(text, text)
 
 
+def _map_pregunta_tipo_for_response(tipo: Optional[str]) -> Tuple[str, Optional[str]]:
+    """Return a frontend-friendly question type along with the original value."""
+
+    mapping = {
+        "opcion_unica": "single_choice",
+        "opcion_multiple": "multiple_choice",
+        "abierta": "text",
+    }
+
+    original = tipo
+    external = mapping.get(tipo, tipo)
+    return external, original
+
+
 def _coerce_int_or_none(value: Any) -> Optional[int]:
     if value is None:
         return None
@@ -3085,6 +3099,30 @@ def _collect_encuesta_tags(encuesta: EncEncuesta) -> List[str]:
 
 
 def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
+    def _serialize_question(pregunta: EncPregunta) -> Dict[str, Any]:
+        response_type, internal_type = _map_pregunta_tipo_for_response(pregunta.tipo)
+        question_payload = {
+            "id": pregunta.id,
+            "orden": pregunta.orden,
+            "tipo": response_type,
+            "type": response_type,
+            "tipo_interno": internal_type,
+            "texto": pregunta.texto,
+            "obligatoria": pregunta.obligatoria,
+            "min_selecciones": pregunta.min_selecciones,
+            "max_selecciones": pregunta.max_selecciones,
+            "opciones": [
+                {
+                    "id": opcion.id,
+                    "orden": opcion.orden,
+                    "texto": opcion.texto,
+                    "valor": opcion.valor,
+                }
+                for opcion in pregunta.opciones
+            ],
+        }
+        return question_payload
+
     return {
         "id": encuesta.id,
         "tenant_id": encuesta.tenant_id,
@@ -3099,27 +3137,7 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
         "politica_unicidad": encuesta.politica_unicidad,
         "anonimo_permitido": encuesta.anonimo_permitido,
         "tags": _collect_encuesta_tags(encuesta),
-        "preguntas": [
-            {
-                "id": pregunta.id,
-                "orden": pregunta.orden,
-                "tipo": pregunta.tipo,
-                "texto": pregunta.texto,
-                "obligatoria": pregunta.obligatoria,
-                "min_selecciones": pregunta.min_selecciones,
-                "max_selecciones": pregunta.max_selecciones,
-                "opciones": [
-                    {
-                        "id": opcion.id,
-                        "orden": opcion.orden,
-                        "texto": opcion.texto,
-                        "valor": opcion.valor,
-                    }
-                    for opcion in pregunta.opciones
-                ],
-            }
-            for pregunta in encuesta.preguntas
-        ],
+        "preguntas": [_serialize_question(pregunta) for pregunta in encuesta.preguntas],
     }
 
 
