@@ -7796,13 +7796,18 @@ def test_encuestas_menu_whatsapp_embeds_banner_and_disables_audio(client):
 
     assert menu.get("message_type") == "text"
     assert menu.get("generar_audio") is False
-    assert not menu.get("_twilio_pre_messages")
+    pre_messages = menu.get("_twilio_pre_messages")
+    assert isinstance(pre_messages, list) and len(pre_messages) == 1
+    template_message = pre_messages[0]
+    assert template_message.get("content_sid") == "HXtestBanner"
+    assert template_message.get("channels") == ["whatsapp"]
+    assert menu.get("_force_whatsapp_interactive") is True
     assert menu.get("image_url")
     media_urls = menu.get("media_urls")
     assert isinstance(media_urls, list) and menu["image_url"] in media_urls
 
 
-def test_encuestas_menu_whatsapp_skips_pre_message_when_no_template(client):
+def test_encuestas_menu_whatsapp_uses_media_pre_message_when_no_template(client):
     with client.application.app_context():
         encuesta, slug = _create_active_encuesta(tenant_id=33)
         context = _base_context(tenant_id=encuesta.tenant_id or 33)
@@ -7815,7 +7820,13 @@ def test_encuestas_menu_whatsapp_skips_pre_message_when_no_template(client):
 
     assert menu.get("message_type") == "text"
     assert menu.get("generar_audio") is False
-    assert not menu.get("_twilio_pre_messages")
+    pre_messages = menu.get("_twilio_pre_messages")
+    assert isinstance(pre_messages, list) and pre_messages
+    media_message = pre_messages[0]
+    assert media_message.get("channels") == ["whatsapp"]
+    assert menu.get("image_url") in (media_message.get("media_urls") or [])
+    assert media_message.get("body") == "Participación Ciudadana"
+    assert menu.get("_force_whatsapp_interactive") is True
     assert menu.get("image_url")
 
 
