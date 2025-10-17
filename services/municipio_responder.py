@@ -944,17 +944,25 @@ class ReclamoFlowHandler:
         mensaje += f"- Email: {datos.get('email', 'No especificado')}\n"
         mensaje += f"- Teléfono: {datos.get('telefono', 'No especificado')}\n"
         mensaje += f"- Foto adjunta: {'Sí' if datos.get('foto_url') else 'No'}\n"
+        maps_link = datos.get('maps_link') or datos.get('maps_search_url')
+        static_map_url = datos.get('static_map_url')
+        if maps_link:
+            mensaje += f"- Mapa: {maps_link}\n"
         opciones = [
             {"texto": "Confirmar", "action_id": "reclamo_confirmar_si"},
             {"texto": "Editar", "action_id": "reclamo_confirmar_no"},
             {"texto": "Cancelar", "action_id": "cancelar"},
         ]
         opciones = formatear_opciones(opciones)
-        return {
+        payload = {
             "message_body": mensaje,
             "options_list": opciones,
             "message_type": "interactive_buttons",
         }
+        if static_map_url:
+            payload["image_url"] = static_map_url
+            payload["image_alt_text"] = "Mapa de la ubicación"
+        return payload
 
     def handle_confirmacion(self, user_input, payload):
         action = payload.get("action")
@@ -2394,16 +2402,26 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
         f"- **Email**: {email_usuario}"
     )
 
+    maps_link = datos_reclamo.get("maps_link") or datos_reclamo.get("maps_search_url")
+    static_map_url = datos_reclamo.get("static_map_url")
+    if maps_link:
+        mensaje_confirmacion += f"\n🔗 Ver en mapa: {maps_link}"
+
     botones = [
         {"texto": "Sí, crear reclamo", "action_id": "confirmar_reclamo_si"},
         {"texto": "No, quiero editar", "action_id": "confirmar_reclamo_no"},
     ]
 
-    return {
+    response_payload = {
         "message_body": mensaje_confirmacion,
         "options_list": botones,
-        "message_type": "interactive_buttons"
-    }, contexto_municipio_actual
+        "message_type": "interactive_buttons",
+    }
+    if static_map_url:
+        response_payload["image_url"] = static_map_url
+        response_payload["image_alt_text"] = "Mapa de la ubicación"
+
+    return response_payload, contexto_municipio_actual
 
 
 def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual):

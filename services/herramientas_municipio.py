@@ -735,16 +735,41 @@ def validar_y_formatear_direccion(
         )
         return None
 
-    lat = resolved.get("lat")
-    lon = resolved.get("lon")
-    maps_link = f"https://www.google.com/maps?q={lat},{lon}" if lat and lon else None
+    try:
+        lat = float(resolved.get("lat")) if resolved.get("lat") is not None else None
+        lon = float(resolved.get("lon")) if resolved.get("lon") is not None else None
+    except (TypeError, ValueError):
+        lat = lon = None
+
+    maps_link = f"https://www.google.com/maps?q={lat},{lon}" if lat is not None and lon is not None else None
     static_map_url = None
-    gkey = os.getenv("GOOGLE_MAPS_API_KEY")
-    if gkey and lat and lon:
-        static_map_url = (
-            "https://maps.googleapis.com/maps/api/staticmap?center="
-            f"{lat},{lon}&zoom=18&size=800x500&markers=color:red|{lat},{lon}&key={gkey}"
-        )
+    if lat is not None and lon is not None:
+        lat_str = f"{lat:.6f}".rstrip("0").rstrip(".")
+        lon_str = f"{lon:.6f}".rstrip("0").rstrip(".")
+        gkey = os.getenv("GOOGLE_MAPS_API_KEY")
+        if gkey:
+            static_map_url = (
+                "https://maps.googleapis.com/maps/api/staticmap?center="
+                f"{lat_str},{lon_str}&zoom=18&size=800x500&markers=color:red|{lat_str},{lon_str}&key={gkey}"
+            )
+        else:
+            fallback_tpl = os.getenv("STATIC_MAP_FALLBACK_TEMPLATE")
+            if fallback_tpl:
+                try:
+                    static_map_url = fallback_tpl.format(lat=lat_str, lon=lon_str)
+                except Exception as exc:  # pragma: no cover - guardrail for misconfigured templates
+                    logger.warning(
+                        "[GEO] Plantilla STATIC_MAP_FALLBACK_TEMPLATE inválida (%s): %s",
+                        fallback_tpl,
+                        exc,
+                    )
+                    static_map_url = None
+            if not static_map_url:
+                static_map_url = (
+                    "https://staticmap.openstreetmap.de/staticmap.php"
+                    f"?center={lat_str},{lon_str}&zoom=18&size=800x500&maptype=mapnik"
+                    f"&markers={lat_str},{lon_str},red-pushpin"
+                )
 
     return {
         "formatted_address": resolved.get("formatted"),
