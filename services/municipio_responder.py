@@ -5270,6 +5270,7 @@ def _get_encuestas_menu(context: dict) -> dict:
 
     channel_value = (context.get("channel") or "").strip().lower()
     is_widget_channel = "widget" in channel_value
+    is_whatsapp_channel = "whatsapp" in channel_value
 
     tenant_id = _resolve_encuestas_tenant_id(context)
     toggle = _resolve_encuestas_toggle(context)
@@ -5432,10 +5433,10 @@ def _get_encuestas_menu(context: dict) -> dict:
     options = survey_buttons + base_options
     payload = {
         "message_body": message_body.strip(),
-        "message_type": "interactive_buttons",
+        "message_type": "text" if is_whatsapp_channel else "interactive_buttons",
         "options_list": options,
         "fuente": "submenu_encuestas_v1",
-        "generar_audio": True,
+        "generar_audio": False if is_whatsapp_channel else True,
     }
 
     if banner_image_url:
@@ -5450,11 +5451,12 @@ def _get_encuestas_menu(context: dict) -> dict:
     if survey_metadata:
         payload["surveys"] = survey_metadata
 
-    pre_messages = _build_encuestas_whatsapp_banner_pre_messages(
-        context, banner_image_url, media_attachments
-    )
-    if pre_messages:
-        payload["_twilio_pre_messages"] = pre_messages
+    if not is_whatsapp_channel:
+        pre_messages = _build_encuestas_whatsapp_banner_pre_messages(
+            context, banner_image_url, media_attachments
+        )
+        if pre_messages:
+            payload["_twilio_pre_messages"] = pre_messages
 
     return payload
 
