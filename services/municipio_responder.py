@@ -5017,25 +5017,7 @@ def _resolve_encuestas_menu_image_url(
     if fallback_candidate:
         return fallback_candidate
 
-    resolved_base = _clean(_resolve_encuestas_base_url(context))
-    if resolved_base:
-        base_candidates.append(resolved_base)
-
-    if backend_base:
-        base_candidates.append(backend_base)
-
-    base_candidates.append(_clean(DEFAULT_BACKEND_URL))
-
-    asset_candidate = ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH
-    if isinstance(asset_candidate, str) and asset_candidate.startswith(("http://", "https://")):
-        return asset_candidate
-
-    for base in base_candidates:
-        if not base or not asset_candidate:
-            continue
-        return f"{base.rstrip('/')}{asset_candidate}"
-
-    return asset_candidate or None
+    return primary_url, media_urls
 
 
 def _resolve_encuestas_menu_media_urls(
