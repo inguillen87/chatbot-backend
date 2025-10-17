@@ -8,7 +8,7 @@ import time
 from collections import defaultdict, deque
 import re
 from threading import Lock
-from typing import Any, Dict, Iterator, Optional, Pattern, Union
+from typing import Any, Dict, Iterator, Mapping, Optional, Pattern, Sequence, Union
 
 from flask import (
     Blueprint,
@@ -59,6 +59,41 @@ def _safe_json_loads(raw: Optional[str]) -> Optional[Any]:
         return None
 
 
+def _coerce_form_scalar(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    parsed = _safe_json_loads(value)
+    if parsed is not None:
+        return parsed
+    stripped = value.strip()
+    return stripped or value
+
+
+def _assign_nested_form_values(
+    container: Dict[str, Any],
+    path: Sequence[str],
+    raw_values: Sequence[str],
+    is_list: bool,
+) -> None:
+    if not path:
+        return
+
+    key = path[0]
+    if len(path) == 1:
+        coerced = [_coerce_form_scalar(item) for item in raw_values]
+        if is_list or len(coerced) > 1:
+            container[key] = coerced
+        elif coerced:
+            container[key] = coerced[0]
+        return
+
+    next_container = container.get(key)
+    if not isinstance(next_container, dict):
+        next_container = {}
+        container[key] = next_container
+    _assign_nested_form_values(next_container, path[1:], raw_values, is_list)
+
+
 def _payload_from_form(form) -> Optional[Dict[str, Any]]:
     """Normalize form-encoded submissions into a JSON-like payload."""
 
@@ -66,16 +101,60 @@ def _payload_from_form(form) -> Optional[Dict[str, Any]]:
         return None
 
     payload: Dict[str, Any] = {}
+    respuestas_nested: Dict[int, Dict[str, Any]] = {}
+    metadata_nested: Dict[str, Any] = {}
+
     for key, values in form.lists():
         if not values:
             continue
-        payload[key] = values[0] if len(values) == 1 else values
+
+        parts = re.findall(r"([^\[\]]+)", key)
+        is_list = key.endswith("[]") or len(values) > 1
+
+        if parts and parts[0] == "respuestas" and len(parts) >= 3:
+            index_part = parts[1]
+            if index_part.isdigit():
+                idx = int(index_part)
+                target = respuestas_nested.setdefault(idx, {})
+                _assign_nested_form_values(target, parts[2:], values, is_list)
+                continue
+
+        if parts and parts[0] == "metadata" and len(parts) >= 2:
+            _assign_nested_form_values(metadata_nested, parts[1:], values, is_list)
+            continue
+
+        payload[key] = (
+            _coerce_form_scalar(values[0])
+            if len(values) == 1
+            else [_coerce_form_scalar(item) for item in values]
+        )
+
+    if metadata_nested:
+        existing = payload.get("metadata")
+        if isinstance(existing, dict):
+            existing.update(metadata_nested)
+        else:
+            payload["metadata"] = metadata_nested
+
+    if respuestas_nested:
+        ordered = [respuestas_nested[idx] for idx in sorted(respuestas_nested)]
+        payload["respuestas"] = ordered
 
     raw_embedded = payload.get("payload")
     if isinstance(raw_embedded, str):
         parsed = _safe_json_loads(raw_embedded)
         if isinstance(parsed, dict):
-            return parsed
+            payload.pop("payload", None)
+            for key, value in parsed.items():
+                if key in payload and key in {"metadata", "respuestas"}:
+                    continue
+                payload[key] = value
+    elif isinstance(raw_embedded, Mapping):
+        payload.pop("payload", None)
+        for key, value in raw_embedded.items():
+            if key in payload and key in {"metadata", "respuestas"}:
+                continue
+            payload[key] = value
 
     for key in ("respuestas", "metadata"):
         value = payload.get(key)
