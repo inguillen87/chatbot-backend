@@ -513,6 +513,107 @@ class SugerenciaCiudadano(db.Model):
     def __repr__(self):
         return f"<SugerenciaCiudadano {self.id} por User {self.user_id or self.anon_id}>"
 
+
+class PublicSurvey(db.Model):
+    __tablename__ = "public_survey"
+
+    id = db.Column(db.Integer, primary_key=True)
+    slug = db.Column(db.String(80), unique=True, nullable=False, index=True)
+    titulo = db.Column(db.String(255), nullable=False)
+    descripcion = db.Column(db.Text, nullable=True)
+    estado = db.Column(db.String(20), nullable=False, default="draft")
+    created_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    municipio_id = db.Column(db.Integer, nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now)
+    updated_at = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now)
+    published_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    archived_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    created_by = db.relationship("User")
+
+    def estado_publico(self) -> str:
+        """Devuelve el estado en español para las respuestas HTTP."""
+        mapping = {
+            "draft": "borrador",
+            "published": "publicada",
+            "archived": "archivada",
+        }
+        return mapping.get(self.estado, self.estado)
+
+
+class PublicSurveyQuestion(db.Model):
+    __tablename__ = "public_survey_question"
+
+    id = db.Column(db.Integer, primary_key=True)
+    survey_id = db.Column(db.Integer, db.ForeignKey("public_survey.id"), nullable=False)
+    titulo = db.Column(db.String(255), nullable=False)
+    descripcion = db.Column(db.Text, nullable=True)
+    tipo = db.Column(db.String(30), nullable=False)
+    obligatoria = db.Column(db.Boolean, default=False)
+    orden = db.Column(db.Integer, default=0)
+
+    survey = db.relationship(
+        "PublicSurvey",
+        backref=db.backref(
+            "preguntas",
+            order_by="PublicSurveyQuestion.orden",
+            cascade="all, delete-orphan",
+        ),
+    )
+
+
+class PublicSurveyOption(db.Model):
+    __tablename__ = "public_survey_option"
+
+    id = db.Column(db.Integer, primary_key=True)
+    question_id = db.Column(db.Integer, db.ForeignKey("public_survey_question.id"), nullable=False)
+    texto = db.Column(db.String(255), nullable=False)
+    valor = db.Column(db.String(255), nullable=True)
+    orden = db.Column(db.Integer, default=0)
+
+    question = db.relationship(
+        "PublicSurveyQuestion",
+        backref=db.backref(
+            "opciones",
+            order_by="PublicSurveyOption.orden",
+            cascade="all, delete-orphan",
+        ),
+    )
+
+
+class PublicSurveyResponse(db.Model):
+    __tablename__ = "public_survey_response"
+
+    id = db.Column(db.Integer, primary_key=True)
+    survey_id = db.Column(db.Integer, db.ForeignKey("public_survey.id"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    anon_id = db.Column(db.String(80), nullable=True, index=True)
+    metadata_json = db.Column(JSONType, nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now)
+
+    survey = db.relationship(
+        "PublicSurvey",
+        backref=db.backref("respuestas", cascade="all, delete-orphan"),
+    )
+    user = db.relationship("User")
+
+
+class PublicSurveyAnswer(db.Model):
+    __tablename__ = "public_survey_answer"
+
+    id = db.Column(db.Integer, primary_key=True)
+    response_id = db.Column(db.Integer, db.ForeignKey("public_survey_response.id"), nullable=False)
+    question_id = db.Column(db.Integer, db.ForeignKey("public_survey_question.id"), nullable=False)
+    option_id = db.Column(db.Integer, db.ForeignKey("public_survey_option.id"), nullable=True)
+    valor = db.Column(db.Text, nullable=True)
+
+    response = db.relationship(
+        "PublicSurveyResponse",
+        backref=db.backref("answers", cascade="all, delete-orphan"),
+    )
+    question = db.relationship("PublicSurveyQuestion")
+    option = db.relationship("PublicSurveyOption")
+
 def generate_token():
     return str(uuid.uuid4())
 
