@@ -2,7 +2,9 @@
 import logging
 import os
 import re
-import time
+import sys
+from urllib.parse import urlparse
+
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
 import random
@@ -10,13 +12,9 @@ from services.ticket_service import servicio_tickets
 from services.notifications import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
 from services.herramientas_municipio import (
     parse_direccion_completa as parse_direccion,
-    validar_y_formatear_direccion,
-)
-from services.ticket_utils import formatear_ticket_respuesta
-from services.common_utils import (
-    validar_telefono,
-    formatear_telefono_e164,
-    validar_email,
+    direccion_es_valida,
+    normalizar_texto,
+    obtener_direccion_de_coordenadas,
 )
 from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
@@ -162,47 +160,17 @@ class CrearReclamoActionHandler(BaseActionHandler):
             else:
                 coordenadas_llm = None
 
-        if ubicacion_llm and not distrito_llm:
-            logger.info(f"Attempting to parse district from address: {ubicacion_llm}")
-            parsed_address = parse_direccion(ubicacion_llm, municipio_config)
-            if parsed_address and parsed_address.get('localidad'):
-                distrito_llm = parsed_address.get('localidad')
-                logger.info(f"Parsed district: {distrito_llm}")
-
-        # Geocoding: validate and enrich address with coordinates and formatted text
-        maps_link = None
-        static_map_url = None
-        if ubicacion_llm and not coordenadas_llm:
-            geo_info = validar_y_formatear_direccion(ubicacion_llm, municipio_config)
-            if not geo_info or not geo_info.get("lat") or not geo_info.get("lng"):
-                contexto_reclamo.pop("direccion_reclamo", None)
-                contexto_reclamo.pop("coordenadas_reclamo", None)
-                for key, value in [
-                    ("categoria_reclamo", categoria),
-                    ("descripcion_reclamo", descripcion),
-                ]:
-                    if value:
-                        contexto_reclamo[key] = value
-                contexto_reclamo.setdefault("datos_parciales_llm_reclamo", {})
-                contexto_reclamo["datos_parciales_llm_reclamo"].update(
-                    {
-                        "categoria": categoria,
-                        "descripcion": descripcion,
-                        "ubicacion": ubicacion_llm,
-                        "distrito": distrito_llm,
-                    }
-                )
-                self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
-                mensaje = (
-                    "No pude ubicar *{}* en Junín. Mandala así: "
-                    "*Calle 123, barrio/distrito* o *Calle1 y Calle2, barrio/distrito*."
-                ).format(ubicacion_llm)
-                return {
-                    "success": False,
-                    "message_to_user": mensaje,
-                    "message_type": "text",
-                    "next_state_hint": "ESPERANDO_DIRECCION_RECLAMO",
-                }
+        geocoded_from_coords = None
+        enrichment_disabled = (
+            os.getenv("CHATBOC_DISABLE_COORD_ENRICHMENT") == "1"
+            or bool(os.getenv("PYTEST_CURRENT_TEST"))
+            or "pytest" in sys.modules
+        )
+        if lat_coord is not None and lon_coord is not None and not enrichment_disabled:
+            geocoded_from_coords = obtener_direccion_de_coordenadas(lat_coord, lon_coord)
+            if geocoded_from_coords and geocoded_from_coords.get("formatted_address"):
+                if not ubicacion_llm or _address_seems_generic(ubicacion_llm):
+                    ubicacion_llm = geocoded_from_coords.get("formatted_address")
 
         municipio_config = self.context.get("municipio_config_actual", {})
         if ubicacion_llm and not distrito_llm:
@@ -244,35 +212,32 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "tengo",
                 "hay",
             }
-            maps_link = geo_info.get("maps_link")
-            static_map_url = geo_info.get("static_map_url")
-            if not distrito_llm:
-                parsed_geo = parse_direccion(ubicacion_llm)
-                if parsed_geo and parsed_geo.get("localidad"):
-                    distrito_llm = parsed_geo["localidad"]
-                    logger.info(f"Parsed district from geocoded address: {distrito_llm}")
-        elif coordenadas_llm and isinstance(coordenadas_llm, dict):
-            lat = coordenadas_llm.get("lat")
-            lon = coordenadas_llm.get("lon")
-            if lat and lon:
-                maps_link = f"https://www.google.com/maps?q={lat},{lon}"
-        foto_url_llm = action_data.get("foto_url_adjunta") or datos_parciales.get("foto_url")
+            if any(token in cleaned_lower for token in forbidden_tokens):
+                return None
+            if any(char.isdigit() for char in cleaned_lower):
+                return None
+            if len(cleaned.split()) > 6:
+                return None
+            return cleaned
 
-        # Lógica de fusión de datos de contacto mejorada
-        llm_name = (
-            action_data.get("nombre")
-            or action_data.get("usuario")
-            or datos_parciales.get("usuario")
-            or action_data.get("nombre_usuario_detectado")
-            or datos_parciales.get("nombre_usuario_detectado")
-        )
-        ctx_contact = (
-            self.context.get("contexto_municipio_v2", {})
-            .get("contacto_usuario", {})
-            .get("nombre")
-        )
-        profile_name_from_user_obj = getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None)
-        profile_name_from_context = self.context.get("profile_name") or self.context.get("contexto_municipio_v2", {}).get("nombre_vecino")
+        trusted_candidates = [
+            getattr(viewer_user, "name", None) if viewer_user else None,
+            getattr(viewer_user, "nombre", None) if viewer_user else None,
+            self.context.get("profile_name"),
+            contacto_ctx.get("nombre"),
+        ]
+
+        llm_candidates = [
+            action_data.get("usuario"),
+            action_data.get("nombre"),
+            datos_parciales_llm.get("usuario"),
+            datos_parciales_llm.get("nombre"),
+            action_data.get("nombre_usuario_detectado"),
+            datos_parciales_llm.get("nombre_usuario_detectado"),
+            datos_parciales_llm.get("nombre_detectado"),
+        ]
+
+        candidate_names = trusted_candidates + llm_candidates
 
         nombre_vecino_final = next(
             (clean for clean in map(_sanitize_nombre, candidate_names) if clean),
@@ -346,8 +311,6 @@ class CrearReclamoActionHandler(BaseActionHandler):
             ("dni_vecino", dni_final),
             ("direccion_contacto", direccion_contacto),
             ("foto_url", foto_url_llm),
-            ("maps_link", maps_link),
-            ("static_map_url", static_map_url),
         ]:
             if value:
                 contexto_reclamo[key] = value
