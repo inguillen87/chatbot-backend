@@ -5039,13 +5039,61 @@ def _resolve_encuestas_menu_image_url(
         return fallback_candidate
 
 
+def _resolve_encuestas_whatsapp_banner_media_url(
+    context: dict,
+    api_base_url: Optional[str],
+    base_candidates: Optional[Sequence[str]] = None,
+) -> Optional[str]:
+    """Resolve the media URL tied to the WhatsApp banner/template."""
+
+    municipio_config = context.get("municipio_config_actual") or {}
+    encuestas_cfg = {}
+    if isinstance(municipio_config.get("encuestas"), dict):
+        encuestas_cfg = municipio_config["encuestas"]
+
+    candidate_sources: List[Optional[str]] = [
+        encuestas_cfg.get("whatsapp_banner_media_url"),
+        encuestas_cfg.get("banner_media_url"),
+        municipio_config.get("encuestas_whatsapp_banner_media_url"),
+        municipio_config.get("encuestas_banner_media_url"),
+    ]
+
+    if has_app_context():
+        candidate_sources.append(
+            current_app.config.get("PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL")
+        )
+
+    candidate_sources.append(
+        getattr(AppConfig, "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL", None)
+    )
+
+    if base_candidates is None:
+        base_candidates = _collect_encuestas_base_candidates(context, api_base_url)
+
+    for candidate in candidate_sources:
+        resolved = _resolve_candidate_against_bases(
+            candidate, base_candidates, context
+        )
+        if resolved:
+            return resolved
+
+    return None
+
+
 def _resolve_encuestas_menu_media_urls(
     context: dict, api_base_url: Optional[str]
 ) -> tuple[Optional[str], List[str]]:
     """Return the primary banner URL and additional media fallbacks."""
 
     base_candidates = _collect_encuestas_base_candidates(context, api_base_url)
-    primary_url = _resolve_encuestas_menu_image_url(context, api_base_url)
+    banner_media_url = _resolve_encuestas_whatsapp_banner_media_url(
+        context, api_base_url, base_candidates
+    )
+    primary_url = banner_media_url
+    menu_image_url = _resolve_encuestas_menu_image_url(context, api_base_url)
+
+    if not primary_url:
+        primary_url = menu_image_url
 
     media_urls: List[str] = []
 
@@ -5056,7 +5104,8 @@ def _resolve_encuestas_menu_media_urls(
             if resolved and resolved not in media_urls:
                 media_urls.append(resolved)
 
-    _append(primary_url)
+    _append(banner_media_url)
+    _append(menu_image_url)
 
     if has_app_context():
         _append(current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"))
@@ -5072,7 +5121,143 @@ def _resolve_encuestas_menu_media_urls(
     _append(ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH)
     _append(ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH)
 
+    if not primary_url and media_urls:
+        primary_url = media_urls[0]
+
     return primary_url, media_urls
+
+
+def _resolve_encuestas_whatsapp_banner_template_sid(context: dict) -> Optional[str]:
+    """Resolve the Twilio content template SID for encuestas banners."""
+
+    municipio_config = context.get("municipio_config_actual") or {}
+    encuestas_cfg = {}
+    if isinstance(municipio_config.get("encuestas"), dict):
+        encuestas_cfg = municipio_config["encuestas"]
+
+    template_sid = (
+        encuestas_cfg.get("whatsapp_banner_template_sid")
+        or municipio_config.get("encuestas_whatsapp_banner_template_sid")
+    )
+
+    if not template_sid and has_app_context():
+        template_sid = current_app.config.get(
+            "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"
+        )
+
+    if not template_sid:
+        template_sid = getattr(
+            AppConfig, "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID", None
+        )
+
+    if isinstance(template_sid, str):
+        template_sid = template_sid.strip()
+
+    return template_sid or None
+
+
+def _resolve_encuestas_whatsapp_banner_body(context: dict) -> str:
+    """Return the caption used when sending the encuestas banner via media."""
+
+    municipio_config = context.get("municipio_config_actual") or {}
+    encuestas_cfg = {}
+    if isinstance(municipio_config.get("encuestas"), dict):
+        encuestas_cfg = municipio_config["encuestas"]
+
+    body = (
+        encuestas_cfg.get("whatsapp_banner_body")
+        or municipio_config.get("encuestas_whatsapp_banner_body")
+    )
+
+    if not body and has_app_context():
+        body = current_app.config.get("PUBLIC_ENCUESTAS_WHATSAPP_BANNER_BODY")
+
+    if not body:
+        body = getattr(AppConfig, "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_BODY", None)
+
+    if not isinstance(body, str):
+        body = "Encuestas/Opiniones/Sondeos"
+    else:
+        body = body.strip() or "Encuestas/Opiniones/Sondeos"
+
+    return body
+
+
+def _build_encuestas_whatsapp_banner_pre_messages(
+    context: dict,
+    image_url: Optional[str],
+    media_urls: Sequence[str],
+) -> List[dict]:
+    """Return Twilio pre-messages to display the banner in WhatsApp."""
+
+    channel_value = (context.get("channel") or "").strip().lower()
+    if "whatsapp" not in channel_value:
+        return []
+
+    template_sid = _resolve_encuestas_whatsapp_banner_template_sid(context)
+    channels = ["whatsapp"]
+
+    if template_sid:
+        return [
+            {
+                "channels": channels,
+                "content_sid": template_sid,
+                "content_variables": {},
+            }
+        ]
+
+    candidate_url = image_url
+    if not candidate_url:
+        for candidate in media_urls:
+            if candidate:
+                candidate_url = candidate
+                break
+
+    if not candidate_url:
+        return []
+
+    caption = _resolve_encuestas_whatsapp_banner_body(context)
+    return [
+        {
+            "channels": channels,
+            "body": caption,
+            "media_urls": [candidate_url],
+        }
+    ]
+
+
+def _build_encuesta_share_whatsapp_pre_messages(
+    context: dict,
+    share_message: Optional[str],
+    image_url: Optional[str],
+    media_urls: Sequence[str],
+) -> List[dict]:
+    """Prepare media pre-messages so WhatsApp forwards keep their thumbnail."""
+
+    channel_value = (context.get("channel") or "").strip().lower()
+    if "whatsapp" not in channel_value:
+        return []
+
+    if not share_message:
+        return []
+
+    candidate_url = image_url
+    if not candidate_url:
+        for candidate in media_urls:
+            if candidate:
+                candidate_url = candidate
+                break
+
+    if not candidate_url:
+        return []
+
+    return [
+        {
+            "channels": ["whatsapp"],
+            "body": share_message,
+            "media_urls": [candidate_url],
+        }
+    ]
 
 
 def _get_encuestas_menu(context: dict) -> dict:
@@ -5082,6 +5267,10 @@ def _get_encuestas_menu(context: dict) -> dict:
         {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
         {"texto": "Cancelar", "action_id": "cancelar"},
     ]
+
+    channel_value = (context.get("channel") or "").strip().lower()
+    is_widget_channel = "widget" in channel_value
+    is_whatsapp_channel = "whatsapp" in channel_value
 
     tenant_id = _resolve_encuestas_tenant_id(context)
     toggle = _resolve_encuestas_toggle(context)
@@ -5145,13 +5334,14 @@ def _get_encuestas_menu(context: dict) -> dict:
 
     base_url = _resolve_encuestas_base_url(context)
     api_base_url = _resolve_encuestas_api_base_url(context)
-    menu_image_url, media_attachments = _resolve_encuestas_menu_media_urls(
+    primary_banner_url, media_attachments = _resolve_encuestas_menu_media_urls(
         context, api_base_url
     )
     share_media_defaults = list(media_attachments)
-    share_image_default = menu_image_url or (
+    share_image_default = primary_banner_url or (
         share_media_defaults[0] if share_media_defaults else None
     )
+    banner_image_url = share_image_default
 
     lines: List[str] = []
     survey_buttons: List[Dict[str, Any]] = []
@@ -5181,16 +5371,18 @@ def _get_encuestas_menu(context: dict) -> dict:
         short_title = _shorten_button_label(titulo)
         share_button_title = _shorten_button_label(titulo, max_length=30)
 
-        display_share_url = share_short_url
+        display_share_url = share_short_url or share_url
 
         line_parts = [f"{index}. *{titulo}*"]
         if descripcion:
             line_parts.append(f"   {descripcion}")
-        line_parts.append(f"   • Abrir: {display_share_url}")
-        line_parts.append(
-            "   • Compartir: tocá 'Compartir "
-            f"{share_button_title}'"
-        )
+        if display_share_url:
+            line_parts.append(f"   • Abrir: {display_share_url}")
+        if whatsapp_share_url:
+            line_parts.append(
+                "   • Compartir con un mensaje listo para WhatsApp: "
+                f"{whatsapp_share_url}"
+            )
         lines.append("\n".join(line_parts))
 
         survey_buttons.append(
@@ -5201,12 +5393,16 @@ def _get_encuestas_menu(context: dict) -> dict:
             }
         )
 
-        survey_buttons.append(
-            {
-                "texto": f"Compartir {share_button_title}",
-                "action_id": share_action_id,
-            }
-        )
+        share_button: Dict[str, Any] = {
+            "texto": f"Compartir {share_button_title}",
+            "action_id": share_action_id,
+        }
+        if is_widget_channel and whatsapp_share_url:
+            share_button.pop("action_id", None)
+            share_button["url"] = whatsapp_share_url
+            share_button["type"] = "url"
+
+        survey_buttons.append(share_button)
 
         survey_metadata.append(
             {
@@ -5237,14 +5433,14 @@ def _get_encuestas_menu(context: dict) -> dict:
     options = survey_buttons + base_options
     payload = {
         "message_body": message_body.strip(),
-        "message_type": "interactive_buttons",
+        "message_type": "text" if is_whatsapp_channel else "interactive_buttons",
         "options_list": options,
         "fuente": "submenu_encuestas_v1",
-        "generar_audio": True,
+        "generar_audio": False if is_whatsapp_channel else True,
     }
 
-    if menu_image_url:
-        payload["image_url"] = menu_image_url
+    if banner_image_url:
+        payload["image_url"] = banner_image_url
 
     if api_base_url:
         payload.setdefault("_base_url", api_base_url)
@@ -5254,6 +5450,13 @@ def _get_encuestas_menu(context: dict) -> dict:
 
     if survey_metadata:
         payload["surveys"] = survey_metadata
+
+    if not is_whatsapp_channel:
+        pre_messages = _build_encuestas_whatsapp_banner_pre_messages(
+            context, banner_image_url, media_attachments
+        )
+        if pre_messages:
+            payload["_twilio_pre_messages"] = pre_messages
 
     return payload
 
@@ -5270,6 +5473,8 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
     share_image_url, share_media_urls = _resolve_encuestas_menu_media_urls(
         context, api_base_url
     )
+    if not share_image_url and share_media_urls:
+        share_image_url = share_media_urls[0]
 
     stored_meta = contexto_municipio_actual.get("encuestas_menu_surveys") or []
     share_meta = None
@@ -5405,13 +5610,17 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
             "generar_audio": True,
         }
 
-    message_lines = [
-        "*Compartir encuesta*",
-        f"Reenviá este mensaje para invitar a participar en *{titulo}*:",
-        "",
-        share_message,
-        "",
-    ]
+    pre_messages = _build_encuesta_share_whatsapp_pre_messages(
+        context, share_message, share_image_url, share_media_urls
+    )
+
+    intro_line = (
+        f"Reenviá el mensaje con imagen que te envié arriba o copiá este texto:"
+        if pre_messages
+        else f"Reenviá este mensaje para invitar a participar en *{titulo}*:"
+    )
+
+    message_lines = ["*Compartir encuesta*", intro_line, "", share_message, ""]
 
     if share_whatsapp_url:
         message_lines.append(
@@ -5441,6 +5650,9 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
         payload["image_url"] = share_image_url
     if share_media_urls:
         payload["media_urls"] = share_media_urls
+
+    if pre_messages:
+        payload["_twilio_pre_messages"] = pre_messages
 
     if api_base_url:
         payload.setdefault("_base_url", api_base_url)
