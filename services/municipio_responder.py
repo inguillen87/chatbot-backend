@@ -5039,13 +5039,61 @@ def _resolve_encuestas_menu_image_url(
         return fallback_candidate
 
 
+def _resolve_encuestas_whatsapp_banner_media_url(
+    context: dict,
+    api_base_url: Optional[str],
+    base_candidates: Optional[Sequence[str]] = None,
+) -> Optional[str]:
+    """Resolve the media URL tied to the WhatsApp banner/template."""
+
+    municipio_config = context.get("municipio_config_actual") or {}
+    encuestas_cfg = {}
+    if isinstance(municipio_config.get("encuestas"), dict):
+        encuestas_cfg = municipio_config["encuestas"]
+
+    candidate_sources: List[Optional[str]] = [
+        encuestas_cfg.get("whatsapp_banner_media_url"),
+        encuestas_cfg.get("banner_media_url"),
+        municipio_config.get("encuestas_whatsapp_banner_media_url"),
+        municipio_config.get("encuestas_banner_media_url"),
+    ]
+
+    if has_app_context():
+        candidate_sources.append(
+            current_app.config.get("PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL")
+        )
+
+    candidate_sources.append(
+        getattr(AppConfig, "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL", None)
+    )
+
+    if base_candidates is None:
+        base_candidates = _collect_encuestas_base_candidates(context, api_base_url)
+
+    for candidate in candidate_sources:
+        resolved = _resolve_candidate_against_bases(
+            candidate, base_candidates, context
+        )
+        if resolved:
+            return resolved
+
+    return None
+
+
 def _resolve_encuestas_menu_media_urls(
     context: dict, api_base_url: Optional[str]
 ) -> tuple[Optional[str], List[str]]:
     """Return the primary banner URL and additional media fallbacks."""
 
     base_candidates = _collect_encuestas_base_candidates(context, api_base_url)
-    primary_url = _resolve_encuestas_menu_image_url(context, api_base_url)
+    banner_media_url = _resolve_encuestas_whatsapp_banner_media_url(
+        context, api_base_url, base_candidates
+    )
+    primary_url = banner_media_url
+    menu_image_url = _resolve_encuestas_menu_image_url(context, api_base_url)
+
+    if not primary_url:
+        primary_url = menu_image_url
 
     media_urls: List[str] = []
 
@@ -5056,7 +5104,8 @@ def _resolve_encuestas_menu_media_urls(
             if resolved and resolved not in media_urls:
                 media_urls.append(resolved)
 
-    _append(primary_url)
+    _append(banner_media_url)
+    _append(menu_image_url)
 
     if has_app_context():
         _append(current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"))
@@ -5071,6 +5120,9 @@ def _resolve_encuestas_menu_media_urls(
 
     _append(ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH)
     _append(ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH)
+
+    if not primary_url and media_urls:
+        primary_url = media_urls[0]
 
     return primary_url, media_urls
 
@@ -5281,11 +5333,11 @@ def _get_encuestas_menu(context: dict) -> dict:
 
     base_url = _resolve_encuestas_base_url(context)
     api_base_url = _resolve_encuestas_api_base_url(context)
-    menu_image_url, media_attachments = _resolve_encuestas_menu_media_urls(
+    primary_banner_url, media_attachments = _resolve_encuestas_menu_media_urls(
         context, api_base_url
     )
     share_media_defaults = list(media_attachments)
-    share_image_default = menu_image_url or (
+    share_image_default = primary_banner_url or (
         share_media_defaults[0] if share_media_defaults else None
     )
     banner_image_url = share_image_default
@@ -5345,6 +5397,7 @@ def _get_encuestas_menu(context: dict) -> dict:
             "action_id": share_action_id,
         }
         if is_widget_channel and whatsapp_share_url:
+            share_button.pop("action_id", None)
             share_button["url"] = whatsapp_share_url
             share_button["type"] = "url"
 
