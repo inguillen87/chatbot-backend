@@ -5075,150 +5075,6 @@ def _resolve_encuestas_menu_media_urls(
     return primary_url, media_urls
 
 
-def _resolve_encuestas_menu_media_urls(
-    context: dict, api_base_url: Optional[str]
-) -> tuple[Optional[str], List[str]]:
-    """Return the primary banner URL and additional media fallbacks."""
-
-    base_candidates = _collect_encuestas_base_candidates(context, api_base_url)
-    primary_url = _resolve_encuestas_menu_image_url(context, api_base_url)
-
-    media_urls: List[str] = []
-
-    def _append(candidate: Optional[str]) -> None:
-        for resolved in _resolve_candidate_across_bases(
-            candidate, base_candidates, context
-        ):
-            if resolved and resolved not in media_urls:
-                media_urls.append(resolved)
-
-    _append(primary_url)
-
-    if has_app_context():
-        _append(current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"))
-        _append(
-            current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL")
-        )
-
-    _append(getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None))
-    _append(
-        getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL", None)
-    )
-
-    _append(ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH)
-    _append(ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH)
-
-    return primary_url, media_urls
-
-
-def _resolve_encuestas_menu_media_urls(
-    context: dict, api_base_url: Optional[str]
-) -> tuple[Optional[str], List[str]]:
-    """Return the primary banner URL and additional media fallbacks."""
-
-    base_candidates = _collect_encuestas_base_candidates(context, api_base_url)
-    primary_url = _resolve_encuestas_menu_image_url(context, api_base_url)
-
-    media_urls: List[str] = []
-
-    def _append(candidate: Optional[str]) -> None:
-        for resolved in _resolve_candidate_across_bases(
-            candidate, base_candidates, context
-        ):
-            if resolved and resolved not in media_urls:
-                media_urls.append(resolved)
-
-    _append(primary_url)
-
-    if has_app_context():
-        _append(current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"))
-        _append(
-            current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL")
-        )
-
-    _append(getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None))
-    _append(
-        getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL", None)
-    )
-
-    _append(ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH)
-    _append(ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH)
-
-    return primary_url, media_urls
-
-
-def _resolve_encuestas_menu_media_urls(
-    context: dict, api_base_url: Optional[str]
-) -> tuple[Optional[str], List[str]]:
-    """Return the primary banner URL and additional media fallbacks."""
-
-    base_candidates = _collect_encuestas_base_candidates(context, api_base_url)
-    primary_url = _resolve_encuestas_menu_image_url(context, api_base_url)
-
-    media_urls: List[str] = []
-
-    def _append(candidate: Optional[str]) -> None:
-        for resolved in _resolve_candidate_across_bases(
-            candidate, base_candidates, context
-        ):
-            if resolved and resolved not in media_urls:
-                media_urls.append(resolved)
-
-    _append(primary_url)
-
-    if has_app_context():
-        _append(current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"))
-        _append(
-            current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL")
-        )
-
-    _append(getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None))
-    _append(
-        getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL", None)
-    )
-
-    _append(ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH)
-    _append(ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH)
-
-    return primary_url, media_urls
-
-
-def _resolve_encuestas_menu_media_urls(
-    context: dict, api_base_url: Optional[str]
-) -> tuple[Optional[str], List[str]]:
-    """Return the primary banner URL and additional media fallbacks."""
-
-    base_candidates = _collect_encuestas_base_candidates(context, api_base_url)
-    primary_url = _resolve_encuestas_menu_image_url(context, api_base_url)
-
-    media_urls: List[str] = []
-
-    def _append(candidate: Optional[str]) -> None:
-        for resolved in _resolve_candidate_across_bases(
-            candidate, base_candidates, context
-        ):
-            if resolved and resolved not in media_urls:
-                media_urls.append(resolved)
-
-    _append(primary_url)
-
-    if has_app_context():
-        _append(current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"))
-        _append(
-            current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL")
-        )
-
-    _append(getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None))
-    _append(
-        getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL", None)
-    )
-
-    _append(ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH)
-    _append(ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH)
-
-    return primary_url, media_urls
-
-
 def _get_encuestas_menu(context: dict) -> dict:
     """Build the participatory surveys submenu for the chatbot."""
 
@@ -5292,6 +5148,10 @@ def _get_encuestas_menu(context: dict) -> dict:
     menu_image_url, media_attachments = _resolve_encuestas_menu_media_urls(
         context, api_base_url
     )
+    share_media_defaults = list(media_attachments)
+    share_image_default = menu_image_url or (
+        share_media_defaults[0] if share_media_defaults else None
+    )
 
     lines: List[str] = []
     survey_buttons: List[Dict[str, Any]] = []
@@ -5362,6 +5222,8 @@ def _get_encuestas_menu(context: dict) -> dict:
                 "share_widget_url": (
                     f"{share_url}?canal=widget_chat" if share_url else None
                 ),
+                "share_image_url": share_image_default,
+                "share_media_urls": list(share_media_defaults),
             }
         )
 
@@ -5432,6 +5294,10 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
         share_message = share_meta.get("share_message")
         share_whatsapp_url = share_meta.get("share_whatsapp_url")
         share_widget_url = share_meta.get("share_widget_url")
+        share_image_url = share_meta.get("share_image_url") or share_image_url
+        meta_media_urls = share_meta.get("share_media_urls")
+        if isinstance(meta_media_urls, list) and meta_media_urls:
+            share_media_urls = list(meta_media_urls)
 
     if not share_url and normalized_slug:
         base_url = _resolve_encuestas_base_url(context)
@@ -5478,6 +5344,10 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
                 "qr_url": None,
                 "share_whatsapp_url": None,
                 "share_widget_url": None,
+                "share_image_url": share_image_url,
+                "share_media_urls": list(share_media_urls)
+                if share_media_urls
+                else [],
             }
             stored_meta.append(new_meta)
             contexto_municipio_actual["encuestas_menu_surveys"] = stored_meta
@@ -5498,6 +5368,10 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
             share_meta["share_whatsapp_url"] = share_whatsapp_url
         if share_widget_url:
             share_meta["share_widget_url"] = share_widget_url
+        if share_image_url:
+            share_meta["share_image_url"] = share_image_url
+        if share_media_urls:
+            share_meta["share_media_urls"] = list(share_media_urls)
 
     share_followup_options = [
         {"texto": "Volver a encuestas", "action_id": "mostrar_menu_encuestas"},
@@ -5505,14 +5379,16 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
         {"texto": "Cancelar", "action_id": "cancelar"},
     ]
 
-    stored_options = (
-        contexto_municipio_actual.get("encuestas_menu_options") or share_followup_options
-    )
+    previous_menu_options = contexto_municipio_actual.get("encuestas_menu_options")
+    if previous_menu_options:
+        contexto_municipio_actual["_encuestas_menu_previous_options"] = previous_menu_options
+
+    stored_options = list(share_followup_options)
     contexto_municipio_actual["estado_conversacion"] = (
         ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
     )
     contexto_municipio_actual["menu_opciones"] = stored_options
-    contexto_municipio_actual.setdefault("encuestas_menu_options", stored_options)
+    contexto_municipio_actual["encuestas_menu_options"] = stored_options
 
     if chat_db_context:
         flag_modified(chat_db_context, "context_data")
