@@ -2,6 +2,7 @@ from database import db
 import json
 
 import pytest
+from werkzeug.datastructures import MultiDict
 
 from models import EncEncuesta, EncLink, User
 from routes import encuestas_public
@@ -158,6 +159,43 @@ def test_responder_parses_respuestas_field_from_form(client, monkeypatch):
     assert response.get_json()["respuesta_id"] == 789
     assert captured["payload"]["respuestas"] == respuestas
     assert captured["payload"]["metadata"] == {"canal": "web"}
+
+
+def test_responder_flattens_bracketed_form_fields(client, monkeypatch):
+    captured: dict = {}
+
+    def fake_save(slug, payload, ctx):
+        captured["payload"] = payload
+        return _DummyRespuesta(321)
+
+    monkeypatch.setattr("routes.encuestas_public.save_respuesta", fake_save)
+
+    form_payload = MultiDict(
+        [
+            ("respuestas[0][pregunta_id]", "10"),
+            ("respuestas[0][opcion_ids][]", "2"),
+            ("respuestas[0][opcion_ids][]", "3"),
+            ("metadata[canal]", "web"),
+            ("metadata[demographics][genero]", "femenino"),
+        ]
+    )
+
+    response = client.post(
+        "/public/encuestas/demo-encuesta/responder",
+        data=form_payload,
+        headers={"X-Forwarded-For": "4.4.4.4"},
+        content_type="application/x-www-form-urlencoded",
+    )
+
+    assert response.status_code == 201
+    assert response.get_json()["respuesta_id"] == 321
+
+    payload = captured["payload"]
+    assert payload["respuestas"] == [
+        {"pregunta_id": 10, "opcion_ids": [2, 3]}
+    ]
+    assert payload["metadata"]["canal"] == "web"
+    assert payload["metadata"]["demographics"]["genero"] == "femenino"
 
 
 def test_share_redirects_to_canonical(client):

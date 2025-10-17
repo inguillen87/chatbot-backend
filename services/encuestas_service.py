@@ -1975,6 +1975,17 @@ def _coerce_respuestas_payload(value: Optional[Any]) -> List[Dict[str, Any]]:
             return []
         return _coerce_respuestas_payload(parsed)
     if isinstance(value, Mapping):
+        numeric_children: List[Tuple[int, Mapping[str, Any]]] = []
+        for key, item in value.items():
+            if isinstance(item, Mapping) and (
+                isinstance(key, int) or (isinstance(key, str) and key.isdigit())
+            ):
+                numeric_children.append((int(key), item))
+            else:
+                numeric_children = []
+                break
+        if numeric_children:
+            return [dict(child) for _, child in sorted(numeric_children, key=lambda pair: pair[0])]
         return [dict(value)]
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         normalized: List[Dict[str, Any]] = []
