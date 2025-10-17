@@ -753,6 +753,95 @@ def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
     return dt.astimezone(timezone.utc)
 
 
+def _normalize_pregunta_tipo(raw_tipo: Any) -> str:
+    if raw_tipo is None:
+        return "opcion_unica"
+
+    text = str(raw_tipo).strip().lower()
+    if not text:
+        return "opcion_unica"
+
+    mapping = {
+        "multiple": "opcion_multiple",
+        "opcion multiple": "opcion_multiple",
+        "opcion_multiple": "opcion_multiple",
+        "multiple_choice": "opcion_multiple",
+        "multiple-choice": "opcion_multiple",
+        "multiplechoice": "opcion_multiple",
+        "multi_choice": "opcion_multiple",
+        "multi-choice": "opcion_multiple",
+        "multichoice": "opcion_multiple",
+        "multi_select": "opcion_multiple",
+        "multi-select": "opcion_multiple",
+        "multiselect": "opcion_multiple",
+        "checkbox": "opcion_multiple",
+        "check": "opcion_multiple",
+        "multiple answers": "opcion_multiple",
+        "multi": "opcion_multiple",
+        "single": "opcion_unica",
+        "single_choice": "opcion_unica",
+        "single-choice": "opcion_unica",
+        "singlechoice": "opcion_unica",
+        "radio": "opcion_unica",
+        "opcion_unica": "opcion_unica",
+        "texto": "abierta",
+        "text": "abierta",
+        "open": "abierta",
+        "open_text": "abierta",
+        "open-text": "abierta",
+    }
+
+    return mapping.get(text, text)
+
+
+def _coerce_int_or_none(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        return int(float(text))
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_option_entries(opciones: Sequence[Any]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for opt in opciones or []:
+        if isinstance(opt, str):
+            texto = opt.strip()
+            if texto:
+                normalized.append({"texto": texto, "orden": len(normalized) + 1})
+            continue
+
+        if not isinstance(opt, dict):
+            continue
+
+        texto = (
+            opt.get("texto")
+            or opt.get("label")
+            or opt.get("nombre")
+            or opt.get("title")
+            or opt.get("value")
+        )
+        texto_limpio = str(texto).strip() if texto is not None else ""
+        if not texto_limpio:
+            continue
+
+        opcion = dict(opt)
+        opcion["texto"] = texto_limpio
+        orden = _coerce_int_or_none(opcion.get("orden"))
+        if orden is None:
+            orden = len(normalized) + 1
+        opcion["orden"] = orden
+        normalized.append(opcion)
+
+    return normalized
+
+
 def _validate_pregunta_payload(pregunta: Dict[str, Any], index: int) -> Dict[str, Any]:
     payload = dict(pregunta)
     missing: List[str] = []
@@ -761,7 +850,7 @@ def _validate_pregunta_payload(pregunta: Dict[str, Any], index: int) -> Dict[str
     if not raw_tipo:
         missing.append("tipo")
     else:
-        payload["tipo"] = raw_tipo
+        payload["tipo"] = _normalize_pregunta_tipo(raw_tipo)
 
     texto = (
         payload.get("texto")
@@ -790,15 +879,26 @@ def _validate_pregunta_payload(pregunta: Dict[str, Any], index: int) -> Dict[str
     if "obligatoria" not in payload and "required" in payload:
         payload["obligatoria"] = bool(payload.get("required"))
 
-    if payload.get("opciones") is None and payload.get("options") is not None:
+    if "opciones" not in payload and payload.get("options") is not None:
         payload["opciones"] = payload.get("options") or []
 
-    tipo = payload.get("tipo")
-    if tipo in {"multiple"}:
-        tipo = "opcion_multiple"
-        payload["tipo"] = tipo
+    if "min_selecciones" not in payload and payload.get("minSeleccion") is not None:
+        payload["min_selecciones"] = payload.get("minSeleccion")
+    if "max_selecciones" not in payload and payload.get("maxSeleccion") is not None:
+        payload["max_selecciones"] = payload.get("maxSeleccion")
 
-    opciones = payload.get("opciones") or []
+    tipo = _normalize_pregunta_tipo(payload.get("tipo"))
+    payload["tipo"] = tipo
+
+    payload["min_selecciones"] = _coerce_int_or_none(
+        payload.get("min_selecciones")
+    )
+    payload["max_selecciones"] = _coerce_int_or_none(
+        payload.get("max_selecciones")
+    )
+
+    opciones = _normalize_option_entries(payload.get("opciones") or [])
+    payload["opciones"] = opciones
     if tipo in {"opcion_unica", "opcion_multiple"} and not opciones:
         raise EncuestaError(f"Pregunta #{index + 1} requiere opciones")
 
@@ -825,17 +925,15 @@ def _build_pregunta_entities(encuesta: EncEncuesta, preguntas_payload: Sequence[
     preguntas: List[EncPregunta] = []
     for idx, pregunta_payload in enumerate(preguntas_payload):
         payload = _validate_pregunta_payload(pregunta_payload, idx)
-        pregunta_tipo = payload.get("tipo", "opcion_unica")
-        if pregunta_tipo == "multiple":
-            pregunta_tipo = "opcion_multiple"
+        pregunta_tipo = _normalize_pregunta_tipo(payload.get("tipo", "opcion_unica"))
         pregunta = EncPregunta(
             encuesta=encuesta,
             orden=int(payload.get("orden", idx + 1)),
             tipo=pregunta_tipo,
             texto=(payload.get("texto") or "").strip(),
             obligatoria=bool(payload.get("obligatoria", False)),
-            min_selecciones=payload.get("min_selecciones"),
-            max_selecciones=payload.get("max_selecciones"),
+            min_selecciones=_coerce_int_or_none(payload.get("min_selecciones")),
+            max_selecciones=_coerce_int_or_none(payload.get("max_selecciones")),
         )
         opciones_payload = payload.get("opciones") or []
         for opt in opciones_payload:

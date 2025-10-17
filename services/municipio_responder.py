@@ -11,7 +11,7 @@ import json
 from enum import Enum, auto
 import unicodedata
 import difflib
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
@@ -82,6 +82,8 @@ from services.vocabulary_loader import get_name_prefix_stopwords
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
 from config import (
     BACKEND_URL as DEFAULT_BACKEND_URL,
+    ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH,
+    ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH,
     IS_HTTPS as DEFAULT_IS_HTTPS,
     Config as AppConfig,
 )
@@ -4893,6 +4895,77 @@ def _format_url_for_display(
     return display
 
 
+def _clean_url_candidate(value: Optional[str]) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _collect_encuestas_base_candidates(
+    context: dict, api_base_url: Optional[str]
+) -> List[str]:
+    base_candidates: List[str] = []
+
+    if has_app_context():
+        canonical_base = _clean_url_candidate(
+            current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+        )
+        backend_base = _clean_url_candidate(current_app.config.get("BACKEND_URL"))
+        if canonical_base:
+            base_candidates.append(canonical_base.rstrip("/"))
+        if backend_base:
+            base_candidates.append(backend_base.rstrip("/"))
+
+    if api_base_url:
+        api_base_cleaned = _clean_url_candidate(api_base_url)
+        if api_base_cleaned:
+            base_candidates.append(api_base_cleaned.rstrip("/"))
+
+    resolved_base = _clean_url_candidate(_resolve_encuestas_base_url(context))
+    if resolved_base:
+        base_candidates.append(resolved_base.rstrip("/"))
+
+    default_base = _clean_url_candidate(DEFAULT_BACKEND_URL)
+    if default_base:
+        base_candidates.append(default_base.rstrip("/"))
+
+    seen: set[str] = set()
+    unique: List[str] = []
+    for base in base_candidates:
+        if base and base not in seen:
+            seen.add(base)
+            unique.append(base)
+    return unique
+
+
+def _resolve_candidate_against_bases(
+    candidate: Optional[str],
+    base_candidates: Sequence[str],
+    context: Optional[dict] = None,
+) -> Optional[str]:
+    cleaned = _clean_url_candidate(candidate)
+    if not cleaned:
+        return None
+
+    normalized = _normalize_public_url(cleaned, context)
+    if normalized:
+        return normalized
+
+    if cleaned.startswith(("http://", "https://")):
+        return cleaned
+
+    if cleaned.startswith("//"):
+        return f"https:{cleaned}" if cleaned[2:] else None
+
+    for base in base_candidates:
+        if cleaned.startswith("/"):
+            return f"{base}{cleaned}"
+        return f"{base}/{cleaned.lstrip('/')}"
+
+    return cleaned if cleaned else None
+
+
 def _resolve_encuestas_menu_image_url(
     context: dict, api_base_url: Optional[str]
 ) -> Optional[str]:
@@ -4914,28 +4987,65 @@ def _resolve_encuestas_menu_image_url(
         or municipio_config.get("encuestas_default_share_image_url")
     )
 
-    normalized_image = _normalize_public_url(raw_image_url, context)
-    if normalized_image:
-        return normalized_image
+    base_candidates = _collect_encuestas_base_candidates(context, api_base_url)
 
-    fallback_image_url = None
+    candidate_sources = [raw_image_url]
     if has_app_context():
-        fallback_image_url = current_app.config.get(
-            "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"
+        candidate_sources.append(
+            current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL")
         )
-    if not fallback_image_url:
-        fallback_image_url = getattr(
-            AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None
+    candidate_sources.append(
+        getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None)
+    )
+
+    for candidate in candidate_sources:
+        resolved = _resolve_candidate_against_bases(
+            candidate, base_candidates, context
         )
+        if resolved:
+            return resolved
 
-    if isinstance(fallback_image_url, str) and fallback_image_url.strip():
-        return fallback_image_url.strip()
-
-    if api_base_url:
-        base = api_base_url.rstrip("/")
-        return f"{base}/static/encuestas/participacion_ciudadana.png"
+    fallback_candidate = _resolve_candidate_against_bases(
+        ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH, base_candidates, context
+    )
+    if fallback_candidate:
+        return fallback_candidate
 
     return None
+
+
+def _resolve_encuestas_menu_media_urls(
+    context: dict, api_base_url: Optional[str]
+) -> tuple[Optional[str], List[str]]:
+    """Return the primary banner URL and additional media fallbacks."""
+
+    base_candidates = _collect_encuestas_base_candidates(context, api_base_url)
+    primary_url = _resolve_encuestas_menu_image_url(context, api_base_url)
+
+    media_urls: List[str] = []
+
+    def _append(candidate: Optional[str]) -> None:
+        resolved = _resolve_candidate_against_bases(candidate, base_candidates, context)
+        if resolved and resolved not in media_urls:
+            media_urls.append(resolved)
+
+    _append(primary_url)
+
+    if has_app_context():
+        _append(current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"))
+        _append(
+            current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL")
+        )
+
+    _append(getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None))
+    _append(
+        getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL", None)
+    )
+
+    _append(ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH)
+    _append(ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH)
+
+    return primary_url, media_urls
 
 
 def _get_encuestas_menu(context: dict) -> dict:
@@ -5008,7 +5118,9 @@ def _get_encuestas_menu(context: dict) -> dict:
 
     base_url = _resolve_encuestas_base_url(context)
     api_base_url = _resolve_encuestas_api_base_url(context)
-    menu_image_url = _resolve_encuestas_menu_image_url(context, api_base_url)
+    menu_image_url, media_attachments = _resolve_encuestas_menu_media_urls(
+        context, api_base_url
+    )
 
     lines: List[str] = []
     survey_buttons: List[Dict[str, Any]] = []
@@ -5096,9 +5208,6 @@ def _get_encuestas_menu(context: dict) -> dict:
     if api_base_url:
         payload.setdefault("_base_url", api_base_url)
 
-    media_attachments: List[str] = []
-    if menu_image_url:
-        media_attachments.append(menu_image_url)
     if media_attachments:
         payload["media_urls"] = media_attachments
 
@@ -5117,7 +5226,9 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
     )
 
     api_base_url = _resolve_encuestas_api_base_url(context)
-    share_image_url = _resolve_encuestas_menu_image_url(context, api_base_url)
+    share_image_url, share_media_urls = _resolve_encuestas_menu_media_urls(
+        context, api_base_url
+    )
 
     stored_meta = contexto_municipio_actual.get("encuestas_menu_surveys") or []
     share_meta = None
@@ -5273,7 +5384,8 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
 
     if share_image_url:
         payload["image_url"] = share_image_url
-        payload["media_urls"] = [share_image_url]
+    if share_media_urls:
+        payload["media_urls"] = share_media_urls
 
     if api_base_url:
         payload.setdefault("_base_url", api_base_url)
