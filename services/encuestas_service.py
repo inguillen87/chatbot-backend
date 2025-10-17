@@ -2363,10 +2363,11 @@ def _is_encuesta_activa(encuesta: EncEncuesta) -> bool:
 def seed_encuesta_respuestas_demo(
     encuesta_id: int,
     user: Any,
-    cantidad: int = 50,
+    cantidad: int = 100,
     *,
     geo_profile_key: Optional[str] = None,
     municipality_label: Optional[str] = None,
+    seed: Optional[int] = None,
 ) -> Dict[str, Any]:
     if cantidad <= 0:
         raise EncuestaError("Debe solicitar al menos una respuesta demo")
@@ -2378,7 +2379,7 @@ def seed_encuesta_respuestas_demo(
         geo_metadata = _resolve_geo_metadata(profile_key=geo_profile_key)
     if not geo_metadata and municipality_label:
         geo_metadata = _resolve_geo_metadata(municipality=municipality_label)
-    rng = random.Random()
+    rng = random.Random(seed)
 
     location_question = None
     otros_option = None
@@ -2598,6 +2599,7 @@ def seed_encuesta_respuestas_demo(
         "creadas": created,
         "omitidas": skipped,
         "objetivo": cantidad,
+        "seed": seed,
     }
 
 
@@ -2793,6 +2795,7 @@ def build_admin_list_payload(
     activas = 0
     con_respuestas = 0
 
+    seed_profiles_map = _geo_catalog()
     for encuesta in encuestas:
         data = serialize_encuesta(encuesta)
         metricas = stats_map.get(encuesta.id or -1, _empty_panel_metrics())
@@ -2804,6 +2807,27 @@ def build_admin_list_payload(
             "points": geo_points.get(encuesta.id or -1, []),
             "bounds": geo_metadata.get("bounds") if geo_metadata else None,
             "center": geo_metadata.get("center") if geo_metadata else None,
+        }
+
+        auto_seed_cfg = _get_auto_seed_config(encuesta) or {}
+        if not auto_seed_cfg:
+            default_geo, default_municipality = _guess_auto_seed_defaults(
+                municipality_label=None,
+                slug_hint=encuesta.slug,
+                tenant_id=encuesta.tenant_id,
+            )
+            auto_seed_cfg = {
+                "cantidad": 100,
+                "geo_profile_key": default_geo,
+                "municipality_label": default_municipality,
+                "label": _AUTO_SEED_DEFAULT_LABEL,
+            }
+        data["seed_demo"] = {
+            "label": auto_seed_cfg.get("label") or _AUTO_SEED_DEFAULT_LABEL,
+            "cantidad": auto_seed_cfg.get("cantidad", 100),
+            "geo_profile_key": auto_seed_cfg.get("geo_profile_key"),
+            "municipality_label": auto_seed_cfg.get("municipality_label"),
+            "endpoint": f"/api/encuestas/{encuesta.id}/seed-demo",
         }
         encuestas_payload.append(data)
 
@@ -2826,7 +2850,36 @@ def build_admin_list_payload(
         "respuestas_ultimas_24h": total_24h,
     }
 
-    return {"encuestas": encuestas_payload, "resumen": resumen}
+    seed_profiles = []
+    for key, entry in (seed_profiles_map or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        seed_profiles.append(
+            {
+                "key": key,
+                "municipality": entry.get("municipality"),
+                "state": entry.get("state"),
+                "country": entry.get("country"),
+                "label": entry.get("municipality")
+                or entry.get("label")
+                or key.replace("_", " ").title(),
+                "bounds": entry.get("bounds"),
+                "center": entry.get("center"),
+            }
+        )
+
+    seed_defaults = {
+        "label": _AUTO_SEED_DEFAULT_LABEL,
+        "cantidad": 100,
+        "geo_profile_key": seed_profiles[0]["key"] if seed_profiles else None,
+        "municipality_label": seed_profiles[0]["municipality"] if seed_profiles else None,
+    }
+
+    return {
+        "encuestas": encuestas_payload,
+        "resumen": resumen,
+        "seed_demo": {"defaults": seed_defaults, "profiles": seed_profiles},
+    }
 
 
 def serialize_respuesta(respuesta: EncRespuesta) -> Dict[str, Any]:

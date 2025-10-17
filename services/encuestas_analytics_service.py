@@ -6,12 +6,65 @@ import io
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from statistics import mean, median
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import joinedload
 
 from models import EncEncuesta, EncRespuesta
-from services.encuestas_service import EncuestaError, get_encuesta, _parse_datetime
+from services.encuestas_service import (
+    EncuestaError,
+    get_encuesta,
+    _parse_datetime,
+    _resolve_geo_metadata_for_tenant,
+)
+
+try:  # pragma: no cover - optional dependency
+    import h3  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    h3 = None
+
+
+def _init_h3_helpers():  # pragma: no cover - exercised via integration tests
+    if not h3:
+        return None, None
+
+    to_cell = None
+    to_geo = None
+
+    if hasattr(h3, "geo_to_h3"):
+        to_cell = h3.geo_to_h3  # type: ignore[attr-defined]
+    elif hasattr(h3, "latlng_to_cell"):
+        latlng_to_cell = h3.latlng_to_cell  # type: ignore[attr-defined]
+
+        def _call(lat: float, lng: float, resolution: int) -> str:
+            try:
+                return latlng_to_cell(lat, lng, resolution)
+            except TypeError:
+                return latlng_to_cell((lat, lng), resolution)
+
+        to_cell = _call
+
+    if hasattr(h3, "h3_to_geo"):
+        to_geo = h3.h3_to_geo  # type: ignore[attr-defined]
+    elif hasattr(h3, "cell_to_latlng"):
+        cell_to_latlng = h3.cell_to_latlng  # type: ignore[attr-defined]
+
+        def _to_latlng(cell_id: str):
+            result = cell_to_latlng(cell_id)
+            if isinstance(result, (tuple, list)) and len(result) >= 2:
+                return result[0], result[1]
+            if hasattr(result, "lat") and hasattr(result, "lng"):
+                return result.lat, result.lng
+            if hasattr(result, "lat") and hasattr(result, "lon"):
+                return result.lat, result.lon
+            return None, None
+
+        to_geo = _to_latlng
+
+    return to_cell, to_geo
+
+
+_H3_TO_CELL, _H3_CELL_TO_GEO = _init_h3_helpers()
 
 
 def _apply_filters(query, filtros: Optional[Dict[str, Any]]):
@@ -79,6 +132,131 @@ def _counter_to_list(counter: Counter) -> List[Dict[str, Any]]:
         {"label": label, "value": counter[label]}
         for label in sorted(counter.keys(), key=lambda key: counter[key], reverse=True)
     ]
+
+
+DEFAULT_HEATMAP_RESOLUTION = 8
+
+
+def _heatmap_cell_id(lat: float, lng: float, resolution: int) -> str:
+    if _H3_TO_CELL:
+        try:
+            return _H3_TO_CELL(lat, lng, resolution)
+        except Exception:  # pragma: no cover - defensive fallback
+            pass
+    return f"grid_{round(lat, 3)}_{round(lng, 3)}_{resolution}"
+
+
+def _heatmap_centroid(cell_id: str, *, lat_sum: float, lng_sum: float, count: int) -> Tuple[Optional[float], Optional[float]]:
+    if _H3_CELL_TO_GEO and not cell_id.startswith("grid_"):
+        try:
+            lat, lng = _H3_CELL_TO_GEO(cell_id)
+            if lat is not None and lng is not None:
+                return float(lat), float(lng)
+        except Exception:  # pragma: no cover - defensive fallback
+            pass
+    if not count:
+        return None, None
+    return lat_sum / count, lng_sum / count
+
+
+def _aggregate_heatmap_cells(
+    respuestas: Sequence[EncRespuesta],
+    *,
+    resolution: Optional[int] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    points: List[Dict[str, Any]] = []
+    cells: Dict[str, Dict[str, Any]] = {}
+    effective_resolution = resolution or DEFAULT_HEATMAP_RESOLUTION
+
+    for respuesta in respuestas:
+        if respuesta.lat is None or respuesta.lng is None:
+            continue
+
+        lat = float(respuesta.lat)
+        lng = float(respuesta.lng)
+        submitted_at = respuesta.submitted_at
+        points.append(
+            {
+                "lat": lat,
+                "lng": lng,
+                "w": 1.0,
+                "barrio": respuesta.barrio,
+                "ciudad": respuesta.ciudad,
+                "provincia": respuesta.provincia,
+                "pais": respuesta.pais,
+                "canal": respuesta.canal,
+                "submitted_at": submitted_at.isoformat() if submitted_at else None,
+            }
+        )
+
+        cell_id = _heatmap_cell_id(lat, lng, effective_resolution)
+        cell = cells.setdefault(
+            cell_id,
+            {
+                "count": 0,
+                "lat_sum": 0.0,
+                "lng_sum": 0.0,
+                "barrios": defaultdict(int),
+                "canales": defaultdict(int),
+            },
+        )
+        cell["count"] += 1
+        cell["lat_sum"] += lat
+        cell["lng_sum"] += lng
+        if respuesta.barrio:
+            cell["barrios"][respuesta.barrio] += 1
+        if respuesta.canal:
+            cell["canales"][respuesta.canal] += 1
+
+    cells_payload: List[Dict[str, Any]] = []
+    for cell_id, data in cells.items():
+        centroid_lat, centroid_lng = _heatmap_centroid(
+            cell_id,
+            lat_sum=data["lat_sum"],
+            lng_sum=data["lng_sum"],
+            count=data["count"],
+        )
+        cells_payload.append(
+            {
+                "cell_id": cell_id,
+                "count": data["count"],
+                "centroid_lat": round(centroid_lat, 6) if centroid_lat is not None else None,
+                "centroid_lon": round(centroid_lng, 6) if centroid_lng is not None else None,
+                "barrios": dict(
+                    sorted(data["barrios"].items(), key=lambda item: item[1], reverse=True)
+                ),
+                "canales": dict(
+                    sorted(data["canales"].items(), key=lambda item: item[1], reverse=True)
+                ),
+            }
+        )
+
+    cells_payload.sort(key=lambda cell: cell["count"], reverse=True)
+    return points, cells_payload
+
+
+def _build_heatmap_metadata(
+    encuesta: EncEncuesta,
+    points: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    tenant_geo = _resolve_geo_metadata_for_tenant(encuesta.tenant_id)
+    bounds = None
+    if points:
+        min_lat = min(point["lat"] for point in points)
+        max_lat = max(point["lat"] for point in points)
+        min_lng = min(point["lng"] for point in points)
+        max_lng = max(point["lng"] for point in points)
+        bounds = [min_lng, min_lat, max_lng, max_lat]
+
+    metadata = {
+        "encuesta_id": encuesta.id,
+        "total_points": len(points),
+        "tenant_id": encuesta.tenant_id,
+        "bounds": bounds,
+        "tenant_bounds": tenant_geo.get("bounds") if tenant_geo else None,
+        "tenant_center": tenant_geo.get("center") if tenant_geo else None,
+    }
+    return metadata
 
 
 def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -293,15 +471,24 @@ def get_timeseries(encuesta_id: int, granularity: str = "day", filtros: Optional
     return series
 
 
-def get_heatmap(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> Dict[str, List[Dict[str, float]]]:
+def get_heatmap(
+    encuesta_id: int,
+    filtros: Optional[Dict[str, Any]] = None,
+    *,
+    resolution: Optional[int] = None,
+) -> Dict[str, Any]:
     encuesta = get_encuesta(encuesta_id)
     respuestas = _collect_respuestas(encuesta, filtros)
-    points: List[Dict[str, float]] = []
-    for respuesta in respuestas:
-        if respuesta.lat is None or respuesta.lng is None:
-            continue
-        points.append({"lat": float(respuesta.lat), "lng": float(respuesta.lng), "w": 1.0})
-    return {"points": points}
+    points, cells = _aggregate_heatmap_cells(respuestas, resolution=resolution)
+    metadata = _build_heatmap_metadata(encuesta, points)
+    metadata.update(
+        {
+            "resolution": resolution or DEFAULT_HEATMAP_RESOLUTION,
+            "unique_cells": len(cells),
+            "has_coordinates": bool(points),
+        }
+    )
+    return {"points": points, "cells": cells, "metadata": metadata}
 
 
 def _mask_ip(ip: Optional[str]) -> str:
