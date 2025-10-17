@@ -5017,6 +5017,38 @@ def _resolve_encuestas_menu_image_url(
     if fallback_candidate:
         return fallback_candidate
 
+
+def _resolve_encuestas_menu_media_urls(
+    context: dict, api_base_url: Optional[str]
+) -> tuple[Optional[str], List[str]]:
+    """Return the primary banner URL and additional media fallbacks."""
+
+    base_candidates = _collect_encuestas_base_candidates(context, api_base_url)
+    primary_url = _resolve_encuestas_menu_image_url(context, api_base_url)
+
+    media_urls: List[str] = []
+
+    def _append(candidate: Optional[str]) -> None:
+        resolved = _resolve_candidate_against_bases(candidate, base_candidates, context)
+        if resolved and resolved not in media_urls:
+            media_urls.append(resolved)
+
+    _append(primary_url)
+
+    if has_app_context():
+        _append(current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"))
+        _append(
+            current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL")
+        )
+
+    _append(getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None))
+    _append(
+        getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL", None)
+    )
+
+    _append(ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH)
+    _append(ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH)
+
     return primary_url, media_urls
 
 
