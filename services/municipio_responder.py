@@ -5083,6 +5083,9 @@ def _get_encuestas_menu(context: dict) -> dict:
         {"texto": "Cancelar", "action_id": "cancelar"},
     ]
 
+    channel_value = (context.get("channel") or "").strip().lower()
+    is_widget_channel = "widget" in channel_value
+
     tenant_id = _resolve_encuestas_tenant_id(context)
     toggle = _resolve_encuestas_toggle(context)
     if toggle is False:
@@ -5201,12 +5204,15 @@ def _get_encuestas_menu(context: dict) -> dict:
             }
         )
 
-        survey_buttons.append(
-            {
-                "texto": f"Compartir {share_button_title}",
-                "action_id": share_action_id,
-            }
-        )
+        share_button: Dict[str, Any] = {
+            "texto": f"Compartir {share_button_title}",
+            "action_id": share_action_id,
+        }
+        if is_widget_channel and whatsapp_share_url:
+            share_button["url"] = whatsapp_share_url
+            share_button["type"] = "url"
+
+        survey_buttons.append(share_button)
 
         survey_metadata.append(
             {

@@ -7257,6 +7257,27 @@ def test_encuesta_share_payload_uses_short_url(client):
     )
 
 
+def test_encuestas_menu_widget_share_button_opens_whatsapp_url(client):
+    with client.application.app_context():
+        encuesta, slug = _create_active_encuesta(tenant_id=7)
+        context = _base_context(tenant_id=encuesta.tenant_id or 7)
+        context["channel"] = "widget_chat"
+        menu = municipio_responder._get_encuestas_menu(context)
+
+    options_list = menu.get("options_list") or []
+    share_buttons = [
+        option
+        for option in options_list
+        if option.get("action_id", "").startswith("encuesta_compartir::")
+    ]
+
+    assert share_buttons, "Expected at least one share button in widget menu"
+    for button in share_buttons:
+        assert button.get("type") == "url"
+        assert button.get("url", "").startswith("https://wa.me/")
+        assert button.get("action_id", "").startswith("encuesta_compartir::")
+
+
 def test_encuestas_menu_defaults_to_backend_banner(client, monkeypatch):
     with client.application.app_context():
         encuesta, slug = _create_active_encuesta(tenant_id=13)
