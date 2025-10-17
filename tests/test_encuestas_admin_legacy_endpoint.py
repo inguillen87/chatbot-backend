@@ -271,8 +271,11 @@ def test_update_encuesta_accepts_multiple_choice_edit(client, monkeypatch, admin
     assert update_resp.status_code == 200
     updated = update_resp.get_json()
 
-    assert updated["preguntas"] and updated["preguntas"][0]["tipo"] == "opcion_multiple"
+    assert updated["preguntas"]
     pregunta = updated["preguntas"][0]
+    assert pregunta["tipo"] == "multiple_choice"
+    assert pregunta["tipo_interno"] == "opcion_multiple"
+    assert pregunta["type"] == "multiple_choice"
     assert pregunta["min_selecciones"] == 1
     assert pregunta["max_selecciones"] == 3
     assert len(pregunta["opciones"]) == 3
@@ -286,7 +289,9 @@ def test_update_encuesta_accepts_multiple_choice_edit(client, monkeypatch, admin
     assert detail_resp.status_code == 200
     detalle = detail_resp.get_json()
     detalle_pregunta = detalle["preguntas"][0]
-    assert detalle_pregunta["tipo"] == "opcion_multiple"
+    assert detalle_pregunta["tipo"] == "multiple_choice"
+    assert detalle_pregunta["tipo_interno"] == "opcion_multiple"
+    assert detalle_pregunta["type"] == "multiple_choice"
     assert detalle_pregunta["min_selecciones"] == 1
     assert detalle_pregunta["max_selecciones"] == 3
     assert len(detalle_pregunta["opciones"]) == 3
