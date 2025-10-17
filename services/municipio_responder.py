@@ -5451,12 +5451,14 @@ def _get_encuestas_menu(context: dict) -> dict:
     if survey_metadata:
         payload["surveys"] = survey_metadata
 
-    if not is_whatsapp_channel:
-        pre_messages = _build_encuestas_whatsapp_banner_pre_messages(
-            context, banner_image_url, media_attachments
-        )
-        if pre_messages:
-            payload["_twilio_pre_messages"] = pre_messages
+    pre_messages = _build_encuestas_whatsapp_banner_pre_messages(
+        context, banner_image_url, media_attachments
+    )
+    if pre_messages:
+        payload["_twilio_pre_messages"] = pre_messages
+
+    if is_whatsapp_channel:
+        payload["_force_whatsapp_interactive"] = True
 
     return payload
 
