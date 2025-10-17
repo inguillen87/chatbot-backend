@@ -198,12 +198,22 @@ def _apply_status_transition(survey: PublicSurvey, desired_status: Optional[str]
             survey.published_at = None
 
 
+def _query_surveys_for_admin(user) -> Any:
+    query = PublicSurvey.query
+    municipio_id = getattr(user, "municipio_id", None)
+    if municipio_id is not None:
+        query = query.filter(PublicSurvey.municipio_id == municipio_id)
+    return query
+
+
 @encuestas_admin_bp.route("/", methods=["GET"])
 @token_requerido
 @admin_o_empleado_requerido
 def listar_encuestas(current_user):
     encuestas = (
-        PublicSurvey.query.order_by(PublicSurvey.created_at.desc()).all()
+        _query_surveys_for_admin(current_user)
+        .order_by(PublicSurvey.created_at.desc())
+        .all()
     )
     data = [_serialize_survey(encuesta, include_questions=False) for encuesta in encuestas]
     return jsonify({"encuestas": data})
@@ -256,7 +266,11 @@ def crear_encuesta(current_user):
 @token_requerido
 @admin_o_empleado_requerido
 def obtener_encuesta(current_user, encuesta_id: int):
-    encuesta = PublicSurvey.query.get_or_404(encuesta_id)
+    encuesta = (
+        _query_surveys_for_admin(current_user)
+        .filter_by(id=encuesta_id)
+        .first_or_404()
+    )
     return jsonify(_serialize_survey(encuesta))
 
 
@@ -264,7 +278,11 @@ def obtener_encuesta(current_user, encuesta_id: int):
 @token_requerido
 @admin_o_empleado_requerido
 def actualizar_encuesta(current_user, encuesta_id: int):
-    encuesta = PublicSurvey.query.get_or_404(encuesta_id)
+    encuesta = (
+        _query_surveys_for_admin(current_user)
+        .filter_by(id=encuesta_id)
+        .first_or_404()
+    )
     payload = request.get_json(force=True, silent=True) or {}
 
     nuevo_titulo = payload.get("titulo") or payload.get("title")
