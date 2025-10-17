@@ -358,6 +358,46 @@ def test_respuesta_unica_por_cookie(client):
         assert "Ya registramos" in error.value.message or "Respuesta duplicada" in error.value.message
 
 
+def test_save_respuesta_accepts_answers_aliases(client):
+    with client.application.app_context():
+        encuesta, slug, _ = _create_active_encuesta()
+        pregunta_opcion = next(p for p in encuesta.preguntas if p.tipo == "opcion_unica")
+        pregunta_abierta = next(p for p in encuesta.preguntas if p.tipo == "abierta")
+        opcion = pregunta_opcion.opciones[0]
+
+        payload = {
+            "answers": [
+                {"questionId": pregunta_opcion.id, "selectedOptionIds": [str(opcion.id)]},
+                {"questionId": pregunta_abierta.id, "value": "Excelente"},
+            ],
+            "metadata": {"canal": "web"},
+        }
+
+        respuesta = save_respuesta(slug, payload, _request_ctx("alias"))
+        assert respuesta.id is not None
+        detalles = {(det.pregunta_id, det.opcion_id, det.texto_libre) for det in respuesta.detalles}
+        assert (pregunta_opcion.id, opcion.id, None) in detalles
+        assert any(det[0] == pregunta_abierta.id and det[2] == "Excelente" for det in detalles)
+
+
+def test_save_respuesta_accepts_option_labels(client):
+    with client.application.app_context():
+        encuesta, slug, _ = _create_active_encuesta()
+        pregunta_opcion = next(p for p in encuesta.preguntas if p.tipo == "opcion_unica")
+        opcion = pregunta_opcion.opciones[1]
+
+        payload = {
+            "answers": [
+                {"questionId": pregunta_opcion.id, "value": opcion.texto},
+            ]
+        }
+
+        respuesta = save_respuesta(slug, payload, _request_ctx("alias-label"))
+        assert respuesta.id is not None
+        opcion_ids = [det.opcion_id for det in respuesta.detalles if det.opcion_id]
+        assert opcion.id in opcion_ids
+
+
 def test_respuesta_por_ip_sin_datos_no_bloquea(client):
     with client.application.app_context():
         encuesta, slug, _ = _create_active_encuesta(politica_unicidad="por_ip")

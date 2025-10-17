@@ -82,8 +82,9 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @require_role("admin", "empleado", "super_admin")
     def heatmap(current_user, encuesta_id: int):
         filtros = _parse_filtros()
+        resolution = request.args.get("resolution", type=int)
         try:
-            data = get_heatmap(encuesta_id, filtros)
+            data = get_heatmap(encuesta_id, filtros, resolution=resolution)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
         return jsonify(data)
