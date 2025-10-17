@@ -60,6 +60,11 @@ def test_admin_encuestas_alias_exposes_rest_endpoints(client, monkeypatch, admin
     assert isinstance(listado, dict)
     assert "encuestas" in listado
     assert "resumen" in listado
+    assert "seed_demo" in listado
+    seed_config = listado["seed_demo"]
+    assert "profiles" in seed_config
+    assert seed_config["profiles"], "Se esperaba catálogo de perfiles geo demo"
+    assert seed_config["defaults"]["cantidad"] == 100
     encuestas = listado["encuestas"]
     assert isinstance(encuestas, list)
     initial_total = listado["resumen"].get("total", 0)
@@ -67,6 +72,8 @@ def test_admin_encuestas_alias_exposes_rest_endpoints(client, monkeypatch, admin
     for encuesta_payload in encuestas:
         assert "geo" in encuesta_payload
         assert encuesta_payload["geo"].get("bounds") is not None
+        assert "seed_demo" in encuesta_payload
+        assert encuesta_payload["seed_demo"]["endpoint"].endswith("seed-demo")
     resumen = listado["resumen"]
     assert resumen["total"] == len(encuestas)
     assert resumen["activas"] <= resumen["total"]
@@ -359,6 +366,9 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     assert heatmap_resp.status_code == 200
     heatmap_data = heatmap_resp.get_json()
     assert "points" in heatmap_data
+    assert "cells" in heatmap_data
+    assert "metadata" in heatmap_data
+    assert heatmap_data["metadata"]["resolution"] >= 1
 
     snapshots_resp = client.get(f"/admin/encuestas/{encuesta_id}/snapshots", headers=headers)
     assert snapshots_resp.status_code == 200
@@ -521,6 +531,7 @@ def test_admin_encuestas_seed_demo_endpoint(client, monkeypatch, admin_user):
     assert seed_resp.status_code == 200
     seed_payload = seed_resp.get_json()
     assert seed_payload["creadas"] > 0
+    assert "seed" in seed_payload
 
     with client.application.app_context():
         total = EncRespuesta.query.filter_by(encuesta_id=encuesta_id).count()
