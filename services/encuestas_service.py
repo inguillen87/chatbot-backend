@@ -1792,6 +1792,162 @@ def _sanitize_text(value: Optional[str]) -> Optional[str]:
     return text[:2000]
 
 
+def _extract_pregunta_id(item: Mapping[str, Any]) -> Optional[int]:
+    candidate_keys = (
+        "pregunta_id",
+        "preguntaId",
+        "question_id",
+        "questionId",
+        "id",
+    )
+    for key in candidate_keys:
+        value = item.get(key)
+        if isinstance(value, Mapping):
+            nested = value.get("id")
+            if nested is not None:
+                value = nested
+        if value in (None, ""):
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _extract_opcion_ids(item: Mapping[str, Any], pregunta: EncPregunta) -> List[int]:
+    list_candidate_keys = (
+        "opcion_ids",
+        "opcionIds",
+        "option_ids",
+        "optionIds",
+        "opciones",
+        "opciones_ids",
+        "options",
+        "selected_option_ids",
+        "selectedOptionIds",
+    )
+    raw: Any = None
+    for key in list_candidate_keys:
+        if item.get(key) is not None:
+            raw = item.get(key)
+            break
+
+    if raw is None:
+        single_candidate_keys = (
+            "opcion_id",
+            "opcionId",
+            "option_id",
+            "optionId",
+            "selected_option",
+            "selectedOption",
+            "valor",
+            "value",
+        )
+        for key in single_candidate_keys:
+            value = item.get(key)
+            if value is None:
+                continue
+            raw = value if isinstance(value, (list, tuple, set)) else [value]
+            break
+
+    if isinstance(raw, Mapping):
+        nested_id = raw.get("id") or raw.get("option_id") or raw.get("value") or raw.get("valor")
+        if nested_id is not None:
+            raw = [nested_id]
+        else:
+            raw = list(raw.values())
+
+    if raw is None:
+        candidate_values: List[Any] = []
+    elif isinstance(raw, (list, tuple, set)):
+        candidate_values = list(raw)
+    else:
+        candidate_values = [raw]
+
+    opciones_validas = {op.id: op for op in pregunta.opciones}
+    resolved: List[int] = []
+    fallback_labels: List[str] = []
+
+    for value in candidate_values:
+        candidate = value
+        if isinstance(candidate, Mapping):
+            candidate = (
+                candidate.get("id")
+                or candidate.get("option_id")
+                or candidate.get("value")
+                or candidate.get("valor")
+            )
+        if candidate in (None, ""):
+            continue
+        try:
+            resolved.append(int(candidate))
+            continue
+        except (TypeError, ValueError):
+            pass
+
+        text_value = str(candidate).strip()
+        if text_value:
+            fallback_labels.append(text_value.lower())
+
+    if fallback_labels:
+        for label in fallback_labels:
+            for opcion in opciones_validas.values():
+                candidates = [opcion.valor, opcion.texto]
+                for candidate in candidates:
+                    if not candidate:
+                        continue
+                    if str(candidate).strip().lower() == label:
+                        resolved.append(opcion.id)
+                        break
+                else:
+                    continue
+                break
+
+    unique_resolved: List[int] = []
+    seen: set[int] = set()
+    for oid in resolved:
+        if oid in seen:
+            continue
+        seen.add(oid)
+        unique_resolved.append(oid)
+    return unique_resolved
+
+
+def _extract_texto_libre(item: Mapping[str, Any]) -> Optional[str]:
+    candidate_keys = (
+        "texto_libre",
+        "textoLibre",
+        "texto",
+        "text",
+        "value",
+        "valor",
+        "respuesta",
+        "answer",
+        "freeText",
+    )
+    for key in candidate_keys:
+        value = item.get(key)
+        if isinstance(value, Mapping):
+            nested = (
+                value.get("texto")
+                or value.get("text")
+                or value.get("value")
+                or value.get("valor")
+            )
+            value = nested
+        if value is None:
+            continue
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, str):
+            if value.strip():
+                return value
+            continue
+        return str(value)
+    return None
+
+
 def _validate_respuesta_payload(
     encuesta: EncEncuesta,
     respuestas_payload: Sequence[Dict[str, Any]],
@@ -1801,10 +1957,10 @@ def _validate_respuesta_payload(
 
     answered_ids = set()
     for item in respuestas_payload:
-        pregunta_id = item.get("pregunta_id")
+        pregunta_id = _extract_pregunta_id(item)
         if not pregunta_id:
             raise EncuestaError("Respuesta sin pregunta_id")
-        pregunta = preguntas_map.get(int(pregunta_id))
+        pregunta = preguntas_map.get(pregunta_id)
         if not pregunta:
             raise EncuestaError("Pregunta inválida en respuestas")
 
@@ -1814,17 +1970,14 @@ def _validate_respuesta_payload(
         answered_ids.add(pregunta.id)
 
         if pregunta.tipo in {"opcion_unica", "opcion_multiple"}:
-            opcion_ids = item.get("opcion_ids") or []
-            if not isinstance(opcion_ids, (list, tuple)):
-                raise EncuestaError("opcion_ids debe ser lista")
-            opcion_ids = [int(oid) for oid in opcion_ids]
+            opcion_ids = _extract_opcion_ids(item, pregunta)
             opciones_validas = {op.id: op for op in pregunta.opciones}
-            seleccionadas = []
-            for oid in opcion_ids:
-                opcion = opciones_validas.get(oid)
+            seleccionadas: List[int] = []
+            for opcion_id in opcion_ids:
+                opcion = opciones_validas.get(opcion_id)
                 if not opcion:
                     raise EncuestaError("Opción inválida seleccionada")
-                seleccionadas.append(opcion)
+                seleccionadas.append(opcion.id)
                 detalle_opcion = EncRespuestaDetalle(
                     pregunta_id=pregunta.id,
                     opcion_id=opcion.id,
@@ -1839,7 +1992,8 @@ def _validate_respuesta_payload(
             continue
 
         if pregunta.tipo == "abierta":
-            texto = _sanitize_text(item.get("texto_libre"))
+            texto = _extract_texto_libre(item)
+            texto = _sanitize_text(texto)
             if pregunta.obligatoria and not texto:
                 raise EncuestaError("Pregunta abierta obligatoria sin texto")
             respuesta_detalle.texto_libre = texto
@@ -2051,7 +2205,10 @@ def save_respuesta(slug_publico: str, payload: Dict[str, Any], request_ctx: Dict
         else:
             raise EncuestaError("Debe enviar respuestas")
 
-    respuestas_payload = _coerce_respuestas_payload(payload.get("respuestas"))
+    raw_respuestas = payload.get("respuestas")
+    if raw_respuestas is None and "answers" in payload:
+        raw_respuestas = payload.get("answers")
+    respuestas_payload = _coerce_respuestas_payload(raw_respuestas)
     if not isinstance(respuestas_payload, Sequence) or not respuestas_payload:
         raise EncuestaError("Debe enviar respuestas")
 
