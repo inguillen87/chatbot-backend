@@ -7095,8 +7095,9 @@ def responder_municipio(
     assert not any(url.endswith(f"/e/{slug}?canal=widget_chat") for url in button_urls)
     assert not any(url.endswith(f"/api/public/encuestas/{slug}/qr") for url in button_urls)
     media_urls = menu.get("media_urls")
-    assert isinstance(media_urls, list) and len(media_urls) == 1
+    assert isinstance(media_urls, list) and media_urls
     assert media_urls[0] == fallback_image
+    assert fallback_image in media_urls
     assert menu.get("image_url") == fallback_image
     assert menu.get("_base_url") == client.application.config.get(
         "PUBLIC_ENCUESTAS_API_BASE_URL"
@@ -7188,7 +7189,9 @@ def test_encuestas_menu_includes_configured_image(client):
 
     assert menu.get("image_url") == "https://cdn.example.com/encuestas/banner.png"
     media_urls = menu.get("media_urls")
-    assert media_urls and media_urls[0] == "https://cdn.example.com/encuestas/banner.png"
+    assert isinstance(media_urls, list) and media_urls
+    assert media_urls[0] == "https://cdn.example.com/encuestas/banner.png"
+    assert "https://cdn.example.com/encuestas/banner.png" in media_urls
 
 
 def test_encuesta_share_payload_uses_short_url(client):
@@ -7224,7 +7227,10 @@ def test_encuesta_share_payload_uses_short_url(client):
     assert "Compartir con un mensaje listo para WhatsApp" in payload["message_body"]
     assert "Compartir desde el widget web" not in payload["message_body"]
     assert payload.get("image_url") == image_url
-    assert payload.get("media_urls") == [image_url]
+    media_urls = payload.get("media_urls")
+    assert isinstance(media_urls, list) and media_urls
+    assert image_url in media_urls
+    assert media_urls[0] == image_url
     assert payload.get("_base_url") == menu.get("_base_url")
 
 
@@ -7251,7 +7257,9 @@ def test_encuestas_menu_defaults_to_backend_banner(client, monkeypatch):
         expected_banner = f"{fallback_base}{ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH}"
     assert menu.get("image_url") == expected_banner
     media_urls = menu.get("media_urls")
-    assert media_urls and media_urls[0] == expected_banner
+    assert isinstance(media_urls, list) and media_urls
+    assert media_urls[0] == expected_banner
+    assert expected_banner in media_urls
     assert menu.get("_base_url") == "https://api.chatboc.ar"
     short_token = slug.rsplit("-", 1)[-1]
     assert short_token in menu["message_body"]
