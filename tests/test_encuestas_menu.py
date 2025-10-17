@@ -7551,6 +7551,73 @@ def test_encuestas_menu_widget_share_button_opens_whatsapp_url(client):
         assert not button.get("action_id")
 
 
+def test_encuesta_share_payload_uses_media_fallback_when_missing_primary(
+    client, monkeypatch
+):
+    fallback_image = "https://cdn.example.com/fallback-banner.png"
+
+    def _fake_media_urls(context, api_base_url):
+        return None, [fallback_image]
+
+    monkeypatch.setattr(
+        municipio_responder,
+        "_resolve_encuestas_menu_media_urls",
+        _fake_media_urls,
+    )
+
+    with client.application.app_context():
+        encuesta, slug = _create_active_encuesta(tenant_id=19)
+        context = _base_context(tenant_id=encuesta.tenant_id or 19)
+
+    normalized_slug = slug.strip().lower()
+    short_token = normalized_slug.rsplit("-", 1)[-1]
+    context.setdefault("chat_db_context_data", {})[
+        municipio_responder.CONTEXTO_MUNICIPIO
+    ] = {
+        "encuestas_menu_surveys": [
+            {
+                "slug": normalized_slug,
+                "titulo": "Encuesta Test",
+                "share_url": f"https://chatboc.ar/e/{normalized_slug}",
+                "share_short_url": f"https://chatboc.ar/e/{short_token}",
+                "share_message": f"Participá en Encuesta Test: https://chatboc.ar/e/{short_token}",
+                "share_action_id": f"encuesta_compartir::{normalized_slug}",
+                "share_media_urls": [],
+                "share_image_url": None,
+            }
+        ],
+        "encuestas_menu_options": [],
+    }
+
+    payload = municipio_responder._build_encuesta_share_payload(
+        slug, context, chat_db_context=None
+    )
+
+    assert payload["image_url"] == fallback_image
+    assert payload["media_urls"][0] == fallback_image
+
+
+def test_encuestas_menu_widget_share_button_opens_whatsapp_url(client):
+    with client.application.app_context():
+        encuesta, slug = _create_active_encuesta(tenant_id=7)
+        context = _base_context(tenant_id=encuesta.tenant_id or 7)
+        context["channel"] = "widget_chat"
+        menu = municipio_responder._get_encuestas_menu(context)
+
+    options_list = menu.get("options_list") or []
+    share_buttons = [
+        option
+        for option in options_list
+        if option.get("texto", "").lower().startswith("compartir ")
+    ]
+
+    assert share_buttons, "Expected at least one share button in widget menu"
+    for button in share_buttons:
+        assert button.get("type") == "url"
+        assert button.get("url", "").startswith("https://wa.me/")
+        assert not button.get("action_id")
+
+
 def test_encuestas_menu_defaults_to_backend_banner(client, monkeypatch):
     with client.application.app_context():
         encuesta, slug = _create_active_encuesta(tenant_id=13)
@@ -7581,37 +7648,6 @@ def test_encuestas_menu_defaults_to_backend_banner(client, monkeypatch):
     short_token = slug.rsplit("-", 1)[-1]
     assert short_token in menu["message_body"]
     assert menu.get("_force_whatsapp_interactive") is True
-
-
-def test_encuestas_menu_adds_whatsapp_banner_template_pre_message(client):
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=31)
-        context = _base_context(tenant_id=encuesta.tenant_id or 31)
-        context["channel"] = "whatsapp"
-        previous_value = client.application.config.get(
-            "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"
-        )
-        client.application.config["PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"] = (
-            "HXtestBanner"
-        )
-        try:
-            menu = municipio_responder._get_encuestas_menu(context)
-        finally:
-            client.application.config[
-                "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"
-            ] = previous_value
-
-    pre_messages = menu.get("_twilio_pre_messages")
-    assert isinstance(pre_messages, list) and pre_messages
-    template_entry = pre_messages[0]
-    assert template_entry.get("content_sid") == "HXtestBanner"
-    channels = {
-        str(channel).strip().lower()
-        for channel in template_entry.get("channels", [])
-        if channel
-    }
-    assert "whatsapp" in channels
-    assert not template_entry.get("media_urls")
 
 
 def test_encuestas_menu_uses_template_media_url_for_banner_and_share(client):
@@ -7673,9 +7709,33 @@ def test_encuestas_menu_uses_template_media_url_for_banner_and_share(client):
     assert payload["media_urls"][0] == banner_url
 
 
-def test_encuestas_menu_adds_whatsapp_banner_media_pre_message_when_no_template(
-    client,
-):
+def test_encuestas_menu_whatsapp_embeds_banner_and_disables_audio(client):
+    with client.application.app_context():
+        encuesta, slug = _create_active_encuesta(tenant_id=31)
+        context = _base_context(tenant_id=encuesta.tenant_id or 31)
+        context["channel"] = "whatsapp"
+        previous_template = client.application.config.get(
+            "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"
+        )
+        client.application.config["PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"] = (
+            "HXtestBanner"
+        )
+        try:
+            menu = municipio_responder._get_encuestas_menu(context)
+        finally:
+            client.application.config[
+                "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"
+            ] = previous_template
+
+    assert menu.get("message_type") == "text"
+    assert menu.get("generar_audio") is False
+    assert not menu.get("_twilio_pre_messages")
+    assert menu.get("image_url")
+    media_urls = menu.get("media_urls")
+    assert isinstance(media_urls, list) and menu["image_url"] in media_urls
+
+
+def test_encuestas_menu_whatsapp_skips_pre_message_when_no_template(client):
     with client.application.app_context():
         encuesta, slug = _create_active_encuesta(tenant_id=33)
         context = _base_context(tenant_id=encuesta.tenant_id or 33)
@@ -7686,11 +7746,10 @@ def test_encuestas_menu_adds_whatsapp_banner_media_pre_message_when_no_template(
         )
         menu = municipio_responder._get_encuestas_menu(context)
 
-    pre_messages = menu.get("_twilio_pre_messages")
-    assert isinstance(pre_messages, list) and pre_messages
-    entry = pre_messages[0]
-    assert entry.get("body") == "Participación Ciudadana"
-    assert entry.get("media_urls") == [menu.get("image_url")]
+    assert menu.get("message_type") == "text"
+    assert menu.get("generar_audio") is False
+    assert not menu.get("_twilio_pre_messages")
+    assert menu.get("image_url")
 
 
 def test_encuestas_menu_orders_newest_first(client):
