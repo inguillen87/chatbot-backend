@@ -754,18 +754,55 @@ def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
 
 
 def _validate_pregunta_payload(pregunta: Dict[str, Any], index: int) -> Dict[str, Any]:
-    required_fields = {"orden", "tipo", "texto"}
-    missing = [campo for campo in required_fields if campo not in pregunta]
+    payload = dict(pregunta)
+    missing: List[str] = []
+
+    raw_tipo = payload.get("tipo") or payload.get("type")
+    if not raw_tipo:
+        missing.append("tipo")
+    else:
+        payload["tipo"] = raw_tipo
+
+    texto = (
+        payload.get("texto")
+        or payload.get("titulo")
+        or payload.get("title")
+        or payload.get("pregunta")
+    )
+    if not texto:
+        missing.append("texto")
+    else:
+        payload["texto"] = texto
+
     if missing:
-        raise EncuestaError(f"Pregunta #{index + 1} incompleta: falta {', '.join(missing)}")
-    opciones = pregunta.get("opciones") or []
-    tipo = pregunta.get("tipo")
+        raise EncuestaError(
+            f"Pregunta #{index + 1} incompleta: falta {', '.join(missing)}"
+        )
+
+    if payload.get("orden") is None:
+        payload["orden"] = index + 1
+    else:
+        try:
+            payload["orden"] = int(payload.get("orden"))
+        except (TypeError, ValueError):
+            payload["orden"] = index + 1
+
+    if "obligatoria" not in payload and "required" in payload:
+        payload["obligatoria"] = bool(payload.get("required"))
+
+    if payload.get("opciones") is None and payload.get("options") is not None:
+        payload["opciones"] = payload.get("options") or []
+
+    tipo = payload.get("tipo")
     if tipo in {"multiple"}:
         tipo = "opcion_multiple"
-        pregunta["tipo"] = tipo
+        payload["tipo"] = tipo
+
+    opciones = payload.get("opciones") or []
     if tipo in {"opcion_unica", "opcion_multiple"} and not opciones:
         raise EncuestaError(f"Pregunta #{index + 1} requiere opciones")
-    return pregunta
+
+    return payload
 
 
 def _apply_common_updates(encuesta: EncEncuesta, data: Dict[str, Any]) -> None:
@@ -802,11 +839,21 @@ def _build_pregunta_entities(encuesta: EncEncuesta, preguntas_payload: Sequence[
         )
         opciones_payload = payload.get("opciones") or []
         for opt in opciones_payload:
+            texto_opcion = (
+                opt.get("texto")
+                or opt.get("label")
+                or opt.get("nombre")
+                or ""
+            ).strip()
+            if not texto_opcion:
+                raise EncuestaError(
+                    f"Pregunta #{idx + 1} contiene una opción sin texto"
+                )
             opcion = EncOpcion(
                 pregunta=pregunta,
                 orden=int(opt.get("orden", len(pregunta.opciones) + 1)),
-                texto=(opt.get("texto") or "").strip(),
-                valor=opt.get("valor"),
+                texto=texto_opcion,
+                valor=opt.get("valor") or opt.get("value"),
             )
             pregunta.opciones.append(opcion)
         preguntas.append(pregunta)
@@ -908,18 +955,6 @@ def _normalize_auto_seed_config(
     )
 
     if config is None:
-        geo_key = default_geo
-        municipality_value = default_municipality
-        if not geo_key and municipality_value:
-            geo_key = _slugify(str(municipality_value))
-        if geo_key or municipality_value:
-            return {
-                "enabled": True,
-                "cantidad": 100,
-                "geo_profile_key": geo_key,
-                "municipality_label": municipality_value,
-                "label": _AUTO_SEED_DEFAULT_LABEL,
-            }
         return None
 
     enabled = bool(config.get("enabled", True))
@@ -1019,19 +1054,6 @@ def _get_auto_seed_config(encuesta: EncEncuesta) -> Optional[Dict[str, Any]]:
         config.setdefault("label", _AUTO_SEED_DEFAULT_LABEL)
         return config
 
-    geo_key, municipality_value = _guess_auto_seed_defaults(
-        municipality_label=None,
-        slug_hint=getattr(encuesta, "slug", None),
-        tenant_id=getattr(encuesta, "tenant_id", None),
-    )
-    if geo_key or municipality_value:
-        return {
-            "enabled": True,
-            "cantidad": 100,
-            "geo_profile_key": geo_key,
-            "municipality_label": municipality_value,
-            "label": _AUTO_SEED_DEFAULT_LABEL,
-        }
     return None
 
 
@@ -1119,6 +1141,26 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
     municipality_hint = data.get("municipality") or data.get("municipio")
     has_auto_seed_update = "auto_seed_demo" in data
     raw_auto_seed_cfg = data.get("auto_seed_demo") if has_auto_seed_update else None
+
+    raw_slug = None
+    if "slug" in data:
+        raw_slug = data.get("slug")
+    elif "codigo" in data:
+        raw_slug = data.get("codigo")
+
+    if raw_slug is not None:
+        candidate_slug = _slugify(str(raw_slug))
+        if not candidate_slug:
+            raise EncuestaError("El slug no puede quedar vacío", status_code=400)
+        if candidate_slug != encuesta.slug:
+            exists = (
+                db.session.query(EncEncuesta.id)
+                .filter(EncEncuesta.slug == candidate_slug, EncEncuesta.id != encuesta.id)
+                .first()
+            )
+            if exists:
+                raise EncuestaError("Ya existe una encuesta con ese slug", status_code=409)
+            encuesta.slug = candidate_slug
 
     if encuesta.estado == "publicada" and "preguntas" in data:
         respuestas_registradas = encuesta.respuestas.count()

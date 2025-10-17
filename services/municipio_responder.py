@@ -5117,6 +5117,9 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
         CONTEXTO_MUNICIPIO, {}
     )
 
+    api_base_url = _resolve_encuestas_api_base_url(context)
+    share_image_url = _resolve_encuestas_menu_image_url(context, api_base_url)
+
     stored_meta = contexto_municipio_actual.get("encuestas_menu_surveys") or []
     share_meta = None
     for meta in stored_meta:
@@ -5256,7 +5259,7 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
 
     message_body = "\n".join(message_lines)
 
-    return {
+    payload = {
         "message_body": message_body,
         "message_type": "interactive_buttons",
         "options_list": stored_options,
@@ -5268,6 +5271,15 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
         "share_whatsapp_url": share_whatsapp_url,
         "share_widget_url": share_widget_url,
     }
+
+    if share_image_url:
+        payload["image_url"] = share_image_url
+        payload["media_urls"] = [share_image_url]
+
+    if api_base_url:
+        payload.setdefault("_base_url", api_base_url)
+
+    return payload
 
 
 def _get_estacionamiento_menu():

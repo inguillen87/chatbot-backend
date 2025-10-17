@@ -62,6 +62,15 @@ def _slugify() -> str:
     return secrets.token_hex(3)
 
 
+def _normalize_slug_value(raw: Optional[str]) -> Optional[str]:
+    if raw is None:
+        return None
+    slug = str(raw).strip()
+    if not slug:
+        return None
+    return slug.lower()
+
+
 def _normalize_status(raw: Optional[str]) -> Optional[str]:
     if not raw:
         return None
@@ -113,7 +122,10 @@ def _serialize_survey(survey: PublicSurvey, include_questions: bool = True) -> D
     return data
 
 
-def _ensure_slug_unique(slug: str, survey_id: Optional[int] = None) -> bool:
+def _ensure_slug_unique(slug: Optional[str], survey_id: Optional[int] = None) -> bool:
+    if not slug:
+        return True
+
     query = PublicSurvey.query.filter_by(slug=slug)
     if survey_id is not None:
         query = query.filter(PublicSurvey.id != survey_id)
@@ -238,7 +250,10 @@ def crear_encuesta(current_user):
     if not titulo:
         return jsonify({"error": "El campo 'titulo' es obligatorio"}), 400
 
-    slug = payload.get("slug") or payload.get("codigo") or _slugify()
+    slug = (
+        _normalize_slug_value(payload.get("slug") or payload.get("codigo"))
+        or _slugify()
+    )
     if not _ensure_slug_unique(slug):
         return jsonify({"error": "Ya existe una encuesta con ese slug"}), 409
 
@@ -300,11 +315,16 @@ def actualizar_encuesta(current_user, encuesta_id: int):
 
     encuesta.descripcion = payload.get("descripcion") or payload.get("description") or encuesta.descripcion
 
-    nuevo_slug = payload.get("slug") or payload.get("codigo")
-    if nuevo_slug and nuevo_slug != encuesta.slug:
-        if not _ensure_slug_unique(nuevo_slug, encuesta.id):
-            return jsonify({"error": "Ya existe una encuesta con ese slug"}), 409
-        encuesta.slug = nuevo_slug
+    if "slug" in payload or "codigo" in payload:
+        raw_slug = payload.get("slug") if "slug" in payload else payload.get("codigo")
+        nuevo_slug = _normalize_slug_value(raw_slug)
+        if nuevo_slug:
+            if nuevo_slug != encuesta.slug:
+                if not _ensure_slug_unique(nuevo_slug, encuesta.id):
+                    return jsonify({"error": "Ya existe una encuesta con ese slug"}), 409
+            encuesta.slug = nuevo_slug
+        elif isinstance(raw_slug, str) and raw_slug.strip() == "":
+            return jsonify({"error": "El slug no puede quedar vacío"}), 400
 
     try:
         if "preguntas" in payload or "questions" in payload:

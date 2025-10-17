@@ -58,7 +58,7 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
             encuesta = create_encuesta(request.get_json(force=True), current_user)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
-        return jsonify({"id": encuesta.id, "estado": encuesta.estado}), 201
+        return jsonify(serialize_encuesta(encuesta)), 201
 
     @bp.route("/<int:encuesta_id>", methods=["PUT"])
     @token_requerido

@@ -2,7 +2,8 @@ import unittest
 
 from app import create_app
 from config import TestingConfig
-from models import db, User, PublicSurvey, PublicSurveyQuestion
+from models import db, User, EncEncuesta, EncPregunta
+from services.encuestas_service import save_respuesta
 from utils.auth_helpers import generar_token
 
 
@@ -112,7 +113,6 @@ class PublicSurveyFlowTests(unittest.TestCase):
                     ],
                 }
             ],
-            "publicar": True,
         }
 
         resp = self.client.put(
@@ -122,33 +122,120 @@ class PublicSurveyFlowTests(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 200, resp.get_json())
         updated = resp.get_json()
-        self.assertEqual(updated["estado"], "published")
+        self.assertEqual(updated["estado"], "borrador")
+
+        publish_resp = self.client.post(
+            f"/admin/encuestas/{encuesta_id}/publicar",
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(publish_resp.status_code, 200, publish_resp.get_json())
+        published_data = publish_resp.get_json()
+        self.assertTrue(published_data.get("ok"))
+        public_slug = published_data.get("slug_publico") or slug
         opciones = updated["preguntas"][0]["opciones"]
         second_option_id = [opt["id"] for opt in opciones if opt["valor"] == "educacion"][0]
 
-        public_resp = self.client.post(
-            f"/public/encuestas/{slug}/respuestas",
+        with self.app.app_context():
+            service_response = save_respuesta(
+                public_slug,
+                {
+                    "anon_id": "anon-test",
+                    "respuestas": [
+                        {
+                            "pregunta_id": question_id,
+                            "opcion_ids": [second_option_id],
+                        }
+                    ],
+                },
+                {},
+            )
+            self.assertIsNotNone(service_response.id)
+
+        with self.app.app_context():
+            stored = EncEncuesta.query.get(encuesta_id)
+            self.assertIsNotNone(stored)
+            self.assertEqual(stored.respuestas.count(), 1)
+            stored_question = EncPregunta.query.get(question_id)
+            self.assertEqual(stored_question.texto, "Tema central 2025")
+            opciones_ids = {opt.valor for opt in stored_question.opciones}
+            self.assertIn("educacion", opciones_ids)
+
+    def test_slug_is_normalized_on_create_and_update(self):
+        create_payload = {
+            "titulo": "Encuesta Slug",
+            "slug": " Participacion-PRUEBA ",
+            "preguntas": [
+                {
+                    "titulo": "Pregunta única",
+                    "tipo": "opcion_unica",
+                    "opciones": [{"texto": "Sí", "valor": "si"}],
+                }
+            ],
+        }
+
+        create_resp = self.client.post(
+            "/admin/encuestas/",
+            json=create_payload,
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(create_resp.status_code, 201, create_resp.get_json())
+        data = create_resp.get_json()
+        encuesta_id = data["id"]
+        self.assertEqual(data["slug"], "participacion-prueba")
+
+        update_resp = self.client.put(
+            f"/admin/encuestas/{encuesta_id}",
+            json={"slug": "PARTICIPACION-PRUEBA", "titulo": "Encuesta Slug 2025"},
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(update_resp.status_code, 200, update_resp.get_json())
+        updated = update_resp.get_json()
+        self.assertEqual(updated["slug"], "participacion-prueba")
+
+    def test_slug_conflict_respects_normalization(self):
+        first_resp = self.client.post(
+            "/admin/encuestas/",
             json={
-                "anon_id": "anon-test",
-                "respuestas": [
+                "titulo": "Primera encuesta",
+                "slug": "sondeo-municipal",
+                "preguntas": [
                     {
-                        "pregunta_id": question_id,
-                        "opcion_id": second_option_id,
+                        "titulo": "Pregunta 1",
+                        "tipo": "opcion_unica",
+                        "opciones": [{"texto": "A", "valor": "a"}],
                     }
                 ],
             },
+            headers=self._auth_headers(),
         )
-        self.assertEqual(public_resp.status_code, 201, public_resp.get_json())
-        self.assertTrue(public_resp.get_json().get("success"))
+        self.assertEqual(first_resp.status_code, 201, first_resp.get_json())
+        first_slug = first_resp.get_json()["slug"]
+        self.assertEqual(first_slug, "sondeo-municipal")
 
-        with self.app.app_context():
-            stored = PublicSurvey.query.get(encuesta_id)
-            self.assertIsNotNone(stored)
-            self.assertEqual(len(stored.respuestas), 1)
-            stored_question = PublicSurveyQuestion.query.get(question_id)
-            self.assertEqual(stored_question.titulo, "Tema central 2025")
-            opciones_ids = {opt.valor for opt in stored_question.opciones}
-            self.assertIn("educacion", opciones_ids)
+        second_resp = self.client.post(
+            "/admin/encuestas/",
+            json={
+                "titulo": "Segunda encuesta",
+                "slug": "consulta-ciudadana",
+                "preguntas": [
+                    {
+                        "titulo": "Pregunta 2",
+                        "tipo": "opcion_unica",
+                        "opciones": [{"texto": "B", "valor": "b"}],
+                    }
+                ],
+            },
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(second_resp.status_code, 201, second_resp.get_json())
+        second_id = second_resp.get_json()["id"]
+
+        conflict_resp = self.client.put(
+            f"/admin/encuestas/{second_id}",
+            json={"slug": " SONDEO-MUNICIPAL ", "titulo": "Actualizada"},
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(conflict_resp.status_code, 409, conflict_resp.get_json())
 
     def test_listado_filtrado_por_municipio(self):
         primera_resp = self.client.post(
@@ -237,14 +324,14 @@ class PublicSurveyFlowTests(unittest.TestCase):
             f"/admin/encuestas/{encuesta_id}",
             headers={"Authorization": f"Bearer {token_muni_777}"},
         )
-        self.assertEqual(detalle_otro.status_code, 404)
+        self.assertEqual(detalle_otro.status_code, 403)
 
         actualizacion = self.client.put(
             f"/admin/encuestas/{encuesta_id}",
             json={"titulo": "No deberia"},
             headers={"Authorization": f"Bearer {token_muni_777}"},
         )
-        self.assertEqual(actualizacion.status_code, 404)
+        self.assertEqual(actualizacion.status_code, 403)
 
 
 if __name__ == "__main__":
