@@ -23,7 +23,10 @@ from flask import (
 from flask_login import current_user
 from urllib.parse import quote_plus
 
-from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS
+from config import (
+    ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS,
+    ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH,
+)
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_qr_service import build_qr_png
 from services.encuestas_service import (
@@ -290,8 +293,22 @@ def _resolve_share_image(encuesta: Optional[dict]) -> Optional[str]:
                 if candidate:
                     return candidate
 
-    fallback = current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL")
-    return _clean(fallback)
+    fallback = _clean(current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"))
+    if fallback:
+        return fallback
+
+    base = _clean(current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"))
+    if not base:
+        base = _clean(request.host_url)
+
+    asset_candidate = ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH
+    if isinstance(asset_candidate, str) and asset_candidate.startswith(("http://", "https://")):
+        return asset_candidate
+
+    if base and asset_candidate:
+        return f"{base.rstrip('/')}{asset_candidate}"
+
+    return asset_candidate or None
 
 
 def _extract_ip() -> str:

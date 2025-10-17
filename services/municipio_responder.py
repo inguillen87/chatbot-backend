@@ -82,6 +82,7 @@ from services.vocabulary_loader import get_name_prefix_stopwords
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
 from config import (
     BACKEND_URL as DEFAULT_BACKEND_URL,
+    ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH,
     IS_HTTPS as DEFAULT_IS_HTTPS,
     Config as AppConfig,
 )
@@ -4898,6 +4899,12 @@ def _resolve_encuestas_menu_image_url(
 ) -> Optional[str]:
     """Return the banner image URL for participatory survey menus."""
 
+    def _clean(value: Optional[str]) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        stripped = value.strip()
+        return stripped or None
+
     municipio_config = context.get("municipio_config_actual") or {}
     encuestas_cfg = {}
     if isinstance(municipio_config.get("encuestas"), dict):
@@ -4920,22 +4927,52 @@ def _resolve_encuestas_menu_image_url(
 
     fallback_image_url = None
     if has_app_context():
-        fallback_image_url = current_app.config.get(
-            "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"
+        fallback_image_url = _clean(
+            current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL")
         )
     if not fallback_image_url:
-        fallback_image_url = getattr(
-            AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None
+        fallback_image_url = _clean(
+            getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None)
         )
 
-    if isinstance(fallback_image_url, str) and fallback_image_url.strip():
-        return fallback_image_url.strip()
+    if fallback_image_url:
+        return fallback_image_url
+
+    base_candidates: List[Optional[str]] = []
+    canonical_base = None
+    backend_base = None
+
+    if has_app_context():
+        canonical_base = _clean(
+            current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+        )
+        backend_base = _clean(current_app.config.get("BACKEND_URL"))
+
+    if canonical_base:
+        base_candidates.append(canonical_base)
 
     if api_base_url:
-        base = api_base_url.rstrip("/")
-        return f"{base}/static/encuestas/participacion_ciudadana.png"
+        base_candidates.append(api_base_url)
 
-    return None
+    resolved_base = _clean(_resolve_encuestas_base_url(context))
+    if resolved_base:
+        base_candidates.append(resolved_base)
+
+    if backend_base:
+        base_candidates.append(backend_base)
+
+    base_candidates.append(_clean(DEFAULT_BACKEND_URL))
+
+    asset_candidate = ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH
+    if isinstance(asset_candidate, str) and asset_candidate.startswith(("http://", "https://")):
+        return asset_candidate
+
+    for base in base_candidates:
+        if not base or not asset_candidate:
+            continue
+        return f"{base.rstrip('/')}{asset_candidate}"
+
+    return asset_candidate or None
 
 
 def _get_encuestas_menu(context: dict) -> dict:
