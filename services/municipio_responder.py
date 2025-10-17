@@ -4939,31 +4939,52 @@ def _collect_encuestas_base_candidates(
     return unique
 
 
+def _resolve_candidate_across_bases(
+    candidate: Optional[str],
+    base_candidates: Sequence[str],
+    context: Optional[dict] = None,
+) -> List[str]:
+    cleaned = _clean_url_candidate(candidate)
+    if not cleaned:
+        return []
+
+    normalized = _normalize_public_url(cleaned, context)
+    if normalized:
+        return [normalized]
+
+    if cleaned.startswith(("http://", "https://")):
+        return [cleaned]
+
+    if cleaned.startswith("//"):
+        return [f"https:{cleaned}"] if cleaned[2:] else []
+
+    resolved: List[str] = []
+    if cleaned.startswith("/"):
+        for base in base_candidates:
+            resolved.append(f"{base}{cleaned}")
+    else:
+        for base in base_candidates:
+            resolved.append(f"{base}/{cleaned.lstrip('/')}")
+
+    if resolved:
+        seen: set[str] = set()
+        unique: List[str] = []
+        for value in resolved:
+            if value not in seen:
+                seen.add(value)
+                unique.append(value)
+        return unique
+
+    return [cleaned]
+
+
 def _resolve_candidate_against_bases(
     candidate: Optional[str],
     base_candidates: Sequence[str],
     context: Optional[dict] = None,
 ) -> Optional[str]:
-    cleaned = _clean_url_candidate(candidate)
-    if not cleaned:
-        return None
-
-    normalized = _normalize_public_url(cleaned, context)
-    if normalized:
-        return normalized
-
-    if cleaned.startswith(("http://", "https://")):
-        return cleaned
-
-    if cleaned.startswith("//"):
-        return f"https:{cleaned}" if cleaned[2:] else None
-
-    for base in base_candidates:
-        if cleaned.startswith("/"):
-            return f"{base}{cleaned}"
-        return f"{base}/{cleaned.lstrip('/')}"
-
-    return cleaned if cleaned else None
+    resolved = _resolve_candidate_across_bases(candidate, base_candidates, context)
+    return resolved[0] if resolved else None
 
 
 def _resolve_encuestas_menu_image_url(
@@ -5017,11 +5038,6 @@ def _resolve_encuestas_menu_image_url(
     if fallback_candidate:
         return fallback_candidate
 
-def _resolve_encuestas_menu_media_urls(
-    context: dict, api_base_url: Optional[str]
-) -> tuple[Optional[str], List[str]]:
-    """Return the primary banner URL and additional media fallbacks."""
-
     base_candidates = _collect_encuestas_base_candidates(context, api_base_url)
     primary_url = _resolve_encuestas_menu_image_url(context, api_base_url)
 
@@ -5099,6 +5115,42 @@ def _resolve_encuestas_menu_media_urls(
         resolved = _resolve_candidate_against_bases(candidate, base_candidates, context)
         if resolved and resolved not in media_urls:
             media_urls.append(resolved)
+
+    _append(primary_url)
+
+    if has_app_context():
+        _append(current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"))
+        _append(
+            current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL")
+        )
+
+    _append(getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None))
+    _append(
+        getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL", None)
+    )
+
+    _append(ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH)
+    _append(ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH)
+
+    return primary_url, media_urls
+
+
+def _resolve_encuestas_menu_media_urls(
+    context: dict, api_base_url: Optional[str]
+) -> tuple[Optional[str], List[str]]:
+    """Return the primary banner URL and additional media fallbacks."""
+
+    base_candidates = _collect_encuestas_base_candidates(context, api_base_url)
+    primary_url = _resolve_encuestas_menu_image_url(context, api_base_url)
+
+    media_urls: List[str] = []
+
+    def _append(candidate: Optional[str]) -> None:
+        for resolved in _resolve_candidate_across_bases(
+            candidate, base_candidates, context
+        ):
+            if resolved and resolved not in media_urls:
+                media_urls.append(resolved)
 
     _append(primary_url)
 
