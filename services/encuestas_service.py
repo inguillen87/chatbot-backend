@@ -13,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from flask import current_app
 from sqlalchemy import func, or_
@@ -1934,6 +1934,18 @@ def _normalize_genero(value: Optional[Any]) -> Optional[str]:
     return text[:30]
 
 
+def _safe_json_value(raw: Optional[str]) -> Optional[Any]:
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        return None
+
+
 def _normalize_metadata(value: Optional[Any]) -> Optional[Any]:
     if value is None:
         return None
@@ -1954,9 +1966,39 @@ def _normalize_metadata(value: Optional[Any]) -> Optional[Any]:
     return json_value
 
 
+def _coerce_respuestas_payload(value: Optional[Any]) -> List[Dict[str, Any]]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parsed = _safe_json_value(value)
+        if parsed is None:
+            return []
+        return _coerce_respuestas_payload(parsed)
+    if isinstance(value, Mapping):
+        return [dict(value)]
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        normalized: List[Dict[str, Any]] = []
+        for item in value:
+            if isinstance(item, str):
+                parsed_item = _safe_json_value(item)
+                if isinstance(parsed_item, Mapping):
+                    normalized.append(dict(parsed_item))
+                    continue
+            if isinstance(item, Mapping):
+                normalized.append(dict(item))
+        return normalized
+    return []
+
+
 def save_respuesta(slug_publico: str, payload: Dict[str, Any], request_ctx: Dict[str, Any]) -> EncRespuesta:
     encuesta = get_public_encuesta(slug_publico)
-    respuestas_payload = payload.get("respuestas") or []
+    if not isinstance(payload, dict):
+        if isinstance(payload, Mapping):
+            payload = dict(payload)
+        else:
+            raise EncuestaError("Debe enviar respuestas")
+
+    respuestas_payload = _coerce_respuestas_payload(payload.get("respuestas"))
     if not isinstance(respuestas_payload, Sequence) or not respuestas_payload:
         raise EncuestaError("Debe enviar respuestas")
 

@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import time
 from collections import defaultdict, deque
 import re
 from threading import Lock
-from typing import Iterator, Optional, Pattern, Union
+from typing import Any, Dict, Iterator, Optional, Pattern, Union
 
 from flask import (
     Blueprint,
@@ -40,6 +41,69 @@ _rate_buckets: defaultdict[str, deque] = defaultdict(deque)
 _rate_lock = Lock()
 
 AllowedOrigin = Union[str, Pattern[str]]
+
+
+def _safe_json_loads(raw: Optional[str]) -> Optional[Any]:
+    """Best-effort JSON parsing that never raises."""
+
+    if not isinstance(raw, str):
+        return None
+
+    candidate = raw.strip()
+    if not candidate:
+        return None
+
+    try:
+        return json.loads(candidate)
+    except (TypeError, ValueError):
+        return None
+
+
+def _payload_from_form(form) -> Optional[Dict[str, Any]]:
+    """Normalize form-encoded submissions into a JSON-like payload."""
+
+    if not form:
+        return None
+
+    payload: Dict[str, Any] = {}
+    for key, values in form.lists():
+        if not values:
+            continue
+        payload[key] = values[0] if len(values) == 1 else values
+
+    raw_embedded = payload.get("payload")
+    if isinstance(raw_embedded, str):
+        parsed = _safe_json_loads(raw_embedded)
+        if isinstance(parsed, dict):
+            return parsed
+
+    for key in ("respuestas", "metadata"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            parsed = _safe_json_loads(value)
+            if parsed is not None:
+                payload[key] = parsed
+
+    return payload or None
+
+
+def _extract_request_payload() -> Dict[str, Any]:
+    """Obtain the submission payload regardless of encoding."""
+
+    json_payload = request.get_json(silent=True)
+    if isinstance(json_payload, dict):
+        return json_payload
+
+    form_payload = _payload_from_form(request.form)
+    if isinstance(form_payload, dict):
+        return form_payload
+
+    raw_body = request.get_data(cache=False, as_text=True)
+    parsed_body = _safe_json_loads(raw_body)
+    if isinstance(parsed_body, dict):
+        return parsed_body
+
+    return {}
 
 
 def _normalize_host(value: Optional[str]) -> Optional[str]:
@@ -436,8 +500,9 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             or request.headers.get("X-Anon-Id"),
             "canal": request.args.get("canal"),
         }
+        payload = _extract_request_payload()
         try:
-            respuesta = save_respuesta(slug, request.get_json(force=True), request_ctx)
+            respuesta = save_respuesta(slug, payload, request_ctx)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
         return jsonify({"ok": True, "respuesta_id": respuesta.id}), 201
