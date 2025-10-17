@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
+from config import ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH
 from models import (
     MunicipioTicket,
     TicketComentario,
@@ -7242,7 +7243,9 @@ def test_encuestas_menu_defaults_to_backend_banner(client, monkeypatch):
         )
         menu = municipio_responder._get_encuestas_menu(context)
 
-    expected_banner = "https://api.chatboc.ar/static/encuestas/participacion_ciudadana.png"
+    canonical_base = client.application.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+    fallback_base = canonical_base.rstrip("/") if canonical_base else "https://chatboc.ar"
+    expected_banner = f"{fallback_base}{ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH}"
     assert menu.get("image_url") == expected_banner
     media_urls = menu.get("media_urls")
     assert media_urls and media_urls[0] == expected_banner
