@@ -2503,6 +2503,11 @@ def _collect_admin_panel_stats(
         stats["total_respuestas"] += 1
 
         submitted_at = respuesta.submitted_at
+        if submitted_at is not None:
+            if submitted_at.tzinfo is None:
+                submitted_at = submitted_at.replace(tzinfo=timezone.utc)
+            else:
+                submitted_at = submitted_at.astimezone(timezone.utc)
         if submitted_at and submitted_at >= cutoff:
             stats["respuestas_ultimas_24h"] += 1
         if submitted_at and (

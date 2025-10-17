@@ -25,6 +25,15 @@ encuestas_admin_bp = Blueprint("encuestas_admin", __name__, url_prefix="/admin/e
 encuestas_public_bp = Blueprint("encuestas_public", __name__, url_prefix="/public/encuestas")
 
 
+@encuestas_admin_bp.route("", methods=["OPTIONS"], provide_automatic_options=False)
+@encuestas_admin_bp.route("/", methods=["OPTIONS"], provide_automatic_options=False)
+@encuestas_admin_bp.route("/<path:anything>", methods=["OPTIONS"], provide_automatic_options=False)
+def encuestas_admin_preflight(anything: Optional[str] = None):
+    """Allow unauthenticated CORS preflight checks for the legacy admin API."""
+
+    return current_app.make_default_options_response()
+
+
 STATUS_ALIASES = {
     "draft": "draft",
     "borrador": "draft",

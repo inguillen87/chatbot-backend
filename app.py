@@ -354,6 +354,14 @@ def create_app(config_class=Config):
         app.register_blueprint(accessibility_bp)
         app.register_blueprint(encuestas_admin_bp)
         app.register_blueprint(encuestas_public_bp)
+        if FEATURE_ENCUESTAS:
+            app.register_blueprint(encuestas_admin_legacy_bp)
+            app.register_blueprint(encuestas_public_legacy_bp)
+            app.register_blueprint(encuestas_public_share_bp)
+            app.register_blueprint(encuestas_analytics_bp)
+            app.register_blueprint(encuestas_analytics_legacy_bp)
+            app.register_blueprint(encuestas_anchor_bp)
+            app.register_blueprint(encuestas_anchor_legacy_bp)
 
         # Comandos CLI
         register_commands(app)

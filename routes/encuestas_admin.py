@@ -43,6 +43,13 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
             return guard
         return None
 
+    @bp.route("", methods=["OPTIONS"], provide_automatic_options=False)
+    @bp.route("/<path:anything>", methods=["OPTIONS"], provide_automatic_options=False)
+    def preflight(anything=None):
+        """Return a CORS friendly preflight response without auth checks."""
+
+        return current_app.make_default_options_response()
+
     @bp.route("", methods=["POST"])
     @token_requerido
     @require_role("admin", "super_admin")

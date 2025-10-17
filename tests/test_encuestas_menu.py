@@ -7036,7 +7036,7 @@ def responder_municipio(
     assert short_token in body
     assert "Abrir:" in body
     assert "Compartir con un mensaje listo para WhatsApp" in body
-    assert "Compartir desde el widget web" in body
+    assert "Compartir desde el widget web" not in body
     assert "Descargar el código QR" not in body
     assert "Usar el asistente virtual en la web" not in body
     assert any(option.get("type") == "url" for option in menu["options_list"])
@@ -7181,6 +7181,7 @@ def test_encuesta_share_payload_uses_short_url(client):
     assert payload["share_whatsapp_url"].startswith("https://wa.me/?text=")
     assert payload["share_widget_url"].endswith("?canal=widget_chat")
     assert "Compartir con un mensaje listo para WhatsApp" in payload["message_body"]
+    assert "Compartir desde el widget web" not in payload["message_body"]
 
 
 def test_encuestas_menu_defaults_to_backend_banner(client, monkeypatch):
