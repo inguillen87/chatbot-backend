@@ -5261,6 +5261,8 @@ def _get_encuestas_menu(context: dict) -> dict:
     if survey_metadata:
         payload["surveys"] = survey_metadata
 
+    payload["_force_whatsapp_interactive"] = True
+
     return payload
 
 
@@ -5450,6 +5452,8 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
 
     if api_base_url:
         payload.setdefault("_base_url", api_base_url)
+
+    payload["_force_whatsapp_interactive"] = True
 
     return payload
 
