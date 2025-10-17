@@ -5050,9 +5050,11 @@ def _resolve_encuestas_menu_media_urls(
     media_urls: List[str] = []
 
     def _append(candidate: Optional[str]) -> None:
-        resolved = _resolve_candidate_against_bases(candidate, base_candidates, context)
-        if resolved and resolved not in media_urls:
-            media_urls.append(resolved)
+        for resolved in _resolve_candidate_across_bases(
+            candidate, base_candidates, context
+        ):
+            if resolved and resolved not in media_urls:
+                media_urls.append(resolved)
 
     _append(primary_url)
 
