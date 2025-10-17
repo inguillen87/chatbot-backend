@@ -7074,7 +7074,7 @@ def responder_municipio(
     short_token = slug.rsplit("-", 1)[-1]
     assert short_token in body
     assert "Abrir:" in body
-    assert "Compartir con un mensaje listo para WhatsApp" in body
+    assert "Compartir: tocá 'Compartir" in body
     assert "Compartir desde el widget web" not in body
     assert "Descargar el código QR" not in body
     assert "Usar el asistente virtual en la web" not in body
@@ -7091,7 +7091,7 @@ def responder_municipio(
         for option in menu["options_list"]
         if option.get("action_id")
     ]
-    assert not any(action.startswith("encuesta_compartir::") for action in share_actions)
+    assert any(action.startswith("encuesta_compartir::") for action in share_actions)
     assert not any(url.endswith(f"/e/{slug}?canal=widget_chat") for url in button_urls)
     assert not any(url.endswith(f"/api/public/encuestas/{slug}/qr") for url in button_urls)
     media_urls = menu.get("media_urls")
@@ -7163,6 +7163,7 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
     expected_prefix = "https://www.chatboc.ar/e/"
     short_token = slug.rsplit("-", 1)[-1]
     assert f"https://chatboc.ar/e/{short_token}" in menu["message_body"]
+    assert "Compartir: tocá 'Compartir" in menu["message_body"]
     button_urls = [
         option.get("url", "")
         for option in menu["options_list"]
@@ -7175,7 +7176,7 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
         for option in menu["options_list"]
         if option.get("action_id")
     ]
-    assert not any(action.startswith("encuesta_compartir::") for action in share_actions)
+    assert any(action.startswith("encuesta_compartir::") for action in share_actions)
 
 
 def test_encuestas_menu_includes_configured_image(client):
