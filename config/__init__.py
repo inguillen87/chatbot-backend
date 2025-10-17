@@ -106,6 +106,20 @@ ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH = (
         "/static/encuestas/participacion_ciudadana.png",
     )
 )
+# Optional WhatsApp template to show a banner before the encuestas menu
+PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID = os.getenv(
+    "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"
+)
+# Caption used when falling back to a media message for the banner
+PUBLIC_ENCUESTAS_WHATSAPP_BANNER_BODY = os.getenv(
+    "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_BODY",
+    "Encuestas/Opiniones/Sondeos",
+)
+# Optional media URL associated with the banner template so menus reuse the
+# same artwork as the Twilio pre-message.
+PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL = os.getenv(
+    "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL"
+)
 
 PANEL_URL = os.getenv("PANEL_URL", "http://localhost:8080")
 WIDGET_URL = os.getenv("WIDGET_URL", "http://localhost:8080")
@@ -417,6 +431,14 @@ class Config:
     TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
 
     APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:5000")
+
+    PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID = (
+        PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID
+    )
+    PUBLIC_ENCUESTAS_WHATSAPP_BANNER_BODY = PUBLIC_ENCUESTAS_WHATSAPP_BANNER_BODY
+    PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL = (
+        PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL
+    )
 
     _encuestas_default = os.getenv("PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID")
     if _encuestas_default is None or _encuestas_default == "":
