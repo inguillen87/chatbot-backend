@@ -1242,35 +1242,27 @@ class ReclamoFlowHandler:
 
     def get_confirmation_message(self):
         datos = self.flow_context.get('datos_reclamo', {})
-
-        def format_line(label, value, default_value='No especificado'):
-            return f"*{label}:* {value or default_value}"
-
-        descripcion_resumen = datos.get('descripcion_resumida')
-        if not descripcion_resumen:
-            descripcion_resumen = construir_descripcion_breve(datos.get('descripcion'))
-            if descripcion_resumen:
-                datos['descripcion_resumida'] = descripcion_resumen
-
-        # Build the summary message, ensuring all fields are included
-        summary_parts = [
-            "Por favor, confirmá que los datos de tu reclamo son correctos:\n",
-            "📄 *Resumen del Reclamo*",
-            format_line('Categoría', datos.get('categoria')),
-            format_line('Dirección', datos.get('direccion')),
-            format_line('Descripción', descripcion_resumen or datos.get('descripcion')),
-            "",
-            "👤 *Tus Datos*",
-            format_line('Nombre', datos.get('nombre')),
-            format_line('DNI', datos.get('dni')),
-            format_line('Email', datos.get('email')),
-            format_line('Teléfono', datos.get('telefono')),
-            f"*Foto adjunta:* {'Sí' if datos.get('foto_url') else 'No'}"
+        mensaje = "Por favor, confirmá que los datos de tu reclamo son correctos:\n\nDatos del reclamo:\n"
+        mensaje += f"- Categoría: {datos.get('categoria', 'No especificada')}\n"
+        mensaje += f"- Dirección: {datos.get('direccion', 'No especificada')}\n"
+        mensaje += f"- Descripción: {datos.get('descripcion', 'No especificada')}\n\n"
+        mensaje += "Datos personales:\n"
+        mensaje += f"- Nombre: {datos.get('nombre', 'No especificado')}\n"
+        mensaje += f"- DNI: {datos.get('dni', 'No especificado')}\n"
+        mensaje += f"- Email: {datos.get('email', 'No especificado')}\n"
+        mensaje += f"- Teléfono: {datos.get('telefono', 'No especificado')}\n"
+        mensaje += f"- Foto adjunta: {'Sí' if datos.get('foto_url') else 'No'}\n"
+        maps_link = datos.get('maps_link') or datos.get('maps_search_url')
+        static_map_url = datos.get('static_map_url')
+        if maps_link:
+            mensaje += f"- Mapa: {maps_link}\n"
+        opciones = [
+            {"texto": "Confirmar", "action_id": "reclamo_confirmar_si"},
+            {"texto": "Editar", "action_id": "reclamo_confirmar_no"},
+            {"texto": "Cancelar", "action_id": "cancelar"},
         ]
-
-        mensaje = "\n".join(summary_parts)
-        
-        response = {
+        opciones = formatear_opciones(opciones)
+        payload = {
             "message_body": mensaje,
             "options_list": [
                 {"texto": "✅ Confirmar", "action_id": "reclamo_confirmar_si"},
@@ -1279,6 +1271,10 @@ class ReclamoFlowHandler:
             ],
             "message_type": "interactive_buttons"
         }
+        if static_map_url:
+            payload["image_url"] = static_map_url
+            payload["image_alt_text"] = "Mapa de la ubicación"
+        return payload
 
         if datos.get('foto_url'):
             response['image_url'] = datos.get('foto_url')
@@ -2773,16 +2769,26 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
         f"- **Email**: {email_usuario}"
     )
 
+    maps_link = datos_reclamo.get("maps_link") or datos_reclamo.get("maps_search_url")
+    static_map_url = datos_reclamo.get("static_map_url")
+    if maps_link:
+        mensaje_confirmacion += f"\n🔗 Ver en mapa: {maps_link}"
+
     botones = [
         {"texto": "Sí, crear reclamo", "action_id": "confirmar_reclamo_si"},
         {"texto": "No, quiero editar", "action_id": "confirmar_reclamo_no"},
     ]
 
-    return {
+    response_payload = {
         "message_body": mensaje_confirmacion,
         "options_list": botones,
-        "message_type": "interactive_buttons"
-    }, contexto_municipio_actual
+        "message_type": "interactive_buttons",
+    }
+    if static_map_url:
+        response_payload["image_url"] = static_map_url
+        response_payload["image_alt_text"] = "Mapa de la ubicación"
+
+    return response_payload, contexto_municipio_actual
 
 
 def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual, demo_metadata=None):
