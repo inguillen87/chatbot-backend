@@ -5184,16 +5184,18 @@ def _get_encuestas_menu(context: dict) -> dict:
         short_title = _shorten_button_label(titulo)
         share_button_title = _shorten_button_label(titulo, max_length=30)
 
-        display_share_url = share_short_url
+        display_share_url = share_short_url or share_url
 
         line_parts = [f"{index}. *{titulo}*"]
         if descripcion:
             line_parts.append(f"   {descripcion}")
-        line_parts.append(f"   • Abrir: {display_share_url}")
-        line_parts.append(
-            "   • Compartir: tocá 'Compartir "
-            f"{share_button_title}'"
-        )
+        if display_share_url:
+            line_parts.append(f"   • Abrir: {display_share_url}")
+        if whatsapp_share_url:
+            line_parts.append(
+                "   • Compartir con un mensaje listo para WhatsApp: "
+                f"{whatsapp_share_url}"
+            )
         lines.append("\n".join(line_parts))
 
         survey_buttons.append(

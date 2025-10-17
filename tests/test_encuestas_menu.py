@@ -7074,7 +7074,8 @@ def responder_municipio(
     short_token = slug.rsplit("-", 1)[-1]
     assert short_token in body
     assert "Abrir:" in body
-    assert "Compartir: tocá 'Compartir" in body
+    assert "Compartir con un mensaje listo para WhatsApp:" in body
+    assert "https://wa.me/" in body
     assert "Compartir desde el widget web" not in body
     assert "Descargar el código QR" not in body
     assert "Usar el asistente virtual en la web" not in body
@@ -7168,7 +7169,8 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
     expected_prefix = "https://www.chatboc.ar/e/"
     short_token = slug.rsplit("-", 1)[-1]
     assert f"https://chatboc.ar/e/{short_token}" in menu["message_body"]
-    assert "Compartir: tocá 'Compartir" in menu["message_body"]
+    assert "Compartir con un mensaje listo para WhatsApp:" in menu["message_body"]
+    assert "https://wa.me/" in menu["message_body"]
     button_urls = [
         option.get("url", "")
         for option in menu["options_list"]
@@ -7258,6 +7260,27 @@ def test_encuesta_share_payload_uses_short_url(client):
         for opt in previous_options
     )
     assert payload.get("_force_whatsapp_interactive") is True
+
+
+def test_encuestas_menu_widget_share_button_opens_whatsapp_url(client):
+    with client.application.app_context():
+        encuesta, slug = _create_active_encuesta(tenant_id=7)
+        context = _base_context(tenant_id=encuesta.tenant_id or 7)
+        context["channel"] = "widget_chat"
+        menu = municipio_responder._get_encuestas_menu(context)
+
+    options_list = menu.get("options_list") or []
+    share_buttons = [
+        option
+        for option in options_list
+        if option.get("action_id", "").startswith("encuesta_compartir::")
+    ]
+
+    assert share_buttons, "Expected at least one share button in widget menu"
+    for button in share_buttons:
+        assert button.get("type") == "url"
+        assert button.get("url", "").startswith("https://wa.me/")
+        assert button.get("action_id", "").startswith("encuesta_compartir::")
 
 
 def test_encuestas_menu_defaults_to_backend_banner(client, monkeypatch):
