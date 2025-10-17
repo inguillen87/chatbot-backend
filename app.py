@@ -241,6 +241,10 @@ def create_app(config_class=Config):
         from routes.estacionamiento import bp_est
         from routes.media import media_bp
         from routes.accessibility import accessibility_bp
+        from routes.encuestas_publicas import (
+            encuestas_admin_bp,
+            encuestas_public_bp,
+        )
         from cli_commands import register_commands
 
         app.register_blueprint(config_bp)
@@ -295,6 +299,8 @@ def create_app(config_class=Config):
         app.register_blueprint(bp_est)
         app.register_blueprint(media_bp)
         app.register_blueprint(accessibility_bp)
+        app.register_blueprint(encuestas_admin_bp)
+        app.register_blueprint(encuestas_public_bp)
 
         # Comandos CLI
         register_commands(app)
