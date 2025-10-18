@@ -5454,11 +5454,7 @@ def _get_encuestas_menu(context: dict) -> dict:
         payload["surveys"] = survey_metadata
 
     pre_messages: List[dict] = []
-    if is_whatsapp_channel and not embed_whatsapp_banner:
-        pre_messages = _build_encuestas_whatsapp_banner_pre_messages(
-            context, banner_image_url, media_attachments
-        )
-    elif not is_whatsapp_channel:
+    if not is_whatsapp_channel:
         pre_messages = _build_encuestas_whatsapp_banner_pre_messages(
             context, banner_image_url, media_attachments
         )
