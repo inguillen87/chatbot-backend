@@ -4842,6 +4842,44 @@ def _resolve_encuestas_short_base_url(context: dict, base_url: str) -> str:
     return short_base.rstrip("/")
 
 
+def _is_domain_mapped_base_url_for_tenant(
+    base_url: str, tenant_id: Optional[int]
+) -> bool:
+    """Return True when the resolved base URL matches a configured domain map entry."""
+
+    if tenant_id is None:
+        return False
+
+    if not isinstance(base_url, str) or not base_url.strip():
+        return False
+
+    normalized = base_url.strip()
+    if "://" not in normalized:
+        normalized = f"https://{normalized}"
+
+    host = urlparse(normalized).netloc.lower()
+    if not host:
+        return False
+
+    if ":" in host:
+        host = host.split(":", 1)[0]
+
+    mapping = None
+    if has_app_context():
+        mapping = current_app.config.get("PUBLIC_ENCUESTAS_DOMAIN_MAP")
+
+    if not isinstance(mapping, dict):
+        return False
+
+    for domain, mapped_id in mapping.items():
+        if mapped_id != tenant_id:
+            continue
+        if isinstance(domain, str) and domain.strip().lower() == host:
+            return True
+
+    return False
+
+
 def _format_url_for_display(
     url: str,
     *,
@@ -5363,6 +5401,12 @@ def _get_encuestas_menu(context: dict) -> dict:
     )
     banner_image_url = share_image_default
 
+    suppress_whatsapp_share_line = False
+    if is_whatsapp_channel:
+        suppress_whatsapp_share_line = _is_domain_mapped_base_url_for_tenant(
+            base_url, tenant_id
+        )
+
     general_lines: List[str] = []
     whatsapp_blocks: List[Dict[str, str]] = []
     survey_buttons: List[Dict[str, Any]] = []
@@ -5416,11 +5460,9 @@ def _get_encuestas_menu(context: dict) -> dict:
         general_lines.append("\n".join(general_line_parts))
 
         if is_whatsapp_channel:
-            whatsapp_share_line = (
-                f"   • Compartir: {whatsapp_share_url}"
-                if whatsapp_share_url
-                else ""
-            )
+            whatsapp_share_line = ""
+            if whatsapp_share_url and not suppress_whatsapp_share_line:
+                whatsapp_share_line = f"   • Compartir: {whatsapp_share_url}"
 
             whatsapp_parts_with_desc = [whatsapp_title_line]
             if descripcion:
