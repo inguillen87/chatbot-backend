@@ -5450,11 +5450,18 @@ def _get_encuestas_menu(context: dict) -> dict:
 
         open_line = f"   • Abrir: {display_share_url}"
         share_line_full = None
-        share_url_for_body = whatsapp_share_display_url or whatsapp_share_url
+        share_url_for_body = whatsapp_share_url or whatsapp_share_display_url
         if share_url_for_body:
             share_line_full = (
                 "   • Compartir con un mensaje listo para WhatsApp: "
                 f"{share_url_for_body}"
+            )
+
+        direct_share_line = None
+        if share_target_for_display:
+            direct_share_line = (
+                "   • Copiar link directo: "
+                f"{share_target_for_display}"
             )
 
         general_line_parts = [title_line]
@@ -5464,6 +5471,8 @@ def _get_encuestas_menu(context: dict) -> dict:
             general_line_parts.append(open_line)
         if share_line_full:
             general_line_parts.append(share_line_full)
+        if direct_share_line:
+            general_line_parts.append(direct_share_line)
         general_lines.append("\n".join(general_line_parts))
 
         if is_whatsapp_channel:
@@ -5489,16 +5498,22 @@ def _get_encuestas_menu(context: dict) -> dict:
                 whatsapp_parts_with_desc.append(open_line)
             if whatsapp_share_line:
                 whatsapp_parts_with_desc.append(whatsapp_share_line)
+            if direct_share_line:
+                whatsapp_parts_with_desc.append(direct_share_line)
 
             whatsapp_parts_without_desc = [whatsapp_title_line]
             if display_share_url:
                 whatsapp_parts_without_desc.append(open_line)
             if whatsapp_share_line:
                 whatsapp_parts_without_desc.append(whatsapp_share_line)
+            if direct_share_line:
+                whatsapp_parts_without_desc.append(direct_share_line)
 
             whatsapp_title_and_open = [whatsapp_title_line]
             if display_share_url:
                 whatsapp_title_and_open.append(open_line)
+            if direct_share_line:
+                whatsapp_title_and_open.append(direct_share_line)
 
             whatsapp_blocks.append(
                 {
@@ -5598,6 +5613,9 @@ def _get_encuestas_menu(context: dict) -> dict:
         "generar_audio": False if is_whatsapp_channel else True,
     }
 
+    if embed_whatsapp_banner:
+        payload["message_type"] = "text"
+
     if banner_image_url:
         payload["image_url"] = banner_image_url
 
@@ -5607,18 +5625,30 @@ def _get_encuestas_menu(context: dict) -> dict:
     if media_attachments:
         payload["media_urls"] = media_attachments
 
+    if embed_whatsapp_banner:
+        merged_media_urls = list(payload.get("media_urls") or [])
+        if banner_image_url and banner_image_url not in merged_media_urls:
+            merged_media_urls.insert(0, banner_image_url)
+        if merged_media_urls:
+            payload["media_urls"] = merged_media_urls
+
     if survey_metadata:
         payload["surveys"] = survey_metadata
 
-    pre_messages: List[dict] = _build_encuestas_whatsapp_banner_pre_messages(
-        context, banner_image_url, media_attachments
-    )
+    pre_messages: List[dict] = []
+    if not embed_whatsapp_banner:
+        pre_messages = _build_encuestas_whatsapp_banner_pre_messages(
+            context, banner_image_url, media_attachments
+        )
 
     if pre_messages:
         payload["_twilio_pre_messages"] = pre_messages
 
     if is_whatsapp_channel:
-        payload["_force_whatsapp_interactive"] = True
+        if embed_whatsapp_banner:
+            payload["_force_whatsapp_text"] = True
+        else:
+            payload["_force_whatsapp_interactive"] = True
 
     return payload
 
