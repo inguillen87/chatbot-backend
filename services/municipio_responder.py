@@ -5448,13 +5448,17 @@ def _get_encuestas_menu(context: dict) -> dict:
         whatsapp_title = _shorten_button_label(titulo, max_length=120)
         whatsapp_title_line = f"{index}. *{whatsapp_title}*"
 
-        open_line = f"   • Abrir: {display_share_url}"
+        open_line = f"   • *Abrir*: {display_share_url}"
         share_line_full = None
         share_url_for_body = whatsapp_share_url or whatsapp_share_display_url
         if share_url_for_body:
-            share_line_full = (
-                "   • Compartir con un mensaje listo para WhatsApp: "
-                f"{share_url_for_body}"
+            share_line_full = f"   • *Compartir*: {share_url_for_body}"
+
+        direct_share_line = None
+        if share_target_for_display:
+            direct_share_line = (
+                "   • Copiar link directo: "
+                f"{share_target_for_display}"
             )
 
         direct_share_line = None
@@ -5482,7 +5486,7 @@ def _get_encuestas_menu(context: dict) -> dict:
                 and whatsapp_share_url
                 and not suppress_whatsapp_share_line
             ):
-                whatsapp_share_line = f"   • Compartir: {share_url_for_body}"
+                whatsapp_share_line = f"   • *Compartir*: {share_url_for_body}"
 
             whatsapp_parts_with_desc = [whatsapp_title_line]
             if descripcion:
@@ -5530,13 +5534,14 @@ def _get_encuestas_menu(context: dict) -> dict:
                 }
             )
 
-        survey_buttons.append(
-            {
-                "texto": f"Abrir {short_title}",
-                "url": share_url,
-                "type": "url",
-            }
-        )
+        if not is_whatsapp_channel:
+            survey_buttons.append(
+                {
+                    "texto": f"Abrir {short_title}",
+                    "url": share_url,
+                    "type": "url",
+                }
+            )
 
         share_button: Dict[str, Any] = {
             "texto": f"Compartir {share_button_title}",
@@ -5816,7 +5821,7 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
 
     if share_whatsapp_url:
         message_lines.append(
-            f"• Compartir con un mensaje listo para WhatsApp: {share_whatsapp_url}"
+            f"• *Compartir*: {share_whatsapp_url}"
         )
 
     message_lines.append(
