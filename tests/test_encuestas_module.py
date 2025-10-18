@@ -677,6 +677,10 @@ def test_get_summary_returns_metrics(client):
     assert len(resumen["preguntas"]) == len(preguntas_ids)
     assert set(item["pregunta_id"] for item in resumen["preguntas"]) == set(preguntas_ids)
     assert all(item["total_respuestas"] == 3 for item in resumen["preguntas"])
+    tipos = {item["tipo"] for item in resumen["preguntas"]}
+    assert "single_choice" in tipos
+    assert "text" in tipos
+    assert any(item.get("tipo_interno") == "opcion_unica" for item in resumen["preguntas"])
     assert resumen["canales"]
     assert resumen["canales_map"]["qr"] == 2
     canales_labels = {entry["label"] for entry in resumen["canales"]}
