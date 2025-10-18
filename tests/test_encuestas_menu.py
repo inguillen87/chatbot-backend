@@ -8478,13 +8478,10 @@ def test_encuestas_menu_whatsapp_embeds_banner_and_disables_audio(client):
                 "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"
             ] = previous_template
 
-    assert menu.get("message_type") == "interactive_buttons"
+    assert menu.get("message_type") == "text"
     assert menu.get("generar_audio") is False
-    pre_messages = menu.get("_twilio_pre_messages")
-    assert pre_messages and isinstance(pre_messages, list)
-    template_entry = pre_messages[0]
-    assert template_entry.get("content_sid") == "HXtestBanner"
-    assert menu.get("_force_whatsapp_interactive") is True
+    assert menu.get("_twilio_pre_messages") is None
+    assert menu.get("_force_whatsapp_text") is True
     assert menu.get("image_url")
     media_urls = menu.get("media_urls")
     assert isinstance(media_urls, list) and menu["image_url"] in media_urls
@@ -8501,14 +8498,10 @@ def test_encuestas_menu_whatsapp_embeds_banner_when_no_template(client):
         )
         menu = municipio_responder._get_encuestas_menu(context)
 
-    assert menu.get("message_type") == "interactive_buttons"
+    assert menu.get("message_type") == "text"
     assert menu.get("generar_audio") is False
-    pre_messages = menu.get("_twilio_pre_messages")
-    assert pre_messages and isinstance(pre_messages, list)
-    banner_entry = pre_messages[0]
-    assert banner_entry.get("media_urls")
-    assert banner_entry.get("body") == "Participación Ciudadana"
-    assert menu.get("_force_whatsapp_interactive") is True
+    assert menu.get("_twilio_pre_messages") is None
+    assert menu.get("_force_whatsapp_text") is True
     assert menu.get("image_url")
 
 
@@ -8529,8 +8522,8 @@ def test_encuestas_menu_whatsapp_uses_banner_pre_messages(client, monkeypatch):
         menu = municipio_responder._get_encuestas_menu(context)
 
     assert menu.get("image_url")
-    assert menu.get("_force_whatsapp_interactive") is True
-    assert menu.get("_twilio_pre_messages") == stub_pre_message
+    assert menu.get("_force_whatsapp_text") is True
+    assert menu.get("_twilio_pre_messages") is None
 
 
 def test_encuestas_menu_orders_newest_first(client):
