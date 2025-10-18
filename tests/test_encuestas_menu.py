@@ -11,12 +11,10 @@ import json
 from enum import Enum, auto
 import unicodedata
 import difflib
-from typing import Any, Dict, List, Optional
-from types import SimpleNamespace
-from urllib.parse import parse_qs, unquote, urljoin, urlparse
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
-from config import ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH
 from models import (
     MunicipioTicket,
     TicketComentario,
@@ -48,10 +46,7 @@ from .actions.municipio_actions import (
     CrearReclamoActionHandler,
     _normalize_url_for_comparison,
 )
-from tests.test_encuestas_module import (
-    _create_active_encuesta as _module_create_active_encuesta,
-)
-from services.herramientas_municipio import (
+from .herramientas_municipio import (
     consultar_recoleccion_por_direccion,
     categorizar_reclamo_por_palabra_clave,
     sugerir_categorias_relevantes,
@@ -61,9 +56,9 @@ from services.herramientas_municipio import (
     TOOL_REGISTRY,
     KEYWORD_TO_CATEGORY_MAP,
 )
-from services.points_of_interest_handler import PointsOfInterestHandler
-from services.categorias_municipio import CATEGORIAS_RECLAMO, categorias_normalizadas
-from services.common_utils import (
+from .points_of_interest_handler import PointsOfInterestHandler
+from .categorias_municipio import CATEGORIAS_RECLAMO, categorias_normalizadas
+from .common_utils import (
     validar_email,
     validar_telefono,
     formatear_telefono_e164,
@@ -71,12 +66,12 @@ from services.common_utils import (
     extract_multiple_contact_details_regex,
     _get_main_menu_payload,
 )
-from services.llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
+from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
 from services.tasks import process_image_for_chat_task
 from services.intent_classifier import IntentClassifier
 from services.multimodal_analyzer import analizar_imagen_con_fallback
-from services import promo_service, municipio_responder
+from services import promo_service
 import json
 from services.ticket_utils import (
     formatear_ticket_respuesta,
@@ -84,9 +79,11 @@ from services.ticket_utils import (
     remove_buttons_with_urls_in_message,
 )
 from services.vocabulary_loader import get_name_prefix_stopwords
-from services.constants import ConversationState, CONTEXTO_MUNICIPIO
+from .constants import ConversationState, CONTEXTO_MUNICIPIO
 from config import (
     BACKEND_URL as DEFAULT_BACKEND_URL,
+    ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH,
+    ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH,
     IS_HTTPS as DEFAULT_IS_HTTPS,
     Config as AppConfig,
 )
@@ -97,41 +94,6 @@ from services.encuestas_service import (
     get_public_encuesta,
 )
 from services.feature_flag_service import get_feature_toggle
-
-
-def _create_active_encuesta(*args, **kwargs):
-    encuesta, slug, _ = _module_create_active_encuesta(*args, **kwargs)
-    return encuesta, slug
-
-
-def _merge_dicts(base: dict, overrides: Optional[dict]) -> dict:
-    if not overrides:
-        return base
-    for key, value in overrides.items():
-        if (
-            isinstance(value, dict)
-            and isinstance(base.get(key), dict)
-        ):
-            base[key] = _merge_dicts(dict(base[key]), value)
-        else:
-            base[key] = value
-    return base
-
-
-def _base_context(tenant_id: int, *, extra_config: Optional[dict] = None) -> dict:
-    owner = SimpleNamespace(id=tenant_id, municipio_id=tenant_id, empresa_id=None, pyme_id=None)
-    municipio_config = cargar_configuracion_municipio(str(tenant_id), "config.json") or {}
-    merged_config = _merge_dicts(dict(municipio_config), extra_config)
-    context = {
-        "municipio_id": tenant_id,
-        "user_obj": owner,
-        "viewer_user_obj": None,
-        "municipio_config_actual": merged_config,
-        "chat_db_context_data": {CONTEXTO_MUNICIPIO: {}},
-        "channel": "whatsapp",
-    }
-    return context
-
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
@@ -1282,35 +1244,27 @@ class ReclamoFlowHandler:
 
     def get_confirmation_message(self):
         datos = self.flow_context.get('datos_reclamo', {})
-
-        def format_line(label, value, default_value='No especificado'):
-            return f"*{label}:* {value or default_value}"
-
-        descripcion_resumen = datos.get('descripcion_resumida')
-        if not descripcion_resumen:
-            descripcion_resumen = construir_descripcion_breve(datos.get('descripcion'))
-            if descripcion_resumen:
-                datos['descripcion_resumida'] = descripcion_resumen
-
-        # Build the summary message, ensuring all fields are included
-        summary_parts = [
-            "Por favor, confirmá que los datos de tu reclamo son correctos:\n",
-            "📄 *Resumen del Reclamo*",
-            format_line('Categoría', datos.get('categoria')),
-            format_line('Dirección', datos.get('direccion')),
-            format_line('Descripción', descripcion_resumen or datos.get('descripcion')),
-            "",
-            "👤 *Tus Datos*",
-            format_line('Nombre', datos.get('nombre')),
-            format_line('DNI', datos.get('dni')),
-            format_line('Email', datos.get('email')),
-            format_line('Teléfono', datos.get('telefono')),
-            f"*Foto adjunta:* {'Sí' if datos.get('foto_url') else 'No'}"
+        mensaje = "Por favor, confirmá que los datos de tu reclamo son correctos:\n\nDatos del reclamo:\n"
+        mensaje += f"- Categoría: {datos.get('categoria', 'No especificada')}\n"
+        mensaje += f"- Dirección: {datos.get('direccion', 'No especificada')}\n"
+        mensaje += f"- Descripción: {datos.get('descripcion', 'No especificada')}\n\n"
+        mensaje += "Datos personales:\n"
+        mensaje += f"- Nombre: {datos.get('nombre', 'No especificado')}\n"
+        mensaje += f"- DNI: {datos.get('dni', 'No especificado')}\n"
+        mensaje += f"- Email: {datos.get('email', 'No especificado')}\n"
+        mensaje += f"- Teléfono: {datos.get('telefono', 'No especificado')}\n"
+        mensaje += f"- Foto adjunta: {'Sí' if datos.get('foto_url') else 'No'}\n"
+        maps_link = datos.get('maps_link') or datos.get('maps_search_url')
+        static_map_url = datos.get('static_map_url')
+        if maps_link:
+            mensaje += f"- Mapa: {maps_link}\n"
+        opciones = [
+            {"texto": "Confirmar", "action_id": "reclamo_confirmar_si"},
+            {"texto": "Editar", "action_id": "reclamo_confirmar_no"},
+            {"texto": "Cancelar", "action_id": "cancelar"},
         ]
-
-        mensaje = "\n".join(summary_parts)
-        
-        response = {
+        opciones = formatear_opciones(opciones)
+        payload = {
             "message_body": mensaje,
             "options_list": [
                 {"texto": "✅ Confirmar", "action_id": "reclamo_confirmar_si"},
@@ -1319,11 +1273,10 @@ class ReclamoFlowHandler:
             ],
             "message_type": "interactive_buttons"
         }
-
-        if datos.get('foto_url'):
-            response['image_url'] = datos.get('foto_url')
-
-        return response
+        if static_map_url:
+            payload["image_url"] = static_map_url
+            payload["image_alt_text"] = "Mapa de la ubicación"
+        return payload
 
     def handle_confirmacion(self, user_input, payload):
         action = payload.get("action") or payload.get("action_id") or ""
@@ -2813,16 +2766,26 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
         f"- **Email**: {email_usuario}"
     )
 
+    maps_link = datos_reclamo.get("maps_link") or datos_reclamo.get("maps_search_url")
+    static_map_url = datos_reclamo.get("static_map_url")
+    if maps_link:
+        mensaje_confirmacion += f"\n🔗 Ver en mapa: {maps_link}"
+
     botones = [
         {"texto": "Sí, crear reclamo", "action_id": "confirmar_reclamo_si"},
         {"texto": "No, quiero editar", "action_id": "confirmar_reclamo_no"},
     ]
 
-    return {
+    response_payload = {
         "message_body": mensaje_confirmacion,
         "options_list": botones,
-        "message_type": "interactive_buttons"
-    }, contexto_municipio_actual
+        "message_type": "interactive_buttons",
+    }
+    if static_map_url:
+        response_payload["image_url"] = static_map_url
+        response_payload["image_alt_text"] = "Mapa de la ubicación"
+
+    return response_payload, contexto_municipio_actual
 
 
 def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual, demo_metadata=None):
@@ -4879,6 +4842,44 @@ def _resolve_encuestas_short_base_url(context: dict, base_url: str) -> str:
     return short_base.rstrip("/")
 
 
+def _is_domain_mapped_base_url_for_tenant(
+    base_url: str, tenant_id: Optional[int]
+) -> bool:
+    """Return True when the resolved base URL matches a configured domain map entry."""
+
+    if tenant_id is None:
+        return False
+
+    if not isinstance(base_url, str) or not base_url.strip():
+        return False
+
+    normalized = base_url.strip()
+    if "://" not in normalized:
+        normalized = f"https://{normalized}"
+
+    host = urlparse(normalized).netloc.lower()
+    if not host:
+        return False
+
+    if ":" in host:
+        host = host.split(":", 1)[0]
+
+    mapping = None
+    if has_app_context():
+        mapping = current_app.config.get("PUBLIC_ENCUESTAS_DOMAIN_MAP")
+
+    if not isinstance(mapping, dict):
+        return False
+
+    for domain, mapped_id in mapping.items():
+        if mapped_id != tenant_id:
+            continue
+        if isinstance(domain, str) and domain.strip().lower() == host:
+            return True
+
+    return False
+
+
 def _format_url_for_display(
     url: str,
     *,
@@ -4932,10 +4933,108 @@ def _format_url_for_display(
     return display
 
 
+def _clean_url_candidate(value: Optional[str]) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _collect_encuestas_base_candidates(
+    context: dict, api_base_url: Optional[str]
+) -> List[str]:
+    base_candidates: List[str] = []
+
+    if has_app_context():
+        canonical_base = _clean_url_candidate(
+            current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+        )
+        backend_base = _clean_url_candidate(current_app.config.get("BACKEND_URL"))
+        if canonical_base:
+            base_candidates.append(canonical_base.rstrip("/"))
+        if backend_base:
+            base_candidates.append(backend_base.rstrip("/"))
+
+    if api_base_url:
+        api_base_cleaned = _clean_url_candidate(api_base_url)
+        if api_base_cleaned:
+            base_candidates.append(api_base_cleaned.rstrip("/"))
+
+    resolved_base = _clean_url_candidate(_resolve_encuestas_base_url(context))
+    if resolved_base:
+        base_candidates.append(resolved_base.rstrip("/"))
+
+    default_base = _clean_url_candidate(DEFAULT_BACKEND_URL)
+    if default_base:
+        base_candidates.append(default_base.rstrip("/"))
+
+    seen: set[str] = set()
+    unique: List[str] = []
+    for base in base_candidates:
+        if base and base not in seen:
+            seen.add(base)
+            unique.append(base)
+    return unique
+
+
+def _resolve_candidate_across_bases(
+    candidate: Optional[str],
+    base_candidates: Sequence[str],
+    context: Optional[dict] = None,
+) -> List[str]:
+    cleaned = _clean_url_candidate(candidate)
+    if not cleaned:
+        return []
+
+    normalized = _normalize_public_url(cleaned, context)
+    if normalized:
+        return [normalized]
+
+    if cleaned.startswith(("http://", "https://")):
+        return [cleaned]
+
+    if cleaned.startswith("//"):
+        return [f"https:{cleaned}"] if cleaned[2:] else []
+
+    resolved: List[str] = []
+    if cleaned.startswith("/"):
+        for base in base_candidates:
+            resolved.append(f"{base}{cleaned}")
+    else:
+        for base in base_candidates:
+            resolved.append(f"{base}/{cleaned.lstrip('/')}")
+
+    if resolved:
+        seen: set[str] = set()
+        unique: List[str] = []
+        for value in resolved:
+            if value not in seen:
+                seen.add(value)
+                unique.append(value)
+        return unique
+
+    return [cleaned]
+
+
+def _resolve_candidate_against_bases(
+    candidate: Optional[str],
+    base_candidates: Sequence[str],
+    context: Optional[dict] = None,
+) -> Optional[str]:
+    resolved = _resolve_candidate_across_bases(candidate, base_candidates, context)
+    return resolved[0] if resolved else None
+
+
 def _resolve_encuestas_menu_image_url(
     context: dict, api_base_url: Optional[str]
 ) -> Optional[str]:
     """Return the banner image URL for participatory survey menus."""
+
+    def _clean(value: Optional[str]) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        stripped = value.strip()
+        return stripped or None
 
     municipio_config = context.get("municipio_config_actual") or {}
     encuestas_cfg = {}
@@ -4953,28 +5052,270 @@ def _resolve_encuestas_menu_image_url(
         or municipio_config.get("encuestas_default_share_image_url")
     )
 
-    normalized_image = _normalize_public_url(raw_image_url, context)
-    if normalized_image:
-        return normalized_image
+    base_candidates = _collect_encuestas_base_candidates(context, api_base_url)
 
-    fallback_image_url = None
+    candidate_sources = [raw_image_url]
     if has_app_context():
-        fallback_image_url = current_app.config.get(
-            "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"
+        candidate_sources.append(
+            current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL")
         )
-    if not fallback_image_url:
-        fallback_image_url = getattr(
-            AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None
+    candidate_sources.append(
+        getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None)
+    )
+
+    for candidate in candidate_sources:
+        resolved = _resolve_candidate_against_bases(
+            candidate, base_candidates, context
+        )
+        if resolved:
+            return resolved
+
+    fallback_candidate = _resolve_candidate_against_bases(
+        ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH, base_candidates, context
+    )
+    if fallback_candidate:
+        return fallback_candidate
+
+
+def _resolve_encuestas_whatsapp_banner_media_url(
+    context: dict,
+    api_base_url: Optional[str],
+    base_candidates: Optional[Sequence[str]] = None,
+) -> Optional[str]:
+    """Resolve the media URL tied to the WhatsApp banner/template."""
+
+    municipio_config = context.get("municipio_config_actual") or {}
+    encuestas_cfg = {}
+    if isinstance(municipio_config.get("encuestas"), dict):
+        encuestas_cfg = municipio_config["encuestas"]
+
+    candidate_sources: List[Optional[str]] = [
+        encuestas_cfg.get("whatsapp_banner_media_url"),
+        encuestas_cfg.get("banner_media_url"),
+        municipio_config.get("encuestas_whatsapp_banner_media_url"),
+        municipio_config.get("encuestas_banner_media_url"),
+    ]
+
+    if has_app_context():
+        candidate_sources.append(
+            current_app.config.get("PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL")
         )
 
-    if isinstance(fallback_image_url, str) and fallback_image_url.strip():
-        return fallback_image_url.strip()
+    candidate_sources.append(
+        getattr(AppConfig, "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL", None)
+    )
 
-    if api_base_url:
-        base = api_base_url.rstrip("/")
-        return f"{base}/static/encuestas/participacion_ciudadana.png"
+    if base_candidates is None:
+        base_candidates = _collect_encuestas_base_candidates(context, api_base_url)
+
+    for candidate in candidate_sources:
+        resolved = _resolve_candidate_against_bases(
+            candidate, base_candidates, context
+        )
+        if resolved:
+            return resolved
 
     return None
+
+
+def _resolve_encuestas_menu_media_urls(
+    context: dict, api_base_url: Optional[str]
+) -> tuple[Optional[str], List[str]]:
+    """Return the primary banner URL and additional media fallbacks."""
+
+    base_candidates = _collect_encuestas_base_candidates(context, api_base_url)
+    banner_media_url = _resolve_encuestas_whatsapp_banner_media_url(
+        context, api_base_url, base_candidates
+    )
+    primary_url = banner_media_url
+    menu_image_url = _resolve_encuestas_menu_image_url(context, api_base_url)
+
+    if not primary_url:
+        primary_url = menu_image_url
+
+    media_urls: List[str] = []
+
+    def _append(candidate: Optional[str]) -> None:
+        for resolved in _resolve_candidate_across_bases(
+            candidate, base_candidates, context
+        ):
+            if resolved and resolved not in media_urls:
+                media_urls.append(resolved)
+
+    _append(banner_media_url)
+    _append(menu_image_url)
+
+    if has_app_context():
+        _append(current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"))
+        _append(
+            current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL")
+        )
+
+    _append(getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None))
+    _append(
+        getattr(AppConfig, "PUBLIC_ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_URL", None)
+    )
+
+    _append(ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH)
+    _append(ENCUESTAS_DEFAULT_SHARE_MEDIA_FALLBACK_PATH)
+
+    if not primary_url and media_urls:
+        primary_url = media_urls[0]
+
+    return primary_url, media_urls
+
+
+def _resolve_encuestas_whatsapp_banner_template_sid(context: dict) -> Optional[str]:
+    """Resolve the Twilio content template SID for encuestas banners."""
+
+    municipio_config = context.get("municipio_config_actual") or {}
+    encuestas_cfg = {}
+    if isinstance(municipio_config.get("encuestas"), dict):
+        encuestas_cfg = municipio_config["encuestas"]
+
+    template_sid = (
+        encuestas_cfg.get("whatsapp_banner_template_sid")
+        or municipio_config.get("encuestas_whatsapp_banner_template_sid")
+    )
+
+    if not template_sid and has_app_context():
+        template_sid = current_app.config.get(
+            "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"
+        )
+
+    if not template_sid:
+        template_sid = getattr(
+            AppConfig, "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID", None
+        )
+
+    if isinstance(template_sid, str):
+        template_sid = template_sid.strip()
+
+    return template_sid or None
+
+
+def _resolve_encuestas_whatsapp_banner_body(context: dict) -> str:
+    """Return the caption used when sending the encuestas banner via media."""
+
+    municipio_config = context.get("municipio_config_actual") or {}
+    encuestas_cfg = {}
+    if isinstance(municipio_config.get("encuestas"), dict):
+        encuestas_cfg = municipio_config["encuestas"]
+
+    body = (
+        encuestas_cfg.get("whatsapp_banner_body")
+        or municipio_config.get("encuestas_whatsapp_banner_body")
+    )
+
+    if not body and has_app_context():
+        body = current_app.config.get("PUBLIC_ENCUESTAS_WHATSAPP_BANNER_BODY")
+
+    if not body:
+        body = getattr(AppConfig, "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_BODY", None)
+
+    if not isinstance(body, str):
+        body = "Encuestas/Opiniones/Sondeos"
+    else:
+        body = body.strip() or "Encuestas/Opiniones/Sondeos"
+
+    return body
+
+
+def _build_encuestas_whatsapp_banner_pre_messages(
+    context: dict,
+    image_url: Optional[str],
+    media_urls: Sequence[str],
+) -> List[dict]:
+    """Return Twilio pre-messages to display the banner in WhatsApp."""
+
+    channel_value = (context.get("channel") or "").strip().lower()
+    if "whatsapp" not in channel_value:
+        return []
+
+    template_sid = _resolve_encuestas_whatsapp_banner_template_sid(context)
+    channels = ["whatsapp"]
+
+    if template_sid:
+        return [
+            {
+                "channels": channels,
+                "content_sid": template_sid,
+                "content_variables": {},
+            }
+        ]
+
+    candidate_url = image_url
+    if not candidate_url:
+        for candidate in media_urls:
+            if candidate:
+                candidate_url = candidate
+                break
+
+    if not candidate_url:
+        return []
+
+    caption = _resolve_encuestas_whatsapp_banner_body(context)
+    return [
+        {
+            "channels": channels,
+            "body": caption,
+            "media_urls": [candidate_url],
+        }
+    ]
+
+
+_WHATSAPP_MENU_BODY_SOFT_LIMIT = 1400
+_WHATSAPP_MENU_DESCRIPTION_LIMIT = 160
+
+
+def _truncate_text(value: str, max_length: int) -> str:
+    if not isinstance(value, str):
+        return ""
+
+    trimmed = value.strip()
+    if len(trimmed) <= max_length:
+        return trimmed
+
+    candidate = trimmed[: max_length - 1].rstrip()
+    if " " in candidate:
+        candidate = candidate.rsplit(" ", 1)[0]
+    if not candidate:
+        candidate = trimmed[: max_length - 1].rstrip()
+    return f"{candidate}…"
+
+
+def _build_encuesta_share_whatsapp_pre_messages(
+    context: dict,
+    share_message: Optional[str],
+    image_url: Optional[str],
+    media_urls: Sequence[str],
+) -> List[dict]:
+    """Prepare media pre-messages so WhatsApp forwards keep their thumbnail."""
+
+    channel_value = (context.get("channel") or "").strip().lower()
+    if "whatsapp" not in channel_value:
+        return []
+
+    if not share_message:
+        return []
+
+    candidate_url = image_url
+    if not candidate_url:
+        for candidate in media_urls:
+            if candidate:
+                candidate_url = candidate
+                break
+
+    if not candidate_url:
+        return []
+
+    return [
+        {
+            "channels": ["whatsapp"],
+            "body": share_message,
+            "media_urls": [candidate_url],
+        }
+    ]
 
 
 def _get_encuestas_menu(context: dict) -> dict:
@@ -4984,6 +5325,10 @@ def _get_encuestas_menu(context: dict) -> dict:
         {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
         {"texto": "Cancelar", "action_id": "cancelar"},
     ]
+
+    channel_value = (context.get("channel") or "").strip().lower()
+    is_widget_channel = "widget" in channel_value
+    is_whatsapp_channel = "whatsapp" in channel_value
 
     tenant_id = _resolve_encuestas_tenant_id(context)
     toggle = _resolve_encuestas_toggle(context)
@@ -5047,9 +5392,23 @@ def _get_encuestas_menu(context: dict) -> dict:
 
     base_url = _resolve_encuestas_base_url(context)
     api_base_url = _resolve_encuestas_api_base_url(context)
-    menu_image_url = _resolve_encuestas_menu_image_url(context, api_base_url)
+    primary_banner_url, media_attachments = _resolve_encuestas_menu_media_urls(
+        context, api_base_url
+    )
+    share_media_defaults = list(media_attachments)
+    share_image_default = primary_banner_url or (
+        share_media_defaults[0] if share_media_defaults else None
+    )
+    banner_image_url = share_image_default
 
-    lines: List[str] = []
+    suppress_whatsapp_share_line = False
+    if is_whatsapp_channel:
+        suppress_whatsapp_share_line = _is_domain_mapped_base_url_for_tenant(
+            base_url, tenant_id
+        )
+
+    general_lines: List[str] = []
+    whatsapp_blocks: List[Dict[str, str]] = []
     survey_buttons: List[Dict[str, Any]] = []
     survey_metadata: List[Dict[str, Any]] = []
     for index, (encuesta, slug_publico) in enumerate(encuestas, start=1):
@@ -5070,23 +5429,80 @@ def _get_encuestas_menu(context: dict) -> dict:
             qr_url = urljoin(
                 f"{api_base_url}/", f"api/public/encuestas/{slug_publico}/qr"
             )
-        share_message = f"Participá en '{titulo}' ingresando a {share_short_url}"
+        share_message = f"Participá en {titulo}: {share_short_url}"
+        whatsapp_share_url = f"https://wa.me/?text={quote_plus(share_message)}"
         share_action_id = f"encuesta_compartir::{slug_publico}"
 
         short_title = _shorten_button_label(titulo)
         share_button_title = _shorten_button_label(titulo, max_length=30)
 
-        display_share_url = share_short_url
+        display_share_url = share_short_url or share_url
 
-        line_parts = [f"{index}. *{titulo}*"]
+        title_line = f"{index}. *{titulo}*"
+        whatsapp_title = _shorten_button_label(titulo, max_length=120)
+        whatsapp_title_line = f"{index}. *{whatsapp_title}*"
+
+        open_line = f"   • Abrir: {display_share_url}"
+        share_line_full = None
+        if whatsapp_share_url:
+            share_line_full = (
+                "   • Compartir con un mensaje listo para WhatsApp: "
+                f"{whatsapp_share_url}"
+            )
+
+        general_line_parts = [title_line]
         if descripcion:
-            line_parts.append(f"   {descripcion}")
-        line_parts.append(f"   • Abrir la encuesta en la web: {display_share_url}")
-        line_parts.append(
-            "   • Compartir desde este chat: tocá 'Compartir "
-            f"{share_button_title}' para reenviar el mensaje sugerido."
-        )
-        lines.append("\n".join(line_parts))
+            general_line_parts.append(f"   {descripcion}")
+        if display_share_url:
+            general_line_parts.append(open_line)
+        if share_line_full:
+            general_line_parts.append(share_line_full)
+        general_lines.append("\n".join(general_line_parts))
+
+        if is_whatsapp_channel:
+            whatsapp_share_line = ""
+            if whatsapp_share_url and not suppress_whatsapp_share_line:
+                whatsapp_share_line = f"   • Compartir: {whatsapp_share_url}"
+
+            whatsapp_parts_with_desc = [whatsapp_title_line]
+            if descripcion:
+                truncated_description = _truncate_text(
+                    descripcion, _WHATSAPP_MENU_DESCRIPTION_LIMIT
+                )
+                if truncated_description:
+                    whatsapp_parts_with_desc.append(
+                        f"   {truncated_description}"
+                    )
+
+            if display_share_url:
+                whatsapp_parts_with_desc.append(open_line)
+            if whatsapp_share_line:
+                whatsapp_parts_with_desc.append(whatsapp_share_line)
+
+            whatsapp_parts_without_desc = [whatsapp_title_line]
+            if display_share_url:
+                whatsapp_parts_without_desc.append(open_line)
+            if whatsapp_share_line:
+                whatsapp_parts_without_desc.append(whatsapp_share_line)
+
+            whatsapp_title_and_open = [whatsapp_title_line]
+            if display_share_url:
+                whatsapp_title_and_open.append(open_line)
+
+            whatsapp_blocks.append(
+                {
+                    "with_description": "\n".join(
+                        part for part in whatsapp_parts_with_desc if part
+                    ),
+                    "without_description": "\n".join(
+                        part for part in whatsapp_parts_without_desc if part
+                    ),
+                    "title_and_open": "\n".join(
+                        part for part in whatsapp_title_and_open if part
+                    ),
+                    "title_only": whatsapp_title_line,
+                }
+            )
 
         survey_buttons.append(
             {
@@ -5095,12 +5511,17 @@ def _get_encuestas_menu(context: dict) -> dict:
                 "type": "url",
             }
         )
-        survey_buttons.append(
-            {
-                "texto": f"Compartir {share_button_title}",
-                "action_id": share_action_id,
-            }
-        )
+
+        share_button: Dict[str, Any] = {
+            "texto": f"Compartir {share_button_title}",
+            "action_id": share_action_id,
+        }
+        if is_widget_channel and whatsapp_share_url:
+            share_button.pop("action_id", None)
+            share_button["url"] = whatsapp_share_url
+            share_button["type"] = "url"
+
+        survey_buttons.append(share_button)
 
         survey_metadata.append(
             {
@@ -5112,39 +5533,83 @@ def _get_encuestas_menu(context: dict) -> dict:
                 "share_action_id": share_action_id,
                 "qr_url": qr_url,
                 "short_slug": short_slug,
+                "share_whatsapp_url": whatsapp_share_url,
+                "share_widget_url": (
+                    f"{share_url}?canal=widget_chat" if share_url else None
+                ),
+                "share_image_url": share_image_default,
+                "share_media_urls": list(share_media_defaults),
             }
         )
 
-    header = (
-        "*Participación Ciudadana*\n"
-    )
-    message_body = header + "\n".join(lines)
+    header = "*Participación Ciudadana*\n"
+
+    if is_whatsapp_channel:
+        selected_lines = [
+            block.get("with_description", "") for block in whatsapp_blocks
+        ]
+        message_body = header + "\n".join(filter(None, selected_lines))
+    else:
+        selected_lines = general_lines
+        message_body = header + "\n".join(selected_lines)
+
+    message_body = message_body or header
 
     message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
 
+    if is_whatsapp_channel and len(message_body) > _WHATSAPP_MENU_BODY_SOFT_LIMIT:
+        selected_lines = [
+            block.get("without_description", "") for block in whatsapp_blocks
+        ]
+        message_body = header + "\n".join(filter(None, selected_lines))
+        message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
+
+    if is_whatsapp_channel and len(message_body) > _WHATSAPP_MENU_BODY_SOFT_LIMIT:
+        selected_lines = [
+            block.get("title_and_open", "") for block in whatsapp_blocks
+        ]
+        message_body = header + "\n".join(filter(None, selected_lines))
+        message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
+
+    if is_whatsapp_channel and len(message_body) > _WHATSAPP_MENU_BODY_SOFT_LIMIT:
+        selected_lines = [block.get("title_only", "") for block in whatsapp_blocks]
+        message_body = header + "\n".join(filter(None, selected_lines))
+        message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
+
     options = survey_buttons + base_options
+    embed_whatsapp_banner = is_whatsapp_channel and bool(banner_image_url)
+
     payload = {
         "message_body": message_body.strip(),
         "message_type": "interactive_buttons",
         "options_list": options,
         "fuente": "submenu_encuestas_v1",
-        "generar_audio": True,
+        "generar_audio": False if is_whatsapp_channel else True,
     }
 
-    if menu_image_url:
-        payload["image_url"] = menu_image_url
+    if banner_image_url:
+        payload["image_url"] = banner_image_url
 
     if api_base_url:
         payload.setdefault("_base_url", api_base_url)
 
-    media_attachments: List[str] = []
-    if menu_image_url:
-        media_attachments.append(menu_image_url)
     if media_attachments:
         payload["media_urls"] = media_attachments
 
     if survey_metadata:
         payload["surveys"] = survey_metadata
+
+    pre_messages: List[dict] = []
+    if not is_whatsapp_channel:
+        pre_messages = _build_encuestas_whatsapp_banner_pre_messages(
+            context, banner_image_url, media_attachments
+        )
+
+    if pre_messages:
+        payload["_twilio_pre_messages"] = pre_messages
+
+    if is_whatsapp_channel:
+        payload["_force_whatsapp_interactive"] = True
 
     return payload
 
@@ -5157,6 +5622,13 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
         CONTEXTO_MUNICIPIO, {}
     )
 
+    api_base_url = _resolve_encuestas_api_base_url(context)
+    share_image_url, share_media_urls = _resolve_encuestas_menu_media_urls(
+        context, api_base_url
+    )
+    if not share_image_url and share_media_urls:
+        share_image_url = share_media_urls[0]
+
     stored_meta = contexto_municipio_actual.get("encuestas_menu_surveys") or []
     share_meta = None
     for meta in stored_meta:
@@ -5167,6 +5639,8 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
     share_url = None
     share_short_url = None
     share_message = None
+    share_whatsapp_url = None
+    share_widget_url = None
     titulo = "Encuesta ciudadana"
 
     if share_meta:
@@ -5176,6 +5650,12 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
             "share_url"
         )
         share_message = share_meta.get("share_message")
+        share_whatsapp_url = share_meta.get("share_whatsapp_url")
+        share_widget_url = share_meta.get("share_widget_url")
+        share_image_url = share_meta.get("share_image_url") or share_image_url
+        meta_media_urls = share_meta.get("share_media_urls")
+        if isinstance(meta_media_urls, list) and meta_media_urls:
+            share_media_urls = list(meta_media_urls)
 
     if not share_url and normalized_slug:
         base_url = _resolve_encuestas_base_url(context)
@@ -5208,7 +5688,7 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
                 else share_short_url
             )
             share_message = share_message or (
-                f"Participá en '{titulo}' ingresando a {share_short_url or share_url}"
+                f"Participá en {titulo}: {share_short_url or share_url}"
                 if (share_short_url or share_url)
                 else None
             )
@@ -5220,13 +5700,36 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
                 "share_message": share_message,
                 "share_action_id": f"encuesta_compartir::{normalized_slug}",
                 "qr_url": None,
+                "share_whatsapp_url": None,
+                "share_widget_url": None,
+                "share_image_url": share_image_url,
+                "share_media_urls": list(share_media_urls)
+                if share_media_urls
+                else [],
             }
             stored_meta.append(new_meta)
             contexto_municipio_actual["encuestas_menu_surveys"] = stored_meta
+            share_meta = new_meta
 
     if not share_message and (share_short_url or share_url) and titulo:
         target_url = share_short_url or share_url
-        share_message = f"Participá en '{titulo}' ingresando a {target_url}"
+        share_message = f"Participá en {titulo}: {target_url}"
+
+    if share_message and not share_whatsapp_url:
+        share_whatsapp_url = f"https://wa.me/?text={quote_plus(share_message)}"
+
+    if share_url and not share_widget_url:
+        share_widget_url = f"{share_url}?canal=widget_chat"
+
+    if share_meta is not None:
+        if share_whatsapp_url:
+            share_meta["share_whatsapp_url"] = share_whatsapp_url
+        if share_widget_url:
+            share_meta["share_widget_url"] = share_widget_url
+        if share_image_url:
+            share_meta["share_image_url"] = share_image_url
+        if share_media_urls:
+            share_meta["share_media_urls"] = list(share_media_urls)
 
     share_followup_options = [
         {"texto": "Volver a encuestas", "action_id": "mostrar_menu_encuestas"},
@@ -5234,14 +5737,16 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
         {"texto": "Cancelar", "action_id": "cancelar"},
     ]
 
-    stored_options = (
-        contexto_municipio_actual.get("encuestas_menu_options") or share_followup_options
-    )
+    previous_menu_options = contexto_municipio_actual.get("encuestas_menu_options")
+    if previous_menu_options:
+        contexto_municipio_actual["_encuestas_menu_previous_options"] = previous_menu_options
+
+    stored_options = list(share_followup_options)
     contexto_municipio_actual["estado_conversacion"] = (
         ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
     )
     contexto_municipio_actual["menu_opciones"] = stored_options
-    contexto_municipio_actual.setdefault("encuestas_menu_options", stored_options)
+    contexto_municipio_actual["encuestas_menu_options"] = stored_options
 
     if chat_db_context:
         flag_modified(chat_db_context, "context_data")
@@ -5258,14 +5763,30 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
             "generar_audio": True,
         }
 
-    message_body = (
-        "*Compartir encuesta*\n"
-        f"Reenviá este mensaje para invitar a participar en *{titulo}*:\n\n"
-        f"{share_message}\n\n"
+    pre_messages = _build_encuesta_share_whatsapp_pre_messages(
+        context, share_message, share_image_url, share_media_urls
+    )
+
+    intro_line = (
+        f"Reenviá el mensaje con imagen que te envié arriba o copiá este texto:"
+        if pre_messages
+        else f"Reenviá este mensaje para invitar a participar en *{titulo}*:"
+    )
+
+    message_lines = ["*Compartir encuesta*", intro_line, "", share_message, ""]
+
+    if share_whatsapp_url:
+        message_lines.append(
+            f"• Compartir con un mensaje listo para WhatsApp: {share_whatsapp_url}"
+        )
+
+    message_lines.append(
         "Podés copiarlo o reenviarlo directamente sin salir de esta conversación."
     )
 
-    return {
+    message_body = "\n".join(message_lines)
+
+    payload = {
         "message_body": message_body,
         "message_type": "interactive_buttons",
         "options_list": stored_options,
@@ -5274,7 +5795,24 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
         "share_message": share_message,
         "share_url": share_url,
         "share_short_url": share_short_url or share_url,
+        "share_whatsapp_url": share_whatsapp_url,
+        "share_widget_url": share_widget_url,
     }
+
+    if share_image_url:
+        payload["image_url"] = share_image_url
+    if share_media_urls:
+        payload["media_urls"] = share_media_urls
+
+    if pre_messages:
+        payload["_twilio_pre_messages"] = pre_messages
+
+    if api_base_url:
+        payload.setdefault("_base_url", api_base_url)
+
+    payload["_force_whatsapp_interactive"] = True
+
+    return payload
 
 
 def _get_estacionamiento_menu():
@@ -7056,851 +7594,824 @@ def responder_municipio(
         contexto_municipio_data_from_db = chat_db_context_live_data.get(
             CONTEXTO_MUNICIPIO, {}
         )
-        app.config["PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"] = fallback_image
-        try:
-            menu = municipio_responder._get_encuestas_menu(context)
-        finally:
-            if previous_default_image is None:
-                app.config.pop("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None)
-            else:
-                app.config["PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL"] = (
-                    previous_default_image
-                )
-
-
-    body = menu["message_body"]
-    assert "Participación Ciudadana" in body
-    assert "Últimas encuestas disponibles" in body
-    short_token = slug.rsplit("-", 1)[-1]
-    assert "• Abrir:" in body
-    assert "• Compartir:" in body
-    assert "https://wa.me/" in body
-    assert len(body) < 1600
-    assert "Compartir desde el widget web" not in body
-    assert "Descargar el código QR" not in body
-    assert "Usar el asistente virtual en la web" not in body
-    assert any(option.get("type") == "url" for option in menu["options_list"])
-    button_urls = [
-        option.get("url", "")
-        for option in menu["options_list"]
-        if option.get("type") == "url"
-    ]
-    assert any(url.endswith(f"/e/{slug}") for url in button_urls)
-    assert not any(url.startswith("https://wa.me/") for url in button_urls)
-    share_actions = [
-        option.get("action_id")
-        for option in menu["options_list"]
-        if option.get("action_id")
-    ]
-    assert any(action.startswith("encuesta_compartir::") for action in share_actions)
-    assert not any(url.endswith(f"/e/{slug}?canal=widget_chat") for url in button_urls)
-    assert not any(url.endswith(f"/api/public/encuestas/{slug}/qr") for url in button_urls)
-    media_urls = menu.get("media_urls")
-    assert isinstance(media_urls, list) and media_urls
-    assert media_urls[0] == fallback_image
-    assert fallback_image in media_urls
-    assert menu.get("image_url") == fallback_image
-    assert menu.get("_base_url") == client.application.config.get(
-        "PUBLIC_ENCUESTAS_API_BASE_URL"
-    )
-    assert menu.get("_force_whatsapp_interactive") is True
-    surveys_meta = menu.get("surveys")
-    assert isinstance(surveys_meta, list) and surveys_meta
-    first_meta = surveys_meta[0]
-    assert first_meta["slug"] == slug
-    assert first_meta["share_url"].endswith(f"/e/{slug}")
-    assert first_meta["share_short_url"].endswith(f"/e/{short_token}")
-    assert first_meta["share_message"].startswith("Participá en")
-    assert first_meta["share_message"].endswith(f"/e/{short_token}")
-    assert "ingresando a" not in first_meta["share_message"]
-    assert "https://www." not in first_meta["share_message"]
-    assert first_meta["share_action_id"].startswith("encuesta_compartir::")
-    assert first_meta["share_whatsapp_url"].startswith("https://wa.me/?text=")
-    assert first_meta["share_widget_url"].endswith("?canal=widget_chat")
-    assert first_meta["qr_url"].endswith(f"/api/public/encuestas/{slug}/qr")
-    assert first_meta["share_image_url"]
-    assert first_meta["share_media_urls"]
-    assert first_meta["share_media_urls"][0] == first_meta["share_image_url"]
-    assert first_meta["share_image_url"] == menu.get("image_url")
-
-
-def test_encuestas_menu_respects_explicit_disable(client):
-    with client.application.app_context():
-        encuesta, _ = _create_active_encuesta(tenant_id=3)
-        context = _base_context(
-            tenant_id=encuesta.tenant_id or 3,
-            extra_config={"encuestas_enabled": False},
-        )
-        menu = municipio_responder._get_encuestas_menu(context)
-
-    assert "todavía no están habilitadas" in menu["message_body"].lower()
-    assert menu["options_list"][-1]["action_id"] == "cancelar"
-    assert "surveys" not in menu
-
-
-def test_encuestas_menu_shows_empty_state_when_enabled(client):
-    with client.application.app_context():
-        context = _base_context(
-            tenant_id=1,
-            extra_config={"encuestas": {"enabled": True}},
-        )
-        menu = municipio_responder._get_encuestas_menu(context)
-
-    assert "por el momento no hay encuestas activas" in menu["message_body"].lower()
-    assert menu["fuente"] == "submenu_encuestas_v1"
-    assert "surveys" not in menu
-
-
-def test_encuestas_menu_prefers_domain_map_base_url(client):
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=11)
-        app = client.application
-        app.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = None
-        app.config["PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL"] = None
-        app.config["PUBLIC_ENCUESTAS_DOMAIN_MAP"] = {
-            "chatbot-backend-2e14.onrender.com": 999,
-            "www.chatboc.ar": encuesta.tenant_id,
-            "chatboc.ar": encuesta.tenant_id,
-        }
-        app.config["IS_HTTPS"] = True
-        context = _base_context(tenant_id=encuesta.tenant_id or 11)
-        menu = municipio_responder._get_encuestas_menu(context)
-
-    expected_prefix = "https://www.chatboc.ar/e/"
-    short_token = slug.rsplit("-", 1)[-1]
-    body = menu["message_body"]
-    assert "https://wa.me/" not in body
-    button_urls = [
-        option.get("url", "")
-        for option in menu["options_list"]
-        if option.get("type") == "url"
-    ]
-    assert any(url.startswith(expected_prefix) for url in button_urls)
-    assert not any(url.startswith("https://wa.me/") for url in button_urls)
-    share_actions = [
-        option.get("action_id")
-        for option in menu["options_list"]
-        if option.get("action_id")
-    ]
-    assert any(action.startswith("encuesta_compartir::") for action in share_actions)
-
-    surveys_meta = menu.get("surveys") or []
-    assert any(
-        meta.get("share_url", "").startswith(expected_prefix) for meta in surveys_meta
-    )
-    assert any(
-        meta.get("share_short_url", "").endswith(f"/e/{short_token}")
-        for meta in surveys_meta
-    )
-
-
-def test_encuestas_menu_includes_configured_image(client):
-    with client.application.app_context():
-        encuesta, _ = _create_active_encuesta(tenant_id=9)
-        context = _base_context(
-            tenant_id=encuesta.tenant_id or 9,
-            extra_config={"encuestas": {"menu_image_url": "https://cdn.example.com/encuestas/banner.png"}},
-        )
-        menu = municipio_responder._get_encuestas_menu(context)
-
-    assert menu.get("image_url") == "https://cdn.example.com/encuestas/banner.png"
-    media_urls = menu.get("media_urls")
-    assert isinstance(media_urls, list) and media_urls
-    assert media_urls[0] == "https://cdn.example.com/encuestas/banner.png"
-    assert "https://cdn.example.com/encuestas/banner.png" in media_urls
-    assert menu.get("_force_whatsapp_interactive") is True
-
-
-def test_encuesta_share_payload_uses_short_url(client):
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=5)
-        context = _base_context(tenant_id=encuesta.tenant_id or 5)
-        menu = municipio_responder._get_encuestas_menu(context)
-
-    context["chat_db_context_data"] = {
-        municipio_responder.CONTEXTO_MUNICIPIO: {
-            "encuestas_menu_surveys": menu.get("surveys"),
-            "encuestas_menu_options": [
-                option
-                for option in menu.get("options_list", [])
-                if option.get("action_id")
-            ],
-        }
-    }
-
-    payload = municipio_responder._build_encuesta_share_payload(
-        slug, context, chat_db_context=None
-    )
-
-    short_token = slug.rsplit("-", 1)[-1]
-    image_url = menu.get("image_url")
-    assert image_url
-    assert payload["message_type"] == "interactive_buttons"
-    expected_followup_ids = [
-        "mostrar_menu_encuestas",
-        "menu_principal",
-        "cancelar",
-    ]
-    options_list = payload["options_list"]
-    assert [opt.get("action_id") for opt in options_list] == expected_followup_ids
-    assert payload["share_url"].endswith(f"/e/{slug}")
-    assert payload["share_short_url"].endswith(f"/e/{short_token}")
-    assert payload["share_message"].endswith(f"/e/{short_token}")
-    assert "https://www." not in payload["share_message"]
-    assert payload["share_whatsapp_url"].startswith("https://wa.me/?text=")
-    assert payload["share_widget_url"].endswith("?canal=widget_chat")
-    assert "Compartir con un mensaje listo para WhatsApp" in payload["message_body"]
-    assert "Compartir desde el widget web" not in payload["message_body"]
-    assert payload.get("image_url") == image_url
-    media_urls = payload.get("media_urls")
-    assert isinstance(media_urls, list) and media_urls
-    assert image_url in media_urls
-    assert media_urls[0] == image_url
-    first_meta = menu["surveys"][0]
-    assert payload["image_url"] == first_meta["share_image_url"]
-    assert payload["media_urls"][0] == first_meta["share_media_urls"][0]
-    assert payload.get("_base_url") == menu.get("_base_url")
-    contexto_municipio = context["chat_db_context_data"][municipio_responder.CONTEXTO_MUNICIPIO]
-    assert contexto_municipio["encuestas_menu_options"] == options_list
-    previous_options = contexto_municipio.get("_encuestas_menu_previous_options")
-    assert previous_options and any(
-        opt.get("action_id", "").startswith("encuesta_compartir::")
-        for opt in previous_options
-    )
-    assert payload.get("_force_whatsapp_interactive") is True
-
-
-def test_encuestas_menu_widget_share_button_opens_whatsapp_url(client):
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=7)
-        context = _base_context(tenant_id=encuesta.tenant_id or 7)
-        context["channel"] = "widget_chat"
-        menu = municipio_responder._get_encuestas_menu(context)
-
-    options_list = menu.get("options_list") or []
-    share_buttons = [
-        option
-        for option in options_list
-        if option.get("action_id", "").startswith("encuesta_compartir::")
-    ]
-
-    assert share_buttons, "Expected at least one share button in widget menu"
-    for button in share_buttons:
-        assert button.get("type") == "url"
-        assert button.get("url", "").startswith("https://wa.me/")
-        assert button.get("action_id", "").startswith("encuesta_compartir::")
-
-
-def test_encuesta_share_payload_uses_media_fallback_when_missing_primary(
-    client, monkeypatch
-):
-    fallback_image = "https://cdn.example.com/fallback-banner.png"
-
-    def _fake_media_urls(context, api_base_url):
-        return None, [fallback_image]
-
-    monkeypatch.setattr(
-        municipio_responder,
-        "_resolve_encuestas_menu_media_urls",
-        _fake_media_urls,
-    )
-
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=19)
-        context = _base_context(tenant_id=encuesta.tenant_id or 19)
-
-    normalized_slug = slug.strip().lower()
-    short_token = normalized_slug.rsplit("-", 1)[-1]
-    context.setdefault("chat_db_context_data", {})[
-        municipio_responder.CONTEXTO_MUNICIPIO
-    ] = {
-        "encuestas_menu_surveys": [
-            {
-                "slug": normalized_slug,
-                "titulo": "Encuesta Test",
-                "share_url": f"https://chatboc.ar/e/{normalized_slug}",
-                "share_short_url": f"https://chatboc.ar/e/{short_token}",
-                "share_message": f"Participá en Encuesta Test: https://chatboc.ar/e/{short_token}",
-                "share_action_id": f"encuesta_compartir::{normalized_slug}",
-                "share_media_urls": [],
-                "share_image_url": None,
-            }
-        ],
-        "encuestas_menu_options": [],
-    }
-
-    payload = municipio_responder._build_encuesta_share_payload(
-        slug, context, chat_db_context=None
-    )
-
-    assert payload["image_url"] == fallback_image
-    assert payload["media_urls"][0] == fallback_image
-
-
-def test_encuestas_menu_widget_share_button_opens_whatsapp_url(client):
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=7)
-        context = _base_context(tenant_id=encuesta.tenant_id or 7)
-        context["channel"] = "widget_chat"
-        menu = municipio_responder._get_encuestas_menu(context)
-
-    options_list = menu.get("options_list") or []
-    share_buttons = [
-        option
-        for option in options_list
-        if option.get("action_id", "").startswith("encuesta_compartir::")
-    ]
-
-    assert share_buttons, "Expected at least one share button in widget menu"
-    for button in share_buttons:
-        assert button.get("type") == "url"
-        assert button.get("url", "").startswith("https://wa.me/")
-        assert button.get("action_id", "").startswith("encuesta_compartir::")
-
-
-def test_encuesta_share_payload_uses_media_fallback_when_missing_primary(
-    client, monkeypatch
-):
-    fallback_image = "https://cdn.example.com/fallback-banner.png"
-
-    def _fake_media_urls(context, api_base_url):
-        return None, [fallback_image]
-
-    monkeypatch.setattr(
-        municipio_responder,
-        "_resolve_encuestas_menu_media_urls",
-        _fake_media_urls,
-    )
-
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=19)
-        context = _base_context(tenant_id=encuesta.tenant_id or 19)
-
-    normalized_slug = slug.strip().lower()
-    short_token = normalized_slug.rsplit("-", 1)[-1]
-    context.setdefault("chat_db_context_data", {})[
-        municipio_responder.CONTEXTO_MUNICIPIO
-    ] = {
-        "encuestas_menu_surveys": [
-            {
-                "slug": normalized_slug,
-                "titulo": "Encuesta Test",
-                "share_url": f"https://chatboc.ar/e/{normalized_slug}",
-                "share_short_url": f"https://chatboc.ar/e/{short_token}",
-                "share_message": f"Participá en Encuesta Test: https://chatboc.ar/e/{short_token}",
-                "share_action_id": f"encuesta_compartir::{normalized_slug}",
-                "share_media_urls": [],
-                "share_image_url": None,
-            }
-        ],
-        "encuestas_menu_options": [],
-    }
-
-    payload = municipio_responder._build_encuesta_share_payload(
-        slug, context, chat_db_context=None
-    )
-
-    assert payload["image_url"] == fallback_image
-    assert payload["media_urls"][0] == fallback_image
-
-
-def test_encuestas_menu_widget_share_button_opens_whatsapp_url(client):
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=7)
-        context = _base_context(tenant_id=encuesta.tenant_id or 7)
-        context["channel"] = "widget_chat"
-        menu = municipio_responder._get_encuestas_menu(context)
-
-    options_list = menu.get("options_list") or []
-    share_buttons = [
-        option
-        for option in options_list
-        if option.get("action_id", "").startswith("encuesta_compartir::")
-    ]
-
-    assert share_buttons, "Expected at least one share button in widget menu"
-    for button in share_buttons:
-        assert button.get("type") == "url"
-        assert button.get("url", "").startswith("https://wa.me/")
-        assert button.get("action_id", "").startswith("encuesta_compartir::")
-
-
-def test_encuesta_share_payload_uses_media_fallback_when_missing_primary(
-    client, monkeypatch
-):
-    fallback_image = "https://cdn.example.com/fallback-banner.png"
-
-    def _fake_media_urls(context, api_base_url):
-        return None, [fallback_image]
-
-    monkeypatch.setattr(
-        municipio_responder,
-        "_resolve_encuestas_menu_media_urls",
-        _fake_media_urls,
-    )
-
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=19)
-        context = _base_context(tenant_id=encuesta.tenant_id or 19)
-
-    normalized_slug = slug.strip().lower()
-    short_token = normalized_slug.rsplit("-", 1)[-1]
-    context.setdefault("chat_db_context_data", {})[
-        municipio_responder.CONTEXTO_MUNICIPIO
-    ] = {
-        "encuestas_menu_surveys": [
-            {
-                "slug": normalized_slug,
-                "titulo": "Encuesta Test",
-                "share_url": f"https://chatboc.ar/e/{normalized_slug}",
-                "share_short_url": f"https://chatboc.ar/e/{short_token}",
-                "share_message": f"Participá en Encuesta Test: https://chatboc.ar/e/{short_token}",
-                "share_action_id": f"encuesta_compartir::{normalized_slug}",
-                "share_media_urls": [],
-                "share_image_url": None,
-            }
-        ],
-        "encuestas_menu_options": [],
-    }
-
-    payload = municipio_responder._build_encuesta_share_payload(
-        slug, context, chat_db_context=None
-    )
-
-    assert payload["image_url"] == fallback_image
-    assert payload["media_urls"][0] == fallback_image
-
-
-def test_encuestas_menu_widget_share_button_opens_whatsapp_url(client):
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=7)
-        context = _base_context(tenant_id=encuesta.tenant_id or 7)
-        context["channel"] = "widget_chat"
-        menu = municipio_responder._get_encuestas_menu(context)
-
-    options_list = menu.get("options_list") or []
-    share_buttons = [
-        option
-        for option in options_list
-        if option.get("texto", "").lower().startswith("compartir ")
-    ]
-
-    assert share_buttons, "Expected at least one share button in widget menu"
-    for button in share_buttons:
-        assert button.get("type") == "url"
-        assert button.get("url", "").startswith("https://wa.me/")
-        assert not button.get("action_id")
-
-
-def test_encuesta_share_payload_uses_media_fallback_when_missing_primary(
-    client, monkeypatch
-):
-    fallback_image = "https://cdn.example.com/fallback-banner.png"
-
-    def _fake_media_urls(context, api_base_url):
-        return None, [fallback_image]
-
-    monkeypatch.setattr(
-        municipio_responder,
-        "_resolve_encuestas_menu_media_urls",
-        _fake_media_urls,
-    )
-
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=19)
-        context = _base_context(tenant_id=encuesta.tenant_id or 19)
-
-    normalized_slug = slug.strip().lower()
-    short_token = normalized_slug.rsplit("-", 1)[-1]
-    context.setdefault("chat_db_context_data", {})[
-        municipio_responder.CONTEXTO_MUNICIPIO
-    ] = {
-        "encuestas_menu_surveys": [
-            {
-                "slug": normalized_slug,
-                "titulo": "Encuesta Test",
-                "share_url": f"https://chatboc.ar/e/{normalized_slug}",
-                "share_short_url": f"https://chatboc.ar/e/{short_token}",
-                "share_message": f"Participá en Encuesta Test: https://chatboc.ar/e/{short_token}",
-                "share_action_id": f"encuesta_compartir::{normalized_slug}",
-                "share_media_urls": [],
-                "share_image_url": None,
-            }
-        ],
-        "encuestas_menu_options": [],
-    }
-
-    payload = municipio_responder._build_encuesta_share_payload(
-        slug, context, chat_db_context=None
-    )
-
-    assert payload["image_url"] == fallback_image
-    assert payload["media_urls"][0] == fallback_image
-
-
-def test_encuestas_menu_widget_share_button_opens_whatsapp_url(client):
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=7)
-        context = _base_context(tenant_id=encuesta.tenant_id or 7)
-        context["channel"] = "widget_chat"
-        menu = municipio_responder._get_encuestas_menu(context)
-
-    options_list = menu.get("options_list") or []
-    share_buttons = [
-        option
-        for option in options_list
-        if option.get("texto", "").lower().startswith("compartir ")
-    ]
-
-    assert share_buttons, "Expected at least one share button in widget menu"
-    for button in share_buttons:
-        assert button.get("type") == "url"
-        assert button.get("url", "").startswith("https://wa.me/")
-        assert not button.get("action_id")
-
-
-def test_encuesta_share_payload_uses_media_fallback_when_missing_primary(
-    client, monkeypatch
-):
-    fallback_image = "https://cdn.example.com/fallback-banner.png"
-
-    def _fake_media_urls(context, api_base_url):
-        return None, [fallback_image]
-
-    monkeypatch.setattr(
-        municipio_responder,
-        "_resolve_encuestas_menu_media_urls",
-        _fake_media_urls,
-    )
-
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=19)
-        context = _base_context(tenant_id=encuesta.tenant_id or 19)
-
-    normalized_slug = slug.strip().lower()
-    short_token = normalized_slug.rsplit("-", 1)[-1]
-    context.setdefault("chat_db_context_data", {})[
-        municipio_responder.CONTEXTO_MUNICIPIO
-    ] = {
-        "encuestas_menu_surveys": [
-            {
-                "slug": normalized_slug,
-                "titulo": "Encuesta Test",
-                "share_url": f"https://chatboc.ar/e/{normalized_slug}",
-                "share_short_url": f"https://chatboc.ar/e/{short_token}",
-                "share_message": f"Participá en Encuesta Test: https://chatboc.ar/e/{short_token}",
-                "share_action_id": f"encuesta_compartir::{normalized_slug}",
-                "share_media_urls": [],
-                "share_image_url": None,
-            }
-        ],
-        "encuestas_menu_options": [],
-    }
-
-    payload = municipio_responder._build_encuesta_share_payload(
-        slug, context, chat_db_context=None
-    )
-
-    assert payload["image_url"] == fallback_image
-    assert payload["media_urls"][0] == fallback_image
-
-
-def test_encuestas_menu_widget_share_button_opens_whatsapp_url(client):
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=7)
-        context = _base_context(tenant_id=encuesta.tenant_id or 7)
-        context["channel"] = "widget_chat"
-        menu = municipio_responder._get_encuestas_menu(context)
-
-    options_list = menu.get("options_list") or []
-    share_buttons = [
-        option
-        for option in options_list
-        if option.get("texto", "").lower().startswith("compartir ")
-    ]
-
-    assert share_buttons, "Expected at least one share button in widget menu"
-    for button in share_buttons:
-        assert button.get("type") == "url"
-        assert button.get("url", "").startswith("https://wa.me/")
-        assert not button.get("action_id")
-
-
-def test_encuesta_share_payload_uses_media_fallback_when_missing_primary(
-    client, monkeypatch
-):
-    fallback_image = "https://cdn.example.com/fallback-banner.png"
-
-    def _fake_media_urls(context, api_base_url):
-        return None, [fallback_image]
-
-    monkeypatch.setattr(
-        municipio_responder,
-        "_resolve_encuestas_menu_media_urls",
-        _fake_media_urls,
-    )
-
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=19)
-        context = _base_context(tenant_id=encuesta.tenant_id or 19)
-
-    normalized_slug = slug.strip().lower()
-    short_token = normalized_slug.rsplit("-", 1)[-1]
-    context.setdefault("chat_db_context_data", {})[
-        municipio_responder.CONTEXTO_MUNICIPIO
-    ] = {
-        "encuestas_menu_surveys": [
-            {
-                "slug": normalized_slug,
-                "titulo": "Encuesta Test",
-                "share_url": f"https://chatboc.ar/e/{normalized_slug}",
-                "share_short_url": f"https://chatboc.ar/e/{short_token}",
-                "share_message": f"Participá en Encuesta Test: https://chatboc.ar/e/{short_token}",
-                "share_action_id": f"encuesta_compartir::{normalized_slug}",
-                "share_media_urls": [],
-                "share_image_url": None,
-            }
-        ],
-        "encuestas_menu_options": [],
-    }
-
-    payload = municipio_responder._build_encuesta_share_payload(
-        slug, context, chat_db_context=None
-    )
-
-    assert payload["image_url"] == fallback_image
-    assert payload["media_urls"][0] == fallback_image
-
-
-def test_encuestas_menu_widget_share_button_opens_whatsapp_url(client):
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=7)
-        context = _base_context(tenant_id=encuesta.tenant_id or 7)
-        context["channel"] = "widget_chat"
-        menu = municipio_responder._get_encuestas_menu(context)
-
-    options_list = menu.get("options_list") or []
-    share_buttons = [
-        option
-        for option in options_list
-        if option.get("texto", "").lower().startswith("compartir ")
-    ]
-
-    assert share_buttons, "Expected at least one share button in widget menu"
-    for button in share_buttons:
-        assert button.get("type") == "url"
-        assert button.get("url", "").startswith("https://wa.me/")
-        assert not button.get("action_id")
-
-
-def test_encuestas_menu_defaults_to_backend_banner(client, monkeypatch):
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=13)
-        context = _base_context(tenant_id=encuesta.tenant_id or 13)
-        app = client.application
-        app.config.pop("PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL", None)
-        app.config["PUBLIC_ENCUESTAS_API_BASE_URL"] = "https://api.chatboc.ar"
-        monkeypatch.setattr(
-            municipio_responder.AppConfig,
-            "PUBLIC_ENCUESTAS_DEFAULT_SHARE_IMAGE_URL",
-            None,
-            raising=False,
-        )
-        menu = municipio_responder._get_encuestas_menu(context)
-
-    canonical_base = client.application.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
-    fallback_base = canonical_base.rstrip("/") if canonical_base else "https://chatboc.ar"
-    if ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH.startswith(("http://", "https://")):
-        expected_banner = ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH
     else:
-        expected_banner = f"{fallback_base}{ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH}"
-    assert menu.get("image_url") == expected_banner
-    media_urls = menu.get("media_urls")
-    assert isinstance(media_urls, list) and media_urls
-    assert media_urls[0] == expected_banner
-    assert expected_banner in media_urls
-    assert menu.get("_base_url") == "https://api.chatboc.ar"
-    short_token = slug.rsplit("-", 1)[-1]
-    assert short_token in menu["message_body"]
-    assert menu.get("_force_whatsapp_interactive") is True
+        logger_actual.warning("[RESPONDER_MUNICIPIO] chat_db_context is None. Municipio context will be empty for this request.")
+        # contexto_municipio_data_from_db remains {}
+        # chat_db_context_live_data remains {}
 
-
-def test_encuestas_menu_uses_template_media_url_for_banner_and_share(client):
-    banner_url = "https://cdn.example.com/twilio-banner.png"
-
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=37)
-        context = _base_context(tenant_id=encuesta.tenant_id or 37)
-        app = client.application
-        previous_template = app.config.get(
-            "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"
-        )
-        previous_media = app.config.get(
-            "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL"
-        )
-        try:
-            app.config["PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"] = (
-                "HXBannerMedia"
-            )
-            app.config["PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL"] = banner_url
-            menu = municipio_responder._get_encuestas_menu(context)
-        finally:
-            if previous_template is None:
-                app.config.pop("PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID", None)
-            else:
-                app.config["PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"] = (
-                    previous_template
-                )
-            if previous_media is None:
-                app.config.pop("PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL", None)
-            else:
-                app.config["PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL"] = (
-                    previous_media
-                )
-
-    assert menu.get("image_url") == banner_url
-    media_urls = menu.get("media_urls")
-    assert isinstance(media_urls, list) and media_urls
-    assert media_urls[0] == banner_url
-
-    surveys_meta = menu.get("surveys") or []
-    assert surveys_meta
-    first_meta = surveys_meta[0]
-    assert first_meta["share_image_url"] == banner_url
-    assert first_meta["share_media_urls"][0] == banner_url
-
-    context.setdefault("chat_db_context_data", {})[
-        municipio_responder.CONTEXTO_MUNICIPIO
-    ] = {
-        "encuestas_menu_surveys": surveys_meta,
-        "encuestas_menu_options": menu.get("options_list") or [],
-    }
-
-    payload = municipio_responder._build_encuesta_share_payload(
-        slug, context, chat_db_context=None
+    logger_actual.info(
+        f"[CONTEXTO_MUNICIPIO_LOAD_RAW] Contexto crudo para '{CONTEXTO_MUNICIPIO}' desde DB: {contexto_municipio_data_from_db}"
     )
 
-    assert payload["image_url"] == banner_url
-    assert payload["media_urls"][0] == banner_url
+    # Log the current state of the conversation
+    estado_conversacion = contexto_municipio_data_from_db.get("estado_conversacion")
+    logger_actual.info(f"[CONTEXTO_MUNICIPIO] Estado de conversacion actual: {estado_conversacion}")
 
+    # Directly use the dictionary from the live context data.
+    # This ensures that modifications are made to the original object.
+    contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
+    context[CONTEXTO_MUNICIPIO] = contexto_municipio_actual # Ensure main context points to this sub-context
 
-def test_encuestas_menu_whatsapp_embeds_banner_and_disables_audio(client):
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=31)
-        context = _base_context(tenant_id=encuesta.tenant_id or 31)
-        context["channel"] = "whatsapp"
-        previous_template = client.application.config.get(
-            "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"
-        )
-        client.application.config["PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"] = (
-            "HXtestBanner"
-        )
-        try:
-            menu = municipio_responder._get_encuestas_menu(context)
-        finally:
-            client.application.config[
-                "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"
-            ] = previous_template
+    # --- INICIO: Manejo de selección de menú principal por número, letra o keyword ---
+    if estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name:
+        pregunta_str_menu = ""
+        payload_action = None
+        if isinstance(pregunta_original, str):
+            pregunta_str_menu = pregunta_original
+        elif isinstance(pregunta_original, dict):
+            pregunta_str_menu = pregunta_original.get("pregunta", "")
+            payload_action = pregunta_original.get("action")
 
-    assert menu.get("message_type") == "interactive_buttons"
-    assert menu.get("generar_audio") is False
-    pre_messages = menu.get("_twilio_pre_messages")
-    assert not pre_messages
-    assert menu.get("_force_whatsapp_interactive") is True
-    assert menu.get("image_url")
-    media_urls = menu.get("media_urls")
-    assert isinstance(media_urls, list) and menu["image_url"] in media_urls
-
-
-def test_encuestas_menu_whatsapp_embeds_banner_when_no_template(client):
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=33)
-        context = _base_context(tenant_id=encuesta.tenant_id or 33)
-        context["channel"] = "whatsapp"
-        client.application.config["PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"] = None
-        client.application.config["PUBLIC_ENCUESTAS_WHATSAPP_BANNER_BODY"] = (
-            "Participación Ciudadana"
-        )
-        menu = municipio_responder._get_encuestas_menu(context)
-
-    assert menu.get("message_type") == "interactive_buttons"
-    assert menu.get("generar_audio") is False
-    pre_messages = menu.get("_twilio_pre_messages")
-    assert not pre_messages
-    assert menu.get("_force_whatsapp_interactive") is True
-    assert menu.get("image_url")
-
-
-def test_encuestas_menu_whatsapp_skips_pre_messages_when_banner_attached(client, monkeypatch):
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=35)
-        context = _base_context(tenant_id=encuesta.tenant_id or 35)
-        context["channel"] = "whatsapp"
-
-        def _should_not_run(*args, **kwargs):
-            raise AssertionError("WhatsApp menu should not trigger banner pre-messages")
-
-        monkeypatch.setattr(
-            municipio_responder,
-            "_build_encuestas_whatsapp_banner_pre_messages",
-            _should_not_run,
+        logger_actual.info(
+            f"Handling input in ESPERANDO_SELECCION_MENU_PRINCIPAL state. Input: '{pregunta_str_menu}', Payload action: '{payload_action}'"
         )
 
-        menu = municipio_responder._get_encuestas_menu(context)
+        # Get the definitive menu structure from the payload generator
+        # This ensures that the menu we check against is the same one the user saw.
+        menu_payload = _get_main_menu_payload(context)
+        # The payload has 'options_list' which is the flat list of buttons with 'id' and 'texto'
+        flat_buttons = menu_payload.get('options_list', [])
 
-    assert menu.get("image_url")
-    assert menu.get("_force_whatsapp_interactive") is True
-    assert not menu.get("_twilio_pre_messages")
+        # We need to adapt the list for find_menu_action_by_input, which expects 'action_id'
+        buttons_for_finder = []
+        for btn in flat_buttons:
+            buttons_for_finder.append({
+                "texto": btn.get("texto"),
+                "action_id": btn.get("id") # The 'id' key holds the action_id
+            })
 
+        selected_action = payload_action or find_menu_action_by_input(pregunta_str_menu, buttons_for_finder)
+        if not selected_action:
+            selected_action = find_global_menu_action(pregunta_str_menu)
 
-def test_encuestas_menu_orders_newest_first(client):
-    with client.application.app_context():
-        encuesta_old, slug_old = _create_active_encuesta(tenant_id=21)
-        encuesta_new, slug_new = _create_active_encuesta(tenant_id=21)
+        if selected_action:
+            logger_actual.info(f"User input '{pregunta_str_menu}' matched to action: '{selected_action}'")
 
-        if encuesta_old.created_at:
-            encuesta_old.created_at = encuesta_old.created_at - timedelta(minutes=5)
-        db.session.commit()
+            # The state should be cleared so we don't get stuck here.
+            # The handler itself will set a new state if it needs to continue a flow.
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
 
-        context = _base_context(tenant_id=encuesta_old.tenant_id or 21)
-        menu = municipio_responder._get_encuestas_menu(context)
+            response = handle_main_menu_action(selected_action, context, chat_db_context)
+            if response:
+                # After the action, ask a generic follow-up question unless the handler
+                # wants to take control of the conversation (e.g., by setting a new state).
+                # We check if a new state was set by the handler.
+                new_state = contexto_municipio_actual.get("estado_conversacion")
+                if not new_state:
+                    # Append a follow-up question and show the main menu again.
+                    # This creates a clear "turn" and returns control to the user.
+                    follow_up_message = "\n\n¿En qué más puedo ayudarte?"
+                    response['message_body'] = response.get('message_body', '').strip() + follow_up_message
 
-    surveys = menu.get("surveys")
-    assert isinstance(surveys, list) and len(surveys) >= 2
-    assert surveys[0]["slug"] == slug_new
-    assert surveys[1]["slug"] == slug_old
+                    # We will not send the full menu again here.
+                    # We will send a simpler prompt.
+                    # A better approach would be to have a "back to menu" button.
+                    # For now, we just add the text.
 
-    body = menu["message_body"]
-    token_new = slug_new.rsplit("-", 1)[-1]
-    token_old = slug_old.rsplit("-", 1)[-1]
-    assert body.index(token_new) < body.index(token_old)
+                return _finalize_response(response)
+        else:
+            # If the input doesn't match a menu option, treat it as a general query.
+            # Clear the state so it falls through to the main LLM handler.
+            logger_actual.info(f"Input '{pregunta_str_menu}' is not a menu option. Treating as a general query and falling through to LLM.")
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+    # --- FIN: Manejo de selección de menú principal ---
 
+    # --- INICIO: Manejo genérico de selección de submenús ---
+    elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_DE_LISTA.name:
+        pregunta_str_menu = ""
+        action_payload = None
+        if isinstance(pregunta_original, str):
+            pregunta_str_menu = pregunta_original
+        elif isinstance(pregunta_original, dict):
+            pregunta_str_menu = pregunta_original.get("pregunta", "")
+            action_payload = pregunta_original.get("action")
 
-def test_encuesta_share_payload_adds_whatsapp_media_pre_message(client):
-    with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=41)
-        context = _base_context(tenant_id=encuesta.tenant_id or 41)
-        context["channel"] = "whatsapp"
-        menu = municipio_responder._get_encuestas_menu(context)
+        menu_opciones = contexto_municipio_actual.get("menu_opciones", [])
+        selected_action = action_payload or find_menu_action_by_input(pregunta_str_menu, menu_opciones)
 
-    context["chat_db_context_data"] = {
-        municipio_responder.CONTEXTO_MUNICIPIO: {
-            "encuestas_menu_surveys": menu.get("surveys"),
-            "encuestas_menu_options": [
-                option
-                for option in menu.get("options_list", [])
-                if option.get("action_id")
-            ],
+        if not action_payload and selected_action == "iniciar_reclamo":
+            # El usuario volvió a escribir "iniciar reclamo" en lugar de pulsar el botón.
+            # Reenviamos el menú de reclamos para que pueda elegir una opción.
+            submenu = _get_reclamos_consultas_menu()
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+            contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(submenu)
+
+        if not selected_action:
+            selected_action = find_global_menu_action(pregunta_str_menu)
+
+        if selected_action:
+            contexto_municipio_actual['estado_conversacion'] = None
+            contexto_municipio_actual.pop('menu_opciones', None)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            response = handle_main_menu_action(selected_action, context, chat_db_context)
+            if response:
+                new_state = contexto_municipio_actual.get("estado_conversacion")
+                if not new_state:
+                    response['message_body'] = response.get('message_body', '').strip() + "\n\n¿En qué más puedo ayudarte?"
+                return _finalize_response(response)
+        else:
+            # Reenviar el mismo submenú si la opción no es válida
+            return _finalize_response({
+                "message_body": "No reconocí esa opción. Por favor, elegí una opción del menú.",
+                "message_type": "interactive_buttons",
+                "options_list": menu_opciones,
+                "fuente": "submenu_opcion_invalida",
+            })
+    # --- FIN: Manejo genérico de selección de submenús ---
+
+    # --- INICIO: Manejo de la espera por nombre de trámite ---
+    elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_TRAMITE.name:
+        logger_actual.info(f"Handling input in ESPERANDO_SELECCION_TRAMITE state. Input: '{pregunta_str}'")
+        from .actions.municipio_actions import ConsultarInfoTramiteActionHandler
+
+        # The handler expects the data in the payload dict
+        received_payload['nombre_tramite'] = pregunta_str
+
+        handler = ConsultarInfoTramiteActionHandler(context)
+        handler_response = handler.execute(received_payload)
+
+        # The handler should now succeed and return a standard response with the info.
+        # We need to clear the state after this.
+        contexto_municipio_actual['estado_conversacion'] = None
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response(handler_response)
+    # --- FIN: Manejo de la espera por nombre de trámite ---
+
+    # --- INICIO: Manejo de selección de menú de reclamos ---
+    elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name:
+        pregunta_str_reclamo = ""
+        if isinstance(pregunta_original, str):
+            pregunta_str_reclamo = pregunta_original
+        elif isinstance(pregunta_original, dict) and "pregunta" in pregunta_original:
+            pregunta_str_reclamo = pregunta_original["pregunta"]
+
+        logger_actual.info(f"Handling input in ESPERANDO_SELECCION_MENU_RECLAMOS state. Input: '{pregunta_str_reclamo}'")
+
+        normalized_input = normalizar_texto(pregunta_str_reclamo or "")
+
+        if pregunta_str_reclamo in {"0", "1"} or normalized_input in RETURN_TO_MAIN_MENU:
+            logger_actual.info("User requested to return to main menu from reclamos menu.")
+            handler = GreetingHandler(context)
+            response = handler.handle({})
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response)
+
+        repeat_commands = {
+            "show_reclamos_menu",
+            "mostrar_menu_reclamos",
+            "hacer un reclamo",
+            "iniciar reclamo",
+            "reclamo",
+            "reclamos",
         }
+        if not pregunta_str_reclamo or normalized_input in repeat_commands:
+            logger_actual.info("Input requests reclamos menu again. Returning submenu.")
+            return _finalize_response(_get_reclamos_menu())
+
+        # El menú se muestra numerado a partir de 1, mientras que los id_accion
+        # comienzan en 0. Convertimos la elección del usuario a id_accion.
+        reclamo_options = _get_reclamos_menu().get("options_list", [])
+        selected_category_name = None
+
+        if pregunta_str_reclamo.isdigit():
+            expected_id = str(int(pregunta_str_reclamo) - 1)
+            for option in reclamo_options:
+                if option.get("id_accion") == expected_id:
+                    selected_category_name = option.get("category_name")
+                    break
+
+        # Si no es un número o no corresponde, intentar matchear por texto y extraer más datos.
+        details = {}
+        if not selected_category_name:
+            plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
+            details = extract_reclamo_details_from_text(pregunta_str_reclamo, plain_text_options)
+            selected_category_name = details.pop("categoria_sugerida", None)
+
+        if selected_category_name:
+            if selected_category_name == "Pérdida de agua":
+                contexto_municipio_actual['estado_conversacion'] = None
+                if chat_db_context: flag_modified(chat_db_context, "context_data")
+                return _finalize_response({
+                    "message_body": "Para pérdida de agua, dirigite a la página de Aysam:\nhttps://www.aysam.com.ar/",
+                    "options_list": [], "message_type": "text", "fuente": "info_perdida_agua"
+                })
+
+            logger_actual.info(f"Categoría de reclamo seleccionada: '{selected_category_name}'. Limpiando contexto anterior.")
+
+            # FIX: Limpiar explícitamente el contexto del reclamo anterior para evitar el "estado atascado".
+            contexto_municipio_actual.pop("datos_parciales_llm_reclamo", None)
+            contexto_municipio_actual.pop("historial_llm_reclamo", None)
+
+            constructed_prompt = f"Quiero iniciar un reclamo de {selected_category_name}"
+
+            # --- INICIO: Integración del nuevo ReclamoFlowHandler ---
+            handler = ReclamoFlowHandler(context, chat_db_context)
+            datos_iniciales = {}
+            if details.get("descripcion_sugerida"):
+                datos_iniciales["descripcion"] = details["descripcion_sugerida"]
+            if details.get("direccion_sugerida"):
+                datos_iniciales["direccion"] = details["direccion_sugerida"]
+            response_dict = handler.start_flow(
+                datos_iniciales=datos_iniciales or None,
+                categoria_inicial=selected_category_name,
+            )
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response_dict)
+            # --- FIN: Integración del nuevo ReclamoFlowHandler ---
+        else:
+            logger_actual.warning(f"Input '{pregunta_str_reclamo}' no coincide con ninguna categoría. Mostrando menú de nuevo.")
+            return _finalize_response(_get_reclamos_menu())
+    # --- FIN: Manejo de selección de menú de reclamos ---
+
+    elif estado_conversacion == ConversationState.ESPERANDO_NOMBRE_INICIAL.name:
+        if action:
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            response = handle_main_menu_action(action, context, chat_db_context)
+            if response:
+                return _finalize_response(response)
+
+        nombre_usuario = (pregunta_str or "").strip()
+        if len(nombre_usuario) > 2:
+            # Save the name
+            if viewer_user:
+                viewer_user.name = nombre_usuario
+                db.session.add(viewer_user)
+                db.session.commit()
+
+            context["profile_name"] = nombre_usuario
+            chat_data = context.get("chat_db_context_data")
+            if not isinstance(chat_data, dict):
+                chat_data = {}
+                context["chat_db_context_data"] = chat_data
+            chat_data["profile_name"] = nombre_usuario
+            contexto_municipio_actual = chat_data.setdefault(CONTEXTO_MUNICIPIO, {})
+            contacto = contexto_municipio_actual.setdefault("contacto_usuario", {})
+            contacto['nombre'] = nombre_usuario
+            contexto_municipio_actual['estado_conversacion'] = (
+                ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+            )
+            if chat_db_context and isinstance(chat_db_context.context_data, dict):
+                chat_db_context.context_data["profile_name"] = nombre_usuario
+                contexto_db = chat_db_context.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+                contacto_db = contexto_db.setdefault("contacto_usuario", {})
+                contacto_db['nombre'] = nombre_usuario
+                contexto_db['estado_conversacion'] = (
+                    ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+                )
+                flag_modified(chat_db_context, "context_data")
+
+            mensaje_bienvenida = f"¡Gracias, {nombre_usuario}!"
+            menu_payload = _get_main_menu_payload(
+                context,
+                welcome_message_override=mensaje_bienvenida,
+                reduced=True,
+            )
+            return _finalize_response(menu_payload)
+        else:
+            return _finalize_response({
+                "message_body": "No entendí tu nombre. Por favor, ¿podrías repetirlo?",
+                "fuente": "nombre_no_entendido"
+            })
+    elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_CONTACTO_CATEGORIA.name:
+        selected_category_action = received_payload.get('action')
+        pregunta_str_norm = normalizar_texto(pregunta_str or '')
+
+        categorias_map = contexto_municipio_actual.get('contactos_categorias', {})
+        if selected_category_action and selected_category_action.startswith('select_contact_category_'):
+            slug = selected_category_action.replace('select_contact_category_', '')
+            selected = categorias_map.get(slug)
+        elif pregunta_str_norm and categorias_map:
+            from fuzzywuzzy import process
+            name_map = {v['nombre']: k for k, v in categorias_map.items()}
+            match, score = process.extractOne(pregunta_str_norm, list(name_map.keys()))
+            selected = categorias_map.get(name_map[match]) if score > 80 else None
+        else:
+            selected = None
+
+        if not selected:
+            return _finalize_response({
+                'message_body': 'Por favor, seleccioná una categoría de la lista.',
+                'fuente': 'contactos_utiles_invalid_category_selection'
+            })
+
+        return _finalize_response(
+            handle_contactos_utiles_mostrar_categoria(context, chat_db_context, selected)
+        )
+    # --- INICIO: Manejo de actualización de datos de usuario ---
+    elif estado_conversacion == ConversationState.ESPERANDO_NUEVO_DATO_USUARIO.name:
+        campo_a_actualizar = contexto_municipio_actual.get('campo_a_actualizar')
+        nuevo_valor = pregunta_str.strip()
+
+        if not campo_a_actualizar:
+            logger_actual.error("[UPDATE_USER_DATA] In ESPERANDO_NUEVO_DATO_USUARIO state but no 'campo_a_actualizar' in context. Resetting.")
+            contexto_municipio_actual['estado_conversacion'] = None
+        elif not viewer_user:
+            logger_actual.error("[UPDATE_USER_DATA] Cannot update data for a non-logged-in user. Resetting.")
+            contexto_municipio_actual['estado_conversacion'] = None
+            # Limpiar contexto para no quedar en un bucle
+            contexto_municipio_actual.pop('campo_a_actualizar', None)
+            contexto_municipio_actual.pop('accion_original_para_reintentar', None)
+            return _finalize_response({"message_body": "Para actualizar tus datos, primero necesitás iniciar sesión. ¿Querés que te ayude con eso?", "fuente": "update_data_login_required"})
+        else:
+            from services.user_service import actualizar_perfil_usuario
+            resultado_actualizacion = actualizar_perfil_usuario(
+                user_id=viewer_user.id,
+                datos_actualizacion={campo_a_actualizar: nuevo_valor}
+            )
+
+            if resultado_actualizacion.get('status') == 'success':
+                contexto_municipio_actual.pop('campo_a_actualizar', None)
+                contexto_municipio_actual['estado_conversacion'] = None # Reset state to re-evaluate
+
+                accion_original = contexto_municipio_actual.pop('accion_original_para_reintentar', "continuar con el reclamo")
+
+                pregunta_str = (
+                    f"Acabo de actualizar el/la {campo_a_actualizar} del usuario a '{nuevo_valor}'. "
+                    f"Confirma al usuario que el dato fue actualizado correctamente. "
+                    f"Ahora, por favor, continúa con su pedido original, que era: '{accion_original}'"
+                )
+
+                logger_actual.info(f"Generated synthetic prompt to resume flow: {pregunta_str}")
+                # La ejecución continuará y llamará a handle_llm_interaction con la nueva pregunta_str
+            else:
+                contexto_municipio_actual['estado_conversacion'] = None # Reset state
+                error_message = resultado_actualizacion.get('message', f"Hubo un error al actualizar tu {campo_a_actualizar}.")
+                return _finalize_response({
+                    "message_body": error_message,
+                    "options_list": [],
+                    "message_type": "text",
+                    "fuente": "error_actualizacion_dato_usuario"
+                })
+    # --- FIN: Manejo de actualización de datos de usuario ---
+
+    # --- INICIO: Manejo de recepción de ubicación para consulta general ---
+    elif estado_conversacion == ConversationState.ESPERANDO_UBICACION_GENERAL.name:
+        if location:
+            consulta_guardada = contexto_municipio_actual.pop('consulta_pendiente_ubicacion', None)
+            if consulta_guardada:
+                contexto_municipio_actual['ultima_consulta_poi'] = consulta_guardada
+            contexto_municipio_actual['estado_conversacion'] = None  # Clear state
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+
+            if consulta_guardada:
+                logger_actual.info(f"Received location, processing saved query: '{consulta_guardada}'")
+                return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": consulta_guardada, "location": location}))
+            else:
+                logger_actual.warning("In ESPERANDO_UBICACION_GENERAL state but no saved query found.")
+                return _finalize_response({"message_body": "Recibí tu ubicación, pero no recuerdo qué estabas buscando. ¿Podrías decírmelo de nuevo?", "options_list": [], "message_type": "text", "fuente": "error_no_saved_query"})
+        else:
+            # If no location object was sent, check if the user typed an address
+            if pregunta_str and len(pregunta_str) > 5: # Basic check to see if it's a potential address
+                from .herramientas_municipio import validar_y_formatear_direccion
+                logger_actual.info(f"Attempting to geocode textual address: '{pregunta_str}'")
+
+                # We can use the simpler geocoding tool here
+                geocoded_location = validar_y_formatear_direccion(pregunta_str, municipio_config=context.get("municipio_config_actual"))
+
+                if geocoded_location:
+                    # Address was valid, proceed with the original query
+                    consulta_guardada = contexto_municipio_actual.pop('consulta_pendiente_ubicacion', None)
+                    if consulta_guardada:
+                        contexto_municipio_actual['ultima_consulta_poi'] = consulta_guardada
+                    contexto_municipio_actual['estado_conversacion'] = None  # Clear state
+                    if chat_db_context:
+                        flag_modified(chat_db_context, "context_data")
+
+                    if consulta_guardada:
+                        logger_actual.info(f"Geocoded address successfully. Processing saved query: '{consulta_guardada}'")
+                        loc_payload = {
+                            "address": geocoded_location.get("formatted_address"),
+                            "lat": geocoded_location.get("lat"),
+                            "lon": geocoded_location.get("lng"),
+                        }
+                        return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": consulta_guardada, "location": loc_payload}))
+                    else:
+                        # This case is unlikely but handled for safety
+                        logger_actual.warning("Geocoded address but no saved query found.")
+                        return _finalize_response({"message_body": f"OK, entiendo que estás en {geocoded_location.get('formatted_address')}. ¿Qué necesitabas buscar?", "options_list": [], "message_type": "text", "fuente": "geocoded_but_no_query"})
+                else:
+                    # Geocoding failed, stay in the same state and re-prompt.
+                    if chat_db_context: flag_modified(chat_db_context, "context_data")
+                    return _finalize_response({
+                        "message_body": "No pude entender esa dirección. Por favor, intentá de nuevo con más detalles, usá el botón para compartir tu ubicación, o escribí 'cancelar' para salir.",
+                        "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}, {"texto": "Cancelar", "action": "cancelar"}],
+                        "message_type": "interactive_buttons",
+                        "fuente": "geocoding_failed_reprompt"
+                    })
+            else:
+                # User sent something that is not a location and not a potential address.
+                # Check for cancellation.
+                cancel_keywords = {"cancelar", "no", "salir", "basta", "terminar"}
+                if normalizar_texto(pregunta_str) in cancel_keywords or action == "cancelar":
+                    contexto_municipio_actual['estado_conversacion'] = None # Reset state
+                    contexto_municipio_actual.pop('consulta_pendiente_ubicacion', None)
+                    if chat_db_context: flag_modified(chat_db_context, "context_data")
+                    return _finalize_response({"message_body": "Ok, cancelado. ¿En qué otra cosa te puedo ayudar?", "options_list": [], "message_type": "text", "fuente": "ubicacion_cancelled"})
+                else:
+                    # Not a location, not an address, not a cancellation. Re-prompt.
+                    if chat_db_context: flag_modified(chat_db_context, "context_data")
+                    return _finalize_response({
+                        "message_body": "No recibí una ubicación. Por favor, compartí tu ubicación, escribí una dirección, o escribí 'cancelar' para salir.",
+                        "options_list": [{"texto": "Compartir ubicación", "action": "compartir_ubicacion"}, {"texto": "Cancelar", "action": "cancelar"}],
+                        "message_type": "interactive_buttons",
+                        "fuente": "no_location_reprompt"
+                    })
+    # --- FIN: Manejo de recepción de ubicación ---
+
+    elif estado_conversacion == ConversationState.ESPERANDO_CONFIRMACION_DATOS_RECLAMO.name:
+        if "si" in normalizar_texto(pregunta_str) or action == "confirmar_reclamo_si":
+            datos_confirmados = contexto_municipio_actual.pop("datos_a_confirmar", {})
+
+            # Llamar a la acción de creación de reclamo
+            handler = CrearReclamoActionHandler(context)
+            response = handler.execute(datos_confirmados)
+
+            # Limpiar el estado de la conversación solo si la creación fue exitosa
+            if response.get("success"):
+                contexto_municipio_actual['estado_conversacion'] = None
+
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+
+            return _finalize_response(response)
+        else: # User wants to edit
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_CORRECCION_DATOS_RECLAMO.name
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response({
+                "message_body": "Entendido. ¿Qué dato te gustaría corregir o agregar? Por favor, decímelo y lo corrijo.",
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "pide_correccion_reclamo"
+            })
+
+    elif estado_conversacion == ConversationState.ESPERANDO_INTENCION_UBICACION.name:
+        ubicacion_contextual = contexto_municipio_actual.pop('ubicacion_contextual', None)
+        address = ubicacion_contextual.get('address', 'la ubicación proporcionada') if ubicacion_contextual else 'la ubicación proporcionada'
+        if not action:
+            pregunta_menu = ""
+            if isinstance(pregunta_original, str):
+                pregunta_menu = pregunta_original
+            elif isinstance(pregunta_original, dict):
+                pregunta_menu = pregunta_original.get("pregunta", "")
+            opciones = [
+                {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
+                {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
+                {"texto": "Cancelar", "action_id": "cancelar"},
+            ]
+            action = find_menu_action_by_input(pregunta_menu, opciones)
+
+        if action == "iniciar_reclamo_con_ubicacion":
+            handler = ReclamoFlowHandler(context, chat_db_context)
+            datos_iniciales = {"direccion": address}
+            if ubicacion_contextual:
+                datos_iniciales['coordenadas'] = {
+                    "lat": ubicacion_contextual.get("latitude"),
+                    "lon": ubicacion_contextual.get("longitude")
+                }
+            # The original implementation was missing the 'categoria_inicial' argument for start_flow
+            response_dict = handler.start_flow(datos_iniciales=datos_iniciales)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response_dict)
+        elif action == "enviar_sugerencia_con_ubicacion":
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
+            _set_sugerencia_location_context(
+                contexto_municipio_actual,
+                ubicacion_contextual,
+                fallback_address=address,
+            )
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response({
+                "message_body": f"Excelente. Por favor, escribí tu sugerencia relacionada con la ubicación: *{address}*.",
+                "fuente": "handler_enviar_sugerencia_con_ubicacion"
+            })
+
+        else:  # Cancelar o no se entiende
+            contexto_municipio_actual['estado_conversacion'] = None
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return GreetingHandler(context).handle({})
+
+
+    elif estado_conversacion == ConversationState.ESPERANDO_CORRECCION_DATOS_RECLAMO.name:
+        logger_actual.info(f"Handling input in ESPERANDO_CORRECCION_DATOS_RECLAMO state. Input: '{pregunta_str}'")
+
+        datos_nuevos = extract_multiple_contact_details_llm(pregunta_str, ["nombre", "email", "telefono", "ubicacion", "descripcion"])
+        datos_pendientes = contexto_municipio_actual.get("datos_a_confirmar", {})
+
+        # Mapeo de claves para actualizar correctamente
+        if datos_nuevos.get("nombre"): datos_pendientes["nombre_usuario_detectado"] = datos_nuevos["nombre"]
+        if datos_nuevos.get("email"): datos_pendientes["email_detectado"] = datos_nuevos["email"]
+        if datos_nuevos.get("telefono"): datos_pendientes["telefono_detectado"] = datos_nuevos["telefono"]
+        if datos_nuevos.get("ubicacion"): datos_pendientes["ubicacion"] = datos_nuevos["ubicacion"]
+        if datos_nuevos.get("descripcion"): datos_pendientes["descripcion"] = datos_nuevos["descripcion"]
+
+        contexto_municipio_actual["datos_a_confirmar"] = datos_pendientes
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_CONFIRMACION_DATOS_RECLAMO.name
+
+        mensaje_confirmacion = (
+            f"""Perfecto, he actualizado los datos. Por favor, confirmá si ahora son correctos:
+*Categoría:* {datos_pendientes.get('categoria', 'No especificada')}
+*Descripción:* {datos_pendientes.get('descripcion', 'No especificada')}
+*Ubicación:* {datos_pendientes.get('ubicacion', 'No especificada')}
+*Nombre:* {datos_pendientes.get('nombre_usuario_detectado', 'No especificado')}
+*Teléfono:* {datos_pendientes.get('telefono_detectado', 'No especificado')}
+*Email:* {datos_pendientes.get('email_detectado', 'No especificado')}
+"""
+        )
+
+        botones = [
+            {"texto": "Sí, crear reclamo", "action_id": "confirmar_reclamo_si"},
+            {"texto": "No, seguir editando", "action_id": "confirmar_reclamo_no"},
+        ]
+
+        return _finalize_response({
+            "message_body": mensaje_confirmacion,
+            "options_list": botones,
+            "message_type": "interactive_buttons",
+            "fuente": "re_pide_confirmacion_reclamo"
+        })
+
+
+    # Initialize the context if it's empty
+    # This dictionary is passed to handlers and used throughout this function.
+    context = {
+        CONTEXTO_MUNICIPIO: contexto_municipio_actual, # The specific state for municipio flow
+        "user_obj": owner_user, # The User object of the bot instance (e.g., the Municipality)
+        "viewer_user_obj": viewer_user, # The User object of the end-user (vecino/ciudadano)
+        "cliente_id": getattr(viewer_user, "id", None),
+        "anon_id": anon_id,
+        "rubro_obj": rubro_obj,
+        "channel": channel,
+        "municipio_config_actual": CONFIG_MUNICIPIO, # Use the correct global constant here
+        "chat_session_uuid": kwargs.get("chat_session_uuid"),
+        "chat_db_context_data": chat_db_context_live_data, # Use the safely accessed live data dict
+        # Fields to be populated by payload/kwargs or later logic:
+        "intencion": kwargs.get("intencion"), # Initial intent from Orchestrator/kwargs
+        "ubicacion_usuario": location or received_payload.get("ubicacion_usuario"),
+        "es_foto": False, "foto_url": None, # Defaults, will be updated after inspecting payload
+        "es_ubicacion": received_payload.get("es_ubicacion", False),
+        "es_archivo": received_payload.get("es_archivo", False),
+        "action": received_payload.get("action"), # From button clicks, etc.
+        "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
+        "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
     }
+    if not (chat_db_context and hasattr(chat_db_context, 'context_data')):
+        logger_actual.critical("chat_db_context.context_data no disponible al inicializar 'context'. Usando dict vacío. Esto es problemático.")
 
-    payload = municipio_responder._build_encuesta_share_payload(
-        slug, context, chat_db_context=None
+    # Check for completed analysis in the context
+    if chat_db_context_live_data.get("web_analisis_listo"):
+        analisis_info = chat_db_context_live_data.pop("web_analisis_listo")
+        from models import AnalisisArchivo
+        analisis_obj = db.session.get(AnalisisArchivo, analisis_info.get("archivo_id"))
+        if analisis_obj and analisis_obj.texto_extraido:
+            pregunta_str = analisis_obj.texto_extraido
+            logger_actual.info(f"Usando texto de análisis de archivo como pregunta: '{pregunta_str}'")
+
+    logger_actual.info(
+        f"[RESPONDER_MUNICIPIO_START_CONTEXT_INIT] Context inicializado. UserMunicipio: {context['user_obj'].id if context['user_obj'] else 'N/A'}, "
+        f"ViewerCiudadano: {context['cliente_id'] or context['anon_id']}"
     )
+    logger_actual.info(f"[CONTEXTO_MUNICIPIO_LOAD_RAW] Contexto DB para {CONTEXTO_MUNICIPIO}: {contexto_municipio_data_from_db}")
 
-    pre_messages = payload.get("_twilio_pre_messages")
-    assert isinstance(pre_messages, list) and pre_messages
-    entry = pre_messages[0]
-    assert entry.get("body") == payload.get("share_message")
-    assert entry.get("media_urls") == [payload.get("image_url")]
-    assert "mensaje con imagen" in payload.get("message_body", "")
+
+    # --- Handle post-login resumption (modifies context[CONTEXTO_MUNICIPIO] and context["intencion"]) ---
+    # Ensure to check within context["chat_db_context_data"] which is the live dict from the ORM object
+    if viewer_user and context["chat_db_context_data"].get("just_logged_in_flag"):
+        logger_actual.info(f"User {viewer_user.id} identified as just logged in.")
+        chat_db_context.context_data.pop("just_logged_in_flag") # Consume the flag
+
+        accion_pendiente = contexto_municipio_actual.pop("accion_pendiente_post_login", None)
+        estado_pre_login_str = contexto_municipio_actual.pop("estado_conversacion_pre_login", None)
+
+        if accion_pendiente:
+            logger_actual.info(f"Retomando acción pendiente post-login: {accion_pendiente}, estado pre-login: {estado_pre_login_str}")
+            kwargs["intencion"] = accion_pendiente # Set intencion for current processing context
+            if estado_pre_login_str:
+                # Restore state directly into contexto_municipio_actual. It will be parsed to Enum later.
+                contexto_municipio_actual["estado_conversacion"] = estado_pre_login_str
+
+        # If the user's input is a generic acknowledgement of login, neutralize it
+        # so it doesn't interfere with the resumed flow.
+        generic_login_acks = ["ok", "listo", "ya está", "ya me loguee", "estoy logueado", "logged in", "continuar", "dale", "bueno"]
+        if pregunta_str.strip().lower() in generic_login_acks:
+            logger_actual.info(f"Input '{pregunta_str}' es un ack genérico post-login. Neutralizándolo.")
+            pregunta_str = "" # Neutralize for current processing
+            if "pregunta" in received_payload: # Ensure payload also reflects this
+                received_payload["pregunta"] = ""
+
+    # --- End Handle post-login resumption ---
+
+    if contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name:
+        if "si" in pregunta_str.lower():
+            contexto_municipio_actual["ubicacion_confirmada"] = True
+            contexto_municipio_actual["estado_conversacion"] = None
+        else:
+            contexto_municipio_actual["ubicacion_confirmada"] = False
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+            return _finalize_response({
+                "message_body": "Por favor, decime la nueva ubicación.",
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "pedir_nueva_ubicacion"
+            })
+
+    elif estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name:
+        sugerencia_texto = pregunta_str
+        if len(sugerencia_texto) < 10:
+            return _finalize_response({
+                "message_body": "Tu sugerencia parece un poco corta. ¿Podrías darme un poco más de detalle?",
+                "fuente": "sugerencia_muy_corta"
+            })
+
+        ubicacion_sugerencia, coordenadas_sugerencia = _extract_sugerencia_location(
+            contexto_municipio_actual
+        )
+
+        # Crear ticket para la sugerencia
+        contacto_prev = contexto_municipio_actual.get('contacto_usuario', {}) or {}
+        viewer_user_obj = context.get("viewer_user_obj")
+        datos_sugerencia = _build_sugerencia_datos(
+            sugerencia_texto,
+            ubicacion_sugerencia,
+            coordenadas_sugerencia,
+            viewer_user_obj,
+            contacto_prev,
+        )
+        _merge_contacto_usuario(contexto_municipio_actual, datos_sugerencia)
+
+        handler = CrearReclamoActionHandler(context)
+        response = handler.execute(datos_sugerencia)
+
+        # Modificar el mensaje de éxito para que sea específico para sugerencias
+        if response.get("success"):
+            response["message_body"] = f"✅ ¡Hemos recibido tu sugerencia! Muchas gracias por tu aporte. Lo hemos registrado con el número de ticket `{response.get('ticket_nro', 'N/A')}` para su seguimiento."
+
+        # Limpiar el estado de la conversación
+        contexto_municipio_actual['estado_conversacion'] = None
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+
+        return _finalize_response(response)
+
+    if USAR_LLM_PARA_RECLAMOS:
+        # --- INICIO FIX: Resetear contexto de reclamo si llega una nueva imagen analizada ---
+        datos_interpretados = context.get("datos_interpretados_archivo") or kwargs.get("datos_interpretados_archivo")
+        if datos_interpretados and isinstance(datos_interpretados, dict):
+            logger_actual.info("[CONTEXT_RESET] Se detectaron datos de archivo interpretados. Forzando reseteo de contexto de reclamo.")
+
+            # Guardar datos de contacto antes de limpiar
+            datos_parciales_existentes = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+            datos_de_contacto_a_preservar = {
+                "nombre_usuario_detectado": datos_parciales_existentes.get("nombre_usuario_detectado"),
+                "telefono_detectado": datos_parciales_existentes.get("telefono_detectado"),
+                "email_detectado": datos_parciales_existentes.get("email_detectado"),
+            }
+
+            # Limpiar contexto de reclamo anterior
+            contexto_municipio_actual["historial_llm_reclamo"] = []
+            contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
+
+            # Repoblar con la nueva información del análisis de imagen
+            if datos_interpretados.get("categoria_sugerida"):
+                contexto_municipio_actual["datos_parciales_llm_reclamo"]["categoria"] = datos_interpretados["categoria_sugerida"]
+            if datos_interpretados.get("descripcion_sugerida"):
+                contexto_municipio_actual["datos_parciales_llm_reclamo"]["descripcion"] = datos_interpretados["descripcion_sugerida"]
+
+            # Restaurar datos de contacto si existían
+            contexto_municipio_actual["datos_parciales_llm_reclamo"].update({k: v for k, v in datos_de_contacto_a_preservar.items() if v})
+
+            # Establecer el estado para que el LLM sepa que está en un flujo de reclamo
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+
+            # >>> INICIO FIX: Si la pregunta está vacía pero la imagen se interpretó como reclamo, crear una pregunta para el LLM
+            if not pregunta_str.strip() and datos_interpretados.get("es_reclamo"):
+                categoria = datos_interpretados.get("categoria_sugerida", "No especificada")
+                descripcion = datos_interpretados.get("descripcion_sugerida", "No especificada")
+
+                pregunta_str = (
+                    f"El usuario ha enviado una imagen para iniciar un reclamo. "
+                    f"El análisis automático de la imagen sugiere la siguiente información: "
+                    f"Categoría: '{categoria}', Descripción: '{descripcion}'. "
+                    f"Por favor, inicia el proceso de reclamo confirmando estos datos con el usuario y "
+                    f"solicita la información que falte, como la ubicación."
+                )
+                logger_actual.info(f"Pregunta generada a partir de imagen: '{pregunta_str}'")
+            # <<< FIN FIX
+
+
+        logger_actual.info(f"[BEFORE_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
+        respuesta_manejada_por_llm, contexto_municipio_actual = handle_llm_interaction(
+            app,
+            pregunta_str,
+            context,
+            viewer_user,
+            owner_user,
+            chat_db_context,
+            contexto_municipio_actual,
+            demo_metadata=demo_metadata,
+        )
+        logger_actual.info(f"[AFTER_HANDLE_LLM] Contexto: {contexto_municipio_actual}")
+        if respuesta_manejada_por_llm:
+            if not isinstance(respuesta_manejada_por_llm, dict):
+                respuesta_manejada_por_llm = {"message_body": str(respuesta_manejada_por_llm)}
+
+            # Clean the message body of redundant URLs that are in buttons
+            if 'message_body' in respuesta_manejada_por_llm:
+                respuesta_manejada_por_llm['message_body'] = _remove_redundant_urls_from_message(
+                    respuesta_manejada_por_llm.get('message_body'),
+                    respuesta_manejada_por_llm.get('options_list', [])
+                )
+
+            respuesta_manejada_por_llm.setdefault("message_type", "text")
+            respuesta_manejada_por_llm.setdefault("options_list", [])
+            return _finalize_response(respuesta_manejada_por_llm)
+
+        # Si la intención se estableció en derivar a un agente, significa que el flujo del LLM
+        # ya manejó la lógica y no debemos continuar con el flujo antiguo.
+        if context.get("intencion") == "hablar_con_agente":
+            mensaje_para_escalar = contexto_municipio_actual.get("mensaje_previo_llm_para_escalamiento", "Un agente se pondrá en contacto contigo en breve.")
+            # Ensure the context is saved before returning
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response({
+                "message_body": mensaje_para_escalar,
+                "options_list": [],
+                "message_type": "text",
+                "fuente": "llm_derivar_humano_v2"
+            })
+
+
+
+
+    # --- Serializar y guardar contexto final ---
+    contexto_municipio_serializado_para_db = serializar_enum(contexto_municipio_actual)
+    estado_final_para_guardar_str = contexto_municipio_actual.get("estado_conversacion") # Debería ser string o None
+    if isinstance(estado_final_para_guardar_str, ConversationState): # Por si acaso no se convirtió a string
+        logger_actual.warning(f"Estado {estado_final_para_guardar_str} era Enum antes de serializar. Convirtiendo.")
+        contexto_municipio_actual["estado_conversacion"] = estado_final_para_guardar_str.name
+    elif estado_final_para_guardar_str is None:
+        contexto_municipio_actual.pop("estado_conversacion", None)
+
+    if chat_db_context:
+        # Explicitly re-assign the dictionary to ensure SQLAlchemy detects the change.
+        # This is a more robust way to handle mutable JSONB fields.
+        chat_db_context.context_data = chat_db_context_live_data
+        flag_modified(chat_db_context, "context_data")
+        logger_actual.info(f"[CONTEXT_SAVE_FINAL] Final context data being flagged for save: {chat_db_context.context_data}")
+
+
+    # --- Fallback logic ---
+    logger_actual.info(f"LLM no manejó la respuesta. Intentando fallback con Google Search.")
+    search_results = google_search(pregunta_str)
+    if search_results:
+        search_items = []
+        for result in search_results[:3]:
+            search_items.append(f"- [{result.get('title')}]({result.get('link')})\n{result.get('snippet')}")
+
+        final_response_dict = {
+            "message_body": "No estoy seguro de cómo ayudarte con eso, pero encontré esto en la web:\n\n" + "\n\n".join(search_items),
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "municipio_fallback_google_search"
+        }
+    else:
+        final_response_dict = {
+            "message_body": "Lo siento, no pude entender tu consulta. ¿Podrías intentar reformularla?",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "fallback_final"
+        }
+
+
+    # Log de conversación para anónimos
+    if anon_id and not viewer_user:
+        try:
+            db.session.add(Conversacion(
+                session_id=kwargs.get("chat_session_uuid") or anon_id, pregunta=pregunta_str,
+                respuesta=final_response_dict["message_body"], fuente=final_response_dict["fuente"],
+                rubro=getattr(rubro_obj, "nombre", "municipio_general"), user_id=None,
+            ))
+            db.session.commit()
+        except Exception as e_conv_muni_final:
+            logger_actual.error(f"Error guardando Conversacion final (municipio): {e_conv_muni_final}", exc_info=True)
+            db.session.rollback()
+
+    logger_actual.info(f"[RESPONDER_MUNICIPIO_END_V4] Respuesta: '{final_response_dict.get('message_body', '')[:100]}...', Fuente: {final_response_dict.get('fuente', 'N/A')}")
+    return _finalize_response(final_response_dict)
