@@ -7696,6 +7696,7 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
 
 
 
+
         logger_actual.info(
             f"Handling input in ESPERANDO_SELECCION_MENU_PRINCIPAL state. Input: '{pregunta_str_menu}', Payload action: '{payload_action}'"
         )
