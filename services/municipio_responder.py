@@ -5431,9 +5431,11 @@ def _get_encuestas_menu(context: dict) -> dict:
     message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
 
     options = survey_buttons + base_options
+    embed_whatsapp_banner = is_whatsapp_channel and bool(banner_image_url)
+
     payload = {
         "message_body": message_body.strip(),
-        "message_type": "text" if is_whatsapp_channel else "interactive_buttons",
+        "message_type": "interactive_buttons",
         "options_list": options,
         "fuente": "submenu_encuestas_v1",
         "generar_audio": False if is_whatsapp_channel else True,
@@ -5451,9 +5453,12 @@ def _get_encuestas_menu(context: dict) -> dict:
     if survey_metadata:
         payload["surveys"] = survey_metadata
 
-    pre_messages = _build_encuestas_whatsapp_banner_pre_messages(
-        context, banner_image_url, media_attachments
-    )
+    pre_messages: List[dict] = []
+    if not is_whatsapp_channel:
+        pre_messages = _build_encuestas_whatsapp_banner_pre_messages(
+            context, banner_image_url, media_attachments
+        )
+
     if pre_messages:
         payload["_twilio_pre_messages"] = pre_messages
 
