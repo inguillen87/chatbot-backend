@@ -5431,6 +5431,12 @@ def _get_encuestas_menu(context: dict) -> dict:
             )
         share_message = f"Participá en {titulo}: {share_short_url}"
         whatsapp_share_url = f"https://wa.me/?text={quote_plus(share_message)}"
+        whatsapp_share_display_url = None
+        share_target_for_display = share_short_url or share_url
+        if share_target_for_display:
+            whatsapp_share_display_url = (
+                f"https://wa.me/?text={quote_plus(share_target_for_display)}"
+            )
         share_action_id = f"encuesta_compartir::{slug_publico}"
 
         short_title = _shorten_button_label(titulo)
@@ -5444,10 +5450,11 @@ def _get_encuestas_menu(context: dict) -> dict:
 
         open_line = f"   • Abrir: {display_share_url}"
         share_line_full = None
-        if whatsapp_share_url:
+        share_url_for_body = whatsapp_share_display_url or whatsapp_share_url
+        if share_url_for_body:
             share_line_full = (
                 "   • Compartir con un mensaje listo para WhatsApp: "
-                f"{whatsapp_share_url}"
+                f"{share_url_for_body}"
             )
 
         general_line_parts = [title_line]
@@ -5461,8 +5468,12 @@ def _get_encuestas_menu(context: dict) -> dict:
 
         if is_whatsapp_channel:
             whatsapp_share_line = ""
-            if whatsapp_share_url and not suppress_whatsapp_share_line:
-                whatsapp_share_line = f"   • Compartir: {whatsapp_share_url}"
+            if (
+                share_url_for_body
+                and whatsapp_share_url
+                and not suppress_whatsapp_share_line
+            ):
+                whatsapp_share_line = f"   • Compartir: {share_url_for_body}"
 
             whatsapp_parts_with_desc = [whatsapp_title_line]
             if descripcion:
@@ -5599,11 +5610,9 @@ def _get_encuestas_menu(context: dict) -> dict:
     if survey_metadata:
         payload["surveys"] = survey_metadata
 
-    pre_messages: List[dict] = []
-    if not is_whatsapp_channel:
-        pre_messages = _build_encuestas_whatsapp_banner_pre_messages(
-            context, banner_image_url, media_attachments
-        )
+    pre_messages: List[dict] = _build_encuestas_whatsapp_banner_pre_messages(
+        context, banner_image_url, media_attachments
+    )
 
     if pre_messages:
         payload["_twilio_pre_messages"] = pre_messages
