@@ -7823,6 +7823,28 @@ def test_encuestas_menu_whatsapp_embeds_banner_when_no_template(client):
     assert menu.get("image_url")
 
 
+def test_encuestas_menu_whatsapp_skips_pre_messages_when_banner_attached(client, monkeypatch):
+    with client.application.app_context():
+        encuesta, slug = _create_active_encuesta(tenant_id=35)
+        context = _base_context(tenant_id=encuesta.tenant_id or 35)
+        context["channel"] = "whatsapp"
+
+        def _should_not_run(*args, **kwargs):
+            raise AssertionError("WhatsApp menu should not trigger banner pre-messages")
+
+        monkeypatch.setattr(
+            municipio_responder,
+            "_build_encuestas_whatsapp_banner_pre_messages",
+            _should_not_run,
+        )
+
+        menu = municipio_responder._get_encuestas_menu(context)
+
+    assert menu.get("image_url")
+    assert menu.get("_force_whatsapp_interactive") is True
+    assert not menu.get("_twilio_pre_messages")
+
+
 def test_encuestas_menu_orders_newest_first(client):
     with client.application.app_context():
         encuesta_old, slug_old = _create_active_encuesta(tenant_id=21)
