@@ -382,6 +382,133 @@ function createDemoSummary(scope) {
   };
 }
 
+function createDemoTimeseries(scope) {
+  const offset = scope === 'pyme' ? 59 : scope === 'operaciones' ? 103 : 27;
+  const random = createSeededRandom(dailySeed(offset));
+  const days = 21;
+  const today = new Date();
+  const base = scope === 'pyme' ? 120 : scope === 'operaciones' ? 160 : 240;
+  const series = [];
+  for (let index = days - 1; index >= 0; index -= 1) {
+    const date = new Date(today);
+    date.setDate(today.getDate() - index);
+    const variance = (random() - 0.5) * 0.4;
+    const value = Math.max(1, Math.round(base * (0.75 + variance) + random() * 35));
+    series.push({
+      date: date.toISOString().slice(0, 10),
+      group: 'total',
+      value,
+    });
+  }
+  return series;
+}
+
+function createDemoBreakdown(dimension, scope) {
+  const offset =
+    dimension === 'canal' ? 71 : dimension === 'estado' ? 83 : scope === 'pyme' ? 67 : 45;
+  const random = createSeededRandom(dailySeed(offset));
+  let labels;
+  if (dimension === 'canal') {
+    labels = scope === 'pyme' ? ['WhatsApp', 'Instagram', 'Web', 'Sucursal'] : ['WhatsApp', 'Web', 'Presencial', 'Llamadas'];
+  } else if (dimension === 'estado') {
+    labels = scope === 'pyme' ? ['nuevo', 'pagado', 'en_proceso', 'entregado'] : DEMO_STATUSES;
+  } else if (dimension === 'productos') {
+    labels = ['Canasta básica', 'Turnos médicos', 'Turismo', 'Eventos', 'Pagos'];
+  } else {
+    labels = scope === 'pyme'
+      ? ['Ventas online', 'Delivery', 'Turnos', 'Reservas', 'Reclamos']
+      : DEMO_CATEGORIES;
+  }
+  const breakdown = labels.map((label, index) => ({
+    label,
+    value: Math.max(1, Math.round((index + 1) * 12 + random() * 90)),
+  }));
+  breakdown.sort((a, b) => b.value - a.value);
+  return { breakdown };
+}
+
+function createDemoTop(category, scope) {
+  const random = createSeededRandom(dailySeed(category === 'productos' ? 89 : 75));
+  let labels;
+  if (category === 'productos') {
+    labels = ['Menú ejecutivo', 'Supermercado', 'Farmacia', 'Limpieza', 'Regalería', 'Electrónica'];
+  } else {
+    labels = ['Centro', 'Norte', 'Sur', 'Este', 'Oeste', 'San Martín', 'Belgrano', 'La Colonia', 'Godoy Cruz', 'Ciudad'];
+  }
+  const items = labels.map((label, index) => ({
+    label,
+    value: Math.max(1, Math.round(30 + random() * (scope === 'pyme' ? 60 : 110) - index * 4)),
+  }));
+  items.sort((a, b) => b.value - a.value);
+  return { items };
+}
+
+function createDemoTemplates() {
+  const random = createSeededRandom(dailySeed(111));
+  const templates = [
+    'Seguimiento pedido',
+    'Promoción semanal',
+    'Encuesta satisfacción',
+    'Recordatorio pago',
+  ].map((template) => {
+    const sent = Math.round(180 + random() * 260);
+    const responded = Math.round(sent * (0.18 + random() * 0.32));
+    const ctr = sent ? Number(((responded / sent) * 100).toFixed(1)) : 0;
+    return {
+      template,
+      sent,
+      responded,
+      ctr,
+    };
+  });
+  return { templates };
+}
+
+function createDemoCohorts() {
+  const random = createSeededRandom(dailySeed(129));
+  const cohorts = [];
+  const baseDate = new Date();
+  for (let index = 0; index < 4; index += 1) {
+    const date = new Date(baseDate);
+    date.setMonth(baseDate.getMonth() - index);
+    const label = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const size = Math.round(80 + random() * 140);
+    const retention30 = Math.round(30 + random() * 40);
+    const retention60 = Math.max(retention30 - Math.round(10 + random() * 15), 5);
+    const retention90 = Math.max(retention60 - Math.round(5 + random() * 12), 3);
+    cohorts.push({
+      cohort: label,
+      size,
+      retention30,
+      retention60,
+      retention90,
+    });
+  }
+  return { cohorts };
+}
+
+function createDemoOperations() {
+  const random = createSeededRandom(dailySeed(151));
+  const aging = {
+    '0-1 días': Math.round(45 + random() * 25),
+    '2-3 días': Math.round(30 + random() * 22),
+    '4-7 días': Math.round(18 + random() * 15),
+    '8+ días': Math.round(8 + random() * 10),
+  };
+  const agents = ['García', 'Rodríguez', 'Pérez', 'López', 'Fernández'].map((apellido, index) => ({
+    agente: `Agente ${apellido}`,
+    tickets: Math.round(35 + random() * 28 - index * 3),
+    respuesta_promedio_min: Math.round(18 + random() * 25 + index * 2),
+  }));
+  const queue = {
+    'Guardia Urbana': Math.round(22 + random() * 18),
+    'Espacios Verdes': Math.round(18 + random() * 14),
+    'Obras Públicas': Math.round(26 + random() * 16),
+    'Servicios Generales': Math.round(15 + random() * 12),
+  };
+  return { extras: { aging, agents, queue } };
+}
+
 function renderSummary(summary) {
   if (state.scope === 'municipio') {
     const items = [
@@ -459,10 +586,25 @@ function renderSla(containerId, sla) {
 
 async function loadTimeseries(canvasId) {
   const params = buildParams();
-  const data = await fetchJson('timeseries', params);
+  let data;
+  try {
+    data = await fetchJson('timeseries', params);
+  } catch (error) {
+    console.warn('Timeseries unavailable, generating demo data.', error);
+    data = { series: [] };
+  }
+  let series = Array.isArray(data?.series) ? data.series : [];
+  if (!series.length) {
+    series = createDemoTimeseries(state.scope);
+  }
+  if (!series.length) {
+    updateEmptyState(canvasId, false, 'Sin datos de evolución');
+    return;
+  }
+  updateEmptyState(canvasId, true);
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
-  const grouped = groupSeries(data.series || []);
+  const grouped = groupSeries(series);
   const datasets = Object.entries(grouped).map(([group, entries], index) => ({
     label: group,
     data: entries.map((entry) => ({ x: entry.date, y: entry.value })),
@@ -495,41 +637,145 @@ async function loadTimeseries(canvasId) {
 }
 
 async function loadBreakdowns() {
-  const categoria = await fetchJson('breakdown', buildParams({ dimension: 'categoria' }));
-  renderBarChart('municipio-top-categorias', categoria.breakdown || []);
-  const canales = await fetchJson('breakdown', buildParams({ dimension: 'canal' }));
-  renderDonutChart('municipio-top-canales', canales.breakdown || []);
-  updateFilterOptions('filter-categoria', categoria.breakdown);
-  updateFilterOptions('filter-canal', canales.breakdown);
-  const estados = await fetchJson('breakdown', buildParams({ dimension: 'estado' }));
-  updateFilterOptions('filter-estado', estados.breakdown);
-  const zonas = await fetchJson('top', buildParams({ category: 'barrios', limit: 20 }));
-  updateFilterOptions('filter-zona', zonas.items);
+  let categoria;
+  try {
+    categoria = await fetchJson('breakdown', buildParams({ dimension: 'categoria' }));
+  } catch (error) {
+    console.warn('Categoría breakdown unavailable, using demo data.', error);
+    categoria = { breakdown: [] };
+  }
+  let categoriasData = Array.isArray(categoria?.breakdown) ? categoria.breakdown : [];
+  if (!categoriasData.length) {
+    categoriasData = createDemoBreakdown('categoria', state.scope).breakdown;
+  }
+  renderBarChart('municipio-top-categorias', categoriasData);
+  updateFilterOptions('filter-categoria', categoriasData);
+
+  let canales;
+  try {
+    canales = await fetchJson('breakdown', buildParams({ dimension: 'canal' }));
+  } catch (error) {
+    console.warn('Canal breakdown unavailable, using demo data.', error);
+    canales = { breakdown: [] };
+  }
+  let canalesData = Array.isArray(canales?.breakdown) ? canales.breakdown : [];
+  if (!canalesData.length) {
+    canalesData = createDemoBreakdown('canal', state.scope).breakdown;
+  }
+  renderDonutChart('municipio-top-canales', canalesData);
+  updateFilterOptions('filter-canal', canalesData);
+
+  let estados;
+  try {
+    estados = await fetchJson('breakdown', buildParams({ dimension: 'estado' }));
+  } catch (error) {
+    console.warn('Estado breakdown unavailable, using demo data.', error);
+    estados = { breakdown: [] };
+  }
+  let estadosData = Array.isArray(estados?.breakdown) ? estados.breakdown : [];
+  if (!estadosData.length) {
+    estadosData = createDemoBreakdown('estado', state.scope).breakdown;
+  }
+  updateFilterOptions('filter-estado', estadosData);
+
+  let zonas;
+  try {
+    zonas = await fetchJson('top', buildParams({ category: 'barrios', limit: 20 }));
+  } catch (error) {
+    console.warn('Zonas top unavailable, using demo data.', error);
+    zonas = { items: [] };
+  }
+  let zonasData = Array.isArray(zonas?.items) ? zonas.items : [];
+  if (!zonasData.length) {
+    zonasData = createDemoTop('barrios', state.scope).items;
+  }
+  updateFilterOptions('filter-zona', zonasData);
 }
 
 async function loadTopMunicipio() {
-  const zonas = await fetchJson('top', buildParams({ category: 'barrios', limit: 10 }));
-  renderTable('municipio-top-zonas', zonas.items, ['label', 'value']);
+  let zonas;
+  try {
+    zonas = await fetchJson('top', buildParams({ category: 'barrios', limit: 10 }));
+  } catch (error) {
+    console.warn('Top zonas unavailable, using demo data.', error);
+    zonas = { items: [] };
+  }
+  let items = Array.isArray(zonas?.items) ? zonas.items : [];
+  if (!items.length) {
+    items = createDemoTop('barrios', state.scope).items.slice(0, 10);
+  }
+  renderTable('municipio-top-zonas', items, ['label', 'value']);
 }
 
 async function loadPymeBreakdowns() {
-  const productos = await fetchJson('top', buildParams({ category: 'productos', limit: 10 }));
-  renderBarChart('pyme-top-productos', productos.items || []);
-  const conversion = await fetchJson('breakdown', buildParams({ dimension: 'canal' }));
-  renderDonutChart('pyme-conversion-canal', conversion.breakdown || []);
-  updateFilterOptions('filter-canal', conversion.breakdown);
+  let productos;
+  try {
+    productos = await fetchJson('top', buildParams({ category: 'productos', limit: 10 }));
+  } catch (error) {
+    console.warn('Top productos unavailable, using demo data.', error);
+    productos = { items: [] };
+  }
+  let productosItems = Array.isArray(productos?.items) ? productos.items : [];
+  if (!productosItems.length) {
+    productosItems = createDemoTop('productos', 'pyme').items.slice(0, 10);
+  }
+  renderBarChart('pyme-top-productos', productosItems);
+
+  let conversion;
+  try {
+    conversion = await fetchJson('breakdown', buildParams({ dimension: 'canal' }));
+  } catch (error) {
+    console.warn('Conversión por canal unavailable, using demo data.', error);
+    conversion = { breakdown: [] };
+  }
+  let conversionData = Array.isArray(conversion?.breakdown) ? conversion.breakdown : [];
+  if (!conversionData.length) {
+    conversionData = createDemoBreakdown('canal', 'pyme').breakdown;
+  }
+  renderDonutChart('pyme-conversion-canal', conversionData);
+  updateFilterOptions('filter-canal', conversionData);
 }
 
 async function loadPymeTables() {
-  const templates = await fetchJson('whatsapp/templates', buildParams());
-  renderTable('pyme-templates', templates.templates, ['template', 'sent', 'responded', 'ctr']);
-  const cohorts = await fetchJson('cohorts', buildParams());
-  renderTable('pyme-cohorts', cohorts.cohorts, ['cohort', 'size', 'retention30', 'retention60', 'retention90']);
+  let templates;
+  try {
+    templates = await fetchJson('whatsapp/templates', buildParams());
+  } catch (error) {
+    console.warn('Templates analytics unavailable, using demo data.', error);
+    templates = { templates: [] };
+  }
+  let templatesRows = Array.isArray(templates?.templates) ? templates.templates : [];
+  if (!templatesRows.length) {
+    templatesRows = createDemoTemplates().templates;
+  }
+  renderTable('pyme-templates', templatesRows, ['template', 'sent', 'responded', 'ctr']);
+
+  let cohorts;
+  try {
+    cohorts = await fetchJson('cohorts', buildParams());
+  } catch (error) {
+    console.warn('Cohorts analytics unavailable, using demo data.', error);
+    cohorts = { cohorts: [] };
+  }
+  let cohortRows = Array.isArray(cohorts?.cohorts) ? cohorts.cohorts : [];
+  if (!cohortRows.length) {
+    cohortRows = createDemoCohorts().cohorts;
+  }
+  renderTable('pyme-cohorts', cohortRows, ['cohort', 'size', 'retention30', 'retention60', 'retention90']);
 }
 
 async function loadOperations() {
-  const data = await fetchJson('operations', buildParams());
-  const extras = data.extras || {};
+  let data;
+  try {
+    data = await fetchJson('operations', buildParams());
+  } catch (error) {
+    console.warn('Operaciones analytics unavailable, using demo data.', error);
+    data = { extras: {} };
+  }
+  let extras = data?.extras || {};
+  if (!extras.aging && !extras.agents && !extras.queue) {
+    extras = createDemoOperations().extras;
+  }
   renderBarChart('operaciones-aging', Object.entries(extras.aging || {}).map(([label, value]) => ({ label, value })));
   renderTable('operaciones-agentes', extras.agents, ['agente', 'tickets', 'respuesta_promedio_min']);
   renderBarChart('operaciones-sla', Object.entries(extras.queue || {}).map(([label, value]) => ({ label, value })));

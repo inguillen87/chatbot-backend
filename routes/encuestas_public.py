@@ -38,8 +38,8 @@ from services.encuestas_service import (
 )
 from utils.auth_helpers import obtener_token, user_from_token
 
-_RATE_LIMIT = 30
-_RATE_PERIOD = 60
+_DEFAULT_RATE_LIMIT = 150
+_DEFAULT_RATE_PERIOD = 60
 _rate_buckets: defaultdict[str, deque] = defaultdict(deque)
 _rate_lock = Lock()
 
@@ -318,13 +318,39 @@ def _extract_ip() -> str:
     return request.remote_addr or "0.0.0.0"
 
 
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        return default
+    return coerced if coerced > 0 else default
+
+
+def _resolve_rate_settings() -> tuple[int, int]:
+    limit = current_app.config.get("PUBLIC_ENCUESTAS_RATE_LIMIT")
+    period = current_app.config.get("PUBLIC_ENCUESTAS_RATE_PERIOD")
+
+    if limit is None:
+        limit = os.getenv("PUBLIC_ENCUESTAS_RATE_LIMIT")
+    if period is None:
+        period = os.getenv("PUBLIC_ENCUESTAS_RATE_PERIOD")
+
+    resolved_limit = _coerce_positive_int(limit, _DEFAULT_RATE_LIMIT)
+    resolved_period = _coerce_positive_int(period, _DEFAULT_RATE_PERIOD)
+    return resolved_limit, resolved_period
+
+
 def _rate_limit(ip: str) -> bool:
+    limit, period = _resolve_rate_settings()
+    if limit <= 0 or period <= 0:
+        return True
+
     now = time.time()
     with _rate_lock:
         bucket = _rate_buckets[ip]
-        while bucket and now - bucket[0] > _RATE_PERIOD:
+        while bucket and now - bucket[0] > period:
             bucket.popleft()
-        if len(bucket) >= _RATE_LIMIT:
+        if len(bucket) >= limit:
             return False
         bucket.append(now)
         return True
