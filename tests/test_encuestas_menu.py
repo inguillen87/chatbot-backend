@@ -7072,10 +7072,10 @@ def responder_municipio(
     assert "Participación Ciudadana" in body
     assert "Últimas encuestas disponibles" in body
     short_token = slug.rsplit("-", 1)[-1]
-    assert short_token in body
-    assert "Abrir:" in body
-    assert "Compartir con un mensaje listo para WhatsApp:" in body
-    assert "https://wa.me/" in body
+    assert "Abrir:" not in body
+    assert "Compartir con un mensaje listo para WhatsApp:" not in body
+    assert "https://wa.me/" not in body
+    assert len(body) < 1600
     assert "Compartir desde el widget web" not in body
     assert "Descargar el código QR" not in body
     assert "Usar el asistente virtual en la web" not in body
@@ -7168,9 +7168,8 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
 
     expected_prefix = "https://www.chatboc.ar/e/"
     short_token = slug.rsplit("-", 1)[-1]
-    assert f"https://chatboc.ar/e/{short_token}" in menu["message_body"]
-    assert "Compartir con un mensaje listo para WhatsApp:" in menu["message_body"]
-    assert "https://wa.me/" in menu["message_body"]
+    body = menu["message_body"]
+    assert "https://wa.me/" not in body
     button_urls = [
         option.get("url", "")
         for option in menu["options_list"]
@@ -7184,6 +7183,15 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
         if option.get("action_id")
     ]
     assert any(action.startswith("encuesta_compartir::") for action in share_actions)
+
+    surveys_meta = menu.get("surveys") or []
+    assert any(
+        meta.get("share_url", "").startswith(expected_prefix) for meta in surveys_meta
+    )
+    assert any(
+        meta.get("share_short_url", "").endswith(f"/e/{short_token}")
+        for meta in surveys_meta
+    )
 
 
 def test_encuestas_menu_includes_configured_image(client):

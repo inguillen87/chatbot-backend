@@ -11,7 +11,7 @@ import json
 from enum import Enum, auto
 import unicodedata
 import difflib
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
@@ -5226,6 +5226,26 @@ def _build_encuestas_whatsapp_banner_pre_messages(
     ]
 
 
+_WHATSAPP_MENU_BODY_SOFT_LIMIT = 1400
+_WHATSAPP_MENU_DESCRIPTION_LIMIT = 160
+
+
+def _truncate_text(value: str, max_length: int) -> str:
+    if not isinstance(value, str):
+        return ""
+
+    trimmed = value.strip()
+    if len(trimmed) <= max_length:
+        return trimmed
+
+    candidate = trimmed[: max_length - 1].rstrip()
+    if " " in candidate:
+        candidate = candidate.rsplit(" ", 1)[0]
+    if not candidate:
+        candidate = trimmed[: max_length - 1].rstrip()
+    return f"{candidate}…"
+
+
 def _build_encuesta_share_whatsapp_pre_messages(
     context: dict,
     share_message: Optional[str],
@@ -5343,7 +5363,8 @@ def _get_encuestas_menu(context: dict) -> dict:
     )
     banner_image_url = share_image_default
 
-    lines: List[str] = []
+    general_lines: List[str] = []
+    whatsapp_lines: List[Tuple[str, str]] = []
     survey_buttons: List[Dict[str, Any]] = []
     survey_metadata: List[Dict[str, Any]] = []
     for index, (encuesta, slug_publico) in enumerate(encuestas, start=1):
@@ -5373,17 +5394,32 @@ def _get_encuestas_menu(context: dict) -> dict:
 
         display_share_url = share_short_url or share_url
 
-        line_parts = [f"{index}. *{titulo}*"]
+        title_line = f"{index}. *{titulo}*"
+        whatsapp_title = _shorten_button_label(titulo, max_length=120)
+        whatsapp_title_line = f"{index}. *{whatsapp_title}*"
+
+        general_line_parts = [title_line]
         if descripcion:
-            line_parts.append(f"   {descripcion}")
+            general_line_parts.append(f"   {descripcion}")
         if display_share_url:
-            line_parts.append(f"   • Abrir: {display_share_url}")
+            general_line_parts.append(f"   • Abrir: {display_share_url}")
         if whatsapp_share_url:
-            line_parts.append(
+            general_line_parts.append(
                 "   • Compartir con un mensaje listo para WhatsApp: "
                 f"{whatsapp_share_url}"
             )
-        lines.append("\n".join(line_parts))
+        general_lines.append("\n".join(general_line_parts))
+
+        if is_whatsapp_channel:
+            whatsapp_parts = [whatsapp_title_line]
+            if descripcion:
+                truncated_description = _truncate_text(
+                    descripcion, _WHATSAPP_MENU_DESCRIPTION_LIMIT
+                )
+                if truncated_description:
+                    whatsapp_parts.append(f"   {truncated_description}")
+            whatsapp_with_description = "\n".join(whatsapp_parts)
+            whatsapp_lines.append((whatsapp_with_description, whatsapp_title_line))
 
         survey_buttons.append(
             {
@@ -5423,12 +5459,21 @@ def _get_encuestas_menu(context: dict) -> dict:
             }
         )
 
-    header = (
-        "*Participación Ciudadana*\n"
-    )
-    message_body = header + "\n".join(lines)
+    header = "*Participación Ciudadana*\n"
+
+    if is_whatsapp_channel:
+        selected_lines = [with_desc for with_desc, _ in whatsapp_lines]
+    else:
+        selected_lines = general_lines
+
+    message_body = header + "\n".join(selected_lines)
 
     message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
+
+    if is_whatsapp_channel and len(message_body) > _WHATSAPP_MENU_BODY_SOFT_LIMIT:
+        selected_lines = [title_only for _, title_only in whatsapp_lines]
+        message_body = header + "\n".join(selected_lines)
+        message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
 
     options = survey_buttons + base_options
     embed_whatsapp_banner = is_whatsapp_channel and bool(banner_image_url)
