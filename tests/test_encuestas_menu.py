@@ -7599,28 +7599,101 @@ def responder_municipio(
         # contexto_municipio_data_from_db remains {}
         # chat_db_context_live_data remains {}
 
-    logger_actual.info(
-        f"[CONTEXTO_MUNICIPIO_LOAD_RAW] Contexto crudo para '{CONTEXTO_MUNICIPIO}' desde DB: {contexto_municipio_data_from_db}"
+    body = menu["message_body"]
+    assert "Participación Ciudadana" in body
+    assert "Últimas encuestas disponibles" in body
+    short_token = slug.rsplit("-", 1)[-1]
+    assert "• Abrir:" in body
+    assert "• Compartir:" in body
+    assert "https://wa.me/" in body
+    assert len(body) < 1600
+    assert "Compartir desde el widget web" not in body
+    assert "Descargar el código QR" not in body
+    assert "Usar el asistente virtual en la web" not in body
+    assert any(option.get("type") == "url" for option in menu["options_list"])
+    button_urls = [
+        option.get("url", "")
+        for option in menu["options_list"]
+        if option.get("type") == "url"
+    ]
+    assert any(url.endswith(f"/e/{slug}") for url in button_urls)
+    assert not any(url.startswith("https://wa.me/") for url in button_urls)
+    share_actions = [
+        option.get("action_id")
+        for option in menu["options_list"]
+        if option.get("action_id")
+    ]
+    assert any(action.startswith("encuesta_compartir::") for action in share_actions)
+    assert not any(url.endswith(f"/e/{slug}?canal=widget_chat") for url in button_urls)
+    assert not any(url.endswith(f"/api/public/encuestas/{slug}/qr") for url in button_urls)
+    media_urls = menu.get("media_urls")
+    assert isinstance(media_urls, list) and media_urls
+    assert media_urls[0] == fallback_image
+    assert fallback_image in media_urls
+    assert menu.get("image_url") == fallback_image
+    assert menu.get("_base_url") == client.application.config.get(
+        "PUBLIC_ENCUESTAS_API_BASE_URL"
     )
 
     # Log the current state of the conversation
     estado_conversacion = contexto_municipio_data_from_db.get("estado_conversacion")
     logger_actual.info(f"[CONTEXTO_MUNICIPIO] Estado de conversacion actual: {estado_conversacion}")
 
-    # Directly use the dictionary from the live context data.
-    # This ensures that modifications are made to the original object.
-    contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
-    context[CONTEXTO_MUNICIPIO] = contexto_municipio_actual # Ensure main context points to this sub-context
+def test_encuestas_menu_shows_empty_state_when_enabled(client):
+    with client.application.app_context():
+        context = _base_context(
+            tenant_id=1,
+            extra_config={"encuestas": {"enabled": True}},
+        )
+        menu = municipio_responder._get_encuestas_menu(context)
 
-    # --- INICIO: Manejo de selección de menú principal por número, letra o keyword ---
-    if estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name:
-        pregunta_str_menu = ""
-        payload_action = None
-        if isinstance(pregunta_original, str):
-            pregunta_str_menu = pregunta_original
-        elif isinstance(pregunta_original, dict):
-            pregunta_str_menu = pregunta_original.get("pregunta", "")
-            payload_action = pregunta_original.get("action")
+    assert "por el momento no hay encuestas activas" in menu["message_body"].lower()
+    assert menu["fuente"] == "submenu_encuestas_v1"
+    assert "surveys" not in menu
+
+
+def test_encuestas_menu_prefers_domain_map_base_url(client):
+    with client.application.app_context():
+        encuesta, slug = _create_active_encuesta(tenant_id=11)
+        app = client.application
+        app.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = None
+        app.config["PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL"] = None
+        app.config["PUBLIC_ENCUESTAS_DOMAIN_MAP"] = {
+            "chatbot-backend-2e14.onrender.com": 999,
+            "www.chatboc.ar": encuesta.tenant_id,
+            "chatboc.ar": encuesta.tenant_id,
+        }
+        app.config["IS_HTTPS"] = True
+        context = _base_context(tenant_id=encuesta.tenant_id or 11)
+        menu = municipio_responder._get_encuestas_menu(context)
+
+    expected_prefix = "https://www.chatboc.ar/e/"
+    short_token = slug.rsplit("-", 1)[-1]
+    body = menu["message_body"]
+    assert "https://wa.me/" not in body
+    button_urls = [
+        option.get("url", "")
+        for option in menu["options_list"]
+        if option.get("type") == "url"
+    ]
+    assert any(url.startswith(expected_prefix) for url in button_urls)
+    assert not any(url.startswith("https://wa.me/") for url in button_urls)
+    share_actions = [
+        option.get("action_id")
+        for option in menu["options_list"]
+        if option.get("action_id")
+    ]
+    assert any(action.startswith("encuesta_compartir::") for action in share_actions)
+
+    surveys_meta = menu.get("surveys") or []
+    assert any(
+        meta.get("share_url", "").startswith(expected_prefix) for meta in surveys_meta
+    )
+    assert any(
+        meta.get("share_short_url", "").endswith(f"/e/{short_token}")
+        for meta in surveys_meta
+    )
+
 
         logger_actual.info(
             f"Handling input in ESPERANDO_SELECCION_MENU_PRINCIPAL state. Input: '{pregunta_str_menu}', Payload action: '{payload_action}'"
@@ -8385,18 +8458,113 @@ def responder_municipio(
         for result in search_results[:3]:
             search_items.append(f"- [{result.get('title')}]({result.get('link')})\n{result.get('snippet')}")
 
-        final_response_dict = {
-            "message_body": "No estoy seguro de cómo ayudarte con eso, pero encontré esto en la web:\n\n" + "\n\n".join(search_items),
-            "options_list": [],
-            "message_type": "text",
-            "fuente": "municipio_fallback_google_search"
-        }
-    else:
-        final_response_dict = {
-            "message_body": "Lo siento, no pude entender tu consulta. ¿Podrías intentar reformularla?",
-            "options_list": [],
-            "message_type": "text",
-            "fuente": "fallback_final"
+def test_encuestas_menu_whatsapp_embeds_banner_and_disables_audio(client):
+    with client.application.app_context():
+        encuesta, slug = _create_active_encuesta(tenant_id=31)
+        context = _base_context(tenant_id=encuesta.tenant_id or 31)
+        context["channel"] = "whatsapp"
+        previous_template = client.application.config.get(
+            "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"
+        )
+        client.application.config["PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"] = (
+            "HXtestBanner"
+        )
+        try:
+            menu = municipio_responder._get_encuestas_menu(context)
+        finally:
+            client.application.config[
+                "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"
+            ] = previous_template
+
+    assert menu.get("message_type") == "interactive_buttons"
+    assert menu.get("generar_audio") is False
+    pre_messages = menu.get("_twilio_pre_messages")
+    assert not pre_messages
+    assert menu.get("_force_whatsapp_interactive") is True
+    assert menu.get("image_url")
+    media_urls = menu.get("media_urls")
+    assert isinstance(media_urls, list) and menu["image_url"] in media_urls
+
+
+def test_encuestas_menu_whatsapp_embeds_banner_when_no_template(client):
+    with client.application.app_context():
+        encuesta, slug = _create_active_encuesta(tenant_id=33)
+        context = _base_context(tenant_id=encuesta.tenant_id or 33)
+        context["channel"] = "whatsapp"
+        client.application.config["PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"] = None
+        client.application.config["PUBLIC_ENCUESTAS_WHATSAPP_BANNER_BODY"] = (
+            "Participación Ciudadana"
+        )
+        menu = municipio_responder._get_encuestas_menu(context)
+
+    assert menu.get("message_type") == "interactive_buttons"
+    assert menu.get("generar_audio") is False
+    pre_messages = menu.get("_twilio_pre_messages")
+    assert not pre_messages
+    assert menu.get("_force_whatsapp_interactive") is True
+    assert menu.get("image_url")
+
+
+def test_encuestas_menu_whatsapp_skips_pre_messages_when_banner_attached(client, monkeypatch):
+    with client.application.app_context():
+        encuesta, slug = _create_active_encuesta(tenant_id=35)
+        context = _base_context(tenant_id=encuesta.tenant_id or 35)
+        context["channel"] = "whatsapp"
+
+        def _should_not_run(*args, **kwargs):
+            raise AssertionError("WhatsApp menu should not trigger banner pre-messages")
+
+        monkeypatch.setattr(
+            municipio_responder,
+            "_build_encuestas_whatsapp_banner_pre_messages",
+            _should_not_run,
+        )
+
+        menu = municipio_responder._get_encuestas_menu(context)
+
+    assert menu.get("image_url")
+    assert menu.get("_force_whatsapp_interactive") is True
+    assert not menu.get("_twilio_pre_messages")
+
+
+def test_encuestas_menu_orders_newest_first(client):
+    with client.application.app_context():
+        encuesta_old, slug_old = _create_active_encuesta(tenant_id=21)
+        encuesta_new, slug_new = _create_active_encuesta(tenant_id=21)
+
+        if encuesta_old.created_at:
+            encuesta_old.created_at = encuesta_old.created_at - timedelta(minutes=5)
+        db.session.commit()
+
+        context = _base_context(tenant_id=encuesta_old.tenant_id or 21)
+        menu = municipio_responder._get_encuestas_menu(context)
+
+    surveys = menu.get("surveys")
+    assert isinstance(surveys, list) and len(surveys) >= 2
+    assert surveys[0]["slug"] == slug_new
+    assert surveys[1]["slug"] == slug_old
+
+    body = menu["message_body"]
+    token_new = slug_new.rsplit("-", 1)[-1]
+    token_old = slug_old.rsplit("-", 1)[-1]
+    assert body.index(token_new) < body.index(token_old)
+
+
+def test_encuesta_share_payload_adds_whatsapp_media_pre_message(client):
+    with client.application.app_context():
+        encuesta, slug = _create_active_encuesta(tenant_id=41)
+        context = _base_context(tenant_id=encuesta.tenant_id or 41)
+        context["channel"] = "whatsapp"
+        menu = municipio_responder._get_encuestas_menu(context)
+
+    context["chat_db_context_data"] = {
+        municipio_responder.CONTEXTO_MUNICIPIO: {
+            "encuestas_menu_surveys": menu.get("surveys"),
+            "encuestas_menu_options": [
+                option
+                for option in menu.get("options_list", [])
+                if option.get("action_id")
+            ],
         }
 
 
