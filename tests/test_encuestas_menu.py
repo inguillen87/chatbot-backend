@@ -8480,7 +8480,9 @@ def test_encuestas_menu_whatsapp_embeds_banner_and_disables_audio(client):
     assert menu.get("message_type") == "interactive_buttons"
     assert menu.get("generar_audio") is False
     pre_messages = menu.get("_twilio_pre_messages")
-    assert not pre_messages
+    assert pre_messages and isinstance(pre_messages, list)
+    template_entry = pre_messages[0]
+    assert template_entry.get("content_sid") == "HXtestBanner"
     assert menu.get("_force_whatsapp_interactive") is True
     assert menu.get("image_url")
     media_urls = menu.get("media_urls")
@@ -8501,31 +8503,33 @@ def test_encuestas_menu_whatsapp_embeds_banner_when_no_template(client):
     assert menu.get("message_type") == "interactive_buttons"
     assert menu.get("generar_audio") is False
     pre_messages = menu.get("_twilio_pre_messages")
-    assert not pre_messages
+    assert pre_messages and isinstance(pre_messages, list)
+    banner_entry = pre_messages[0]
+    assert banner_entry.get("media_urls")
+    assert banner_entry.get("body") == "Participación Ciudadana"
     assert menu.get("_force_whatsapp_interactive") is True
     assert menu.get("image_url")
 
 
-def test_encuestas_menu_whatsapp_skips_pre_messages_when_banner_attached(client, monkeypatch):
+def test_encuestas_menu_whatsapp_uses_banner_pre_messages(client, monkeypatch):
     with client.application.app_context():
         encuesta, slug = _create_active_encuesta(tenant_id=35)
         context = _base_context(tenant_id=encuesta.tenant_id or 35)
         context["channel"] = "whatsapp"
 
-        def _should_not_run(*args, **kwargs):
-            raise AssertionError("WhatsApp menu should not trigger banner pre-messages")
+        stub_pre_message = [{"channels": ["whatsapp"], "body": "Banner", "media_urls": ["https://cdn.test/banner.png"]}]
 
         monkeypatch.setattr(
             municipio_responder,
             "_build_encuestas_whatsapp_banner_pre_messages",
-            _should_not_run,
+            lambda *args, **kwargs: stub_pre_message,
         )
 
         menu = municipio_responder._get_encuestas_menu(context)
 
     assert menu.get("image_url")
     assert menu.get("_force_whatsapp_interactive") is True
-    assert not menu.get("_twilio_pre_messages")
+    assert menu.get("_twilio_pre_messages") == stub_pre_message
 
 
 def test_encuestas_menu_orders_newest_first(client):
