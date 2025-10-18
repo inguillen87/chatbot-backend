@@ -67,6 +67,53 @@ def _init_h3_helpers():  # pragma: no cover - exercised via integration tests
 _H3_TO_CELL, _H3_CELL_TO_GEO = _init_h3_helpers()
 
 
+_SINGLE_CHOICE_TYPES = {
+    "opcion_unica",
+    "single_choice",
+    "single-choice",
+    "singlechoice",
+    "single",
+    "radio",
+}
+
+_MULTIPLE_CHOICE_TYPES = {
+    "opcion_multiple",
+    "multiple_choice",
+    "multiple-choice",
+    "multiple",
+    "checkbox",
+    "check",
+    "multi_select",
+    "multi-select",
+    "multiselect",
+}
+
+_TEXT_TYPES = {
+    "abierta",
+    "text",
+    "texto",
+    "open_text",
+    "open-text",
+    "open",
+}
+
+
+def _normalize_question_type(raw: Optional[str]) -> str:
+    if raw is None:
+        return "single_choice"
+
+    text = str(raw).strip().lower()
+    if not text:
+        return "single_choice"
+    if text in _SINGLE_CHOICE_TYPES:
+        return "single_choice"
+    if text in _MULTIPLE_CHOICE_TYPES:
+        return "multiple_choice"
+    if text in _TEXT_TYPES:
+        return "text"
+    return text
+
+
 def _apply_filters(query, filtros: Optional[Dict[str, Any]]):
     if not filtros:
         return query
@@ -329,13 +376,15 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
 
     preguntas_summary = []
     for pregunta in encuesta.preguntas:
+        normalized_tipo = _normalize_question_type(pregunta.tipo)
         pregunta_data = {
             "pregunta_id": pregunta.id,
             "texto": pregunta.texto,
-            "tipo": pregunta.tipo,
+            "tipo": normalized_tipo,
+            "tipo_interno": pregunta.tipo,
             "total_respuestas": total,
         }
-        if pregunta.tipo in {"opcion_unica", "opcion_multiple"}:
+        if normalized_tipo in {"single_choice", "multiple_choice"}:
             opciones = []
             for opcion in pregunta.opciones:
                 conteo = opciones_por_pregunta[pregunta.id][opcion.id]
@@ -353,13 +402,33 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
                 {"label": opcion["texto"], "value": opcion["conteo"]}
                 for opcion in opciones
             ]
-        else:
+        elif normalized_tipo == "text":
             muestras = textos_abiertos.get(pregunta.id, [])[:20]
             pregunta_data["muestras_texto"] = muestras
             # Frontend widgets expect ``opciones`` to exist so they can iterate
             # without special casing preguntas de texto libre.
             pregunta_data["opciones"] = []
             pregunta_data["series"] = []
+        else:
+            # Preserve backwards compatibility for unexpected question types by
+            # exposing aggregated option counts when available.
+            opciones = []
+            for opcion in pregunta.opciones:
+                conteo = opciones_por_pregunta[pregunta.id][opcion.id]
+                porcentaje = (conteo / total * 100) if total else 0
+                opciones.append(
+                    {
+                        "opcion_id": opcion.id,
+                        "texto": opcion.texto,
+                        "conteo": conteo,
+                        "porcentaje": round(porcentaje, 2),
+                    }
+                )
+            pregunta_data["opciones"] = opciones
+            pregunta_data["series"] = [
+                {"label": opcion["texto"], "value": opcion["conteo"]}
+                for opcion in opciones
+            ]
         preguntas_summary.append(pregunta_data)
 
     canales_list = [
