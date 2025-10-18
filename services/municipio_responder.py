@@ -5364,7 +5364,7 @@ def _get_encuestas_menu(context: dict) -> dict:
     banner_image_url = share_image_default
 
     general_lines: List[str] = []
-    whatsapp_lines: List[Tuple[str, str]] = []
+    whatsapp_blocks: List[Dict[str, str]] = []
     survey_buttons: List[Dict[str, Any]] = []
     survey_metadata: List[Dict[str, Any]] = []
     for index, (encuesta, slug_publico) in enumerate(encuestas, start=1):
@@ -5398,28 +5398,69 @@ def _get_encuestas_menu(context: dict) -> dict:
         whatsapp_title = _shorten_button_label(titulo, max_length=120)
         whatsapp_title_line = f"{index}. *{whatsapp_title}*"
 
+        open_line = f"   • Abrir: {display_share_url}"
+        share_line_full = None
+        if whatsapp_share_url:
+            share_line_full = (
+                "   • Compartir con un mensaje listo para WhatsApp: "
+                f"{whatsapp_share_url}"
+            )
+
         general_line_parts = [title_line]
         if descripcion:
             general_line_parts.append(f"   {descripcion}")
         if display_share_url:
-            general_line_parts.append(f"   • Abrir: {display_share_url}")
-        if whatsapp_share_url:
-            general_line_parts.append(
-                "   • Compartir con un mensaje listo para WhatsApp: "
-                f"{whatsapp_share_url}"
-            )
+            general_line_parts.append(open_line)
+        if share_line_full:
+            general_line_parts.append(share_line_full)
         general_lines.append("\n".join(general_line_parts))
 
         if is_whatsapp_channel:
-            whatsapp_parts = [whatsapp_title_line]
+            whatsapp_share_line = (
+                f"   • Compartir: {whatsapp_share_url}"
+                if whatsapp_share_url
+                else ""
+            )
+
+            whatsapp_parts_with_desc = [whatsapp_title_line]
             if descripcion:
                 truncated_description = _truncate_text(
                     descripcion, _WHATSAPP_MENU_DESCRIPTION_LIMIT
                 )
                 if truncated_description:
-                    whatsapp_parts.append(f"   {truncated_description}")
-            whatsapp_with_description = "\n".join(whatsapp_parts)
-            whatsapp_lines.append((whatsapp_with_description, whatsapp_title_line))
+                    whatsapp_parts_with_desc.append(
+                        f"   {truncated_description}"
+                    )
+
+            if display_share_url:
+                whatsapp_parts_with_desc.append(open_line)
+            if whatsapp_share_line:
+                whatsapp_parts_with_desc.append(whatsapp_share_line)
+
+            whatsapp_parts_without_desc = [whatsapp_title_line]
+            if display_share_url:
+                whatsapp_parts_without_desc.append(open_line)
+            if whatsapp_share_line:
+                whatsapp_parts_without_desc.append(whatsapp_share_line)
+
+            whatsapp_title_and_open = [whatsapp_title_line]
+            if display_share_url:
+                whatsapp_title_and_open.append(open_line)
+
+            whatsapp_blocks.append(
+                {
+                    "with_description": "\n".join(
+                        part for part in whatsapp_parts_with_desc if part
+                    ),
+                    "without_description": "\n".join(
+                        part for part in whatsapp_parts_without_desc if part
+                    ),
+                    "title_and_open": "\n".join(
+                        part for part in whatsapp_title_and_open if part
+                    ),
+                    "title_only": whatsapp_title_line,
+                }
+            )
 
         survey_buttons.append(
             {
@@ -5462,17 +5503,35 @@ def _get_encuestas_menu(context: dict) -> dict:
     header = "*Participación Ciudadana*\n"
 
     if is_whatsapp_channel:
-        selected_lines = [with_desc for with_desc, _ in whatsapp_lines]
+        selected_lines = [
+            block.get("with_description", "") for block in whatsapp_blocks
+        ]
+        message_body = header + "\n".join(filter(None, selected_lines))
     else:
         selected_lines = general_lines
+        message_body = header + "\n".join(selected_lines)
 
-    message_body = header + "\n".join(selected_lines)
+    message_body = message_body or header
 
     message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
 
     if is_whatsapp_channel and len(message_body) > _WHATSAPP_MENU_BODY_SOFT_LIMIT:
-        selected_lines = [title_only for _, title_only in whatsapp_lines]
-        message_body = header + "\n".join(selected_lines)
+        selected_lines = [
+            block.get("without_description", "") for block in whatsapp_blocks
+        ]
+        message_body = header + "\n".join(filter(None, selected_lines))
+        message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
+
+    if is_whatsapp_channel and len(message_body) > _WHATSAPP_MENU_BODY_SOFT_LIMIT:
+        selected_lines = [
+            block.get("title_and_open", "") for block in whatsapp_blocks
+        ]
+        message_body = header + "\n".join(filter(None, selected_lines))
+        message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
+
+    if is_whatsapp_channel and len(message_body) > _WHATSAPP_MENU_BODY_SOFT_LIMIT:
+        selected_lines = [block.get("title_only", "") for block in whatsapp_blocks]
+        message_body = header + "\n".join(filter(None, selected_lines))
         message_body += "\n\nSeleccioná una encuesta para participar o volvé al inicio."
 
     options = survey_buttons + base_options

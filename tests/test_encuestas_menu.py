@@ -7072,9 +7072,9 @@ def responder_municipio(
     assert "Participación Ciudadana" in body
     assert "Últimas encuestas disponibles" in body
     short_token = slug.rsplit("-", 1)[-1]
-    assert "Abrir:" not in body
-    assert "Compartir con un mensaje listo para WhatsApp:" not in body
-    assert "https://wa.me/" not in body
+    assert "• Abrir:" in body
+    assert "• Compartir:" in body
+    assert "https://wa.me/" in body
     assert len(body) < 1600
     assert "Compartir desde el widget web" not in body
     assert "Descargar el código QR" not in body
