@@ -1,5 +1,6 @@
 from app import create_app, db
 from config import TestingConfig
+from routes.encuestas_public import _rate_buckets, _rate_limit
 
 
 def test_public_encuestas_defaults_to_config_owner(client):
@@ -61,3 +62,15 @@ def test_internal_error_returns_json():
 
     assert response.status_code == 500
     assert response.get_json() == {"error": "server_error"}
+
+
+def test_public_encuestas_rate_limit_respects_config(app):
+    ip = "203.0.113.10"
+    with app.app_context():
+        app.config["PUBLIC_ENCUESTAS_RATE_LIMIT"] = 2
+        app.config["PUBLIC_ENCUESTAS_RATE_PERIOD"] = 60
+        _rate_buckets.pop(ip, None)
+
+        assert _rate_limit(ip) is True
+        assert _rate_limit(ip) is True
+        assert _rate_limit(ip) is False
