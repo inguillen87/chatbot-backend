@@ -19,6 +19,12 @@ const state = {
   drawControl: null,
   selectionLayer: null,
   mapContainerId: null,
+  mapLayers: { heat: true, cluster: true },
+  baseLayer: 'streets',
+  baseLayers: new Map(),
+  currentBaseLayer: null,
+  mapData: { cells: [], points: [] },
+  mapBounds: null,
 };
 
 const API_BASE = '/analytics';
@@ -38,6 +44,7 @@ function init() {
   bindScopeButtons();
   bindFilterActions();
   bindExports();
+  bindMapControls();
   bindThemeToggle();
   bindShareView();
   hydrateFiltersFromUrl();
@@ -117,6 +124,38 @@ function bindShareView() {
   });
 }
 
+function bindMapControls() {
+  document.querySelectorAll('[data-map-layer]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const layer = button.dataset.mapLayer;
+      if (!layer) return;
+      const activeLayers = Object.values(state.mapLayers).filter(Boolean).length;
+      const isActive = !!state.mapLayers[layer];
+      if (isActive && activeLayers <= 1) {
+        return;
+      }
+      state.mapLayers[layer] = !isActive;
+      applyMapLayers();
+      updateMapModeButtons();
+    });
+  });
+
+  document.querySelectorAll('[data-map-fit]').forEach((button) => {
+    button.addEventListener('click', () => {
+      fitMapToData(true);
+    });
+  });
+
+  document.querySelectorAll('[data-map-base]').forEach((select) => {
+    select.addEventListener('change', () => {
+      setBaseLayer(select.value);
+    });
+  });
+
+  updateMapModeButtons();
+  updateBaseLayerSelectors();
+}
+
 function hydrateFiltersFromUrl() {
   const params = new URLSearchParams(window.location.search);
   if (params.get('from')) state.filters.from = params.get('from');
@@ -132,9 +171,12 @@ function hydrateFiltersFromUrl() {
 
 function populateInputs() {
   const { from, to, canal, categoria, estado, agente, zona, etiqueta, bbox } = state.filters;
-  if (from) document.getElementById('date-from').value = from;
-  if (to) document.getElementById('date-to').value = to;
-  if (bbox) document.getElementById('filter-bbox').value = bbox;
+  const fromInput = document.getElementById('date-from');
+  if (fromInput) fromInput.value = from || '';
+  const toInput = document.getElementById('date-to');
+  if (toInput) toInput.value = to || '';
+  const bboxInput = document.getElementById('filter-bbox');
+  if (bboxInput) bboxInput.value = bbox || '';
   setSelectValues('filter-canal', canal);
   setSelectValues('filter-categoria', categoria);
   setSelectValues('filter-estado', estado);
@@ -552,7 +594,21 @@ function createDemoOperations() {
   return { extras: { aging, agents, queue } };
 }
 
+function populateAgentsFromSummary(summary) {
+  const agents = summary?.extras?.agents;
+  if (!Array.isArray(agents) || !agents.length) return;
+  const options = agents.map((agent) => ({
+    value:
+      agent.agente_id !== undefined && agent.agente_id !== null
+        ? String(agent.agente_id)
+        : agent.value || agent.agente || agent.label,
+    label: agent.agente || agent.label || agent.nombre || `Agente ${agent.agente_id ?? ''}`,
+  }));
+  updateFilterOptions('filter-agente', options);
+}
+
 function renderSummary(summary) {
+  populateAgentsFromSummary(summary);
   if (state.scope === 'municipio') {
     const totals = summary.totals || {};
     const items = [
@@ -1168,14 +1224,31 @@ function updateFilterOptions(selectId, values) {
   if (!select || !values) return;
   const existing = new Set(Array.from(select.options).map((opt) => opt.value));
   values.forEach((value) => {
-    const label = typeof value === 'object' ? value.label : value;
-    const optionValue = typeof value === 'object' ? value.label : value;
-    if (!optionValue || existing.has(optionValue)) return;
+    let optionValue;
+    let label;
+    if (typeof value === 'object') {
+      optionValue =
+        value.value ??
+        value.id ??
+        value.agente_id ??
+        value.key ??
+        value.label ??
+        value.nombre ??
+        value.agente ??
+        '';
+      label = value.label || value.nombre || value.agente || value.text || String(optionValue);
+    } else {
+      optionValue = value;
+      label = value;
+    }
+    if (!optionValue) return;
+    const key = String(optionValue);
+    if (existing.has(key)) return;
     const option = document.createElement('option');
-    option.value = optionValue;
+    option.value = key;
     option.textContent = label || optionValue;
     select.append(option);
-    existing.add(optionValue);
+    existing.add(key);
   });
 }
 
@@ -1188,16 +1261,53 @@ function ensureMap() {
     state.map.off();
     state.map.remove();
   }
+  state.baseLayers = new Map();
+  state.currentBaseLayer = null;
   state.map = L.map(container, {
     center: [JUNIN_CENTER.lat, JUNIN_CENTER.lon],
     zoom: 13,
     zoomControl: true,
   });
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenStreetMap contributors',
-  }).addTo(state.map);
-  state.heatLayer = L.heatLayer([], { radius: 25, blur: 15, maxZoom: 17 }).addTo(state.map);
-  state.clusterLayer = L.markerClusterGroup().addTo(state.map);
+  state.baseLayers.set(
+    'streets',
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+      maxZoom: 19,
+    }),
+  );
+  state.baseLayers.set(
+    'dark',
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+      maxZoom: 19,
+    }),
+  );
+  state.baseLayers.set(
+    'terrain',
+    L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+      attribution:
+        'Datos © OpenStreetMap contributors, SRTM | Estilo © OpenTopoMap (CC-BY-SA)',
+      maxZoom: 17,
+    }),
+  );
+  setBaseLayer(state.baseLayer, { silent: true });
+  state.heatLayer = L.heatLayer([], {
+    radius: 24,
+    blur: 18,
+    maxZoom: 18,
+    gradient: {
+      0.2: '#38bdf8',
+      0.4: '#0ea5e9',
+      0.6: '#6366f1',
+      0.8: '#f97316',
+      1: '#f43f5e',
+    },
+  });
+  state.clusterLayer = L.markerClusterGroup({
+    disableClusteringAtZoom: 17,
+    spiderfyOnEveryZoom: false,
+    spiderfyDistanceMultiplier: 1.3,
+  });
   state.selectionLayer = L.featureGroup().addTo(state.map);
   if (state.drawControl) {
     state.map.removeControl(state.drawControl);
@@ -1230,32 +1340,162 @@ function ensureMap() {
     loadDashboard();
   });
   state.mapContainerId = desiredId;
+  applyMapLayers();
+  updateMapModeButtons();
+  updateBaseLayerSelectors();
 }
 
 function updateMap(cells, points) {
   ensureMap();
   if (!state.map) return;
-  const heatPoints = cells.map((cell) => {
-    const intensity = typeof cell.intensity === 'number' ? cell.intensity : cell.count;
-    const normalized = Math.max(0, Math.min(1, intensity || 0));
-    return [cell.centroid_lat, cell.centroid_lon, normalized];
-  });
+  const mapCells = Array.isArray(cells) ? cells : [];
+  const mapPoints = Array.isArray(points) ? points : [];
+  state.mapData = { cells: mapCells, points: mapPoints };
+  const heatPoints = mapCells
+    .map((cell) => {
+      const lat = Number(cell.centroid_lat);
+      const lon = Number(cell.centroid_lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+      let intensity = Number(cell.intensity);
+      if (!Number.isFinite(intensity) || intensity <= 0) {
+        const count = Number(cell.count || 0);
+        intensity = Number.isFinite(count) && count > 0 ? Math.min(count / 10, 1) : 0;
+      }
+      const normalized = Math.max(0, Math.min(1, intensity));
+      return [lat, lon, normalized];
+    })
+    .filter(Boolean);
   state.heatLayer.setLatLngs(heatPoints);
   state.clusterLayer.clearLayers();
-  points.forEach((point) => {
-    const marker = L.marker([point.lat, point.lon]);
-    marker.bindPopup(`<strong>${point.categoria || point.estado || 'Dato'}</strong><br/>${formatCell(point.total || point.count || '')}`);
-    state.clusterLayer.addLayer(marker);
+  const bounds = [];
+  mapCells.forEach((cell) => {
+    const lat = Number(cell.centroid_lat);
+    const lon = Number(cell.centroid_lon);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      bounds.push([lat, lon]);
+    }
   });
-  if (!state.map.hasLayer(state.clusterLayer)) {
-    state.map.addLayer(state.clusterLayer);
+  mapPoints.forEach((point) => {
+    const lat = Number(point.lat);
+    const lon = Number(point.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    const marker = L.marker([lat, lon], {
+      title: point.categoria || point.estado || 'Dato',
+    });
+    const details = [];
+    if (point.categoria) {
+      details.push(`<strong>${point.categoria}</strong>`);
+    }
+    if (point.estado) {
+      details.push(`<span>${point.estado}</span>`);
+    }
+    if (point.total) {
+      details.push(`<span>Monto: ${formatCell(point.total)}</span>`);
+    } else if (point.count) {
+      details.push(`<span>Casos: ${formatCell(point.count)}</span>`);
+    }
+    marker.bindPopup(details.join('<br/>') || 'Dato');
+    state.clusterLayer.addLayer(marker);
+    bounds.push([lat, lon]);
+  });
+  state.mapBounds = bounds.length ? L.latLngBounds(bounds) : null;
+  applyMapLayers();
+  updateMapModeButtons();
+  updateMapMeta(mapCells, mapPoints);
+  fitMapToData();
+}
+
+function applyMapLayers() {
+  if (!state.map) return;
+  if (state.heatLayer) {
+    if (state.mapLayers.heat && !state.map.hasLayer(state.heatLayer)) {
+      state.heatLayer.addTo(state.map);
+    }
+    if (!state.mapLayers.heat && state.map.hasLayer(state.heatLayer)) {
+      state.map.removeLayer(state.heatLayer);
+    }
   }
-  if (cells.length || points.length) {
-    const bounds = [];
-    cells.forEach((cell) => bounds.push([cell.centroid_lat, cell.centroid_lon]));
-    points.forEach((point) => bounds.push([point.lat, point.lon]));
-    if (bounds.length) state.map.fitBounds(bounds, { padding: [40, 40] });
+  if (state.clusterLayer) {
+    if (state.mapLayers.cluster && !state.map.hasLayer(state.clusterLayer)) {
+      state.map.addLayer(state.clusterLayer);
+    }
+    if (!state.mapLayers.cluster && state.map.hasLayer(state.clusterLayer)) {
+      state.map.removeLayer(state.clusterLayer);
+    }
   }
+}
+
+function updateMapModeButtons() {
+  document.querySelectorAll('[data-map-layer]').forEach((button) => {
+    const layer = button.dataset.mapLayer;
+    if (!layer) return;
+    const active = !!state.mapLayers[layer];
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+}
+
+function updateBaseLayerSelectors() {
+  document.querySelectorAll('[data-map-base]').forEach((select) => {
+    if (!select) return;
+    if (select.value !== state.baseLayer) {
+      select.value = state.baseLayer;
+    }
+  });
+}
+
+function setBaseLayer(name, options = {}) {
+  const desired = name || state.baseLayer || 'streets';
+  state.baseLayer = desired;
+  if (!state.map || !state.baseLayers.size) {
+    if (!options.silent) updateBaseLayerSelectors();
+    return;
+  }
+  const key = state.baseLayers.has(desired) ? desired : 'streets';
+  const layer = state.baseLayers.get(key);
+  if (!layer) return;
+  if (state.currentBaseLayer) {
+    state.map.removeLayer(state.currentBaseLayer);
+  }
+  layer.addTo(state.map);
+  state.currentBaseLayer = layer;
+  state.baseLayer = key;
+  if (!options.silent) updateBaseLayerSelectors();
+}
+
+function fitMapToData(animate = false) {
+  ensureMap();
+  if (!state.map) return;
+  if (state.mapBounds && state.mapBounds.isValid()) {
+    state.map.fitBounds(state.mapBounds, {
+      padding: [40, 40],
+      maxZoom: 16,
+      animate,
+    });
+  } else {
+    state.map.setView([JUNIN_CENTER.lat, JUNIN_CENTER.lon], 13);
+  }
+}
+
+function updateMapMeta(cells, points) {
+  const metaId = state.scope === 'pyme' ? 'pyme-map-meta' : 'municipio-map-meta';
+  const container = document.getElementById(metaId);
+  if (!container) return;
+  const totalPoints = points.length;
+  const activeCells = cells.filter((cell) => Number(cell.count || cell.intensity || 0) > 0).length;
+  const maxIntensity = cells.reduce((max, cell) => {
+    const value = Number(cell.intensity || 0);
+    return value > max ? value : max;
+  }, 0);
+  if (!totalPoints && !activeCells) {
+    container.textContent = 'Sin datos georreferenciados para el período seleccionado.';
+    return;
+  }
+  const intensityPct = Math.round(Math.min(Math.max(maxIntensity, 0), 1) * 100);
+  container.innerHTML = `
+    <span><strong>${formatNumber(totalPoints)}</strong> puntos</span>
+    <span><strong>${formatNumber(activeCells)}</strong> hotspots</span>
+    <span>Intensidad máx: <strong>${intensityPct}%</strong></span>
+  `;
 }
 
 function exportCsv(key) {

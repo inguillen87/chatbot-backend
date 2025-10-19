@@ -213,6 +213,9 @@ def _municipio_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
     attachment_total, attachments_with_ticket = _attachments_per_ticket(attachments_map)
 
     channel_scores: Dict[str, List[int]] = defaultdict(list)
+    agent_samples: Dict[int, Dict[str, Any]] = defaultdict(
+        lambda: {"tickets": 0, "first_response": []}
+    )
 
     for ticket in tickets:
         comments = comments_map.get(ticket.id, [])
@@ -231,11 +234,34 @@ def _municipio_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
             responses = [c for c in admin_comments if c.es_admin]
             if len(responses) == 1 and not _ticket_reopened(comments):
                 first_contact_resolved += 1
+            first_comment = min(responses, key=lambda c: c.fecha)
+            if first_comment.user_id:
+                agent_data = agent_samples[first_comment.user_id]
+                agent_data["tickets"] += 1
+                if first_minutes is not None:
+                    agent_data["first_response"].append(first_minutes)
         if not _is_closed(ticket.estado):
             open_tickets += 1
         for survey in surveys_map.get(ticket.id, []):
             canal = (ticket.canal_ingreso or "desconocido").lower()
             channel_scores[canal].append(survey.puntuacion)
+
+    agent_ids = [agent_id for agent_id in agent_samples.keys() if agent_id]
+    user_map = load_users(agent_ids)
+    agent_rows: List[Dict[str, Any]] = []
+    for agent_id, data in agent_samples.items():
+        if not agent_id:
+            continue
+        name = getattr(user_map.get(agent_id), "name", f"Agente {agent_id}")
+        agent_rows.append(
+            {
+                "agente_id": agent_id,
+                "agente": name,
+                "tickets": data["tickets"],
+                "respuesta_promedio_min": _average(data["first_response"]),
+            }
+        )
+    agent_rows.sort(key=lambda row: row["tickets"], reverse=True)
 
     survey_summary = _survey_metrics(surveys_map)
 
@@ -269,6 +295,7 @@ def _municipio_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
         }
         for canal, scores in channel_scores.items()
     }
+    payload["extras"]["agents"] = agent_rows
 
     return payload
 
@@ -305,6 +332,9 @@ def _pyme_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
     first_contact_resolved = 0
 
     attachment_total, _ = _attachments_per_ticket(attachments_map)
+    agent_samples: Dict[int, Dict[str, Any]] = defaultdict(
+        lambda: {"tickets": 0, "first_response": []}
+    )
 
     for ticket in tickets:
         comments = comments_map.get(ticket.id, [])
@@ -322,6 +352,12 @@ def _pyme_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
         if admin_comments:
             if len(admin_comments) == 1 and not _ticket_reopened(comments):
                 first_contact_resolved += 1
+            first_comment = min(admin_comments, key=lambda c: c.fecha)
+            if first_comment.user_id:
+                agent_data = agent_samples[first_comment.user_id]
+                agent_data["tickets"] += 1
+                if first_minutes is not None:
+                    agent_data["first_response"].append(first_minutes)
 
     total_amount = sum(pedido.monto_total or 0 for pedido in pedidos)
     avg_ticket = round(total_amount / total_orders, 2) if total_orders else 0.0
@@ -333,6 +369,23 @@ def _pyme_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
         key = _customer_key(pedido)
         if key:
             customers[key].append(pedido.fecha)
+
+    agent_ids = [agent_id for agent_id in agent_samples.keys() if agent_id]
+    user_map = load_users(agent_ids)
+    agent_rows: List[Dict[str, Any]] = []
+    for agent_id, data in agent_samples.items():
+        if not agent_id:
+            continue
+        name = getattr(user_map.get(agent_id), "name", f"Agente {agent_id}")
+        agent_rows.append(
+            {
+                "agente_id": agent_id,
+                "agente": name,
+                "tickets": data["tickets"],
+                "respuesta_promedio_min": _average(data["first_response"]),
+            }
+        )
+    agent_rows.sort(key=lambda row: row["tickets"], reverse=True)
 
     retention30 = retention60 = retention90 = 0
     cohort_sizes = 0
@@ -387,6 +440,8 @@ def _pyme_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
 
     payload["sla"]["tta"] = compute_percentiles(tta_values)
     payload["sla"]["ttr"] = compute_percentiles(ttr_values)
+
+    payload["extras"]["agents"] = agent_rows
 
     return payload
 
