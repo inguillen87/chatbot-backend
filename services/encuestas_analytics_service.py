@@ -394,6 +394,7 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
                         "opcion_id": opcion.id,
                         "texto": opcion.texto,
                         "conteo": conteo,
+                        "value": conteo,
                         "porcentaje": round(porcentaje, 2),
                     }
                 )
@@ -421,6 +422,7 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
                         "opcion_id": opcion.id,
                         "texto": opcion.texto,
                         "conteo": conteo,
+                        "value": conteo,
                         "porcentaje": round(porcentaje, 2),
                     }
                 )

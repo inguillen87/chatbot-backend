@@ -666,6 +666,7 @@ def test_get_summary_returns_metrics(client):
         db.session.add(incompleta)
         db.session.commit()
 
+        encuesta = db.session.get(EncEncuesta, encuesta.id)
         preguntas_ids = [preg.id for preg in encuesta.preguntas]
         resumen = get_summary(encuesta.id)
 
@@ -680,6 +681,14 @@ def test_get_summary_returns_metrics(client):
     tipos = {item["tipo"] for item in resumen["preguntas"]}
     assert "single_choice" in tipos
     assert "text" in tipos
+    unica = next(item for item in resumen["preguntas"] if item["tipo"] == "single_choice")
+    assert unica["series"], "Las preguntas de opción única deben exponer series para gráficos"
+    opciones_map = {opt["texto"]: opt["conteo"] for opt in unica["opciones"]}
+    series_map = {serie["label"]: serie["value"] for serie in unica["series"]}
+    assert series_map == opciones_map
+    assert all(opt["value"] == opt["conteo"] for opt in unica["opciones"])
+    abierta = next(item for item in resumen["preguntas"] if item["tipo"] == "text")
+    assert abierta["series"] == []
     assert any(item.get("tipo_interno") == "opcion_unica" for item in resumen["preguntas"])
     assert resumen["canales"]
     assert resumen["canales_map"]["qr"] == 2
