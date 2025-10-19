@@ -8494,8 +8494,8 @@ def test_encuestas_menu_whatsapp_embeds_banner_and_disables_audio(client):
     media_urls = menu.get("media_urls")
     assert isinstance(media_urls, list) and menu["image_url"] in media_urls
     assert not any(option.get("type") == "url" for option in menu["options_list"])
-    assert any(
-        option.get("action_id", "").startswith("encuesta_compartir::")
+    assert all(
+        option.get("action_id") in {"menu_principal", "cancelar"}
         for option in menu["options_list"]
     )
 
