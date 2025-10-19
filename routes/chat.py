@@ -32,6 +32,7 @@ from utils.auth_helpers import (
     obtener_token,
     user_from_token,
 )
+from utils.map_config import get_map_config
 from utils.response_utils import ensure_buttons_compatibility
 from datetime import datetime, timedelta
 
@@ -2571,4 +2572,4 @@ def widget_config():
 
 @chat_bp.route("/config/google-maps-key", methods=["GET"])
 def google_maps_key():
-    return jsonify({"google_maps_key": current_app.config.get("GOOGLE_MAPS_API_KEY")})
+    return jsonify(get_map_config())
