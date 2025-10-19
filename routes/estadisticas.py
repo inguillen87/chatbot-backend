@@ -9,11 +9,8 @@ from services.municipal_stats import build_stats_for_municipio, StatsFilters
 from services.metricas_service import MetricasService
 from models import User
 from services.demo_geo import generate_demo_points
-from utils.heatmap import (
-    build_feature_collection,
-    build_google_heatmap,
-    enrich_heatmap_points,
-)
+from utils.heatmap import build_feature_collection, enrich_heatmap_points
+from utils.map_config import get_map_config
 
 
 estadisticas_bp = Blueprint("estadisticas", __name__, url_prefix="/estadisticas")
@@ -150,7 +147,11 @@ def _demo_heatmap(scope: str) -> list[dict]:
 
 
 def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap") -> None:
-    """Attach shared heatmap representations used by MapLibre and Google Maps."""
+    """Attach shared heatmap representations and map configuration hints."""
+
+    map_config = get_map_config()
+    if map_config:
+        payload.setdefault("map_config", map_config)
 
     points = payload.get(key)
     if not isinstance(points, list) or not points:
@@ -162,12 +163,26 @@ def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap"
     )
 
     feature_collection = build_feature_collection(points)
+    supported_formats: list[str] = ["points"]
+    preferred_format = "points"
+
     if feature_collection:
         payload[f"{key}_geojson"] = feature_collection
+        supported_formats.append("geojson")
+        preferred_format = "geojson"
 
-    google_points = build_google_heatmap(points)
-    if google_points:
-        payload[f"{key}_google"] = google_points
+    provider_hint = map_config.get("provider") if isinstance(map_config, dict) else None
+    if not provider_hint or provider_hint == "none":
+        provider_hint = "maplibre"
+
+    layers = payload.setdefault("map_layers", {})
+    if isinstance(layers, dict):
+        layers[key] = {
+            "kind": "heatmap",
+            "supported_formats": supported_formats,
+            "preferred_format": preferred_format,
+            "provider_hint": provider_hint,
+        }
 
 
 def _parse_iso_datetime(value: str | None, *, is_end: bool = False) -> datetime | None:
