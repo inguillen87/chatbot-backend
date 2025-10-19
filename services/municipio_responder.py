@@ -5420,19 +5420,33 @@ def _get_encuestas_menu(context: dict) -> dict:
             if len(descripcion) > 180:
                 descripcion = descripcion[:177].rstrip() + "…"
 
-        share_url = urljoin(f"{base_url}/", f"e/{slug_publico}")
+        share_url = None
+        if base_url:
+            base_with_trailing = f"{base_url.rstrip('/')}/"
+            share_url = urljoin(base_with_trailing, f"e/{slug_publico}")
+
         short_slug = _extract_short_public_slug(slug_publico)
         short_base_url = _resolve_encuestas_short_base_url(context, base_url)
-        share_short_url = urljoin(f"{short_base_url}/", f"e/{short_slug}")
+        share_short_url = None
+        if short_base_url:
+            short_base_with_trailing = f"{short_base_url.rstrip('/')}/"
+            share_short_url = urljoin(short_base_with_trailing, f"e/{short_slug}")
         qr_url: Optional[str] = None
         if api_base_url:
             qr_url = urljoin(
                 f"{api_base_url}/", f"api/public/encuestas/{slug_publico}/qr"
             )
-        share_message = f"Participá en {titulo}: {share_short_url}"
-        whatsapp_share_url = f"https://wa.me/?text={quote_plus(share_message)}"
-        whatsapp_share_display_url = None
         share_target_for_display = share_short_url or share_url
+        if share_target_for_display:
+            share_message = f"Participá en {titulo}: {share_target_for_display}"
+        else:
+            share_message = f"Participá en {titulo}"
+
+        whatsapp_share_url = None
+        if share_message:
+            whatsapp_share_url = f"https://wa.me/?text={quote_plus(share_message)}"
+
+        whatsapp_share_display_url = None
         if share_target_for_display:
             whatsapp_share_display_url = (
                 f"https://wa.me/?text={quote_plus(share_target_for_display)}"
@@ -5442,13 +5456,15 @@ def _get_encuestas_menu(context: dict) -> dict:
         short_title = _shorten_button_label(titulo)
         share_button_title = _shorten_button_label(titulo, max_length=30)
 
-        display_share_url = share_short_url or share_url
+        display_share_url = share_target_for_display
 
         title_line = f"{index}. *{titulo}*"
         whatsapp_title = _shorten_button_label(titulo, max_length=120)
         whatsapp_title_line = f"{index}. *{whatsapp_title}*"
 
-        open_line = f"   • *Abrir*: {display_share_url}"
+        open_line = (
+            f"   • *Abrir*: {display_share_url}" if display_share_url else ""
+        )
         share_line_full = None
         share_url_for_body = whatsapp_share_url or whatsapp_share_display_url
         if share_url_for_body:
