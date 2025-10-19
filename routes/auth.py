@@ -35,6 +35,7 @@ from services.user_service import (
     split_password_reset_token,
     update_user_profile,
 )
+from utils.map_config import get_map_config
 
 
 _OWNER_TOKEN_RESOLVER: Optional[Callable[[User], Optional[str]]] = None
@@ -181,6 +182,8 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "logo_url": getattr(user, "logo_url", None),
         "preguntas_usadas": getattr(user, "preguntas_usadas", None),
     }
+
+    profile_data["map_config"] = get_map_config()
 
     plan_metadata = get_plan_metadata(profile_data.get("plan"))
     profile_data["plan_detalle"] = serialize_plan_for_response(plan_metadata)
@@ -434,9 +437,8 @@ def get_google_client_id():
 
 @auth_bp.route('/google-maps-key', methods=['GET'])
 def get_google_maps_key():
-    """Retorna la API key de Google Maps si está configurada."""
-    key = os.getenv("GOOGLE_MAPS_API_KEY", "")
-    return jsonify({"api_key": key})
+    """Expone la configuración de mapas para clientes autenticados."""
+    return jsonify(get_map_config())
 
 @auth_bp.route('/google-login', methods=['POST'])
 def google_login():
