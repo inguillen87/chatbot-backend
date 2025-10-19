@@ -87,11 +87,13 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         self.assertIn('feature', heat_point)
         self.assertIn('coordinates', heat_point)
         self.assertIn('heatmap_geojson', payload)
-        self.assertIn('heatmap_google', payload)
-        self.assertEqual(
-            payload['heatmap_google'][0],
-            {"location": {"lat": -34.6, "lng": -58.4}, "weight": 5.0},
-        )
+        self.assertNotIn('heatmap_google', payload)
+        self.assertIn('map_config', payload)
+        self.assertIn('map_layers', payload)
+        heatmap_layer = payload['map_layers'].get('heatmap')
+        self.assertIsInstance(heatmap_layer, dict)
+        self.assertEqual(heatmap_layer.get('preferred_format'), 'geojson')
+        self.assertIn('geojson', heatmap_layer.get('supported_formats', []))
         self.assertEqual(payload['stats'], mock_build_stats.return_value)
         self.assertEqual(payload['summary'], mock_build_stats.return_value['resumen'])
         self.assertEqual(
@@ -185,7 +187,13 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         self.assertIn('feature', first_point)
         self.assertIn('coordinates', first_point)
         self.assertIn('heatmap_geojson', payload)
-        self.assertIn('heatmap_google', payload)
+        self.assertNotIn('heatmap_google', payload)
+        self.assertIn('map_config', payload)
+        self.assertIn('map_layers', payload)
+        pyme_heatmap_layer = payload['map_layers'].get('heatmap')
+        self.assertIsInstance(pyme_heatmap_layer, dict)
+        self.assertEqual(pyme_heatmap_layer.get('preferred_format'), 'geojson')
+        self.assertIn('geojson', pyme_heatmap_layer.get('supported_formats', []))
         self.assertEqual(payload['filters'], {})
         self.assertEqual(
             payload['summary'],
