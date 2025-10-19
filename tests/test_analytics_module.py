@@ -141,6 +141,9 @@ def test_municipio_summary(client):
     assert data['totals']['tickets'] == 1
     assert data['totals']['nps'] is not None
     assert 'tta' in data['sla']
+    assert data['totals']['tickets_cerrados'] is not None
+    assert 'cierre_pct' in data['totals']
+    assert 'tickets_variacion_pct' in data['totals']
 
 
 def test_geo_heatmap(client):
@@ -169,6 +172,9 @@ def test_pyme_endpoints(client):
         headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert summary.status_code == 200
+    data = summary.get_json()
+    assert 'pedidos_variacion_pct' in data['totals']
+    assert 'ttr_promedio_min' in data['totals']
     templates = client.get(
         '/analytics/whatsapp/templates',
         query_string={'tenant_id': tenant_id, 'scope': 'pyme'},
@@ -198,6 +204,8 @@ def test_operations_overview(client):
     data = response.get_json()
     assert data['totals']['tickets'] >= 2
     assert 'aging' in data['extras']
+    assert 'tickets_cerrados' in data['totals']
+    assert 'cierre_pct' in data['totals']
     assert data['extras']['agents']
 
 

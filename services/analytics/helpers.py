@@ -79,6 +79,14 @@ def safe_ratio(numerator: float, denominator: float) -> float:
     return round(numerator / denominator * 100.0, 2)
 
 
+def growth_rate(current: float, previous: float) -> float:
+    """Return the percentage growth between two values, rounded to 2 decimals."""
+
+    if previous in (None, 0):
+        return 0.0
+    return round(((current or 0) - previous) / previous * 100.0, 2)
+
+
 def mode(values: Iterable) -> Optional:
     counter = Counter(values)
     if not counter:

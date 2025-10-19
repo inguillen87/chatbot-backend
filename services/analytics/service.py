@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -19,6 +20,7 @@ from .filters import AnalyticsFilters
 from .helpers import (
     compute_percentiles,
     compute_ctr,
+    growth_rate,
     mode,
     safe_ratio,
     tenant_as_int,
@@ -57,6 +59,47 @@ def _filters_cache_key(filters: AnalyticsFilters, *extra: Any) -> Tuple:
         filters.resolution,
         extra,
     )
+
+
+def _average(values: Sequence[float]) -> Optional[float]:
+    if not values:
+        return None
+    return round(sum(values) / len(values), 2)
+
+
+def _previous_period_filters(filters: AnalyticsFilters) -> Optional[AnalyticsFilters]:
+    """Return a copy of filters shifted to the previous period for comparisons."""
+
+    span: Optional[timedelta] = None
+    if filters.date_from and filters.date_to:
+        span = filters.date_to - filters.date_from
+    if span is None or span <= timedelta(0):
+        span = timedelta(days=7)
+    anchor = filters.date_from or filters.date_to or datetime.utcnow()
+    previous_end = anchor - timedelta(seconds=1)
+    previous_start = previous_end - span
+    if previous_start >= previous_end:
+        return None
+    return replace(filters, date_from=previous_start, date_to=previous_end)
+
+
+def _enrich_with_period_comparison(
+    payload: Dict[str, Any],
+    filters: AnalyticsFilters,
+    aggregator,
+    metrics: Sequence[str],
+) -> None:
+    previous_filters = _previous_period_filters(filters)
+    if not previous_filters:
+        return
+    previous_payload = aggregator(previous_filters)
+    totals = payload.setdefault("totals", {})
+    previous_totals = previous_payload.get("totals", {})
+    for metric in metrics:
+        current_value = totals.get(metric, 0)
+        previous_value = previous_totals.get(metric, 0)
+        totals[f"{metric}_periodo_anterior"] = previous_value
+        totals[f"{metric}_variacion_pct"] = growth_rate(current_value, previous_value)
 
 
 def _is_closed(status: Optional[str]) -> bool:
@@ -196,18 +239,23 @@ def _municipio_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
 
     survey_summary = _survey_metrics(surveys_map)
 
+    closed_tickets = total - open_tickets
     payload["totals"].update(
         {
             "tickets": total,
             "tickets_abiertos": open_tickets,
+            "tickets_cerrados": closed_tickets,
             "backlog": open_tickets,
             "adjuntos_por_100": round((attachment_total / total) * 100, 2) if total else 0.0,
             "automatizado_pct": safe_ratio(automated, total),
             "primer_contacto_pct": safe_ratio(first_contact_resolved, total),
+            "cierre_pct": safe_ratio(closed_tickets, total),
             "reaperturas": reopenings,
             "nps": survey_summary.get("nps"),
             "csat": survey_summary.get("csat"),
             "encuestas": survey_summary.get("responses"),
+            "tta_promedio_min": _average(tta_values),
+            "ttr_promedio_min": _average(ttr_values),
         }
     )
 
@@ -308,17 +356,22 @@ def _pyme_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
 
     survey_summary = _survey_metrics(surveys_map)
 
+    open_tickets = sum(1 for ticket in tickets if not _is_closed(ticket.estado))
+    closed_tickets = total_tickets - open_tickets
+
     payload["totals"].update(
         {
             "tickets": total_tickets,
-            "tickets_abiertos": sum(1 for ticket in tickets if not _is_closed(ticket.estado)),
-            "backlog": sum(1 for ticket in tickets if not _is_closed(ticket.estado)),
+            "tickets_abiertos": open_tickets,
+            "tickets_cerrados": closed_tickets,
+            "backlog": open_tickets,
             "pedidos": total_orders,
             "ticket_medio": avg_ticket,
             "conversion_pct": safe_ratio(total_orders, total_tickets) if total_tickets else 0.0,
             "adjuntos_por_100": round((attachment_total / total_tickets) * 100, 2) if total_tickets else 0.0,
             "automatizado_pct": safe_ratio(automated, total_tickets) if total_tickets else 0.0,
             "primer_contacto_pct": safe_ratio(first_contact_resolved, total_tickets) if total_tickets else 0.0,
+            "cierre_pct": safe_ratio(closed_tickets, total_tickets) if total_tickets else 0.0,
             "reaperturas": reopenings,
             "nps": survey_summary.get("nps"),
             "csat": survey_summary.get("csat"),
@@ -327,6 +380,8 @@ def _pyme_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
             "retencion_60": safe_ratio(retention60, cohort_sizes),
             "retencion_90": safe_ratio(retention90, cohort_sizes),
             "hora_pico": mode(hourly_orders.elements()),
+            "tta_promedio_min": _average(tta_values),
+            "ttr_promedio_min": _average(ttr_values),
         }
     )
 
@@ -369,6 +424,8 @@ def _operations_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
     aging_buckets = {"0-4h": 0, "4-24h": 0, "1-3d": 0, "3-7d": 0, ">7d": 0}
     queue_by_estado: Counter[str] = Counter()
     agent_stats: Dict[int, Dict[str, Any]] = defaultdict(lambda: {"tickets": 0, "first_response": []})
+    tta_samples: List[float] = []
+    ttr_samples: List[float] = []
 
     def _collect_operations(dataset, is_pyme: bool = False):
         if is_pyme:
@@ -391,14 +448,19 @@ def _operations_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
                 else:
                     aging_buckets[">7d"] += 1
             comments = comments_map.get(ticket.id, [])
+            first_minutes = _ticket_first_response_minutes(ticket, comments)
+            if first_minutes is not None:
+                tta_samples.append(first_minutes)
+            resolution_minutes = _ticket_resolution_minutes(ticket, comments)
+            if resolution_minutes is not None:
+                ttr_samples.append(resolution_minutes)
             admin_comments = [c for c in comments if c.es_admin and c.user_id]
             if admin_comments:
                 first = min(admin_comments, key=lambda c: c.fecha)
-                delta = to_minutes(first.fecha - ticket.fecha)
                 agent_data = agent_stats[first.user_id]
                 agent_data["tickets"] += 1
-                if delta is not None:
-                    agent_data["first_response"].append(delta)
+                if first_minutes is not None:
+                    agent_data["first_response"].append(first_minutes)
 
     _collect_operations(muni_dataset, is_pyme=False)
     _collect_operations(pyme_dataset, is_pyme=True)
@@ -422,14 +484,21 @@ def _operations_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
         )
     agent_rows.sort(key=lambda row: row["tickets"], reverse=True)
 
+    closed = tickets_total - abiertos
+    totals = {
+        "tickets": tickets_total,
+        "abiertos": abiertos,
+        "tickets_cerrados": closed,
+        "cierre_pct": safe_ratio(closed, tickets_total) if tickets_total else 0.0,
+        "violaciones_sla": municipio_data["totals"].get("reaperturas", 0),
+        "primer_contacto_pct": municipio_data["totals"].get("primer_contacto_pct", 0.0),
+        "automatizado_pct": municipio_data["totals"].get("automatizado_pct", 0.0),
+        "tta_promedio_min": _average(tta_samples),
+        "ttr_promedio_min": _average(ttr_samples),
+    }
+
     return {
-        "totals": {
-            "tickets": tickets_total,
-            "abiertos": abiertos,
-            "violaciones_sla": municipio_data["totals"].get("reaperturas", 0),
-            "primer_contacto_pct": municipio_data["totals"].get("primer_contacto_pct", 0.0),
-            "automatizado_pct": municipio_data["totals"].get("automatizado_pct", 0.0),
-        },
+        "totals": totals,
         "sla": municipio_data.get("sla", {}),
         "extras": {
             "pyme": pyme_data,
@@ -452,10 +521,18 @@ def get_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
 
 def _summary_no_cache(filters: AnalyticsFilters) -> Dict[str, Any]:
     if filters.scope == "municipio":
-        return _municipio_summary(filters)
-    if filters.scope == "pyme":
-        return _pyme_summary(filters)
-    return _operations_summary(filters)
+        aggregator = _municipio_summary
+        metrics = ["tickets", "encuestas"]
+    elif filters.scope == "pyme":
+        aggregator = _pyme_summary
+        metrics = ["tickets", "pedidos", "encuestas"]
+    else:
+        aggregator = _operations_summary
+        metrics = ["tickets"]
+
+    payload = aggregator(filters)
+    _enrich_with_period_comparison(payload, filters, aggregator, metrics)
+    return payload
 
 
 def _aggregate_timeseries(query, date_column, group_column=None) -> List[Dict[str, Any]]:
@@ -757,7 +834,20 @@ def _generate_geo_from_tickets(tickets: Sequence, filters: AnalyticsFilters) -> 
                 "categories": dict(data["categories"]),
             }
         )
-    return results
+    return _attach_intensity(results)
+
+
+def _attach_intensity(cells: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not cells:
+        return cells
+    max_count = max(cell.get("count") or 0 for cell in cells) or 0
+    if not max_count:
+        for cell in cells:
+            cell["intensity"] = 0.0
+        return cells
+    for cell in cells:
+        cell["intensity"] = round((cell.get("count") or 0) / max_count, 4)
+    return cells
 
 
 def get_geo_heatmap(filters: AnalyticsFilters) -> Dict[str, Any]:
@@ -789,8 +879,9 @@ def _geo_heatmap_no_cache(filters: AnalyticsFilters) -> Dict[str, Any]:
         payload = _generate_geo_from_tickets(tickets, filters)
 
     if not payload:
-        return {"cells": generate_demo_heatmap_cells(scope=filters.scope)}
-    return {"cells": payload}
+        demo_cells = generate_demo_heatmap_cells(scope=filters.scope)
+        return {"cells": _attach_intensity(demo_cells)}
+    return {"cells": _attach_intensity(payload)}
 
 
 def get_geo_points(filters: AnalyticsFilters, limit: int = 500) -> Dict[str, Any]:

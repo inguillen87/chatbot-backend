@@ -326,6 +326,7 @@ def create_app(config_class=Config):
         app.register_blueprint(chat_bp)
         app.register_blueprint(ticket_bp)
         app.register_blueprint(crm_bp)
+        app.register_blueprint(analytics_bp)
         app.register_blueprint(upload_bp)
         app.register_blueprint(archivos_bp)
         app.register_blueprint(rubros_bp)
