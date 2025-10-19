@@ -253,6 +253,7 @@ button.ghost {
 .card-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
 }
 
 .card-actions button {
@@ -260,6 +261,33 @@ button.ghost {
   color: var(--accent);
   padding: 6px 12px;
   border-radius: 10px;
+}
+
+.card-actions .ghost {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--muted-color);
+}
+
+.card-actions .ghost[aria-pressed='true'] {
+  background: var(--accent);
+  color: #0b1120;
+  box-shadow: 0 6px 18px rgba(56, 189, 248, 0.35);
+}
+
+.map-actions select {
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid var(--border-color);
+  color: var(--text-color);
+  border-radius: 10px;
+  padding: 6px 12px;
+  font-weight: 600;
+}
+
+.map-actions select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.25);
 }
 
 .card.wide {
@@ -271,6 +299,19 @@ button.ghost {
   height: 360px;
   border-radius: 14px;
   overflow: hidden;
+}
+
+.map-meta {
+  margin-top: 8px;
+  font-size: 0.9rem;
+  color: var(--muted-color);
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.map-meta strong {
+  color: var(--text-color);
 }
 
 .data-table {
