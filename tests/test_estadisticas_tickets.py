@@ -69,9 +69,17 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             response = estats.estadisticas_tickets(current_user)
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
+        self.assertEqual(len(payload["heatmap"]), 1)
+        point = payload["heatmap"][0]
+        self.assertEqual(point["location"], {"lat": 1, "lng": 2})
+        self.assertEqual(point["weight"], 3.0)
+        self.assertIn("feature", point)
+        self.assertIn("coordinates", point)
+        self.assertIn("heatmap_geojson", payload)
+        self.assertIn("heatmap_google", payload)
         self.assertEqual(
-            payload["heatmap"],
-            [{"location": {"lat": 1, "lng": 2}, "weight": 3}],
+            payload["heatmap_google"][0],
+            {"location": {"lat": 1, "lng": 2}, "weight": 3.0},
         )
         self.assertEqual(payload["stats"], mock_stats.return_value)
         self.assertEqual(payload["summary"], mock_stats.return_value["resumen"])

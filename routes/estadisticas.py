@@ -9,6 +9,11 @@ from services.municipal_stats import build_stats_for_municipio, StatsFilters
 from services.metricas_service import MetricasService
 from models import User
 from services.demo_geo import generate_demo_points
+from utils.heatmap import (
+    build_feature_collection,
+    build_google_heatmap,
+    enrich_heatmap_points,
+)
 
 
 estadisticas_bp = Blueprint("estadisticas", __name__, url_prefix="/estadisticas")
@@ -127,6 +132,8 @@ def _demo_heatmap(scope: str) -> list[dict]:
             weight = max(1, int(round(total / 2500))) if total else 1
         heatmap.append(
             {
+                "lat": point["lat"],
+                "lng": point["lon"],
                 "location": {"lat": point["lat"], "lng": point["lon"]},
                 "weight": weight,
                 "categoria": point.get("categoria"),
@@ -135,7 +142,32 @@ def _demo_heatmap(scope: str) -> list[dict]:
                 "fuente": "demo",
             }
         )
+    enrich_heatmap_points(
+        heatmap,
+        property_keys=("categoria", "estado", "barrio", "fuente"),
+    )
     return heatmap
+
+
+def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap") -> None:
+    """Attach shared heatmap representations used by MapLibre and Google Maps."""
+
+    points = payload.get(key)
+    if not isinstance(points, list) or not points:
+        return
+
+    enrich_heatmap_points(
+        points,
+        property_keys=("categoria", "estado", "barrio", "fuente", "canal", "total"),
+    )
+
+    feature_collection = build_feature_collection(points)
+    if feature_collection:
+        payload[f"{key}_geojson"] = feature_collection
+
+    google_points = build_google_heatmap(points)
+    if google_points:
+        payload[f"{key}_google"] = google_points
 
 
 def _parse_iso_datetime(value: str | None, *, is_end: bool = False) -> datetime | None:
@@ -334,6 +366,8 @@ def estadisticas_dashboard(current_user):
         ),
     }
 
+    _augment_heatmap_payload(payload)
+
     if tipo == "municipio":
         stats_filters = _build_stats_filters(args, estados)
         if stats_filters:
@@ -430,6 +464,8 @@ def mapa_calor_datos(current_user):
 
     payload: dict[str, object] = {"heatmap": puntos}
 
+    _augment_heatmap_payload(payload)
+
     if args.get("tipo_ticket", "municipio") == "municipio":
         stats_filters = _build_stats_filters(args, estados)
         if stats_filters:
@@ -522,6 +558,8 @@ def estadisticas_tickets(current_user):
     heatmap = puntos or _demo_heatmap(tipo)
 
     respuesta: dict[str, object] = {"heatmap": heatmap}
+
+    _augment_heatmap_payload(respuesta)
 
     if tipo == "municipio":
         stats_filters = _build_stats_filters(args, estados)

@@ -80,9 +80,18 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         payload = response.get_json()
 
         self.assertEqual(payload['tipo'], 'municipio')
-        self.assertEqual(payload['heatmap'], [
-            {"location": {"lat": -34.6, "lng": -58.4}, "weight": 5}
-        ])
+        self.assertEqual(len(payload['heatmap']), 1)
+        heat_point = payload['heatmap'][0]
+        self.assertEqual(heat_point['location'], {"lat": -34.6, "lng": -58.4})
+        self.assertEqual(heat_point['weight'], 5.0)
+        self.assertIn('feature', heat_point)
+        self.assertIn('coordinates', heat_point)
+        self.assertIn('heatmap_geojson', payload)
+        self.assertIn('heatmap_google', payload)
+        self.assertEqual(
+            payload['heatmap_google'][0],
+            {"location": {"lat": -34.6, "lng": -58.4}, "weight": 5.0},
+        )
         self.assertEqual(payload['stats'], mock_build_stats.return_value)
         self.assertEqual(payload['summary'], mock_build_stats.return_value['resumen'])
         self.assertEqual(
@@ -173,6 +182,10 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         first_point = payload['heatmap'][0]
         self.assertIn('location', first_point)
         self.assertEqual(first_point.get('fuente'), 'demo')
+        self.assertIn('feature', first_point)
+        self.assertIn('coordinates', first_point)
+        self.assertIn('heatmap_geojson', payload)
+        self.assertIn('heatmap_google', payload)
         self.assertEqual(payload['filters'], {})
         self.assertEqual(
             payload['summary'],
