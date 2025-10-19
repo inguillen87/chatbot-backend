@@ -7618,22 +7618,35 @@ def responder_municipio(
     assert "Compartir desde el widget web" not in body
     assert "Descargar el código QR" not in body
     assert "Usar el asistente virtual en la web" not in body
-    assert any(option.get("type") == "url" for option in menu["options_list"])
+    expected_options = [
+        {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
+        {"texto": "Cancelar", "action_id": "cancelar"},
+    ]
+    assert menu["options_list"] == expected_options
+
     button_urls = [
         option.get("url", "")
         for option in menu["options_list"]
         if option.get("type") == "url"
     ]
-    assert any(url.endswith(f"/e/{slug}") for url in button_urls)
-    assert not any(url.startswith("https://wa.me/") for url in button_urls)
+    assert button_urls == []
+
     share_actions = [
         option.get("action_id")
         for option in menu["options_list"]
         if option.get("action_id")
     ]
-    assert any(action.startswith("encuesta_compartir::") for action in share_actions)
-    assert not any(url.endswith(f"/e/{slug}?canal=widget_chat") for url in button_urls)
-    assert not any(url.endswith(f"/api/public/encuestas/{slug}/qr") for url in button_urls)
+    assert share_actions == ["menu_principal", "cancelar"]
+    assert not any(action.startswith("encuesta_compartir::") for action in share_actions)
+    surveys_meta = menu.get("surveys") or []
+    assert any(
+        meta.get("share_short_url", "").endswith(f"/e/{short_token}")
+        for meta in surveys_meta
+    )
+    assert any(
+        meta.get("share_whatsapp_url", "").startswith("https://wa.me/")
+        for meta in surveys_meta
+    )
     media_urls = menu.get("media_urls")
     assert isinstance(media_urls, list) and media_urls
     assert media_urls[0] == fallback_image
