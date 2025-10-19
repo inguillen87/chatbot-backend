@@ -291,6 +291,10 @@ function createDemoSummary(scope) {
     const ttrP50 = Math.round(120 + random() * 160);
     const ttrP90 = ttrP50 + Math.round(150 + random() * 220);
     const respuestas = Math.max(Math.round(180 + random() * 160), 1);
+    const encuestasDelta = Number((random() * 40 - 20).toFixed(2));
+    const ticketsDelta = Number((random() * 28 - 14).toFixed(2));
+    const ticketsPrev = Math.max(Math.round(tickets / (1 + ticketsDelta / 100)), 1);
+    const encuestasPrev = Math.max(Math.round(respuestas / (1 + encuestasDelta / 100)), 1);
     const generoFem = Math.round(respuestas * (0.45 + random() * 0.1));
     const generoMasc = Math.round(respuestas * (0.4 + random() * 0.08));
     const generoNb = Math.max(respuestas - generoFem - generoMasc, 0);
@@ -312,11 +316,20 @@ function createDemoSummary(scope) {
       totals: {
         tickets,
         tickets_abiertos: abiertos,
+        tickets_cerrados: Math.max(tickets - abiertos, 0),
         backlog,
         automatizado_pct: automatizado,
         primer_contacto_pct: primerContacto,
         nps,
         csat,
+        encuestas: respuestas,
+        cierre_pct: tickets ? Math.round(((tickets - abiertos) / tickets) * 10000) / 100 : 0,
+        tta_promedio_min: Math.round((ttaP50 + ttaP90) / 2),
+        ttr_promedio_min: Math.round((ttrP50 + ttrP90) / 2),
+        tickets_periodo_anterior: ticketsPrev,
+        tickets_variacion_pct: ticketsDelta,
+        encuestas_periodo_anterior: encuestasPrev,
+        encuestas_variacion_pct: encuestasDelta,
       },
       sla: {
         tta: { p50: ttaP50, p90: ttaP90, p95: ttaP90 + Math.round(random() * 10) },
@@ -346,17 +359,38 @@ function createDemoSummary(scope) {
     const hora = `${String(8 + Math.floor(random() * 10)).padStart(2, '0')}:00`;
     const nps = Math.round(-10 + random() * 60);
     const csat = Math.round((3.8 + random() * 1) * 100) / 100;
+    const encuestas = Math.max(Math.round(60 + random() * 45), 1);
+    const ticketsDelta = Number((random() * 26 - 13).toFixed(2));
+    const pedidosDelta = Number((random() * 30 - 15).toFixed(2));
+    const encuestasDelta = Number((random() * 36 - 18).toFixed(2));
+    const ttaProm = Math.round(10 + random() * 18);
+    const ttrProm = Math.round(90 + random() * 140);
     return {
       totals: {
         tickets,
+        tickets_cerrados: Math.max(tickets - Math.round(tickets * 0.25), 0),
         pedidos,
         ticket_medio: ticketMedio,
         conversion_pct: conversion,
         retencion_30: retencion,
+        retencion_60: Math.max(retencion - 5, 0),
+        retencion_90: Math.max(retencion - 9, 0),
         automatizado_pct: automatizado,
         hora_pico: hora,
         nps,
         csat,
+        encuestas,
+        tickets_abiertos: Math.round(tickets * 0.25),
+        backlog: Math.round(tickets * 0.25),
+        cierre_pct: tickets ? Math.round(((tickets - Math.round(tickets * 0.25)) / tickets) * 10000) / 100 : 0,
+        tta_promedio_min: ttaProm,
+        ttr_promedio_min: ttrProm,
+        tickets_periodo_anterior: Math.max(Math.round(tickets / (1 + ticketsDelta / 100)), 1),
+        tickets_variacion_pct: ticketsDelta,
+        pedidos_periodo_anterior: Math.max(Math.round(pedidos / (1 + pedidosDelta / 100)), 1),
+        pedidos_variacion_pct: pedidosDelta,
+        encuestas_periodo_anterior: Math.max(Math.round(encuestas / (1 + encuestasDelta / 100)), 1),
+        encuestas_variacion_pct: encuestasDelta,
       },
       sla: {},
       extras: {},
@@ -368,13 +402,22 @@ function createDemoSummary(scope) {
   const violaciones = Math.round(5 + random() * 25);
   const primer = Math.round(40 + random() * 45);
   const automatizado = Math.round(20 + random() * 35);
+  const ticketsDelta = Number((random() * 22 - 11).toFixed(2));
+  const ttaProm = Math.round(9 + random() * 16);
+  const ttrProm = Math.round(95 + random() * 155);
   return {
     totals: {
       tickets,
       abiertos,
+      tickets_cerrados: Math.max(tickets - abiertos, 0),
+      cierre_pct: tickets ? Math.round(((tickets - abiertos) / tickets) * 10000) / 100 : 0,
       violaciones_sla: violaciones,
       primer_contacto_pct: primer,
       automatizado_pct: automatizado,
+      tta_promedio_min: ttaProm,
+      ttr_promedio_min: ttrProm,
+      tickets_periodo_anterior: Math.max(Math.round(tickets / (1 + ticketsDelta / 100)), 1),
+      tickets_variacion_pct: ticketsDelta,
     },
     sla: {},
     extras: {},
@@ -511,38 +554,60 @@ function createDemoOperations() {
 
 function renderSummary(summary) {
   if (state.scope === 'municipio') {
+    const totals = summary.totals || {};
     const items = [
-      { label: 'Tickets', value: summary.totals.tickets },
-      { label: 'Abiertos', value: summary.totals.tickets_abiertos },
-      { label: 'Backlog', value: summary.totals.backlog },
-      { label: 'TTA P50', value: summary.sla.tta?.p50, suffix: 'min' },
-      { label: 'TTR P90', value: summary.sla.ttr?.p90, suffix: 'min' },
-      { label: '% Automatizado', value: summary.totals.automatizado_pct, suffix: '%' },
-      { label: '% 1er contacto', value: summary.totals.primer_contacto_pct, suffix: '%' },
-      { label: 'NPS', value: summary.totals.nps },
-      { label: 'CSAT', value: summary.totals.csat },
+      { label: 'Tickets', value: totals.tickets },
+      { label: 'Δ Tickets', value: totals.tickets_variacion_pct, suffix: '%' },
+      { label: 'Cerrados', value: totals.tickets_cerrados },
+      { label: '% Cierre', value: totals.cierre_pct, suffix: '%' },
+      { label: 'Abiertos', value: totals.tickets_abiertos },
+      { label: 'Backlog', value: totals.backlog },
+      { label: 'TTA prom', value: totals.tta_promedio_min, suffix: 'min' },
+      { label: 'TTR prom', value: totals.ttr_promedio_min, suffix: 'min' },
+      { label: 'TTA P90', value: summary.sla?.tta?.p90, suffix: 'min' },
+      { label: 'TTR P90', value: summary.sla?.ttr?.p90, suffix: 'min' },
+      { label: '% Automatizado', value: totals.automatizado_pct, suffix: '%' },
+      { label: '% 1er contacto', value: totals.primer_contacto_pct, suffix: '%' },
+      { label: 'Encuestas', value: totals.encuestas },
+      { label: 'NPS', value: totals.nps },
+      { label: 'CSAT', value: totals.csat },
     ];
     renderKpis('municipio-kpis', items);
     renderSla('municipio-sla', summary.sla);
   } else if (state.scope === 'pyme') {
+    const totals = summary.totals || {};
     const items = [
-      { label: 'Tickets', value: summary.totals.tickets },
-      { label: 'Pedidos', value: summary.totals.pedidos },
-      { label: 'Ticket medio', value: summary.totals.ticket_medio, prefix: '$' },
-      { label: '% Conversión', value: summary.totals.conversion_pct, suffix: '%' },
-      { label: 'Retención 30', value: summary.totals.retencion_30, suffix: '%' },
-      { label: '% Automatizado', value: summary.totals.automatizado_pct, suffix: '%' },
-      { label: 'Hora pico', value: summary.totals.hora_pico },
-      { label: 'NPS', value: summary.totals.nps },
-      { label: 'CSAT', value: summary.totals.csat },
+      { label: 'Tickets', value: totals.tickets },
+      { label: 'Δ Tickets', value: totals.tickets_variacion_pct, suffix: '%' },
+      { label: 'Cerrados', value: totals.tickets_cerrados },
+      { label: '% Cierre', value: totals.cierre_pct, suffix: '%' },
+      { label: 'Pedidos', value: totals.pedidos },
+      { label: 'Δ Pedidos', value: totals.pedidos_variacion_pct, suffix: '%' },
+      { label: 'Ticket medio', value: totals.ticket_medio, prefix: '$' },
+      { label: '% Conversión', value: totals.conversion_pct, suffix: '%' },
+      { label: 'Retención 30', value: totals.retencion_30, suffix: '%' },
+      { label: 'Retención 60', value: totals.retencion_60, suffix: '%' },
+      { label: 'Retención 90', value: totals.retencion_90, suffix: '%' },
+      { label: '% Automatizado', value: totals.automatizado_pct, suffix: '%' },
+      { label: 'TTA prom', value: totals.tta_promedio_min, suffix: 'min' },
+      { label: 'TTR prom', value: totals.ttr_promedio_min, suffix: 'min' },
+      { label: 'Hora pico', value: totals.hora_pico },
+      { label: 'Encuestas', value: totals.encuestas },
+      { label: 'NPS', value: totals.nps },
+      { label: 'CSAT', value: totals.csat },
     ];
     renderKpis('pyme-kpis', items);
   } else {
     const totals = summary.totals || {};
     const items = [
       { label: 'Tickets', value: totals.tickets },
+      { label: 'Δ Tickets', value: totals.tickets_variacion_pct, suffix: '%' },
+      { label: 'Cerrados', value: totals.tickets_cerrados },
+      { label: '% Cierre', value: totals.cierre_pct, suffix: '%' },
       { label: 'Abiertos', value: totals.abiertos },
       { label: 'Violaciones SLA', value: totals.violaciones_sla },
+      { label: 'TTA prom', value: totals.tta_promedio_min, suffix: 'min' },
+      { label: 'TTR prom', value: totals.ttr_promedio_min, suffix: 'min' },
       { label: '% 1er contacto', value: totals.primer_contacto_pct, suffix: '%' },
       { label: '% Automatizado', value: totals.automatizado_pct, suffix: '%' },
     ];
@@ -1064,6 +1129,12 @@ function generateDemoGeoDataset(scope = 'municipio') {
       fuente: 'demo',
     });
   }
+  if (cells.length) {
+    const maxCount = Math.max(...cells.map((cell) => cell.count || 0)) || 1;
+    cells.forEach((cell) => {
+      cell.intensity = Number(((cell.count || 0) / maxCount).toFixed(4));
+    });
+  }
   const points = [];
   for (let index = 0; index < pointCount; index += 1) {
     const coords = randomPointAroundJunin(random);
@@ -1164,7 +1235,12 @@ function ensureMap() {
 function updateMap(cells, points) {
   ensureMap();
   if (!state.map) return;
-  state.heatLayer.setLatLngs(cells.map((cell) => [cell.centroid_lat, cell.centroid_lon, cell.count]));
+  const heatPoints = cells.map((cell) => {
+    const intensity = typeof cell.intensity === 'number' ? cell.intensity : cell.count;
+    const normalized = Math.max(0, Math.min(1, intensity || 0));
+    return [cell.centroid_lat, cell.centroid_lon, normalized];
+  });
+  state.heatLayer.setLatLngs(heatPoints);
   state.clusterLayer.clearLayers();
   points.forEach((point) => {
     const marker = L.marker([point.lat, point.lon]);

@@ -95,6 +95,10 @@ def generate_demo_heatmap_cells(
                 "fuente": "demo",
             }
         )
+    if cells_data:
+        max_count = max(cell["count"] for cell in cells_data) or 1
+        for cell in cells_data:
+            cell["intensity"] = round(cell["count"] / max_count, 4)
     return cells_data
 
 
