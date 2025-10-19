@@ -5431,6 +5431,12 @@ def _get_encuestas_menu(context: dict) -> dict:
             )
         share_message = f"Participá en {titulo}: {share_short_url}"
         whatsapp_share_url = f"https://wa.me/?text={quote_plus(share_message)}"
+        whatsapp_share_display_url = None
+        share_target_for_display = share_short_url or share_url
+        if share_target_for_display:
+            whatsapp_share_display_url = (
+                f"https://wa.me/?text={quote_plus(share_target_for_display)}"
+            )
         share_action_id = f"encuesta_compartir::{slug_publico}"
 
         short_title = _shorten_button_label(titulo)
@@ -5442,13 +5448,11 @@ def _get_encuestas_menu(context: dict) -> dict:
         whatsapp_title = _shorten_button_label(titulo, max_length=120)
         whatsapp_title_line = f"{index}. *{whatsapp_title}*"
 
-        open_line = f"   • Abrir: {display_share_url}"
+        open_line = f"   • *Abrir*: {display_share_url}"
         share_line_full = None
-        if whatsapp_share_url:
-            share_line_full = (
-                "   • Compartir con un mensaje listo para WhatsApp: "
-                f"{whatsapp_share_url}"
-            )
+        share_url_for_body = whatsapp_share_url or whatsapp_share_display_url
+        if share_url_for_body:
+            share_line_full = f"   • *Compartir*: {share_url_for_body}"
 
         general_line_parts = [title_line]
         if descripcion:
@@ -5461,8 +5465,12 @@ def _get_encuestas_menu(context: dict) -> dict:
 
         if is_whatsapp_channel:
             whatsapp_share_line = ""
-            if whatsapp_share_url and not suppress_whatsapp_share_line:
-                whatsapp_share_line = f"   • Compartir: {whatsapp_share_url}"
+            if (
+                share_url_for_body
+                and whatsapp_share_url
+                and not suppress_whatsapp_share_line
+            ):
+                whatsapp_share_line = f"   • *Compartir*: {share_url_for_body}"
 
             whatsapp_parts_with_desc = [whatsapp_title_line]
             if descripcion:
@@ -5777,7 +5785,7 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
 
     if share_whatsapp_url:
         message_lines.append(
-            f"• Compartir con un mensaje listo para WhatsApp: {share_whatsapp_url}"
+            f"• *Compartir*: {share_whatsapp_url}"
         )
 
     message_lines.append(
@@ -7601,31 +7609,44 @@ def responder_municipio(
 
     body = menu["message_body"]
     assert "Participación Ciudadana" in body
-    assert "Últimas encuestas disponibles" in body
+    assert "Seleccioná una encuesta" in body
     short_token = slug.rsplit("-", 1)[-1]
-    assert "• Abrir:" in body
-    assert "• Compartir:" in body
+    assert "• *Abrir*:" in body
+    assert "• *Compartir*:" in body
     assert "https://wa.me/" in body
     assert len(body) < 1600
     assert "Compartir desde el widget web" not in body
     assert "Descargar el código QR" not in body
     assert "Usar el asistente virtual en la web" not in body
-    assert any(option.get("type") == "url" for option in menu["options_list"])
+    expected_options = [
+        {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
+        {"texto": "Cancelar", "action_id": "cancelar"},
+    ]
+    assert menu["options_list"] == expected_options
+
     button_urls = [
         option.get("url", "")
         for option in menu["options_list"]
         if option.get("type") == "url"
     ]
-    assert any(url.endswith(f"/e/{slug}") for url in button_urls)
-    assert not any(url.startswith("https://wa.me/") for url in button_urls)
+    assert button_urls == []
+
     share_actions = [
         option.get("action_id")
         for option in menu["options_list"]
         if option.get("action_id")
     ]
-    assert any(action.startswith("encuesta_compartir::") for action in share_actions)
-    assert not any(url.endswith(f"/e/{slug}?canal=widget_chat") for url in button_urls)
-    assert not any(url.endswith(f"/api/public/encuestas/{slug}/qr") for url in button_urls)
+    assert share_actions == ["menu_principal", "cancelar"]
+    assert not any(action.startswith("encuesta_compartir::") for action in share_actions)
+    surveys_meta = menu.get("surveys") or []
+    assert any(
+        meta.get("share_short_url", "").endswith(f"/e/{short_token}")
+        for meta in surveys_meta
+    )
+    assert any(
+        meta.get("share_whatsapp_url", "").startswith("https://wa.me/")
+        for meta in surveys_meta
+    )
     media_urls = menu.get("media_urls")
     assert isinstance(media_urls, list) and media_urls
     assert media_urls[0] == fallback_image
@@ -8478,16 +8499,18 @@ def test_encuestas_menu_whatsapp_embeds_banner_and_disables_audio(client):
                 "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"
             ] = previous_template
 
-    assert menu.get("message_type") == "interactive_buttons"
+    assert menu.get("message_type") == "text"
     assert menu.get("generar_audio") is False
-    pre_messages = menu.get("_twilio_pre_messages")
-    assert pre_messages and isinstance(pre_messages, list)
-    template_entry = pre_messages[0]
-    assert template_entry.get("content_sid") == "HXtestBanner"
-    assert menu.get("_force_whatsapp_interactive") is True
+    assert menu.get("_twilio_pre_messages") is None
+    assert menu.get("_force_whatsapp_text") is True
     assert menu.get("image_url")
     media_urls = menu.get("media_urls")
     assert isinstance(media_urls, list) and menu["image_url"] in media_urls
+    assert not any(option.get("type") == "url" for option in menu["options_list"])
+    assert all(
+        option.get("action_id") in {"menu_principal", "cancelar"}
+        for option in menu["options_list"]
+    )
 
 
 def test_encuestas_menu_whatsapp_embeds_banner_when_no_template(client):
@@ -8501,15 +8524,12 @@ def test_encuestas_menu_whatsapp_embeds_banner_when_no_template(client):
         )
         menu = municipio_responder._get_encuestas_menu(context)
 
-    assert menu.get("message_type") == "interactive_buttons"
+    assert menu.get("message_type") == "text"
     assert menu.get("generar_audio") is False
-    pre_messages = menu.get("_twilio_pre_messages")
-    assert pre_messages and isinstance(pre_messages, list)
-    banner_entry = pre_messages[0]
-    assert banner_entry.get("media_urls")
-    assert banner_entry.get("body") == "Participación Ciudadana"
-    assert menu.get("_force_whatsapp_interactive") is True
+    assert menu.get("_twilio_pre_messages") is None
+    assert menu.get("_force_whatsapp_text") is True
     assert menu.get("image_url")
+    assert not any(option.get("type") == "url" for option in menu.get("options_list", []))
 
 
 def test_encuestas_menu_whatsapp_uses_banner_pre_messages(client, monkeypatch):
@@ -8529,8 +8549,8 @@ def test_encuestas_menu_whatsapp_uses_banner_pre_messages(client, monkeypatch):
         menu = municipio_responder._get_encuestas_menu(context)
 
     assert menu.get("image_url")
-    assert menu.get("_force_whatsapp_interactive") is True
-    assert menu.get("_twilio_pre_messages") == stub_pre_message
+    assert menu.get("_force_whatsapp_text") is True
+    assert menu.get("_twilio_pre_messages") is None
 
 
 def test_encuestas_menu_orders_newest_first(client):
