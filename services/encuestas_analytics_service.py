@@ -23,6 +23,7 @@ from utils.heatmap import (
     enrich_heatmap_cells,
     enrich_heatmap_points,
 )
+from utils.map_config import get_map_config
 
 try:  # pragma: no cover - optional dependency
     import h3  # type: ignore
@@ -575,13 +576,35 @@ def get_heatmap(
     )
     points_geojson = build_feature_collection(points)
     cells_geojson = build_feature_collection(cells)
-    google_payload = build_google_heatmap(points)
+    google_points = build_google_heatmap(points)
     if points_geojson:
         metadata["points_geojson"] = points_geojson
     if cells_geojson:
         metadata["cells_geojson"] = cells_geojson
-    if google_payload:
-        metadata["google_heatmap"] = google_payload
+    if google_points:
+        metadata["points_google"] = google_points
+
+    map_config = get_map_config()
+    if map_config:
+        metadata["map_config"] = map_config
+    supported_formats = ["points"]
+    preferred_format = "points"
+    if points_geojson:
+        supported_formats.append("geojson")
+        preferred_format = "geojson"
+    if google_points:
+        supported_formats.append("google")
+    provider_hint = map_config.get("provider") if isinstance(map_config, dict) else None
+    if not provider_hint or provider_hint == "none":
+        provider_hint = "maplibre"
+    if provider_hint == "google" and google_points:
+        preferred_format = "google"
+    metadata["heatmap_layer"] = {
+        "kind": "heatmap",
+        "supported_formats": supported_formats,
+        "preferred_format": preferred_format,
+        "provider_hint": provider_hint,
+    }
     return {"points": points, "cells": cells, "metadata": metadata}
 
 

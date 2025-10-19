@@ -53,6 +53,10 @@ def get_map_config() -> Dict[str, str]:
     return {
         "provider": provider,
         "google_maps_key": google_key,
+        "google_maps_api_key": google_key,
         "maptiler_key": maptiler_key,
+        "maptiler_api_key": maptiler_key,
         "style_url": style_url,
+        "maplibre_style_url": style_url,
+        "maptiler_style_url": style_url,
     }
