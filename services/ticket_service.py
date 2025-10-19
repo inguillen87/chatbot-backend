@@ -16,6 +16,7 @@ from models import (
 from utils.ticket_utils import normalize_category
 from sqlalchemy.exc import SQLAlchemyError
 from .integracion_municipal import enviar_ticket_a_sigem # SIGEM Integration
+from utils.heatmap import enrich_heatmap_points
 
 logger = logging.getLogger(__name__)
 
@@ -554,6 +555,10 @@ class ServicioTickets:
                         "categoria": cat,
                     }
                 )
+            enrich_heatmap_points(
+                resultado_heatmap,
+                property_keys=("categoria", "estado", "barrio", "fuente"),
+            )
             logger.info(
                 "[TICKET_SERVICE_MAPA] puntos_heatmap=%s ejemplo=%s",
                 len(resultado_heatmap),

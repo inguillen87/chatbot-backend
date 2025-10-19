@@ -17,6 +17,12 @@ from services.encuestas_service import (
     _parse_datetime,
     _resolve_geo_metadata_for_tenant,
 )
+from utils.heatmap import (
+    build_feature_collection,
+    build_google_heatmap,
+    enrich_heatmap_cells,
+    enrich_heatmap_points,
+)
 
 try:  # pragma: no cover - optional dependency
     import h3  # type: ignore
@@ -279,6 +285,14 @@ def _aggregate_heatmap_cells(
         )
 
     cells_payload.sort(key=lambda cell: cell["count"], reverse=True)
+    enrich_heatmap_points(
+        points,
+        property_keys=("barrio", "ciudad", "provincia", "pais", "canal"),
+    )
+    enrich_heatmap_cells(
+        cells_payload,
+        property_keys=("barrios", "canales"),
+    )
     return points, cells_payload
 
 
@@ -559,6 +573,15 @@ def get_heatmap(
             "has_coordinates": bool(points),
         }
     )
+    points_geojson = build_feature_collection(points)
+    cells_geojson = build_feature_collection(cells)
+    google_payload = build_google_heatmap(points)
+    if points_geojson:
+        metadata["points_geojson"] = points_geojson
+    if cells_geojson:
+        metadata["cells_geojson"] = cells_geojson
+    if google_payload:
+        metadata["google_heatmap"] = google_payload
     return {"points": points, "cells": cells, "metadata": metadata}
 
 

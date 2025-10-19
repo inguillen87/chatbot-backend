@@ -67,10 +67,14 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertIsInstance(payload, dict)
-        self.assertEqual(
-            payload.get("heatmap"),
-            [{"location": {"lat": 1, "lng": 2}, "weight": 3, "categoria": None}],
-        )
+        self.assertEqual(len(payload.get("heatmap", [])), 1)
+        point = payload["heatmap"][0]
+        self.assertEqual(point["location"], {"lat": 1, "lng": 2})
+        self.assertEqual(point["weight"], 3.0)
+        self.assertIn("feature", point)
+        self.assertIn("coordinates", point)
+        self.assertIn("heatmap_geojson", payload)
+        self.assertIn("heatmap_google", payload)
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='municipio',
             municipio_id=None,
