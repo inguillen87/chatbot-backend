@@ -5323,7 +5323,6 @@ def _get_encuestas_menu(context: dict) -> dict:
 
     base_options = [
         {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
-        {"texto": "Cancelar", "action_id": "cancelar"},
     ]
 
     channel_value = (context.get("channel") or "").strip().lower()
@@ -5454,20 +5453,6 @@ def _get_encuestas_menu(context: dict) -> dict:
         if share_url_for_body:
             share_line_full = f"   • *Compartir*: {share_url_for_body}"
 
-        direct_share_line = None
-        if share_target_for_display:
-            direct_share_line = (
-                "   • Copiar link directo: "
-                f"{share_target_for_display}"
-            )
-
-        direct_share_line = None
-        if share_target_for_display:
-            direct_share_line = (
-                "   • Copiar link directo: "
-                f"{share_target_for_display}"
-            )
-
         general_line_parts = [title_line]
         if descripcion:
             general_line_parts.append(f"   {descripcion}")
@@ -5475,8 +5460,6 @@ def _get_encuestas_menu(context: dict) -> dict:
             general_line_parts.append(open_line)
         if share_line_full:
             general_line_parts.append(share_line_full)
-        if direct_share_line:
-            general_line_parts.append(direct_share_line)
         general_lines.append("\n".join(general_line_parts))
 
         if is_whatsapp_channel:
@@ -5502,22 +5485,16 @@ def _get_encuestas_menu(context: dict) -> dict:
                 whatsapp_parts_with_desc.append(open_line)
             if whatsapp_share_line:
                 whatsapp_parts_with_desc.append(whatsapp_share_line)
-            if direct_share_line:
-                whatsapp_parts_with_desc.append(direct_share_line)
 
             whatsapp_parts_without_desc = [whatsapp_title_line]
             if display_share_url:
                 whatsapp_parts_without_desc.append(open_line)
             if whatsapp_share_line:
                 whatsapp_parts_without_desc.append(whatsapp_share_line)
-            if direct_share_line:
-                whatsapp_parts_without_desc.append(direct_share_line)
 
             whatsapp_title_and_open = [whatsapp_title_line]
             if display_share_url:
                 whatsapp_title_and_open.append(open_line)
-            if direct_share_line:
-                whatsapp_title_and_open.append(direct_share_line)
 
             whatsapp_blocks.append(
                 {
@@ -5543,16 +5520,17 @@ def _get_encuestas_menu(context: dict) -> dict:
                 }
             )
 
-        share_button: Dict[str, Any] = {
-            "texto": f"Compartir {share_button_title}",
-            "action_id": share_action_id,
-        }
-        if is_widget_channel and whatsapp_share_url:
-            share_button.pop("action_id", None)
-            share_button["url"] = whatsapp_share_url
-            share_button["type"] = "url"
+        if not is_whatsapp_channel:
+            share_button: Dict[str, Any] = {
+                "texto": f"Compartir {share_button_title}",
+                "action_id": share_action_id,
+            }
+            if is_widget_channel and whatsapp_share_url:
+                share_button.pop("action_id", None)
+                share_button["url"] = whatsapp_share_url
+                share_button["type"] = "url"
 
-        survey_buttons.append(share_button)
+            survey_buttons.append(share_button)
 
         survey_metadata.append(
             {
