@@ -43,3 +43,10 @@ Este documento sintetiza herramientas y stacks tecnológicos que integran analí
 - **Privacidad**: pseudoanonimización mediante hash + salt, agregación espacial con hexágonos H3, políticas de consentimiento y retención de datos.
 - **Accesibilidad**: cumplir WCAG AA, asegurar contrastes adecuados, etiquetas `aria-*`, navegación por teclado y descripciones alternativas para mapas.
 
+## Implementación de referencia incluida en el backend
+
+- **Servicios**: el módulo `services/government_pipeline.py` centraliza scorecards, heatmaps con H3, pronósticos de demanda y ruteo operativo.
+- **Privacidad**: `utils/privacy.py` expone `pseudoanonymize` y agregadores que eliminan grupos menores a tres casos.
+- **API REST**: el blueprint `routes/gov_analytics.py` publica `/gov/analytics/*` (scorecards, heatmap, demand, clusters, routes) con RBAC (`admin`, `empleado`, `visor`).
+- **Frontends**: las respuestas incluyen metadatos listos para MapLibre/Deck.gl (`map_layers`, celdas H3) y proyecciones para dashboards React o Superset embebido.
+
