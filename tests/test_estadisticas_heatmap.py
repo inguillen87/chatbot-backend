@@ -82,6 +82,22 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         self.assertIsInstance(heatmap_layer, dict)
         self.assertEqual(heatmap_layer.get("preferred_format"), "geojson")
         self.assertIn("geojson", heatmap_layer.get("supported_formats", []))
+        self.assertIn("source_keys", heatmap_layer)
+        self.assertIn("heatmap_cells", payload)
+        self.assertTrue(payload["heatmap_cells"])
+        self.assertIn("heatmap_cells_geojson", payload)
+        self.assertIn("heatmap_cells", payload.get("map_layers", {}))
+        grid_layer = payload["map_layers"].get("heatmap_cells")
+        self.assertIsInstance(grid_layer, dict)
+        self.assertEqual(grid_layer.get("kind"), "grid")
+        self.assertIn("geojson", grid_layer.get("supported_formats", []))
+        self.assertIn("metadata", payload)
+        self.assertIn("map", payload["metadata"])
+        self.assertIn("heatmap", payload["metadata"]["map"])
+        heatmap_meta = payload["metadata"]["map"]["heatmap"]
+        self.assertIsInstance(heatmap_meta, dict)
+        self.assertIn("point_count", heatmap_meta)
+        self.assertIn("cell_count", heatmap_meta)
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='municipio',
             municipio_id=None,

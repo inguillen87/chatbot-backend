@@ -9,7 +9,7 @@ from services.municipal_stats import build_stats_for_municipio, StatsFilters
 from services.metricas_service import MetricasService
 from models import User
 from services.demo_geo import generate_demo_points
-from utils.heatmap import build_feature_collection, enrich_heatmap_points
+from utils.heatmap import aggregate_heatmap_points, build_feature_collection, enrich_heatmap_points
 from utils.map_config import get_map_config
 
 
@@ -147,7 +147,7 @@ def _demo_heatmap(scope: str) -> list[dict]:
 
 
 def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap") -> None:
-    """Attach shared heatmap representations and map configuration hints."""
+    """Attach shared heatmap representations, metadata and provider hints."""
 
     map_config = get_map_config()
     if map_config:
@@ -182,7 +182,49 @@ def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap"
             "supported_formats": supported_formats,
             "preferred_format": preferred_format,
             "provider_hint": provider_hint,
+            "source_keys": {"points": key, "geojson": f"{key}_geojson"},
         }
+
+    # Aggregate the points into grid cells so that MapLibre/MapTiler can render
+    # either a heatmap or clustered overlays without relying on the deprecated
+    # Google APIs.
+    cells, cells_metadata = aggregate_heatmap_points(
+        points,
+        categorical_keys=("categoria", "estado", "barrio", "fuente", "canal"),
+    )
+
+    if cells:
+        payload[f"{key}_cells"] = cells
+        cells_geojson = build_feature_collection(cells)
+        if cells_geojson:
+            payload[f"{key}_cells_geojson"] = cells_geojson
+
+        if isinstance(layers, dict):
+            layers[f"{key}_cells"] = {
+                "kind": "grid",
+                "supported_formats": ["cells", "geojson"],
+                "preferred_format": "geojson",
+                "provider_hint": provider_hint,
+                "source_keys": {
+                    "cells": f"{key}_cells",
+                    "geojson": f"{key}_cells_geojson",
+                },
+            }
+
+    metadata = payload.setdefault("metadata", {})
+    if isinstance(metadata, dict):
+        map_metadata = metadata.setdefault("map", {})
+        if isinstance(map_metadata, dict):
+            map_metadata[key] = {
+                "point_count": cells_metadata.get("point_count"),
+                "cell_count": cells_metadata.get("cell_count"),
+                "max_point_weight": cells_metadata.get("max_point_weight"),
+                "max_cell_count": cells_metadata.get("max_cell_count"),
+                "total_weight": cells_metadata.get("total_weight"),
+                "resolution": cells_metadata.get("resolution"),
+                "bounds": cells_metadata.get("bounds"),
+                "centroid": cells_metadata.get("centroid"),
+            }
 
 
 def _parse_iso_datetime(value: str | None, *, is_end: bool = False) -> datetime | None:
