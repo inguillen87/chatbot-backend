@@ -76,6 +76,11 @@ selection instructions to maintain full visibility of all choices.
 - `GET /analytics/cohorts` – cohortes y recurrencia de clientes.
 - `GET /analytics/whatsapp/templates` – métricas de CTR y bloqueos por plantilla.
 - `GET /analytics/ui` – dashboard responsive con filtros persistentes, exportación CSV/PNG y modo oscuro.
+- `GET /gov/analytics/scorecards` – KPIs municipales con backlog, SLA de 24h y ranking por barrio/categoría.
+- `GET /gov/analytics/heatmap` – celdas H3 agregadas con ruido diferencial y metadatos listos para MapLibre/deck.gl.
+- `GET /gov/analytics/demand` – forecast determinístico (tendencia + intervalos) para planificar cuadrillas.
+- `GET /gov/analytics/clusters` – clusters de incidentes recurrentes para priorizar intervenciones.
+- `GET /gov/analytics/routes` – orden sugerido de visitas respetando un depósito y máximo de paradas.
 
 Todos los endpoints requieren `tenant_id` y validan RBAC (`admin`, `operador`, `visor`). El módulo puede deshabilitarse con `ANALYTICS_ENABLED=false` y cuenta con cache TTL configurable (`ANALYTICS_CACHE_TTL`).
 - `GET /catalogo/buscar` – query the vector catalog with `?q=` and optional
