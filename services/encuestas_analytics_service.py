@@ -17,56 +17,14 @@ from services.encuestas_service import (
     _parse_datetime,
     _resolve_geo_metadata_for_tenant,
 )
-from utils.heatmap import build_feature_collection, enrich_heatmap_cells, enrich_heatmap_points
+from utils.heatmap import (
+    build_feature_collection,
+    compute_heatmap_cell_id,
+    compute_heatmap_centroid,
+    enrich_heatmap_cells,
+    enrich_heatmap_points,
+)
 from utils.map_config import get_map_config
-
-try:  # pragma: no cover - optional dependency
-    import h3  # type: ignore
-except ImportError:  # pragma: no cover - optional dependency
-    h3 = None
-
-
-def _init_h3_helpers():  # pragma: no cover - exercised via integration tests
-    if not h3:
-        return None, None
-
-    to_cell = None
-    to_geo = None
-
-    if hasattr(h3, "geo_to_h3"):
-        to_cell = h3.geo_to_h3  # type: ignore[attr-defined]
-    elif hasattr(h3, "latlng_to_cell"):
-        latlng_to_cell = h3.latlng_to_cell  # type: ignore[attr-defined]
-
-        def _call(lat: float, lng: float, resolution: int) -> str:
-            try:
-                return latlng_to_cell(lat, lng, resolution)
-            except TypeError:
-                return latlng_to_cell((lat, lng), resolution)
-
-        to_cell = _call
-
-    if hasattr(h3, "h3_to_geo"):
-        to_geo = h3.h3_to_geo  # type: ignore[attr-defined]
-    elif hasattr(h3, "cell_to_latlng"):
-        cell_to_latlng = h3.cell_to_latlng  # type: ignore[attr-defined]
-
-        def _to_latlng(cell_id: str):
-            result = cell_to_latlng(cell_id)
-            if isinstance(result, (tuple, list)) and len(result) >= 2:
-                return result[0], result[1]
-            if hasattr(result, "lat") and hasattr(result, "lng"):
-                return result.lat, result.lng
-            if hasattr(result, "lat") and hasattr(result, "lon"):
-                return result.lat, result.lon
-            return None, None
-
-        to_geo = _to_latlng
-
-    return to_cell, to_geo
-
-
-_H3_TO_CELL, _H3_CELL_TO_GEO = _init_h3_helpers()
 
 
 _SINGLE_CHOICE_TYPES = {
@@ -186,28 +144,6 @@ def _counter_to_list(counter: Counter) -> List[Dict[str, Any]]:
 DEFAULT_HEATMAP_RESOLUTION = 8
 
 
-def _heatmap_cell_id(lat: float, lng: float, resolution: int) -> str:
-    if _H3_TO_CELL:
-        try:
-            return _H3_TO_CELL(lat, lng, resolution)
-        except Exception:  # pragma: no cover - defensive fallback
-            pass
-    return f"grid_{round(lat, 3)}_{round(lng, 3)}_{resolution}"
-
-
-def _heatmap_centroid(cell_id: str, *, lat_sum: float, lng_sum: float, count: int) -> Tuple[Optional[float], Optional[float]]:
-    if _H3_CELL_TO_GEO and not cell_id.startswith("grid_"):
-        try:
-            lat, lng = _H3_CELL_TO_GEO(cell_id)
-            if lat is not None and lng is not None:
-                return float(lat), float(lng)
-        except Exception:  # pragma: no cover - defensive fallback
-            pass
-    if not count:
-        return None, None
-    return lat_sum / count, lng_sum / count
-
-
 def _aggregate_heatmap_cells(
     respuestas: Sequence[EncRespuesta],
     *,
@@ -238,7 +174,7 @@ def _aggregate_heatmap_cells(
             }
         )
 
-        cell_id = _heatmap_cell_id(lat, lng, effective_resolution)
+        cell_id = compute_heatmap_cell_id(lat, lng, effective_resolution)
         cell = cells.setdefault(
             cell_id,
             {
@@ -259,7 +195,7 @@ def _aggregate_heatmap_cells(
 
     cells_payload: List[Dict[str, Any]] = []
     for cell_id, data in cells.items():
-        centroid_lat, centroid_lng = _heatmap_centroid(
+        centroid_lat, centroid_lng = compute_heatmap_centroid(
             cell_id,
             lat_sum=data["lat_sum"],
             lng_sum=data["lng_sum"],
