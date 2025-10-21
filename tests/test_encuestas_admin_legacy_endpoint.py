@@ -303,6 +303,8 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     monkeypatch.setattr(encuestas_analytics_routes, "FEATURE_ENCUESTAS", True)
     monkeypatch.setattr(encuestas_anchor_routes, "FEATURE_ENCUESTAS", True)
 
+    respuesta_id = None
+
     with client.application.app_context():
         payload = {
             "titulo": "Encuesta analítica",
@@ -339,20 +341,51 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
             "utm_source": "widget",
             "utm_campaign": "analytics-test",
             "canal": "web",
+            "lat": -34.6037,
+            "lng": -58.3816,
+            "barrio": "Microcentro",
+            "ciudad": "CABA",
+            "provincia": "Buenos Aires",
+            "pais": "Argentina",
         }
         request_ctx = {"ip": "10.0.0.2", "user_agent": "pytest", "anon_id": "analytics", "canal": "web"}
-        save_respuesta(link.slug_publico, respuesta_payload, request_ctx)
-
-        build_snapshot(
-            encuesta.id,
-            "2020-01-01T00:00:00Z",
-            "2030-01-01T00:00:00Z",
-            admin_user,
-        )
+        respuesta = save_respuesta(link.slug_publico, respuesta_payload, request_ctx)
+        respuesta_id = respuesta.id
 
         encuesta_id = encuesta.id
 
     headers = _auth_headers(client, admin_user)
+
+    snapshot_resp = client.post(
+        f"/admin/encuestas/{encuesta_id}/snapshot",
+        json={"desde": "2020-01-01T00:00:00Z", "hasta": "2030-01-01T00:00:00Z"},
+        headers=headers,
+    )
+    assert snapshot_resp.status_code == 200
+    snapshot_data = snapshot_resp.get_json()
+    assert snapshot_data["total_respuestas"] >= 1
+    snapshot_id = snapshot_data["snapshot_id"]
+
+    publish_resp = client.post(
+        f"/admin/encuestas/{encuesta_id}/publish/{snapshot_id}",
+        json={"chain": "polygon"},
+        headers=headers,
+    )
+    assert publish_resp.status_code == 200
+    publish_data = publish_resp.get_json()
+    assert publish_data["ok"] is True
+    assert publish_data["anchor_status"]
+
+    verify_resp = client.get(
+        f"/admin/encuestas/{encuesta_id}/{snapshot_id}/verify",
+        query_string={"respuesta_id": respuesta_id},
+        headers=headers,
+    )
+    assert verify_resp.status_code == 200
+    verify_data = verify_resp.get_json()
+    assert verify_data["ok"] is True
+    assert verify_data["snapshot_id"] == snapshot_id
+    assert verify_data["respuesta_id"] == respuesta_id
 
     resumen_resp = client.get(f"/admin/encuestas/{encuesta_id}/analytics/resumen", headers=headers)
     assert resumen_resp.status_code == 200
@@ -373,7 +406,21 @@ def test_admin_encuestas_legacy_analytics_and_snapshots(client, monkeypatch, adm
     assert "points" in heatmap_data
     assert "cells" in heatmap_data
     assert "metadata" in heatmap_data
-    assert heatmap_data["metadata"]["resolution"] >= 1
+    metadata = heatmap_data["metadata"]
+    assert metadata["resolution"] >= 1
+    assert "map_config" in metadata
+    assert "heatmap_layer" in metadata
+    assert "map_filter" in metadata
+    heatmap_layer = metadata["heatmap_layer"]
+    assert "provider_hint" in heatmap_layer
+    assert "filter_keys" in heatmap_layer
+    map_filter = metadata["map_filter"]
+    assert isinstance(map_filter, dict)
+    assert "options" in map_filter
+    if map_filter["available"]:
+        assert "canal" in map_filter["options"]
+        canales = {opt["value"] for opt in map_filter["options"]["canal"]}
+        assert "web" in canales
 
     snapshots_resp = client.get(f"/admin/encuestas/{encuesta_id}/snapshots", headers=headers)
     assert snapshots_resp.status_code == 200
