@@ -6,7 +6,7 @@ import io
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from statistics import mean, median
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import joinedload
 
@@ -226,6 +226,60 @@ def _aggregate_heatmap_cells(
         property_keys=("barrios", "canales"),
     )
     return points, cells_payload
+
+
+def _build_map_filter(points: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return filter metadata for the heatmap payload.
+
+    The modern admin dashboard can expose dynamic filters for map layers and it
+    expects the backend to provide the available values with usage counts so it
+    can render the controls without extra round-trips.  We derive the
+    statistics from the already-normalised points list to avoid additional
+    database queries.
+    """
+
+    filter_counters: Dict[str, Counter] = {
+        "canal": Counter(),
+        "barrio": Counter(),
+        "ciudad": Counter(),
+        "provincia": Counter(),
+        "pais": Counter(),
+    }
+
+    for point in points:
+        if not isinstance(point, Mapping):  # type: ignore[arg-type]
+            continue
+        for key, counter in filter_counters.items():
+            raw_value = point.get(key)
+            if raw_value is None:
+                continue
+            values: Iterable[Any]
+            if isinstance(raw_value, (list, tuple, set)):
+                values = raw_value
+            else:
+                values = (raw_value,)
+            for value in values:
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if text:
+                    counter[text] += 1
+
+    options: Dict[str, List[Dict[str, Any]]] = {}
+    for key, counter in filter_counters.items():
+        if not counter:
+            continue
+        options[key] = [
+            {"label": label, "value": label, "count": count}
+            for label, count in counter.most_common()
+        ]
+
+    keys = sorted(options.keys())
+    return {
+        "available": bool(options),
+        "keys": keys,
+        "options": options,
+    }
 
 
 def _build_heatmap_metadata(
@@ -498,6 +552,7 @@ def get_heatmap(
     respuestas = _collect_respuestas(encuesta, filtros)
     points, cells = _aggregate_heatmap_cells(respuestas, resolution=resolution)
     metadata = _build_heatmap_metadata(encuesta, points)
+    map_filter = _build_map_filter(points)
     metadata.update(
         {
             "resolution": resolution or DEFAULT_HEATMAP_RESOLUTION,
@@ -528,7 +583,10 @@ def get_heatmap(
         "supported_formats": supported_formats,
         "preferred_format": preferred_format,
         "provider_hint": provider_hint,
+        "supports_filters": bool(map_filter["keys"]),
+        "filter_keys": map_filter["keys"],
     }
+    metadata["map_filter"] = map_filter
     return {"points": points, "cells": cells, "metadata": metadata}
 
 
