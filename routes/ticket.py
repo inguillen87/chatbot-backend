@@ -21,7 +21,7 @@ from services.geo.route import obtener_ruta
 from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
 from utils.permissions import require_role
 from collections import defaultdict
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 from utils.ticket_utils import normalize_category
 logger = logging.getLogger("app")
 
@@ -292,28 +292,39 @@ def get_tickets_del_usuario_logic(current_user: User):
                 query_base = query_base.filter(or_(*category_conditions))
 
 
-        # Obtener todos los tickets que cumplen con los filtros base (municipio/rubro y categoría de empleado/request) para el resumen
-        all_tickets_for_summary_calculation = query_base.all()
-
+        # Obtener todos los tickets que cumplen con los filtros base (municipio/rubro y categoría
+        # de empleado/request) para el resumen utilizando una consulta agregada en lugar de traer
+        # todas las filas a memoria. Esto mejora la latencia percibida en clientes móviles y
+        # reduce el consumo de recursos en escenarios con grandes volúmenes de tickets.
         summary_by_status = defaultdict(int)
         defined_statuses = list(TICKET_ALLOWED_STATES) + ["resuelto"]
 
-        # Inicializar todos los estados definidos en 0 para que el frontend
-        # siempre reciba las claves esperadas aunque no existan tickets en ese
-        # estado.
         for st in defined_statuses:
             summary_by_status[st] = 0
 
-        for t_sum in all_tickets_for_summary_calculation:
-            # El filtro de categoría de empleado ya se aplicó en la query_base
-            estado_actual = "resuelto" if t_sum.estado == "cerrado" else t_sum.estado
+        status_counts = (
+            query_base.with_entities(
+                TicketModel.estado,
+                func.count(TicketModel.id)
+            )
+            .group_by(TicketModel.estado)
+            .all()
+        )
+
+        total_tickets = 0
+        for estado_original, cantidad in status_counts:
+            estado_original = estado_original or "desconocido"
+            estado_actual = "resuelto" if estado_original == "cerrado" else estado_original
+            total_tickets += cantidad
+
             if estado_actual in defined_statuses:
-                summary_by_status[estado_actual] += 1
+                summary_by_status[estado_actual] += cantidad
             else:
-                summary_by_status["otros"] += 1  # Contar otros estados
-        summary_by_status["total"] = len(all_tickets_for_summary_calculation)
-        # Unificar los tickets cerrados dentro de la cuenta de "resuelto" para
-        # que el frontend los trate como reclamos resueltos.
+                summary_by_status["otros"] += cantidad
+
+        summary_by_status["total"] = total_tickets
+        # Unificar los tickets cerrados dentro de la cuenta de "resuelto" para que el frontend
+        # los trate como reclamos resueltos.
         summary_by_status["resuelto"] += summary_by_status.get("cerrado", 0)
 
         # Ahora, obtener la lista de tickets para la página actual, aplicando el filtro de estado si existe
@@ -359,10 +370,25 @@ def get_tickets_del_usuario_logic(current_user: User):
 
         serialized_tickets = [serialize_ticket_to_json(t, tipo_ticket_str) for t in tickets_for_list_page]
 
-        # Devolver tanto la lista de tickets para la página actual como el resumen
+        total_pages = 1
+        if per_page > 0:
+            total_pages = max(1, (total_tickets + per_page - 1) // per_page)
+
+        pagination_info = {
+            "page": page,
+            "per_page": per_page,
+            "total_items": total_tickets,
+            "total_pages": total_pages,
+            "has_next": page * per_page < total_tickets if per_page > 0 else False,
+            "has_prev": page > 1,
+        }
+
+        # Devolver tanto la lista de tickets para la página actual como el resumen y metadatos
+        # de paginación para facilitar experiencias responsivas (por ejemplo, vistas móviles).
         return jsonify({
             "tickets": serialized_tickets,
-            "summary": summary_by_status
+            "summary": dict(summary_by_status),
+            "pagination": pagination_info,
         })
 
     except Exception as e:
