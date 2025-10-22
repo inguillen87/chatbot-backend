@@ -357,30 +357,57 @@ def get_tickets_del_usuario_logic(current_user: User):
             else:
                 final_tickets_query = final_tickets_query.filter(TicketModel.estado == requested_estado_filter)
 
-        page = int(request.args.get("page", 1))
-        per_page = int(request.args.get("per_page", current_app.config.get("TICKETS_PER_PAGE_DEFAULT", 50)))
+        try:
+            page = int(request.args.get("page", 1))
+        except (TypeError, ValueError):
+            page = 1
+        if page < 1:
+            page = 1
 
-        tickets_for_list_page = (
-            final_tickets_query
-            .order_by(TicketModel.fecha.desc())
-            .offset((page - 1) * per_page)
-            .limit(per_page)
-            .all()
-        )
+        per_page_default = current_app.config.get("TICKETS_PER_PAGE_DEFAULT", 50)
+        per_page_raw = request.args.get("per_page")
+        try:
+            per_page = int(per_page_raw) if per_page_raw is not None else int(per_page_default)
+        except (TypeError, ValueError):
+            per_page = int(per_page_default)
+
+        # Interpret per_page <= 0 as a request for all records (no pagination)
+        if per_page <= 0:
+            per_page = 0
+            page = 1  # Cuando no hay paginación, forzamos la página a 1
+
+        ordered_query = final_tickets_query.order_by(TicketModel.fecha.desc())
+        if per_page > 0:
+            tickets_for_list_page = (
+                ordered_query
+                .offset((page - 1) * per_page)
+                .limit(per_page)
+                .all()
+            )
+        else:
+            tickets_for_list_page = ordered_query.all()
 
         serialized_tickets = [serialize_ticket_to_json(t, tipo_ticket_str) for t in tickets_for_list_page]
 
-        total_pages = 1
         if per_page > 0:
             total_pages = max(1, (total_tickets + per_page - 1) // per_page)
+            has_next = page * per_page < total_tickets
+            has_prev = page > 1
+            per_page_value = per_page
+        else:
+            total_pages = 1
+            has_next = False
+            has_prev = False
+            # Reportar 0 para mantener compatibilidad con el valor solicitado "sin límite"
+            per_page_value = 0
 
         pagination_info = {
             "page": page,
-            "per_page": per_page,
+            "per_page": per_page_value,
             "total_items": total_tickets,
             "total_pages": total_pages,
-            "has_next": page * per_page < total_tickets if per_page > 0 else False,
-            "has_prev": page > 1,
+            "has_next": has_next,
+            "has_prev": has_prev,
         }
 
         # Devolver tanto la lista de tickets para la página actual como el resumen y metadatos
