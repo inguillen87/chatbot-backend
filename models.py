@@ -316,6 +316,120 @@ class MunicipioPost(db.Model):
             "datos_extra": self.datos_extra or {},
         }
 
+
+class TenantProfile(db.Model, TimestampMixin):
+    __tablename__ = "tenant_profile"
+
+    id = db.Column(db.Integer, primary_key=True)
+    slug = db.Column(db.String(80), nullable=False, unique=True, index=True)
+    nombre = db.Column(db.String(255), nullable=False)
+    tipo = db.Column(db.String(20), nullable=False)
+    municipio_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    pyme_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    encuestas_tenant_id = db.Column(db.Integer, nullable=True)
+    dominio = db.Column(db.String(255), nullable=True)
+    logo_url = db.Column(db.String(512), nullable=True)
+    tema = db.Column(JSONType, nullable=True)
+    configuracion = db.Column(JSONType, nullable=True)
+
+    municipio = db.relationship(
+        "User",
+        foreign_keys=[municipio_id],
+        backref=db.backref("tenant_profile_municipio", uselist=False),
+    )
+    pyme = db.relationship(
+        "User",
+        foreign_keys=[pyme_id],
+        backref=db.backref("tenant_profile_pyme", uselist=False),
+    )
+
+    followers = db.relationship(
+        "TenantFollower",
+        back_populates="tenant",
+        cascade="all, delete-orphan",
+        lazy="dynamic",
+    )
+    tickets = db.relationship(
+        "TenantTicket",
+        back_populates="tenant",
+        cascade="all, delete-orphan",
+        lazy="dynamic",
+    )
+
+    __table_args__ = (
+        db.CheckConstraint(
+            "(municipio_id IS NOT NULL) OR (pyme_id IS NOT NULL)",
+            name="ck_tenant_profile_owner_present",
+        ),
+        db.CheckConstraint(
+            "NOT (municipio_id IS NOT NULL AND pyme_id IS NOT NULL)",
+            name="ck_tenant_profile_single_owner",
+        ),
+    )
+
+    def to_public_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "slug": self.slug,
+            "nombre": self.nombre,
+            "tipo": self.tipo,
+            "logo_url": self.logo_url,
+            "dominio": self.dominio,
+            "tema": self.tema or {},
+        }
+
+    def __repr__(self) -> str:  # pragma: no cover - simple representation
+        return f"<TenantProfile slug={self.slug!r} tipo={self.tipo!r}>"
+
+
+class TenantFollower(db.Model, TimestampMixin):
+    __tablename__ = "tenant_follower"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    notifications_enabled = db.Column(db.Boolean, nullable=False, default=True)
+
+    tenant = db.relationship("TenantProfile", back_populates="followers")
+    user = db.relationship("User", backref=db.backref("tenant_followers", lazy="dynamic"))
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "user_id",
+            "tenant_id",
+            name="uq_tenant_follower_user_tenant",
+        ),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - simple representation
+        return f"<TenantFollower user={self.user_id} tenant={self.tenant_id}>"
+
+
+class TenantTicket(db.Model, TimestampMixin):
+    __tablename__ = "tenant_ticket"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    categoria = db.Column(db.String(80), nullable=True)
+    descripcion = db.Column(db.Text, nullable=False)
+    estado = db.Column(db.String(20), nullable=False, default="nuevo")
+    origen = db.Column(db.String(20), nullable=False, default="pwa")
+    latitud = db.Column(db.Float, nullable=True)
+    longitud = db.Column(db.Float, nullable=True)
+    datos_extra = db.Column(JSONType, nullable=True)
+    fingerprint = db.Column(db.String(120), nullable=True, index=True)
+
+    tenant = db.relationship("TenantProfile", back_populates="tickets")
+    user = db.relationship("User", backref=db.backref("tenant_tickets", lazy="dynamic"))
+
+    __table_args__ = (
+        db.Index("ix_tenant_ticket_tenant_estado", "tenant_id", "estado"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - simple representation
+        return f"<TenantTicket id={self.id} tenant={self.tenant_id} estado={self.estado}>"
+
 class PymeTicket(db.Model):
     __tablename__ = "pyme_ticket"
     id = db.Column(db.Integer, primary_key=True)
