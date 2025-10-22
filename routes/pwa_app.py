@@ -14,6 +14,8 @@ from utils.fingerprint import hash_fingerprint
 
 
 pwa_app_bp = Blueprint("pwa_app", __name__, url_prefix="/api/pwa/app")
+# Blueprint con rutas espejo para compatibilidad con versiones previas de la PWA
+pwa_app_legacy_bp = Blueprint("pwa_app_legacy", __name__, url_prefix="/app")
 
 
 def _require_tenant() -> TenantProfile:
@@ -151,3 +153,26 @@ def create_ticket():
     db.session.commit()
 
     return jsonify({"ticket_id": ticket.id, "estado": ticket.estado}), 201
+
+
+# --- Rutas espejo para compatibilidad con clientes antiguos ---
+pwa_app_legacy_bp.add_url_rule(
+    "/me/tenants",
+    view_func=list_followed_tenants,
+    methods=["GET"],
+)
+pwa_app_legacy_bp.add_url_rule(
+    "/me/tenants/follow",
+    view_func=follow_tenant,
+    methods=["POST"],
+)
+pwa_app_legacy_bp.add_url_rule(
+    "/me/tenants/follow",
+    view_func=unfollow_tenant,
+    methods=["DELETE"],
+)
+pwa_app_legacy_bp.add_url_rule(
+    "/tickets",
+    view_func=create_ticket,
+    methods=["POST"],
+)
