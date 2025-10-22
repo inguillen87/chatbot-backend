@@ -1,5 +1,5 @@
 import unittest
-from types import SimpleNamespace
+from types import SimpleNamespace, ModuleType
 from unittest.mock import patch, MagicMock
 import sys
 import os
@@ -11,6 +11,13 @@ from models import db, User, MunicipioTicket, Rubro
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
+
+# Proveer un módulo mínimo de services.logic para evitar dependencias pesadas en los tests
+if 'services.logic' not in sys.modules:
+    mock_logic = ModuleType('services.logic')
+    mock_logic.es_rubro_publico = lambda *args, **kwargs: False
+    mock_logic.normalizar_rubro = lambda value: value
+    sys.modules['services.logic'] = mock_logic
 
 from routes.ticket import get_tickets_del_usuario_logic
 
@@ -73,6 +80,52 @@ class TicketsEndpointTest(unittest.TestCase):
                 self.assertEqual(data['tickets'][0]['id'], 1)
                 self.assertEqual(data['tickets'][0]['nro_ticket'], 'M-101')
                 self.assertEqual(data['tickets'][0]['asunto'], 'Test Ticket 1')
+
+    def test_get_tickets_per_page_zero_returns_all(self):
+        with self.app.app_context():
+            rubro = Rubro(nombre='municipios', clave='municipios')
+            db.session.add(rubro)
+            db.session.commit()
+
+            user = User(
+                id=2,
+                name='Paginated User',
+                email='paginate@example.com',
+                password_hash='test',
+                rol='admin',
+                municipio_id=20,
+                rubro_id=rubro.id
+            )
+            user.tipo_chat = 'municipio'
+            db.session.add(user)
+            db.session.commit()
+
+            tickets = [
+                MunicipioTicket(
+                    id=index,
+                    user_id=user.id,
+                    nro_ticket=200 + index,
+                    asunto=f'Ticket {index}',
+                    estado='nuevo',
+                    categoria='General',
+                    direccion='Calle 1',
+                    pregunta='test',
+                    municipio_id=20
+                )
+                for index in range(1, 4)
+            ]
+            db.session.add_all(tickets)
+            db.session.commit()
+
+            request_args = {'per_page': '0'}
+            with patch('routes.ticket.request', SimpleNamespace(args=request_args)):
+                resp = get_tickets_del_usuario_logic(user)
+                self.assertEqual(resp.status_code, 200)
+                data = resp.get_json()
+                self.assertEqual(len(data['tickets']), 3)
+                self.assertEqual(data['pagination']['per_page'], 0)
+                self.assertFalse(data['pagination']['has_next'])
+                self.assertFalse(data['pagination']['has_prev'])
 
 if __name__ == '__main__':
     unittest.main()
