@@ -86,6 +86,39 @@ def _parse_public_encuestas_domain_map(raw_value: Optional[str]) -> Dict[str, in
 
     return mapping
 
+
+def _coalesce_version(*candidates: Optional[str], fallback: str = "dev") -> str:
+    """Return the first non-empty version string from the provided candidates."""
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+
+        value = str(candidate).strip()
+        if value:
+            return value
+
+    return fallback
+
+
+# Backend/Frontend version identifiers exposed through /api/version so admins can
+# double check deployed revisions from the UI without forcing a cache reset.
+DEFAULT_FRONTEND_VERSION = _coalesce_version(
+    os.getenv("FRONTEND_VERSION"),
+    os.getenv("APP_VERSION"),
+    os.getenv("VITE_APP_VERSION"),
+    os.getenv("NEXT_PUBLIC_APP_VERSION"),
+)
+
+DEFAULT_BACKEND_VERSION = _coalesce_version(
+    os.getenv("BACKEND_VERSION"),
+    os.getenv("SOURCE_VERSION"),  # Heroku style
+    os.getenv("RENDER_GIT_COMMIT"),
+    os.getenv("GIT_COMMIT"),
+    os.getenv("GITHUB_SHA"),
+    os.getenv("VERCEL_GIT_COMMIT_SHA"),
+)
+
 # --- Variables de Entorno para Despliegue ---
 ENV = os.getenv("ENV", "dev")  # "dev" o "prod"
 
@@ -319,6 +352,18 @@ class Config:
     """
 
     DEBUG = True
+
+    # Public URLs exposed to the frontend. Keeping them in the Flask config
+    # ensures endpoints like /api/config can always read them without having
+    # to import the module-level constants.
+    BACKEND_URL = str(BACKEND_URL)
+    PANEL_URL = str(PANEL_URL)
+    WIDGET_URL = str(WIDGET_URL)
+
+    # Version identifiers surfaced through /api/version so that the Admin UI
+    # can display the active frontend/backend revisions.
+    FRONTEND_VERSION = DEFAULT_FRONTEND_VERSION
+    BACKEND_VERSION = DEFAULT_BACKEND_VERSION
 
     # 1. LLAVE SECRETA
     SECRET_KEY = os.getenv("SECRET_KEY", "una-llave-secreta-muy-segura-para-desarrollo-local")
