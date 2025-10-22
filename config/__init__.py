@@ -385,6 +385,10 @@ class Config:
     ANON_SESSION_COOKIE_NAME = os.getenv("ANON_SESSION_COOKIE_NAME", "chatboc_anon_id")
     ANON_SESSION_COOKIE_MAX_AGE = int(os.getenv("ANON_SESSION_COOKIE_MAX_AGE", str(60 * 60 * 24 * 30)))
 
+    WEBAUTHN_RP_ID = os.getenv("WEBAUTHN_RP_ID", "chatboc.ar")
+    WEBAUTHN_RP_NAME = os.getenv("WEBAUTHN_RP_NAME", "Chatboc")
+    WEBAUTHN_EXPECTED_ORIGIN = os.getenv("WEBAUTHN_EXPECTED_ORIGIN", "https://www.chatboc.ar")
+
     DEMO_MAX_MESSAGES_PER_SESSION = int(os.getenv("DEMO_MAX_MESSAGES_PER_SESSION", "5"))
     DEMO_WELCOME_MESSAGE = os.getenv(
         "DEMO_WELCOME_MESSAGE",

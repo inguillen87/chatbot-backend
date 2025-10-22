@@ -88,6 +88,7 @@ msgspec==0.19.0
 jsonschema
 h3==4.1.0
 faker==25.9.1
+webauthn>=2.0.0
 
 ############################
 # GOOGLE CLOUD / GEN AI
