@@ -141,6 +141,52 @@ PLACEHOLDER_DESCRIPTIONS_NORMALIZED = {
 }
 
 
+def formatear_opciones(opciones: Optional[Sequence[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Normaliza una lista de opciones para respuestas interactivas.
+
+    Esta función garantiza que cada opción contenga las claves ``texto`` y
+    ``action_id`` (aceptando alias comunes como ``text`` o ``action``), elimina
+    entradas inválidas y conserva cualquier metadato adicional (por ejemplo,
+    ``url`` o ``type``).
+    """
+
+    if not opciones:
+        return []
+
+    opciones_normalizadas: List[Dict[str, Any]] = []
+    combinaciones_vistas: set[tuple[Any, Any, Any]] = set()
+
+    for indice, opcion in enumerate(opciones, start=1):
+        if not isinstance(opcion, dict):
+            continue
+
+        texto_original = opcion.get("texto") or opcion.get("text") or opcion.get("label") or opcion.get("title")
+        texto = str(texto_original).strip() if texto_original is not None else ""
+        if not texto:
+            texto = f"Opción {indice}"
+
+        action_original = opcion.get("action_id") or opcion.get("action") or opcion.get("id") or opcion.get("value")
+        action_id = str(action_original).strip() if action_original is not None else ""
+        if not action_id:
+            action_id = f"opcion_{indice}"
+
+        opcion_normalizada = {
+            key: value
+            for key, value in opcion.items()
+            if key not in {"text", "label", "title", "action"}
+        }
+        opcion_normalizada.update({"texto": texto, "action_id": action_id})
+
+        dedup_key = (texto, action_id, opcion_normalizada.get("url"))
+        if dedup_key in combinaciones_vistas:
+            continue
+
+        combinaciones_vistas.add(dedup_key)
+        opciones_normalizadas.append(opcion_normalizada)
+
+    return opciones_normalizadas
+
+
 def _is_placeholder_description(value: Any) -> bool:
     if not value or not isinstance(value, str):
         return False
@@ -1258,19 +1304,14 @@ class ReclamoFlowHandler:
         static_map_url = datos.get('static_map_url')
         if maps_link:
             mensaje += f"- Mapa: {maps_link}\n"
-        opciones = [
-            {"texto": "Confirmar", "action_id": "reclamo_confirmar_si"},
-            {"texto": "Editar", "action_id": "reclamo_confirmar_no"},
-            {"texto": "Cancelar", "action_id": "cancelar"},
-        ]
-        opciones = formatear_opciones(opciones)
+        opciones = formatear_opciones([
+            {"texto": "✅ Confirmar", "action_id": "reclamo_confirmar_si"},
+            {"texto": "✏️ Editar datos", "action_id": "reclamo_confirmar_no"},
+            {"texto": "❌ Cancelar", "action_id": "reclamo_cancelar"},
+        ])
         payload = {
             "message_body": mensaje,
-            "options_list": [
-                {"texto": "✅ Confirmar", "action_id": "reclamo_confirmar_si"},
-                {"texto": "✏️ Editar datos", "action_id": "reclamo_confirmar_no"},
-                {"texto": "❌ Cancelar", "action_id": "reclamo_cancelar"}
-            ],
+            "options_list": opciones,
             "message_type": "interactive_buttons"
         }
         if static_map_url:
