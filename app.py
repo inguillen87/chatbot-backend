@@ -32,6 +32,7 @@ from sqlalchemy import event as sa_event
 from config import Config, ALLOWED_ORIGINS
 from config.feature_flags import FEATURE_ENCUESTAS
 from extensions import db, migrate, login_manager  # livianos
+from middleware import tenant_middleware
 
 # En migraciones NO importamos socket_service ni blueprints
 if not MIGRATIONS_ONLY:
@@ -124,6 +125,8 @@ def create_app(config_class=Config):
                 if user:
                     g.viewer = user
                     current_app.logger.debug(f"User {user.id} via token.")
+
+        tenant_middleware(app)
 
     # --- Inicialización de extensiones base (seguras para migraciones) ---
     with app.app_context():
@@ -279,6 +282,8 @@ def create_app(config_class=Config):
             encuestas_admin_bp,
             encuestas_public_bp,
         )
+        from routes.pwa_public import pwa_public_bp
+        from routes.pwa_app import pwa_app_bp
         from cli_commands import register_commands
 
         if FEATURE_ENCUESTAS:
@@ -355,6 +360,8 @@ def create_app(config_class=Config):
         app.register_blueprint(bp_est)
         app.register_blueprint(media_bp)
         app.register_blueprint(accessibility_bp)
+        app.register_blueprint(pwa_public_bp)
+        app.register_blueprint(pwa_app_bp)
         app.register_blueprint(encuestas_admin_bp)
         app.register_blueprint(encuestas_public_bp)
         if FEATURE_ENCUESTAS:
