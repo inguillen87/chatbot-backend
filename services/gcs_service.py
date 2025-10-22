@@ -5,6 +5,7 @@ import io
 import re
 import shutil
 from datetime import datetime, timedelta
+from typing import Any
 from urllib.parse import urlparse, urljoin
 
 import requests
@@ -320,13 +321,17 @@ def _mask_sensitive_value(value: str) -> str:
 
 
 def _clean_env_value(name: str) -> str | None:
-    """Return a trimmed environment variable or ``None`` if empty."""
+    """Return a trimmed config value from env or Flask config when available."""
 
-    raw_value = os.environ.get(name)
+    raw_value: Any = os.environ.get(name)
+
+    if raw_value is None and has_app_context():
+        raw_value = current_app.config.get(name)
+
     if raw_value is None:
         return None
 
-    cleaned = raw_value.strip()
+    cleaned = str(raw_value).strip()
     return cleaned or None
 
 
@@ -396,7 +401,7 @@ def _init_cloudinary():  # pragma: no cover - thin wrapper validated via tests
         logger.error("Failed to configure Cloudinary: %s", exc, exc_info=True)
         return False, None, {}
 
-    extra_options = {}
+    extra_options: dict[str, Any] = {}
     if upload_folder:
         sanitized = upload_folder.strip("/")
         if sanitized:
@@ -434,14 +439,69 @@ def _init_cloudinary():  # pragma: no cover - thin wrapper validated via tests
     return True, cloudinary_uploader, extra_options
 
 
-CLOUDINARY_ENABLED, uploader, CLOUDINARY_UPLOAD_OPTIONS = _init_cloudinary()
+CLOUDINARY_ENABLED: bool | None = None
+uploader = None
+CLOUDINARY_UPLOAD_OPTIONS: dict[str, Any] = {}
 _CLOUDINARY_DISABLED_REASON: str | None = None
+_CLOUDINARY_CONFIG_FINGERPRINT: tuple[str | None, str | None, str | None, str | None, str | None] | None = None
+
+
+def _current_cloudinary_fingerprint() -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    """Return a tuple identifying the active Cloudinary configuration."""
+
+    return (
+        _clean_env_value("CLOUDINARY_URL"),
+        _clean_env_value("CLOUDINARY_CLOUD_NAME"),
+        _clean_env_value("CLOUDINARY_API_KEY"),
+        _clean_env_value("CLOUDINARY_API_SECRET"),
+        _clean_env_value("CLOUDINARY_UPLOAD_FOLDER"),
+    )
+
+
+def _ensure_cloudinary_initialized(force: bool = False) -> None:
+    """Initialise Cloudinary configuration when first accessed."""
+
+    global CLOUDINARY_ENABLED
+    global uploader
+    global CLOUDINARY_UPLOAD_OPTIONS
+    global _CLOUDINARY_DISABLED_REASON
+    global _CLOUDINARY_CONFIG_FINGERPRINT
+
+    if force:
+        CLOUDINARY_ENABLED = None
+        uploader = None
+        CLOUDINARY_UPLOAD_OPTIONS = {}
+        _CLOUDINARY_DISABLED_REASON = None
+        _CLOUDINARY_CONFIG_FINGERPRINT = None
+
+    fingerprint = _current_cloudinary_fingerprint()
+
+    if CLOUDINARY_ENABLED is not None and fingerprint == _CLOUDINARY_CONFIG_FINGERPRINT:
+        return
+
+    enabled, configured_uploader, options = _init_cloudinary()
+    CLOUDINARY_ENABLED = enabled
+    uploader = configured_uploader
+    CLOUDINARY_UPLOAD_OPTIONS = options
+    _CLOUDINARY_CONFIG_FINGERPRINT = fingerprint
+
+
+def refresh_cloudinary_configuration() -> None:
+    """Force Cloudinary to pick up new credentials from env or app config."""
+
+    _ensure_cloudinary_initialized(force=True)
+
+
+_ensure_cloudinary_initialized()
 
 
 def _disable_cloudinary(reason: str) -> None:
     """Disable Cloudinary uploads for the remainder of the process."""
 
     global CLOUDINARY_ENABLED, _CLOUDINARY_DISABLED_REASON
+
+    if CLOUDINARY_ENABLED is None:
+        _ensure_cloudinary_initialized()
 
     if not CLOUDINARY_ENABLED:
         return
@@ -625,7 +685,7 @@ def _save_to_local(
         "mimetype": mimetype,
         "thumb_meta": thumb_meta,
         "thumbUrl": thumb_url,
-        "path": original_path,
+        "path": os.path.realpath(original_path),
     }
 
 
@@ -684,6 +744,11 @@ def _save_to_cloudinary(
     Returns ``None`` if the upload fails so callers can gracefully fall back to
     the next configured storage backend.
     """
+    _ensure_cloudinary_initialized()
+
+    if not CLOUDINARY_ENABLED or uploader is None:
+        return None
+
     try:  # pragma: no cover - exercised via unit tests with mocks
         file_obj = io.BytesIO(file_bytes)
         upload_kwargs = {"public_id": unique_name, "resource_type": "auto"}
@@ -733,11 +798,15 @@ def _save_to_cloudinary(
             "must specify api key",
             "api key is invalid",
             "unauthorized",
+            "must supply api_secret",
+            "must supply api secret",
         )
         if any(token in error_message for token in auth_errors):
             reason = "authentication error"
             if "unknown api key" in error_message:
                 reason = "unknown api key"
+            elif "must supply api_secret" in error_message or "must supply api secret" in error_message:
+                reason = "missing api secret"
             _disable_cloudinary(reason)
 
         return None
@@ -764,6 +833,8 @@ def upload_to_gcs(file_storage) -> dict | None:
 
     file_storage.seek(0)
     file_bytes = file_storage.read()
+
+    _ensure_cloudinary_initialized()
 
     if CLOUDINARY_ENABLED:
         result = _save_to_cloudinary(
@@ -867,6 +938,8 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
     thumbnail_bytes, thumb_meta = generar_thumbnail(
         file_stream_for_thumb, file_storage.mimetype
     )
+
+    _ensure_cloudinary_initialized()
 
     if CLOUDINARY_ENABLED:
         cloudinary_result = _save_to_cloudinary(
