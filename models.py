@@ -87,6 +87,7 @@ class User(db.Model, UserMixin):
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(128), nullable=False)
     token = db.Column(db.String(255), nullable=True)
+    anon_id = db.Column(db.String(80), nullable=True, index=True)
     rol = db.Column(db.String(30), default="usuario")
     tipo_chat = db.Column(db.String(20), nullable=True)
     password_reset_selector = db.Column(db.String(64), unique=True, index=True, nullable=True)
@@ -184,6 +185,39 @@ class User(db.Model, UserMixin):
         self.password_reset_selector = None
         self.password_reset_verifier_hash = None
         self.password_reset_sent_at = None
+
+    @classmethod
+    def create_or_get_by_anon(
+        cls,
+        anon_id: Optional[str],
+        display_name: Optional[str] = None,
+    ) -> "User":
+        """Return an existing provisional user or create a new one for ``anon_id``."""
+
+        display = (display_name or "Ciudadano").strip() or "Ciudadano"
+
+        if anon_id:
+            existing = cls.query.filter_by(anon_id=anon_id).first()
+            if existing:
+                if not existing.name:
+                    existing.name = display
+                return existing
+
+        placeholder_email = f"anon-{uuid.uuid4().hex}@passkey.chatboc"
+        random_password = secrets.token_urlsafe(24)
+
+        provisional = cls(
+            name=display,
+            email=placeholder_email,
+            token=generate_token(),
+            anon_id=anon_id or uuid.uuid4().hex,
+            rol="usuario",
+        )
+        provisional.set_password(random_password)
+
+        db.session.add(provisional)
+        db.session.flush()
+        return provisional
 
     @property
     def horario_json(self):
@@ -429,6 +463,35 @@ class TenantTicket(db.Model, TimestampMixin):
 
     def __repr__(self) -> str:  # pragma: no cover - simple representation
         return f"<TenantTicket id={self.id} tenant={self.tenant_id} estado={self.estado}>"
+
+
+class WebAuthnCredential(db.Model, TimestampMixin):
+    __tablename__ = "webauthn_credential"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    credential_id = db.Column(db.String(255), unique=True, nullable=False)
+    public_key = db.Column(db.Text, nullable=False)
+    sign_count = db.Column(db.Integer, nullable=False, default=0)
+    transports = db.Column(JSONType, nullable=True)
+
+    user = db.relationship(
+        "User",
+        backref=db.backref(
+            "webauthn_credentials",
+            cascade="all, delete-orphan",
+            lazy="dynamic",
+        ),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - simple representation
+        return f"<WebAuthnCredential user={self.user_id} id={self.credential_id[:8]}>"
+
 
 class PymeTicket(db.Model):
     __tablename__ = "pyme_ticket"

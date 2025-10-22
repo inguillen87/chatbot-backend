@@ -284,6 +284,7 @@ def create_app(config_class=Config):
         )
         from routes.pwa_public import pwa_public_bp
         from routes.pwa_app import pwa_app_bp
+        from routes.webauthn import webauthn_bp
         from cli_commands import register_commands
 
         if FEATURE_ENCUESTAS:
@@ -362,6 +363,7 @@ def create_app(config_class=Config):
         app.register_blueprint(accessibility_bp)
         app.register_blueprint(pwa_public_bp)
         app.register_blueprint(pwa_app_bp)
+        app.register_blueprint(webauthn_bp)
         app.register_blueprint(encuestas_admin_bp)
         app.register_blueprint(encuestas_public_bp)
         if FEATURE_ENCUESTAS:
