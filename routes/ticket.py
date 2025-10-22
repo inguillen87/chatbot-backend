@@ -23,6 +23,7 @@ from utils.permissions import require_role
 from collections import defaultdict
 from sqlalchemy import or_, func
 from utils.ticket_utils import normalize_category
+from utils.time_utils import datetime_to_iso_utc
 logger = logging.getLogger("app")
 
 from utils.recaptcha import verify_recaptcha
@@ -175,7 +176,7 @@ def serialize_ticket_to_json(ticket, ticket_type):
         "asunto": getattr(ticket, 'asunto', 'Sin Asunto'),
         # Mapear "cerrado" a "resuelto" para una mejor UX en el panel.
         "estado": "resuelto" if getattr(ticket, 'estado', None) == "cerrado" else ticket.estado,
-        "fecha": ticket.fecha.isoformat(),
+        "fecha": datetime_to_iso_utc(ticket.fecha),
         "categoria": normalize_category(getattr(ticket, 'categoria', 'Sin Categoría')),
         "direccion": user_data.get("direccion", "No especificada"),
         "distrito": getattr(ticket, 'distrito', None),
@@ -470,7 +471,7 @@ def get_mis_tickets(current_user: User):
                 "nro_ticket": t.nro_ticket,
                 "asunto": getattr(t, "asunto", "N/A"),
                 "estado": t.estado,
-                "fecha": t.fecha.isoformat(),
+                "fecha": datetime_to_iso_utc(t.fecha),
                 "direccion": getattr(t, "direccion", None),
                 "latitud": getattr(t, "latitud", None),
                 "longitud": getattr(t, "longitud", None),
@@ -573,13 +574,13 @@ def _serialize_ticket_details(ticket, ticket_type):
                 analisis = adj.analisis
                 analisis_data = {
                     "id": analisis.id, "resumen": analisis.resumen, "estado_analisis": analisis.estado_analisis,
-                    "fecha_analisis": analisis.fecha_analisis.isoformat() if analisis.fecha_analisis else None,
+                    "fecha_analisis": datetime_to_iso_utc(analisis.fecha_analisis) if analisis.fecha_analisis else None,
                     "error_analisis": analisis.error_analisis, "texto_extraido": analisis.texto_extraido,
                     "datos_estructurados": analisis.datos_estructurados, "tipo_analisis": analisis.tipo_analisis,
                 }
             archivos_adjuntos_data.append({
                 "id": adj.id, "name": adj.nombre_original or adj.filename, "mimeType": adj.mime,
-                "size": adj.tamano, "url": adj.url, "fecha": adj.fecha.isoformat() if adj.fecha else None,
+                "size": adj.tamano, "url": adj.url, "fecha": datetime_to_iso_utc(adj.fecha) if adj.fecha else None,
                 "analisis": analisis_data
             })
 
@@ -599,7 +600,7 @@ def _serialize_ticket_details(ticket, ticket_type):
         "asunto": getattr(ticket, 'asunto', ''),
         "categoria_reclamo": getattr(ticket, 'categoria', ''),
         "estado_ticket": ticket.estado,
-        "fecha_hora_creacion": ticket.fecha.isoformat(),
+        "fecha_hora_creacion": datetime_to_iso_utc(ticket.fecha),
         "descripcion_completa_reclamo": getattr(ticket, 'pregunta', ''),
         "detalles_adicionales": user_data["descripcion"], # Datos extraídos del campo 'detalles'
         "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
@@ -939,14 +940,14 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
                 "mimeType": adj.mime,
                 "size": adj.tamano,
                 "url": adj.url, 
-                "fecha": adj.fecha.isoformat() if adj.fecha else None,
+                "fecha": datetime_to_iso_utc(adj.fecha) if adj.fecha else None,
                 "analisis": None 
             })
 
     ticket_data_respuesta = {
         "id": ticket_obj.id, "tipo": tipo, "nro_ticket": ticket_obj.nro_ticket,
         "asunto": getattr(ticket_obj, 'asunto', ''), "estado": ticket_obj.estado,
-        "fecha": ticket_obj.fecha.isoformat(),
+        "fecha": datetime_to_iso_utc(ticket_obj.fecha),
         "detalles": getattr(ticket_obj, 'detalles', getattr(ticket_obj, 'pregunta', '')),
         "comentarios": comentarios_actualizados, # Usar la lista actualizada
         "archivos_adjuntos": archivos_actualizados_data, # Usar la lista actualizada
@@ -1044,11 +1045,19 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
     emit_ticket_update(ticket_json)
 
-    comentarios = [{"id": c.id, "comentario": c.comentario, "fecha": c.fecha.isoformat(), "es_admin": c.es_admin} for c in ticket_obj.comentarios]
+    comentarios = [
+        {
+            "id": c.id,
+            "comentario": c.comentario,
+            "fecha": datetime_to_iso_utc(c.fecha),
+            "es_admin": c.es_admin,
+        }
+        for c in ticket_obj.comentarios
+    ]
     ticket_data = {
         "id": ticket_obj.id, "tipo": tipo, "nro_ticket": ticket_obj.nro_ticket,
         "asunto": getattr(ticket_obj, 'asunto', ''), "estado": ticket_obj.estado,
-        "fecha": ticket_obj.fecha.isoformat(),
+        "fecha": datetime_to_iso_utc(ticket_obj.fecha),
         "detalles": getattr(ticket_obj, 'detalles', getattr(ticket_obj, 'pregunta', '')),
         "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
         "rubro_id": getattr(ticket_obj, 'rubro_id', None),
@@ -1477,7 +1486,7 @@ def get_panel_por_categoria(current_user: User):
                 ticket_data_serialized = {
                     "id": ticket_obj.id, "tipo": "municipio", "nro_ticket": ticket_obj.nro_ticket,
                     "asunto": ticket_obj.asunto, "estado": ticket_obj.estado,
-                    "fecha": ticket_obj.fecha.isoformat(), "direccion": direccion,
+                    "fecha": datetime_to_iso_utc(ticket_obj.fecha), "direccion": direccion,
                     "latitud": getattr(ticket_obj, 'latitud', None), "longitud": getattr(ticket_obj, 'longitud', None),
                     "nombre_usuario": user_data["nombre"],
                     "telefono": user_data["telefono"],
@@ -1551,7 +1560,7 @@ def get_panel_pyme(current_user: User):
                 ticket_data_serialized = {
                     "id": ticket_obj.id, "tipo": "pyme", "nro_ticket": ticket_obj.nro_ticket,
                     "asunto": ticket_obj.asunto, "estado": ticket_obj.estado,
-                    "fecha": ticket_obj.fecha.isoformat(),
+                    "fecha": datetime_to_iso_utc(ticket_obj.fecha),
                     "direccion": getattr(ticket_obj, 'direccion', None),
                     "latitud": getattr(ticket_obj, 'latitud', None), "longitud": getattr(ticket_obj, 'longitud', None),
                      # PYME specific fields for serialization if needed by frontend for this view
@@ -1730,7 +1739,7 @@ def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
         "tipo": encuesta.tipo,
         "puntuacion": encuesta.puntuacion,
         "comentario": encuesta.comentario,
-        "fecha": encuesta.fecha.isoformat() if encuesta.fecha else None,
+        "fecha": datetime_to_iso_utc(encuesta.fecha) if encuesta.fecha else None,
     })
 
 # ---------- MAPA DE TICKETS ABIERTOS ----------

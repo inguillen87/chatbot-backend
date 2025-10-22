@@ -1,7 +1,7 @@
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from utils.time_utils import get_local_now
+from utils.time_utils import get_local_now, datetime_to_iso_utc
 from sqlalchemy import (
     Column,
     Integer,
@@ -666,7 +666,7 @@ class TicketComentario(db.Model):
             "municipio_ticket_id": self.municipio_ticket_id,
             "comentario": self.comentario,
             "texto": self.comentario,
-            "fecha": self.fecha.isoformat(),
+            "fecha": datetime_to_iso_utc(self.fecha),
             "user_id": self.user_id,
             "anon_id": self.anon_id,
             "es_admin": self.es_admin,
@@ -679,7 +679,8 @@ class TicketComentario(db.Model):
                 "url": self.archivo_adjunto.url,
                 "name": self.archivo_adjunto.nombre_original,
                 "mimeType": self.archivo_adjunto.mime,
-                "size": self.archivo_adjunto.tamano
+                "size": self.archivo_adjunto.tamano,
+                "uploadedAt": datetime_to_iso_utc(self.archivo_adjunto.fecha),
             }
 
             # Fetch metadata from AnalisisArchivo

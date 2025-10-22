@@ -14,6 +14,7 @@ from models import (
     db,
 )
 from utils.ticket_utils import normalize_category
+from utils.time_utils import datetime_to_iso_utc
 from sqlalchemy.exc import SQLAlchemyError
 from .integracion_municipal import enviar_ticket_a_sigem # SIGEM Integration
 from utils.heatmap import enrich_heatmap_points
@@ -604,7 +605,7 @@ class ServicioTickets:
                     mensajes.append(
                         {
                             "texto": conv.pregunta,
-                            "fecha": conv.timestamp.isoformat(),
+                            "fecha": datetime_to_iso_utc(conv.timestamp),
                             "autor": "vecino",
                             "autor_nombre": nombre_vecino,
                             "es_admin": False,
@@ -612,7 +613,9 @@ class ServicioTickets:
                     )
                 if conv.respuesta:
                     # Añadir un pequeño delta para conservar el orden pregunta-respuesta
-                    respuesta_fecha = (conv.timestamp + timedelta(milliseconds=1)).isoformat()
+                    respuesta_fecha = datetime_to_iso_utc(
+                        conv.timestamp + timedelta(milliseconds=1)
+                    )
                     mensajes.append(
                         {
                             "texto": conv.respuesta,
@@ -632,6 +635,7 @@ class ServicioTickets:
         for c in comentarios:
             data = c.to_dict()
             data["texto"] = data.pop("comentario")
+            data["fecha"] = datetime_to_iso_utc(c.fecha)
             mensajes.append(data)
 
         # Orden cronológico por fecha
@@ -653,7 +657,7 @@ class ServicioTickets:
             {
                 "tipo": "ticket_creado",
                 "estado": "nuevo",
-                "fecha": ticket.fecha.isoformat(),
+                "fecha": datetime_to_iso_utc(ticket.fecha),
             }
         ]
 
@@ -663,7 +667,7 @@ class ServicioTickets:
                     {
                         "tipo": "estado",
                         "estado": _estado_publico(c.estado_ticket),
-                        "fecha": c.fecha.isoformat(),
+                        "fecha": datetime_to_iso_utc(c.fecha),
                     }
                 )
             else:
@@ -686,7 +690,7 @@ class ServicioTickets:
                     {
                         "tipo": "comentario",
                         "texto": c.comentario,
-                        "fecha": c.fecha.isoformat(),
+                        "fecha": datetime_to_iso_utc(c.fecha),
                         "es_admin": c.es_admin,
                         "user_id": c.user_id,
                         "autor": autor_tipo,
