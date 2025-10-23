@@ -126,17 +126,43 @@ class DocumentProcessingService:
 
     def _extract_from_spreadsheet(self, file_content: bytes, filename: str | None = None) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
         buffer = io.BytesIO(file_content)
-        df_raw = pd.read_excel(buffer, header=None, dtype=str, keep_default_na=False)
+        csv_text: str | None = None
+
+        try:
+            df_raw = pd.read_excel(buffer, header=None, dtype=str, keep_default_na=False)
+
+            def loader(header: int) -> pd.DataFrame:
+                inner_buffer = io.BytesIO(file_content)
+                return pd.read_excel(inner_buffer, header=header, dtype=str, keep_default_na=False)
+
+        except ValueError:
+            csv_text = file_content.decode("utf-8", errors="replace")
+            df_raw = pd.read_csv(
+                io.StringIO(csv_text),
+                header=None,
+                dtype=str,
+                keep_default_na=False,
+                sep=None,
+                engine="python",
+            )
+
+            def loader(header: int) -> pd.DataFrame:
+                return pd.read_csv(
+                    io.StringIO(csv_text),
+                    header=header,
+                    dtype=str,
+                    keep_default_na=False,
+                    sep=None,
+                    engine="python",
+                )
 
         header_row = self._detect_header_row(df_raw)
-
-        buffer.seek(0)
-        df = pd.read_excel(buffer, header=header_row, dtype=str, keep_default_na=False)
-        df = df.dropna(how="all")
+        df = loader(header_row)
+        df = df.applymap(lambda val: val.strip() if isinstance(val, str) else val)
+        df = df.replace("", pd.NA).dropna(how="all").fillna("")
 
         df.columns = [self._clean_header(str(col)) for col in df.columns]
         df = df.loc[:, ~df.columns.str.contains(r"^unnamed", case=False)]
-        df = df.applymap(lambda val: val.strip() if isinstance(val, str) else val)
 
         records = df.to_dict(orient="records")
         trimmed_records = records[: self.MAX_TABLE_ROWS]
@@ -148,6 +174,7 @@ class DocumentProcessingService:
             "header_row_index": header_row,
             "columnas_detectadas": list(df.columns),
             "total_filas": len(df),
+            "formato_fuente": "csv" if csv_text is not None else "excel",
         }
 
         return csv_buffer.getvalue(), trimmed_records, metadata
