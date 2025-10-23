@@ -459,40 +459,94 @@ def enviar_email_con_adjunto(destino: str, asunto: str, cuerpo_html: str, nombre
         return False
 
 
-def enviar_email_pedido_admin(pedido) -> bool:
+def _render_items_html(pedido) -> str:
+    try:
+        from services.pedido_pdf import extraer_items_pedido
+    except Exception:  # pragma: no cover - fallback if import fails
+        extraer_items_pedido = None  # type: ignore
+
+    if extraer_items_pedido is None:
+        return f"<pre>{getattr(pedido, 'detalles', '')}</pre>"
+
+    items = extraer_items_pedido(pedido)
+    if not items:
+        return f"<pre>{getattr(pedido, 'detalles', '')}</pre>"
+
+    lines = ["<ul style='padding-left:20px'>"]
+    for item in items:
+        nombre = item.get("nombre", "Item")
+        cantidad = item.get("cantidad", 0)
+        precio = item.get("precio_unitario", 0)
+        subtotal = item.get("subtotal", cantidad * precio)
+        lines.append(
+            f"<li><strong>{nombre}</strong>: {cantidad:g} x ${precio:,.2f} = ${subtotal:,.2f}</li>"
+        )
+    lines.append("</ul>")
+    return "".join(lines)
+
+
+def enviar_email_pedido_admin(pedido, *, pdf_bytes: bytes | None = None, empresa_info: Dict[str, Any] | None = None) -> bool:
     """Envía un correo al administrador con el nuevo pedido."""
     admin_email_val = current_app.config.get("ADMIN_EMAIL")
     if not admin_email_val or admin_email_val == "noreply@example.com":
         logger.warning("[EMAIL] ADMIN_EMAIL no configurado para notificación de pedido. Envío omitido.")
         return False
 
-    detalles = pedido.detalles
     asunto = f"Nuevo pedido {pedido.nro_pedido}"
     cuerpo_html_pedido = (
         f"<h3>Nuevo pedido recibido</h3>"
         f"<p><strong>Número:</strong> {pedido.nro_pedido}</p>"
         f"<p><strong>Cliente:</strong> {pedido.nombre_cliente} - {pedido.email_cliente} - {pedido.telefono_cliente}</p>"
         f"<p><strong>Monto estimado:</strong> ${pedido.monto_total:,.2f}</p>"
-        f"<pre>{detalles}</pre>"
+        f"{_render_items_html(pedido)}"
     )
+    cuerpo_texto = (
+        f"Nuevo pedido {pedido.nro_pedido} de {pedido.nombre_cliente or 'cliente'} "
+        f"por ${pedido.monto_total or 0:,.2f}."
+    )
+    if pdf_bytes:
+        nombre_archivo = f"Pedido-{pedido.nro_pedido}.pdf"
+        return enviar_email_con_adjunto(admin_email_val, asunto, cuerpo_html_pedido, nombre_archivo, pdf_bytes, cuerpo_texto)
     # Para emails transaccionales, no marcamos como es_campana=True
-    return enviar_email(admin_email_val, asunto, cuerpo_html_pedido)
+    return enviar_email(admin_email_val, asunto, cuerpo_html_pedido, cuerpo_texto=cuerpo_texto)
 
 
-def enviar_email_pedido_cliente(pedido) -> bool:
+def enviar_email_pedido_cliente(pedido, *, pdf_bytes: bytes | None = None, empresa_info: Dict[str, Any] | None = None) -> bool:
     """Envía un correo al cliente confirmando su pedido."""
     destino = getattr(pedido, "email_cliente", None)
     if not destino:
         logger.warning("[EMAIL] Pedido sin email de cliente.")
         return False
 
-    asunto = f"Confirmación de pedido {pedido.nro_pedido}"
-    cuerpo_html_confirmacion = (
-        f"<p>Hola {pedido.nombre_cliente or ''},</p>"
-        f"<p>Recibimos tu pedido <strong>{pedido.nro_pedido}</strong> y está en proceso.</p>"
-        "<p>Te avisaremos cuando esté listo para el envío.</p>"
-    )
-    return enviar_email(destino, asunto, cuerpo_html_confirmacion)
+    empresa_nombre = None
+    if empresa_info:
+        empresa_nombre = empresa_info.get("nombre")
+    asunto = f"Confirmación de pedido {pedido.nro_pedido}" if not empresa_nombre else f"{empresa_nombre} - Pedido {pedido.nro_pedido}"
+    body_lines = [
+        f"<p>Hola {pedido.nombre_cliente or ''},</p>",
+        f"<p>Recibimos tu pedido <strong>{pedido.nro_pedido}</strong> y está en proceso.</p>",
+    ]
+    if pdf_bytes:
+        body_lines.append("<p>Adjuntamos la nota de pedido en PDF para que la revises.</p>")
+    else:
+        body_lines.append("<p>Te avisaremos cuando esté listo para el envío.</p>")
+    items_html = _render_items_html(pedido)
+    if items_html:
+        body_lines.append(items_html)
+    cuerpo_html_confirmacion = "".join(body_lines)
+    if pdf_bytes:
+        cuerpo_texto = (
+            f"Hola {pedido.nombre_cliente or ''}, tu pedido {pedido.nro_pedido} está en proceso. "
+            "Adjuntamos la nota en PDF."
+        )
+    else:
+        cuerpo_texto = (
+            f"Hola {pedido.nombre_cliente or ''}, tu pedido {pedido.nro_pedido} está en proceso."
+        )
+    if pdf_bytes:
+        nombre_archivo = f"Pedido-{pedido.nro_pedido}.pdf"
+        return enviar_email_con_adjunto(destino, asunto, cuerpo_html_confirmacion, nombre_archivo, pdf_bytes, cuerpo_texto)
+    return enviar_email(destino, asunto, cuerpo_html_confirmacion, cuerpo_texto=cuerpo_texto)
 
 
 def enviar_email_ticket_admin(

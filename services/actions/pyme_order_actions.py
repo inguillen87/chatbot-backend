@@ -180,6 +180,7 @@ class CrearPedidoAction(BaseActionHandler):
                 "direccion": direccion_entrega,
             }
 
+            nota_pdf_generado = getattr(nuevo_pedido, "nota_pedido_pdf_generado", False)
             data_payload = {
                 "nro_pedido": nuevo_pedido.nro_pedido,
                 "pedido_id": nuevo_pedido.id,
@@ -188,11 +189,18 @@ class CrearPedidoAction(BaseActionHandler):
                 "cart_summary": current_cart_summary,
                 "cliente": cliente_payload,
                 "order_summary_text": resumen_carrito,
+                "nota_pedido_pdf_generado": nota_pdf_generado,
             }
+
+            mensaje_confirmacion = resumen_carrito
+            if nota_pdf_generado and email_cliente_validado:
+                mensaje_confirmacion += f"\n\nTe enviamos la nota de pedido en PDF a {email_cliente_validado}."
+            elif nota_pdf_generado:
+                mensaje_confirmacion += "\n\nLa nota de pedido en PDF está lista para compartir con tu equipo."
 
             return {
                 "success": True,
-                "message_body": resumen_carrito,
+                "message_body": mensaje_confirmacion,
                 "data": data_payload,
                 "fuente": "pyme_pedido_registrado",
             }

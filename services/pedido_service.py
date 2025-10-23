@@ -1,5 +1,7 @@
 import logging
-from models import db, PymePedido  # Asegúrate que PymePedido esté importado desde models
+from typing import Optional
+
+from models import db, PymePedido, User  # Asegúrate que PymePedido esté importado desde models
 from .email_service import (
     enviar_email_pedido_admin,
     enviar_email_pedido_cliente,
@@ -14,6 +16,7 @@ from utils.validators import (
     normalize_phone,
     validate_address,
 )
+from services.pedido_pdf import generar_pdf_nota_pedido
 
 logger = logging.getLogger(__name__)
 
@@ -81,12 +84,47 @@ class PedidoService:
             logger.info(
                 f"Nuevo pedido '{nuevo_pedido.nro_pedido}' creado para rubro '{rubro_log}' por cliente '{nuevo_pedido.nombre_cliente}'"
             )
+            pyme_owner: Optional[User] = None
+            empresa_info = None
             try:
-                enviar_email_pedido_admin(nuevo_pedido)
+                pyme_owner = db.session.get(User, pyme_id)
+            except Exception:
+                pyme_owner = User.query.get(pyme_id)
+            if pyme_owner:
+                empresa_info = {
+                    "nombre": getattr(pyme_owner, "nombre_empresa", None) or getattr(pyme_owner, "name", None),
+                    "direccion": getattr(pyme_owner, "direccion", None),
+                    "telefono": getattr(pyme_owner, "telefono", None),
+                    "email": getattr(pyme_owner, "email", None),
+                }
+
+            pdf_bytes = None
+            try:
+                pdf_bytes = generar_pdf_nota_pedido(nuevo_pedido, empresa_info=empresa_info)
+            except RuntimeError as pdf_missing_dep:
+                logger.warning(f"No se pudo generar el PDF del pedido: {pdf_missing_dep}")
+            except Exception as e:
+                logger.error(f"Error generando PDF de pedido {nuevo_pedido.nro_pedido}: {e}", exc_info=True)
+
+            # Attach ephemeral attributes for downstream consumers (no commit)
+            nuevo_pedido.nota_pedido_pdf_generado = bool(pdf_bytes)
+            nuevo_pedido._nota_pedido_pdf_bytes = pdf_bytes  # type: ignore[attr-defined]
+            nuevo_pedido._empresa_info_pdf = empresa_info  # type: ignore[attr-defined]
+
+            try:
+                enviar_email_pedido_admin(
+                    nuevo_pedido,
+                    pdf_bytes=pdf_bytes,
+                    empresa_info=empresa_info,
+                )
             except Exception as e:
                 logger.error(f"Error enviando email de pedido: {e}")
             try:
-                enviar_email_pedido_cliente(nuevo_pedido)
+                enviar_email_pedido_cliente(
+                    nuevo_pedido,
+                    pdf_bytes=pdf_bytes,
+                    empresa_info=empresa_info,
+                )
             except Exception as e:
                 logger.error(f"Error enviando email al cliente: {e}")
             try:
