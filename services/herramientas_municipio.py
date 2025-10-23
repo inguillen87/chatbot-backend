@@ -606,10 +606,22 @@ def consultar_eventos_culturales(fecha: str) -> str:
         f"Para '{fecha_norm}', la agenda cultural es:\n\n" + "\n\n---\n\n".join(lista_eventos_str)
     )
 
-    respuesta += "\n\n---\n"
-    respuesta += "Seguinos en nuestras redes para más eventos y noticias:\n"
-    respuesta += "Facebook: https://www.facebook.com/JuninMunicipio\n"
-    respuesta += "Instagram: https://www.instagram.com/munijuninmdz"
+    social_links = []
+    if isinstance(CONFIG_MUNICIPIO, dict):
+        social_links = CONFIG_MUNICIPIO.get("social_links", []) or []
+
+    social_lines: list[str] = []
+    for link in social_links:
+        name = link.get("name")
+        url = link.get("url")
+        if not name or not url:
+            continue
+        social_lines.append(f"{name}: {url}")
+
+    if social_lines:
+        respuesta += "\n\n---\n"
+        respuesta += "Seguinos en nuestras redes para más eventos y noticias:\n"
+        respuesta += "\n".join(social_lines)
 
     return respuesta
 
