@@ -8,6 +8,7 @@ from typing import Dict, Any, List, Optional
 from services.llm_utils import robust_chat, _clean_llm_json_output # _clean_llm_json_output es de llm_utils
 from services.vision_fallback_service import analyze_image_smart
 from services.categorias_municipio import CATEGORIAS_RECLAMO
+from services.document_processing_service import document_processing_service
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ class InterpretacionService:
         if not archivo_adjunto or not getattr(archivo_adjunto, "mime", None):
             return resultado
 
-        mime = archivo_adjunto.mime.lower()
+        mime = (archivo_adjunto.mime or "").lower()
         if mime.startswith("audio/"):
             from services.audio_transcription_service import transcribe_audio_from_url
             try:
@@ -35,6 +36,15 @@ class InterpretacionService:
             except Exception as e:
                 logger.error(f"Error transcribiendo audio {archivo_adjunto.url}: {e}", exc_info=True)
                 resultado["error"] = "Ocurrió un error al procesar el audio."
+        elif any(keyword in mime for keyword in ("pdf", "excel", "spreadsheet", "msword", "word", "text/", "csv")):
+            doc_result = document_processing_service.process_document_by_id(archivo_adjunto.id)
+            if doc_result.get("success"):
+                resultado["texto_extraido"] = doc_result.get("texto_extraido")
+                resultado["datos_estructurados"] = doc_result.get("datos_estructurados")
+                if doc_result.get("metadata"):
+                    resultado["metadata"] = doc_result["metadata"]
+            else:
+                resultado["error"] = doc_result.get("error") or "No fue posible interpretar el documento."
 
         return resultado
 
