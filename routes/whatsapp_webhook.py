@@ -1464,6 +1464,9 @@ def whatsapp_webhook():
                 'to': from_number_raw,
             }
 
+            if not isinstance(session_context_db_entry.context_data, dict):
+                session_context_db_entry.context_data = {}
+
             def _resolve_pre_media_link(raw: Optional[str]) -> Optional[str]:
                 if not raw:
                     return None
@@ -1485,14 +1488,13 @@ def whatsapp_webhook():
                 _resolve_pre_media_link,
             )
 
+            interactive_payload = None
+            interactive_body_dict = None
             if formatted_whatsapp_payload.get("type") == "interactive":
-                interactive_payload = formatted_whatsapp_payload.get("interactive")
+                interactive_payload = formatted_whatsapp_payload.get("interactive") or {}
                 # The body is required, it's the fallback for notifications and older clients
-                message_params['body'] = interactive_payload.get("body", {}).get("text", "Por favor, mirá las opciones.")
-                # The PersistentAction is what actually sends the interactive message
-                # It needs to be a list of strings, with the format "channel:payload"
-                # For WhatsApp, the payload is a JSON string of the interactive object.
-                message_params['persistent_action'] = [f"whatsapp:{json.dumps(interactive_payload)}"]
+                interactive_body_dict = interactive_payload.get("body") or {}
+                message_params['body'] = interactive_body_dict.get("text", "Por favor, mirá las opciones.")
             else: # Text message
                 message_params['body'] = formatted_whatsapp_payload.get("text", {}).get("body", "No se pudo generar una respuesta.")
 
@@ -1505,43 +1507,102 @@ def whatsapp_webhook():
 
             current_app.logger.debug(f"Sending WhatsApp message params: {message_params}")
 
-            # Send the main message. If the body exceeds Twilio's 1600 character
-            # limit (and isn't an interactive payload), send the first chunk and
-            # store the remainder so the user can request more with a button.
-            body_text = message_params.get('body', '') or ''
-            if 'persistent_action' not in message_params and len(body_text) > MAX_TWILIO_BODY_LENGTH:
-                chunks = _split_message(body_text)
-                session_context_db_entry.context_data['pending_chunks'] = chunks[1:]
-                safe_flag_modified(session_context_db_entry, 'context_data')
-                db.session.add(session_context_db_entry)
-                db.session.commit()
+            def _apply_persistent_action(params: Dict[str, Any], payload: Optional[Dict[str, Any]]) -> bool:
+                """Attach the interactive payload to Twilio params ensuring it respects length limits."""
+                if not payload:
+                    params.pop('persistent_action', None)
+                    return True
 
-                first_chunk_params = {
-                    'from_': to_number_raw,
-                    'to': from_number_raw,
-                    'body': chunks[0],
-                }
-                main_message = twilio_client.messages.create(**first_chunk_params)
-                print(f"Mensaje parte 1/{len(chunks)} enviado a {from_number_raw}, SID: {main_message.sid}")
-
-                if session_context_db_entry.context_data['pending_chunks']:
-                    more_payload = {
-                        "type": "button",
-                        "body": {"text": "¿Mostrar más resultados?"},
-                        "action": {
-                            "buttons": [
-                                {"type": "reply", "reply": {"id": "show_more", "title": "Mostrar más"}},
-                                {"type": "reply", "reply": {"id": "menu_principal", "title": "Menú"}},
-                            ]
-                        },
-                    }
-                    twilio_client.messages.create(
-                        from_=to_number_raw,
-                        to=from_number_raw,
-                        body="Seleccioná una opción",
-                        persistent_action=[f"whatsapp:{json.dumps(more_payload)}"],
+                encoded_payload = f"whatsapp:{json.dumps(payload, ensure_ascii=False)}"
+                body_len = len(params.get('body') or "")
+                if len(encoded_payload) > MAX_TWILIO_BODY_LENGTH or (body_len + len(encoded_payload)) > MAX_TWILIO_BODY_LENGTH:
+                    current_app.logger.warning(
+                        "Interactive payload exceeds Twilio character limit; falling back to plain text delivery."
                     )
+                    params.pop('persistent_action', None)
+                    return False
+
+                params['persistent_action'] = [encoded_payload]
+                return True
+
+            # Send the main message. If the body exceeds Twilio's 1600 character
+            # limit we now split it into chunks. For interactive payloads we
+            # update the fallback text and deliver the remaining chunks as
+            # separate plain messages. For regular text payloads we keep the
+            # "Mostrar más" flow so the user can request the remaining chunks.
+            body_text = message_params.get('body', '') or ''
+            if len(body_text) > MAX_TWILIO_BODY_LENGTH:
+                chunks = _split_message(body_text)
+                first_chunk = chunks[0]
+                remaining_chunks = chunks[1:]
+
+                message_params['body'] = first_chunk
+
+                sent_interactive_chunk = False
+                if interactive_payload is not None:
+                    # Update the interactive payload fallback text as well so the
+                    # JSON payload we send through Twilio respects the character
+                    # limit.
+                    interactive_body = interactive_body_dict if interactive_body_dict is not None else interactive_payload.setdefault("body", {})
+                    interactive_body["text"] = first_chunk
+
+                    if _apply_persistent_action(message_params, interactive_payload):
+                        session_context_db_entry.context_data.pop('pending_chunks', None)
+                        safe_flag_modified(session_context_db_entry, 'context_data')
+                        db.session.add(session_context_db_entry)
+                        db.session.commit()
+
+                        main_message = twilio_client.messages.create(**message_params)
+                        print(f"Mensaje principal (interactivo) enviado a {from_number_raw}, SID: {main_message.sid}")
+
+                        for idx, chunk in enumerate(remaining_chunks, start=2):
+                            followup_params = {
+                                'from_': to_number_raw,
+                                'to': from_number_raw,
+                                'body': chunk,
+                            }
+                            followup_message = twilio_client.messages.create(**followup_params)
+                            print(f"Mensaje adicional {idx}/{len(chunks)} enviado a {from_number_raw}, SID: {followup_message.sid}")
+                        sent_interactive_chunk = True
+                    else:
+                        interactive_payload = None
+
+                if not sent_interactive_chunk:
+                    session_context_db_entry.context_data['pending_chunks'] = remaining_chunks
+                    safe_flag_modified(session_context_db_entry, 'context_data')
+                    db.session.add(session_context_db_entry)
+                    db.session.commit()
+
+                    first_chunk_params = {
+                        'from_': to_number_raw,
+                        'to': from_number_raw,
+                        'body': first_chunk,
+                    }
+                    main_message = twilio_client.messages.create(**first_chunk_params)
+                    print(f"Mensaje parte 1/{len(chunks)} enviado a {from_number_raw}, SID: {main_message.sid}")
+
+                    if session_context_db_entry.context_data['pending_chunks']:
+                        more_payload = {
+                            "type": "button",
+                            "body": {"text": "¿Mostrar más resultados?"},
+                            "action": {
+                                "buttons": [
+                                    {"type": "reply", "reply": {"id": "show_more", "title": "Mostrar más"}},
+                                    {"type": "reply", "reply": {"id": "menu_principal", "title": "Menú"}},
+                                ]
+                            },
+                        }
+                        twilio_client.messages.create(
+                            from_=to_number_raw,
+                            to=from_number_raw,
+                            body="Seleccioná una opción",
+                            persistent_action=[f"whatsapp:{json.dumps(more_payload)}"],
+                        )
             else:
+                if interactive_payload is not None:
+                    if not _apply_persistent_action(message_params, interactive_payload):
+                        interactive_payload = None
+
                 session_context_db_entry.context_data.pop('pending_chunks', None)
                 safe_flag_modified(session_context_db_entry, 'context_data')
                 db.session.add(session_context_db_entry)
