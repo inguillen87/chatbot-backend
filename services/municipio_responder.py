@@ -2016,7 +2016,7 @@ def _normalize_post_entry(post: dict, context: Optional[dict]) -> dict:
     return normalized
 
 
-def _format_post(post: dict, channel: str) -> str:
+def _format_post(post: dict, channel: str, *, index: Optional[int] = None) -> str:
     """Return a formatted string for a single news/event entry."""
 
     def _format_fecha(fecha_str: str) -> str:
@@ -2052,20 +2052,32 @@ def _format_post(post: dict, channel: str) -> str:
     ubicacion = post.get("ubicacion")
 
     if channel == "whatsapp":
-        lines = [f"*{title}*"]
+        header = f"*{index}. {title}*" if index is not None else f"*{title}*"
+        lines: list[str] = [header]
+
         if subtitle:
             lines.append(f"_{subtitle}_")
+
         if fecha:
             lines.append(f"📅 {fecha}")
         if ubicacion:
             lines.append(f"📍 {ubicacion}")
-        if desc:
-            lines.extend(["", desc])
-        if imagen:
-            lines.extend(["", imagen])
+
+        cleaned_desc = (desc or "").strip()
+        if cleaned_desc:
+            if len(cleaned_desc) > 420:
+                cleaned_desc = cleaned_desc[:417].rstrip() + "…"
+            lines.extend(["", cleaned_desc])
+
+        resource_lines: list[str] = []
         if link:
-            lines.extend(["", f"🔗 {link}"])
-        return "\n".join(lines)
+            resource_lines.append(f"🔗 Más info: {link}")
+        if imagen:
+            resource_lines.append(f"🖼️ Flyer: {imagen}")
+        if resource_lines:
+            lines.extend(["", *resource_lines])
+
+        return "\n".join(lines).strip()
 
     if channel == "web":
         lines = [title]
@@ -2080,7 +2092,7 @@ def _format_post(post: dict, channel: str) -> str:
         if imagen:
             lines.extend(["", imagen])
         if link:
-            lines.extend(["", f"🔗 {link}"])
+            lines.extend(["", f"🔗 Más info: {link}"])
         return "\n".join(lines)
 
     # Default to HTML formatting for other channels
@@ -2096,7 +2108,7 @@ def _format_post(post: dict, channel: str) -> str:
     if desc:
         parts.append(desc)
     if link:
-        parts.append(f'<a href="{link}" target="_blank">Ver más</a>')
+        parts.append(f'<a href="{link}" target="_blank">Más info</a>')
     return "<br>".join(parts)
 
 
@@ -2259,13 +2271,14 @@ def _get_posts_from_json(
     formatted: list[str] = []
     selected_posts = posts[:limit]
     first_image = next((p.get("imagen_url") for p in selected_posts if p.get("imagen_url")), None)
-    for p in selected_posts:
-        formatted.append(_format_post(p, channel))
+    for idx, p in enumerate(selected_posts, start=1):
+        formatted.append(_format_post(p, channel, index=idx if channel == "whatsapp" else None))
 
     if channel == "whatsapp":
         emoji = "📰" if content_type == "noticia" else "🎭"
         formatted = [f"{emoji} {item}".rstrip() for item in formatted]
-        return "\n\n".join(formatted) + "\n", first_image
+        separator = "\n\n────────────────────\n\n"
+        return separator.join(formatted) + "\n", first_image
     if channel == "web":
         return "\n\n".join(formatted) + "\n", first_image
     return "<hr>".join(formatted), first_image
@@ -4648,7 +4661,7 @@ def _get_informacion_menu():
         {"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"},
     ]
     return {
-        "message_body": "Seleccioná una opción:",
+        "message_body": "Elegí la información que querés consultar:",
         "message_type": "interactive_buttons",
         "options_list": opciones,
         "fuente": "submenu_informacion_v1",
