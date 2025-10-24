@@ -39,21 +39,65 @@ MAX_TWILIO_BODY_LENGTH = 1600
 
 
 def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
-    """Split `text` into chunks no longer than `limit` characters.
+    """Split ``text`` into chunks whose UTF-8 encoded length stays below ``limit``.
 
-    Preference is given to splitting on newlines or spaces to avoid breaking
-    words when possible.
+    Twilio enforces the limit using the number of *bytes* in the request body
+    rather than Python's notion of characters. Emojis and accented letters can
+    therefore push the request over the threshold even if ``len(text)`` is
+    below ``limit``.  This helper keeps chunks within the byte budget while
+    still preferring to break on newlines or spaces so the response remains
+    readable.
     """
+
+    if not text:
+        return [text]
+
     parts: list[str] = []
-    while len(text) > limit:
-        split_idx = text.rfind("\n", 0, limit)
+    remaining = text
+
+    while remaining:
+        if len(remaining.encode("utf-8")) <= limit:
+            parts.append(remaining)
+            break
+
+        # Start with the largest substring that fits the byte limit.
+        end = min(len(remaining), limit)
+        while end > 0 and len(remaining[:end].encode("utf-8")) > limit:
+            end -= 1
+        if end <= 0:
+            end = 1
+
+        candidate = remaining[:end]
+        split_idx = -1
+        for delimiter in ("\n\n", "\n🎭", "\n🗞", "\n📰", "\n*", "\n", " "):
+            idx = candidate.rfind(delimiter)
+            if idx == -1:
+                continue
+            # Include the delimiter when splitting on blank lines so the next
+            # chunk keeps the natural spacing between posts.
+            if delimiter == "\n\n":
+                proposed_end = idx + len(delimiter)
+            elif delimiter in {"\n🎭", "\n🗞", "\n📰", "\n*"}:
+                proposed_end = idx
+            else:
+                proposed_end = idx
+            if proposed_end <= 0:
+                continue
+            if len(remaining[:proposed_end].encode("utf-8")) <= limit:
+                split_idx = proposed_end
+                break
+
         if split_idx == -1:
-            split_idx = text.rfind(" ", 0, limit)
-        if split_idx == -1:
-            split_idx = limit
-        parts.append(text[:split_idx])
-        text = text[split_idx:].lstrip()
-    parts.append(text)
+            split_idx = end
+
+        chunk = remaining[:split_idx]
+        if not chunk:
+            chunk = remaining[:end]
+            split_idx = end
+
+        parts.append(chunk)
+        remaining = remaining[split_idx:].lstrip()
+
     return parts
 
 
