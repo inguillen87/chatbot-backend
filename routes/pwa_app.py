@@ -59,9 +59,11 @@ def _serialize_tenant_ticket(ticket: TenantTicket) -> dict[str, Any]:
 
 
 @pwa_app_bp.get("/me/tenants")
-@require_auth
+@require_auth_optional
 def list_followed_tenants():
-    user = g.viewer
+    user = getattr(g, "viewer", None)
+    if user is None:
+        return jsonify([])
     rows = (
         TenantFollower.query.join(TenantProfile)
         .filter(TenantFollower.user_id == user.id)
