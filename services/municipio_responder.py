@@ -7958,7 +7958,7 @@ def responder_municipio(
             return _finalize_response(menu_payload)
         else:
             return _finalize_response({
-                "message_body": "No entendí tu nombre. Por favor, ¿podrías repetirlo?",
+                "message_body": "Me encantaría conocerte mejor. ¿Me contás tu nombre?",
                 "fuente": "nombre_no_entendido"
             })
     elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_CONTACTO_CATEGORIA.name:
