@@ -18,6 +18,11 @@ instance/*
 !data/estacionamiento/parking_spots.json
 !data/municipios/**
 !data/pyme/**
+!firebase.json
+!functions/package.json
+!functions/tsconfig.json
+!firestore.rules
+!storage.rules
 __pycache__/
 *.pyc
 venv/
