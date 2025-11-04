@@ -1,8 +1,10 @@
+import io
+import logging
 import os
 import uuid
-import io
+
 import requests
-from flask import current_app
+from flask import current_app, has_app_context
 from werkzeug.utils import secure_filename
 from services.thumbnail_service import generar_thumbnail
 
@@ -33,28 +35,46 @@ def get_thumb_filename(original_filename: str) -> str:
 def _save_to_local(original_filename: str, file_bytes: bytes, unique_name: str,
                    mimetype: str, thumbnail_bytes: bytes | None,
                    thumb_meta: dict | None) -> dict:
-    """Save files to the local filesystem when GCS is unavailable."""
-    upload_dir = current_app.config.get(
-        "LOCAL_UPLOAD_FOLDER",
-        os.path.join(current_app.root_path, "static", "uploads"),
-    )
+    """Save files to the local filesystem when external storage is unavailable."""
+
+    if has_app_context():
+        root_path = current_app.root_path
+        upload_dir = current_app.config.get(
+            "LOCAL_UPLOAD_FOLDER",
+            os.path.join(root_path, "static", "uploads"),
+        )
+    else:
+        root_path = os.getcwd()
+        upload_dir = os.path.join(root_path, "static", "uploads")
+
     os.makedirs(upload_dir, exist_ok=True)
 
     original_path = os.path.join(upload_dir, unique_name)
     with open(original_path, "wb") as f:
         f.write(file_bytes)
+
     thumb_url = None
     if thumbnail_bytes and thumb_meta:
         thumb_filename = get_thumb_filename(unique_name)
         thumb_path = os.path.join(upload_dir, thumb_filename)
         with open(thumb_path, "wb") as f:
             f.write(thumbnail_bytes)
-        rel_thumb = os.path.relpath(thumb_path, current_app.root_path)
-        thumb_url = "/" + rel_thumb.replace(os.sep, "/")
+        rel_thumb = os.path.relpath(thumb_path, root_path)
+        thumb_public_path = rel_thumb.replace(os.sep, "/")
+        thumb_url = "/" + thumb_public_path
         thumb_meta["url"] = thumb_url
 
-    rel_path = os.path.relpath(original_path, current_app.root_path)
-    original_url = "/" + rel_path.replace(os.sep, "/")
+    rel_path = os.path.relpath(original_path, root_path)
+    rel_public_path = rel_path.replace(os.sep, "/")
+    original_url = "/" + rel_public_path
+
+    base_url = os.environ.get("LOCAL_PUBLIC_BASE_URL")
+    if base_url and base_url.startswith("http"):
+        base_url = base_url.rstrip("/")
+        original_url = f"{base_url}/{rel_public_path}"
+        if thumb_url and thumb_url.startswith("/"):
+            thumb_meta["url"] = f"{base_url}/{thumb_public_path}"
+            thumb_url = thumb_meta["url"]
 
     return {
         "unique_name": unique_name,
@@ -211,6 +231,102 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
             thumbnail_bytes,
             thumb_meta,
         )
+
+
+def guardar_bytes_publicos(
+    file_bytes: bytes,
+    original_filename: str,
+    mimetype: str = "application/octet-stream",
+) -> dict | None:
+    """Guarda bytes arbitrarios en el backend de almacenamiento configurado.
+
+    Se intenta primero Vercel Blob (si está disponible), luego GCS y finalmente
+    el filesystem local. Devuelve los metadatos del archivo tal como lo hacen
+    las funciones de subida existentes.
+    """
+
+    if not file_bytes:
+        return None
+
+    filename = secure_filename(original_filename or "upload.bin") or "upload.bin"
+    unique_name = f"{uuid.uuid4().hex}_{filename}"
+
+    thumbnail_bytes = None
+    thumb_meta = None
+    logger = current_app.logger if has_app_context() else logging.getLogger(__name__)
+
+    if mimetype and mimetype.startswith("image/"):
+        try:
+            stream_for_thumb = io.BytesIO(file_bytes)
+            thumbnail_bytes, thumb_meta = generar_thumbnail(stream_for_thumb, mimetype)
+        except Exception as exc:  # pragma: no cover - failsafe for pillow errors
+            logger.warning("No se pudo generar thumbnail para %s: %s", filename, exc)
+            thumbnail_bytes = None
+            thumb_meta = None
+
+    storage_response = None
+
+    if VERCEL_BLOB_RW_TOKEN:
+        storage_response = _save_to_vercel_blob(
+            filename,
+            file_bytes,
+            unique_name,
+            mimetype,
+            thumbnail_bytes,
+            thumb_meta,
+        )
+    elif not GCS_ENABLED:
+        storage_response = _save_to_local(
+            filename,
+            file_bytes,
+            unique_name,
+            mimetype,
+            thumbnail_bytes,
+            thumb_meta,
+        )
+    else:
+        try:
+            storage_client = _get_gcs_client()
+            bucket = storage_client.bucket(BUCKET_NAME)
+            blob_original = bucket.blob(unique_name)
+            blob_original.upload_from_string(file_bytes, content_type=mimetype)
+
+            thumb_url = None
+            if thumbnail_bytes and thumb_meta:
+                thumb_filename = get_thumb_filename(unique_name)
+                blob_thumb = bucket.blob(thumb_filename)
+                blob_thumb.upload_from_string(thumbnail_bytes, content_type="image/webp")
+                thumb_url = blob_thumb.public_url
+                thumb_meta["url"] = thumb_url
+
+            storage_response = {
+                "unique_name": unique_name,
+                "original_url": blob_original.public_url,
+                "public_url": blob_original.public_url,
+                "size": len(file_bytes),
+                "original_name": filename,
+                "mimetype": mimetype,
+                "thumb_meta": thumb_meta,
+                "thumbUrl": thumb_url,
+            }
+        except Exception as exc:  # pragma: no cover - network/credential issues
+            logger.error("Error subiendo %s a GCS: %s", filename, exc, exc_info=True)
+            storage_response = _save_to_local(
+                filename,
+                file_bytes,
+                unique_name,
+                mimetype,
+                thumbnail_bytes,
+                thumb_meta,
+            )
+
+    if not storage_response:
+        return None
+
+    if "public_url" not in storage_response:
+        storage_response["public_url"] = storage_response.get("original_url")
+
+    return storage_response
 
     try:
         storage_client = _get_gcs_client()

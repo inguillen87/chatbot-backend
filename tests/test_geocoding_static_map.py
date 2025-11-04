@@ -33,10 +33,15 @@ def _mock_resolution(lat=-33.0, lon=-68.5):
 def test_validar_y_formatear_direccion_usa_static_map_de_google(fake_resolver, monkeypatch):
     monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "TEST_KEY")
     fake_resolver.resolve.return_value = _mock_resolution()
+    monkeypatch.setattr(
+        "services.herramientas_municipio._ensure_public_static_map",
+        lambda url: "https://cdn.example/public/google.png",
+    )
 
     resultado = validar_y_formatear_direccion("Av. Siempreviva 742")
 
-    assert resultado["static_map_url"] == (
+    assert resultado["static_map_url"] == "https://cdn.example/public/google.png"
+    assert resultado["static_map_source_url"] == (
         "https://maps.googleapis.com/maps/api/staticmap?center="
         "-33,-68.5&zoom=18&size=800x500&markers=color:red|-33,-68.5&key=TEST_KEY"
     )
@@ -47,6 +52,10 @@ def test_validar_y_formatear_direccion_usa_fallback_openstreetmap(fake_resolver,
     monkeypatch.delenv("GOOGLE_MAPS_API_KEY", raising=False)
     monkeypatch.delenv("STATIC_MAP_FALLBACK_TEMPLATE", raising=False)
     fake_resolver.resolve.return_value = _mock_resolution()
+    monkeypatch.setattr(
+        "services.herramientas_municipio._ensure_public_static_map",
+        lambda url: None,
+    )
 
     resultado = validar_y_formatear_direccion("Av. Siempreviva 742")
 
@@ -54,6 +63,7 @@ def test_validar_y_formatear_direccion_usa_fallback_openstreetmap(fake_resolver,
         "https://staticmap.openstreetmap.de/staticmap.php?"
     )
     assert "center=-33,-68.5" in resultado["static_map_url"]
+    assert resultado["static_map_source_url"] == resultado["static_map_url"]
 
 
 def test_validar_y_formatear_direccion_respetar_plantilla_personalizada(fake_resolver, monkeypatch):
@@ -63,7 +73,12 @@ def test_validar_y_formatear_direccion_respetar_plantilla_personalizada(fake_res
         "https://cdn.example/maps/{lat}/{lon}/preview.png",
     )
     fake_resolver.resolve.return_value = _mock_resolution()
+    monkeypatch.setattr(
+        "services.herramientas_municipio._ensure_public_static_map",
+        lambda url: "https://cdn.example/rehospedado.png",
+    )
 
     resultado = validar_y_formatear_direccion("Av. Siempreviva 742")
 
-    assert resultado["static_map_url"] == "https://cdn.example/maps/-33/-68.5/preview.png"
+    assert resultado["static_map_source_url"] == "https://cdn.example/maps/-33/-68.5/preview.png"
+    assert resultado["static_map_url"] == "https://cdn.example/rehospedado.png"

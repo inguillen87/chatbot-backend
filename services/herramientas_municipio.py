@@ -1,8 +1,10 @@
 import json
 import logging
+import mimetypes
 import os
 import re
 import unicodedata
+import uuid
 
 import requests
 from services.config_loader import cargar_configuracion_municipio
@@ -15,6 +17,7 @@ from database import db
 from services.openai_bridge import client as openai_client
 from services.cohere_bridge import co as cohere_client
 from services.openai_maps_service import geocodificar_inversa_llm
+from services.gcs_service import guardar_bytes_publicos
 
 # ... (el resto de tus herramientas y diccionarios)
 
@@ -677,6 +680,42 @@ def _resolve_municipio_config(cfg: dict | str | None) -> dict:
     return CONFIG_MUNICIPIO
 
 
+def _ensure_public_static_map(static_map_url: str | None) -> str | None:
+    """Descarga y re-hospeda la imagen del mapa si hay storage configurado."""
+
+    if not static_map_url:
+        return None
+
+    try:
+        response = requests.get(static_map_url, timeout=10)
+        response.raise_for_status()
+    except Exception as exc:  # pragma: no cover - network hiccups
+        logger.warning("[GEO] No se pudo descargar mapa estático %s: %s", static_map_url, exc)
+        return None
+
+    content_type = response.headers.get("Content-Type", "").split(";")[0].strip()
+    if not content_type.startswith("image/"):
+        content_type = "image/png"
+
+    extension = mimetypes.guess_extension(content_type) or ".png"
+    filename = f"mapa_{uuid.uuid4().hex}{extension}"
+
+    upload_info = None
+    try:
+        upload_info = guardar_bytes_publicos(response.content, filename, content_type)
+    except Exception as exc:  # pragma: no cover - storage backend issues
+        logger.warning("[GEO] No se pudo re-hospedar mapa estático: %s", exc, exc_info=True)
+        return None
+
+    if not upload_info:
+        return None
+
+    public_url = upload_info.get("public_url") or upload_info.get("original_url")
+    if public_url and public_url.startswith("http"):
+        return public_url
+    return None
+
+
 def validar_y_formatear_direccion(
     direccion: str, municipio_config: dict | str | None = None
 ) -> dict | None:
@@ -742,13 +781,13 @@ def validar_y_formatear_direccion(
         lat = lon = None
 
     maps_link = f"https://www.google.com/maps?q={lat},{lon}" if lat is not None and lon is not None else None
-    static_map_url = None
+    static_map_source_url = None
     if lat is not None and lon is not None:
         lat_str = f"{lat:.6f}".rstrip("0").rstrip(".")
         lon_str = f"{lon:.6f}".rstrip("0").rstrip(".")
         gkey = os.getenv("GOOGLE_MAPS_API_KEY")
         if gkey:
-            static_map_url = (
+            static_map_source_url = (
                 "https://maps.googleapis.com/maps/api/staticmap?center="
                 f"{lat_str},{lon_str}&zoom=18&size=800x500&markers=color:red|{lat_str},{lon_str}&key={gkey}"
             )
@@ -756,20 +795,22 @@ def validar_y_formatear_direccion(
             fallback_tpl = os.getenv("STATIC_MAP_FALLBACK_TEMPLATE")
             if fallback_tpl:
                 try:
-                    static_map_url = fallback_tpl.format(lat=lat_str, lon=lon_str)
+                    static_map_source_url = fallback_tpl.format(lat=lat_str, lon=lon_str)
                 except Exception as exc:  # pragma: no cover - guardrail for misconfigured templates
                     logger.warning(
                         "[GEO] Plantilla STATIC_MAP_FALLBACK_TEMPLATE inválida (%s): %s",
                         fallback_tpl,
                         exc,
                     )
-                    static_map_url = None
-            if not static_map_url:
-                static_map_url = (
+                    static_map_source_url = None
+            if not static_map_source_url:
+                static_map_source_url = (
                     "https://staticmap.openstreetmap.de/staticmap.php"
                     f"?center={lat_str},{lon_str}&zoom=18&size=800x500&maptype=mapnik"
                     f"&markers={lat_str},{lon_str},red-pushpin"
                 )
+
+    static_map_url = _ensure_public_static_map(static_map_source_url) or static_map_source_url
 
     return {
         "formatted_address": resolved.get("formatted"),
@@ -786,6 +827,7 @@ def validar_y_formatear_direccion(
         "validez": resolved.get("validez"),
         "maps_link": maps_link,
         "static_map_url": static_map_url,
+        "static_map_source_url": static_map_source_url,
     }
 
 def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:

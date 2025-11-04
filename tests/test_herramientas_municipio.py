@@ -17,8 +17,9 @@ def app_context():
         db.session.remove()
         db.drop_all()
 
+@patch('services.herramientas_municipio._ensure_public_static_map', return_value='https://cdn.example/public/google.png')
 @patch('services.herramientas_municipio.AddressResolver.resolve')
-def test_validar_y_formatear_direccion_exitosa(mock_resolve, monkeypatch):
+def test_validar_y_formatear_direccion_exitosa(mock_resolve, mock_rehost, monkeypatch):
     monkeypatch.setenv('GOOGLE_MAPS_API_KEY', 'TEST')
     mock_resolve.return_value = {
         "formatted": "Av. Siempreviva 742, Junín, Mendoza, AR",
@@ -49,7 +50,8 @@ def test_validar_y_formatear_direccion_exitosa(mock_resolve, monkeypatch):
         "precision": "point",
         "validez": True,
         "maps_link": "https://www.google.com/maps?q=-33.0,-68.5",
-        "static_map_url": "https://maps.googleapis.com/maps/api/staticmap?center=-33.0,-68.5&zoom=18&size=800x500&markers=color:red|-33.0,-68.5&key=TEST",
+        "static_map_url": "https://cdn.example/public/google.png",
+        "static_map_source_url": "https://maps.googleapis.com/maps/api/staticmap?center=-33,-68.5&zoom=18&size=800x500&markers=color:red|-33,-68.5&key=TEST",
     }
 
 @patch('services.herramientas_municipio.AddressResolver.resolve', return_value=None)
@@ -58,8 +60,9 @@ def test_validar_y_formatear_direccion_invalida(mock_resolve):
     assert resultado is None
 
 
+@patch('services.herramientas_municipio._ensure_public_static_map', return_value=None)
 @patch('services.herramientas_municipio.reverse_geocode')
-def test_validar_y_formatear_direccion_maps_link(mock_reverse, monkeypatch):
+def test_validar_y_formatear_direccion_maps_link(mock_reverse, mock_rehost, monkeypatch):
     monkeypatch.setenv('GOOGLE_MAPS_API_KEY', 'TEST')
     mock_reverse.return_value = {
         'calle': 'Sarmiento',

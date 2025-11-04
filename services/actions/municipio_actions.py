@@ -165,6 +165,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
         # Geocoding: validate and enrich address with coordinates and formatted text
         maps_link = None
         static_map_url = None
+        static_map_source_url = None
         if ubicacion_llm and not coordenadas_llm:
             geo_info = validar_y_formatear_direccion(ubicacion_llm, municipio_config)
             if not geo_info or not geo_info.get("lat") or not geo_info.get("lng"):
@@ -204,6 +205,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             }
             maps_link = geo_info.get("maps_link")
             static_map_url = geo_info.get("static_map_url")
+            static_map_source_url = geo_info.get("static_map_source_url")
             if not distrito_llm:
                 parsed_geo = parse_direccion(ubicacion_llm)
                 if parsed_geo and parsed_geo.get("localidad"):
@@ -321,6 +323,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             ("foto_url", foto_url_llm),
             ("maps_link", maps_link),
             ("static_map_url", static_map_url),
+            ("static_map_source_url", static_map_source_url),
         ]:
             if value:
                 contexto_reclamo[key] = value
