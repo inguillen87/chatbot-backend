@@ -34,6 +34,45 @@ from config.feature_flags import FEATURE_ENCUESTAS
 from extensions import db, migrate, login_manager  # livianos
 from middleware import tenant_middleware
 
+
+def _mask_token(value: str | None) -> str | None:
+    """Return a partially masked token for diagnostic logging."""
+
+    if not value:
+        return value
+
+    text = str(value)
+    if len(text) <= 4:
+        return "*" * len(text)
+
+    return f"{text[:2]}{'*' * (len(text) - 4)}{text[-2:]}"
+
+
+def _describe_database_uri(database_uri: str | None) -> str:
+    """Return a sanitised representation of the configured database URI."""
+
+    if not database_uri:
+        return "<unset>"
+
+    try:
+        from sqlalchemy.engine.url import make_url
+
+        url = make_url(database_uri)
+        user_segment = ""
+        if url.username:
+            user_segment = _mask_token(url.username) or "*"
+            password_segment = ":***" if url.password else ""
+            user_segment = f"{user_segment}{password_segment}@"
+
+        host = url.host or "localhost"
+        port = f":{url.port}" if url.port else ""
+        database = f"/{url.database}" if url.database else ""
+        query = f"?{url.query}" if url.query else ""
+
+        return f"{url.drivername}://{user_segment}{host}{port}{database}{query}"
+    except Exception:
+        return "<configured>"
+
 # En migraciones NO importamos socket_service ni blueprints
 if not MIGRATIONS_ONLY:
     # SocketIO real
@@ -72,14 +111,21 @@ def create_app(config_class=Config):
     # Cargar configuración
     app.config.from_object(config_class)
     print(f"Loaded config: {config_class}")
-    print(f"Database URI: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
+    print(
+        "Database URI: "
+        f"{_describe_database_uri(app.config.get('SQLALCHEMY_DATABASE_URI'))}"
+    )
     print(f"DB object: {db}")
 
     # --- Diagnóstico de sesión (solo en runtime normal) ---
     if not MIGRATIONS_ONLY:
         print("--- DIAGNÓSTICO DE SESIÓN (desde app.py) ---")
         session_ext = Session()
-        print(f"SECRET_KEY leída por Flask: {app.config.get('SECRET_KEY')}")
+        secret_key = app.config.get("SECRET_KEY")
+        print(
+            "SECRET_KEY configurada: "
+            f"{'sí' if secret_key else 'no'}"
+        )
         print(f"SESSION_COOKIE_SECURE: {app.config.get('SESSION_COOKIE_SECURE')}")
         print(f"SESSION_COOKIE_SAMESITE: {app.config.get('SESSION_COOKIE_SAMESITE')}")
         print(f"SESSION_TYPE: {app.config.get('SESSION_TYPE')}")
