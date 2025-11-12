@@ -1835,6 +1835,23 @@ def mapa_de_tickets(current_user: User, tipo: str):
     return jsonify({"type": "FeatureCollection", "features": features})
 
 # ---------- ENVIAR HISTORIAL POR CORREO ----------
+def _format_datetime_safe(value) -> str:
+    """Formatea valores de fecha evitando errores cuando son nulos o strings."""
+    if not value:
+        return "Sin fecha"
+    if isinstance(value, str):
+        value = value.strip()
+        return value or "Sin fecha"
+    try:
+        return value.strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        try:
+            parsed = datetime.fromisoformat(str(value))
+            return parsed.strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            return str(value)
+
+
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/send-history', methods=['POST'])
 @token_requerido
 @admin_o_empleado_requerido
@@ -1891,10 +1908,41 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int):
         # --- Renderizar y Enviar Correo ---
         asunto = f"Historial de conversación del Ticket #{ticket_obj.nro_ticket}"
 
+        ticket_info = {
+            "nro_ticket": ticket_obj.nro_ticket or "",
+            "asunto": ticket_obj.asunto or "Sin asunto",
+            "estado": ticket_obj.estado or "Sin estado",
+            "fecha_creacion": _format_datetime_safe(getattr(ticket_obj, "fecha", None)),
+            "ultima_actividad": _format_datetime_safe(getattr(ticket_obj, "ultima_actividad", None)),
+            "canal_ingreso": ticket_obj.canal_ingreso or None,
+        }
+
+        comentarios_info = []
+        for comentario in comentarios:
+            adjunto = None
+            if comentario.archivo_adjunto:
+                nombre_adjunto = (
+                    comentario.archivo_adjunto.nombre_original
+                    or comentario.archivo_adjunto.filename
+                    or "Archivo adjunto"
+                )
+                adjunto = {
+                    "nombre": nombre_adjunto,
+                    "url": comentario.archivo_adjunto.url,
+                }
+
+            comentarios_info.append({
+                "es_admin": bool(comentario.es_admin),
+                "autor": "Agente" if comentario.es_admin else "Vecino/a",
+                "fecha": _format_datetime_safe(getattr(comentario, "fecha", None)),
+                "mensaje": comentario.comentario or "",
+                "adjunto": adjunto,
+            })
+
         cuerpo_html = render_template(
             "email/ticket_history.html",
-            ticket=ticket_obj,
-            comentarios=comentarios
+            ticket=ticket_info,
+            comentarios=comentarios_info
         )
 
         from services.email_service import enviar_email_con_multiples_adjuntos
