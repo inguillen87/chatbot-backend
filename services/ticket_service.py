@@ -14,7 +14,7 @@ from models import (
     db,
 )
 from utils.ticket_utils import normalize_category
-from utils.time_utils import datetime_to_iso_utc
+from utils.time_utils import datetime_to_iso_utc, get_local_now
 from sqlalchemy.exc import SQLAlchemyError
 from .integracion_municipal import enviar_ticket_a_sigem # SIGEM Integration
 from utils.heatmap import enrich_heatmap_points
@@ -284,6 +284,8 @@ class ServicioTickets:
             else:
                 nuevo_comentario.pyme_ticket = ticket
             db.session.add(nuevo_comentario)
+            if hasattr(ticket, "ultima_actividad"):
+                ticket.ultima_actividad = get_local_now()
             # db.session.commit() # <<< ELIMINADO
             try:
                 from services.email_service import (

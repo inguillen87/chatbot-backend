@@ -23,7 +23,7 @@ from utils.permissions import require_role
 from collections import defaultdict
 from sqlalchemy import or_, func
 from utils.ticket_utils import normalize_category
-from utils.time_utils import datetime_to_iso_utc
+from utils.time_utils import datetime_to_iso_utc, get_local_now
 logger = logging.getLogger("app")
 
 from utils.recaptcha import verify_recaptcha
@@ -592,6 +592,10 @@ def _serialize_ticket_details(ticket, ticket_type):
             "dni": user_data["dni"]
         }
 
+    canal_ingreso_valor = getattr(ticket, 'canal_ingreso', None)
+    canal_normalizado = canal_ingreso_valor or 'desconocido'
+    ultima_actualizacion_dt = getattr(ticket, 'ultima_actividad', None) or getattr(ticket, 'fecha', None)
+
     ticket_data = {
         "id": ticket.id,
         "id_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
@@ -616,7 +620,8 @@ def _serialize_ticket_details(ticket, ticket_type):
             "distrito": getattr(ticket, 'distrito', None),
             "direccion": getattr(ticket, 'direccion', None),
         },
-        "canal_ingreso": getattr(ticket, 'canal_ingreso', None),
+        "canal_ingreso": canal_ingreso_valor,
+        "channel": canal_normalizado,
         "contacto_seguimiento": getattr(ticket, 'contacto_seguimiento', None),
         "nombre_y_avatar_whatsapp": {
             "nombre": getattr(ticket, 'nombre_display_whatsapp', None),
@@ -626,6 +631,7 @@ def _serialize_ticket_details(ticket, ticket_type):
         "historial_chat": historial_chat,
         "timeline": timeline,
         "progreso_estados": progreso_estados,
+        "ultima_actualizacion": datetime_to_iso_utc(ultima_actualizacion_dt),
     }
 
     if hasattr(ticket, 'foto_url_directa'):
@@ -1006,6 +1012,8 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     ticket_obj.estado = nuevo_estado
     if hasattr(ticket_obj, "estado_cliente"):
         ticket_obj.estado_cliente = nuevo_estado
+    if hasattr(ticket_obj, "ultima_actividad"):
+        ticket_obj.ultima_actividad = get_local_now()
     if nuevo_estado == "cerrado":
         encuesta = TicketSatisfaccion(
             ticket_id=ticket_obj.id,
@@ -1033,7 +1041,11 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         )
         mensaje_notificacion = f"El estado de tu ticket #{ticket_obj.nro_ticket} ha sido actualizado a: '{nuevo_estado}'."
 
-        enviar_email_ticket_novedad(ticket_obj, mensaje_notificacion)
+        enviar_email_ticket_novedad(
+            ticket_obj,
+            mensaje_notificacion,
+            comentario_reciente=comentario_estado,
+        )
         enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion)
         if tipo == "municipio": # Por ahora, WhatsApp solo para municipio
             enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion)
