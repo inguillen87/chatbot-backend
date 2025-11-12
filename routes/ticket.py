@@ -23,7 +23,7 @@ from utils.permissions import require_role
 from collections import defaultdict
 from sqlalchemy import or_, func
 from utils.ticket_utils import normalize_category
-from utils.time_utils import datetime_to_iso_utc
+from utils.time_utils import datetime_to_iso_utc, get_local_now
 logger = logging.getLogger("app")
 
 from utils.recaptcha import verify_recaptcha
@@ -1012,6 +1012,8 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     ticket_obj.estado = nuevo_estado
     if hasattr(ticket_obj, "estado_cliente"):
         ticket_obj.estado_cliente = nuevo_estado
+    if hasattr(ticket_obj, "ultima_actividad"):
+        ticket_obj.ultima_actividad = get_local_now()
     if nuevo_estado == "cerrado":
         encuesta = TicketSatisfaccion(
             ticket_id=ticket_obj.id,
@@ -1039,7 +1041,11 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         )
         mensaje_notificacion = f"El estado de tu ticket #{ticket_obj.nro_ticket} ha sido actualizado a: '{nuevo_estado}'."
 
-        enviar_email_ticket_novedad(ticket_obj, mensaje_notificacion)
+        enviar_email_ticket_novedad(
+            ticket_obj,
+            mensaje_notificacion,
+            comentario_reciente=comentario_estado,
+        )
         enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion)
         if tipo == "municipio": # Por ahora, WhatsApp solo para municipio
             enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion)
