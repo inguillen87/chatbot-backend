@@ -23,7 +23,7 @@ from utils.permissions import require_role
 from collections import defaultdict
 from sqlalchemy import or_, func
 from utils.ticket_utils import normalize_category
-from utils.time_utils import datetime_to_iso_utc
+from utils.time_utils import datetime_to_iso_utc, get_local_now
 logger = logging.getLogger("app")
 
 from utils.recaptcha import verify_recaptcha
@@ -592,6 +592,10 @@ def _serialize_ticket_details(ticket, ticket_type):
             "dni": user_data["dni"]
         }
 
+    canal_ingreso_valor = getattr(ticket, 'canal_ingreso', None)
+    canal_normalizado = canal_ingreso_valor or 'desconocido'
+    ultima_actualizacion_dt = getattr(ticket, 'ultima_actividad', None) or getattr(ticket, 'fecha', None)
+
     ticket_data = {
         "id": ticket.id,
         "id_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
@@ -616,7 +620,8 @@ def _serialize_ticket_details(ticket, ticket_type):
             "distrito": getattr(ticket, 'distrito', None),
             "direccion": getattr(ticket, 'direccion', None),
         },
-        "canal_ingreso": getattr(ticket, 'canal_ingreso', None),
+        "canal_ingreso": canal_ingreso_valor,
+        "channel": canal_normalizado,
         "contacto_seguimiento": getattr(ticket, 'contacto_seguimiento', None),
         "nombre_y_avatar_whatsapp": {
             "nombre": getattr(ticket, 'nombre_display_whatsapp', None),
@@ -626,6 +631,7 @@ def _serialize_ticket_details(ticket, ticket_type):
         "historial_chat": historial_chat,
         "timeline": timeline,
         "progreso_estados": progreso_estados,
+        "ultima_actualizacion": datetime_to_iso_utc(ultima_actualizacion_dt),
     }
 
     if hasattr(ticket, 'foto_url_directa'):
@@ -1006,6 +1012,8 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     ticket_obj.estado = nuevo_estado
     if hasattr(ticket_obj, "estado_cliente"):
         ticket_obj.estado_cliente = nuevo_estado
+    if hasattr(ticket_obj, "ultima_actividad"):
+        ticket_obj.ultima_actividad = get_local_now()
     if nuevo_estado == "cerrado":
         encuesta = TicketSatisfaccion(
             ticket_id=ticket_obj.id,
@@ -1033,7 +1041,11 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         )
         mensaje_notificacion = f"El estado de tu ticket #{ticket_obj.nro_ticket} ha sido actualizado a: '{nuevo_estado}'."
 
-        enviar_email_ticket_novedad(ticket_obj, mensaje_notificacion)
+        enviar_email_ticket_novedad(
+            ticket_obj,
+            mensaje_notificacion,
+            comentario_reciente=comentario_estado,
+        )
         enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion)
         if tipo == "municipio": # Por ahora, WhatsApp solo para municipio
             enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion)
@@ -1823,6 +1835,23 @@ def mapa_de_tickets(current_user: User, tipo: str):
     return jsonify({"type": "FeatureCollection", "features": features})
 
 # ---------- ENVIAR HISTORIAL POR CORREO ----------
+def _format_datetime_safe(value) -> str:
+    """Formatea valores de fecha evitando errores cuando son nulos o strings."""
+    if not value:
+        return "Sin fecha"
+    if isinstance(value, str):
+        value = value.strip()
+        return value or "Sin fecha"
+    try:
+        return value.strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        try:
+            parsed = datetime.fromisoformat(str(value))
+            return parsed.strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            return str(value)
+
+
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/send-history', methods=['POST'])
 @token_requerido
 @admin_o_empleado_requerido
@@ -1879,10 +1908,41 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int):
         # --- Renderizar y Enviar Correo ---
         asunto = f"Historial de conversación del Ticket #{ticket_obj.nro_ticket}"
 
+        ticket_info = {
+            "nro_ticket": ticket_obj.nro_ticket or "",
+            "asunto": ticket_obj.asunto or "Sin asunto",
+            "estado": ticket_obj.estado or "Sin estado",
+            "fecha_creacion": _format_datetime_safe(getattr(ticket_obj, "fecha", None)),
+            "ultima_actividad": _format_datetime_safe(getattr(ticket_obj, "ultima_actividad", None)),
+            "canal_ingreso": ticket_obj.canal_ingreso or None,
+        }
+
+        comentarios_info = []
+        for comentario in comentarios:
+            adjunto = None
+            if comentario.archivo_adjunto:
+                nombre_adjunto = (
+                    comentario.archivo_adjunto.nombre_original
+                    or comentario.archivo_adjunto.filename
+                    or "Archivo adjunto"
+                )
+                adjunto = {
+                    "nombre": nombre_adjunto,
+                    "url": comentario.archivo_adjunto.url,
+                }
+
+            comentarios_info.append({
+                "es_admin": bool(comentario.es_admin),
+                "autor": "Agente" if comentario.es_admin else "Vecino/a",
+                "fecha": _format_datetime_safe(getattr(comentario, "fecha", None)),
+                "mensaje": comentario.comentario or "",
+                "adjunto": adjunto,
+            })
+
         cuerpo_html = render_template(
             "email/ticket_history.html",
-            ticket=ticket_obj,
-            comentarios=comentarios
+            ticket=ticket_info,
+            comentarios=comentarios_info
         )
 
         from services.email_service import enviar_email_con_multiples_adjuntos

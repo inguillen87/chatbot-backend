@@ -7,7 +7,7 @@ import json
 
 class TicketEndpointsTest(unittest.TestCase):
     def setUp(self):
-        self.app = create_app()
+        self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
@@ -163,7 +163,7 @@ class TicketEndpointsTest(unittest.TestCase):
         self.assertGreater(len(data['mensajes']), 0)
 
         comment_with_attachment = data['mensajes'][0]
-        self.assertEqual(comment_with_attachment['comentario'], "Test comment with attachment")
+        self.assertEqual(comment_with_attachment['texto'], "Test comment with attachment")
         self.assertIn('attachmentInfo', comment_with_attachment)
         self.assertIsNotNone(comment_with_attachment['attachmentInfo'])
         self.assertEqual(comment_with_attachment['attachmentInfo']['name'], "test_image.jpg")
@@ -200,6 +200,43 @@ class TicketEndpointsTest(unittest.TestCase):
         self.assertIn('admin@junin.com', kwargs['destinos']) # Admin email
         self.assertIn(f'Ticket #{ticket.nro_ticket}', kwargs['asunto'])
         self.assertIn('<h1>Historial de Conversación</h1>', kwargs['cuerpo_html'])
+
+    @patch('services.email_service.enviar_email_con_multiples_adjuntos')
+    def test_send_ticket_history_handles_missing_dates(self, mock_send_email):
+        mock_send_email.return_value = True
+
+        login_resp = self.client.post('/auth/login', json={'email': 'admin@junin.com', 'password': 'adminpass'})
+        self.assertEqual(login_resp.status_code, 200)
+        token = json.loads(login_resp.data)['token']
+        headers = {'Authorization': f'Bearer {token}'}
+
+        admin_user = User.query.filter_by(email='admin@junin.com').first()
+        ticket = MunicipioTicket(
+            municipio_id=admin_user.municipio_id,
+            user_id=admin_user.id,
+            asunto='Sin fecha creada',
+            categoria='prueba',
+            pregunta='Necesitamos verificar formato de fecha.',
+            fecha=None,
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        comentario = TicketComentario(
+            municipio_ticket_id=ticket.id,
+            comentario='Comentario sin fecha asignada',
+            es_admin=False,
+        )
+        comentario.fecha = None
+        db.session.add(comentario)
+        db.session.commit()
+
+        resp = self.client.post(f'/tickets/municipio/{ticket.id}/send-history', headers=headers)
+        self.assertEqual(resp.status_code, 200)
+
+        cuerpo_html = mock_send_email.call_args.kwargs['cuerpo_html']
+        self.assertIn('Sin fecha', cuerpo_html)
+        self.assertIn('Comentario sin fecha asignada', cuerpo_html)
 
 
 if __name__ == '__main__':

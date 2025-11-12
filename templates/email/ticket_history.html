@@ -90,28 +90,41 @@
             <p><strong>Ticket:</strong> #{{ ticket.nro_ticket }}</p>
             <p><strong>Asunto:</strong> {{ ticket.asunto }}</p>
             <p><strong>Estado:</strong> {{ ticket.estado }}</p>
-            <p><strong>Fecha de Creación:</strong> {{ ticket.fecha.strftime('%d/%m/%Y %H:%M') }}</p>
+            <p><strong>Fecha de Creación:</strong> {{ ticket.fecha_creacion }}</p>
+            {% if ticket.ultima_actividad %}
+                <p><strong>Última actualización:</strong> {{ ticket.ultima_actividad }}</p>
+            {% endif %}
+            {% if ticket.canal_ingreso %}
+                <p><strong>Canal de ingreso:</strong> {{ ticket.canal_ingreso }}</p>
+            {% endif %}
         </div>
 
         <div class="chat-history">
             <h2>Conversación</h2>
+            {% if comentarios %}
             {% for comentario in comentarios %}
                 <div class="chat-message {% if comentario.es_admin %}agent{% else %}user{% endif %}">
                     <div class="message-meta">
-                        <span class="author">{% if comentario.es_admin %}Agente{% else %}Usuario{% endif %}</span>
+                        <span class="author">{{ comentario.autor }}</span>
                         -
-                        <span class="timestamp">{{ comentario.fecha.strftime('%d/%m/%Y %H:%M') }}</span>
+                        <span class="timestamp">{{ comentario.fecha }}</span>
                     </div>
                     <div class="message-content">
-                        <p style="white-space: pre-wrap;">{{ comentario.comentario }}</p>
-                        {% if comentario.archivo_adjunto %}
+                        <p style="white-space: pre-wrap;">{{ comentario.mensaje }}</p>
+                        {% if comentario.adjunto %}
                             <p class="attachment-link">
-                                Archivo adjunto: {{ comentario.archivo_adjunto.nombre_original }}
+                                Archivo adjunto: {{ comentario.adjunto.nombre }}
+                                {% if comentario.adjunto.url %}
+                                    - <a href="{{ comentario.adjunto.url }}">Descargar</a>
+                                {% endif %}
                             </p>
                         {% endif %}
                     </div>
                 </div>
             {% endfor %}
+            {% else %}
+                <p>No se registran mensajes en este ticket.</p>
+            {% endif %}
         </div>
 
         <div class="footer">
