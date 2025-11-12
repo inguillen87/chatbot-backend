@@ -592,6 +592,10 @@ def _serialize_ticket_details(ticket, ticket_type):
             "dni": user_data["dni"]
         }
 
+    canal_ingreso_valor = getattr(ticket, 'canal_ingreso', None)
+    canal_normalizado = canal_ingreso_valor or 'desconocido'
+    ultima_actualizacion_dt = getattr(ticket, 'ultima_actividad', None) or getattr(ticket, 'fecha', None)
+
     ticket_data = {
         "id": ticket.id,
         "id_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
@@ -616,7 +620,8 @@ def _serialize_ticket_details(ticket, ticket_type):
             "distrito": getattr(ticket, 'distrito', None),
             "direccion": getattr(ticket, 'direccion', None),
         },
-        "canal_ingreso": getattr(ticket, 'canal_ingreso', None),
+        "canal_ingreso": canal_ingreso_valor,
+        "channel": canal_normalizado,
         "contacto_seguimiento": getattr(ticket, 'contacto_seguimiento', None),
         "nombre_y_avatar_whatsapp": {
             "nombre": getattr(ticket, 'nombre_display_whatsapp', None),
@@ -626,6 +631,7 @@ def _serialize_ticket_details(ticket, ticket_type):
         "historial_chat": historial_chat,
         "timeline": timeline,
         "progreso_estados": progreso_estados,
+        "ultima_actualizacion": datetime_to_iso_utc(ultima_actualizacion_dt),
     }
 
     if hasattr(ticket, 'foto_url_directa'):
