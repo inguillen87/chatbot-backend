@@ -101,6 +101,36 @@ def _coalesce_version(*candidates: Optional[str], fallback: str = "dev") -> str:
     return fallback
 
 
+def _env_first(*names: str, default: Optional[str] = None) -> Optional[str]:
+    """Return the first defined/non-empty environment variable from *names."""
+
+    for name in names:
+        if not name:
+            continue
+
+        value = os.getenv(name)
+        if value is None:
+            continue
+
+        value = value.strip()
+        if value == "":
+            continue
+
+        return value
+
+    return default
+
+
+def _env_flag(default: bool, *names: str) -> bool:
+    """Return a boolean flag honoring multiple environment variable aliases."""
+
+    raw_value = _env_first(*names)
+    if raw_value is None:
+        return default
+
+    return raw_value.strip().lower() in {"1", "true", "t", "yes", "y"}
+
+
 # Backend/Frontend version identifiers exposed through /api/version so admins can
 # double check deployed revisions from the UI without forcing a cache reset.
 DEFAULT_FRONTEND_VERSION = _coalesce_version(
@@ -449,26 +479,86 @@ class Config:
     CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
     CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/0")
 
-    # Valores por defecto orientados a Zoho; pueden sobrescribirse mediante variables de entorno
-    SMTP_HOST = os.getenv("SMTP_HOST", "smtp.zoho.com")
-    SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-    SMTP_USER = os.getenv("SMTP_USER", "info@chatboc.ar")
+    # Valores por defecto orientados a Zoho; pueden sobrescribirse mediante múltiples alias
+    SMTP_HOST = _env_first("SMTP_HOST", "MAIL_SERVER", "MAIL_HOST", default="smtp.zoho.com")
+    SMTP_PORT = int(
+        _env_first("SMTP_PORT", "MAIL_PORT", default=str(587))
+    )
+    SMTP_USER = _env_first(
+        "SMTP_USER",
+        "SMTP_USERNAME",
+        "MAIL_USERNAME",
+        "MAIL_USER",
+        "MAIL_FROM_ADDRESS",
+        default="info@chatboc.ar",
+    )
     # No se proporciona contraseña por defecto para evitar uso accidental de credenciales personales
-    SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-    SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "True").lower() in ('true', '1', 't')
-    SMTP_USE_SSL = os.getenv("SMTP_USE_SSL", "False").lower() in ('true', '1', 't')
+    SMTP_PASSWORD = _env_first(
+        "SMTP_PASSWORD",
+        "SMTP_PASS",
+        "MAIL_PASSWORD",
+        default="",
+    )
+    SMTP_USE_TLS = _env_flag(True, "SMTP_USE_TLS", "MAIL_USE_TLS", "SMTP_TLS")
+    SMTP_USE_SSL = _env_flag(False, "SMTP_USE_SSL", "MAIL_USE_SSL", "SMTP_SSL")
 
-    MAIL_FROM_ADDRESS = os.getenv("MAIL_FROM_ADDRESS", SMTP_USER if SMTP_USER else "noreply@example.com")
-    MAIL_FROM_NAME = os.getenv("MAIL_FROM_NAME", "Chatboc Platform")
+    MAIL_FROM_ADDRESS = _env_first(
+        "MAIL_FROM_ADDRESS",
+        "MAIL_DEFAULT_SENDER",
+        "MAIL_SENDER",
+        default=SMTP_USER if SMTP_USER else "noreply@example.com",
+    )
+    MAIL_FROM_NAME = _env_first(
+        "MAIL_FROM_NAME",
+        "MAIL_SENDER_NAME",
+        "MAIL_DEFAULT_NAME",
+        default="Chatboc Platform",
+    )
 
-    SMTP_HOST_CAMPAIGN = os.getenv("SMTP_HOST_CAMPAIGN", SMTP_HOST)
-    SMTP_PORT_CAMPAIGN = int(os.getenv("SMTP_PORT_CAMPAIGN", SMTP_PORT))
-    SMTP_USER_CAMPAIGN = os.getenv("SMTP_USER_CAMPAIGN", SMTP_USER)
-    SMTP_PASSWORD_CAMPAIGN = os.getenv("SMTP_PASSWORD_CAMPAIGN", SMTP_PASSWORD)
-    SMTP_USE_TLS_CAMPAIGN = os.getenv("SMTP_USE_TLS_CAMPAIGN", str(SMTP_USE_TLS)).lower() in ('true', '1', 't')
-    SMTP_USE_SSL_CAMPAIGN = os.getenv("SMTP_USE_SSL_CAMPAIGN", str(SMTP_USE_SSL)).lower() in ('true', '1', 't')
-    MAIL_FROM_ADDRESS_CAMPAIGN = os.getenv("MAIL_FROM_ADDRESS_CAMPAIGN", MAIL_FROM_ADDRESS)
-    MAIL_FROM_NAME_CAMPAIGN = os.getenv("MAIL_FROM_NAME_CAMPAIGN", MAIL_FROM_NAME)
+    SMTP_HOST_CAMPAIGN = _env_first(
+        "SMTP_HOST_CAMPAIGN",
+        "MAIL_SERVER_CAMPAIGN",
+        "MAIL_HOST_CAMPAIGN",
+        default=SMTP_HOST,
+    )
+    SMTP_PORT_CAMPAIGN = int(
+        _env_first("SMTP_PORT_CAMPAIGN", "MAIL_PORT_CAMPAIGN", default=str(SMTP_PORT))
+    )
+    SMTP_USER_CAMPAIGN = _env_first(
+        "SMTP_USER_CAMPAIGN",
+        "SMTP_USERNAME_CAMPAIGN",
+        "MAIL_USERNAME_CAMPAIGN",
+        "MAIL_USER_CAMPAIGN",
+        default=SMTP_USER,
+    )
+    SMTP_PASSWORD_CAMPAIGN = _env_first(
+        "SMTP_PASSWORD_CAMPAIGN",
+        "SMTP_PASS_CAMPAIGN",
+        "MAIL_PASSWORD_CAMPAIGN",
+        default=SMTP_PASSWORD,
+    )
+    SMTP_USE_TLS_CAMPAIGN = _env_flag(
+        SMTP_USE_TLS,
+        "SMTP_USE_TLS_CAMPAIGN",
+        "MAIL_USE_TLS_CAMPAIGN",
+    )
+    SMTP_USE_SSL_CAMPAIGN = _env_flag(
+        SMTP_USE_SSL,
+        "SMTP_USE_SSL_CAMPAIGN",
+        "MAIL_USE_SSL_CAMPAIGN",
+    )
+    MAIL_FROM_ADDRESS_CAMPAIGN = _env_first(
+        "MAIL_FROM_ADDRESS_CAMPAIGN",
+        "MAIL_SENDER_CAMPAIGN",
+        "MAIL_DEFAULT_SENDER_CAMPAIGN",
+        default=MAIL_FROM_ADDRESS,
+    )
+    MAIL_FROM_NAME_CAMPAIGN = _env_first(
+        "MAIL_FROM_NAME_CAMPAIGN",
+        "MAIL_SENDER_NAME_CAMPAIGN",
+        "MAIL_DEFAULT_NAME_CAMPAIGN",
+        default=MAIL_FROM_NAME,
+    )
 
     ANALYTICS_ENABLED = os.getenv("ANALYTICS_ENABLED", "true").lower() in {"1", "true", "yes"}
     ANALYTICS_CACHE_TTL = int(os.getenv("ANALYTICS_CACHE_TTL", "600"))
