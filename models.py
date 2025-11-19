@@ -27,6 +27,48 @@ import os
 import random
 from services.gcs_service import resolve_attachment_thumb_url
 
+try:  # pragma: no cover - defensive fallback for circular imports during tests
+    from config import TIMEZONE_OFFSET as _CONFIG_TIMEZONE_OFFSET
+except Exception:  # pragma: no cover - fallback to default offset used in prod (GMT-3)
+    _CONFIG_TIMEZONE_OFFSET = -3
+
+
+def _build_public_survey_timezone() -> timezone:
+    """Return the timezone used to interpret naive encuesta schedules."""
+
+    try:
+        offset_hours = int(_CONFIG_TIMEZONE_OFFSET)
+    except (TypeError, ValueError):
+        offset_hours = -3
+
+    # ``datetime.timezone`` supports offsets between -24 and +24 hours.  Our
+    # deployments typically live in GMT-3, but we clamp the value to avoid
+    # crashes caused by misconfigured environment variables.
+    offset_hours = max(-12, min(14, offset_hours))
+    return timezone(timedelta(hours=offset_hours))
+
+
+_PUBLIC_SURVEY_LOCAL_TZ = _build_public_survey_timezone()
+
+
+def _normalize_public_survey_datetime(value: Optional[datetime]) -> Optional[datetime]:
+    """Ensure encuesta schedule datetimes are timezone-aware."""
+
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=_PUBLIC_SURVEY_LOCAL_TZ)
+    return value
+
+
+def _coerce_reference_time(at: Optional[datetime]) -> datetime:
+    """Return an aware datetime (UTC) used for actividad comparisons."""
+
+    reference = at or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        return reference.replace(tzinfo=timezone.utc)
+    return reference.astimezone(timezone.utc)
+
 
 JSONType = JSONB().with_variant(SQLITE_JSON, "sqlite")
 
@@ -1175,17 +1217,17 @@ class EncEncuesta(db.Model, TimestampMixin):
     def esta_activa(self, at: Optional[datetime] = None) -> bool:
         if self.estado != "publicada":
             return False
-        at = at or datetime.now(timezone.utc)
-        inicio = self.inicio_at
-        if inicio and inicio.tzinfo is None:
-            inicio = inicio.replace(tzinfo=timezone.utc)
-        fin = self.fin_at
-        if fin and fin.tzinfo is None:
-            fin = fin.replace(tzinfo=timezone.utc)
+        reference = _coerce_reference_time(at)
+        inicio = _normalize_public_survey_datetime(self.inicio_at)
+        if inicio:
+            inicio = inicio.astimezone(timezone.utc)
+        fin = _normalize_public_survey_datetime(self.fin_at)
+        if fin:
+            fin = fin.astimezone(timezone.utc)
 
-        if inicio and at < inicio:
+        if inicio and reference < inicio:
             return False
-        if fin and at > fin:
+        if fin and reference > fin:
             return False
         return True
 

@@ -1730,28 +1730,29 @@ def list_public_encuestas_for_tenant(
     """Return active public surveys for a tenant along with their public slugs."""
 
     _bootstrap_sample_if_needed(tenant_id)
-    now = datetime.now(timezone.utc)
     query = (
         EncEncuesta.query.options(joinedload(EncEncuesta.links))
         .filter(EncEncuesta.tenant_id == tenant_id)
         .filter(EncEncuesta.estado == "publicada")
-        .filter(or_(EncEncuesta.inicio_at.is_(None), EncEncuesta.inicio_at <= now))
-        .filter(or_(EncEncuesta.fin_at.is_(None), EncEncuesta.fin_at >= now))
         .order_by(
             EncEncuesta.created_at.desc(),
             EncEncuesta.id.desc(),
         )
     )
-    if limit and limit > 0:
-        query = query.limit(limit)
 
     encuestas = query.all()
     resultados: List[Tuple[EncEncuesta, str]] = []
+    max_items = limit if limit and limit > 0 else None
 
     for encuesta in encuestas:
+        if not encuesta.esta_activa():
+            continue
         slug_publico = _resolve_public_slug(encuesta)
-        if slug_publico:
-            resultados.append((encuesta, slug_publico))
+        if not slug_publico:
+            continue
+        resultados.append((encuesta, slug_publico))
+        if max_items and len(resultados) >= max_items:
+            break
 
     return resultados
 
@@ -2460,16 +2461,7 @@ def _ensure_timezone(dt: Optional[datetime]) -> Optional[datetime]:
 
 
 def _is_encuesta_activa(encuesta: EncEncuesta) -> bool:
-    if encuesta.estado != "publicada":
-        return False
-    now = datetime.now(timezone.utc)
-    inicio = _ensure_timezone(encuesta.inicio_at)
-    fin = _ensure_timezone(encuesta.fin_at)
-    if inicio and now < inicio:
-        return False
-    if fin and now > fin:
-        return False
-    return True
+    return encuesta.esta_activa()
 
 
 def seed_encuesta_respuestas_demo(

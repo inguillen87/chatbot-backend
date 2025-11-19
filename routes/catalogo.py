@@ -1,6 +1,6 @@
 import os
 from flask import Blueprint, request, jsonify, send_from_directory, render_template, g, url_for
-from models import CatalogoItem, QA, ArchivoAdjunto
+from models import CatalogoItem, QA, ArchivoAdjunto, User
 from routes.auth import token_requerido
 from services.qdrant_search import (
     buscar_catalogo_qdrant,
@@ -9,6 +9,7 @@ from services.qdrant_search import (
     CATALOGO_PYME,
     CATALOGO_MUNICIPIO,
 )
+from services.catalog_seed import ensure_seed_catalog
 try:
     from services.upload_processor import (
         subir_catalogo as _subir_catalogo,
@@ -244,17 +245,18 @@ def listar_catalogo(user, *args, **kwargs):
     precio_max = request.args.get("precio_max")
     stock_min = request.args.get("stock_min")
 
-    consulta = CatalogoItem.query.filter_by(user_id=user.id)
+    catalog_owner = _resolve_catalog_owner(user)
+    if getattr(catalog_owner, "tipo_chat", None) == "municipio":
+        ensure_seed_catalog(catalog_owner)
+
+    consulta = CatalogoItem.query.filter_by(user_id=catalog_owner.id)
     if categoria:
         consulta = consulta.filter_by(categoria=categoria)
     items = consulta.all()
     if not items:
-        return jsonify(
-            {
-                "mensaje": "No hay productos cargados en el catálogo. "
-                "Contactá a la empresa para más info."
-            }
-        )
+        response = jsonify([])
+        response.headers["X-Catalogo-Vacio"] = "1"
+        return response
 
     productos = []
     for item in items:
@@ -269,6 +271,8 @@ def listar_catalogo(user, *args, **kwargs):
                 "cantidad": item.cantidad,
                 "marca": item.marca,
                 "imagen_url": item.imagen_url,
+                "descripcion_corta": item.descripcion_corta,
+                "promocion_info": item.promocion_info,
             }
         )
 
@@ -455,3 +459,11 @@ def listar_compartidos(user):
             "fecha_compartido": c.fecha_compartido.isoformat()
         })
     return jsonify(data)
+def _resolve_catalog_owner(user: User) -> User:
+    """Return the owning account that should manage the catalog entries."""
+
+    empresa = getattr(user, "empresa", None)
+    if empresa is not None:
+        return empresa
+    return user
+

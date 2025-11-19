@@ -66,6 +66,7 @@ from .common_utils import (
     extract_multiple_contact_details_regex,
     _get_main_menu_payload,
 )
+from utils.validators import extract_email, extract_phone, extract_dni, extract_name
 from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
 from services.tasks import process_image_for_chat_task
@@ -1527,6 +1528,68 @@ def strip_variation_selector(s: str) -> str:
     return s.replace(VARIATION_SELECTOR, "") if isinstance(s, str) else s
 
 
+def _looks_like_free_form_input(text: str | None) -> bool:
+    """Detects if the user sent a natural sentence instead of a menu option."""
+    if not isinstance(text, str):
+        return False
+
+    stripped = strip_variation_selector(text).strip()
+    if not stripped:
+        return False
+
+    normalized = normalizar_texto(stripped)
+    word_count = len(normalized.split())
+
+    if word_count >= 6:
+        return True
+
+    if len(stripped) >= 40:
+        return True
+
+    # Sentences with punctuation combined with at least a few words
+    if word_count >= 4 and any(ch in stripped for ch in ".,;¿?¡!:"):
+        return True
+
+    return False
+
+
+def _maybe_route_menu_input_to_llm(
+    pregunta_str: str,
+    contexto_municipio_actual: dict,
+    app,
+    context: dict,
+    viewer_user,
+    owner_user,
+    chat_db_context,
+    demo_metadata=None,
+):
+    """Escalate long natural sentences sent during menu selection to the LLM."""
+    if not _looks_like_free_form_input(pregunta_str):
+        return None
+
+    logger_actual = current_app.logger if has_app_context() else logger
+    logger_actual.info(
+        "Free-form sentence detected while waiting for a menu selection. Escalating to LLM."
+    )
+
+    contexto_municipio_actual['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+    contexto_municipio_actual.pop('menu_opciones', None)
+    if chat_db_context:
+        flag_modified(chat_db_context, "context_data")
+
+    response_dict, _ = handle_llm_interaction(
+        app,
+        pregunta_str,
+        context,
+        viewer_user,
+        owner_user,
+        chat_db_context,
+        contexto_municipio_actual,
+        demo_metadata=demo_metadata,
+    )
+    return response_dict
+
+
 def extract_description_and_check_confirmation(text: str, confirmation_keywords: set) -> tuple[str | None, bool]:
     """
     Extracts description from text and checks for a confirmation intent.
@@ -1774,6 +1837,104 @@ PEDIR_INFO_TO_STATE = {
     "confirmacion": ConversationState.ESPERANDO_CONFIRMACION_RECLAMO,
     "adjuntos": ConversationState.ESPERANDO_ADJUNTOS_RECLAMO,
 }
+
+CLAIM_PENDING_FIELDS = {
+    "ubicacion",
+    "direccion",
+    "categoria",
+    "descripcion",
+    "descripcion_mas_detallada",
+    "nombre",
+    "nombre_completo",
+    "telefono",
+    "email",
+    "dni",
+    "documento",
+    "adjuntos",
+    "confirmacion",
+}
+
+CLAIM_WAITING_STATES = {
+    ConversationState.ESPERANDO_INFO_RECLAMO_LLM,
+    ConversationState.ESPERANDO_DIRECCION_RECLAMO,
+    ConversationState.ESPERANDO_CATEGORIA_RECLAMO,
+    ConversationState.ESPERANDO_DESCRIPCION_RECLAMO,
+    ConversationState.ESPERANDO_NOMBRE_VECINO,
+    ConversationState.ESPERANDO_TELEFONO_VECINO,
+    ConversationState.ESPERANDO_EMAIL_VECINO,
+    ConversationState.ESPERANDO_CONFIRMACION_RECLAMO,
+    ConversationState.ESPERANDO_ADJUNTOS_RECLAMO,
+}
+
+
+def _is_claim_pending_field(field_name: Optional[str]) -> bool:
+    if not field_name or not isinstance(field_name, str):
+        return False
+    normalized = unicodedata.normalize("NFKD", field_name).encode("ascii", "ignore").decode("ascii").lower().strip()
+    return normalized in CLAIM_PENDING_FIELDS
+
+
+def _normalize_pedir_info_value(pedir_info: Any) -> Optional[str]:
+    """Return the first meaningful string value from pedir_info."""
+
+    if isinstance(pedir_info, (list, tuple)):
+        for value in pedir_info:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    if isinstance(pedir_info, str):
+        cleaned = pedir_info.strip()
+        return cleaned or None
+
+    return None
+
+
+def _extract_value_for_expected_field(
+    field_name: Optional[str],
+    raw_text: str,
+    context: dict,
+) -> Optional[str]:
+    """Try to extract the value that the flow is waiting for from the raw text."""
+
+    if not field_name:
+        return None
+
+    normalized_field = field_name.lower()
+    raw_text = raw_text or ""
+
+    if normalized_field in {"email", "correo", "correo_electronico"}:
+        return extract_email(raw_text)
+
+    if normalized_field in {"telefono", "tel", "celular"}:
+        phone = extract_phone(raw_text)
+        return phone[0] if phone else None
+
+    if normalized_field in {"dni", "documento"}:
+        dni = extract_dni(raw_text)
+        return dni[0] if dni else None
+
+    if normalized_field in {"nombre", "nombre_completo"}:
+        return extract_name(raw_text)
+
+    if normalized_field in {"descripcion", "descripcion_mas_detallada"}:
+        return raw_text.strip() or None
+
+    if normalized_field in {"categoria", "direccion", "ubicacion"}:
+        # Location fields are handled separately using the structured payload when possible,
+        # but fall back to the free-form text if needed.
+        if context.get("es_ubicacion") and context.get("ubicacion_usuario"):
+            location_payload = context.get("ubicacion_usuario") or {}
+            address = location_payload.get("address")
+            if address:
+                return address
+            lat = location_payload.get("latitude")
+            lon = location_payload.get("longitude")
+            if lat is not None and lon is not None:
+                return f"Lat: {lat}, Lon: {lon}"
+        return raw_text.strip() or None
+
+    return raw_text.strip() or None
 
 _PRODUCT_CATALOG_CACHE = None
 def cargar_catalogo_productos():
@@ -2851,6 +3012,12 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
     )
 
     estado_conversacion_para_llm = contexto_municipio_actual.get("estado_conversacion")
+    estado_conversacion_enum = None
+    if isinstance(estado_conversacion_para_llm, ConversationState):
+        estado_conversacion_enum = estado_conversacion_para_llm
+    elif isinstance(estado_conversacion_para_llm, str):
+        estado_conversacion_enum = ConversationState.__members__.get(estado_conversacion_para_llm)
+    waiting_state_active = estado_conversacion_enum in CLAIM_WAITING_STATES if estado_conversacion_enum else False
     invocar_llm = False
 
     # Si se está esperando info de un reclamo pero el usuario consulta un servicio
@@ -2944,20 +3111,33 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
     try:
         # FIX: Pre-process expected data to prevent state loss if LLM fails to return it
         campo_esperado = contexto_municipio_actual.get("esperando_info_llm_reclamo")
+        campo_esperado = _normalize_pedir_info_value(campo_esperado)
+        if campo_esperado:
+            contexto_municipio_actual["esperando_info_llm_reclamo"] = campo_esperado
+            contexto_municipio_actual["esperando_info_llm"] = campo_esperado
+        estabamos_esperando_dato = bool(campo_esperado)
+
+        expected_value_captured = False
+
         if context.get("es_ubicacion") and context.get("ubicacion_usuario"):
-             campo_esperado = "ubicacion"
+            campo_esperado = campo_esperado or "ubicacion"
 
         if campo_esperado and (pregunta_str or context.get("es_ubicacion")):
-            logger_actual.info(f"Guardando dato esperado '{campo_esperado}' en el contexto antes de llamar al LLM.")
+            logger_actual.info(
+                f"Guardando dato esperado '{campo_esperado}' en el contexto antes de llamar al LLM."
+            )
             datos_parciales = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
 
-            valor_a_guardar = None
+            valor_a_guardar: Optional[str] = None
             if campo_esperado == "ubicacion":
                 if context.get("ubicacion_usuario"):
                     lat = context["ubicacion_usuario"].get("latitude")
                     lon = context["ubicacion_usuario"].get("longitude")
                     address = context["ubicacion_usuario"].get("address")
-                    valor_a_guardar = address if address else f"Lat: {lat}, Lon: {lon}"
+                    if address:
+                        valor_a_guardar = address
+                    elif lat is not None and lon is not None:
+                        valor_a_guardar = f"Lat: {lat}, Lon: {lon}"
                     try:
                         if lat is not None and lon is not None:
                             datos_parciales["coordenadas"] = {
@@ -2967,13 +3147,45 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     except (TypeError, ValueError):
                         pass
                 else:
-                    valor_a_guardar = pregunta_str
+                    valor_a_guardar = pregunta_str.strip() if pregunta_str else None
             else:
-                valor_a_guardar = pregunta_str
+                valor_a_guardar = _extract_value_for_expected_field(
+                    campo_esperado,
+                    pregunta_str,
+                    context,
+                )
 
-            datos_parciales[campo_esperado] = valor_a_guardar
-            logger_actual.info(f"Datos parciales actualizados: {datos_parciales}")
-            contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+            if valor_a_guardar:
+                datos_parciales[campo_esperado] = valor_a_guardar
+                expected_value_captured = True
+                contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                contexto_municipio_actual.pop("esperando_info_llm", None)
+                logger_actual.info(f"Datos parciales actualizados: {datos_parciales}")
+            else:
+                logger_actual.info(
+                    f"No se pudo extraer un valor válido para '{campo_esperado}'. Se mantendrá la solicitud pendiente."
+                )
+
+        if expected_value_captured and (estabamos_esperando_dato or waiting_state_active):
+            logger_actual.info(
+                "[HANDLE_LLM] Dato esperado recibido. Validando reclamo sin invocar al LLM."
+            )
+            datos_parciales = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+            handler = CrearReclamoActionHandler(context)
+            handler_response = handler.execute(datos_parciales)
+
+            normalized_pending = _normalize_pedir_info_value(handler_response.get("pedir_info"))
+            if normalized_pending:
+                contexto_municipio_actual["estado_conversacion"] = (
+                    ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+                )
+                contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending
+                contexto_municipio_actual["esperando_info_llm"] = normalized_pending
+            else:
+                contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                contexto_municipio_actual.pop("esperando_info_llm", None)
+
+            return handler_response, contexto_municipio_actual
 
 
         mensaje_completo_para_llm = {"texto": pregunta_str}
@@ -2988,7 +3200,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
         try:
             mensaje_para_llm = json.dumps(mensaje_completo_para_llm)
-            respuesta_llm_dict, context_dict = llamar_llm_con_fallback(
+            respuesta_llm_dict, context_dict = llamar_gemini(
                 app=app,
                 mensaje_usuario=mensaje_para_llm,
                 usuario=usuario_info_llm,
@@ -3062,26 +3274,38 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_actuales
 
             if not pedir_info_llm:
-                # If the LLM thinks it has all the data, call the handler to validate.
-                # The handler is the source of truth. Its response will be used.
-                # This prevents a premature confirmation from the LLM being shown
-                # if the handler then asks for more information.
-                logger_actual.info("[HANDLE_LLM] LLM provided all data. Executing CrearReclamoActionHandler for validation and creation.")
-                handler = CrearReclamoActionHandler(context)
-                handler_response = handler.execute(datos_actuales)
+                    # If the LLM thinks it has all the data, call the handler to validate.
+                    # The handler is the source of truth. Its response will be used.
+                    # This prevents a premature confirmation from the LLM being shown
+                    # if the handler then asks for more information.
+                    logger_actual.info("[HANDLE_LLM] LLM provided all data. Executing CrearReclamoActionHandler for validation and creation.")
+                    handler = CrearReclamoActionHandler(context)
+                    handler_response = handler.execute(datos_actuales)
 
-                # The handler's response is the final one, whether it's a success message
-                # or a request for more info. We return it directly, ignoring the LLM's
-                # potentially premature confirmation message.
-                return handler_response, contexto_municipio_actual
+                    pending_field = _normalize_pedir_info_value(handler_response.get("pedir_info"))
+                    if pending_field:
+                        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+                        contexto_municipio_actual["esperando_info_llm_reclamo"] = pending_field
+                        contexto_municipio_actual["esperando_info_llm"] = pending_field
+                    else:
+                        contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                        contexto_municipio_actual.pop("esperando_info_llm", None)
+
+                    # The handler's response is the final one, whether it's a success message
+                    # or a request for more info. We return it directly, ignoring the LLM's
+                    # potentially premature confirmation message.
+                    return handler_response, contexto_municipio_actual
             else:
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-                contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
-                # Update the context that will be passed to the next turn
-                if chat_db_context and hasattr(chat_db_context, 'context_data'):
-                    chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
-                    flag_modified(chat_db_context, "context_data")
-                return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_reclamo"}, contexto_municipio_actual
+                normalized_pending = _normalize_pedir_info_value(pedir_info_llm)
+                if normalized_pending:
+                    contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending
+                    contexto_municipio_actual["esperando_info_llm"] = normalized_pending
+            # Update the context that will be passed to the next turn
+            if chat_db_context and hasattr(chat_db_context, 'context_data'):
+                chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+                flag_modified(chat_db_context, "context_data")
+            return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_reclamo"}, contexto_municipio_actual
         elif accion_backend_llm == "mostrar_menu":
             logger.info("[HANDLE_LLM] LLM solicitó mostrar el menú principal.")
             contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
@@ -3162,7 +3386,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 if info_faltante:
                     logger.info(f"[HERRAMIENTA] LLM pide más información ('{info_faltante}') antes de ejecutar '{nombre_herramienta}'. No se ejecutará la herramienta.")
                     contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-                    contexto_municipio_actual["esperando_info_llm_reclamo"] = info_faltante[0] if isinstance(info_faltante, list) else info_faltante
+                    normalized_tool_pending = _normalize_pedir_info_value(info_faltante)
+                    if normalized_tool_pending:
+                        contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_tool_pending
+                        contexto_municipio_actual["esperando_info_llm"] = normalized_tool_pending
                     contexto_municipio_actual["datos_parciales_llm_reclamo"] = {
                         "nombre_herramienta": nombre_herramienta,
                         "parametros_herramienta": parametros_herramienta
@@ -3285,13 +3512,21 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
             # State transition logic based on 'pedir_info'
             if pedir_info_llm:
-                next_state_obj = PEDIR_INFO_TO_STATE.get(pedir_info_llm)
+                normalized_pending = _normalize_pedir_info_value(pedir_info_llm)
+                pending_lookup_key = normalized_pending or pedir_info_llm
+                if not isinstance(pending_lookup_key, str):
+                    pending_lookup_key = str(pending_lookup_key or "").strip()
+                next_state_obj = PEDIR_INFO_TO_STATE.get(pending_lookup_key)
                 if next_state_obj:
                     contexto_municipio_actual["estado_conversacion"] = next_state_obj.name
                 else:
                     # Fallback if a new 'pedir_info' value isn't in our map
                     contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-                contexto_municipio_actual["esperando_info_llm"] = pedir_info_llm
+                contexto_municipio_actual["esperando_info_llm"] = normalized_pending or pending_lookup_key
+                if _is_claim_pending_field(normalized_pending or pending_lookup_key):
+                    contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending or pending_lookup_key
+                else:
+                    contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
             else:
                 # If no more info is needed, decide what to do
                 if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
@@ -4497,6 +4732,8 @@ def _detect_location_link_info(text: str) -> Optional[dict[str, Any]]:
     info: dict[str, Any] = {}
     cleaned_text = text.strip()
 
+    info["only_location"] = False
+
     if url_match:
         url = url_match.group(0)
         host = urlparse(url).netloc.lower()
@@ -4548,8 +4785,10 @@ def _detect_location_link_info(text: str) -> Optional[dict[str, Any]]:
         if len(residual_words) > 6 and not all(word in allowed_fillers for word in normalized_words):
             return None
         info["address"] = cleaned_text.strip()
+        info["only_location"] = all(word in allowed_fillers for word in normalized_words)
     else:
         info["address"] = "la ubicación que compartiste"
+        info["only_location"] = True
 
     return info
 
@@ -6261,7 +6500,10 @@ def responder_municipio(
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response(response)
 
-        if not contexto_municipio_actual.get("estado_conversacion"):
+        if (
+            not contexto_municipio_actual.get("estado_conversacion")
+            and location_link_info.get("only_location")
+        ):
             address = location_link_info.get("address") or "la ubicación que compartiste"
             opciones_proactivas = [
                 {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
@@ -6411,6 +6653,18 @@ def responder_municipio(
                 if response:
                     return _finalize_response(response)
             else:
+                response_dict = _maybe_route_menu_input_to_llm(
+                    pregunta_str_menu,
+                    contexto_municipio_actual,
+                    app,
+                    context,
+                    viewer_user,
+                    owner_user,
+                    chat_db_context,
+                    demo_metadata=demo_metadata,
+                )
+                if response_dict:
+                    return _finalize_response(response_dict)
                 logger_actual.info(f"Input '{pregunta_str_menu}' is not a menu option. Treating as a general query.")
                 contexto_municipio_actual['estado_conversacion'] = None
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
@@ -7794,6 +8048,18 @@ def responder_municipio(
                     response['message_body'] = response.get('message_body', '').strip() + "\n\n¿En qué más puedo ayudarte?"
                 return _finalize_response(response)
         else:
+            response_dict = _maybe_route_menu_input_to_llm(
+                pregunta_str_menu,
+                contexto_municipio_actual,
+                app,
+                context,
+                viewer_user,
+                owner_user,
+                chat_db_context,
+                demo_metadata=demo_metadata,
+            )
+            if response_dict:
+                return _finalize_response(response_dict)
             # Reenviar el mismo submenú si la opción no es válida
             return _finalize_response({
                 "message_body": "No reconocí esa opción. Por favor, elegí una opción del menú.",

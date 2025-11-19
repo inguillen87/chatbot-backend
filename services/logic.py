@@ -50,8 +50,6 @@ def es_rubro_publico(rubro) -> bool:
 
 from services.demo_response_engine import maybe_handle_demo_interaction
 from services.llm_utils import clasificar_entidad_con_llm
-from services.municipio_responder import responder_municipio
-from services.pymes import responder_pyme
 from services.response_formatter import render_audio_text
 from services.constants import CONTEXTO_MUNICIPIO
 
@@ -399,7 +397,9 @@ def responder_chatboc(
 
     if tipo_chat == "municipio":
         if response_data is None:
-            response_data = responder_municipio(
+            from services import municipio_responder as municipio_responder_module
+
+            response_data = municipio_responder_module.responder_municipio(
                 pregunta_original=pregunta, # La pregunta original del usuario
                 owner_user=owner_user,
                 rubro_obj=rubro_obj,
@@ -412,7 +412,9 @@ def responder_chatboc(
             )
     elif tipo_chat == "pyme":
         if response_data is None:
-            response_data = responder_pyme(
+            from services import pymes as pymes_module
+
+            response_data = pymes_module.responder_pyme(
                 pregunta_original=pregunta,
                 owner_user=owner_user,
                 rubro_obj=rubro_obj,
