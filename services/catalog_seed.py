@@ -63,7 +63,10 @@ _JUNIN_ITEMS: Sequence[SeedItem] = (
         sku="junin-kit-escolar",
         cantidad="Stock solidario: 250 kits",
         promocion_info="Sumá 1.500 puntos participando de encuestas cívicas",
-        imagen_url="https://cdn.chatboc.ar/demo/catalogo/kit-escolar.png",
+        imagen_url=(
+            "https://images.unsplash.com/photo-1503676260728-1c00da094a0b?"
+            "auto=format&fit=crop&w=900&q=80"
+        ),
     ),
     SeedItem(
         nombre="Árbol nativo en tu vereda",
@@ -75,7 +78,10 @@ _JUNIN_ITEMS: Sequence[SeedItem] = (
         sku="junin-arbol-nativo",
         cantidad="Agenda abierta: 120 turnos",
         promocion_info="Disponible para donación o puntos verdes",
-        imagen_url="https://cdn.chatboc.ar/demo/catalogo/arbol-nativo.png",
+        imagen_url=(
+            "https://images.unsplash.com/photo-1501785888041-af3ef285b470?"
+            "auto=format&fit=crop&w=900&q=80"
+        ),
     ),
     SeedItem(
         nombre="Bono de donación Hospital Saporiti",
@@ -87,7 +93,10 @@ _JUNIN_ITEMS: Sequence[SeedItem] = (
         sku="junin-bono-hospital",
         cantidad="Meta mensual: 80 bonos",
         promocion_info="Cada bono financia 1 kit de insumos críticos",
-        imagen_url="https://cdn.chatboc.ar/demo/catalogo/bono-hospital.png",
+        imagen_url=(
+            "https://images.unsplash.com/photo-1505751172876-fa1923c5c528?"
+            "auto=format&fit=crop&w=900&q=80"
+        ),
     ),
     SeedItem(
         nombre="Bolson saludable kilómetro cero",
@@ -99,7 +108,10 @@ _JUNIN_ITEMS: Sequence[SeedItem] = (
         sku="junin-bolson-saludable",
         cantidad="Stock semanal: 150 bolsos",
         promocion_info="Beneficio exclusivo vecinos registrados",
-        imagen_url="https://cdn.chatboc.ar/demo/catalogo/bolson-saludable.png",
+        imagen_url=(
+            "https://images.unsplash.com/photo-1466978913421-dad2ebd01d17?"
+            "auto=format&fit=crop&w=900&q=80"
+        ),
     ),
     SeedItem(
         nombre="Canje de residuos electrónicos",
@@ -111,7 +123,10 @@ _JUNIN_ITEMS: Sequence[SeedItem] = (
         sku="junin-canje-ewaste",
         cantidad="Cupón mensual: 300 canjes",
         promocion_info="Incluye retiro coordinado para adultos mayores",
-        imagen_url="https://cdn.chatboc.ar/demo/catalogo/canje-electronicos.png",
+        imagen_url=(
+            "https://images.unsplash.com/photo-1518770660439-4636190af475?"
+            "auto=format&fit=crop&w=900&q=80"
+        ),
     ),
 )
 
