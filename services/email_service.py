@@ -1,4 +1,5 @@
 # import os # No es necesario si usamos current_app.config
+import contextlib
 import logging
 import smtplib
 from datetime import datetime
@@ -36,6 +37,18 @@ def _coerce_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_bool(value: Any, *, default: bool = False) -> bool:
+    """Convierte valores tipo string en booleanos confiables."""
+
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def _format_datetime(value: Any) -> Optional[str]:
@@ -372,6 +385,47 @@ def _get_config_val(key, default=None, campaign_specific=False):
     return val
 
 
+class SMTPConfigurationError(RuntimeError):
+    """Error personalizado para problemas de configuración SMTP."""
+
+
+def _connect_smtp_server(
+    *,
+    host: str,
+    port: int,
+    use_tls: bool,
+    use_ssl: bool,
+    username: Optional[str],
+    password: Optional[str],
+    require_auth: bool = True,
+):
+    """Abre una conexión SMTP consistente y autenticada."""
+
+    if not host or not port:
+        raise SMTPConfigurationError("Host o puerto SMTP no configurados")
+
+    if require_auth and (not username or not password):
+        raise SMTPConfigurationError(
+            "Se requiere autenticación SMTP pero faltan credenciales"
+        )
+
+    server = smtplib.SMTP_SSL(host, port) if use_ssl else smtplib.SMTP(host, port)
+    try:
+        server.ehlo()
+        if use_tls and not use_ssl:
+            server.starttls()
+            server.ehlo()
+
+        if username and password:
+            server.login(username, password)
+
+        return server
+    except Exception:
+        with contextlib.suppress(Exception):
+            server.quit()
+        raise
+
+
 def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str = "", es_campana: bool = False) -> bool:
     """
     Envía un email simple en formato HTML y opcionalmente texto plano.
@@ -384,8 +438,13 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str 
     smtp_password = _get_config_val("SMTP_PASSWORD", campaign_specific=es_campana)
     from_email = _get_config_val("MAIL_FROM_ADDRESS", campaign_specific=es_campana)
     from_name = _get_config_val("MAIL_FROM_NAME", campaign_specific=es_campana)
-    use_tls = bool(_get_config_val("SMTP_USE_TLS", True, campaign_specific=es_campana))
-    use_ssl = bool(_get_config_val("SMTP_USE_SSL", False, campaign_specific=es_campana))
+    use_tls = _coerce_bool(
+        _get_config_val("SMTP_USE_TLS", True, campaign_specific=es_campana),
+        default=True,
+    )
+    use_ssl = _coerce_bool(
+        _get_config_val("SMTP_USE_SSL", False, campaign_specific=es_campana)
+    )
 
     if not smtp_user and from_email:
         smtp_user = from_email
@@ -413,18 +472,19 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str 
 
     log_prefix = f"[EMAIL{' CAMPAIGN' if es_campana else ''}]"
     try:
-        logger.info(f"{log_prefix} Intentando enviar a {destino} desde {from_email} via {smtp_host}:{smtp_port}")
+        logger.info(
+            f"{log_prefix} Intentando enviar a {destino} desde {from_email} via {smtp_host}:{smtp_port}"
+        )
 
-        if use_ssl:
-            server = smtplib.SMTP_SSL(smtp_host, smtp_port)
-        else:
-            server = smtplib.SMTP(smtp_host, smtp_port)
-
-        if use_tls and not use_ssl:
-            server.starttls()
-
-        if smtp_user and smtp_password:
-            server.login(smtp_user, smtp_password)
+        server = _connect_smtp_server(
+            host=smtp_host,
+            port=smtp_port,
+            use_tls=use_tls,
+            use_ssl=use_ssl,
+            username=smtp_user,
+            password=smtp_password,
+            require_auth=True,
+        )
 
         server.send_message(msg)
         server.quit()
@@ -450,8 +510,8 @@ def enviar_email_con_adjunto(destino: str, asunto: str, cuerpo_html: str, nombre
     smtp_password = _get_config_val("SMTP_PASSWORD")
     from_email = _get_config_val("MAIL_FROM_ADDRESS")
     from_name = _get_config_val("MAIL_FROM_NAME", from_email)
-    use_tls = bool(_get_config_val("SMTP_USE_TLS", True))
-    use_ssl = bool(_get_config_val("SMTP_USE_SSL", False))
+    use_tls = _coerce_bool(_get_config_val("SMTP_USE_TLS", True), default=True)
+    use_ssl = _coerce_bool(_get_config_val("SMTP_USE_SSL", False))
 
     if not smtp_user and from_email:
         smtp_user = from_email
@@ -482,16 +542,19 @@ def enviar_email_con_adjunto(destino: str, asunto: str, cuerpo_html: str, nombre
 
 
     try:
-        logger.info(f"[EMAIL_ADJ] Intentando enviar a {destino} con adjunto {nombre_archivo}")
-        if use_ssl:
-            server = smtplib.SMTP_SSL(smtp_host, smtp_port)
-        else:
-            server = smtplib.SMTP(smtp_host, smtp_port)
-        if use_tls and not use_ssl:
-            server.starttls()
-        if smtp_user and smtp_password:
-            server.login(smtp_user, smtp_password)
-        server.send_message(msg) # send_message es mejor para MIME
+        logger.info(
+            f"[EMAIL_ADJ] Intentando enviar a {destino} con adjunto {nombre_archivo}"
+        )
+        server = _connect_smtp_server(
+            host=smtp_host,
+            port=smtp_port,
+            use_tls=use_tls,
+            use_ssl=use_ssl,
+            username=smtp_user,
+            password=smtp_password,
+            require_auth=True,
+        )
+        server.send_message(msg)  # send_message es mejor para MIME
         server.quit()
         logger.info(f"[EMAIL_ADJ] Enviado a {destino} con adjunto {nombre_archivo}")
         return True
@@ -691,8 +754,8 @@ def enviar_email_con_multiples_adjuntos(destinos: List[str], asunto: str, cuerpo
     smtp_password = _get_config_val("SMTP_PASSWORD")
     from_email = _get_config_val("MAIL_FROM_ADDRESS")
     from_name = _get_config_val("MAIL_FROM_NAME", from_email)
-    use_tls = bool(_get_config_val("SMTP_USE_TLS", True))
-    use_ssl = bool(_get_config_val("SMTP_USE_SSL", False))
+    use_tls = _coerce_bool(_get_config_val("SMTP_USE_TLS", True), default=True)
+    use_ssl = _coerce_bool(_get_config_val("SMTP_USE_SSL", False))
 
     if not smtp_user and from_email:
         smtp_user = from_email
@@ -735,21 +798,40 @@ def enviar_email_con_multiples_adjuntos(destinos: List[str], asunto: str, cuerpo
             continue
 
     try:
-        logger.info(f"[EMAIL_MULTI_ADJ] Intentando enviar a {', '.join(destinos)} con {len(adjuntos)} adjuntos.")
-        if use_ssl:
-            server = smtplib.SMTP_SSL(smtp_host, smtp_port)
-        else:
-            server = smtplib.SMTP(smtp_host, smtp_port)
-        if use_tls and not use_ssl:
-            server.starttls()
-        if smtp_user and smtp_password:
-            server.login(smtp_user, smtp_password)
+        logger.info(
+            f"[EMAIL_MULTI_ADJ] Intentando enviar a {', '.join(destinos)} con {len(adjuntos)} adjuntos."
+        )
+        server = _connect_smtp_server(
+            host=smtp_host,
+            port=smtp_port,
+            use_tls=use_tls,
+            use_ssl=use_ssl,
+            username=smtp_user,
+            password=smtp_password,
+            require_auth=True,
+        )
         server.send_message(msg)
         server.quit()
         logger.info(f"[EMAIL_MULTI_ADJ] Enviado a {', '.join(destinos)} exitosamente.")
         return True
+    except SMTPConfigurationError as config_err:
+        logger.error(f"[EMAIL_MULTI_ADJ] Configuración SMTP inválida: {config_err}")
+        return False
+    except smtplib.SMTPSenderRefused as sender_error:
+        if sender_error.smtp_code == 530:
+            logger.error(
+                "[EMAIL_MULTI_ADJ] El servidor exige autenticación SMTP (código 530). Verificar credenciales o IP permitida."
+            )
+        logger.error(
+            f"[EMAIL_MULTI_ADJ] Servidor rechazó el remitente: {sender_error}",
+            exc_info=True,
+        )
+        return False
     except Exception as e:
-        logger.error(f"[EMAIL_MULTI_ADJ] Error enviando correo con múltiples adjuntos: {e}", exc_info=True)
+        logger.error(
+            f"[EMAIL_MULTI_ADJ] Error enviando correo con múltiples adjuntos: {e}",
+            exc_info=True,
+        )
         return False
 
 from flask import render_template
