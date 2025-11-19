@@ -1527,6 +1527,68 @@ def strip_variation_selector(s: str) -> str:
     return s.replace(VARIATION_SELECTOR, "") if isinstance(s, str) else s
 
 
+def _looks_like_free_form_input(text: str | None) -> bool:
+    """Detects if the user sent a natural sentence instead of a menu option."""
+    if not isinstance(text, str):
+        return False
+
+    stripped = strip_variation_selector(text).strip()
+    if not stripped:
+        return False
+
+    normalized = normalizar_texto(stripped)
+    word_count = len(normalized.split())
+
+    if word_count >= 6:
+        return True
+
+    if len(stripped) >= 40:
+        return True
+
+    # Sentences with punctuation combined with at least a few words
+    if word_count >= 4 and any(ch in stripped for ch in ".,;¿?¡!:"):
+        return True
+
+    return False
+
+
+def _maybe_route_menu_input_to_llm(
+    pregunta_str: str,
+    contexto_municipio_actual: dict,
+    app,
+    context: dict,
+    viewer_user,
+    owner_user,
+    chat_db_context,
+    demo_metadata=None,
+):
+    """Escalate long natural sentences sent during menu selection to the LLM."""
+    if not _looks_like_free_form_input(pregunta_str):
+        return None
+
+    logger_actual = current_app.logger if has_app_context() else logger
+    logger_actual.info(
+        "Free-form sentence detected while waiting for a menu selection. Escalating to LLM."
+    )
+
+    contexto_municipio_actual['estado_conversacion'] = ConversationState.CONVERSACION_GENERAL_LLM.name
+    contexto_municipio_actual.pop('menu_opciones', None)
+    if chat_db_context:
+        flag_modified(chat_db_context, "context_data")
+
+    response_dict, _ = handle_llm_interaction(
+        app,
+        pregunta_str,
+        context,
+        viewer_user,
+        owner_user,
+        chat_db_context,
+        contexto_municipio_actual,
+        demo_metadata=demo_metadata,
+    )
+    return response_dict
+
+
 def extract_description_and_check_confirmation(text: str, confirmation_keywords: set) -> tuple[str | None, bool]:
     """
     Extracts description from text and checks for a confirmation intent.
@@ -6411,6 +6473,18 @@ def responder_municipio(
                 if response:
                     return _finalize_response(response)
             else:
+                response_dict = _maybe_route_menu_input_to_llm(
+                    pregunta_str_menu,
+                    contexto_municipio_actual,
+                    app,
+                    context,
+                    viewer_user,
+                    owner_user,
+                    chat_db_context,
+                    demo_metadata=demo_metadata,
+                )
+                if response_dict:
+                    return _finalize_response(response_dict)
                 logger_actual.info(f"Input '{pregunta_str_menu}' is not a menu option. Treating as a general query.")
                 contexto_municipio_actual['estado_conversacion'] = None
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
@@ -7794,6 +7868,18 @@ def responder_municipio(
                     response['message_body'] = response.get('message_body', '').strip() + "\n\n¿En qué más puedo ayudarte?"
                 return _finalize_response(response)
         else:
+            response_dict = _maybe_route_menu_input_to_llm(
+                pregunta_str_menu,
+                contexto_municipio_actual,
+                app,
+                context,
+                viewer_user,
+                owner_user,
+                chat_db_context,
+                demo_metadata=demo_metadata,
+            )
+            if response_dict:
+                return _finalize_response(response_dict)
             # Reenviar el mismo submenú si la opción no es válida
             return _finalize_response({
                 "message_body": "No reconocí esa opción. Por favor, elegí una opción del menú.",

@@ -10,10 +10,20 @@ from services.municipio_responder import (
     ConversationState,
     find_reclamo_category_by_input,
     _get_reclamos_menu,
+    _looks_like_free_form_input,
+    _maybe_route_menu_input_to_llm,
 )
 
 
 class TestMenuKeywords(unittest.TestCase):
+    def test_free_form_detector(self):
+        self.assertTrue(
+            _looks_like_free_form_input(
+                "una luminaria caída en mi barrio está parpadeando y es peligroso"
+            )
+        )
+        self.assertFalse(_looks_like_free_form_input("2"))
+
     def test_agenda_keyword(self):
         self.assertEqual(find_global_menu_action("agenda"), "agenda_y_noticias")
 
@@ -127,6 +137,46 @@ class TestMenuKeywords(unittest.TestCase):
         self.assertEqual(
             find_global_menu_action("Requisitos y costos"),
             "licencia_de_conducir",
+        )
+
+    def test_menu_helper_escalates_to_llm(self):
+        owner = SimpleNamespace(municipio_id="default", id=1)
+        contexto_menu = {
+            "estado_conversacion": ConversationState.ESPERANDO_SELECCION_DE_LISTA.name,
+            "menu_opciones": [
+                {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
+                {"texto": "Cancelar", "action_id": "cancelar"},
+            ],
+        }
+        chat_ctx = SimpleNamespace(
+            chat_session_id="test",
+            context_data={CONTEXTO_MUNICIPIO: contexto_menu},
+        )
+        context = {CONTEXTO_MUNICIPIO: contexto_menu}
+        app = Flask(__name__)
+        llm_response = {"message_body": "Entendido, ya registré tu reclamo."}
+        with app.app_context():
+            with patch("services.municipio_responder.flag_modified") as mock_flag, \
+                 patch(
+                     "services.municipio_responder.handle_llm_interaction",
+                     return_value=(llm_response, contexto_menu),
+                 ) as mock_llm:
+                response = _maybe_route_menu_input_to_llm(
+                    "una luminaria caida en mi barrio esta parpadeando y esta torcido",
+                    contexto_menu,
+                    app,
+                    context,
+                    viewer_user=None,
+                    owner_user=owner,
+                    chat_db_context=chat_ctx,
+                )
+
+        mock_llm.assert_called_once()
+        mock_flag.assert_called_once()
+        self.assertEqual(response, llm_response)
+        self.assertEqual(
+            contexto_menu["estado_conversacion"],
+            ConversationState.CONVERSACION_GENERAL_LLM.name,
         )
 
 
