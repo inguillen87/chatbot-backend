@@ -1838,6 +1838,41 @@ PEDIR_INFO_TO_STATE = {
     "adjuntos": ConversationState.ESPERANDO_ADJUNTOS_RECLAMO,
 }
 
+CLAIM_PENDING_FIELDS = {
+    "ubicacion",
+    "direccion",
+    "categoria",
+    "descripcion",
+    "descripcion_mas_detallada",
+    "nombre",
+    "nombre_completo",
+    "telefono",
+    "email",
+    "dni",
+    "documento",
+    "adjuntos",
+    "confirmacion",
+}
+
+CLAIM_WAITING_STATES = {
+    ConversationState.ESPERANDO_INFO_RECLAMO_LLM,
+    ConversationState.ESPERANDO_DIRECCION_RECLAMO,
+    ConversationState.ESPERANDO_CATEGORIA_RECLAMO,
+    ConversationState.ESPERANDO_DESCRIPCION_RECLAMO,
+    ConversationState.ESPERANDO_NOMBRE_VECINO,
+    ConversationState.ESPERANDO_TELEFONO_VECINO,
+    ConversationState.ESPERANDO_EMAIL_VECINO,
+    ConversationState.ESPERANDO_CONFIRMACION_RECLAMO,
+    ConversationState.ESPERANDO_ADJUNTOS_RECLAMO,
+}
+
+
+def _is_claim_pending_field(field_name: Optional[str]) -> bool:
+    if not field_name or not isinstance(field_name, str):
+        return False
+    normalized = unicodedata.normalize("NFKD", field_name).encode("ascii", "ignore").decode("ascii").lower().strip()
+    return normalized in CLAIM_PENDING_FIELDS
+
 
 def _normalize_pedir_info_value(pedir_info: Any) -> Optional[str]:
     """Return the first meaningful string value from pedir_info."""
@@ -2977,6 +3012,12 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
     )
 
     estado_conversacion_para_llm = contexto_municipio_actual.get("estado_conversacion")
+    estado_conversacion_enum = None
+    if isinstance(estado_conversacion_para_llm, ConversationState):
+        estado_conversacion_enum = estado_conversacion_para_llm
+    elif isinstance(estado_conversacion_para_llm, str):
+        estado_conversacion_enum = ConversationState.__members__.get(estado_conversacion_para_llm)
+    waiting_state_active = estado_conversacion_enum in CLAIM_WAITING_STATES if estado_conversacion_enum else False
     invocar_llm = False
 
     # Si se está esperando info de un reclamo pero el usuario consulta un servicio
@@ -3073,6 +3114,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         campo_esperado = _normalize_pedir_info_value(campo_esperado)
         if campo_esperado:
             contexto_municipio_actual["esperando_info_llm_reclamo"] = campo_esperado
+            contexto_municipio_actual["esperando_info_llm"] = campo_esperado
+        estabamos_esperando_dato = bool(campo_esperado)
 
         expected_value_captured = False
 
@@ -3116,17 +3159,14 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 datos_parciales[campo_esperado] = valor_a_guardar
                 expected_value_captured = True
                 contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                contexto_municipio_actual.pop("esperando_info_llm", None)
                 logger_actual.info(f"Datos parciales actualizados: {datos_parciales}")
             else:
                 logger_actual.info(
                     f"No se pudo extraer un valor válido para '{campo_esperado}'. Se mantendrá la solicitud pendiente."
                 )
 
-        if (
-            expected_value_captured
-            and contexto_municipio_actual.get("estado_conversacion")
-            == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-        ):
+        if expected_value_captured and (estabamos_esperando_dato or waiting_state_active):
             logger_actual.info(
                 "[HANDLE_LLM] Dato esperado recibido. Validando reclamo sin invocar al LLM."
             )
@@ -3140,8 +3180,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                 )
                 contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending
+                contexto_municipio_actual["esperando_info_llm"] = normalized_pending
             else:
                 contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                contexto_municipio_actual.pop("esperando_info_llm", None)
 
             return handler_response, contexto_municipio_actual
 
@@ -3244,8 +3286,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     if pending_field:
                         contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                         contexto_municipio_actual["esperando_info_llm_reclamo"] = pending_field
+                        contexto_municipio_actual["esperando_info_llm"] = pending_field
                     else:
                         contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                        contexto_municipio_actual.pop("esperando_info_llm", None)
 
                     # The handler's response is the final one, whether it's a success message
                     # or a request for more info. We return it directly, ignoring the LLM's
@@ -3253,7 +3297,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     return handler_response, contexto_municipio_actual
             else:
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-                contexto_municipio_actual["esperando_info_llm_reclamo"] = _normalize_pedir_info_value(pedir_info_llm)
+                normalized_pending = _normalize_pedir_info_value(pedir_info_llm)
+                if normalized_pending:
+                    contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending
+                    contexto_municipio_actual["esperando_info_llm"] = normalized_pending
             # Update the context that will be passed to the next turn
             if chat_db_context and hasattr(chat_db_context, 'context_data'):
                 chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
@@ -3339,7 +3386,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 if info_faltante:
                     logger.info(f"[HERRAMIENTA] LLM pide más información ('{info_faltante}') antes de ejecutar '{nombre_herramienta}'. No se ejecutará la herramienta.")
                     contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-                    contexto_municipio_actual["esperando_info_llm_reclamo"] = _normalize_pedir_info_value(info_faltante)
+                    normalized_tool_pending = _normalize_pedir_info_value(info_faltante)
+                    if normalized_tool_pending:
+                        contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_tool_pending
+                        contexto_municipio_actual["esperando_info_llm"] = normalized_tool_pending
                     contexto_municipio_actual["datos_parciales_llm_reclamo"] = {
                         "nombre_herramienta": nombre_herramienta,
                         "parametros_herramienta": parametros_herramienta
@@ -3462,13 +3512,21 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
             # State transition logic based on 'pedir_info'
             if pedir_info_llm:
-                next_state_obj = PEDIR_INFO_TO_STATE.get(pedir_info_llm)
+                normalized_pending = _normalize_pedir_info_value(pedir_info_llm)
+                pending_lookup_key = normalized_pending or pedir_info_llm
+                if not isinstance(pending_lookup_key, str):
+                    pending_lookup_key = str(pending_lookup_key or "").strip()
+                next_state_obj = PEDIR_INFO_TO_STATE.get(pending_lookup_key)
                 if next_state_obj:
                     contexto_municipio_actual["estado_conversacion"] = next_state_obj.name
                 else:
                     # Fallback if a new 'pedir_info' value isn't in our map
                     contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-                contexto_municipio_actual["esperando_info_llm"] = _normalize_pedir_info_value(pedir_info_llm)
+                contexto_municipio_actual["esperando_info_llm"] = normalized_pending or pending_lookup_key
+                if _is_claim_pending_field(normalized_pending or pending_lookup_key):
+                    contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending or pending_lookup_key
+                else:
+                    contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
             else:
                 # If no more info is needed, decide what to do
                 if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
