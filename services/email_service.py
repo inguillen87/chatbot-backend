@@ -328,13 +328,48 @@ def _build_ticket_email_context(
     }
 
 
-def _get_config_val(key, default=None, campaign_specific=False):
-    """Helper para obtener valores de config, con fallback a campaña si se especifica."""
+SMTP_CONFIG_ALIASES = {
+    "SMTP_HOST": ["MAIL_SERVER"],
+    "SMTP_PORT": ["MAIL_PORT"],
+    "SMTP_USER": ["SMTP_USERNAME", "MAIL_USERNAME", "MAIL_FROM_ADDRESS"],
+    "SMTP_PASSWORD": ["SMTP_PASS", "MAIL_PASSWORD"],
+    "SMTP_USE_TLS": ["MAIL_USE_TLS"],
+    "SMTP_USE_SSL": ["MAIL_USE_SSL"],
+    "MAIL_FROM_ADDRESS": ["MAIL_DEFAULT_SENDER"],
+    "MAIL_FROM_NAME": ["MAIL_SENDER_NAME"],
+}
+
+
+def _resolve_config_key(key: str, *, campaign_specific: bool = False):
+    """Intenta múltiples claves equivalentes para una configuración SMTP."""
+
+    keys_to_try = [key]
+    keys_to_try.extend(SMTP_CONFIG_ALIASES.get(key, []))
+
     if campaign_specific:
-        val = current_app.config.get(f"{key}_CAMPAIGN", None)
-        if val is not None:
-            return val
-    return current_app.config.get(key, default)
+        for candidate in keys_to_try:
+            campaign_key = f"{candidate}_CAMPAIGN"
+            if campaign_key in current_app.config:
+                val = current_app.config.get(campaign_key)
+                if val is not None:
+                    return val
+
+    for candidate in keys_to_try:
+        if candidate in current_app.config:
+            val = current_app.config.get(candidate)
+            if val is not None:
+                return val
+
+    return None
+
+
+def _get_config_val(key, default=None, campaign_specific=False):
+    """Helper para obtener valores de config, considerando alias comunes."""
+
+    val = _resolve_config_key(key, campaign_specific=campaign_specific)
+    if val is None:
+        return default
+    return val
 
 
 def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str = "", es_campana: bool = False) -> bool:
@@ -349,8 +384,11 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str 
     smtp_password = _get_config_val("SMTP_PASSWORD", campaign_specific=es_campana)
     from_email = _get_config_val("MAIL_FROM_ADDRESS", campaign_specific=es_campana)
     from_name = _get_config_val("MAIL_FROM_NAME", campaign_specific=es_campana)
-    use_tls = _get_config_val("SMTP_USE_TLS", True, campaign_specific=es_campana)
-    use_ssl = _get_config_val("SMTP_USE_SSL", False, campaign_specific=es_campana)
+    use_tls = bool(_get_config_val("SMTP_USE_TLS", True, campaign_specific=es_campana))
+    use_ssl = bool(_get_config_val("SMTP_USE_SSL", False, campaign_specific=es_campana))
+
+    if not smtp_user and from_email:
+        smtp_user = from_email
 
     if not all([smtp_host, smtp_port, from_email, destino]):
         logger.error(f"[EMAIL{' CAMPAIGN' if es_campana else ''}] Configuración SMTP incompleta o falta destino. Email no enviado a {destino}.")
@@ -406,14 +444,17 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str 
 
 def enviar_email_con_adjunto(destino: str, asunto: str, cuerpo_html: str, nombre_archivo: str, contenido_adjunto: bytes, cuerpo_texto: str = "") -> bool:
     """Envía un email con un archivo adjunto."""
-    smtp_host = current_app.config.get("SMTP_HOST")
-    smtp_port = current_app.config.get("SMTP_PORT", 587)
-    smtp_user = current_app.config.get("SMTP_USER")
-    smtp_password = current_app.config.get("SMTP_PASSWORD")
-    from_email = current_app.config.get("MAIL_FROM_ADDRESS")
-    from_name = current_app.config.get("MAIL_FROM_NAME", from_email)
-    use_tls = current_app.config.get("SMTP_USE_TLS", True)
-    use_ssl = current_app.config.get("SMTP_USE_SSL", False)
+    smtp_host = _get_config_val("SMTP_HOST")
+    smtp_port = int(_get_config_val("SMTP_PORT", 587))
+    smtp_user = _get_config_val("SMTP_USER")
+    smtp_password = _get_config_val("SMTP_PASSWORD")
+    from_email = _get_config_val("MAIL_FROM_ADDRESS")
+    from_name = _get_config_val("MAIL_FROM_NAME", from_email)
+    use_tls = bool(_get_config_val("SMTP_USE_TLS", True))
+    use_ssl = bool(_get_config_val("SMTP_USE_SSL", False))
+
+    if not smtp_user and from_email:
+        smtp_user = from_email
 
     if not all([smtp_host, smtp_port, from_email, destino]):
         logger.error("[EMAIL_ADJ] Configuración SMTP incompleta o falta destino. Email no enviado.")
@@ -644,14 +685,17 @@ import requests
 
 def enviar_email_con_multiples_adjuntos(destinos: List[str], asunto: str, cuerpo_html: str, adjuntos: List[ArchivoAdjunto], cuerpo_texto: str = "") -> bool:
     """Envía un email con múltiples archivos adjuntos."""
-    smtp_host = current_app.config.get("SMTP_HOST")
-    smtp_port = current_app.config.get("SMTP_PORT", 587)
-    smtp_user = current_app.config.get("SMTP_USER")
-    smtp_password = current_app.config.get("SMTP_PASSWORD")
-    from_email = current_app.config.get("MAIL_FROM_ADDRESS")
-    from_name = current_app.config.get("MAIL_FROM_NAME", from_email)
-    use_tls = current_app.config.get("SMTP_USE_TLS", True)
-    use_ssl = current_app.config.get("SMTP_USE_SSL", False)
+    smtp_host = _get_config_val("SMTP_HOST")
+    smtp_port = int(_get_config_val("SMTP_PORT", 587))
+    smtp_user = _get_config_val("SMTP_USER")
+    smtp_password = _get_config_val("SMTP_PASSWORD")
+    from_email = _get_config_val("MAIL_FROM_ADDRESS")
+    from_name = _get_config_val("MAIL_FROM_NAME", from_email)
+    use_tls = bool(_get_config_val("SMTP_USE_TLS", True))
+    use_ssl = bool(_get_config_val("SMTP_USE_SSL", False))
+
+    if not smtp_user and from_email:
+        smtp_user = from_email
 
     if not all([smtp_host, smtp_port, from_email, destinos]):
         logger.error("[EMAIL_MULTI_ADJ] Configuración SMTP incompleta o falta destino. Email no enviado.")
