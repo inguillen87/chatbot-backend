@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
-from flask import Blueprint, abort, g, jsonify, request
+from flask import Blueprint, abort, g, jsonify, request, session
+from sqlalchemy import func
 
-from models import MunicipioPost, TenantProfile
+from models import CatalogoItem, MunicipioPost, TenantProfile, User
 from services.encuestas_service import (
     EncuestaError,
     get_public_encuesta,
@@ -14,6 +15,9 @@ from services.encuestas_service import (
     save_respuesta,
     serialize_public_encuesta,
 )
+from services.catalog_seed import ensure_seed_catalog
+from services.common_utils import parse_precio_flexible
+from routes.catalogo import _formatear_producto
 
 
 pwa_public_bp = Blueprint("pwa_public", __name__, url_prefix="/api/pwa/public")
@@ -41,6 +45,316 @@ def _posts_query_for_tenant(tenant: TenantProfile):
     if not owner_id:
         return MunicipioPost.query.filter(False)
     return MunicipioPost.query.filter(MunicipioPost.municipio_id == owner_id)
+
+
+def _tenant_owner(tenant: TenantProfile) -> User | None:
+    return tenant.municipio or tenant.pyme
+
+
+def _require_owner(tenant: TenantProfile) -> User:
+    owner = _tenant_owner(tenant)
+    if owner is None:
+        abort(404, description="Tenant sin propietario configurado")
+    return owner
+
+
+def _public_cart_storage() -> Dict[str, List[Dict[str, int]]]:
+    data = session.get("tenant_public_carts")
+    if not isinstance(data, dict):
+        data = {}
+        session["tenant_public_carts"] = data
+    return data
+
+
+def _persist_public_cart_storage(data: Dict[str, List[Dict[str, int]]]) -> None:
+    session["tenant_public_carts"] = data
+    session.modified = True
+
+
+def _tenant_cart(data: Dict[str, List[Dict[str, int]]], tenant_id: int) -> List[Dict[str, int]]:
+    key = str(tenant_id)
+    cart = data.get(key)
+    if not isinstance(cart, list):
+        cart = []
+        data[key] = cart
+    return cart
+
+
+def _lookup_catalog_item(owner: User, payload: Dict[str, object]) -> CatalogoItem | None:
+    identifier = payload.get("catalogo_item_id") or payload.get("item_id")
+    sku = payload.get("sku")
+    nombre = payload.get("nombre")
+
+    query = CatalogoItem.query.filter(CatalogoItem.user_id == owner.id)
+    if identifier is not None:
+        try:
+            identifier = int(identifier)  # type: ignore[assignment]
+        except (TypeError, ValueError):
+            identifier = None
+        else:
+            item = query.filter(CatalogoItem.id == identifier).first()
+            if item:
+                return item
+
+    if sku:
+        sku_text = str(sku).strip().lower()
+        if sku_text:
+            item = query.filter(func.lower(CatalogoItem.sku) == sku_text).first()
+            if item:
+                return item
+
+    if nombre:
+        nombre_text = str(nombre).strip().lower()
+        if nombre_text:
+            return query.filter(func.lower(CatalogoItem.nombre) == nombre_text).first()
+
+    return None
+
+
+def _normalize_quantity(value: object, default: int = 1, min_value: int = 1) -> int:
+    try:
+        cantidad = int(value)
+    except (TypeError, ValueError):
+        cantidad = default
+    return max(cantidad, min_value)
+
+
+def _coerce_item_id(value: object) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _enrich_cart_summary(tenant: TenantProfile, owner: User) -> Dict[str, object]:
+    data = _public_cart_storage()
+    cart = list(_tenant_cart(data, tenant.id))
+    if not cart:
+        return {
+            "tenant_id": tenant.id,
+            "items": [],
+            "items_count": 0,
+            "total_estimado": 0.0,
+            "moneda": "ARS",
+        }
+
+    item_ids = [entry.get("catalogo_item_id") for entry in cart if entry.get("catalogo_item_id")]
+    catalog_items: Dict[int, CatalogoItem] = {}
+    if item_ids:
+        rows = (
+            CatalogoItem.query.filter(
+                CatalogoItem.user_id == owner.id,
+                CatalogoItem.id.in_(item_ids),
+            ).all()
+        )
+        catalog_items = {row.id: row for row in rows}
+
+    enriched = []
+    total = 0.0
+    total_count = 0
+    for entry in cart:
+        item_id = entry.get("catalogo_item_id")
+        cantidad = _normalize_quantity(entry.get("cantidad", 1))
+        total_count += cantidad
+        catalog_item = catalog_items.get(item_id)
+        if not catalog_item:
+            continue
+
+        formatted = _formatear_producto(
+            {
+                "nombre": catalog_item.nombre,
+                "categoria": catalog_item.categoria,
+                "descripcion": catalog_item.descripcion,
+                "sku": catalog_item.sku,
+                "unidad": catalog_item.unidad,
+                "precio_str": catalog_item.precio,
+                "cantidad": catalog_item.cantidad,
+                "marca": catalog_item.marca,
+                "imagen_url": catalog_item.imagen_url,
+                "descripcion_corta": catalog_item.descripcion_corta,
+                "promocion_info": catalog_item.promocion_info,
+            }
+        )
+        precio_unitario = formatted.get("precio_unitario")
+        precio_float = None
+        if isinstance(precio_unitario, (int, float)):
+            precio_float = float(precio_unitario)
+        else:
+            _, precio_float, _ = parse_precio_flexible(str(precio_unitario))
+
+        subtotal = precio_float * cantidad if precio_float is not None else None
+        if subtotal is not None:
+            total += subtotal
+
+        enriched.append(
+            {
+                "catalogo_item_id": item_id,
+                "nombre": formatted.get("nombre"),
+                "descripcion": formatted.get("descripcion"),
+                "cantidad": cantidad,
+                "precio_unitario": precio_float,
+                "precio_unitario_texto": catalog_item.precio,
+                "subtotal": subtotal,
+                "imagen_url": formatted.get("imagen_url"),
+                "categoria": formatted.get("categoria"),
+            }
+        )
+
+    return {
+        "tenant_id": tenant.id,
+        "items": enriched,
+        "items_count": total_count,
+        "total_estimado": round(total, 2),
+        "moneda": "ARS",
+    }
+
+
+@pwa_public_bp.get("/catalog")
+def public_catalog():
+    tenant = _require_tenant()
+    owner = _require_owner(tenant)
+    ensure_seed_catalog(owner, tenant)
+
+    categoria = request.args.get("categoria")
+    search_text = request.args.get("q")
+
+    query = CatalogoItem.query.filter(CatalogoItem.user_id == owner.id)
+    if categoria:
+        categoria_norm = categoria.strip().lower()
+        if categoria_norm:
+            query = query.filter(func.lower(CatalogoItem.categoria) == categoria_norm)
+
+    items = query.order_by(func.lower(CatalogoItem.nombre)).all()
+
+    productos: List[Dict[str, object]] = []
+    for item in items:
+        prod = _formatear_producto(
+            {
+                "nombre": item.nombre,
+                "categoria": item.categoria,
+                "descripcion": item.descripcion,
+                "sku": item.sku,
+                "unidad": item.unidad,
+                "precio_str": item.precio,
+                "cantidad": item.cantidad,
+                "marca": item.marca,
+                "imagen_url": item.imagen_url,
+                "descripcion_corta": item.descripcion_corta,
+                "promocion_info": item.promocion_info,
+            }
+        )
+        prod["catalogo_item_id"] = item.id
+        prod["tenant_id"] = tenant.id
+        productos.append(prod)
+
+    if search_text:
+        term = search_text.strip().lower()
+        if term:
+            filtrados = []
+            for prod in productos:
+                texto_busqueda = " ".join(
+                    str(value or "")
+                    for value in (
+                        prod.get("nombre"),
+                        prod.get("descripcion"),
+                        prod.get("categoria"),
+                        prod.get("promocion_info"),
+                    )
+                ).lower()
+                if term in texto_busqueda:
+                    filtrados.append(prod)
+            productos = filtrados
+
+    return jsonify(productos)
+
+
+@pwa_public_bp.get("/cart")
+def public_cart_summary():
+    tenant = _require_tenant()
+    owner = _require_owner(tenant)
+    ensure_seed_catalog(owner, tenant)
+    return jsonify(_enrich_cart_summary(tenant, owner))
+
+
+@pwa_public_bp.post("/cart/add")
+def public_cart_add():
+    tenant = _require_tenant()
+    owner = _require_owner(tenant)
+    ensure_seed_catalog(owner, tenant)
+
+    payload = request.get_json(silent=True) or {}
+    item = _lookup_catalog_item(owner, payload)
+    if not item:
+        return jsonify({"error": "Producto no encontrado"}), 404
+
+    cantidad = _normalize_quantity(payload.get("cantidad", 1))
+    data = _public_cart_storage()
+    cart = _tenant_cart(data, tenant.id)
+    for entry in cart:
+        if entry.get("catalogo_item_id") == item.id:
+            entry["cantidad"] = entry.get("cantidad", 0) + cantidad
+            break
+    else:
+        cart.append({"catalogo_item_id": item.id, "cantidad": cantidad})
+
+    _persist_public_cart_storage(data)
+    return jsonify(_enrich_cart_summary(tenant, owner))
+
+
+@pwa_public_bp.post("/cart/update")
+def public_cart_update():
+    tenant = _require_tenant()
+    owner = _require_owner(tenant)
+    payload = request.get_json(silent=True) or {}
+    item_id = _coerce_item_id(payload.get("catalogo_item_id") or payload.get("item_id"))
+    if item_id is None:
+        return jsonify({"error": "catalogo_item_id requerido"}), 400
+
+    cantidad = _normalize_quantity(payload.get("cantidad", 0), default=0, min_value=0)
+    data = _public_cart_storage()
+    cart = _tenant_cart(data, tenant.id)
+    for entry in list(cart):
+        if entry.get("catalogo_item_id") == item_id:
+            if cantidad <= 0:
+                cart.remove(entry)
+            else:
+                entry["cantidad"] = cantidad
+            _persist_public_cart_storage(data)
+            return jsonify(_enrich_cart_summary(tenant, owner))
+
+    return jsonify({"error": "Item no encontrado en el carrito"}), 404
+
+
+@pwa_public_bp.post("/cart/remove")
+def public_cart_remove():
+    tenant = _require_tenant()
+    owner = _require_owner(tenant)
+    payload = request.get_json(silent=True) or {}
+    item_id = _coerce_item_id(payload.get("catalogo_item_id") or payload.get("item_id"))
+    if item_id is None:
+        return jsonify({"error": "catalogo_item_id requerido"}), 400
+
+    data = _public_cart_storage()
+    cart = _tenant_cart(data, tenant.id)
+    removed = False
+    for entry in list(cart):
+        if entry.get("catalogo_item_id") == item_id:
+            cart.remove(entry)
+            removed = True
+    if removed:
+        _persist_public_cart_storage(data)
+        return jsonify(_enrich_cart_summary(tenant, owner))
+    return jsonify({"error": "Item no encontrado en el carrito"}), 404
+
+
+@pwa_public_bp.post("/cart/clear")
+def public_cart_clear():
+    tenant = _require_tenant()
+    owner = _require_owner(tenant)
+    data = _public_cart_storage()
+    data[str(tenant.id)] = []
+    _persist_public_cart_storage(data)
+    return jsonify(_enrich_cart_summary(tenant, owner))
 
 
 @pwa_public_bp.get("/tenant")
