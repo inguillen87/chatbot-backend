@@ -146,6 +146,20 @@ _CATEGORY_FALLBACK_IMAGES: dict[str, str] = {
 }
 
 
+def _moneda_desde_texto(precio_str: str | None) -> str | None:
+    if not precio_str:
+        return None
+
+    texto = precio_str.lower()
+    if "pt" in texto or "punto" in texto:
+        return "PTS"
+    if "usd" in texto or "u$s" in texto:
+        return "USD"
+    if "$" in precio_str:
+        return "ARS"
+    return None
+
+
 def _formatear_producto(data: dict) -> dict:
     """Normaliza un diccionario de producto al formato universal."""
     precio_pack = None
@@ -153,6 +167,7 @@ def _formatear_producto(data: dict) -> dict:
 
     precio_float = data.get("precio_float")
     precio_str = data.get("precio_str")
+    moneda_detectada = _moneda_desde_texto(precio_str)
 
     if precio_float is not None:
         precio_pack = precio_float
@@ -166,7 +181,8 @@ def _formatear_producto(data: dict) -> dict:
     elif isinstance(precio_str, str) and precio_str.strip():
         from services.common_utils import parse_precio_flexible
 
-        _, parsed_float, _ = parse_precio_flexible(precio_str)
+        _, parsed_float, moneda_precio = parse_precio_flexible(precio_str)
+        moneda_detectada = moneda_detectada or moneda_precio
         if parsed_float is not None:
             precio_pack = parsed_float
             unidad_str = data.get("unidad") or data.get("presentacion", "")
@@ -204,6 +220,9 @@ def _formatear_producto(data: dict) -> dict:
         fallback_key = categoria_normalizada.lower()
         imagen_url = _CATEGORY_FALLBACK_IMAGES.get(fallback_key)
 
+    precio_texto = precio_str or (str(precio_pack) if precio_pack is not None else None)
+    moneda_estandar = moneda_detectada or data.get("moneda")
+
     return {
         "nombre": data.get("nombre", ""),
         "marca": data.get("marca"), # Añadido aquí para consistencia en la estructura base
@@ -216,6 +235,9 @@ def _formatear_producto(data: dict) -> dict:
         "colores": data.get("colores"),
         "precio_unitario": precio_unitario,
         "precio_pack": precio_pack if precio_pack != precio_unitario else None,
+        "precio_texto": precio_texto,
+        "precio_puntos": precio_unitario if moneda_estandar == "PTS" else None,
+        "moneda": moneda_estandar,
         "stock": data.get("cantidad") or data.get("stock"), # Qdrant tiene "stock", CatalogoItem "cantidad"
         "imagen_url": imagen_url,
         # Podríamos añadir aquí una lista de acciones sugeridas para el bot
