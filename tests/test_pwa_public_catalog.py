@@ -106,6 +106,32 @@ class PublicCatalogAndCartTest(unittest.TestCase):
         self.assertIn("saldo_demo_puntos", rewards)
         self.assertIn("balance_resumen", rewards)
 
+    def test_legacy_cdn_images_are_replaced(self):
+        # Crear item con URL CDN no disponible y validar que se devuelva un fallback
+        legacy_item = CatalogoItem(
+            user_id=self.owner.id,
+            nombre="Kit escolar solidario",
+            categoria="Educación",
+            descripcion="Mochila, útiles y abrigo.",
+            precio="1500 pts",
+            unidad="kit",
+            sku="kit-escolar",
+            cantidad="1",
+            imagen_url="https://cdn.chatboc.ar/demo/catalogo/kit-escolar.png",
+        )
+        db.session.add(legacy_item)
+        db.session.commit()
+
+        resp = self.client.get(f"/api/pwa/public/catalog?tenant_id={self.tenant.id}")
+        self.assertEqual(resp.status_code, 200)
+        items = resp.get_json()
+
+        rewritten = [item for item in items if item.get("sku") == "kit-escolar"]
+        self.assertTrue(rewritten)
+        self.assertTrue(
+            all("cdn.chatboc.ar" not in (item.get("imagen_url", "").lower()) for item in rewritten)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

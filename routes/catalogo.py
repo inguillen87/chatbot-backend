@@ -145,6 +145,36 @@ _CATEGORY_FALLBACK_IMAGES: dict[str, str] = {
     "deporte": "https://images.unsplash.com/photo-1431329842981-433c86325f43?auto=format&fit=crop&w=900&q=80",
 }
 
+_DEMO_IMAGE_FALLBACKS: dict[str, str] = {
+    "kit-escolar": "https://images.unsplash.com/photo-1503676260728-1c00da094a0b?auto=format&fit=crop&w=900&q=80",
+    "arbol-nativo": "https://images.unsplash.com/photo-1501785888041-af3ef285b470?auto=format&fit=crop&w=900&q=80",
+    "bono-hospital": "https://images.unsplash.com/photo-1505751172876-fa1923c5c528?auto=format&fit=crop&w=900&q=80",
+    "bolson-saludable": "https://images.unsplash.com/photo-1466978913421-dad2ebd01d17?auto=format&fit=crop&w=900&q=80",
+    "canje-electronicos": "https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=900&q=80",
+}
+
+
+def _fallback_image_for_item(imagen_url: str | None, data: dict, categoria_normalizada: str) -> str | None:
+    """Return a resilient image URL for demo assets even when legacy CDN links fail."""
+
+    if imagen_url and "cdn.chatboc.ar" not in imagen_url.lower():
+        return imagen_url
+
+    candidates = [
+        data.get("sku"),
+        data.get("nombre"),
+        data.get("imagen_url"),
+    ]
+    for cand in candidates:
+        if not cand:
+            continue
+        key = str(cand).lower()
+        for demo_key, demo_url in _DEMO_IMAGE_FALLBACKS.items():
+            if demo_key in key:
+                return demo_url
+
+    return _CATEGORY_FALLBACK_IMAGES.get(categoria_normalizada.lower())
+
 
 def _moneda_desde_texto(precio_str: str | None) -> str | None:
     if not precio_str:
@@ -215,10 +245,7 @@ def _formatear_producto(data: dict) -> dict:
         promo_info = data.get("promocion_info")
 
     categoria_normalizada = (data.get("categoria") or data.get("categoria_qdrant", "")).strip()
-    imagen_url = data.get("imagen_url")
-    if not imagen_url:
-        fallback_key = categoria_normalizada.lower()
-        imagen_url = _CATEGORY_FALLBACK_IMAGES.get(fallback_key)
+    imagen_url = _fallback_image_for_item(data.get("imagen_url"), data, categoria_normalizada)
 
     precio_texto = precio_str or (str(precio_pack) if precio_pack is not None else None)
     moneda_estandar = moneda_detectada or data.get("moneda")
