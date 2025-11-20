@@ -2,6 +2,8 @@
 
 This project exposes several endpoints to process questions for different sectors.
 
+For the upcoming conversational marketplace and rewards evolution, see `docs/propuesta-marketplace-conversacional.md`.
+
 When WhatsApp interactive menus are not approved or available, the bot falls back
 to a text-based menu that groups options by category and includes numeric
 selection instructions to maintain full visibility of all choices.
