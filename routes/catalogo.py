@@ -136,6 +136,60 @@ def descargar_archivo(user, filename):
     return send_from_directory(CATALOGO_FOLDER, filename, as_attachment=True)
 
 
+_CATEGORY_FALLBACK_IMAGES: dict[str, str] = {
+    "educación": "https://images.unsplash.com/photo-1516383740770-fbcc5ccbece0?auto=format&fit=crop&w=900&q=80",
+    "ambiente": "https://images.unsplash.com/photo-1501004318641-b39e6451bec6?auto=format&fit=crop&w=900&q=80",
+    "salud": "https://images.unsplash.com/photo-1584467735871-5884e44b1f4d?auto=format&fit=crop&w=900&q=80",
+    "producción local": "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=900&q=80",
+    "economía circular": "https://images.unsplash.com/photo-1503594384566-461fe158e797?auto=format&fit=crop&w=900&q=80",
+    "deporte": "https://images.unsplash.com/photo-1431329842981-433c86325f43?auto=format&fit=crop&w=900&q=80",
+}
+
+_DEMO_IMAGE_FALLBACKS: dict[str, str] = {
+    "kit-escolar": "https://images.unsplash.com/photo-1503676260728-1c00da094a0b?auto=format&fit=crop&w=900&q=80",
+    "arbol-nativo": "https://images.unsplash.com/photo-1501785888041-af3ef285b470?auto=format&fit=crop&w=900&q=80",
+    "bono-hospital": "https://images.unsplash.com/photo-1505751172876-fa1923c5c528?auto=format&fit=crop&w=900&q=80",
+    "bolson-saludable": "https://images.unsplash.com/photo-1466978913421-dad2ebd01d17?auto=format&fit=crop&w=900&q=80",
+    "canje-electronicos": "https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=900&q=80",
+}
+
+
+def _fallback_image_for_item(imagen_url: str | None, data: dict, categoria_normalizada: str) -> str | None:
+    """Return a resilient image URL for demo assets even when legacy CDN links fail."""
+
+    if imagen_url and "cdn.chatboc.ar" not in imagen_url.lower():
+        return imagen_url
+
+    candidates = [
+        data.get("sku"),
+        data.get("nombre"),
+        data.get("imagen_url"),
+    ]
+    for cand in candidates:
+        if not cand:
+            continue
+        key = str(cand).lower()
+        for demo_key, demo_url in _DEMO_IMAGE_FALLBACKS.items():
+            if demo_key in key:
+                return demo_url
+
+    return _CATEGORY_FALLBACK_IMAGES.get(categoria_normalizada.lower())
+
+
+def _moneda_desde_texto(precio_str: str | None) -> str | None:
+    if not precio_str:
+        return None
+
+    texto = precio_str.lower()
+    if "pt" in texto or "punto" in texto:
+        return "PTS"
+    if "usd" in texto or "u$s" in texto:
+        return "USD"
+    if "$" in precio_str:
+        return "ARS"
+    return None
+
+
 def _formatear_producto(data: dict) -> dict:
     """Normaliza un diccionario de producto al formato universal."""
     precio_pack = None
@@ -143,6 +197,7 @@ def _formatear_producto(data: dict) -> dict:
 
     precio_float = data.get("precio_float")
     precio_str = data.get("precio_str")
+    moneda_detectada = _moneda_desde_texto(precio_str)
 
     if precio_float is not None:
         precio_pack = precio_float
@@ -156,7 +211,8 @@ def _formatear_producto(data: dict) -> dict:
     elif isinstance(precio_str, str) and precio_str.strip():
         from services.common_utils import parse_precio_flexible
 
-        _, parsed_float, _ = parse_precio_flexible(precio_str)
+        _, parsed_float, moneda_precio = parse_precio_flexible(precio_str)
+        moneda_detectada = moneda_detectada or moneda_precio
         if parsed_float is not None:
             precio_pack = parsed_float
             unidad_str = data.get("unidad") or data.get("presentacion", "")
@@ -188,10 +244,16 @@ def _formatear_producto(data: dict) -> dict:
     if not promo_info and "promocion_info" in data: # Desde CatalogoItem (si 'data' es un dict de su __dict__)
         promo_info = data.get("promocion_info")
 
+    categoria_normalizada = (data.get("categoria") or data.get("categoria_qdrant", "")).strip()
+    imagen_url = _fallback_image_for_item(data.get("imagen_url"), data, categoria_normalizada)
+
+    precio_texto = precio_str or (str(precio_pack) if precio_pack is not None else None)
+    moneda_estandar = moneda_detectada or data.get("moneda")
+
     return {
         "nombre": data.get("nombre", ""),
         "marca": data.get("marca"), # Añadido aquí para consistencia en la estructura base
-        "categoria": data.get("categoria") or data.get("categoria_qdrant", ""),
+        "categoria": categoria_normalizada,
         "descripcion": descripcion_final, # Usa la descripción corta si está disponible
         "promocion_info": promo_info if promo_info else None, # Añadido campo de promoción
         "sku": data.get("sku") or None,
@@ -200,8 +262,11 @@ def _formatear_producto(data: dict) -> dict:
         "colores": data.get("colores"),
         "precio_unitario": precio_unitario,
         "precio_pack": precio_pack if precio_pack != precio_unitario else None,
+        "precio_texto": precio_texto,
+        "precio_puntos": precio_unitario if moneda_estandar == "PTS" else None,
+        "moneda": moneda_estandar,
         "stock": data.get("cantidad") or data.get("stock"), # Qdrant tiene "stock", CatalogoItem "cantidad"
-        "imagen_url": data.get("imagen_url"),
+        "imagen_url": imagen_url,
         # Podríamos añadir aquí una lista de acciones sugeridas para el bot
         # "acciones_sugeridas": ["agregar_carrito", "mas_detalles"] # Ejemplo
     }
