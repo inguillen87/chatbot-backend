@@ -238,6 +238,25 @@ class TicketEndpointsTest(unittest.TestCase):
         self.assertIn('Sin fecha', cuerpo_html)
         self.assertIn('Comentario sin fecha asignada', cuerpo_html)
 
+    @patch('services.email_service.enviar_email_con_multiples_adjuntos')
+    @patch('services.email_service.validar_configuracion_smtp')
+    def test_send_ticket_history_returns_503_when_smtp_missing(self, mock_validar_smtp, mock_send_email):
+        mock_validar_smtp.return_value = (False, 'Configuración SMTP incompleta: faltan host o puerto.')
+
+        login_resp = self.client.post('/auth/login', json={'email': 'admin@junin.com', 'password': 'adminpass'})
+        self.assertEqual(login_resp.status_code, 200)
+        token = json.loads(login_resp.data)['token']
+        headers = {'Authorization': f'Bearer {token}'}
+
+        ticket = MunicipioTicket.query.first()
+
+        resp = self.client.post(f'/tickets/municipio/{ticket.id}/send-history', headers=headers)
+        self.assertEqual(resp.status_code, 503)
+
+        data = json.loads(resp.data)
+        self.assertIn('SMTP', data.get('error', ''))
+        mock_send_email.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

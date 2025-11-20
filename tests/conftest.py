@@ -1,6 +1,12 @@
+import os
+
 import eventlet
 eventlet.monkey_patch()
 import pytest
+
+# Evita que app.py cree una instancia global conectada a Postgres durante las pruebas.
+os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
+
 from app import create_app, db
 from config import TestingConfig
 @pytest.fixture(scope='session')
