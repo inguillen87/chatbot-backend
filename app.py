@@ -312,7 +312,9 @@ def create_app(config_class=Config):
         from routes.catalogo import catalogo_bp
         from routes.productos import productos_bp
         from routes.pedidos import pedidos_bp
-        from routes.carrito import carrito_bp
+from routes.carrito import carrito_bp
+from routes.catalog_import import catalog_import_bp
+from routes.checkout import checkout_bp
         from routes.estadisticas import estadisticas_bp
         from routes.empleados import empleados_bp
         from routes.categorias import categorias_bp
@@ -335,7 +337,11 @@ def create_app(config_class=Config):
             encuestas_admin_bp,
             encuestas_public_bp,
         )
-        from routes.pwa_public import pwa_public_bp
+from routes.pwa_public import pwa_public_bp
+from routes.public_resolver import public_resolver_bp
+from routes.pedidos_from_file import pedidos_from_file_bp
+from routes.puntos import puntos_bp
+from routes.kits import kits_bp
         from routes.pwa_app import pwa_app_bp, pwa_app_legacy_bp
         from routes.webauthn import webauthn_bp
         from cli_commands import register_commands
@@ -396,6 +402,12 @@ def create_app(config_class=Config):
         app.register_blueprint(productos_bp)
         app.register_blueprint(pedidos_bp)
         app.register_blueprint(carrito_bp)
+        app.register_blueprint(public_resolver_bp)
+        app.register_blueprint(puntos_bp)
+        app.register_blueprint(catalog_import_bp)
+        app.register_blueprint(pedidos_from_file_bp)
+        app.register_blueprint(kits_bp)
+        app.register_blueprint(checkout_bp)
         app.register_blueprint(estadisticas_bp)
         app.register_blueprint(empleados_bp)
         app.register_blueprint(categorias_bp)

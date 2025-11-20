@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Text,
     Index,
+    Numeric,
     UniqueConstraint,
 )
 from sqlalchemy.orm import validates
@@ -130,6 +131,7 @@ class User(db.Model, UserMixin):
     password_hash = db.Column(db.String(128), nullable=False)
     token = db.Column(db.String(255), nullable=True)
     anon_id = db.Column(db.String(80), nullable=True, index=True)
+    saldo_puntos = db.Column(db.Integer, nullable=False, default=0)
     rol = db.Column(db.String(30), default="usuario")
     tipo_chat = db.Column(db.String(20), nullable=True)
     password_reset_selector = db.Column(db.String(64), unique=True, index=True, nullable=True)
@@ -770,6 +772,7 @@ class TicketComentario(db.Model):
 class CatalogoItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    tenant_id = db.Column(db.Integer, db.ForeignKey('tenant_profile.id'), nullable=True, index=True)
     nombre = db.Column(db.String(255), nullable=False)
     descripcion = db.Column(db.String(1024))
     precio = db.Column(db.String(50))
@@ -778,6 +781,13 @@ class CatalogoItem(db.Model):
     marca = db.Column(db.String(100), nullable=True, index=True)
     categoria = db.Column(db.String(100))
     unidad = db.Column(db.String(50))
+    precio_monetario = db.Column(db.Numeric(12, 2), nullable=True)
+    moneda = db.Column(db.String(10), nullable=True)
+    precio_puntos = db.Column(db.Integer, nullable=True)
+    modalidad = db.Column(db.String(20), nullable=False, default="venta")
+    precio_por_caja = db.Column(db.Numeric(12, 2), nullable=True)
+    unidad_por_caja = db.Column(db.Integer, nullable=True)
+    metadata = db.Column(JSONType, nullable=True)
     # Nuevos campos para información más detallada del catálogo
     descripcion_corta = db.Column(db.String(512), nullable=True)
     promocion_info = db.Column(db.String(255), nullable=True) # Para texto de promociones, ej: "20% OFF"
@@ -800,6 +810,50 @@ class CatalogoEmbedding(db.Model):
     descripcion = db.Column(db.String(1024))
     precio = db.Column(db.String(50))
     embedding_vector = db.Column(JSONType)
+
+
+class PointsTransaction(db.Model, TimestampMixin):
+    __tablename__ = "points_transaction"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True, index=True)
+    tipo = db.Column(db.String(50), nullable=False)
+    delta = db.Column(db.Integer, nullable=False)
+    saldo_final = db.Column(db.Integer, nullable=False)
+    metadata = db.Column(JSONType, nullable=True)
+
+    user = db.relationship("User", backref=db.backref("points_transactions", lazy="dynamic"))
+    tenant = db.relationship("TenantProfile")
+
+    __table_args__ = (
+        db.Index("ix_points_tx_user_tenant", "user_id", "tenant_id"),
+    )
+
+
+class CatalogoKit(db.Model, TimestampMixin):
+    __tablename__ = "catalogo_kit"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True, index=True)
+    nombre = db.Column(db.String(255), nullable=False)
+    descripcion = db.Column(db.Text, nullable=True)
+    precio_especial = db.Column(db.Numeric(12, 2), nullable=True)
+    moneda = db.Column(db.String(10), nullable=True, default="ARS")
+    items = db.Column(JSONType, nullable=False, default=list)
+
+    tenant = db.relationship("TenantProfile")
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "tenant_id": self.tenant_id,
+            "nombre": self.nombre,
+            "descripcion": self.descripcion,
+            "precio_especial": float(self.precio_especial) if self.precio_especial is not None else None,
+            "moneda": self.moneda,
+            "items": self.items or [],
+        }
 
 class SitioWebInfo(db.Model):
     __tablename__ = 'sitio_web_info'
@@ -865,6 +919,28 @@ class SugerenciaCiudadano(db.Model):
 
     def __repr__(self):
         return f"<SugerenciaCiudadano {self.id} por User {self.user_id or self.anon_id}>"
+
+
+class PedidoConversacional(db.Model, TimestampMixin):
+    __tablename__ = "pedido_conversacional"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    estado = db.Column(db.String(40), nullable=False, default="pendiente_pago")
+    monto_monetario = db.Column(db.Numeric(12, 2), nullable=True)
+    monto_puntos = db.Column(db.Integer, nullable=True)
+    tipo = db.Column(db.String(20), nullable=False, default="compra")
+    mp_preference_id = db.Column(db.String(120), nullable=True, index=True)
+    mp_payment_id = db.Column(db.String(120), nullable=True, index=True)
+    items = db.Column(JSONType, nullable=False, default=list)
+
+    tenant = db.relationship("TenantProfile")
+    user = db.relationship("User")
+
+    __table_args__ = (
+        db.Index("ix_pedido_conv_tenant_estado", "tenant_id", "estado"),
+    )
 
 
 class PublicSurvey(db.Model):
