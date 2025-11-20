@@ -18,6 +18,7 @@ from services.encuestas_service import (
 from services.catalog_seed import ensure_seed_catalog
 from services.common_utils import parse_precio_flexible
 from routes.catalogo import _formatear_producto
+from services.rewards_demo import reward_profile_for_tenant
 
 
 pwa_public_bp = Blueprint("pwa_public", __name__, url_prefix="/api/pwa/public")
@@ -136,6 +137,9 @@ def _enrich_cart_summary(tenant: TenantProfile, owner: User) -> Dict[str, object
             "items_count": 0,
             "total_estimado": 0.0,
             "moneda": "ARS",
+            "badge_count": 0,
+            "total_puntos_estimado": 0.0,
+            "recompensas_demo": reward_profile_for_tenant(tenant.id, 0.0),
         }
 
     item_ids = [entry.get("catalogo_item_id") for entry in cart if entry.get("catalogo_item_id")]
@@ -152,6 +156,8 @@ def _enrich_cart_summary(tenant: TenantProfile, owner: User) -> Dict[str, object
     enriched = []
     total = 0.0
     total_count = 0
+    totals_by_currency: Dict[str, float] = {}
+    total_points = 0.0
     for entry in cart:
         item_id = entry.get("catalogo_item_id")
         cantidad = _normalize_quantity(entry.get("cantidad", 1))
@@ -182,9 +188,15 @@ def _enrich_cart_summary(tenant: TenantProfile, owner: User) -> Dict[str, object
         else:
             _, precio_float, _ = parse_precio_flexible(str(precio_unitario))
 
+        moneda = formatted.get("moneda") or "ARS"
         subtotal = precio_float * cantidad if precio_float is not None else None
+        subtotal_puntos = subtotal if moneda == "PTS" else None
         if subtotal is not None:
-            total += subtotal
+            if moneda == "PTS":
+                total_points += subtotal
+            else:
+                totals_by_currency[moneda] = totals_by_currency.get(moneda, 0.0) + subtotal
+                total += subtotal
 
         enriched.append(
             {
@@ -194,9 +206,11 @@ def _enrich_cart_summary(tenant: TenantProfile, owner: User) -> Dict[str, object
                 "cantidad": cantidad,
                 "precio_unitario": precio_float,
                 "precio_unitario_texto": catalog_item.precio,
-                "subtotal": subtotal,
+                "subtotal": subtotal if moneda != "PTS" else None,
+                "subtotal_puntos": subtotal_puntos,
                 "imagen_url": formatted.get("imagen_url"),
                 "categoria": formatted.get("categoria"),
+                "moneda": moneda,
             }
         )
 
@@ -205,7 +219,20 @@ def _enrich_cart_summary(tenant: TenantProfile, owner: User) -> Dict[str, object
         "items": enriched,
         "items_count": total_count,
         "total_estimado": round(total, 2),
+        "totales_monedas": {k: round(v, 2) for k, v in totals_by_currency.items()},
+        "total_puntos_estimado": round(total_points, 2),
         "moneda": "ARS",
+        "badge_count": total_count,
+        "recompensas_demo": reward_profile_for_tenant(tenant.id, total_points),
+        "checkout_options": {
+            "mercadopago_ready": True,
+            "gateway_hint": "Mercado Pago preference/token flow listo para demo",
+            "points_enabled": total_points > 0,
+        },
+        "ui_signals": {
+            "animation": "cart-burst",
+            "toast": "Agregado al carrito",
+        },
     }
 
 
@@ -266,6 +293,12 @@ def public_catalog():
             productos = filtrados
 
     return jsonify(productos)
+
+
+@pwa_public_bp.get("/rewards")
+def public_rewards():
+    tenant = _require_tenant()
+    return jsonify(reward_profile_for_tenant(tenant.id, 0.0))
 
 
 @pwa_public_bp.get("/cart")
