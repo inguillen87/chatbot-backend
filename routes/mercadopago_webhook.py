@@ -1,7 +1,7 @@
 # routes/mercadopago_webhook.py
 from flask import Blueprint, request, jsonify
 from extensions import db
-from models import User
+from models import PedidoConversacional, User
 import logging
 import requests
 
@@ -23,6 +23,30 @@ def mercadopago_webhook():
     topic = data.get("type")
     action = data.get("action")
     preapproval_id = data.get("data", {}).get("id")  # El ID de la suscripción (preapproval_id)
+
+    if topic == "payment":
+        payment_id = data.get("data", {}).get("id")
+        url = f"https://api.mercadopago.com/v1/payments/{payment_id}"
+        headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+        resp = requests.get(url, headers=headers)
+        if resp.status_code != 200:
+            logging.warning("Pago no encontrado: %s", payment_id)
+            return jsonify({"error": "Pago no encontrado"}), 400
+        payment_info = resp.json()
+        external_reference = payment_info.get("external_reference")
+        status = payment_info.get("status")
+        if not external_reference:
+            return jsonify({"error": "Sin referencia externa"}), 400
+        pedido = PedidoConversacional.query.get(external_reference)
+        if not pedido:
+            return jsonify({"error": "Pedido no encontrado"}), 404
+        pedido.mp_payment_id = str(payment_id)
+        if status == "approved":
+            pedido.estado = "pagado"
+        else:
+            pedido.estado = status or "rechazado"
+        db.session.commit()
+        return jsonify({"ok": True, "estado": pedido.estado})
 
     # Si el webhook es por suscripción (preapproval)
     if topic == "preapproval":
