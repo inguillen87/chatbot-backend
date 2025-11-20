@@ -6,7 +6,7 @@ from datetime import datetime
 from email.mime.application import MIMEApplication # Para adjuntos
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from flask import current_app # Para acceder a la configuración
 from twilio.rest import Client
@@ -422,6 +422,37 @@ def _get_config_val(key, default=None, campaign_specific=False):
 
 class SMTPConfigurationError(RuntimeError):
     """Error personalizado para problemas de configuración SMTP."""
+
+
+def validar_configuracion_smtp(require_auth: bool = True) -> Tuple[bool, Optional[str]]:
+    """Valida la configuración SMTP mínima necesaria para enviar correos.
+
+    Retorna una tupla (es_valida, mensaje_error). Si la configuración es válida,
+    el mensaje de error es ``None``.
+    """
+
+    smtp_host = _get_config_val("SMTP_HOST")
+    smtp_port = _get_config_val("SMTP_PORT", 587)
+    smtp_user = _get_config_val("SMTP_USER")
+    smtp_password = _get_config_val("SMTP_PASSWORD")
+    from_email = _get_config_val("MAIL_FROM_ADDRESS")
+
+    if not smtp_user and from_email:
+        smtp_user = from_email
+
+    if not smtp_host or not smtp_port:
+        return False, "Configuración SMTP incompleta: faltan host o puerto."
+
+    if require_auth and (not smtp_user or not smtp_password):
+        return (
+            False,
+            "Configuración SMTP inválida: se requiere autenticación pero faltan credenciales.",
+        )
+
+    if not from_email:
+        return False, "Configuración SMTP incompleta: falta el remitente (MAIL_FROM_ADDRESS)."
+
+    return True, None
 
 
 def _connect_smtp_server(
