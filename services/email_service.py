@@ -1,4 +1,4 @@
-# import os # No es necesario si usamos current_app.config
+import os
 import contextlib
 import logging
 import smtplib
@@ -342,10 +342,17 @@ def _build_ticket_email_context(
 
 
 SMTP_CONFIG_ALIASES = {
-    "SMTP_HOST": ["MAIL_SERVER"],
-    "SMTP_PORT": ["MAIL_PORT"],
-    "SMTP_USER": ["SMTP_USERNAME", "MAIL_USERNAME", "MAIL_FROM_ADDRESS"],
-    "SMTP_PASSWORD": ["SMTP_PASS", "MAIL_PASSWORD"],
+    "SMTP_HOST": ["MAIL_SERVER", "EMAIL_HOST"],
+    "SMTP_PORT": ["MAIL_PORT", "EMAIL_PORT"],
+    "SMTP_USER": [
+        "SMTP_USERNAME",
+        "MAIL_USERNAME",
+        "MAIL_FROM_ADDRESS",
+        "EMAIL_HOST_USER",
+        "SMTP_LOGIN",
+        "SMTP_EMAIL",
+    ],
+    "SMTP_PASSWORD": ["SMTP_PASS", "MAIL_PASSWORD", "EMAIL_HOST_PASSWORD"],
     "SMTP_USE_TLS": ["MAIL_USE_TLS"],
     "SMTP_USE_SSL": ["MAIL_USE_SSL"],
     "MAIL_FROM_ADDRESS": ["MAIL_DEFAULT_SENDER"],
@@ -353,8 +360,28 @@ SMTP_CONFIG_ALIASES = {
 }
 
 
+def _clean_config_value(val: Optional[str]):
+    """Normaliza valores de configuración devolviendo ``None`` si están vacíos."""
+
+    if val is None:
+        return None
+
+    if isinstance(val, str):
+        val = val.strip()
+        if not val:
+            return None
+
+    return val
+
+
 def _resolve_config_key(key: str, *, campaign_specific: bool = False):
-    """Intenta múltiples claves equivalentes para una configuración SMTP."""
+    """Intenta múltiples claves equivalentes para una configuración SMTP.
+
+    Primero busca en la configuración de Flask y, como respaldo, revisa las
+    variables de entorno. Esto ayuda cuando el contenedor tiene las
+    credenciales como variables de entorno pero no se propagaron correctamente
+    a ``current_app.config`` al inicializar la app.
+    """
 
     keys_to_try = [key]
     keys_to_try.extend(SMTP_CONFIG_ALIASES.get(key, []))
@@ -363,15 +390,23 @@ def _resolve_config_key(key: str, *, campaign_specific: bool = False):
         for candidate in keys_to_try:
             campaign_key = f"{candidate}_CAMPAIGN"
             if campaign_key in current_app.config:
-                val = current_app.config.get(campaign_key)
+                val = _clean_config_value(current_app.config.get(campaign_key))
                 if val is not None:
                     return val
+            # Respaldo directo a variables de entorno si la config no está poblada
+            env_val = _clean_config_value(os.getenv(campaign_key))
+            if env_val is not None:
+                return env_val
 
     for candidate in keys_to_try:
         if candidate in current_app.config:
-            val = current_app.config.get(candidate)
+            val = _clean_config_value(current_app.config.get(candidate))
             if val is not None:
                 return val
+
+        env_val = _clean_config_value(os.getenv(candidate))
+        if env_val is not None:
+            return env_val
 
     return None
 
@@ -405,8 +440,15 @@ def _connect_smtp_server(
         raise SMTPConfigurationError("Host o puerto SMTP no configurados")
 
     if require_auth and (not username or not password):
+        missing_parts = []
+        if not username:
+            missing_parts.append("usuario (SMTP_USER/MAIL_USERNAME/EMAIL_HOST_USER)")
+        if not password:
+            missing_parts.append("contraseña (SMTP_PASSWORD/MAIL_PASSWORD/EMAIL_HOST_PASSWORD)")
+
         raise SMTPConfigurationError(
-            "Se requiere autenticación SMTP pero faltan credenciales"
+            "Se requiere autenticación SMTP pero faltan credenciales: "
+            + ", ".join(missing_parts)
         )
 
     server = smtplib.SMTP_SSL(host, port) if use_ssl else smtplib.SMTP(host, port)
