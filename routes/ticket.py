@@ -1945,7 +1945,17 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int):
             comentarios=comentarios_info
         )
 
-        from services.email_service import enviar_email_con_multiples_adjuntos
+        from services.email_service import (
+            enviar_email_con_multiples_adjuntos,
+            validar_configuracion_smtp,
+        )
+
+        smtp_valida, smtp_error = validar_configuracion_smtp(require_auth=True)
+        if not smtp_valida:
+            current_app.logger.error(
+                f"SMTP no configurado correctamente al enviar historial del ticket {ticket_id}: {smtp_error}"
+            )
+            return jsonify({"error": smtp_error}), 503
 
         exito = enviar_email_con_multiples_adjuntos(
             destinos=destinos,

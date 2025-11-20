@@ -4,6 +4,13 @@ import os
 import sys
 import logging
 
+# Cargar variables de entorno desde .env lo más temprano posible para que Config
+# y el resto de la app vean las credenciales (e.g., SMTP) incluso cuando el
+# proceso se inicia fuera del CLI de Flask.
+from dotenv import load_dotenv
+
+load_dotenv()  # override=False por defecto para respetar variables ya definidas
+
 # --- Modo "solo migraciones" para que Alembic no cargue nada pesado ---
 MIGRATIONS_ONLY = os.getenv("FLASK_MIGRATIONS_ONLY") == "1"
 
@@ -431,8 +438,12 @@ def create_app(config_class=Config):
 
     return app
 
-# Objeto global de app para Gunicorn
-app = create_app(Config)
+# Objeto global de app para Gunicorn (se puede omitir en tests configurando
+# FLASK_SKIP_GLOBAL_APP=1)
+if os.getenv("FLASK_SKIP_GLOBAL_APP") != "1":
+    app = create_app(Config)
+else:
+    app = None
 
 if __name__ == '__main__':
     if socketio is not None:
