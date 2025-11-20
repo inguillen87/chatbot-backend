@@ -136,6 +136,16 @@ def descargar_archivo(user, filename):
     return send_from_directory(CATALOGO_FOLDER, filename, as_attachment=True)
 
 
+_CATEGORY_FALLBACK_IMAGES: dict[str, str] = {
+    "educación": "https://images.unsplash.com/photo-1516383740770-fbcc5ccbece0?auto=format&fit=crop&w=900&q=80",
+    "ambiente": "https://images.unsplash.com/photo-1501004318641-b39e6451bec6?auto=format&fit=crop&w=900&q=80",
+    "salud": "https://images.unsplash.com/photo-1584467735871-5884e44b1f4d?auto=format&fit=crop&w=900&q=80",
+    "producción local": "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=900&q=80",
+    "economía circular": "https://images.unsplash.com/photo-1503594384566-461fe158e797?auto=format&fit=crop&w=900&q=80",
+    "deporte": "https://images.unsplash.com/photo-1431329842981-433c86325f43?auto=format&fit=crop&w=900&q=80",
+}
+
+
 def _formatear_producto(data: dict) -> dict:
     """Normaliza un diccionario de producto al formato universal."""
     precio_pack = None
@@ -188,10 +198,16 @@ def _formatear_producto(data: dict) -> dict:
     if not promo_info and "promocion_info" in data: # Desde CatalogoItem (si 'data' es un dict de su __dict__)
         promo_info = data.get("promocion_info")
 
+    categoria_normalizada = (data.get("categoria") or data.get("categoria_qdrant", "")).strip()
+    imagen_url = data.get("imagen_url")
+    if not imagen_url:
+        fallback_key = categoria_normalizada.lower()
+        imagen_url = _CATEGORY_FALLBACK_IMAGES.get(fallback_key)
+
     return {
         "nombre": data.get("nombre", ""),
         "marca": data.get("marca"), # Añadido aquí para consistencia en la estructura base
-        "categoria": data.get("categoria") or data.get("categoria_qdrant", ""),
+        "categoria": categoria_normalizada,
         "descripcion": descripcion_final, # Usa la descripción corta si está disponible
         "promocion_info": promo_info if promo_info else None, # Añadido campo de promoción
         "sku": data.get("sku") or None,
@@ -201,7 +217,7 @@ def _formatear_producto(data: dict) -> dict:
         "precio_unitario": precio_unitario,
         "precio_pack": precio_pack if precio_pack != precio_unitario else None,
         "stock": data.get("cantidad") or data.get("stock"), # Qdrant tiene "stock", CatalogoItem "cantidad"
-        "imagen_url": data.get("imagen_url"),
+        "imagen_url": imagen_url,
         # Podríamos añadir aquí una lista de acciones sugeridas para el bot
         # "acciones_sugeridas": ["agregar_carrito", "mas_detalles"] # Ejemplo
     }

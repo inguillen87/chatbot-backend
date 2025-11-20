@@ -1,10 +1,21 @@
-from flask import Blueprint, request, jsonify, session
-from services.cart import add_item, remove_item, update_item, clear_cart, get_summary
+from __future__ import annotations
+
+from typing import Dict, List, Optional, Tuple
+
+from flask import Blueprint, jsonify, request, session
+from sqlalchemy import func
+
+from models import CatalogoItem, TenantProfile, User
+from routes.catalogo import _formatear_producto
+from routes.productos import _resolve_public_owner
+from services.catalog_seed import ensure_seed_catalog
+from services.cart import add_item, clear_cart, get_summary, remove_item, update_item
+from services.common_utils import parse_precio_flexible
 
 carrito_bp = Blueprint('carrito_bp', __name__, url_prefix='/carrito')
 
 
-def _get_session_cart_data():
+def _get_session_cart_data() -> Dict[str, list]:
     pyme_carts_data = session.get('carritos_pymes')
     if not isinstance(pyme_carts_data, dict):
         pyme_carts_data = {}
@@ -12,13 +23,160 @@ def _get_session_cart_data():
     return pyme_carts_data
 
 
-def _persist_session_cart_data(pyme_carts_data):
+def _persist_session_cart_data(pyme_carts_data: Dict[str, list]) -> None:
     session['carritos_pymes'] = pyme_carts_data
     session.modified = True
 
 
+def _normalize_quantity(value: object, default: int = 1, min_value: int = 1) -> int:
+    try:
+        cantidad = int(value)
+    except (TypeError, ValueError):
+        cantidad = default
+    return max(cantidad, min_value)
+
+
+def _cart_key(tenant: Optional[TenantProfile]) -> str:
+    return str(getattr(tenant, 'id', 0))
+
+
+def _tenant_cart(data: Dict[str, list], tenant: Optional[TenantProfile]) -> List[dict]:
+    key = _cart_key(tenant)
+    cart = data.get(key)
+    if not isinstance(cart, list):
+        cart = []
+        data[key] = cart
+    return cart
+
+
+def _lookup_catalog_item(owner: User, payload: Dict[str, object]) -> Optional[CatalogoItem]:
+    identifier = payload.get('catalogo_item_id') or payload.get('item_id')
+    sku = payload.get('sku')
+    nombre = payload.get('nombre')
+
+    query = CatalogoItem.query.filter(CatalogoItem.user_id == owner.id)
+    if identifier is not None:
+        try:
+            identifier = int(identifier)  # type: ignore[assignment]
+        except (TypeError, ValueError):
+            identifier = None
+        else:
+            item = query.filter(CatalogoItem.id == identifier).first()
+            if item:
+                return item
+
+    if sku:
+        sku_text = str(sku).strip().lower()
+        if sku_text:
+            item = query.filter(func.lower(CatalogoItem.sku) == sku_text).first()
+            if item:
+                return item
+
+    if nombre:
+        nombre_text = str(nombre).strip().lower()
+        if nombre_text:
+            return query.filter(func.lower(CatalogoItem.nombre) == nombre_text).first()
+
+    return None
+
+
+def _resolve_owner_and_seed() -> Tuple[Optional[TenantProfile], Optional[User]]:
+    tenant, owner = _resolve_public_owner()
+    if owner:
+        ensure_seed_catalog(owner, tenant)
+    return tenant, owner
+
+
+def _enrich_cart_summary(pyme_carts_data: Dict[str, list], tenant: TenantProfile, owner: User) -> Dict[str, object]:
+    cart = list(_tenant_cart(pyme_carts_data, tenant))
+    if not cart:
+        return {
+            'tenant_id': tenant.id,
+            'items': [],
+            'items_count': 0,
+            'total_estimado': 0.0,
+            'moneda': 'ARS',
+        }
+
+    item_ids = [entry.get('catalogo_item_id') for entry in cart if entry.get('catalogo_item_id')]
+    catalog_items: Dict[int, CatalogoItem] = {}
+    if item_ids:
+        rows = (
+            CatalogoItem.query.filter(
+                CatalogoItem.user_id == owner.id,
+                CatalogoItem.id.in_(item_ids),
+            ).all()
+        )
+        catalog_items = {row.id: row for row in rows}
+
+    enriched = []
+    total = 0.0
+    total_count = 0
+    for entry in cart:
+        item_id = entry.get('catalogo_item_id')
+        cantidad = _normalize_quantity(entry.get('cantidad', 1))
+        total_count += cantidad
+        catalog_item = catalog_items.get(item_id)
+        if not catalog_item:
+            continue
+
+        formatted = _formatear_producto(
+            {
+                'nombre': catalog_item.nombre,
+                'categoria': catalog_item.categoria,
+                'descripcion': catalog_item.descripcion,
+                'sku': catalog_item.sku,
+                'unidad': catalog_item.unidad,
+                'precio_str': catalog_item.precio,
+                'cantidad': catalog_item.cantidad,
+                'marca': catalog_item.marca,
+                'imagen_url': catalog_item.imagen_url,
+                'descripcion_corta': catalog_item.descripcion_corta,
+                'promocion_info': catalog_item.promocion_info,
+            }
+        )
+        precio_unitario = formatted.get('precio_unitario')
+        precio_float = None
+        if isinstance(precio_unitario, (int, float)):
+            precio_float = float(precio_unitario)
+        else:
+            _, precio_float, _ = parse_precio_flexible(str(precio_unitario))
+
+        subtotal = precio_float * cantidad if precio_float is not None else None
+        if subtotal is not None:
+            total += subtotal
+
+        enriched.append(
+            {
+                'catalogo_item_id': item_id,
+                'nombre': formatted.get('nombre'),
+                'descripcion': formatted.get('descripcion'),
+                'cantidad': cantidad,
+                'precio_unitario': precio_float,
+                'precio_unitario_texto': catalog_item.precio,
+                'subtotal': subtotal,
+                'imagen_url': formatted.get('imagen_url'),
+                'categoria': formatted.get('categoria'),
+            }
+        )
+
+    return {
+        'tenant_id': tenant.id,
+        'items': enriched,
+        'items_count': total_count,
+        'total_estimado': round(total, 2),
+        'moneda': 'ARS',
+    }
+
+
 def _carrito_summary_response():
+    tenant, owner = _resolve_owner_and_seed()
     pyme_carts_data = _get_session_cart_data()
+
+    if tenant and owner:
+        return jsonify(_enrich_cart_summary(pyme_carts_data, tenant, owner))
+
+    # Compatibilidad heredada: devolver sólo nombre y cantidad
     return jsonify(get_summary(pyme_carts_data))
 
 
@@ -34,15 +192,33 @@ def carrito_root():
 @carrito_bp.route('/agregar', methods=['POST'])
 def agregar():
     data = request.get_json(silent=True) or {}
+    tenant, owner = _resolve_owner_and_seed()
+
+    if owner:
+        item = _lookup_catalog_item(owner, data)
+        if not item:
+            return jsonify({'error': 'Producto no encontrado'}), 404
+
+        cantidad = _normalize_quantity(data.get('cantidad', 1))
+        pyme_carts_data = _get_session_cart_data()
+        cart = _tenant_cart(pyme_carts_data, tenant)
+        for entry in cart:
+            if entry.get('catalogo_item_id') == item.id:
+                entry['cantidad'] = entry.get('cantidad', 0) + cantidad
+                break
+        else:
+            cart.append({'catalogo_item_id': item.id, 'cantidad': cantidad})
+
+        _persist_session_cart_data(pyme_carts_data)
+        return _carrito_summary_response()
+
+    # Compatibilidad con datos heredados basados en nombre
     nombre = data.get('nombre')
-    try:
-        cantidad = int(data.get('cantidad', 1))
-    except (TypeError, ValueError):
-        cantidad = 1
+    cantidad = _normalize_quantity(data.get('cantidad', 1))
     if not nombre:
         return jsonify({'error': 'nombre requerido'}), 400
     pyme_carts_data = _get_session_cart_data()
-    add_item(pyme_carts_data, nombre, max(1, cantidad))
+    add_item(pyme_carts_data, nombre, cantidad)
     _persist_session_cart_data(pyme_carts_data)
     return _carrito_summary_response()
 
@@ -50,11 +226,31 @@ def agregar():
 @carrito_bp.route('/actualizar', methods=['POST'])
 def actualizar():
     data = request.get_json(silent=True) or {}
+    tenant, owner = _resolve_owner_and_seed()
+
+    if owner:
+        try:
+            item_id = int(data.get('catalogo_item_id') or data.get('item_id'))
+        except (TypeError, ValueError):
+            item_id = None
+        if item_id is None:
+            return jsonify({'error': 'catalogo_item_id requerido'}), 400
+
+        cantidad = _normalize_quantity(data.get('cantidad', 0), default=0, min_value=0)
+        pyme_carts_data = _get_session_cart_data()
+        cart = _tenant_cart(pyme_carts_data, tenant)
+        for entry in list(cart):
+            if entry.get('catalogo_item_id') == item_id:
+                if cantidad <= 0:
+                    cart.remove(entry)
+                else:
+                    entry['cantidad'] = cantidad
+                _persist_session_cart_data(pyme_carts_data)
+                return _carrito_summary_response()
+        return jsonify({'error': 'Item no encontrado en el carrito'}), 404
+
     nombre = data.get('nombre')
-    try:
-        cantidad = int(data.get('cantidad', 1))
-    except (TypeError, ValueError):
-        cantidad = 1
+    cantidad = _normalize_quantity(data.get('cantidad', 1), default=1, min_value=0)
     if not nombre:
         return jsonify({'error': 'nombre requerido'}), 400
     pyme_carts_data = _get_session_cart_data()
@@ -66,6 +262,28 @@ def actualizar():
 @carrito_bp.route('/eliminar', methods=['POST'])
 def eliminar():
     data = request.get_json(silent=True) or {}
+    tenant, owner = _resolve_owner_and_seed()
+
+    if owner:
+        try:
+            item_id = int(data.get('catalogo_item_id') or data.get('item_id'))
+        except (TypeError, ValueError):
+            item_id = None
+        if item_id is None:
+            return jsonify({'error': 'catalogo_item_id requerido'}), 400
+
+        pyme_carts_data = _get_session_cart_data()
+        cart = _tenant_cart(pyme_carts_data, tenant)
+        removed = False
+        for entry in list(cart):
+            if entry.get('catalogo_item_id') == item_id:
+                cart.remove(entry)
+                removed = True
+        if removed:
+            _persist_session_cart_data(pyme_carts_data)
+            return _carrito_summary_response()
+        return jsonify({'error': 'Item no encontrado en el carrito'}), 404
+
     nombre = data.get('nombre')
     if not nombre:
         return jsonify({'error': 'nombre requerido'}), 400
@@ -77,8 +295,15 @@ def eliminar():
 
 @carrito_bp.route('/vaciar', methods=['POST'])
 def vaciar():
+    tenant, owner = _resolve_owner_and_seed()
     pyme_carts_data = _get_session_cart_data()
-    clear_cart(pyme_carts_data)
+
+    if tenant and owner:
+        cart = _tenant_cart(pyme_carts_data, tenant)
+        cart.clear()
+    else:
+        clear_cart(pyme_carts_data)
+
     _persist_session_cart_data(pyme_carts_data)
     return _carrito_summary_response()
 
@@ -86,3 +311,4 @@ def vaciar():
 @carrito_bp.route('/resumen', methods=['GET'])
 def resumen():
     return _carrito_summary_response()
+
