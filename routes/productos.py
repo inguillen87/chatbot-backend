@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 from flask import Blueprint, current_app, g, jsonify, request
+from flask_cors import cross_origin
 from flask_login import current_user
 from sqlalchemy import func
 
@@ -95,9 +96,13 @@ def _resolve_public_owner() -> Tuple[Optional[TenantProfile], Optional[User]]:
     return None, owner
 
 
-@productos_bp.route("", methods=["GET"], strict_slashes=False)
+@productos_bp.route("", methods=["GET", "OPTIONS"], strict_slashes=False)
+@cross_origin()
 def obtener_productos():
     """Devuelve el catálogo de productos, autenticado o público."""
+
+    if request.method == "OPTIONS":
+        return "", 204
 
     user = _resolve_authenticated_user()
     if user:

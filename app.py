@@ -373,6 +373,13 @@ def create_app(config_class=Config):
     app.register_blueprint(config_bp)
     app.register_blueprint(auth_bp)
 
+    # Alias de login para clientes que aún llaman a `/login` en lugar de `/auth/login`
+    @app.route('/login', methods=['POST', 'OPTIONS'])
+    def login_alias():
+        if request.method == "OPTIONS":
+            return "", 204
+        return login_view_func()
+
     # Aliases /perfil
     @app.route('/perfil', methods=['GET', 'PUT', 'OPTIONS'])
     def perfil_alias():
