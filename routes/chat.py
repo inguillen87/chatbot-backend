@@ -2537,12 +2537,20 @@ def set_profile_name():
 @chat_bp.route("/widget/attention", methods=["GET"])
 def widget_attention():
     opciones = current_app.config.get("ATTENTION_BUBBLE_CHOICES")
+    default_choices = (
+        "¡Hola! ¿Necesitas ayuda?",
+        "¿Te ayudo a encontrar algo?",
+        "¿Querés que te guíe?",
+    )
+
     if opciones:
         mensaje = random.choice(opciones)
     else:
-        mensaje = current_app.config.get(
-            "ATTENTION_BUBBLE_TEXT", "¡Hola! ¿Necesitas ayuda?"
-        )
+        texto_unico = current_app.config.get("ATTENTION_BUBBLE_TEXT")
+        if texto_unico:
+            mensaje = texto_unico
+        else:
+            mensaje = random.choice(default_choices)
     return jsonify({"mensaje": mensaje})
 
 

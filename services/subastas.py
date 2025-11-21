@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-_DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "subastas.json"
+
+def _get_data_path() -> Path:
+    env_path = os.getenv("SUBASTAS_DATA_PATH")
+    if env_path:
+        return Path(env_path)
+    return Path(__file__).resolve().parent.parent / "data" / "subastas.json"
 
 
 def _parse_datetime(value: str | None) -> Optional[datetime]:
@@ -22,10 +29,19 @@ def _parse_datetime(value: str | None) -> Optional[datetime]:
         return None
 
 
+def _slugify(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return normalized or value
+
+
 def _normalize_subasta(entry: dict) -> dict:
+    titulo = entry.get("titulo") or entry.get("title") or ""
+    slug = entry.get("slug") or _slugify(titulo) if titulo else ""
+
     return {
         "id": str(entry.get("id") or entry.get("slug") or ""),
-        "titulo": entry.get("titulo") or entry.get("title") or "",
+        "slug": slug,
+        "titulo": titulo,
         "descripcion": entry.get("descripcion") or entry.get("description") or "",
         "fecha_publicacion": entry.get("fecha_publicacion") or entry.get("fecha_inicio") or "",
         "fecha_cierre": entry.get("fecha_cierre") or entry.get("fecha_fin") or "",
@@ -38,13 +54,19 @@ def _normalize_subasta(entry: dict) -> dict:
 
 
 def _load_subastas() -> List[dict]:
-    if not _DATA_PATH.exists():
+    data_path = _get_data_path()
+    if not data_path.exists():
         return []
 
     try:
-        content = json.loads(_DATA_PATH.read_text(encoding="utf-8"))
+        content = json.loads(data_path.read_text(encoding="utf-8"))
         if isinstance(content, list):
-            return [_normalize_subasta(entry) for entry in content]
+            subastas = [_normalize_subasta(entry) for entry in content]
+            return [
+                subasta
+                for subasta in subastas
+                if subasta.get("id") and subasta.get("titulo")
+            ]
     except Exception:
         return []
 
@@ -81,7 +103,12 @@ def obtener_subasta_por_id(subasta_id: str) -> Optional[dict]:
     if not subasta_id:
         return None
 
+    normalized_id = subasta_id.lower()
     for subasta in _load_subastas():
-        if subasta.get("id") == subasta_id or subasta.get("titulo") == subasta_id:
+        if (
+            str(subasta.get("id", "")).lower() == normalized_id
+            or str(subasta.get("titulo", "")).lower() == normalized_id
+            or str(subasta.get("slug", "")).lower() == normalized_id
+        ):
             return subasta
     return None
