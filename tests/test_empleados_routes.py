@@ -24,7 +24,7 @@ class EmpleadosRouteTests(unittest.TestCase):
         self.app_context.push()
         db.create_all()
         self.client = self.app.test_client()
-        user = User(id=1, name='test', email='test@test.com', password_hash='test')
+        user = User(id=1, name='test', email='test@test.com', password_hash='test', rol='admin')
         user.set_password('test')
         db.session.add(user)
         db.session.commit()
@@ -38,7 +38,12 @@ class EmpleadosRouteTests(unittest.TestCase):
         existing_user = User(name='existing', email='emp@e.com', password_hash='test', id=2)
         db.session.add(existing_user)
         db.session.commit()
-        data = {"name": "Emp", "email": "emp@e.com", "password": "123"}
+        data = {
+            "name": "Emp",
+            "email": "emp@e.com",
+            "password": "123",
+            "categorias": ["Limpieza"],
+        }
         with self.client:
             login_response = self.client.post('/auth/login', json={'email': 'test@test.com', 'password': 'test'})
             token = login_response.get_json()['token']
@@ -51,7 +56,7 @@ class EmpleadosRouteTests(unittest.TestCase):
             "name": "Nuevo",
             "email": "nuevo@e.com",
             "password": "123",
-            "categorias": ["A", "B"],
+            "categorias": ["Limpieza", "Luminaria"],
         }
         with self.client:
             login_response = self.client.post('/auth/login', json={'email': 'test@test.com', 'password': 'test'})
@@ -62,7 +67,34 @@ class EmpleadosRouteTests(unittest.TestCase):
             self.assertEqual(response.status_code, 201)
             created_user = User.query.filter_by(email="nuevo@e.com").first()
             self.assertIsNotNone(created_user)
-            self.assertEqual(created_user.ticket_categorias, 'A,B')
+            self.assertEqual(created_user.ticket_categorias, 'limpieza,luminaria')
+
+    def test_crear_empleado_sin_categorias(self):
+        data = {
+            "name": "Nuevo",
+            "email": "nuevo2@e.com",
+            "password": "123",
+            "categorias": [],
+        }
+        with self.client:
+            login_response = self.client.post('/auth/login', json={'email': 'test@test.com', 'password': 'test'})
+            token = login_response.get_json()['token']
+            headers = {'Authorization': f'Bearer {token}'}
+            response = self.client.post('/empleados', json=data, headers=headers)
+            self.assertEqual(response.status_code, 400)
+
+    def test_actualizar_empleado_no_permite_cambiar_email(self):
+        empleado = User(name='Empleado', email='empleado@e.com', password_hash='test', empresa_id=1, rol='empleado', ticket_categorias='Limpieza')
+        db.session.add(empleado)
+        db.session.commit()
+        payload = {"email": "otro@e.com"}
+        with self.client:
+            login_response = self.client.post('/auth/login', json={'email': 'test@test.com', 'password': 'test'})
+            token = login_response.get_json()['token']
+            headers = {'Authorization': f'Bearer {token}'}
+            response = self.client.put(f'/empleados/{empleado.id}', json=payload, headers=headers)
+            self.assertEqual(response.status_code, 400)
+
 
 if __name__ == '__main__':
     unittest.main()
