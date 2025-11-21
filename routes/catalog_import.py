@@ -16,10 +16,24 @@ logger = logging.getLogger(__name__)
 catalog_import_bp = Blueprint("catalog_import_bp", __name__, url_prefix="/api/admin/catalogo")
 
 
+def _with_cors_headers(response):
+    """Adjunta cabeceras CORS explícitas para evitar HTML en navegadores."""
+
+    origin = request.headers.get("Origin") or "*"
+    response.headers.setdefault("Access-Control-Allow-Origin", origin)
+    response.headers.setdefault(
+        "Access-Control-Allow-Headers",
+        "Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Tenant",
+    )
+    response.headers.setdefault("Access-Control-Allow-Methods", "POST, OPTIONS")
+    response.headers.setdefault("Access-Control-Allow-Credentials", "true")
+    return response
+
+
 def _json_error(status_code: int, code: str, message: str):
     response = jsonify({"codigo": code, "mensaje": message})
     response.status_code = status_code
-    return response
+    return _with_cors_headers(response)
 
 
 _PROMPT = """
@@ -97,6 +111,11 @@ def importar_catalogo():
     if not archivo:
         return _json_error(400, "archivo_requerido", "Archivo requerido")
 
+    filename = archivo.filename or ""
+    extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if extension not in {"pdf", "xlsx", "xls", "csv", "txt"}:
+        return _json_error(400, "formato_no_soportado", "Formato de archivo no soportado")
+
     try:
         tenant, owner, _ = resolve_tenant_and_user(
             tenant_slug=request.headers.get("X-Tenant"), current_user=getattr(g, "user", None)
@@ -119,14 +138,14 @@ def importar_catalogo():
         return _json_error(500, "error_interno", "Error interno al importar el catálogo")
 
     creados = _persist_rows(owner.id, tenant.id, filas or [])
-    return jsonify({"ok": True, "items_importados": creados})
+    return _with_cors_headers(jsonify({"ok": True, "items_importados": creados}))
 
 
 @catalog_import_bp.route("/importar", methods=["OPTIONS"])
 def importar_catalogo_options():
     """Responde el preflight CORS con JSON para evitar HTML inesperado."""
 
-    return jsonify({"ok": True})
+    return _with_cors_headers(jsonify({"ok": True}))
 
 
 @catalog_import_bp.app_errorhandler(HTTPException)
