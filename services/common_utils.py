@@ -758,6 +758,12 @@ def _get_main_menu_payload(
                 {"texto": "🏗️ Obras", "action_id": "obras"},
                 {"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"},
             ]},
+            {"titulo": "🛍️ Catálogo y Beneficios", "botones": [
+                {"texto": "📂 Ver Catálogo", "action_id": "catalogo_ver"},
+                {"texto": "🎁 Canje de Puntos", "action_id": "catalogo_canje_puntos"},
+                {"texto": "🛒 Compra de Productos", "action_id": "catalogo_compras"},
+                {"texto": "❤️ Donaciones", "action_id": "catalogo_donaciones"},
+            ]},
         ]
 
         if FEATURE_ENCUESTAS:
