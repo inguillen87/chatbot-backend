@@ -109,7 +109,13 @@ class ServicioTickets:
             "pyme": PymeTicketCreator()
         }
 
-    def crear_nuevo_ticket(self, tipo_ticket: Literal["municipio", "pyme"], ticket_data: Dict[str, Any]) -> Union[PymeTicket, MunicipioTicket, None, dict]:
+    def crear_nuevo_ticket(
+        self,
+        tipo_ticket: Literal["municipio", "pyme"],
+        ticket_data: Dict[str, Any],
+        *,
+        return_object: bool = False,
+    ) -> Union[PymeTicket, MunicipioTicket, None, dict]:
         creator = self.creators.get(tipo_ticket)
         if not creator:
             raise ValueError(f"Tipo de ticket inválido: '{tipo_ticket}'.")
@@ -205,6 +211,8 @@ class ServicioTickets:
                 ticket_dict["detalles"] = ticket.pregunta # PymeTicket uses 'pregunta'
                 ticket_dict["rubro_id"] = getattr(ticket, 'rubro_id', None)
 
+            if return_object:
+                return ticket
             return ticket_dict
         except SQLAlchemyError as e:
             db.session.rollback()
