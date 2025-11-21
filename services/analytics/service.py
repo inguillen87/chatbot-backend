@@ -193,6 +193,13 @@ def _default_summary_payload() -> Dict[str, Any]:
             "ttr": {"p50": None, "p90": None, "p95": None},
         },
         "extras": {},
+        "meta": {
+            "empty": True,
+            "source": "none",
+            "warnings": [
+                "No hay tickets ni encuestas para el período filtrado; se muestran valores vacíos."
+            ],
+        },
     }
 
 
@@ -296,6 +303,11 @@ def _municipio_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
         for canal, scores in channel_scores.items()
     }
     payload["extras"]["agents"] = agent_rows
+
+    payload["meta"] = {
+        "empty": False,
+        "source": "live",
+    }
 
     return payload
 
@@ -443,6 +455,11 @@ def _pyme_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
 
     payload["extras"]["agents"] = agent_rows
 
+    payload["meta"] = {
+        "empty": False,
+        "source": "live",
+    }
+
     return payload
 
 
@@ -560,6 +577,10 @@ def _operations_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
             "aging": aging_buckets,
             "queue": dict(queue_by_estado),
             "agents": agent_rows,
+        },
+        "meta": {
+            "empty": tickets_total == 0,
+            "source": "live" if tickets_total else "none",
         },
     }
 
@@ -915,6 +936,7 @@ def get_geo_heatmap(filters: AnalyticsFilters) -> Dict[str, Any]:
 
 def _geo_heatmap_no_cache(filters: AnalyticsFilters) -> Dict[str, Any]:
     cached_cells = fetch_geo_cells(filters)
+    meta = {"source": "live"}
     if cached_cells:
         payload = [
             {
@@ -935,8 +957,17 @@ def _geo_heatmap_no_cache(filters: AnalyticsFilters) -> Dict[str, Any]:
 
     if not payload:
         demo_cells = generate_demo_heatmap_cells(scope=filters.scope)
-        return {"cells": _attach_intensity(demo_cells)}
-    return {"cells": _attach_intensity(payload)}
+        meta.update(
+            {
+                "source": "demo",
+                "empty": True,
+                "warnings": [
+                    "Sin datos georreferenciados para los filtros solicitados; se muestran puntos de ejemplo."
+                ],
+            }
+        )
+        return {"cells": _attach_intensity(demo_cells), "meta": meta}
+    return {"cells": _attach_intensity(payload), "meta": meta}
 
 
 def get_geo_points(filters: AnalyticsFilters, limit: int = 500) -> Dict[str, Any]:
@@ -948,6 +979,7 @@ def get_geo_points(filters: AnalyticsFilters, limit: int = 500) -> Dict[str, Any
 
 
 def _geo_points_no_cache(filters: AnalyticsFilters, limit: int) -> Dict[str, Any]:
+    meta = {"source": "live"}
     if filters.scope == "municipio":
         tickets = municipio_ticket_query(filters).limit(limit).all()
         points = [
@@ -975,8 +1007,17 @@ def _geo_points_no_cache(filters: AnalyticsFilters, limit: int) -> Dict[str, Any
     if not points:
         demo_count = limit if limit and limit > 0 else 72
         demo_count = min(demo_count, 180)
-        return {"points": generate_demo_points(scope=filters.scope, count=demo_count)}
-    return {"points": points}
+        meta.update(
+            {
+                "source": "demo",
+                "empty": True,
+                "warnings": [
+                    "No hay puntos georreferenciados; se generaron puntos de ejemplo para mantener el mapa operativo."
+                ],
+            }
+        )
+        return {"points": generate_demo_points(scope=filters.scope, count=demo_count), "meta": meta}
+    return {"points": points, "meta": meta}
 
 
 def get_top(filters: AnalyticsFilters, category: str = "barrios", limit: int = 10) -> Dict[str, Any]:
