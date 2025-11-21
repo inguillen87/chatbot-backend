@@ -4,6 +4,7 @@ from typing import Dict, List
 
 import pandas as pd
 from flask import Blueprint, jsonify, request, session, g
+from flask_cors import cross_origin
 from sqlalchemy import func
 
 from database import db
@@ -13,8 +14,25 @@ from routes.productos import _resolve_public_owner
 from services.cart import _get_pyme_cart
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
 from services.vision_extractor import extract_table_from_file
+from config import ALLOWED_ORIGINS
 
 logger = logging.getLogger(__name__)
+
+_CORS_ALLOWED_HEADERS = [
+    "Content-Type",
+    "Authorization",
+    "X-Chatboc-Token",
+    "X-Entity-Token",
+    "X-Chat-Session-Id",
+    "X-Anon-Id",
+    "Anon-Id",
+    "Cache-Control",
+    "token",
+    "X-Tenant",
+    "X-Tenant-Id",
+    "X-Widget-Token",
+    "X-Whatsapp-Dst",
+]
 
 pedidos_from_file_bp = Blueprint("pedidos_from_file_bp", __name__, url_prefix="/api/pedidos")
 
@@ -79,6 +97,9 @@ def _extract_rows(contenido: bytes) -> List[dict]:
 
 @pedidos_from_file_bp.route("/from-file", methods=["POST"])
 def pedidos_desde_archivo():
+    if request.method == "OPTIONS":
+        return "", 204
+
     archivo = request.files.get("archivo")
     if not archivo:
         return _json_error(400, "archivo_requerido", "Archivo requerido")

@@ -2,6 +2,7 @@ from flask import Blueprint, jsonify, request, g
 from flask_cors import cross_origin
 
 from services.rewards import recompensas_service
+from routes.productos import _resolve_public_owner
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
 from config import ALLOWED_ORIGINS
 
@@ -51,7 +52,9 @@ def saldo():
             current_user=getattr(g, "user", None),
         )
     except TenantResolutionError as exc:
-        return jsonify({"error": str(exc)}), 404
+        tenant, user = _resolve_public_owner()
+        if not tenant or not user:
+            return jsonify({"error": str(exc)}), 404
 
     saldo_actual = recompensas_service().obtener_saldo(user)
     return jsonify({"tenant_id": tenant.id, "saldo": saldo_actual, "anonId": user.anon_id})
@@ -81,7 +84,9 @@ def historial():
             current_user=getattr(g, "user", None),
         )
     except TenantResolutionError as exc:
-        return jsonify({"error": str(exc)}), 404
+        tenant, user = _resolve_public_owner()
+        if not tenant or not user:
+            return jsonify({"error": str(exc)}), 404
 
     historial_registros = []
     for tx in recompensas_service().historial(user):
