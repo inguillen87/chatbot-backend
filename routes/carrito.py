@@ -86,7 +86,9 @@ def _lookup_catalog_item(owner: User, payload: Dict[str, object]) -> Optional[Ca
     sku = payload.get('sku')
     nombre = payload.get('nombre')
 
-    query = CatalogoItem.query.filter(CatalogoItem.user_id == owner.id)
+    query = CatalogoItem.query.options(*CatalogoItem.legacy_safe_options()).filter(
+        CatalogoItem.user_id == owner.id
+    )
     if identifier is not None:
         try:
             identifier = int(identifier)  # type: ignore[assignment]
@@ -137,10 +139,12 @@ def _enrich_cart_summary(pyme_carts_data: Dict[str, list], tenant: TenantProfile
     catalog_items: Dict[int, CatalogoItem] = {}
     if item_ids:
         rows = (
-            CatalogoItem.query.filter(
+            CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())
+            .filter(
                 CatalogoItem.user_id == owner.id,
                 CatalogoItem.id.in_(item_ids),
-            ).all()
+            )
+            .all()
         )
         catalog_items = {row.id: row for row in rows}
 

@@ -192,7 +192,11 @@ def ensure_seed_catalog(owner: User, tenant: Optional[TenantProfile] = None) -> 
     if not owner:
         return False
 
-    existing = CatalogoItem.query.filter_by(user_id=owner.id).first()
+    existing = (
+        CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())
+        .filter_by(user_id=owner.id)
+        .first()
+    )
     if existing:
         return False
 
