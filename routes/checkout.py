@@ -6,7 +6,7 @@ import requests
 from flask import Blueprint, jsonify, request, session, g
 
 from database import db
-from models import CatalogoItem, PedidoConversacional
+from models import CatalogoItem, PedidoConversacional, User
 from routes.catalogo import _formatear_producto
 from services.rewards import recompensas_service
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
@@ -40,6 +40,8 @@ def _totales(items: List[dict]):
 
 @checkout_bp.route("/crear-preferencia", methods=["POST"])
 def crear_preferencia():
+    payload = request.get_json(silent=True) or {}
+
     try:
         tenant, user, _ = resolve_tenant_and_user(
             tenant_slug=request.headers.get("X-Tenant"), current_user=getattr(g, "user", None)
@@ -50,6 +52,8 @@ def crear_preferencia():
     cart_entries = _session_cart(tenant.id)
     if not cart_entries:
         return jsonify({"error": "Carrito vacío"}), 400
+
+    is_anonymous = bool(user.anon_id)
 
     items: List[dict] = []
     for entry in cart_entries:
@@ -76,9 +80,34 @@ def crear_preferencia():
         })
 
     total_money, total_points = _totales(items)
+    if total_points and is_anonymous:
+        return (
+            jsonify(
+                {
+                    "error": "Autenticación requerida para canjear puntos",
+                    "login_required": True,
+                }
+            ),
+            401,
+        )
     if total_points:
         if not recompensas_service().canjear_puntos(user, tenant, total_points):
             return jsonify({"error": "Saldo de puntos insuficiente"}), 400
+
+    if is_anonymous:
+        contacto = payload.get("contacto") or {}
+        nombre_contacto = (contacto.get("nombre") or payload.get("nombre") or "").strip()
+        email_contacto = (contacto.get("email") or payload.get("email") or "").strip()
+        telefono_contacto = (contacto.get("telefono") or payload.get("telefono") or "").strip()
+
+        if nombre_contacto:
+            user.name = nombre_contacto
+        if email_contacto:
+            existing_email = User.query.filter(User.email == email_contacto, User.id != user.id).first()
+            if not existing_email:
+                user.email = email_contacto
+        if telefono_contacto:
+            user.telefono = telefono_contacto
 
     pedido = PedidoConversacional(
         tenant_id=tenant.id,
