@@ -175,6 +175,15 @@ def _survey_metrics(surveys_map: Dict[int, Sequence]) -> Dict[str, Any]:
     return result
 
 
+def _build_meta(
+    *, empty: bool, source: str = "live", warnings: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    meta: Dict[str, Any] = {"empty": empty, "source": source}
+    if warnings:
+        meta["warnings"] = warnings
+    return meta
+
+
 def _default_summary_payload() -> Dict[str, Any]:
     return {
         "totals": {
@@ -193,13 +202,13 @@ def _default_summary_payload() -> Dict[str, Any]:
             "ttr": {"p50": None, "p90": None, "p95": None},
         },
         "extras": {},
-        "meta": {
-            "empty": True,
-            "source": "none",
-            "warnings": [
+        "meta": _build_meta(
+            empty=True,
+            source="none",
+            warnings=[
                 "No hay tickets ni encuestas para el período filtrado; se muestran valores vacíos."
             ],
-        },
+        ),
     }
 
 
@@ -304,10 +313,7 @@ def _municipio_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
     }
     payload["extras"]["agents"] = agent_rows
 
-    payload["meta"] = {
-        "empty": False,
-        "source": "live",
-    }
+    payload["meta"] = _build_meta(empty=False)
 
     return payload
 
@@ -455,10 +461,7 @@ def _pyme_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
 
     payload["extras"]["agents"] = agent_rows
 
-    payload["meta"] = {
-        "empty": False,
-        "source": "live",
-    }
+    payload["meta"] = _build_meta(empty=False)
 
     return payload
 
@@ -569,6 +572,16 @@ def _operations_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
         "ttr_promedio_min": _average(ttr_samples),
     }
 
+    warnings: List[str] = []
+    if municipio_data.get("meta", {}).get("empty"):
+        warnings.append(
+            "Sin tickets municipales en el período; se muestran valores vacíos para operaciones."
+        )
+    if pyme_data.get("meta", {}).get("empty"):
+        warnings.append(
+            "Sin tickets o pedidos PYME en el período; se muestran valores vacíos para operaciones."
+        )
+
     return {
         "totals": totals,
         "sla": municipio_data.get("sla", {}),
@@ -578,10 +591,11 @@ def _operations_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
             "queue": dict(queue_by_estado),
             "agents": agent_rows,
         },
-        "meta": {
-            "empty": tickets_total == 0,
-            "source": "live" if tickets_total else "none",
-        },
+        "meta": _build_meta(
+            empty=tickets_total == 0,
+            source="live" if tickets_total else "none",
+            warnings=warnings or None,
+        ),
     }
 
 
@@ -660,7 +674,18 @@ def _timeseries_no_cache(filters: AnalyticsFilters, metric: str, group: Optional
     else:
         query = municipio_ticket_query(filters)
         data = _aggregate_timeseries(query, MunicipioTicket.fecha)
-    return {"series": data}
+    return {
+        "series": data,
+        "meta": _build_meta(
+            empty=len(data) == 0,
+            source="live" if data else "none",
+            warnings=None
+            if data
+            else [
+                "No hay eventos para la serie temporal solicitada; verifique filtros o cargue datos reales."
+            ],
+        ),
+    }
 
 
 def get_breakdown(filters: AnalyticsFilters, dimension: str = "categoria") -> Dict[str, Any]:
@@ -694,14 +719,25 @@ def _breakdown_no_cache(filters: AnalyticsFilters, dimension: str) -> Dict[str, 
         .order_by(func.count().desc())
         .all()
     )
+    breakdown = [
+        {
+            "label": row.label or "sin_dato",
+            "value": int(row.value or 0),
+        }
+        for row in rows
+    ]
+
     return {
-        "breakdown": [
-            {
-                "label": row.label or "sin_dato",
-                "value": int(row.value or 0),
-            }
-            for row in rows
-        ]
+        "breakdown": breakdown,
+        "meta": _build_meta(
+            empty=len(breakdown) == 0,
+            source="live" if breakdown else "none",
+            warnings=None
+            if breakdown
+            else [
+                "No se encontraron resultados para el desglose solicitado; ajuste filtros o ingrese datos."
+            ],
+        ),
     }
 
 
@@ -936,7 +972,7 @@ def get_geo_heatmap(filters: AnalyticsFilters) -> Dict[str, Any]:
 
 def _geo_heatmap_no_cache(filters: AnalyticsFilters) -> Dict[str, Any]:
     cached_cells = fetch_geo_cells(filters)
-    meta = {"source": "live"}
+    meta = _build_meta(empty=False)
     if cached_cells:
         payload = [
             {
@@ -957,16 +993,15 @@ def _geo_heatmap_no_cache(filters: AnalyticsFilters) -> Dict[str, Any]:
 
     if not payload:
         demo_cells = generate_demo_heatmap_cells(scope=filters.scope)
-        meta.update(
-            {
-                "source": "demo",
-                "empty": True,
-                "warnings": [
-                    "Sin datos georreferenciados para los filtros solicitados; se muestran puntos de ejemplo."
-                ],
-            }
+        meta = _build_meta(
+            empty=True,
+            source="demo",
+            warnings=[
+                "Sin datos georreferenciados para los filtros solicitados; se muestran puntos de ejemplo."
+            ],
         )
         return {"cells": _attach_intensity(demo_cells), "meta": meta}
+    meta["empty"] = False
     return {"cells": _attach_intensity(payload), "meta": meta}
 
 
@@ -979,7 +1014,7 @@ def get_geo_points(filters: AnalyticsFilters, limit: int = 500) -> Dict[str, Any
 
 
 def _geo_points_no_cache(filters: AnalyticsFilters, limit: int) -> Dict[str, Any]:
-    meta = {"source": "live"}
+    meta = _build_meta(empty=False)
     if filters.scope == "municipio":
         tickets = municipio_ticket_query(filters).limit(limit).all()
         points = [
@@ -1007,16 +1042,15 @@ def _geo_points_no_cache(filters: AnalyticsFilters, limit: int) -> Dict[str, Any
     if not points:
         demo_count = limit if limit and limit > 0 else 72
         demo_count = min(demo_count, 180)
-        meta.update(
-            {
-                "source": "demo",
-                "empty": True,
-                "warnings": [
-                    "No hay puntos georreferenciados; se generaron puntos de ejemplo para mantener el mapa operativo."
-                ],
-            }
+        meta = _build_meta(
+            empty=True,
+            source="demo",
+            warnings=[
+                "No hay puntos georreferenciados; se generaron puntos de ejemplo para mantener el mapa operativo."
+            ],
         )
         return {"points": generate_demo_points(scope=filters.scope, count=demo_count), "meta": meta}
+    meta["empty"] = False
     return {"points": points, "meta": meta}
 
 
