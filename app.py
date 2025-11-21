@@ -343,6 +343,7 @@ def create_app(config_class=Config):
     from routes.puntos import puntos_bp
     from routes.kits import kits_bp
     from routes.pwa_app import pwa_app_bp, pwa_app_legacy_bp
+    from routes.pwa_misc import pwa_misc_bp
     from routes.webauthn import webauthn_bp
     from cli_commands import register_commands
 
@@ -427,6 +428,7 @@ def create_app(config_class=Config):
     app.register_blueprint(media_bp)
     app.register_blueprint(accessibility_bp)
     app.register_blueprint(pwa_public_bp)
+    app.register_blueprint(pwa_misc_bp)
     app.register_blueprint(pwa_app_bp)
     app.register_blueprint(pwa_app_legacy_bp)
     app.register_blueprint(webauthn_bp)
