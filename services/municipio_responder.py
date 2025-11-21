@@ -72,6 +72,7 @@ import math
 from services.tasks import process_image_for_chat_task
 from services.intent_classifier import IntentClassifier
 from services.multimodal_analyzer import analizar_imagen_con_fallback
+from services.subastas import listar_subastas_activas
 from services import promo_service
 import json
 from services.ticket_utils import (
@@ -2618,9 +2619,29 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
 
-        message_body = submenu.get("message_body") or ""
-        submenu["message_body"] = "La sección de subastas aún no está disponible. Próximamente la habilitaremos.\n\n" + message_body
-        submenu["fuente"] = "submenu_catalogo_subastas_inactivo"
+        subastas = listar_subastas_activas()
+        base_lines = [
+            "*Subastas activas*",
+            "Estos son los lotes disponibles en este momento:",
+            "",
+        ]
+
+        if subastas:
+            for subasta in subastas:
+                titulo = subasta.get("titulo") or "Subasta"
+                fecha_cierre = subasta.get("fecha_cierre") or "sin fecha de cierre"
+                precio_base = subasta.get("precio_base")
+                moneda = subasta.get("moneda") or "ARS"
+                if isinstance(precio_base, (int, float)):
+                    precio_texto = f"{moneda} {precio_base:,.0f}".replace(",", ".")
+                else:
+                    precio_texto = "Precio base a confirmar"
+                base_lines.append(f"• {titulo} (cierra: {fecha_cierre}) - Base: {precio_texto}")
+        else:
+            base_lines.append("Por ahora no hay subastas abiertas. Podés volver a consultar más tarde.")
+
+        submenu["message_body"] = "\n".join(base_lines)
+        submenu["fuente"] = "submenu_catalogo_subastas"
         return submenu
 
     if action_id.startswith("catalogo_mostrar_mas::"):
