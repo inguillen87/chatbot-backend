@@ -66,6 +66,26 @@ class PublicResolverTest(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
 
+    def test_widget_token_registers_on_resolution(self):
+        """Ensure new widget tokens get persisted in tenant configuration."""
+
+        self.tenant.configuracion = {}
+        db.session.commit()
+
+        response = self.client.post(
+            "/api/public/resolve-tenant",
+            json={"tenant_slug": self.tenant.slug, "widget_token": "fresh-token"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        db.session.refresh(self.tenant)
+
+        tokens = self.tenant.configuracion.get("widget_tokens")
+        if isinstance(tokens, list):
+            self.assertIn("fresh-token", tokens)
+        else:
+            self.assertEqual(tokens, "fresh-token")
+
     def test_public_tenant_profile_not_found(self):
         response = self.client.get("/api/public/tenant-profile?tenant=desconocido")
         self.assertEqual(response.status_code, 404)

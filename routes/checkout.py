@@ -123,6 +123,17 @@ def crear_preferencia():
         email_contacto = (contacto.get("email") or payload.get("email") or "").strip()
         telefono_contacto = (contacto.get("telefono") or payload.get("telefono") or "").strip()
 
+        if not nombre_contacto or not (email_contacto or telefono_contacto):
+            return (
+                jsonify(
+                    {
+                        "error": "Datos de contacto requeridos para finalizar la compra",
+                        "contacto_requerido": True,
+                    }
+                ),
+                400,
+            )
+
         if nombre_contacto:
             user.name = nombre_contacto
         if email_contacto:
@@ -154,9 +165,28 @@ def crear_preferencia():
     db.session.add(pedido)
     db.session.commit()
 
-    access_token = os.getenv("MERCADOPAGO_ACCESS_TOKEN")
+    tenant_cfg = tenant.configuracion or {}
+    access_token = tenant_cfg.get("mercadopago_access_token") or os.getenv("MERCADOPAGO_ACCESS_TOKEN")
     init_point = None
     preference_id = None
+    if total_money > 0 and not access_token:
+        pedido.estado = "pendiente_pago"
+        db.session.commit()
+        return (
+            jsonify(
+                {
+                    "pedido_id": pedido.id,
+                    "total_monetario": total_money,
+                    "total_puntos": total_points,
+                    "estado": pedido.estado,
+                    "tipo": pedido.tipo,
+                    "mercadopago_ready": False,
+                    "error": "MercadoPago no configurado para este tenant",
+                }
+            ),
+            503,
+        )
+
     if total_money > 0 and access_token:
         payload = {
             "items": [
@@ -195,6 +225,8 @@ def crear_preferencia():
             "init_point": init_point,
             "total_monetario": total_money,
             "total_puntos": total_points,
+            "estado": pedido.estado,
+            "tipo": pedido.tipo,
         }
     )
 
