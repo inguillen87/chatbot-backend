@@ -6,6 +6,7 @@ from flask import Blueprint, jsonify, request, session
 from flask_cors import cross_origin
 from sqlalchemy import func
 
+from config import ALLOWED_ORIGINS
 from models import CatalogoItem, TenantProfile, User
 from routes.catalogo import _formatear_producto
 from routes.productos import _resolve_public_owner
@@ -13,6 +14,35 @@ from services.catalog_seed import ensure_seed_catalog
 from services.cart import add_item, clear_cart, get_summary, remove_item, update_item
 from services.common_utils import parse_precio_flexible
 from services.rewards_demo import reward_profile_for_tenant
+
+_CORS_ALLOWED_HEADERS = [
+    "Content-Type",
+    "Authorization",
+    "X-Chatboc-Token",
+    "X-Entity-Token",
+    "X-Chat-Session-Id",
+    "X-Anon-Id",
+    "Anon-Id",
+    "Cache-Control",
+    "token",
+    "X-Tenant",
+    "X-Tenant-Id",
+    "X-Widget-Token",
+    "X-Whatsapp-Dst",
+]
+
+_CORS_EXPOSE_HEADERS = ["Content-Type", "Authorization", "X-Anon-Id", "Anon-Id"]
+
+
+def _cors_kwargs(methods: list[str]) -> dict:
+    return {
+        "origins": ALLOWED_ORIGINS,
+        "supports_credentials": True,
+        "allow_headers": _CORS_ALLOWED_HEADERS,
+        "expose_headers": _CORS_EXPOSE_HEADERS,
+        "methods": methods,
+    }
+
 
 carrito_bp = Blueprint('carrito_bp', __name__, url_prefix='/carrito')
 
@@ -210,7 +240,7 @@ def _carrito_summary_response():
 
 @carrito_bp.route('', methods=['GET', 'POST', 'OPTIONS'])
 @carrito_bp.route('/', methods=['GET', 'POST', 'OPTIONS'])
-@cross_origin()
+@cross_origin(**_cors_kwargs(["GET", "POST", "OPTIONS"]))
 def carrito_root():
     """Permite consultar el carrito (GET) o agregar items (POST) desde la raíz."""
     if request.method == 'OPTIONS':
@@ -222,7 +252,7 @@ def carrito_root():
 
 
 @carrito_bp.route('/agregar', methods=['POST', 'OPTIONS'])
-@cross_origin()
+@cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
 def agregar():
     data = request.get_json(silent=True) or {}
     tenant, owner = _resolve_owner_and_seed()
@@ -260,7 +290,7 @@ def agregar():
 
 
 @carrito_bp.route('/actualizar', methods=['POST', 'OPTIONS'])
-@cross_origin()
+@cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
 def actualizar():
     data = request.get_json(silent=True) or {}
     tenant, owner = _resolve_owner_and_seed()
@@ -300,7 +330,7 @@ def actualizar():
 
 
 @carrito_bp.route('/eliminar', methods=['POST', 'OPTIONS'])
-@cross_origin()
+@cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
 def eliminar():
     data = request.get_json(silent=True) or {}
     tenant, owner = _resolve_owner_and_seed()
@@ -338,7 +368,7 @@ def eliminar():
 
 
 @carrito_bp.route('/vaciar', methods=['POST', 'OPTIONS'])
-@cross_origin()
+@cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
 def vaciar():
     tenant, owner = _resolve_owner_and_seed()
 
@@ -357,7 +387,7 @@ def vaciar():
 
 
 @carrito_bp.route('/resumen', methods=['GET'])
-@cross_origin()
+@cross_origin(**_cors_kwargs(["GET"]))
 def resumen():
     return _carrito_summary_response()
 

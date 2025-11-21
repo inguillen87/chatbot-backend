@@ -210,6 +210,20 @@ def get_pyme_menu_payload(context: Dict[str, Any], channel: str = "web") -> Dict
             }
         ]
 
+        catalog_buttons = [
+            {"texto": "🛍️ Catálogo", "action_id": "pyme_productos_stock"},
+            {"texto": "🛒 Ver carrito", "action_id": "ver_carrito_pyme"},
+            {"texto": "🎁 Canjear puntos", "action_id": "pyme_otras_consultas"},
+            {"texto": "🤲 Donaciones", "action_id": "pyme_otras_consultas"},
+        ]
+
+        payload["categorias"].append(
+            {
+                "titulo": "Catálogo",
+                "botones": catalog_buttons,
+            }
+        )
+
     if menu_config.get("footer"):
         payload["data"]["footer"] = menu_config["footer"]
     if menu_config.get("highlights"):

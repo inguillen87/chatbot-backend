@@ -14,6 +14,37 @@ from routes.catalogo import listar_catalogo
 from services.catalog_seed import ensure_seed_catalog
 from utils.auth_helpers import obtener_token, user_from_token
 
+from config import ALLOWED_ORIGINS
+
+_CORS_ALLOWED_HEADERS = [
+    "Content-Type",
+    "Authorization",
+    "X-Chatboc-Token",
+    "X-Entity-Token",
+    "X-Chat-Session-Id",
+    "X-Anon-Id",
+    "Anon-Id",
+    "Cache-Control",
+    "token",
+    "X-Tenant",
+    "X-Tenant-Id",
+    "X-Widget-Token",
+    "X-Whatsapp-Dst",
+]
+
+_CORS_EXPOSE_HEADERS = ["Content-Type", "Authorization", "X-Anon-Id", "Anon-Id"]
+
+
+def _cors_kwargs() -> dict:
+    return {
+        "origins": ALLOWED_ORIGINS,
+        "supports_credentials": True,
+        "allow_headers": _CORS_ALLOWED_HEADERS,
+        "expose_headers": _CORS_EXPOSE_HEADERS,
+        "methods": ["GET", "OPTIONS"],
+    }
+
+
 productos_bp = Blueprint("productos", __name__, url_prefix="/productos")
 
 
@@ -97,7 +128,7 @@ def _resolve_public_owner() -> Tuple[Optional[TenantProfile], Optional[User]]:
 
 
 @productos_bp.route("", methods=["GET", "OPTIONS"], strict_slashes=False)
-@cross_origin()
+@cross_origin(**_cors_kwargs())
 def obtener_productos():
     """Devuelve el catálogo de productos, autenticado o público."""
 
