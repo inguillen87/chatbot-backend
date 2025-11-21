@@ -252,7 +252,35 @@ def _formatear_producto(data: dict) -> dict:
     imagen_url = _fallback_image_for_item(data.get("imagen_url"), data, categoria_normalizada)
 
     precio_texto = precio_str or (str(precio_pack) if precio_pack is not None else None)
+    precio_puntos = data.get("precio_puntos")
     moneda_estandar = moneda_detectada or data.get("moneda")
+    if precio_puntos is not None and not moneda_estandar:
+        moneda_estandar = "PTS"
+        if precio_unitario is None:
+            precio_unitario = precio_puntos
+
+    modalidad = data.get("modalidad")
+    if isinstance(modalidad, str):
+        modalidad_norm = modalidad.strip().lower()
+        if modalidad_norm == "venta":
+            modalidad = "compra"
+        elif modalidad_norm in {"donación", "donacion"}:
+            modalidad = "donacion"
+        elif modalidad_norm in {"canje", "puntos"}:
+            modalidad = "canje"
+    if not modalidad:
+        if moneda_estandar == "PTS":
+            modalidad = "canje"
+        else:
+            try:
+                valor_numerico = float(precio_unitario) if precio_unitario is not None else None
+            except (TypeError, ValueError):
+                valor_numerico = None
+            if valor_numerico == 0:
+                modalidad = "donacion"
+            else:
+                modalidad = "compra"
+    modalidad = modalidad or "compra"
 
     return {
         "nombre": data.get("nombre", ""),
@@ -267,8 +295,12 @@ def _formatear_producto(data: dict) -> dict:
         "precio_unitario": precio_unitario,
         "precio_pack": precio_pack if precio_pack != precio_unitario else None,
         "precio_texto": precio_texto,
-        "precio_puntos": precio_unitario if moneda_estandar == "PTS" else None,
+        "precio_puntos":
+            precio_puntos
+            if moneda_estandar == "PTS" and precio_puntos is not None
+            else (precio_unitario if moneda_estandar == "PTS" else None),
         "moneda": moneda_estandar,
+        "modalidad": modalidad,
         "stock": data.get("cantidad") or data.get("stock"), # Qdrant tiene "stock", CatalogoItem "cantidad"
         "imagen_url": imagen_url,
         # Podríamos añadir aquí una lista de acciones sugeridas para el bot

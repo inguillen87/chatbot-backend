@@ -24,9 +24,11 @@ class SeedItem:
     descripcion_corta: Optional[str] = None
     promocion_info: Optional[str] = None
     imagen_url: Optional[str] = None
+    modalidad: Optional[str] = None
+    precio_puntos: Optional[int] = None
 
     def to_catalog_kwargs(self) -> Dict[str, Optional[str]]:
-        return {
+        payload = {
             "nombre": self.nombre,
             "categoria": self.categoria,
             "descripcion": self.descripcion,
@@ -39,6 +41,13 @@ class SeedItem:
             "promocion_info": self.promocion_info,
             "imagen_url": self.imagen_url,
         }
+
+        if self.modalidad:
+            payload["modalidad"] = self.modalidad
+        if self.precio_puntos is not None:
+            payload["precio_puntos"] = self.precio_puntos
+
+        return payload
 
 
 def _normalize_key(value: Optional[str]) -> Optional[str]:
@@ -67,6 +76,8 @@ _JUNIN_ITEMS: Sequence[SeedItem] = (
             "https://images.unsplash.com/photo-1503676260728-1c00da094a0b?"
             "auto=format&fit=crop&w=900&q=80"
         ),
+        modalidad="canje",
+        precio_puntos=1500,
     ),
     SeedItem(
         nombre="Árbol nativo en tu vereda",
@@ -82,6 +93,8 @@ _JUNIN_ITEMS: Sequence[SeedItem] = (
             "https://images.unsplash.com/photo-1501785888041-af3ef285b470?"
             "auto=format&fit=crop&w=900&q=80"
         ),
+        modalidad="donacion",
+        precio_puntos=0,
     ),
     SeedItem(
         nombre="Bono de donación Hospital Saporiti",
@@ -97,6 +110,8 @@ _JUNIN_ITEMS: Sequence[SeedItem] = (
             "https://images.unsplash.com/photo-1505751172876-fa1923c5c528?"
             "auto=format&fit=crop&w=900&q=80"
         ),
+        modalidad="donacion",
+        precio_puntos=2500,
     ),
     SeedItem(
         nombre="Bolson saludable kilómetro cero",
@@ -112,6 +127,7 @@ _JUNIN_ITEMS: Sequence[SeedItem] = (
             "https://images.unsplash.com/photo-1466978913421-dad2ebd01d17?"
             "auto=format&fit=crop&w=900&q=80"
         ),
+        modalidad="compra",
     ),
     SeedItem(
         nombre="Canje de residuos electrónicos",
@@ -127,6 +143,8 @@ _JUNIN_ITEMS: Sequence[SeedItem] = (
             "https://images.unsplash.com/photo-1518770660439-4636190af475?"
             "auto=format&fit=crop&w=900&q=80"
         ),
+        modalidad="canje",
+        precio_puntos=800,
     ),
 )
 
@@ -140,6 +158,8 @@ _DEFAULT_MUNICIPAL_ITEMS: Sequence[SeedItem] = (
         sku="muni-beca-deporte",
         cantidad="Cupos disponibles: 60",
         promocion_info="Beneficio para jóvenes que completan encuestas",
+        modalidad="canje",
+        precio_puntos=1200,
     ),
     SeedItem(
         nombre="Pack huerta urbana",
@@ -149,6 +169,8 @@ _DEFAULT_MUNICIPAL_ITEMS: Sequence[SeedItem] = (
         unidad="pack",
         sku="muni-pack-huerta",
         cantidad="Stock inicial: 120",
+        modalidad="canje",
+        precio_puntos=900,
     ),
 )
 
