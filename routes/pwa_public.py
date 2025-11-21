@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple
 from flask import Blueprint, abort, g, jsonify, request, session
 from sqlalchemy import func
 
-from models import CatalogoItem, MunicipioPost, TenantProfile, User
+from models import CatalogoItem, MunicipioPost, TenantProfile, User, CatalogoModalidad
 from services.encuestas_service import (
     EncuestaError,
     get_public_encuesta,
@@ -193,12 +193,16 @@ def _enrich_cart_summary(tenant: TenantProfile, owner: User) -> Dict[str, object
             _, precio_float, _ = parse_precio_flexible(str(precio_unitario))
 
         moneda = formatted.get("moneda") or "ARS"
+        modalidad = CatalogoModalidad.from_legacy(formatted.get("modalidad"))
         subtotal = precio_float * cantidad if precio_float is not None else None
         subtotal_puntos = subtotal if moneda == "PTS" else None
+        if modalidad is CatalogoModalidad.DONACION:
+            subtotal = None
+            subtotal_puntos = None
         if subtotal is not None:
-            if moneda == "PTS":
+            if moneda == "PTS" and modalidad is CatalogoModalidad.CANJE:
                 total_points += subtotal
-            else:
+            elif moneda != "PTS":
                 totals_by_currency[moneda] = totals_by_currency.get(moneda, 0.0) + subtotal
                 total += subtotal
 
@@ -215,6 +219,7 @@ def _enrich_cart_summary(tenant: TenantProfile, owner: User) -> Dict[str, object
                 "imagen_url": formatted.get("imagen_url"),
                 "categoria": formatted.get("categoria"),
                 "moneda": moneda,
+                "modalidad": modalidad.value,
             }
         )
 

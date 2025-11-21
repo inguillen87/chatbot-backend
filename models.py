@@ -2,6 +2,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from utils.time_utils import get_local_now, datetime_to_iso_utc
+from enum import Enum
 from sqlalchemy import (
     Column,
     Integer,
@@ -74,6 +75,50 @@ def _coerce_reference_time(at: Optional[datetime]) -> datetime:
 JSONType = JSONB().with_variant(SQLITE_JSON, "sqlite")
 
 print("Importing models.py")
+
+
+class CatalogoModalidad(str, Enum):
+    VENTA = "venta"
+    DONACION = "donacion"
+    CANJE = "canje"
+
+    @classmethod
+    def from_legacy(cls, raw: Optional[str]) -> "CatalogoModalidad":
+        if raw is None:
+            return cls.VENTA
+        value = str(raw).strip().lower()
+        if value in {cls.DONACION.value, "donaciones", "donación"}:
+            return cls.DONACION
+        if value in {cls.CANJE.value, "puntos", "pts", "canje_puntos"}:
+            return cls.CANJE
+        return cls.VENTA
+
+    @classmethod
+    def infer(
+        cls,
+        raw: Optional[str],
+        *,
+        moneda: Optional[str] = None,
+        precio_puntos: Optional[int] = None,
+        precio_value: Optional[object] = None,
+    ) -> "CatalogoModalidad":
+        normalized = cls.from_legacy(raw)
+        if normalized != cls.VENTA:
+            return normalized
+
+        moneda_norm = (moneda or "").strip().upper()
+        if moneda_norm == "PTS" or (precio_puntos or 0) > 0:
+            return cls.CANJE
+
+        try:
+            precio_float = float(precio_value) if precio_value is not None else None
+        except (TypeError, ValueError):
+            precio_float = None
+
+        if precio_float == 0:
+            return cls.DONACION
+
+        return cls.VENTA
 
 
 class TimestampMixin:
@@ -807,6 +852,28 @@ class CatalogoItem(db.Model):
 
     def __repr__(self):
         return f"<CatalogoItem {self.id} para user {self.user_id}>"
+
+    @validates("modalidad")
+    def _normalize_modalidad(self, key, value):  # noqa: ARG002
+        normalized = CatalogoModalidad.from_legacy(value)
+        return normalized.value
+
+    @property
+    def modalidad_enum(self) -> CatalogoModalidad:
+        return CatalogoModalidad.infer(
+            self.modalidad,
+            moneda=self.moneda,
+            precio_puntos=self.precio_puntos,
+            precio_value=self.precio_monetario or self.precio,
+        )
+
+    @property
+    def es_donacion(self) -> bool:
+        return self.modalidad_enum is CatalogoModalidad.DONACION
+
+    @property
+    def es_canje(self) -> bool:
+        return self.modalidad_enum is CatalogoModalidad.CANJE
 
     @classmethod
     def legacy_safe_options(cls):
