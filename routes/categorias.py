@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 from routes.auth import token_requerido
 from utils.permissions import require_role
 # La lista de categorías disponible para asignar a los empleados y filtrar
@@ -22,6 +22,9 @@ def obtener_categorias(current_user):
     en español (`categorias`) como su equivalente en inglés (`categories`).
     """
     categorias = [c.title() for c in CATEGORIAS_RECLAMO]
+    search_term = (request.args.get("q") or "").strip().lower()
+    if search_term:
+        categorias = [c for c in categorias if search_term in c.lower()]
     return jsonify({
         "categorias": categorias,
         "categories": categorias,
