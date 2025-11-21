@@ -122,9 +122,12 @@ def importar_catalogo():
     return jsonify({"ok": True, "items_importados": creados})
 
 
-@catalog_import_bp.errorhandler(HTTPException)
+@catalog_import_bp.app_errorhandler(HTTPException)
 def _http_error_handler(exc: HTTPException):
     """Garantiza respuestas JSON para errores HTTP en el blueprint."""
+
+    if not request.path.startswith("/api/admin/catalogo"):
+        return exc
 
     logger.exception("Error HTTP en importar catálogo", exc_info=exc)
     status_code = exc.code or 500
@@ -132,8 +135,11 @@ def _http_error_handler(exc: HTTPException):
     return _json_error(status_code, exc.name.lower().replace(" ", "_"), message)
 
 
-@catalog_import_bp.errorhandler(Exception)
+@catalog_import_bp.app_errorhandler(Exception)
 def _unhandled_error_handler(exc: Exception):  # noqa: BLE001
+    if not request.path.startswith("/api/admin/catalogo"):
+        return exc
+
     logger.exception("Error no controlado en importar catálogo", exc_info=exc)
     return _json_error(500, "error_interno", "Error interno al importar el catálogo")
 
