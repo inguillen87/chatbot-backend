@@ -785,11 +785,15 @@ class CatalogoItem(db.Model):
     # Mark it as deferred so ORM queries don't try to SELECT it unless explicitly
     # accessed, preventing "UndefinedColumn" errors when the column is missing.
     precio_monetario = deferred(db.Column(db.Numeric(12, 2), nullable=True))
-    moneda = db.Column(db.String(10), nullable=True)
+    # Some legacy deployments still lack newer monetary fields. Mark them as
+    # deferred so base queries do not attempt to select missing columns. They
+    # will only be accessed (and therefore SELECTed) when explicitly used in
+    # application code after the corresponding migrations are applied.
+    moneda = deferred(db.Column(db.String(10), nullable=True))
     precio_puntos = db.Column(db.Integer, nullable=True)
     modalidad = db.Column(db.String(20), nullable=False, default="venta")
-    precio_por_caja = db.Column(db.Numeric(12, 2), nullable=True)
-    unidad_por_caja = db.Column(db.Integer, nullable=True)
+    precio_por_caja = deferred(db.Column(db.Numeric(12, 2), nullable=True))
+    unidad_por_caja = deferred(db.Column(db.Integer, nullable=True))
     extra_metadata = db.Column("metadata", JSONType, nullable=True)
     # Nuevos campos para información más detallada del catálogo
     descripcion_corta = db.Column(db.String(512), nullable=True)
