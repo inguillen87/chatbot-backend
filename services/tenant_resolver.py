@@ -123,6 +123,13 @@ def resolve_tenant_and_user(
             ).first()
 
     if not tenant:
+        fallback_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
+        tenant = _tenant_by_slug(fallback_slug)
+
+    if not tenant:
+        tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
+
+    if not tenant:
         raise TenantResolutionError("Tenant no encontrado para el contexto dado")
 
     if current_user and getattr(current_user, "is_authenticated", False):

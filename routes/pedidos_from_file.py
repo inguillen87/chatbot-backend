@@ -95,7 +95,13 @@ def _extract_rows(contenido: bytes) -> List[dict]:
     return df.to_dict(orient="records")
 
 
-@pedidos_from_file_bp.route("/from-file", methods=["POST"])
+@pedidos_from_file_bp.route("/from-file", methods=["POST", "OPTIONS"])
+@cross_origin(
+    origins=ALLOWED_ORIGINS,
+    supports_credentials=True,
+    allow_headers=_CORS_ALLOWED_HEADERS,
+    methods=["POST", "OPTIONS"],
+)
 def pedidos_desde_archivo():
     if request.method == "OPTIONS":
         return "", 204
