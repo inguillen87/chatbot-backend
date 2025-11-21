@@ -344,6 +344,8 @@ class MunicipioTicket(db.Model):
     user_id = db.Column(db.Integer, nullable=True)
     municipio_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     estado = db.Column(db.String(30), default="nuevo")
+    asignado_a_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
+    asignado_en = db.Column(db.DateTime(timezone=True), nullable=True)
     anon_id = db.Column(db.String(80), nullable=True, index=True)
     ultima_actividad = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now)
     nro_ticket = db.Column(db.String(36), nullable=False, unique=True, default=lambda: str(uuid.uuid4()))
@@ -373,6 +375,7 @@ class MunicipioTicket(db.Model):
         lazy='dynamic', # O 'select'/'joined' según la necesidad de carga
         cascade="all, delete-orphan" # Opcional: si se borra el ticket, borrar sus archivos
     )
+    asignado_a = db.relationship('User', foreign_keys=[asignado_a_id], backref='tickets_municipio_asignados')
 
 
 class MunicipioPost(db.Model):
@@ -590,6 +593,8 @@ class PymeTicket(db.Model):
     categoria = db.Column(db.String(100), nullable=True)
     user_id = db.Column(db.Integer, nullable=True)
     estado = db.Column(db.String(30), default="nuevo")
+    asignado_a_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
+    asignado_en = db.Column(db.DateTime(timezone=True), nullable=True)
     anon_id = db.Column(db.String(80), nullable=True, index=True)
     nro_ticket = db.Column(db.Integer, nullable=False, unique=True)
     fecha = db.Column(db.DateTime(timezone=True), default=get_local_now)
@@ -610,6 +615,7 @@ class PymeTicket(db.Model):
         lazy='dynamic',
         cascade="all, delete-orphan"
     )
+    asignado_a = db.relationship('User', foreign_keys=[asignado_a_id], backref='tickets_pyme_asignados')
 
 class PymePedido(db.Model):
     __tablename__ = "pyme_pedido"
