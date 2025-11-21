@@ -12,7 +12,7 @@ from enum import Enum, auto
 import unicodedata
 import difflib
 from typing import Any, Dict, List, Optional, Sequence, Tuple
-from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse, urlencode
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
 from models import (
@@ -5104,6 +5104,65 @@ def _resolve_catalogo_base_url(context: Optional[dict]) -> Optional[str]:
     return None
 
 
+def _resolve_tenant_identifiers(context: Optional[dict]) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Return (tenant_slug, tenant_id, owner_id) best-effort from the context/config."""
+
+    municipio_config = (context or {}).get("municipio_config_actual") or {}
+
+    tenant_slug = (
+        municipio_config.get("tenant_slug")
+        or municipio_config.get("slug")
+        or municipio_config.get("nombre_slug")
+    )
+
+    tenant_id = (
+        municipio_config.get("tenant_id")
+        or municipio_config.get("tenant")
+        or municipio_config.get("id")
+        or (context or {}).get("tenant_id")
+        or (context or {}).get("municipio_id")
+    )
+
+    owner_id = (
+        municipio_config.get("owner_id")
+        or municipio_config.get("municipio_id")
+        or (context or {}).get("owner_id")
+        or (context or {}).get("municipio_id")
+    )
+
+    def _clean(value: Optional[object]) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        text = str(value).strip()
+        return text or None
+
+    return _clean(tenant_slug), _clean(tenant_id), _clean(owner_id)
+
+
+def _append_tenant_param(
+    raw_url: Optional[str], tenant_slug: Optional[str], tenant_id: Optional[str], owner_id: Optional[str]
+) -> Optional[str]:
+    """Ensure catalog links carry tenant/owner hints so the right store is loaded."""
+
+    if not raw_url or not isinstance(raw_url, str):
+        return raw_url
+
+    parsed = urlparse(raw_url)
+    query_params = parse_qs(parsed.query, keep_blank_values=True)
+
+    if tenant_slug and not any(key in query_params for key in ("tenant", "tenant_slug")):
+        query_params.setdefault("tenant", [tenant_slug])
+
+    if tenant_id and "tenant_id" not in query_params:
+        query_params["tenant_id"] = [tenant_id]
+
+    if owner_id and "owner_id" not in query_params:
+        query_params["owner_id"] = [owner_id]
+
+    new_query = urlencode(query_params, doseq=True)
+    return parsed._replace(query=new_query).geturl()
+
+
 def _resolve_catalogo_banner_image(context: Optional[dict]) -> Optional[str]:
     municipio_config = (context or {}).get("municipio_config_actual") or {}
     catalogo_cfg = {}
@@ -5148,6 +5207,7 @@ def _build_catalogo_link_map(context: Optional[dict]) -> Dict[str, str]:
             )
 
     base_url = _resolve_catalogo_base_url(context)
+    tenant_slug, tenant_id, owner_id = _resolve_tenant_identifiers(context)
     default_paths = {
         "catalogo_ver": "/productos",
         "catalogo_canje_puntos": "/productos?view=canje",
@@ -5160,6 +5220,7 @@ def _build_catalogo_link_map(context: Optional[dict]) -> Dict[str, str]:
         raw_url = override_maps.get(action_id)
         if not raw_url and base_url:
             raw_url = f"{base_url}{default_path}"
+        raw_url = _append_tenant_param(raw_url, tenant_slug, tenant_id, owner_id)
         normalized = _normalize_public_url(raw_url, context)
         if normalized:
             link_map[action_id] = normalized
