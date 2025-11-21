@@ -281,6 +281,10 @@ def create_app(config_class=Config):
                 "Anon-Id",
                 "Cache-Control",
                 "token",
+                "X-Tenant",
+                "X-Tenant-Id",
+                "X-Widget-Token",
+                "X-Whatsapp-Dst",
             ],
             expose_headers=[
                 "Content-Type",

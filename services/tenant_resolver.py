@@ -2,7 +2,7 @@ import logging
 import uuid
 from typing import Optional, Tuple
 
-from flask import current_app, request
+from flask import current_app, g, request
 from sqlalchemy import func
 
 from database import db
@@ -56,11 +56,26 @@ def _tenant_by_widget_token(token: Optional[str]) -> Optional[TenantProfile]:
 def _tenant_by_domain(domain: Optional[str]) -> Optional[TenantProfile]:
     if not domain:
         return None
-    return (
-        TenantProfile.query.filter(func.lower(TenantProfile.dominio) == domain.lower())
-        .limit(1)
-        .first()
-    )
+
+    normalized = domain.split(":", 1)[0].strip().lower()
+    candidates = [normalized]
+
+    if normalized.startswith("www."):
+        candidates.append(normalized[4:])
+    parts = normalized.split(".")
+    if len(parts) > 2:
+        candidates.append(".".join(parts[-2:]))
+
+    for candidate in dict.fromkeys(filter(None, candidates)):
+        tenant = (
+            TenantProfile.query.filter(func.lower(TenantProfile.dominio) == candidate)
+            .limit(1)
+            .first()
+        )
+        if tenant:
+            return tenant
+
+    return None
 
 
 def _build_anon_user(anon_id: str) -> User:
@@ -97,6 +112,9 @@ def resolve_tenant_and_user(
         or _tenant_by_widget_token(widget_token)
         or _tenant_by_domain(request.host)
     )
+
+    if not tenant:
+        tenant = getattr(g, "tenant_profile", None)
     if not tenant:
         if current_user and getattr(current_user, "is_authenticated", False):
             owner_id = current_user.empresa_id or current_user.id
