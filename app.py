@@ -286,6 +286,8 @@ def create_app(config_class=Config):
             "X-Chat-Session-Id",
             "X-Anon-Id",
             "Anon-Id",
+            "x-anon-id",  # browsers sometimes compare case-sensitively
+            "anon-id",
             "Cache-Control",
             "token",
             "X-Tenant",
