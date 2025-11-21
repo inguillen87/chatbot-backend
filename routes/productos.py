@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from typing import Optional, Tuple
+from urllib.parse import quote_plus, urlencode
 
-from flask import Blueprint, current_app, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, render_template, request
 from flask_cors import cross_origin
 from flask_login import current_user
 from sqlalchemy import func
@@ -135,8 +136,10 @@ def obtener_productos():
     if request.method == "OPTIONS":
         return "", 204
 
+    view_mode = (request.args.get("view") or "").strip().lower()
+
     user = _resolve_authenticated_user()
-    if user:
+    if user and not view_mode:
         return listar_catalogo.__wrapped__(user)
 
     tenant, owner = _resolve_public_owner()
@@ -144,4 +147,30 @@ def obtener_productos():
         return jsonify({"error": "Catálogo no disponible"}), 404
 
     ensure_seed_catalog(owner, tenant)
+
+    if view_mode and view_mode not in {"json", "api"}:
+        catalog_response = listar_catalogo.__wrapped__(owner)
+        productos = []
+        try:
+            productos = catalog_response.get_json(silent=True) or []  # type: ignore[attr-defined]
+        except Exception:
+            productos = []
+
+        query_dict = request.args.to_dict(flat=True)
+        share_query = urlencode(query_dict) if query_dict else ""
+        share_url = request.base_url + (f"?{share_query}" if share_query else "")
+        whatsapp_message = quote_plus(
+            f"Mirá el catálogo digital de {getattr(owner, 'nombre', 'nuestro comercio')} en Chatboc: {share_url}"
+        )
+        whatsapp_link = f"https://api.whatsapp.com/send?text={whatsapp_message}"
+
+        return render_template(
+            "catalogo_publico.html",
+            productos=productos,
+            tenant=tenant,
+            owner=owner,
+            share_url=share_url,
+            whatsapp_link=whatsapp_link,
+        )
+
     return listar_catalogo.__wrapped__(owner)
