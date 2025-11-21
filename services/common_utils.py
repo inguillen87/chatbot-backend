@@ -720,6 +720,7 @@ def _get_main_menu_payload(
             {"texto": "🚗 Trámites y Turnos", "action_id": "mostrar_menu_tramites"},
             {"texto": "📰 Información del Municipio", "action_id": "mostrar_menu_informacion"},
         ]
+        whatsapp_buttons.append({"texto": "🛍️ Catálogo y Beneficios", "action_id": "mostrar_menu_catalogo"})
         if FEATURE_ENCUESTAS:
             whatsapp_buttons.append({"texto": "🗳️ Participación Ciudadana", "action_id": "mostrar_menu_encuestas"})
         whatsapp_buttons.extend([

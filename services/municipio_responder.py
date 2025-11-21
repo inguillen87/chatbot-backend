@@ -2579,6 +2579,15 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             flag_modified(chat_db_context, "context_data")
         return submenu
 
+    if action_id == "mostrar_menu_catalogo":
+        submenu = _get_catalogo_menu()
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return submenu
+
     if action_id.startswith("encuesta_compartir::"):
         slug_publico = action_id.split("::", 1)[1] if "::" in action_id else ""
         return _build_encuesta_share_payload(slug_publico, context, chat_db_context)
@@ -2600,6 +2609,19 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return submenu
+
+    if action_id in {
+        "catalogo_ver",
+        "catalogo_donaciones",
+        "catalogo_canje_puntos",
+        "catalogo_compras",
+        "catalogo_subastas",
+    }:
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _build_catalogo_flow_payload(action_id)
 
     if action_id == "consultar_estado_reclamo":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
@@ -4932,6 +4954,56 @@ def _get_informacion_menu():
         "message_type": "interactive_buttons",
         "options_list": opciones,
         "fuente": "submenu_informacion_v1",
+        "generar_audio": True,
+    }
+
+
+def _get_catalogo_menu():
+    opciones = [
+        {"texto": "📂 Ver Catálogo", "action_id": "catalogo_ver"},
+        {"texto": "🎁 Canje de Puntos", "action_id": "catalogo_canje_puntos"},
+        {"texto": "🛒 Compra de Productos", "action_id": "catalogo_compras"},
+        {"texto": "❤️ Donaciones", "action_id": "catalogo_donaciones"},
+        {"texto": "🔨 Subastas", "action_id": "catalogo_subastas"},
+        {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
+        {"texto": "Cancelar", "action_id": "cancelar"},
+    ]
+    return {
+        "message_body": "Elegí cómo querés operar con el catálogo y los beneficios del tenant:",
+        "message_type": "interactive_buttons",
+        "options_list": opciones,
+        "fuente": "submenu_catalogo_v1",
+        "generar_audio": True,
+    }
+
+
+def _build_catalogo_flow_payload(action_id: str) -> dict:
+    mensajes = {
+        "catalogo_ver": (
+            "Puedo mostrar el catálogo del tenant y activar el carrito tanto en el widget web como en WhatsApp. "
+            "Compartí el ID o token del tenant y, si ya tenés una sesión de usuario, avisanos para respetar tus preferencias."
+        ),
+        "catalogo_donaciones": (
+            "Contame a qué causa o artículo querés donar. Podemos registrar la donación con tus datos o puntos y generar el comprobante correspondiente."
+        ),
+        "catalogo_canje_puntos": (
+            "Indicá tu usuario o email asociado al tenant para consultar tu saldo de puntos. Si el canje lo requiere, te pediremos iniciar sesión antes de confirmar."
+        ),
+        "catalogo_compras": (
+            "Decime qué producto y cantidad querés. Armamos el carrito con el catálogo del tenant y, si hace falta, te guiamos para iniciar sesión y cerrar la compra."
+        ),
+        "catalogo_subastas": (
+            "Pasame el ID de la subasta o el artículo. Registramos tu oferta y validamos si querés usar puntos o el medio de pago habilitado por el tenant."
+        ),
+    }
+    message_body = mensajes.get(
+        action_id,
+        "Contame cómo querés usar el catálogo y te guío paso a paso."
+    )
+    return {
+        "message_body": message_body,
+        "message_type": "text",
+        "fuente": "catalogo_flow_intro_v1",
         "generar_audio": True,
     }
 
