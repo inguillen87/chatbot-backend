@@ -1,9 +1,21 @@
-# routes/mercadopago_webhook.py
-from flask import Blueprint, request, jsonify
+"""MercadoPago webhook handlers.
+
+This endpoint now resolves the MercadoPago access token per tenant (when
+possible) to support multi-tenant payment configurations and emits a
+lightweight notification so chat/widget channels can reflect payment
+status updates.
+"""
+
+import logging
+import os
+from typing import Optional
+
+import requests
+from flask import Blueprint, jsonify, request
+
 from extensions import db
 from models import PedidoConversacional, User
-import logging
-import requests
+from socket_service import socketio
 
 from services.plan_config import (
     MERCADOPAGO_PLAN_LOOKUP,
@@ -13,7 +25,24 @@ from services.plan_config import (
 
 mp_bp = Blueprint("mp_bp", __name__)
 
-ACCESS_TOKEN = "TEST-1688111541735106-061215-d58dd42a5db75ad361985176634393ee-2474247593"
+
+def _resolve_access_token_for_pedido(pedido: PedidoConversacional) -> Optional[str]:
+    tenant_cfg = getattr(getattr(pedido, "tenant", None), "configuracion", None) or {}
+    return tenant_cfg.get("mercadopago_access_token") or os.getenv("MERCADOPAGO_ACCESS_TOKEN")
+
+
+def _emit_payment_notification(pedido: PedidoConversacional) -> None:
+    payload = {
+        "pedido_id": pedido.id,
+        "estado": pedido.estado,
+        "tipo": pedido.tipo,
+        "tenant_id": pedido.tenant_id,
+        "user_id": pedido.user_id,
+    }
+    try:
+        socketio.emit("payment_update", payload, broadcast=True)
+    except Exception:
+        logging.exception("Error emitting payment_update notification for pedido %s", pedido.id)
 
 @mp_bp.route("/mercadopago_webhook", methods=["POST"])
 def mercadopago_webhook():
@@ -27,7 +56,12 @@ def mercadopago_webhook():
     if topic == "payment":
         payment_id = data.get("data", {}).get("id")
         url = f"https://api.mercadopago.com/v1/payments/{payment_id}"
-        headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+        default_token = os.getenv("MERCADOPAGO_ACCESS_TOKEN")
+        if not default_token:
+            logging.warning("MercadoPago token global faltante para webhook de pago %s", payment_id)
+            return jsonify({"error": "MercadoPago no configurado"}), 503
+
+        headers = {"Authorization": f"Bearer {default_token}"}
         resp = requests.get(url, headers=headers)
         if resp.status_code != 200:
             logging.warning("Pago no encontrado: %s", payment_id)
@@ -40,19 +74,30 @@ def mercadopago_webhook():
         pedido = PedidoConversacional.query.get(external_reference)
         if not pedido:
             return jsonify({"error": "Pedido no encontrado"}), 404
+
+        tenant_token = _resolve_access_token_for_pedido(pedido)
+        if tenant_token and tenant_token != default_token:
+            headers = {"Authorization": f"Bearer {tenant_token}"}
+            retry_resp = requests.get(url, headers=headers)
+            if retry_resp.ok:
+                payment_info = retry_resp.json()
+                status = payment_info.get("status")
+
         pedido.mp_payment_id = str(payment_id)
         if status == "approved":
             pedido.estado = "pagado"
         else:
             pedido.estado = status or "rechazado"
         db.session.commit()
+        _emit_payment_notification(pedido)
         return jsonify({"ok": True, "estado": pedido.estado})
 
     # Si el webhook es por suscripción (preapproval)
     if topic == "preapproval":
         # Consultamos detalles de la suscripción a la API de Mercado Pago
         url = f"https://api.mercadopago.com/preapproval/{preapproval_id}"
-        headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+        access_token = os.getenv("MERCADOPAGO_ACCESS_TOKEN")
+        headers = {"Authorization": f"Bearer {access_token}"} if access_token else {}
         resp = requests.get(url, headers=headers)
         if resp.status_code != 200:
             logging.warning(f"No se pudo consultar preapproval: {preapproval_id}")

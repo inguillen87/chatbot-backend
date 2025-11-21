@@ -46,11 +46,39 @@ def _tenant_by_widget_token(token: Optional[str]) -> Optional[TenantProfile]:
         return None
     return (
         TenantProfile.query.filter(
-            TenantProfile.configuracion["widget_tokens"].astext == token  # type: ignore[index]
+            TenantProfile.configuracion["widget_tokens"].astext.contains(token)  # type: ignore[index]
         )
         .limit(1)
         .first()
     )
+
+
+def _register_widget_token(tenant: Optional[TenantProfile], token: Optional[str]) -> None:
+    """Persist the widget token inside the tenant configuration for reuse."""
+
+    if not tenant or not token:
+        return
+
+    cfg = tenant.configuracion or {}
+    tokens = cfg.get("widget_tokens")
+    updated = False
+
+    if not tokens:
+        cfg["widget_tokens"] = token
+        updated = True
+    elif isinstance(tokens, str):
+        if tokens != token:
+            cfg["widget_tokens"] = [tokens, token]
+            updated = True
+    elif isinstance(tokens, list):
+        if token not in tokens:
+            tokens.append(token)
+            updated = True
+
+    if updated:
+        tenant.configuracion = cfg
+        db.session.add(tenant)
+        db.session.commit()
 
 
 def _tenant_by_domain(domain: Optional[str]) -> Optional[TenantProfile]:
@@ -132,6 +160,8 @@ def resolve_tenant_and_user(
     if not tenant:
         raise TenantResolutionError("Tenant no encontrado para el contexto dado")
 
+    _register_widget_token(tenant, widget_token)
+
     if current_user and getattr(current_user, "is_authenticated", False):
         return tenant, current_user, False
 
@@ -179,6 +209,8 @@ def resolve_tenant_only(
         tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
     if not tenant:
         raise TenantResolutionError("Tenant no encontrado para el contexto dado")
+
+    _register_widget_token(tenant, widget_token)
 
     return tenant
 
