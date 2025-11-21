@@ -347,6 +347,7 @@ def solo_admin_requerido(f):
     return decorated
 
 @auth_bp.route('/login', methods=['POST', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
 def login():
     anon_id = get_or_create_anon_id()
     if request.method == 'OPTIONS':

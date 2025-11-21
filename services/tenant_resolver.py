@@ -98,6 +98,13 @@ def resolve_tenant_and_user(
         or _tenant_by_domain(request.host)
     )
     if not tenant:
+        if current_user and getattr(current_user, "is_authenticated", False):
+            owner_id = current_user.empresa_id or current_user.id
+            tenant = TenantProfile.query.filter(
+                (TenantProfile.municipio_id == owner_id) | (TenantProfile.pyme_id == owner_id)
+            ).first()
+
+    if not tenant:
         raise TenantResolutionError("Tenant no encontrado para el contexto dado")
 
     if current_user and getattr(current_user, "is_authenticated", False):
