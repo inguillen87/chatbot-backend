@@ -3,6 +3,7 @@ import ssl
 import os
 import sys
 import logging
+from typing import Pattern
 
 # Cargar variables de entorno desde .env lo más temprano posible para que Config
 # y el resto de la app vean las credenciales (e.g., SMTP) incluso cuando el
@@ -277,26 +278,30 @@ def create_app(config_class=Config):
             r"/*": {"origins": ALLOWED_ORIGINS},
         }
 
+        allow_headers = [
+            "Content-Type",
+            "Authorization",
+            "X-Chatboc-Token",
+            "X-Entity-Token",
+            "X-Chat-Session-Id",
+            "X-Anon-Id",
+            "Anon-Id",
+            "Cache-Control",
+            "token",
+            "X-Tenant",
+            "X-Tenant-Id",
+            "X-Widget-Token",
+            "X-Whatsapp-Dst",
+        ]
+
+        allow_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+
         CORS(
             app,
             resources=cors_resources,
             supports_credentials=True,
-            methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            allow_headers=[
-                "Content-Type",
-                "Authorization",
-                "X-Chatboc-Token",
-                "X-Entity-Token",
-                "X-Chat-Session-Id",
-                "X-Anon-Id",
-                "Anon-Id",
-                "Cache-Control",
-                "token",
-                "X-Tenant",
-                "X-Tenant-Id",
-                "X-Widget-Token",
-                "X-Whatsapp-Dst",
-            ],
+            methods=allow_methods,
+            allow_headers=allow_headers,
             expose_headers=[
                 "Content-Type",
                 "Authorization",
@@ -309,6 +314,46 @@ def create_app(config_class=Config):
         def add_permissions_policy(resp):
             policy = current_app.config.get("PERMISSIONS_POLICY_HEADER", "geolocation=(self)")
             resp.headers.setdefault("Permissions-Policy", policy)
+            return resp
+
+        def _origin_is_allowed(origin: str | None) -> bool:
+            if not origin:
+                return False
+
+            for allowed in ALLOWED_ORIGINS:
+                if isinstance(allowed, Pattern):
+                    if allowed.match(origin):
+                        return True
+                elif origin.rstrip("/") == str(allowed).rstrip("/"):
+                    return True
+
+            return False
+
+        @app.after_request
+        def ensure_cors_headers(resp):
+            origin = request.headers.get("Origin")
+            if not _origin_is_allowed(origin):
+                return resp
+
+            resp.headers.setdefault("Access-Control-Allow-Origin", origin)
+            resp.headers.setdefault("Access-Control-Allow-Credentials", "true")
+
+            # Echo CORS allowances for preflight responses to ensure custom headers like
+            # "x-anon-id" are accepted by browsers.
+            resp.headers.setdefault(
+                "Access-Control-Allow-Headers", ", ".join(allow_headers)
+            )
+            resp.headers.setdefault(
+                "Access-Control-Allow-Methods", ", ".join(allow_methods)
+            )
+
+            vary_header = resp.headers.get("Vary")
+            if vary_header:
+                if "Origin" not in vary_header:
+                    resp.headers["Vary"] = f"{vary_header}, Origin"
+            else:
+                resp.headers["Vary"] = "Origin"
+
             return resp
 
     # --- Blueprints (solo runtime normal) ---
