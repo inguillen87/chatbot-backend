@@ -10,6 +10,13 @@ from flask import Blueprint, request
 
 from routes.auth import login as login_view, me_perfil as perfil_view
 from routes.carrito import agregar, carrito_root, eliminar, vaciar, actualizar
+from routes.estadisticas import (
+    estadisticas_tickets,
+    mapa_calor_datos,
+    tickets_options,
+)
+from routes.municipal_legacy import list_municipal_posts, municipal_categorias
+from routes.notifications import get_notifications, notifications_options
 from routes.productos import obtener_productos
 from routes.pwa_app import follow_tenant, list_followed_tenants, unfollow_tenant
 from routes.pwa_misc import provide_anon_id
@@ -56,6 +63,56 @@ def auth_login_alias():
 @api_aliases_bp.route("/perfil", methods=["GET", "PUT", "OPTIONS"], strict_slashes=False)
 def perfil_alias():
     return perfil_view()
+
+
+@api_aliases_bp.route("/me", methods=["GET", "PUT", "OPTIONS"], strict_slashes=False)
+def me_alias():
+    return perfil_view()
+
+
+@api_aliases_bp.route("/notifications", methods=["GET"], strict_slashes=False)
+def notifications_alias():
+    return get_notifications()  # token_requerido inside original view
+
+
+@api_aliases_bp.route("/notifications", methods=["OPTIONS"], strict_slashes=False)
+def notifications_options_alias():
+    return notifications_options()
+
+
+@api_aliases_bp.route(
+    "/municipal/categorias", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def municipal_categorias_alias():
+    return municipal_categorias()
+
+
+@api_aliases_bp.route(
+    "/municipal/posts", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def municipal_posts_alias():
+    return list_municipal_posts()
+
+
+@api_aliases_bp.route(
+    "/estadisticas/mapa_calor/datos", methods=["GET"], strict_slashes=False
+)
+def estadisticas_heatmap_alias():
+    return mapa_calor_datos()
+
+
+@api_aliases_bp.route(
+    "/estadisticas/tickets", methods=["GET"], strict_slashes=False
+)
+def estadisticas_tickets_alias():
+    return estadisticas_tickets()
+
+
+@api_aliases_bp.route(
+    "/estadisticas/tickets", methods=["OPTIONS"], strict_slashes=False
+)
+def estadisticas_tickets_options_alias():
+    return tickets_options()
 
 
 @api_aliases_bp.route("/app/me/tenants", methods=["GET", "OPTIONS"], strict_slashes=False)
