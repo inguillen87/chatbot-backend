@@ -1,6 +1,6 @@
 import os
 from flask import Blueprint, request, jsonify, send_from_directory, render_template, g, url_for
-from models import CatalogoItem, QA, ArchivoAdjunto, User
+from models import CatalogoItem, QA, ArchivoAdjunto, User, CatalogoModalidad
 from routes.auth import token_requerido
 from services.qdrant_search import (
     buscar_catalogo_qdrant,
@@ -254,6 +254,13 @@ def _formatear_producto(data: dict) -> dict:
     precio_texto = precio_str or (str(precio_pack) if precio_pack is not None else None)
     moneda_estandar = moneda_detectada or data.get("moneda")
 
+    modalidad_valor = CatalogoModalidad.infer(
+        data.get("modalidad"),
+        moneda=moneda_estandar,
+        precio_puntos=data.get("precio_puntos"),
+        precio_value=precio_float if precio_float is not None else precio_pack,
+    ).value
+
     return {
         "nombre": data.get("nombre", ""),
         "marca": data.get("marca"), # Añadido aquí para consistencia en la estructura base
@@ -269,6 +276,7 @@ def _formatear_producto(data: dict) -> dict:
         "precio_texto": precio_texto,
         "precio_puntos": precio_unitario if moneda_estandar == "PTS" else None,
         "moneda": moneda_estandar,
+        "modalidad": modalidad_valor,
         "stock": data.get("cantidad") or data.get("stock"), # Qdrant tiene "stock", CatalogoItem "cantidad"
         "imagen_url": imagen_url,
         # Podríamos añadir aquí una lista de acciones sugeridas para el bot

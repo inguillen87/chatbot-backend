@@ -24,6 +24,7 @@ class SeedItem:
     descripcion_corta: Optional[str] = None
     promocion_info: Optional[str] = None
     imagen_url: Optional[str] = None
+    modalidad: Optional[str] = None
 
     def to_catalog_kwargs(self) -> Dict[str, Optional[str]]:
         return {
@@ -38,6 +39,7 @@ class SeedItem:
             "descripcion_corta": self.descripcion_corta,
             "promocion_info": self.promocion_info,
             "imagen_url": self.imagen_url,
+            "modalidad": self.modalidad,
         }
 
 
@@ -67,6 +69,7 @@ _JUNIN_ITEMS: Sequence[SeedItem] = (
             "https://images.unsplash.com/photo-1503676260728-1c00da094a0b?"
             "auto=format&fit=crop&w=900&q=80"
         ),
+        modalidad="donacion",
     ),
     SeedItem(
         nombre="Árbol nativo en tu vereda",
@@ -82,6 +85,7 @@ _JUNIN_ITEMS: Sequence[SeedItem] = (
             "https://images.unsplash.com/photo-1501785888041-af3ef285b470?"
             "auto=format&fit=crop&w=900&q=80"
         ),
+        modalidad="donacion",
     ),
     SeedItem(
         nombre="Bono de donación Hospital Saporiti",
@@ -97,6 +101,7 @@ _JUNIN_ITEMS: Sequence[SeedItem] = (
             "https://images.unsplash.com/photo-1505751172876-fa1923c5c528?"
             "auto=format&fit=crop&w=900&q=80"
         ),
+        modalidad="donacion",
     ),
     SeedItem(
         nombre="Bolson saludable kilómetro cero",
@@ -127,6 +132,7 @@ _JUNIN_ITEMS: Sequence[SeedItem] = (
             "https://images.unsplash.com/photo-1518770660439-4636190af475?"
             "auto=format&fit=crop&w=900&q=80"
         ),
+        modalidad="canje",
     ),
 )
 
@@ -140,6 +146,7 @@ _DEFAULT_MUNICIPAL_ITEMS: Sequence[SeedItem] = (
         sku="muni-beca-deporte",
         cantidad="Cupos disponibles: 60",
         promocion_info="Beneficio para jóvenes que completan encuestas",
+        modalidad="canje",
     ),
     SeedItem(
         nombre="Pack huerta urbana",

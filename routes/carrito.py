@@ -7,7 +7,7 @@ from flask_cors import cross_origin
 from sqlalchemy import func
 
 from config import ALLOWED_ORIGINS
-from models import CatalogoItem, TenantProfile, User
+from models import CatalogoItem, TenantProfile, User, CatalogoModalidad
 from routes.catalogo import _formatear_producto
 from routes.productos import _resolve_public_owner
 from services.catalog_seed import ensure_seed_catalog
@@ -184,12 +184,16 @@ def _enrich_cart_summary(pyme_carts_data: Dict[str, list], tenant: TenantProfile
             _, precio_float, _ = parse_precio_flexible(str(precio_unitario))
 
         moneda = formatted.get('moneda') or 'ARS'
+        modalidad = CatalogoModalidad.from_legacy(formatted.get('modalidad'))
         subtotal = precio_float * cantidad if precio_float is not None else None
         subtotal_puntos = subtotal if moneda == 'PTS' else None
+        if modalidad is CatalogoModalidad.DONACION:
+            subtotal = None
+            subtotal_puntos = None
         if subtotal is not None:
-            if moneda == 'PTS':
+            if moneda == 'PTS' and modalidad is CatalogoModalidad.CANJE:
                 total_points += subtotal
-            else:
+            elif moneda != 'PTS':
                 totals_by_currency[moneda] = totals_by_currency.get(moneda, 0.0) + subtotal
                 total += subtotal
 
@@ -206,6 +210,7 @@ def _enrich_cart_summary(pyme_carts_data: Dict[str, list], tenant: TenantProfile
                 'imagen_url': formatted.get('imagen_url'),
                 'categoria': formatted.get('categoria'),
                 'moneda': moneda,
+                'modalidad': modalidad.value,
             }
         )
 
