@@ -8,8 +8,8 @@ from flask import Blueprint, jsonify, request, session, g
 from database import db
 from models import CatalogoItem, PedidoConversacional
 from routes.catalogo import _formatear_producto
-from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
 from services.rewards import recompensas_service
+from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
 
 logger = logging.getLogger(__name__)
 
