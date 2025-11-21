@@ -306,9 +306,14 @@ This project can be deployed as a multi-tenant SaaS solution. Each company has i
 
 ## Log Utilities
 You can inspect log files using `script_filter_logs.py`.
-This helper allows filtering by log level, searching with a regular expression
-and limiting the output to the last N lines. Example:
+The helper now supports filtering by log level, searching with a regular
+expression, scoping results to a session/anon ID, showing context lines,
+and printing basic level statistics. Examples:
 
 ```bash
-python script_filter_logs.py logs/chatbot.log --level ERROR --contains reclamo --tail 50
+# Find the last 50 ERROR lines mentioning reclamos, with 2 lines of context
+python script_filter_logs.py logs/chatbot.log --level ERROR --contains reclamo --tail 50 --context 2 --number
+
+# Inspect a specific chat session/anon id and show level counts
+python script_filter_logs.py app.log --session 7d282ef0-ea35-4524-a934-50c5427898b5 --stats
 ```
