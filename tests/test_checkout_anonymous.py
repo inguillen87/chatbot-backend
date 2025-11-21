@@ -90,3 +90,66 @@ def test_donation_checkout_confirms_without_payment(client, tenant_with_catalog)
     assert pedido is not None
     assert pedido.tipo == "donacion"
     assert pedido.estado == "confirmado"
+
+
+@pytest.mark.usefixtures("client")
+def test_checkout_rejects_when_mercadopago_missing(client, tenant_with_catalog, monkeypatch):
+    tenant, product, _ = tenant_with_catalog
+
+    # Ensure no global token leaks
+    monkeypatch.delenv("MERCADOPAGO_ACCESS_TOKEN", raising=False)
+    tenant.configuracion = {}
+    db.session.commit()
+
+    with client.session_transaction() as sess:
+        _build_cart(sess, tenant.id, product.id)
+
+    resp = client.post(
+        "/api/checkout/crear-preferencia",
+        data=json.dumps({"nombre": "Anon", "email": "anon@example.com"}),
+        content_type="application/json",
+        headers={"X-Tenant": tenant.slug},
+    )
+
+    assert resp.status_code == 503
+    data = resp.get_json()
+    assert data["estado"] == "pendiente_pago"
+    assert data["mercadopago_ready"] is False
+    assert "MercadoPago" in data["error"]
+
+
+@pytest.mark.usefixtures("client")
+def test_checkout_uses_tenant_token_for_payment(client, tenant_with_catalog, monkeypatch):
+    tenant, product, _ = tenant_with_catalog
+
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):  # noqa: D401 - test double
+        captured["auth"] = headers.get("Authorization") if headers else None
+
+        class DummyResponse:
+            ok = True
+
+            def json(self):
+                return {"init_point": "http://pay", "id": "pref-1"}
+
+        return DummyResponse()
+
+    tenant.configuracion = {"mercadopago_access_token": "tenant-token"}
+    db.session.commit()
+    monkeypatch.setattr("routes.checkout.requests.post", fake_post)
+
+    with client.session_transaction() as sess:
+        _build_cart(sess, tenant.id, product.id)
+
+    resp = client.post(
+        "/api/checkout/crear-preferencia",
+        data=json.dumps({"nombre": "Anon", "email": "anon@example.com"}),
+        content_type="application/json",
+        headers={"X-Tenant": tenant.slug},
+    )
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["preference_id"] == "pref-1"
+    assert captured["auth"] == "Bearer tenant-token"

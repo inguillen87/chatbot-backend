@@ -165,9 +165,28 @@ def crear_preferencia():
     db.session.add(pedido)
     db.session.commit()
 
-    access_token = os.getenv("MERCADOPAGO_ACCESS_TOKEN")
+    tenant_cfg = tenant.configuracion or {}
+    access_token = tenant_cfg.get("mercadopago_access_token") or os.getenv("MERCADOPAGO_ACCESS_TOKEN")
     init_point = None
     preference_id = None
+    if total_money > 0 and not access_token:
+        pedido.estado = "pendiente_pago"
+        db.session.commit()
+        return (
+            jsonify(
+                {
+                    "pedido_id": pedido.id,
+                    "total_monetario": total_money,
+                    "total_puntos": total_points,
+                    "estado": pedido.estado,
+                    "tipo": pedido.tipo,
+                    "mercadopago_ready": False,
+                    "error": "MercadoPago no configurado para este tenant",
+                }
+            ),
+            503,
+        )
+
     if total_money > 0 and access_token:
         payload = {
             "items": [
