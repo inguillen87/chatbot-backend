@@ -3,6 +3,7 @@ import ssl
 import os
 import sys
 import logging
+from typing import Pattern
 
 # Cargar variables de entorno desde .env lo más temprano posible para que Config
 # y el resto de la app vean las credenciales (e.g., SMTP) incluso cuando el
@@ -309,6 +310,37 @@ def create_app(config_class=Config):
         def add_permissions_policy(resp):
             policy = current_app.config.get("PERMISSIONS_POLICY_HEADER", "geolocation=(self)")
             resp.headers.setdefault("Permissions-Policy", policy)
+            return resp
+
+        def _origin_is_allowed(origin: str | None) -> bool:
+            if not origin:
+                return False
+
+            for allowed in ALLOWED_ORIGINS:
+                if isinstance(allowed, Pattern):
+                    if allowed.match(origin):
+                        return True
+                elif origin.rstrip("/") == str(allowed).rstrip("/"):
+                    return True
+
+            return False
+
+        @app.after_request
+        def ensure_cors_headers(resp):
+            origin = request.headers.get("Origin")
+            if not _origin_is_allowed(origin):
+                return resp
+
+            resp.headers.setdefault("Access-Control-Allow-Origin", origin)
+            resp.headers.setdefault("Access-Control-Allow-Credentials", "true")
+
+            vary_header = resp.headers.get("Vary")
+            if vary_header:
+                if "Origin" not in vary_header:
+                    resp.headers["Vary"] = f"{vary_header}, Origin"
+            else:
+                resp.headers["Vary"] = "Origin"
+
             return resp
 
     # --- Blueprints (solo runtime normal) ---
