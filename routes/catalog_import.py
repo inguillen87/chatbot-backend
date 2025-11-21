@@ -51,6 +51,39 @@ def _persist_rows(owner_id: int, tenant_id: int, rows: List[dict]):
     return created
 
 
+def _parse_rows(contenido: bytes) -> List[dict]:
+    """Parsea filas de catálogo desde un archivo enviado por el usuario.
+
+    Primero intenta usar el extractor de tablas (OpenAI/LLM) y, si no produce
+    resultados, recurre a pandas para leer Excel o CSV. Siempre devuelve una
+    lista de diccionarios o genera un ValueError con un mensaje apto para UI.
+    """
+
+    try:
+        filas = extract_table_from_file(contenido, _PROMPT)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Error al extraer tabla con LLM", exc_info=exc)
+        raise ValueError("No se pudo extraer información del archivo") from exc
+
+    if filas:
+        return filas
+
+    try:
+        df = pd.read_excel(io.BytesIO(contenido))
+    except Exception as excel_exc:  # noqa: BLE001
+        try:
+            df = pd.read_csv(io.BytesIO(contenido))
+        except Exception as csv_exc:  # noqa: BLE001
+            logger.exception("Error al leer archivo de catálogo", exc_info=csv_exc)
+            raise ValueError("Formato de archivo no soportado o archivo dañado") from csv_exc
+        else:
+            logger.info("Archivo de catálogo procesado como CSV")
+    else:
+        logger.info("Archivo de catálogo procesado como Excel")
+
+    return df.to_dict(orient="records")
+
+
 @catalog_import_bp.route("/importar", methods=["POST"])
 def importar_catalogo():
     archivo = request.files.get("archivo")
@@ -64,14 +97,19 @@ def importar_catalogo():
     except TenantResolutionError as exc:
         return jsonify({"error": str(exc)}), 404
 
-    contenido = archivo.read()
-    filas = extract_table_from_file(contenido, _PROMPT)
-    if filas is None:
-        try:
-            df = pd.read_excel(io.BytesIO(contenido))
-        except Exception:
-            df = pd.read_csv(io.BytesIO(contenido))
-        filas = df.to_dict(orient="records")
+    try:
+        contenido = archivo.read()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Error al leer archivo subido", exc_info=exc)
+        return jsonify({"error": "No se pudo leer el archivo subido"}), 400
+
+    try:
+        filas = _parse_rows(contenido)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Fallo inesperado importando catálogo", exc_info=exc)
+        return jsonify({"error": "Error interno al importar el catálogo"}), 500
 
     creados = _persist_rows(owner.id, tenant.id, filas or [])
     return jsonify({"ok": True, "items_importados": creados})
