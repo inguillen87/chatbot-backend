@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 from flask import Blueprint, jsonify, request, session
+from flask_cors import cross_origin
 from sqlalchemy import func
 
 from models import CatalogoItem, TenantProfile, User
@@ -209,6 +210,7 @@ def _carrito_summary_response():
 
 @carrito_bp.route('', methods=['GET', 'POST'])
 @carrito_bp.route('/', methods=['GET', 'POST'])
+@cross_origin()
 def carrito_root():
     """Permite consultar el carrito (GET) o agregar items (POST) desde la raíz."""
     if request.method == 'GET':
@@ -217,6 +219,7 @@ def carrito_root():
 
 
 @carrito_bp.route('/agregar', methods=['POST'])
+@cross_origin()
 def agregar():
     data = request.get_json(silent=True) or {}
     tenant, owner = _resolve_owner_and_seed()
@@ -251,6 +254,7 @@ def agregar():
 
 
 @carrito_bp.route('/actualizar', methods=['POST'])
+@cross_origin()
 def actualizar():
     data = request.get_json(silent=True) or {}
     tenant, owner = _resolve_owner_and_seed()
@@ -287,6 +291,7 @@ def actualizar():
 
 
 @carrito_bp.route('/eliminar', methods=['POST'])
+@cross_origin()
 def eliminar():
     data = request.get_json(silent=True) or {}
     tenant, owner = _resolve_owner_and_seed()
@@ -321,6 +326,7 @@ def eliminar():
 
 
 @carrito_bp.route('/vaciar', methods=['POST'])
+@cross_origin()
 def vaciar():
     tenant, owner = _resolve_owner_and_seed()
     pyme_carts_data = _get_session_cart_data()
@@ -336,6 +342,7 @@ def vaciar():
 
 
 @carrito_bp.route('/resumen', methods=['GET'])
+@cross_origin()
 def resumen():
     return _carrito_summary_response()
 

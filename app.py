@@ -369,19 +369,7 @@ def create_app(config_class=Config):
     app.register_blueprint(config_bp)
     app.register_blueprint(auth_bp)
 
-    # Aliases /login, /api/login, /perfil
-    @app.route('/login', methods=['POST', 'OPTIONS'])
-    def login_alias():
-        if request.method == "OPTIONS":
-            return "", 204
-        return login_view_func()
-
-    @app.route('/api/login', methods=['POST', 'OPTIONS'])
-    def api_login_alias():
-        if request.method == "OPTIONS":
-            return "", 204
-        return login_view_func()
-
+    # Aliases /perfil
     @app.route('/perfil', methods=['GET', 'PUT', 'OPTIONS'])
     def perfil_alias():
         if request.method == "OPTIONS":
