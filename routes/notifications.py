@@ -19,7 +19,8 @@ def notifications_options():
         resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Headers"] = (
         "Authorization, Content-Type, Origin, Accept, "
-        "X-Entity-Token, X-Chat-Session-Id, X-Anon-Id, Anon-Id"
+        "X-Entity-Token, X-Chat-Session-Id, X-Anon-Id, Anon-Id, "
+        "x-anon-id, anon-id"
     )
     resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
     resp.headers["Access-Control-Allow-Credentials"] = "true"
