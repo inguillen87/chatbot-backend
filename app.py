@@ -396,6 +396,7 @@ def create_app(config_class=Config):
     from routes.whatsapp_webhook import webhook_bp as whatsapp_webhook_bp
     from routes.whatsapp_promocionar import whatsapp_promocionar_bp
     from routes.omnichannel import omnichannel_bp
+    from routes.mercadopago_webhook import mp_bp
     from routes.estacionamiento import bp_est
     from routes.media import media_bp
     from routes.accessibility import accessibility_bp
@@ -489,6 +490,7 @@ def create_app(config_class=Config):
     app.register_blueprint(whatsapp_webhook_bp)
     app.register_blueprint(whatsapp_promocionar_bp)
     app.register_blueprint(omnichannel_bp)
+    app.register_blueprint(mp_bp)
     app.register_blueprint(bp_est)
     app.register_blueprint(media_bp)
     app.register_blueprint(accessibility_bp)
