@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from typing import Optional, Tuple
+from urllib.parse import urlencode
 
-from flask import Blueprint, current_app, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, redirect, request
 from flask_cors import cross_origin
 from flask_login import current_user
 from sqlalchemy import func
@@ -135,8 +136,10 @@ def obtener_productos():
     if request.method == "OPTIONS":
         return "", 204
 
+    view_mode = (request.args.get("view") or "").strip().lower()
+
     user = _resolve_authenticated_user()
-    if user:
+    if user and not view_mode:
         return listar_catalogo.__wrapped__(user)
 
     tenant, owner = _resolve_public_owner()
@@ -144,4 +147,19 @@ def obtener_productos():
         return jsonify({"error": "Catálogo no disponible"}), 404
 
     ensure_seed_catalog(owner, tenant)
+
+    if view_mode and view_mode not in {"json", "api"}:
+        query_dict = request.args.to_dict(flat=True)
+        share_query = urlencode(query_dict) if query_dict else ""
+
+        frontend_base = (
+            current_app.config.get("WIDGET_URL")
+            or current_app.config.get("PANEL_URL")
+            or request.host_url.rstrip("/")
+        )
+        target_base = f"{frontend_base.rstrip('/')}/productos"
+        redirect_url = target_base + (f"?{share_query}" if share_query else "")
+
+        return redirect(redirect_url, code=302)
+
     return listar_catalogo.__wrapped__(owner)
