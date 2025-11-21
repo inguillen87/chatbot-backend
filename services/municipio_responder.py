@@ -12,7 +12,7 @@ from enum import Enum, auto
 import unicodedata
 import difflib
 from typing import Any, Dict, List, Optional, Sequence, Tuple
-from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse, urlencode
 from flask import current_app, has_app_context, session as flask_session
 from cachetools import TTLCache
 from models import (
@@ -5104,6 +5104,25 @@ def _resolve_catalogo_base_url(context: Optional[dict]) -> Optional[str]:
     return None
 
 
+def _append_tenant_param(raw_url: Optional[str], tenant_slug: Optional[str]) -> Optional[str]:
+    """Ensure catalog links carry the tenant slug so the right store is loaded."""
+
+    if not raw_url or not isinstance(raw_url, str) or not tenant_slug:
+        return raw_url
+
+    parsed = urlparse(raw_url)
+    query_params = parse_qs(parsed.query, keep_blank_values=True)
+
+    # Respect existing tenant hints if present.
+    if any(key in query_params for key in ("tenant", "tenant_slug", "tenant_id")):
+        return raw_url
+
+    query_params["tenant"] = [tenant_slug]
+    new_query = urlencode(query_params, doseq=True)
+
+    return parsed._replace(query=new_query).geturl()
+
+
 def _resolve_catalogo_banner_image(context: Optional[dict]) -> Optional[str]:
     municipio_config = (context or {}).get("municipio_config_actual") or {}
     catalogo_cfg = {}
@@ -5148,6 +5167,7 @@ def _build_catalogo_link_map(context: Optional[dict]) -> Dict[str, str]:
             )
 
     base_url = _resolve_catalogo_base_url(context)
+    tenant_slug = _resolve_tenant_slug(context)
     default_paths = {
         "catalogo_ver": "/productos",
         "catalogo_canje_puntos": "/productos?view=canje",
@@ -5160,6 +5180,7 @@ def _build_catalogo_link_map(context: Optional[dict]) -> Dict[str, str]:
         raw_url = override_maps.get(action_id)
         if not raw_url and base_url:
             raw_url = f"{base_url}{default_path}"
+        raw_url = _append_tenant_param(raw_url, tenant_slug)
         normalized = _normalize_public_url(raw_url, context)
         if normalized:
             link_map[action_id] = normalized
