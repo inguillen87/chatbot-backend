@@ -86,3 +86,14 @@ def test_llm_parsing_error_returns_json(client, monkeypatch):
     assert body["codigo"] == "formato_no_soportado"
     assert "no se pudo" in body["mensaje"].lower()
     assert response.headers["Content-Type"].startswith("application/json")
+
+
+def test_method_not_allowed_returns_json(client):
+    response = client.get("/api/admin/catalogo/importar")
+
+    assert response.status_code == 405
+    assert response.is_json
+    body = response.get_json()
+    assert body["codigo"] == "method_not_allowed"
+    assert "method" in body["mensaje"].lower()
+    assert response.headers["Content-Type"].startswith("application/json")
