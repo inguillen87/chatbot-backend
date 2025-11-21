@@ -2683,7 +2683,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         }
 
     if action_id == "mostrar_carrito_catalogo":
-        resumen, total_precio, total_puntos = _build_catalogo_cart_summary(context)
+        resumen, total_precio, total_puntos, total_donaciones = _build_catalogo_cart_summary(context)
         options_list = [
             {"texto": "Seguir comprando", "action_id": "mostrar_menu_catalogo"},
             {"texto": "Finalizar", "action_id": "finalizar_pedido_catalogo_demo"},
@@ -2702,12 +2702,14 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         }
 
     if action_id == "finalizar_pedido_catalogo_demo":
-        resumen, total_precio, total_puntos = _build_catalogo_cart_summary(context)
+        resumen, total_precio, total_puntos, total_donaciones = _build_catalogo_cart_summary(context)
         follow_up = []
         if total_precio > 0:
             follow_up.append("Enviamos un link/QR de MercadoPago y te avisaremos cuando el pago esté acreditado.")
         if total_puntos > 0:
             follow_up.append("Para canjear puntos necesitamos validar tu cuenta o email asociado.")
+        if total_donaciones:
+            follow_up.append("Registramos tus donaciones sin necesidad de pago.")
         if not follow_up:
             follow_up.append("No hay productos para procesar todavía.")
         return {
@@ -5369,36 +5371,52 @@ def _get_catalogo_cart(context: dict) -> list:
     return cart
 
 
-def _build_catalogo_cart_summary(context: dict) -> tuple[str, float, float]:
+def _build_catalogo_cart_summary(context: dict) -> tuple[str, float, float, int]:
     cart = _get_catalogo_cart(context)
     if not cart:
-        return "Tu carrito está vacío. Agregá un producto para empezar.", 0.0, 0.0
+        return "Tu carrito está vacío. Agregá un producto para empezar.", 0.0, 0.0, 0
 
     lines = ["🧺 *Resumen de tu carrito:*", ""]
     total_precio = 0.0
     total_puntos = 0.0
+    total_donaciones = 0
     for entry in cart:
         item = _find_catalog_item_by_id(entry.get("id")) or {}
         cantidad = entry.get("cantidad", 1)
         nombre = item.get("nombre", entry.get("id"))
         precio_unit = float(item.get("precio") or 0)
         puntos_unit = float(item.get("puntos") or 0)
+        tipo_item = str(item.get("tipo") or "").lower()
+        es_donacion = tipo_item == "donaciones"
+        es_canje = tipo_item == "canje_puntos"
         subtotal_precio = cantidad * precio_unit
         subtotal_puntos = cantidad * puntos_unit
-        total_precio += subtotal_precio
-        total_puntos += subtotal_puntos
+        if es_donacion:
+            total_donaciones += cantidad
+        elif es_canje:
+            total_puntos += subtotal_puntos
+        else:
+            total_precio += subtotal_precio
         badge_parts = []
-        if subtotal_precio:
+        if subtotal_precio and not es_donacion:
             badge_parts.append(f"${subtotal_precio:,.0f}")
-        if subtotal_puntos:
+        if subtotal_puntos and es_canje:
             badge_parts.append(f"{subtotal_puntos:,.0f} pts")
-        badge = " | ".join(badge_parts) if badge_parts else "Sin costo"
+        badge = " | ".join(badge_parts) if badge_parts else "Donación sin pago" if es_donacion else "Sin costo"
         lines.append(f"• {cantidad} x {nombre} — {badge}")
 
     lines.append("")
-    lines.append(f"Total productos: ${total_precio:,.0f} | {total_puntos:,.0f} pts")
-    lines.append("Si completás pago por MercadoPago te avisaremos cuando se acredite.")
-    return "\n".join(lines), total_precio, total_puntos
+    if total_donaciones:
+        lines.append(f"❤️ Donaciones: {total_donaciones} confirmadas sin cobro.")
+    if total_precio:
+        lines.append(f"Total monetario: ${total_precio:,.0f}")
+    if total_puntos:
+        lines.append(f"Total puntos: {total_puntos:,.0f} pts")
+    if total_precio:
+        lines.append("Si completás pago por MercadoPago te avisaremos cuando se acredite.")
+    if total_puntos:
+        lines.append("Recordá que necesitaremos validar tu saldo para canjear puntos.")
+    return "\n".join(lines), total_precio, total_puntos, total_donaciones
 
 
 def _resolve_encuestas_tenant_id(context: dict) -> Optional[int]:

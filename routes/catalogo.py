@@ -1,6 +1,6 @@
 import os
 from flask import Blueprint, request, jsonify, send_from_directory, render_template, g, url_for
-from models import CatalogoItem, QA, ArchivoAdjunto, User
+from models import CatalogoItem, QA, ArchivoAdjunto, User, CatalogoModalidad
 from routes.auth import token_requerido
 from services.qdrant_search import (
     buscar_catalogo_qdrant,
@@ -281,6 +281,13 @@ def _formatear_producto(data: dict) -> dict:
             else:
                 modalidad = "compra"
     modalidad = modalidad or "compra"
+
+    modalidad_valor = CatalogoModalidad.infer(
+        data.get("modalidad"),
+        moneda=moneda_estandar,
+        precio_puntos=data.get("precio_puntos"),
+        precio_value=precio_float if precio_float is not None else precio_pack,
+    ).value
 
     return {
         "nombre": data.get("nombre", ""),

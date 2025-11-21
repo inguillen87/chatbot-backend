@@ -40,6 +40,7 @@ class SeedItem:
             "descripcion_corta": self.descripcion_corta,
             "promocion_info": self.promocion_info,
             "imagen_url": self.imagen_url,
+            "modalidad": self.modalidad,
         }
 
         if self.modalidad:
