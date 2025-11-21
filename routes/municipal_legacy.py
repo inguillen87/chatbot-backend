@@ -128,6 +128,44 @@ def apply_cors_headers(response):
     return response
 
 
+@municipal_bp.route("/whatsapp", methods=["GET", "OPTIONS"])
+def municipal_whatsapp_placeholder():
+    """Placeholder que evita 404 en la sección de WhatsApp del panel.
+
+    Devuelve un cuerpo JSON mínimo para que el frontend pueda mostrar un
+    estado coherente incluso cuando aún no se configuró la integración.
+    """
+
+    if request.method == "OPTIONS":
+        return "", 204
+
+    payload = {
+        "ok": True,
+        "integraciones": [],
+        "mensaje": "Integración de WhatsApp no configurada en este entorno",
+    }
+    return jsonify(payload)
+
+
+@municipal_bp.route("/integrations", methods=["GET", "OPTIONS"])
+def municipal_integrations_placeholder():
+    """Placeholder para la vista de integraciones del panel admin.
+
+    Responde con un arreglo vacío y un mensaje descriptivo para evitar que el
+    frontend reciba un 404/HTML y muestre pantallas en blanco.
+    """
+
+    if request.method == "OPTIONS":
+        return "", 204
+
+    payload = {
+        "ok": True,
+        "integraciones": [],
+        "mensaje": "No hay integraciones configuradas en este entorno",
+    }
+    return jsonify(payload)
+
+
 def _resolve_current_municipio_id(user) -> Any:
     """Return the municipio identifier associated with the request user.
 
