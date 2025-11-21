@@ -41,13 +41,10 @@ Identificá productos y cantidades del documento. Devuelve JSON {"items": [{"sku
 """
 
 
-def _cors_kwargs(methods: list[str]) -> dict:
-    return {
-        "origins": ALLOWED_ORIGINS,
-        "supports_credentials": True,
-        "allow_headers": _CORS_ALLOWED_HEADERS,
-        "methods": methods,
-    }
+def _json_error(status_code: int, code: str, message: str):
+    response = jsonify({"codigo": code, "mensaje": message})
+    response.status_code = status_code
+    return response
 
 
 def _normalize_items(owner_id: int, tenant_id: int, rows: List[dict]):
@@ -77,15 +74,35 @@ def _normalize_items(owner_id: int, tenant_id: int, rows: List[dict]):
     return cart, not_found
 
 
-@pedidos_from_file_bp.route("/from-file", methods=["POST", "OPTIONS"])
-@cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
+def _extract_rows(contenido: bytes) -> List[dict]:
+    try:
+        rows = extract_table_from_file(contenido, _PROMPT)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Error al extraer items de nota de pedido", exc_info=exc)
+        raise ValueError("No se pudo procesar el archivo subido") from exc
+
+    if rows:
+        return rows
+
+    try:
+        df = pd.read_excel(io.BytesIO(contenido))
+    except Exception as excel_exc:  # noqa: BLE001
+        try:
+            df = pd.read_csv(io.BytesIO(contenido))
+        except Exception as csv_exc:  # noqa: BLE001
+            logger.exception("Formato de nota de pedido no soportado", exc_info=csv_exc)
+            raise ValueError("Formato de archivo no soportado o dañado") from csv_exc
+    return df.to_dict(orient="records")
+
+
+@pedidos_from_file_bp.route("/from-file", methods=["POST"])
 def pedidos_desde_archivo():
     if request.method == "OPTIONS":
         return "", 204
 
     archivo = request.files.get("archivo")
     if not archivo:
-        return jsonify({"error": "Archivo requerido"}), 400
+        return _json_error(400, "archivo_requerido", "Archivo requerido")
 
     tenant_slug = request.headers.get("X-Tenant") or request.args.get("tenant")
     try:
@@ -95,20 +112,21 @@ def pedidos_desde_archivo():
     except TenantResolutionError:
         tenant, owner = _resolve_public_owner()
         if not tenant or not owner:
-            return jsonify({"error": "Tenant no encontrado"}), 404
+            return _json_error(404, "tenant_no_encontrado", "Tenant no encontrado")
 
     try:
         contenido = archivo.read()
-        rows = extract_table_from_file(contenido, _PROMPT)
-        if rows is None:
-            try:
-                df = pd.read_excel(io.BytesIO(contenido))
-            except Exception:
-                df = pd.read_csv(io.BytesIO(contenido))
-            rows = df.to_dict(orient="records")
-    except Exception as exc:  # pragma: no cover - errores dependientes del archivo
-        logger.exception("No se pudo procesar nota de pedido")
-        return jsonify({"error": f"No se pudo procesar el archivo: {exc}"}), 400
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Error al leer archivo de nota de pedido", exc_info=exc)
+        return _json_error(400, "archivo_ilegible", "No se pudo leer el archivo subido")
+
+    try:
+        rows = _extract_rows(contenido)
+    except ValueError as exc:
+        return _json_error(400, "formato_no_soportado", str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Error inesperado procesando nota de pedido", exc_info=exc)
+        return _json_error(500, "error_interno", "Error interno al procesar el archivo")
 
     cart, not_found = _normalize_items(owner.id, tenant.id, rows or [])
 

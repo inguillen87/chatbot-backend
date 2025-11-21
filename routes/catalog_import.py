@@ -4,6 +4,7 @@ from typing import List
 
 import pandas as pd
 from flask import Blueprint, jsonify, request, g
+from werkzeug.exceptions import HTTPException
 
 from database import db
 from models import CatalogoItem
@@ -13,6 +14,12 @@ from services.vision_extractor import extract_table_from_file
 logger = logging.getLogger(__name__)
 
 catalog_import_bp = Blueprint("catalog_import_bp", __name__, url_prefix="/api/admin/catalogo")
+
+
+def _json_error(status_code: int, code: str, message: str):
+    response = jsonify({"codigo": code, "mensaje": message})
+    response.status_code = status_code
+    return response
 
 
 _PROMPT = """
@@ -88,29 +95,45 @@ def _parse_rows(contenido: bytes) -> List[dict]:
 def importar_catalogo():
     archivo = request.files.get("archivo")
     if not archivo:
-        return jsonify({"error": "Archivo requerido"}), 400
+        return _json_error(400, "archivo_requerido", "Archivo requerido")
 
     try:
         tenant, owner, _ = resolve_tenant_and_user(
             tenant_slug=request.headers.get("X-Tenant"), current_user=getattr(g, "user", None)
         )
     except TenantResolutionError as exc:
-        return jsonify({"error": str(exc)}), 404
+        return _json_error(404, "tenant_no_encontrado", str(exc))
 
     try:
         contenido = archivo.read()
     except Exception as exc:  # noqa: BLE001
         logger.exception("Error al leer archivo subido", exc_info=exc)
-        return jsonify({"error": "No se pudo leer el archivo subido"}), 400
+        return _json_error(400, "archivo_ilegible", "No se pudo leer el archivo subido")
 
     try:
         filas = _parse_rows(contenido)
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return _json_error(400, "formato_no_soportado", str(exc))
     except Exception as exc:  # noqa: BLE001
         logger.exception("Fallo inesperado importando catálogo", exc_info=exc)
-        return jsonify({"error": "Error interno al importar el catálogo"}), 500
+        return _json_error(500, "error_interno", "Error interno al importar el catálogo")
 
     creados = _persist_rows(owner.id, tenant.id, filas or [])
     return jsonify({"ok": True, "items_importados": creados})
+
+
+@catalog_import_bp.errorhandler(HTTPException)
+def _http_error_handler(exc: HTTPException):
+    """Garantiza respuestas JSON para errores HTTP en el blueprint."""
+
+    logger.exception("Error HTTP en importar catálogo", exc_info=exc)
+    status_code = exc.code or 500
+    message = exc.description or exc.name
+    return _json_error(status_code, exc.name.lower().replace(" ", "_"), message)
+
+
+@catalog_import_bp.errorhandler(Exception)
+def _unhandled_error_handler(exc: Exception):  # noqa: BLE001
+    logger.exception("Error no controlado en importar catálogo", exc_info=exc)
+    return _json_error(500, "error_interno", "Error interno al importar el catálogo")
 
