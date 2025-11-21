@@ -169,6 +169,8 @@ def serialize_ticket_to_json(ticket, ticket_type):
         room_prefix = 'municipio' if ticket_type == 'municipio' else 'pyme'
         socket_room = f"{room_prefix}_{tenant_id}"
 
+    assigned_user = getattr(ticket, "asignado_a", None)
+
     serialized_data = {
         "id": ticket.id,
         "tipo": ticket_type,
@@ -202,6 +204,16 @@ def serialize_ticket_to_json(ticket, ticket_type):
         "tenant_type": tenant_type,
         "tenant_id": tenant_id,
         "socket_room": socket_room,
+        "asignado_a": (
+            {
+                "id": assigned_user.id,
+                "nombre": assigned_user.name,
+                "email": assigned_user.email,
+            }
+            if assigned_user
+            else None
+        ),
+        "asignado_en": datetime_to_iso_utc(getattr(ticket, "asignado_en", None)),
     }
     return serialized_data
 
@@ -596,6 +608,8 @@ def _serialize_ticket_details(ticket, ticket_type):
     canal_normalizado = canal_ingreso_valor or 'desconocido'
     ultima_actualizacion_dt = getattr(ticket, 'ultima_actividad', None) or getattr(ticket, 'fecha', None)
 
+    assigned_user = getattr(ticket, "asignado_a", None)
+
     ticket_data = {
         "id": ticket.id,
         "id_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
@@ -632,6 +646,16 @@ def _serialize_ticket_details(ticket, ticket_type):
         "timeline": timeline,
         "progreso_estados": progreso_estados,
         "ultima_actualizacion": datetime_to_iso_utc(ultima_actualizacion_dt),
+        "asignado_a": (
+            {
+                "id": assigned_user.id,
+                "nombre": assigned_user.name,
+                "email": assigned_user.email,
+            }
+            if assigned_user
+            else None
+        ),
+        "asignado_en": datetime_to_iso_utc(getattr(ticket, "asignado_en", None)),
     }
 
     if hasattr(ticket, 'foto_url_directa'):
@@ -707,6 +731,55 @@ def get_ticket_details(current_user: User, ticket_id: int):
 
     ticket_data = _serialize_ticket_details(ticket, "municipio")
     return jsonify(ticket_data)
+
+
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/asignar', methods=['POST'])
+@token_requerido
+@require_role('admin', 'empleado')
+def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
+    if tipo != "municipio":
+        return jsonify({"error": "La asignación manual solo está disponible para tickets municipales."}), 400
+
+    ticket_obj = db.session.get(MunicipioTicket, ticket_id)
+    if not ticket_obj:
+        return jsonify({"error": "Ticket no encontrado."}), 404
+
+    municipio_owner_id = current_user.municipio_id or current_user.empresa_id
+    if current_user.tipo_chat != "municipio" or municipio_owner_id != ticket_obj.municipio_id:
+        return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
+
+    data = request.get_json(silent=True) or {}
+    requested_user_id = data.get("user_id")
+    auto = bool(data.get("auto"))
+
+    if current_user.rol == 'empleado':
+        if ticket_obj.asignado_a_id and ticket_obj.asignado_a_id != current_user.id:
+            return jsonify({"error": "El ticket ya está asignado a otro agente."}), 400
+        requested_user_id = current_user.id
+        auto = False
+
+    empleado_asignado = servicio_tickets.asignar_ticket_municipal(
+        ticket_obj,
+        empleado_id=requested_user_id,
+        auto=auto or requested_user_id is None,
+        actor_id=current_user.id,
+    )
+
+    if not empleado_asignado:
+        return jsonify({"error": "No se pudo asignar el ticket a un agente disponible."}), 400
+
+    db.session.commit()
+    ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
+    emit_ticket_update(ticket_json)
+
+    return jsonify({
+        "ticket": ticket_json,
+        "asignado_a": {
+            "id": empleado_asignado.id,
+            "nombre": empleado_asignado.name,
+            "email": empleado_asignado.email,
+        },
+    })
 
 @ticket_bp.route('/tickets/pyme/<int:ticket_id>', methods=['GET'])
 @token_requerido
@@ -1504,6 +1577,16 @@ def get_panel_por_categoria(current_user: User):
                     "telefono": user_data["telefono"],
                     "email_usuario": user_data["email"],
                     "dni": user_data["dni"],
+                    "asignado_a": (
+                        {
+                            "id": getattr(ticket_obj.asignado_a, 'id', None),
+                            "nombre": getattr(ticket_obj.asignado_a, 'name', None),
+                            "email": getattr(ticket_obj.asignado_a, 'email', None),
+                        }
+                        if getattr(ticket_obj, 'asignado_a', None)
+                        else None
+                    ),
+                    "asignado_en": datetime_to_iso_utc(getattr(ticket_obj, 'asignado_en', None)),
                 }
                 serialized_tickets_for_cat.append(ticket_data_serialized)
 
@@ -1580,6 +1663,16 @@ def get_panel_pyme(current_user: User):
                     "telefono": user_data["telefono"],
                     "email_usuario": user_data["email"],
                     "dni": user_data["dni"],
+                    "asignado_a": (
+                        {
+                            "id": getattr(ticket_obj.asignado_a, 'id', None),
+                            "nombre": getattr(ticket_obj.asignado_a, 'name', None),
+                            "email": getattr(ticket_obj.asignado_a, 'email', None),
+                        }
+                        if getattr(ticket_obj, 'asignado_a', None)
+                        else None
+                    ),
+                    "asignado_en": datetime_to_iso_utc(getattr(ticket_obj, 'asignado_en', None)),
                 }
                 serialized_tickets_for_cat.append(ticket_data_serialized)
 

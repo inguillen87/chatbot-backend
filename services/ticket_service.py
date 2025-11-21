@@ -1,7 +1,8 @@
 # services/ticket_service.py
+import os
 import random
 from datetime import datetime, timedelta
-from typing import Dict, Any, Literal, Union, Iterable
+from typing import Dict, Any, Literal, Union, Iterable, Optional
 import logging
 
 from models import (
@@ -15,11 +16,15 @@ from models import (
 )
 from utils.ticket_utils import normalize_category
 from utils.time_utils import datetime_to_iso_utc, get_local_now
+from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 from .integracion_municipal import enviar_ticket_a_sigem # SIGEM Integration
 from utils.heatmap import enrich_heatmap_points
 
 logger = logging.getLogger(__name__)
+
+_CLOSED_STATES = {"cerrado"}
+
 
 class TicketCreator:
     def create(self, ticket_data: Dict[str, Any]) -> Union[PymeTicket, MunicipioTicket]:
@@ -108,6 +113,102 @@ class ServicioTickets:
             "municipio": MunicipioTicketCreator(),
             "pyme": PymeTicketCreator()
         }
+        self.auto_assign_enabled = (
+            str(os.getenv("AUTO_ASSIGN_TICKETS", "false")).strip().lower()
+            in {"1", "true", "yes"}
+        )
+
+    def _empleados_para_ticket_municipal(self, ticket: MunicipioTicket) -> list[User]:
+        if not ticket.municipio_id:
+            return []
+
+        candidatos = (
+            User.query.filter(
+                User.empresa_id == ticket.municipio_id,
+                User.rol == "empleado",
+                User.tipo_chat == "municipio",
+            )
+            .order_by(User.id.asc())
+            .all()
+        )
+
+        categoria_normalizada = (ticket.categoria or "").strip().lower()
+        if not categoria_normalizada:
+            return candidatos
+
+        filtrados = []
+        for empleado in candidatos:
+            categorias_emp = [
+                c.strip().lower()
+                for c in (empleado.ticket_categorias or "").split(",")
+                if c.strip()
+            ]
+            if not categorias_emp or categoria_normalizada in categorias_emp:
+                filtrados.append(empleado)
+
+        return filtrados
+
+    def _calcular_carga_empleado_municipal(self, empleado: User, municipio_id: int) -> int:
+        return (
+            MunicipioTicket.query.filter(
+                MunicipioTicket.municipio_id == municipio_id,
+                MunicipioTicket.asignado_a_id == empleado.id,
+                ~MunicipioTicket.estado.in_(list(_CLOSED_STATES)),
+            )
+            .with_entities(func.count(MunicipioTicket.id))
+            .scalar()
+            or 0
+        )
+
+    def asignar_ticket_municipal(
+        self,
+        ticket: MunicipioTicket,
+        empleado_id: Optional[int] = None,
+        *,
+        auto: bool = False,
+        actor_id: Optional[int] = None,
+    ) -> Optional[User]:
+        """Asigna el ticket a un empleado compatible con la categoría y municipio."""
+
+        if not ticket:
+            return None
+
+        if empleado_id:
+            empleado = User.query.filter(
+                User.id == empleado_id,
+                User.empresa_id == ticket.municipio_id,
+                User.rol.in_(["empleado", "admin"]),
+            ).first()
+        else:
+            candidatos = self._empleados_para_ticket_municipal(ticket)
+            if not candidatos or (not auto and not self.auto_assign_enabled):
+                return None
+            empleado = min(
+                candidatos,
+                key=lambda emp: self._calcular_carga_empleado_municipal(emp, ticket.municipio_id),
+            )
+
+        if not empleado:
+            return None
+
+        if ticket.asignado_a_id == empleado.id:
+            return empleado
+
+        ticket.asignado_a = empleado
+        ticket.asignado_en = get_local_now()
+        if hasattr(ticket, "ultima_actividad"):
+            ticket.ultima_actividad = get_local_now()
+
+        comentario = TicketComentario(
+            municipio_ticket_id=ticket.id,
+            comentario=f"Ticket asignado a {empleado.name}",
+            user_id=actor_id,
+            es_admin=True,
+            origen="sistema",
+        )
+        db.session.add(comentario)
+
+        return empleado
 
     def crear_nuevo_ticket(
         self,
@@ -143,6 +244,16 @@ class ServicioTickets:
             ticket = creator.create(ticket_data)
             db.session.add(ticket)
             db.session.flush() # flush para obtener el ID del ticket para el comentario
+
+            if (
+                self.auto_assign_enabled
+                and tipo_ticket == "municipio"
+                and isinstance(ticket, MunicipioTicket)
+            ):
+                try:
+                    self.asignar_ticket_municipal(ticket, auto=True)
+                except Exception:
+                    logger.exception("No se pudo asignar automáticamente el ticket municipal")
 
             # Si viene un comentario opcional, lo agregamos
             if ticket_data.get("comentario"):
