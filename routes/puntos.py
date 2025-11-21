@@ -83,15 +83,25 @@ def historial():
     except TenantResolutionError as exc:
         return jsonify({"error": str(exc)}), 404
 
-    historial_registros = [
-        {
-            "tipo": tx.tipo,
-            "delta": tx.delta,
-            "saldo_final": tx.saldo_final,
-            "timestamp": tx.created_at.isoformat() if tx.created_at else None,
-        }
-        for tx in recompensas_service().historial(user)
-    ]
+    historial_registros = []
+    for tx in recompensas_service().historial(user):
+        timestamp_iso = tx.created_at.isoformat() if tx.created_at else None
+        timestamp_local = None
+        if tx.created_at:
+            try:
+                timestamp_local = tx.created_at.astimezone().strftime("%d/%m/%Y %H:%M")
+            except Exception:
+                timestamp_local = tx.created_at.strftime("%Y-%m-%d %H:%M")
+
+        historial_registros.append(
+            {
+                "tipo": tx.tipo,
+                "delta": tx.delta,
+                "saldo_final": tx.saldo_final,
+                "timestamp": timestamp_iso,
+                "timestamp_humano": timestamp_local,
+            }
+        )
     return jsonify({"tenant_id": tenant.id, "historial": historial_registros})
 
 
