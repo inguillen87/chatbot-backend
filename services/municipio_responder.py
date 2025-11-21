@@ -2610,12 +2610,101 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             flag_modified(chat_db_context, "context_data")
         return submenu
 
+    if action_id == "catalogo_subastas":
+        submenu = _get_catalogo_menu(context)
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+
+        message_body = submenu.get("message_body") or ""
+        submenu["message_body"] = "La sección de subastas aún no está disponible. Próximamente la habilitaremos.\n\n" + message_body
+        submenu["fuente"] = "submenu_catalogo_subastas_inactivo"
+        return submenu
+
+    if action_id.startswith("catalogo_mostrar_mas::"):
+        parts = action_id.split("::", 2)
+        base_action = parts[1] if len(parts) > 1 else "catalogo_ver"
+        page_str = parts[2] if len(parts) > 2 else "1"
+        page = int(page_str) if page_str.isdigit() else 1
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _build_catalogo_flow_payload(base_action, context, page=page)
+
+    if action_id.startswith("catalogo_agregar_item::"):
+        item_id = action_id.split("::", 1)[1]
+        item_data = _find_catalog_item_by_id(item_id)
+        cart = _get_catalogo_cart(context)
+        existing = next((entry for entry in cart if entry.get("id") == item_id), None)
+        if existing:
+            existing["cantidad"] = existing.get("cantidad", 1) + 1
+        else:
+            cart.append({"id": item_id, "cantidad": 1})
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        nombre = item_data.get("nombre") if item_data else item_id
+        reminder = ""
+        if item_data and item_data.get("tipo") == "canje_puntos" and not context.get("user_obj"):
+            reminder = "\nℹ️ Para usar puntos necesitamos vincular tu cuenta o email."
+        return {
+            "message_body": f"✅ {nombre} agregado al carrito.{reminder}\nEscribí 'Ver carrito' o usá el botón para revisar.",
+            "message_type": "interactive_buttons",
+            "options_list": [
+                {"texto": "Ver carrito", "action_id": "mostrar_carrito_catalogo"},
+                {"texto": "Seguir viendo", "action_id": "mostrar_menu_catalogo"},
+                {"texto": "Cancelar", "action_id": "cancelar"},
+            ],
+            "fuente": "catalogo_item_agregado_demo",
+            "generar_audio": True,
+        }
+
+    if action_id == "mostrar_carrito_catalogo":
+        resumen, total_precio, total_puntos = _build_catalogo_cart_summary(context)
+        options_list = [
+            {"texto": "Seguir comprando", "action_id": "mostrar_menu_catalogo"},
+            {"texto": "Finalizar", "action_id": "finalizar_pedido_catalogo_demo"},
+            {"texto": "Cancelar", "action_id": "cancelar"},
+        ]
+        if total_precio == 0 and total_puntos > 0:
+            options_list.insert(0, {"texto": "Identificarme", "action_id": "catalogo_canje_puntos"})
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return {
+            "message_body": resumen,
+            "message_type": "interactive_buttons",
+            "options_list": options_list,
+            "fuente": "catalogo_carrito_resumen_demo",
+            "generar_audio": True,
+        }
+
+    if action_id == "finalizar_pedido_catalogo_demo":
+        resumen, total_precio, total_puntos = _build_catalogo_cart_summary(context)
+        follow_up = []
+        if total_precio > 0:
+            follow_up.append("Enviamos un link/QR de MercadoPago y te avisaremos cuando el pago esté acreditado.")
+        if total_puntos > 0:
+            follow_up.append("Para canjear puntos necesitamos validar tu cuenta o email asociado.")
+        if not follow_up:
+            follow_up.append("No hay productos para procesar todavía.")
+        return {
+            "message_body": resumen + "\n\n" + " ".join(follow_up),
+            "message_type": "interactive_buttons",
+            "options_list": [
+                {"texto": "Volver al catálogo", "action_id": "mostrar_menu_catalogo"},
+                {"texto": "Menú", "action_id": "menu_principal"},
+            ],
+            "fuente": "catalogo_finalizar_demo",
+            "generar_audio": True,
+        }
+
     if action_id in {
         "catalogo_ver",
         "catalogo_donaciones",
         "catalogo_canje_puntos",
         "catalogo_compras",
-        "catalogo_subastas",
     }:
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
@@ -5041,7 +5130,6 @@ def _build_catalogo_link_map(context: Optional[dict]) -> Dict[str, str]:
         "catalogo_canje_puntos": "/productos?view=canje",
         "catalogo_compras": "/productos?view=compras",
         "catalogo_donaciones": "/productos?view=donaciones",
-        "catalogo_subastas": "/productos?view=subastas",
     }
 
     link_map: Dict[str, str] = {}
@@ -5066,7 +5154,6 @@ def _get_catalogo_menu(context: Optional[dict] = None):
         {"texto": "🎁 Canje de Puntos", "action_id": "catalogo_canje_puntos"},
         {"texto": "🛒 Compra de Productos", "action_id": "catalogo_compras"},
         {"texto": "❤️ Donaciones", "action_id": "catalogo_donaciones"},
-        {"texto": "🔨 Subastas", "action_id": "catalogo_subastas"},
         {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
         {"texto": "Cancelar", "action_id": "cancelar"},
     ]
@@ -5092,7 +5179,6 @@ def _get_catalogo_menu(context: Optional[dict] = None):
         "catalogo_canje_puntos": "🎁 Canje de Puntos",
         "catalogo_compras": "🛒 Compra de Productos",
         "catalogo_donaciones": "❤️ Donaciones",
-        "catalogo_subastas": "🔨 Subastas",
     }
 
     for action_id, label in labels.items():
@@ -5120,62 +5206,178 @@ def _get_catalogo_menu(context: Optional[dict] = None):
     return payload
 
 
-def _build_catalogo_flow_payload(action_id: str, context: Optional[dict] = None) -> dict:
+def _resolve_tenant_slug(context: Optional[dict]) -> str:
+    municipio_config = (context or {}).get("municipio_config_actual", {}) or {}
+    slug = municipio_config.get("slug") or municipio_config.get("nombre_slug")
+    if slug:
+        return str(slug).strip()
+    tenant_id = context.get("municipio_id") if context else None
+    return str(tenant_id or "default").strip()
+
+
+def _filter_catalogo_items(action_id: str, context: Optional[dict]) -> list:
+    action_to_tipo = {
+        "catalogo_donaciones": "donaciones",
+        "catalogo_canje_puntos": "canje_puntos",
+        "catalogo_compras": "compras",
+        "catalogo_ver": None,
+    }
+    tenant_slug = _resolve_tenant_slug(context)
+    desired_tipo = action_to_tipo.get(action_id)
+    items = []
+    for item in PRODUCT_CATALOG:
+        if item.get("tenant_slug") and str(item.get("tenant_slug")) != tenant_slug:
+            continue
+        if desired_tipo and item.get("tipo") != desired_tipo:
+            continue
+        items.append(item)
+    return items
+
+
+def _format_catalogo_item_for_whatsapp(item: dict) -> str:
+    nombre = item.get("nombre", "Producto")
+    item_id = item.get("id") or ""
+    categoria = item.get("categoria") or item.get("tipo") or ""
+    descripcion = item.get("descripcion") or ""
+    precio = item.get("precio") or 0
+    puntos = item.get("puntos") or 0
+    precio_text = f"${precio:,.0f}" if precio else "Sin costo"
+    puntos_text = f"{puntos} pts" if puntos else None
+    badge_parts = [p for p in [precio_text, puntos_text] if p]
+    badge = " | ".join(badge_parts)
+    lines = [f"*{nombre}* ({item_id})"]
+    if categoria:
+        lines.append(f"{categoria}")
+    if descripcion:
+        lines.append(descripcion)
+    if badge:
+        lines.append(badge)
+    return "\n".join(lines)
+
+
+def _build_catalogo_flow_payload(
+    action_id: str, context: Optional[dict] = None, page: int = 1, page_size: int = 5
+) -> dict:
     context = context or {}
     direct_links = _build_catalogo_link_map(context)
     selected_link = direct_links.get(action_id)
     header = "*Catálogo y Beneficios*"
     mensajes = {
         "catalogo_ver": (
-            "Puedo mostrar el catálogo del tenant y activar el carrito tanto en el widget web como en WhatsApp. "
-            "Compartí el ID o token del tenant y, si ya tenés una sesión de usuario, avisanos para respetar tus preferencias."
+            "Catálogo disponible para tu municipio. Podés abrir el enlace o pedir productos acá mismo."
         ),
         "catalogo_donaciones": (
-            "Contame a qué causa o artículo querés donar. Podemos registrar la donación con tus datos o puntos y generar el comprobante correspondiente."
+            "Elegí qué artículo querés donar. Registramos la donación y compartimos el comprobante."
         ),
         "catalogo_canje_puntos": (
-            "Indicá tu usuario o email asociado al tenant para consultar tu saldo de puntos. Si el canje lo requiere, te pediremos iniciar sesión antes de confirmar."
+            "Mostramos opciones canjeables. Si no tenés la sesión vinculada te pediremos identificarte para usar tus puntos."
         ),
         "catalogo_compras": (
-            "Decime qué producto y cantidad querés. Armamos el carrito con el catálogo del tenant y, si hace falta, te guiamos para iniciar sesión y cerrar la compra."
-        ),
-        "catalogo_subastas": (
-            "Pasame el ID de la subasta o el artículo. Registramos tu oferta y validamos si querés usar puntos o el medio de pago habilitado por el tenant."
+            "Armá tu carrito desde WhatsApp o abrí el enlace para ver todos los productos."
         ),
     }
-    message_body = mensajes.get(
-        action_id,
-        "Contame cómo querés usar el catálogo y te guío paso a paso."
-    )
+    base_message = mensajes.get(action_id, "Contame cómo querés usar el catálogo y te guío paso a paso.")
+    if action_id == "catalogo_canje_puntos" and not context.get("user_obj"):
+        base_message += "\nℹ️ Para canjear puntos necesitamos asociar tu cuenta. Podés enviarnos tu email o registrarte con el enlace."
+
+    catalog_items = _filter_catalogo_items(action_id, context)
+    total_items = len(catalog_items)
+    start_idx = max((page - 1) * page_size, 0)
+    end_idx = start_idx + page_size
+    paginated_items = catalog_items[start_idx:end_idx]
+    has_more = end_idx < total_items
+
+    items_text = []
+    for item in paginated_items:
+        items_text.append(_format_catalogo_item_for_whatsapp(item))
+        items_text.append("")
+
+    body_lines = [header, base_message]
     if selected_link:
         display_link = _format_url_for_display(selected_link, widget=True)
-        message_body = "\n".join(
-            [line for line in [header, message_body, f"🔗 {display_link}"] if line]
-        )
+        body_lines.append(f"🔗 {display_link}")
+    if items_text:
+        body_lines.append("\n".join(items_text).strip())
+        if has_more:
+            body_lines.append(f"Mostrando {start_idx + 1}-{min(end_idx, total_items)} de {total_items}.")
+    else:
+        body_lines.append("No encontramos productos disponibles en esta categoría por ahora.")
 
     options_list = []
-    if selected_link:
+    for item in paginated_items[:3]:
         options_list.append(
             {
-                "texto": "Abrir enlace",
-                "url": selected_link,
-                "type": "url",
-                "action_id": action_id,
+                "texto": f"Agregar {item.get('id')}",
+                "action_id": f"catalogo_agregar_item::{item.get('id')}",
+            }
+        )
+    if has_more:
+        options_list.append(
+            {
+                "texto": "Ver más", 
+                "action_id": f"catalogo_mostrar_mas::{action_id}::{page + 1}"
             }
         )
     options_list.extend(
         [
+            {"texto": "Ver carrito", "action_id": "mostrar_carrito_catalogo"},
             {"texto": "Menú", "action_id": "menu_principal"},
             {"texto": "Cancelar", "action_id": "cancelar"},
         ]
     )
+
     return {
-        "message_body": message_body,
+        "message_body": "\n\n".join(filter(None, body_lines)),
         "message_type": "interactive_buttons",
         "options_list": options_list,
-        "fuente": "catalogo_flow_intro_v1",
+        "fuente": "catalogo_flow_intro_v2",
         "generar_audio": True,
     }
+
+
+def _find_catalog_item_by_id(item_id: str) -> Optional[dict]:
+    for item in PRODUCT_CATALOG:
+        if str(item.get("id")) == str(item_id):
+            return item
+    return None
+
+
+def _get_catalogo_cart(context: dict) -> list:
+    chat_ctx = context.setdefault("chat_db_context_data", {})
+    cart = chat_ctx.setdefault("catalogo_carrito_demo", [])
+    return cart
+
+
+def _build_catalogo_cart_summary(context: dict) -> tuple[str, float, float]:
+    cart = _get_catalogo_cart(context)
+    if not cart:
+        return "Tu carrito está vacío. Agregá un producto para empezar.", 0.0, 0.0
+
+    lines = ["🧺 *Resumen de tu carrito:*", ""]
+    total_precio = 0.0
+    total_puntos = 0.0
+    for entry in cart:
+        item = _find_catalog_item_by_id(entry.get("id")) or {}
+        cantidad = entry.get("cantidad", 1)
+        nombre = item.get("nombre", entry.get("id"))
+        precio_unit = float(item.get("precio") or 0)
+        puntos_unit = float(item.get("puntos") or 0)
+        subtotal_precio = cantidad * precio_unit
+        subtotal_puntos = cantidad * puntos_unit
+        total_precio += subtotal_precio
+        total_puntos += subtotal_puntos
+        badge_parts = []
+        if subtotal_precio:
+            badge_parts.append(f"${subtotal_precio:,.0f}")
+        if subtotal_puntos:
+            badge_parts.append(f"{subtotal_puntos:,.0f} pts")
+        badge = " | ".join(badge_parts) if badge_parts else "Sin costo"
+        lines.append(f"• {cantidad} x {nombre} — {badge}")
+
+    lines.append("")
+    lines.append(f"Total productos: ${total_precio:,.0f} | {total_puntos:,.0f} pts")
+    lines.append("Si completás pago por MercadoPago te avisaremos cuando se acredite.")
+    return "\n".join(lines), total_precio, total_puntos
 
 
 def _resolve_encuestas_tenant_id(context: dict) -> Optional[int]:
