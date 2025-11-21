@@ -1528,6 +1528,20 @@ def strip_variation_selector(s: str) -> str:
     return s.replace(VARIATION_SELECTOR, "") if isinstance(s, str) else s
 
 
+def _can_use_global_emoji_shortcuts(estado_conversacion: str | None) -> bool:
+    """Allow emoji shortcuts even when asking for the initial name.
+
+    Accessibility users rely on emoji-only inputs, so we enable the shortcuts
+    for the first interaction as well as when the main menu is displayed.
+    """
+
+    return estado_conversacion in {
+        None,
+        ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name,
+        ConversationState.ESPERANDO_NOMBRE_INICIAL.name,
+    }
+
+
 def _looks_like_free_form_input(text: str | None) -> bool:
     """Detects if the user sent a natural sentence instead of a menu option."""
     if not isinstance(text, str):
@@ -3731,6 +3745,12 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
     # Fallback to standard normalization if super-norm fails (e.g. numeric input)
     normalized_input = normalizar_texto(user_input.strip())
 
+    if not normalized_input:
+        logger.warning(
+            f"DEBUG: Input '{user_input}' normalized to empty string; skipping fuzzy menu matching."
+        )
+        return None
+
     # 2. Check for numeric selection
     try:
         selection_index = int(normalized_input) - 1
@@ -3883,6 +3903,8 @@ EMOJI_RECLAMO_CATEGORIES = {
     "\U0001F4A7": "Pérdida de agua",   # 💧
     "\U0001F6B0": "Pérdida de agua",   # 🚰
     "\U0001F4A6": "Pérdida de agua",   # 💦
+    "\U0001F436": "Otros",           # 🐶
+    "\U0001F525": "Otros",           # 🔥
     "\u26AB": "Otros",              # ⚫
     "\u2753": "Otros",              # ❓
 }
@@ -3921,6 +3943,12 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
         return EMOJI_RECLAMO_CATEGORIES[user_input]
 
     normalized_input = normalizar_texto(user_input.strip())
+
+    if not normalized_input:
+        logger.warning(
+            f"DEBUG: Reclamo input '{user_input}' normalized to empty string; skipping keyword matching."
+        )
+        return None
 
     # 1. Check for numeric selection
     try:
@@ -6569,10 +6597,7 @@ def responder_municipio(
     # Permitir atajos por emoji incluso si la conversación aún no tiene estado
     # (p.ej., primer mensaje del usuario) o si está esperando una selección
     # del menú principal.
-    if (
-        not estado_conversacion
-        or estado_conversacion == ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
-    ):
+    if _can_use_global_emoji_shortcuts(estado_conversacion):
         pregunta_str_menu = ""
         if isinstance(pregunta_original, str):
             pregunta_str_menu = pregunta_original

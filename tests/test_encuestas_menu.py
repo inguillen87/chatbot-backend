@@ -3455,6 +3455,12 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
     # Fallback to standard normalization if super-norm fails (e.g. numeric input)
     normalized_input = normalizar_texto(user_input.strip())
 
+    if not normalized_input:
+        logger.warning(
+            f"DEBUG: Input '{user_input}' normalized to empty string; skipping fuzzy menu matching."
+        )
+        return None
+
     # 2. Check for numeric selection
     try:
         selection_index = int(normalized_input) - 1
