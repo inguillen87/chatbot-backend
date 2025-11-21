@@ -336,6 +336,7 @@ def create_app(config_class=Config):
     from routes.recordatorios import recordatorios_bp
     from routes.historial import historial_bp
     from routes.notifications import notifications_bp
+    from routes.puntos import puntos_bp, puntos_public_bp
     from routes.municipal_legacy import municipal_bp
     from routes.reacciones import reacciones_bp
     from routes.ai_templates import ai_templates_bp
@@ -355,7 +356,6 @@ def create_app(config_class=Config):
     from routes.pwa_public import pwa_public_bp
     from routes.public_resolver import public_resolver_bp
     from routes.pedidos_from_file import pedidos_from_file_bp
-    from routes.puntos import puntos_bp
     from routes.kits import kits_bp
     from routes.pwa_app import pwa_app_bp, pwa_app_legacy_bp
     from routes.pwa_misc import pwa_misc_bp
@@ -414,6 +414,7 @@ def create_app(config_class=Config):
     app.register_blueprint(pedidos_bp)
     app.register_blueprint(carrito_bp)
     app.register_blueprint(public_resolver_bp)
+    app.register_blueprint(puntos_public_bp)
     app.register_blueprint(puntos_bp)
     app.register_blueprint(catalog_import_bp)
     app.register_blueprint(pedidos_from_file_bp)
