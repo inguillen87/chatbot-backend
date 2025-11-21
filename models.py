@@ -787,7 +787,7 @@ class CatalogoItem(db.Model):
     modalidad = db.Column(db.String(20), nullable=False, default="venta")
     precio_por_caja = db.Column(db.Numeric(12, 2), nullable=True)
     unidad_por_caja = db.Column(db.Integer, nullable=True)
-    metadata = db.Column(JSONType, nullable=True)
+    extra_metadata = db.Column("metadata", JSONType, nullable=True)
     # Nuevos campos para información más detallada del catálogo
     descripcion_corta = db.Column(db.String(512), nullable=True)
     promocion_info = db.Column(db.String(255), nullable=True) # Para texto de promociones, ej: "20% OFF"
@@ -821,7 +821,7 @@ class PointsTransaction(db.Model, TimestampMixin):
     tipo = db.Column(db.String(50), nullable=False)
     delta = db.Column(db.Integer, nullable=False)
     saldo_final = db.Column(db.Integer, nullable=False)
-    metadata = db.Column(JSONType, nullable=True)
+    metadata_payload = db.Column("metadata", JSONType, nullable=True)
 
     user = db.relationship("User", backref=db.backref("points_transactions", lazy="dynamic"))
     tenant = db.relationship("TenantProfile")

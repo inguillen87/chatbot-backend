@@ -44,7 +44,7 @@ def _persist_rows(owner_id: int, tenant_id: int, rows: List[dict]):
         item.moneda = row.get("moneda") or "ARS"
         item.precio_puntos = row.get("precio_puntos")
         item.imagen_url = row.get("imagen_url")
-        item.metadata = row
+        item.extra_metadata = row
         db.session.add(item)
         created += 1
     db.session.commit()
