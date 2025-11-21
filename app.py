@@ -278,26 +278,30 @@ def create_app(config_class=Config):
             r"/*": {"origins": ALLOWED_ORIGINS},
         }
 
+        allow_headers = [
+            "Content-Type",
+            "Authorization",
+            "X-Chatboc-Token",
+            "X-Entity-Token",
+            "X-Chat-Session-Id",
+            "X-Anon-Id",
+            "Anon-Id",
+            "Cache-Control",
+            "token",
+            "X-Tenant",
+            "X-Tenant-Id",
+            "X-Widget-Token",
+            "X-Whatsapp-Dst",
+        ]
+
+        allow_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+
         CORS(
             app,
             resources=cors_resources,
             supports_credentials=True,
-            methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            allow_headers=[
-                "Content-Type",
-                "Authorization",
-                "X-Chatboc-Token",
-                "X-Entity-Token",
-                "X-Chat-Session-Id",
-                "X-Anon-Id",
-                "Anon-Id",
-                "Cache-Control",
-                "token",
-                "X-Tenant",
-                "X-Tenant-Id",
-                "X-Widget-Token",
-                "X-Whatsapp-Dst",
-            ],
+            methods=allow_methods,
+            allow_headers=allow_headers,
             expose_headers=[
                 "Content-Type",
                 "Authorization",
@@ -333,6 +337,15 @@ def create_app(config_class=Config):
 
             resp.headers.setdefault("Access-Control-Allow-Origin", origin)
             resp.headers.setdefault("Access-Control-Allow-Credentials", "true")
+
+            # Echo CORS allowances for preflight responses to ensure custom headers like
+            # "x-anon-id" are accepted by browsers.
+            resp.headers.setdefault(
+                "Access-Control-Allow-Headers", ", ".join(allow_headers)
+            )
+            resp.headers.setdefault(
+                "Access-Control-Allow-Methods", ", ".join(allow_methods)
+            )
 
             vary_header = resp.headers.get("Vary")
             if vary_header:
