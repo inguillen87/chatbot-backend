@@ -296,157 +296,157 @@ def create_app(config_class=Config):
             resp.headers.setdefault("Permissions-Policy", policy)
             return resp
 
-        # --- Blueprints (solo runtime normal) ---
-        from routes.config import config_bp
-        from routes.auth import auth_bp, login as login_view_func, me_perfil as me_perfil_view_func
-        from routes.legacy_auth import legacy_auth_bp
-        from routes.chat import chat_bp
-        from routes.ticket import ticket_bp
-        from routes.crm import crm_bp
-        from routes.analytics import analytics_bp
-        from routes.gov_analytics import gov_analytics_bp
-        from services.upload_processor import upload_bp
-        from routes.archivos import archivos_bp
-        from routes.rubros import rubros_bp
-        from routes.metricas import metricas_bp
-        from routes.catalogo import catalogo_bp
-        from routes.productos import productos_bp
-        from routes.pedidos import pedidos_bp
-from routes.carrito import carrito_bp
-from routes.catalog_import import catalog_import_bp
-from routes.checkout import checkout_bp
-        from routes.estadisticas import estadisticas_bp
-        from routes.empleados import empleados_bp
-        from routes.categorias import categorias_bp
-        from routes.recordatorios import recordatorios_bp
-        from routes.historial import historial_bp
-        from routes.notifications import notifications_bp
-        from routes.municipal_legacy import municipal_bp
-        from routes.reacciones import reacciones_bp
-        from routes.ai_templates import ai_templates_bp
-        from routes.ai import ai_bp as ai_suggest_bp
-        from routes.promociones import promociones_bp
-        from routes.catalog_mappings import catalog_mappings_bp
-        from routes.catalog_vector_sync import catalog_vector_sync_bp
-        from routes.whatsapp_webhook import webhook_bp as whatsapp_webhook_bp
-        from routes.whatsapp_promocionar import whatsapp_promocionar_bp
-        from routes.estacionamiento import bp_est
-        from routes.media import media_bp
-        from routes.accessibility import accessibility_bp
-        from routes.encuestas_publicas import (
+    # --- Blueprints (solo runtime normal) ---
+    from routes.config import config_bp
+    from routes.auth import auth_bp, login as login_view_func, me_perfil as me_perfil_view_func
+    from routes.legacy_auth import legacy_auth_bp
+    from routes.chat import chat_bp
+    from routes.ticket import ticket_bp
+    from routes.crm import crm_bp
+    from routes.analytics import analytics_bp
+    from routes.gov_analytics import gov_analytics_bp
+    from services.upload_processor import upload_bp
+    from routes.archivos import archivos_bp
+    from routes.rubros import rubros_bp
+    from routes.metricas import metricas_bp
+    from routes.catalogo import catalogo_bp
+    from routes.productos import productos_bp
+    from routes.pedidos import pedidos_bp
+    from routes.carrito import carrito_bp
+    from routes.catalog_import import catalog_import_bp
+    from routes.checkout import checkout_bp
+    from routes.estadisticas import estadisticas_bp
+    from routes.empleados import empleados_bp
+    from routes.categorias import categorias_bp
+    from routes.recordatorios import recordatorios_bp
+    from routes.historial import historial_bp
+    from routes.notifications import notifications_bp
+    from routes.municipal_legacy import municipal_bp
+    from routes.reacciones import reacciones_bp
+    from routes.ai_templates import ai_templates_bp
+    from routes.ai import ai_bp as ai_suggest_bp
+    from routes.promociones import promociones_bp
+    from routes.catalog_mappings import catalog_mappings_bp
+    from routes.catalog_vector_sync import catalog_vector_sync_bp
+    from routes.whatsapp_webhook import webhook_bp as whatsapp_webhook_bp
+    from routes.whatsapp_promocionar import whatsapp_promocionar_bp
+    from routes.estacionamiento import bp_est
+    from routes.media import media_bp
+    from routes.accessibility import accessibility_bp
+    from routes.encuestas_publicas import (
+        encuestas_admin_bp,
+        encuestas_public_bp,
+    )
+    from routes.pwa_public import pwa_public_bp
+    from routes.public_resolver import public_resolver_bp
+    from routes.pedidos_from_file import pedidos_from_file_bp
+    from routes.puntos import puntos_bp
+    from routes.kits import kits_bp
+    from routes.pwa_app import pwa_app_bp, pwa_app_legacy_bp
+    from routes.webauthn import webauthn_bp
+    from cli_commands import register_commands
+
+    if FEATURE_ENCUESTAS:
+        from routes.encuestas_admin import (
             encuestas_admin_bp,
+            encuestas_admin_legacy_bp,
+        )
+        from routes.encuestas_public import (
             encuestas_public_bp,
+            encuestas_public_legacy_bp,
+            encuestas_public_share_bp,
         )
-from routes.pwa_public import pwa_public_bp
-from routes.public_resolver import public_resolver_bp
-from routes.pedidos_from_file import pedidos_from_file_bp
-from routes.puntos import puntos_bp
-from routes.kits import kits_bp
-        from routes.pwa_app import pwa_app_bp, pwa_app_legacy_bp
-        from routes.webauthn import webauthn_bp
-        from cli_commands import register_commands
+    from routes.encuestas_analytics import (
+        encuestas_analytics_bp,
+        encuestas_analytics_legacy_bp,
+    )
+    from routes.encuestas_anchor import (
+        encuestas_anchor_bp,
+        encuestas_anchor_legacy_bp,
+    )
 
-        if FEATURE_ENCUESTAS:
-            from routes.encuestas_admin import (
-                encuestas_admin_bp,
-                encuestas_admin_legacy_bp,
-            )
-            from routes.encuestas_public import (
-                encuestas_public_bp,
-                encuestas_public_legacy_bp,
-                encuestas_public_share_bp,
-            )
-        from routes.encuestas_analytics import (
-            encuestas_analytics_bp,
-            encuestas_analytics_legacy_bp,
-        )
-        from routes.encuestas_anchor import (
-            encuestas_anchor_bp,
-            encuestas_anchor_legacy_bp,
-        )
+    app.register_blueprint(config_bp)
+    app.register_blueprint(auth_bp)
 
-        app.register_blueprint(config_bp)
-        app.register_blueprint(auth_bp)
+    # Aliases /login, /api/login, /perfil
+    @app.route('/login', methods=['POST', 'OPTIONS'])
+    def login_alias():
+        if request.method == "OPTIONS":
+            return "", 204
+        return login_view_func()
 
-        # Aliases /login, /api/login, /perfil
-        @app.route('/login', methods=['POST', 'OPTIONS'])
-        def login_alias():
-            if request.method == "OPTIONS":
-                return "", 204
-            return login_view_func()
+    @app.route('/api/login', methods=['POST', 'OPTIONS'])
+    def api_login_alias():
+        if request.method == "OPTIONS":
+            return "", 204
+        return login_view_func()
 
-        @app.route('/api/login', methods=['POST', 'OPTIONS'])
-        def api_login_alias():
-            if request.method == "OPTIONS":
-                return "", 204
-            return login_view_func()
+    @app.route('/perfil', methods=['GET', 'PUT', 'OPTIONS'])
+    def perfil_alias():
+        if request.method == "OPTIONS":
+            return "", 204
+        return me_perfil_view_func()
 
-        @app.route('/perfil', methods=['GET', 'PUT', 'OPTIONS'])
-        def perfil_alias():
-            if request.method == "OPTIONS":
-                return "", 204
-            return me_perfil_view_func()
+    # Más blueprints
+    app.register_blueprint(legacy_auth_bp)
+    app.register_blueprint(chat_bp)
+    app.register_blueprint(ticket_bp)
+    app.register_blueprint(crm_bp)
+    app.register_blueprint(analytics_bp)
+    app.register_blueprint(gov_analytics_bp)
+    app.register_blueprint(upload_bp)
+    app.register_blueprint(archivos_bp)
+    app.register_blueprint(rubros_bp)
+    app.register_blueprint(metricas_bp)
+    app.register_blueprint(catalogo_bp)
+    app.register_blueprint(productos_bp)
+    app.register_blueprint(pedidos_bp)
+    app.register_blueprint(carrito_bp)
+    app.register_blueprint(public_resolver_bp)
+    app.register_blueprint(puntos_bp)
+    app.register_blueprint(catalog_import_bp)
+    app.register_blueprint(pedidos_from_file_bp)
+    app.register_blueprint(kits_bp)
+    app.register_blueprint(checkout_bp)
+    app.register_blueprint(estadisticas_bp)
+    app.register_blueprint(empleados_bp)
+    app.register_blueprint(categorias_bp)
+    app.register_blueprint(recordatorios_bp)
+    app.register_blueprint(historial_bp)
+    app.register_blueprint(notifications_bp)
+    app.register_blueprint(municipal_bp)
+    app.register_blueprint(reacciones_bp)
+    app.register_blueprint(ai_templates_bp)
+    app.register_blueprint(ai_suggest_bp)
+    app.register_blueprint(promociones_bp)
+    app.register_blueprint(catalog_mappings_bp)
+    app.register_blueprint(catalog_vector_sync_bp)
+    app.register_blueprint(whatsapp_webhook_bp)
+    app.register_blueprint(whatsapp_promocionar_bp)
+    app.register_blueprint(bp_est)
+    app.register_blueprint(media_bp)
+    app.register_blueprint(accessibility_bp)
+    app.register_blueprint(pwa_public_bp)
+    app.register_blueprint(pwa_app_bp)
+    app.register_blueprint(pwa_app_legacy_bp)
+    app.register_blueprint(webauthn_bp)
+    app.register_blueprint(encuestas_admin_bp)
+    app.register_blueprint(encuestas_public_bp)
+    if FEATURE_ENCUESTAS:
+        app.register_blueprint(encuestas_admin_legacy_bp)
+        app.register_blueprint(encuestas_public_legacy_bp)
+        app.register_blueprint(encuestas_public_share_bp)
+        app.register_blueprint(encuestas_analytics_bp)
+        app.register_blueprint(encuestas_analytics_legacy_bp)
+        app.register_blueprint(encuestas_anchor_bp)
+        app.register_blueprint(encuestas_anchor_legacy_bp)
 
-        # Más blueprints
-        app.register_blueprint(legacy_auth_bp)
-        app.register_blueprint(chat_bp)
-        app.register_blueprint(ticket_bp)
-        app.register_blueprint(crm_bp)
-        app.register_blueprint(analytics_bp)
-        app.register_blueprint(gov_analytics_bp)
-        app.register_blueprint(upload_bp)
-        app.register_blueprint(archivos_bp)
-        app.register_blueprint(rubros_bp)
-        app.register_blueprint(metricas_bp)
-        app.register_blueprint(catalogo_bp)
-        app.register_blueprint(productos_bp)
-        app.register_blueprint(pedidos_bp)
-        app.register_blueprint(carrito_bp)
-        app.register_blueprint(public_resolver_bp)
-        app.register_blueprint(puntos_bp)
-        app.register_blueprint(catalog_import_bp)
-        app.register_blueprint(pedidos_from_file_bp)
-        app.register_blueprint(kits_bp)
-        app.register_blueprint(checkout_bp)
-        app.register_blueprint(estadisticas_bp)
-        app.register_blueprint(empleados_bp)
-        app.register_blueprint(categorias_bp)
-        app.register_blueprint(recordatorios_bp)
-        app.register_blueprint(historial_bp)
-        app.register_blueprint(notifications_bp)
-        app.register_blueprint(municipal_bp)
-        app.register_blueprint(reacciones_bp)
-        app.register_blueprint(ai_templates_bp)
-        app.register_blueprint(ai_suggest_bp)
-        app.register_blueprint(promociones_bp)
-        app.register_blueprint(catalog_mappings_bp)
-        app.register_blueprint(catalog_vector_sync_bp)
-        app.register_blueprint(whatsapp_webhook_bp)
-        app.register_blueprint(whatsapp_promocionar_bp)
-        app.register_blueprint(bp_est)
-        app.register_blueprint(media_bp)
-        app.register_blueprint(accessibility_bp)
-        app.register_blueprint(pwa_public_bp)
-        app.register_blueprint(pwa_app_bp)
-        app.register_blueprint(pwa_app_legacy_bp)
-        app.register_blueprint(webauthn_bp)
-        app.register_blueprint(encuestas_admin_bp)
-        app.register_blueprint(encuestas_public_bp)
-        if FEATURE_ENCUESTAS:
-            app.register_blueprint(encuestas_admin_legacy_bp)
-            app.register_blueprint(encuestas_public_legacy_bp)
-            app.register_blueprint(encuestas_public_share_bp)
-            app.register_blueprint(encuestas_analytics_bp)
-            app.register_blueprint(encuestas_analytics_legacy_bp)
-            app.register_blueprint(encuestas_anchor_bp)
-            app.register_blueprint(encuestas_anchor_legacy_bp)
+    # Comandos CLI
+    register_commands(app)
 
-        # Comandos CLI
-        register_commands(app)
-
-        # Inicializar SocketIO solo en runtime normal
-        if socketio is not None:
-            socketio.init_app(app)
+    # Inicializar SocketIO solo en runtime normal
+    if socketio is not None:
+        socketio.init_app(app)
 
     return app
 
