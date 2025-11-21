@@ -53,7 +53,11 @@ def crear_preferencia():
 
     items: List[dict] = []
     for entry in cart_entries:
-        item = CatalogoItem.query.get(entry.get("catalogo_item_id"))
+        item = db.session.get(
+            CatalogoItem,
+            entry.get("catalogo_item_id"),
+            options=CatalogoItem.legacy_safe_options(),
+        )
         if not item:
             continue
         formatted = _formatear_producto(

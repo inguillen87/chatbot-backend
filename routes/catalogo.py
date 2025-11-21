@@ -314,7 +314,9 @@ def listar_catalogo(user, *args, **kwargs):
     if getattr(catalog_owner, "tipo_chat", None) == "municipio":
         ensure_seed_catalog(catalog_owner)
 
-    consulta = CatalogoItem.query.filter_by(user_id=catalog_owner.id)
+    consulta = CatalogoItem.query.options(*CatalogoItem.legacy_safe_options()).filter_by(
+        user_id=catalog_owner.id
+    )
     if categoria:
         consulta = consulta.filter_by(categoria=categoria)
     items = consulta.all()
@@ -401,7 +403,11 @@ def buscar_en_catalogo(user):
 @token_requerido
 def resumen_catalogo(user):
     """Devuelve un resumen del catálogo agrupado por categoría."""
-    items = CatalogoItem.query.filter_by(user_id=user.id).all()
+    items = (
+        CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())
+        .filter_by(user_id=user.id)
+        .all()
+    )
     if not items:
         return jsonify({"total": 0, "categorias": []})
 

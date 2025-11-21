@@ -86,7 +86,9 @@ def _lookup_catalog_item(owner: User, payload: Dict[str, object]) -> CatalogoIte
     sku = payload.get("sku")
     nombre = payload.get("nombre")
 
-    query = CatalogoItem.query.filter(CatalogoItem.user_id == owner.id)
+    query = CatalogoItem.query.options(*CatalogoItem.legacy_safe_options()).filter(
+        CatalogoItem.user_id == owner.id
+    )
     if identifier is not None:
         try:
             identifier = int(identifier)  # type: ignore[assignment]
@@ -146,10 +148,12 @@ def _enrich_cart_summary(tenant: TenantProfile, owner: User) -> Dict[str, object
     catalog_items: Dict[int, CatalogoItem] = {}
     if item_ids:
         rows = (
-            CatalogoItem.query.filter(
+            CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())
+            .filter(
                 CatalogoItem.user_id == owner.id,
                 CatalogoItem.id.in_(item_ids),
-            ).all()
+            )
+            .all()
         )
         catalog_items = {row.id: row for row in rows}
 
@@ -245,7 +249,9 @@ def public_catalog():
     categoria = request.args.get("categoria")
     search_text = request.args.get("q")
 
-    query = CatalogoItem.query.filter(CatalogoItem.user_id == owner.id)
+    query = CatalogoItem.query.options(*CatalogoItem.legacy_safe_options()).filter(
+        CatalogoItem.user_id == owner.id
+    )
     if categoria:
         categoria_norm = categoria.strip().lower()
         if categoria_norm:

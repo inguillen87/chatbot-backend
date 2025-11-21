@@ -15,7 +15,7 @@ from sqlalchemy import (
     Numeric,
     UniqueConstraint,
 )
-from sqlalchemy.orm import deferred, validates
+from sqlalchemy.orm import defer, deferred, validates
 from sqlalchemy.dialects.sqlite import JSON as SQLITE_JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from database import db
@@ -807,6 +807,23 @@ class CatalogoItem(db.Model):
 
     def __repr__(self):
         return f"<CatalogoItem {self.id} para user {self.user_id}>"
+
+    @classmethod
+    def legacy_safe_options(cls):
+        """Loader options that skip optional monetary columns on legacy DBs.
+
+        Some deployments still have databases created before columns like
+        ``moneda`` or ``precio_por_caja`` existed.  Applying these options
+        avoids selecting missing columns so catalog queries don't crash with
+        ``UndefinedColumn`` errors when the schema is outdated.
+        """
+
+        return (
+            defer(cls.moneda),
+            defer(cls.precio_por_caja),
+            defer(cls.unidad_por_caja),
+            defer(cls.precio_monetario),
+        )
 
 class CatalogoEmbedding(db.Model):
     __tablename__ = "catalogo_embedding"
