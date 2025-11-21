@@ -82,5 +82,86 @@ class ChatUserPanelTests(unittest.TestCase):
         self.assertIsNone(updated_chat_context.anon_id)
         self.assertTrue(updated_chat_context.context_data.get('just_logged_in_flag'))
 
+    def test_register_assigns_municipio_id_for_municipal_owner(self):
+        rubro_publico = Rubro(nombre='Municipal', clave='municipal', es_publico=True)
+        db.session.add(rubro_publico)
+        db.session.commit()
+
+        municipal_owner = User(
+            email='owner-muni@test.com',
+            name='Owner Muni',
+            token=str(uuid.uuid4()),
+            rubro_id=rubro_publico.id,
+            municipio_id=123,
+            rol='admin',
+            tipo_chat='municipio'
+        )
+        municipal_owner.set_password('password')
+        db.session.add(municipal_owner)
+        db.session.commit()
+
+        with patch('services.pymes.get_or_create_pyme_user_by_token', return_value=municipal_owner):
+            resp = self.client.post('/auth/chatuserregisterpanel', json={
+                'name': 'Ciudadano',
+                'email': 'ciudadano@test.com',
+                'password': 'password123',
+                'empresa_token': municipal_owner.token
+            })
+
+        self.assertEqual(resp.status_code, 201)
+        data = resp.get_json()
+        self.assertEqual(data['tipo_chat'], 'municipio')
+        self.assertEqual(data['municipio_id'], 123)
+
+        nuevo_usuario = User.query.filter_by(email='ciudadano@test.com').first()
+        self.assertEqual(nuevo_usuario.municipio_id, 123)
+        self.assertEqual(nuevo_usuario.tipo_chat, 'municipio')
+
+    def test_existing_user_gets_municipio_association(self):
+        rubro_publico = Rubro(nombre='Municipal', clave='municipal', es_publico=True)
+        db.session.add(rubro_publico)
+        db.session.commit()
+
+        municipal_owner = User(
+            email='owner-muni@test.com',
+            name='Owner Muni',
+            token=str(uuid.uuid4()),
+            rubro_id=rubro_publico.id,
+            municipio_id=987,
+            rol='admin',
+            tipo_chat='municipio'
+        )
+        municipal_owner.set_password('password')
+        db.session.add(municipal_owner)
+        db.session.commit()
+
+        existing_user = User(
+            email='ciudadano@test.com',
+            name='Ciudadano',
+            password_hash='hash',
+            empresa_id=municipal_owner.id,
+            rubro_id=rubro_publico.id,
+        )
+        existing_user.set_password('existing')
+        db.session.add(existing_user)
+        db.session.commit()
+
+        with patch('services.pymes.get_or_create_pyme_user_by_token', return_value=municipal_owner):
+            resp = self.client.post('/auth/chatuserregisterpanel', json={
+                'name': 'Ciudadano',
+                'email': 'ciudadano@test.com',
+                'password': 'existing',
+                'empresa_token': municipal_owner.token
+            })
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertEqual(payload['municipio_id'], 987)
+        self.assertEqual(payload['tipo_chat'], 'municipio')
+
+        refreshed_user = User.query.filter_by(email='ciudadano@test.com').first()
+        self.assertEqual(refreshed_user.municipio_id, 987)
+        self.assertEqual(refreshed_user.tipo_chat, 'municipio')
+
 if __name__ == '__main__':
     unittest.main()

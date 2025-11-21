@@ -694,6 +694,7 @@ def register_from_widget(user):
         or request.headers.get("Anon-Id")
         or data.get("anon_id")
     )
+
     if not name or not email or not password:
         return jsonify({
             "error": "Faltan datos obligatorios.",
@@ -862,6 +863,11 @@ def chatuser_register_panel():
         or data.get("anon_id")
     )
 
+    owner_tipo_chat = getattr(owner_user, "tipo_chat", None) or (
+        "municipio" if es_rubro_publico(owner_user.rubro) else "pyme"
+    )
+    owner_municipio_id = getattr(owner_user, "municipio_id", None)
+
     # If the user is anonymous, we can assign a default password
     if not password:
         password = str(uuid.uuid4())
@@ -881,6 +887,12 @@ def chatuser_register_panel():
         if existing_user.empresa_id == owner_user.id:
             # Email exists and is associated with the same empresa_id. Simulate login.
             current_app.logger.info(f"[chatuser_register_panel] Usuario existente '{email}' pertenece a la misma entidad (Owner ID: {owner_user.id}). Devolviendo datos del usuario existente.")
+            if owner_municipio_id and existing_user.municipio_id != owner_municipio_id:
+                existing_user.municipio_id = owner_municipio_id
+            if not existing_user.tipo_chat:
+                existing_user.tipo_chat = owner_tipo_chat
+            db.session.add(existing_user)
+            db.session.commit()
             # Migrate tickets if anon_id is present
             if anon_id:
                 from services.ticket_service import servicio_tickets
@@ -899,7 +911,8 @@ def chatuser_register_panel():
                 "name": existing_user.name,
                 "email": existing_user.email,
                 "rol": existing_user.rol,
-                "tipo_chat": existing_user.tipo_chat or getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(owner_user.rubro) else "pyme"),
+                "tipo_chat": existing_user.tipo_chat or owner_tipo_chat,
+                "municipio_id": existing_user.municipio_id,
                 "empresa_id": existing_user.empresa_id,
                 "already_registered": True,
                 "message": "Usuario ya registrado con esta entidad."
@@ -934,9 +947,10 @@ def chatuser_register_panel():
         # token=str(uuid.uuid4()), # El token ahora es JWT y se genera bajo demanda
         rubro_id=owner_user.rubro_id,
         empresa_id=owner_user.id,
+        municipio_id=owner_municipio_id,
         plan="gratis",
         rol="lead" if not data.get('password') else "usuario",
-        tipo_chat=getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(owner_user.rubro) else "pyme"),
+        tipo_chat=owner_tipo_chat,
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
         tags=tags_value,
@@ -982,6 +996,7 @@ def chatuser_register_panel():
             "email": nuevo.email,
             "rol": nuevo.rol,
             "tipo_chat": nuevo.tipo_chat,
+            "municipio_id": nuevo.municipio_id,
             "empresa_id": nuevo.empresa_id,
             "already_registered": False,
         })
