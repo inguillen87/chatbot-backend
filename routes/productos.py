@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from typing import Optional, Tuple
-from urllib.parse import quote_plus, urlencode
+from urllib.parse import urlencode
 
-from flask import Blueprint, current_app, g, jsonify, render_template, request
+from flask import Blueprint, current_app, g, jsonify, redirect, request
 from flask_cors import cross_origin
 from flask_login import current_user
 from sqlalchemy import func
@@ -149,28 +149,17 @@ def obtener_productos():
     ensure_seed_catalog(owner, tenant)
 
     if view_mode and view_mode not in {"json", "api"}:
-        catalog_response = listar_catalogo.__wrapped__(owner)
-        productos = []
-        try:
-            productos = catalog_response.get_json(silent=True) or []  # type: ignore[attr-defined]
-        except Exception:
-            productos = []
-
         query_dict = request.args.to_dict(flat=True)
         share_query = urlencode(query_dict) if query_dict else ""
-        share_url = request.base_url + (f"?{share_query}" if share_query else "")
-        whatsapp_message = quote_plus(
-            f"Mirá el catálogo digital de {getattr(owner, 'nombre', 'nuestro comercio')} en Chatboc: {share_url}"
-        )
-        whatsapp_link = f"https://api.whatsapp.com/send?text={whatsapp_message}"
 
-        return render_template(
-            "catalogo_publico.html",
-            productos=productos,
-            tenant=tenant,
-            owner=owner,
-            share_url=share_url,
-            whatsapp_link=whatsapp_link,
+        frontend_base = (
+            current_app.config.get("WIDGET_URL")
+            or current_app.config.get("PANEL_URL")
+            or request.host_url.rstrip("/")
         )
+        target_base = f"{frontend_base.rstrip('/')}/productos"
+        redirect_url = target_base + (f"?{share_query}" if share_query else "")
+
+        return redirect(redirect_url, code=302)
 
     return listar_catalogo.__wrapped__(owner)
