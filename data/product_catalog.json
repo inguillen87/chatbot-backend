@@ -1,0 +1,122 @@
+[
+  {
+    "id": "DN-001",
+    "nombre": "Kit escolar solidario",
+    "tipo": "donaciones",
+    "categoria": "Educación",
+    "descripcion": "Útiles básicos para estudiantes locales",
+    "precio": 0,
+    "puntos": 0,
+    "tenant_slug": "junin"
+  },
+  {
+    "id": "DN-002",
+    "nombre": "Caja de alimentos",
+    "tipo": "donaciones",
+    "categoria": "Alimentos",
+    "descripcion": "Artículos no perecederos para familias",
+    "precio": 0,
+    "puntos": 0,
+    "tenant_slug": "junin"
+  },
+  {
+    "id": "DN-003",
+    "nombre": "Apoyo a refugio de animales",
+    "tipo": "donaciones",
+    "categoria": "Mascotas",
+    "descripcion": "Balanceado y medicamentos básicos",
+    "precio": 0,
+    "puntos": 0,
+    "tenant_slug": "junin"
+  },
+  {
+    "id": "PT-101",
+    "nombre": "Bolsa ecológica reutilizable",
+    "tipo": "canje_puntos",
+    "categoria": "Sustentabilidad",
+    "descripcion": "Bolsa resistente de materiales reciclados",
+    "precio": 0,
+    "puntos": 120,
+    "tenant_slug": "junin"
+  },
+  {
+    "id": "PT-102",
+    "nombre": "Entrada a museo local",
+    "tipo": "canje_puntos",
+    "categoria": "Cultura",
+    "descripcion": "Ticket individual para el museo municipal",
+    "precio": 0,
+    "puntos": 240,
+    "tenant_slug": "junin"
+  },
+  {
+    "id": "PT-103",
+    "nombre": "Taller de compostaje",
+    "tipo": "canje_puntos",
+    "categoria": "Sustentabilidad",
+    "descripcion": "Cupo para workshop presencial",
+    "precio": 0,
+    "puntos": 310,
+    "tenant_slug": "junin"
+  },
+  {
+    "id": "CM-201",
+    "nombre": "Huerta urbana completa",
+    "tipo": "compras",
+    "categoria": "Hogar",
+    "descripcion": "Kit con macetas, tierra y semillas de estación",
+    "precio": 18990,
+    "puntos": 0,
+    "tenant_slug": "junin"
+  },
+  {
+    "id": "CM-202",
+    "nombre": "Bicicleta urbana",
+    "tipo": "compras",
+    "categoria": "Movilidad",
+    "descripcion": "Rodado 29 con cuadro de aluminio",
+    "precio": 145000,
+    "puntos": 0,
+    "tenant_slug": "junin"
+  },
+  {
+    "id": "CM-203",
+    "nombre": "Set de luces solares",
+    "tipo": "compras",
+    "categoria": "Energía",
+    "descripcion": "3 lámparas recargables con panel solar",
+    "precio": 38990,
+    "puntos": 0,
+    "tenant_slug": "junin"
+  },
+  {
+    "id": "CM-204",
+    "nombre": "Filtro de agua portátil",
+    "tipo": "compras",
+    "categoria": "Salud",
+    "descripcion": "Purificador personal para salidas",
+    "precio": 21500,
+    "puntos": 0,
+    "tenant_slug": "junin"
+  },
+  {
+    "id": "PT-104",
+    "nombre": "Créditos para transporte",
+    "tipo": "canje_puntos",
+    "categoria": "Movilidad",
+    "descripcion": "Recarga de tarjeta para colectivos locales",
+    "precio": 0,
+    "puntos": 180,
+    "tenant_slug": "junin"
+  },
+  {
+    "id": "CM-205",
+    "nombre": "Botella térmica reutilizable",
+    "tipo": "compras",
+    "categoria": "Sustentabilidad",
+    "descripcion": "Acero inoxidable 750ml",
+    "precio": 14200,
+    "puntos": 0,
+    "tenant_slug": "junin"
+  }
+]

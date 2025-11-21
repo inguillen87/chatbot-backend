@@ -23,8 +23,7 @@
     "catalogo_ver": "https://chatbot-backend-2e14.onrender.com/productos",
     "catalogo_canje_puntos": "https://chatbot-backend-2e14.onrender.com/productos?view=canje",
     "catalogo_compras": "https://chatbot-backend-2e14.onrender.com/productos?view=compras",
-    "catalogo_donaciones": "https://chatbot-backend-2e14.onrender.com/productos?view=donaciones",
-    "catalogo_subastas": "https://chatbot-backend-2e14.onrender.com/productos?view=subastas"
+    "catalogo_donaciones": "https://chatbot-backend-2e14.onrender.com/productos?view=donaciones"
   },
   "catalogo_banner_image_url": "https://chatbot-backend-2e14.onrender.com/static/encuestas/participacion_ciudadana.png"
 }
