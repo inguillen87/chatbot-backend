@@ -15,7 +15,7 @@ from sqlalchemy import (
     Numeric,
     UniqueConstraint,
 )
-from sqlalchemy.orm import validates
+from sqlalchemy.orm import deferred, validates
 from sqlalchemy.dialects.sqlite import JSON as SQLITE_JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from database import db
@@ -781,7 +781,10 @@ class CatalogoItem(db.Model):
     marca = db.Column(db.String(100), nullable=True, index=True)
     categoria = db.Column(db.String(100))
     unidad = db.Column(db.String(50))
-    precio_monetario = db.Column(db.Numeric(12, 2), nullable=True)
+    # Some legacy databases may not yet contain the "precio_monetario" column.
+    # Mark it as deferred so ORM queries don't try to SELECT it unless explicitly
+    # accessed, preventing "UndefinedColumn" errors when the column is missing.
+    precio_monetario = deferred(db.Column(db.Numeric(12, 2), nullable=True))
     moneda = db.Column(db.String(10), nullable=True)
     precio_puntos = db.Column(db.Integer, nullable=True)
     modalidad = db.Column(db.String(20), nullable=False, default="venta")
