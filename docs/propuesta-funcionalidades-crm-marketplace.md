@@ -3,9 +3,9 @@
 Estas ideas extienden el roadmap de Chatboc para ofrecer una experiencia omnicanal, escalable y centrada en la eficiencia operativa. Se agrupan en líneas temáticas para facilitar su priorización.
 
 ## 1. Omnicanalidad y soporte multilingüe
-- **Nuevos canales**: sumar Facebook Messenger, Telegram, email y atención telefónica vía IVR con transcripción automática a tickets.
-- **Bandeja unificada**: consolidar la conversación de todos los canales en el CRM para operadores y administradores.
-- **Multi-idioma**: permitir interfaz y bot en es-ES, en-US, pt-BR, etc., con traducción automática en respuestas y plantillas.
+- **Nuevos canales**: sumar Facebook Messenger, Telegram, email y atención telefónica vía IVR con transcripción automática a tickets (webhook + función serverless de voz a texto para encolar el ticket ya textualizado).
+- **Bandeja unificada**: consolidar la conversación de todos los canales en el CRM para operadores y administradores, con deduplicación de contactos entre orígenes y reglas de enrutamiento específicas por canal.
+- **Multi-idioma**: permitir interfaz y bot en es-ES, en-US, pt-BR, etc., con detección automática de idioma, traducción simultánea en respuestas/plantillas y plantillas localizadas por tenant.
 
 ## 2. Base de conocimiento y respuestas asistidas
 - **Centro de ayuda integrado**: artículos/FAQ consultables por el bot antes de abrir un ticket.
