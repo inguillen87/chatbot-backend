@@ -2580,7 +2580,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         return submenu
 
     if action_id == "mostrar_menu_catalogo":
-        submenu = _get_catalogo_menu()
+        submenu = _get_catalogo_menu(context)
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
         contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
@@ -2621,7 +2621,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
-        return _build_catalogo_flow_payload(action_id)
+        return _build_catalogo_flow_payload(action_id, context)
 
     if action_id == "consultar_estado_reclamo":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
@@ -4958,7 +4958,109 @@ def _get_informacion_menu():
     }
 
 
-def _get_catalogo_menu():
+def _resolve_catalogo_base_url(context: Optional[dict]) -> Optional[str]:
+    municipio_config = (context or {}).get("municipio_config_actual") or {}
+    catalogo_cfg = {}
+    if isinstance(municipio_config.get("catalogo"), dict):
+        catalogo_cfg = municipio_config["catalogo"]
+    elif isinstance(municipio_config.get("catalogos"), dict):
+        catalogo_cfg = municipio_config["catalogos"]
+
+    candidates = [
+        catalogo_cfg.get("base_url"),
+        catalogo_cfg.get("public_base_url"),
+        catalogo_cfg.get("tienda_base_url"),
+        catalogo_cfg.get("share_base_url"),
+        municipio_config.get("catalogo_base_url"),
+        municipio_config.get("catalogos_base_url"),
+        municipio_config.get("tienda_base_url"),
+        municipio_config.get("beneficios_base_url"),
+        municipio_config.get("store_base_url"),
+    ]
+
+    if has_app_context():
+        candidates.append(current_app.config.get("TIENDA_BASE_URL"))
+        candidates.append(current_app.config.get("BACKEND_URL"))
+
+    candidates.append(DEFAULT_BACKEND_URL)
+
+    for candidate in candidates:
+        cleaned = _clean_url_candidate(candidate)
+        if cleaned:
+            return cleaned.rstrip("/")
+
+    return None
+
+
+def _resolve_catalogo_banner_image(context: Optional[dict]) -> Optional[str]:
+    municipio_config = (context or {}).get("municipio_config_actual") or {}
+    catalogo_cfg = {}
+    if isinstance(municipio_config.get("catalogo"), dict):
+        catalogo_cfg = municipio_config["catalogo"]
+    elif isinstance(municipio_config.get("catalogos"), dict):
+        catalogo_cfg = municipio_config["catalogos"]
+
+    candidates = [
+        catalogo_cfg.get("banner_image_url"),
+        catalogo_cfg.get("header_image_url"),
+        catalogo_cfg.get("cover_image_url"),
+        municipio_config.get("catalogo_banner_image_url"),
+        municipio_config.get("catalogo_header_image_url"),
+    ]
+
+    for candidate in candidates:
+        normalized = _normalize_public_url(candidate, context)
+        if normalized:
+            return normalized
+
+    fallback = _normalize_public_url(
+        "static/encuestas/participacion_ciudadana.png", context
+    )
+    return fallback
+
+
+def _build_catalogo_link_map(context: Optional[dict]) -> Dict[str, str]:
+    municipio_config = (context or {}).get("municipio_config_actual") or {}
+    catalogo_cfg = {}
+    if isinstance(municipio_config.get("catalogo"), dict):
+        catalogo_cfg = municipio_config["catalogo"]
+    elif isinstance(municipio_config.get("catalogos"), dict):
+        catalogo_cfg = municipio_config["catalogos"]
+
+    override_maps: Dict[str, str] = {}
+    for key in ("catalogo_links", "catalogo_urls", "catalogos_links", "links", "urls"):
+        mapping = catalogo_cfg.get(key) or municipio_config.get(key)
+        if isinstance(mapping, dict):
+            override_maps.update(
+                {k: v for k, v in mapping.items() if isinstance(k, str)}
+            )
+
+    base_url = _resolve_catalogo_base_url(context)
+    default_paths = {
+        "catalogo_ver": "/productos",
+        "catalogo_canje_puntos": "/productos?view=canje",
+        "catalogo_compras": "/productos?view=compras",
+        "catalogo_donaciones": "/productos?view=donaciones",
+        "catalogo_subastas": "/productos?view=subastas",
+    }
+
+    link_map: Dict[str, str] = {}
+    for action_id, default_path in default_paths.items():
+        raw_url = override_maps.get(action_id)
+        if not raw_url and base_url:
+            raw_url = f"{base_url}{default_path}"
+        normalized = _normalize_public_url(raw_url, context)
+        if normalized:
+            link_map[action_id] = normalized
+
+    return link_map
+
+
+def _get_catalogo_menu(context: Optional[dict] = None):
+    context = context or {}
+    direct_links = _build_catalogo_link_map(context)
+    banner_image = _resolve_catalogo_banner_image(context)
+
     opciones = [
         {"texto": "📂 Ver Catálogo", "action_id": "catalogo_ver"},
         {"texto": "🎁 Canje de Puntos", "action_id": "catalogo_canje_puntos"},
@@ -4968,16 +5070,62 @@ def _get_catalogo_menu():
         {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
         {"texto": "Cancelar", "action_id": "cancelar"},
     ]
-    return {
-        "message_body": "Elegí cómo querés operar con el catálogo y los beneficios del tenant:",
+
+    # Añade URLs directas en los botones cuando estén configuradas para facilitar el acceso desde el menú.
+    for opcion in opciones:
+        action_id = opcion.get("action_id")
+        if not action_id:
+            continue
+        direct_link = direct_links.get(action_id)
+        if direct_link:
+            opcion["url"] = direct_link
+            opcion["type"] = "url"
+
+    header = "*Catálogo y Beneficios*"
+    body_lines = [
+        header,
+        "Elegí cómo querés operar con el catálogo y los beneficios del tenant:",
+    ]
+
+    link_descriptions = []
+    labels = {
+        "catalogo_ver": "📂 Ver Catálogo",
+        "catalogo_canje_puntos": "🎁 Canje de Puntos",
+        "catalogo_compras": "🛒 Compra de Productos",
+        "catalogo_donaciones": "❤️ Donaciones",
+        "catalogo_subastas": "🔨 Subastas",
+    }
+
+    for action_id, label in labels.items():
+        link = direct_links.get(action_id)
+        if not link:
+            continue
+        display_link = _format_url_for_display(link, widget=True)
+        link_descriptions.append(f"{label}: {display_link}")
+
+    if link_descriptions:
+        body_lines.append("")
+        body_lines.extend(link_descriptions)
+
+    payload = {
+        "message_body": "\n".join(filter(None, body_lines)),
         "message_type": "interactive_buttons",
         "options_list": opciones,
         "fuente": "submenu_catalogo_v1",
         "generar_audio": True,
     }
 
+    if banner_image:
+        payload["image_url"] = banner_image
 
-def _build_catalogo_flow_payload(action_id: str) -> dict:
+    return payload
+
+
+def _build_catalogo_flow_payload(action_id: str, context: Optional[dict] = None) -> dict:
+    context = context or {}
+    direct_links = _build_catalogo_link_map(context)
+    selected_link = direct_links.get(action_id)
+    header = "*Catálogo y Beneficios*"
     mensajes = {
         "catalogo_ver": (
             "Puedo mostrar el catálogo del tenant y activar el carrito tanto en el widget web como en WhatsApp. "
@@ -5000,9 +5148,32 @@ def _build_catalogo_flow_payload(action_id: str) -> dict:
         action_id,
         "Contame cómo querés usar el catálogo y te guío paso a paso."
     )
+    if selected_link:
+        display_link = _format_url_for_display(selected_link, widget=True)
+        message_body = "\n".join(
+            [line for line in [header, message_body, f"🔗 {display_link}"] if line]
+        )
+
+    options_list = []
+    if selected_link:
+        options_list.append(
+            {
+                "texto": "Abrir enlace",
+                "url": selected_link,
+                "type": "url",
+                "action_id": action_id,
+            }
+        )
+    options_list.extend(
+        [
+            {"texto": "Menú", "action_id": "menu_principal"},
+            {"texto": "Cancelar", "action_id": "cancelar"},
+        ]
+    )
     return {
         "message_body": message_body,
-        "message_type": "text",
+        "message_type": "interactive_buttons",
+        "options_list": options_list,
         "fuente": "catalogo_flow_intro_v1",
         "generar_audio": True,
     }

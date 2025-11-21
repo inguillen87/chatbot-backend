@@ -17,5 +17,14 @@
       "url": "https://www.instagram.com/juninpuntolimpio",
       "logo_url": "https://www.instagram.com/static/images/ico/favicon-200.png/ab6eff595bb1.png"
     }
-  ]
+  ],
+  "catalogo_base_url": "https://chatbot-backend-2e14.onrender.com",
+  "catalogo_links": {
+    "catalogo_ver": "https://chatbot-backend-2e14.onrender.com/productos",
+    "catalogo_canje_puntos": "https://chatbot-backend-2e14.onrender.com/productos?view=canje",
+    "catalogo_compras": "https://chatbot-backend-2e14.onrender.com/productos?view=compras",
+    "catalogo_donaciones": "https://chatbot-backend-2e14.onrender.com/productos?view=donaciones",
+    "catalogo_subastas": "https://chatbot-backend-2e14.onrender.com/productos?view=subastas"
+  },
+  "catalogo_banner_image_url": "https://chatbot-backend-2e14.onrender.com/static/encuestas/participacion_ciudadana.png"
 }
