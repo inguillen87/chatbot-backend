@@ -31,6 +31,8 @@ def _cors_kwargs(methods: list[str]) -> dict:
     }
 
 puntos_bp = Blueprint("puntos_bp", __name__, url_prefix="/api/puntos")
+# Alias sin el prefijo /api para compatibilidad con widgets antiguos
+puntos_public_bp = Blueprint("puntos_public_bp", __name__, url_prefix="/puntos")
 
 
 @puntos_bp.route("/saldo", methods=["GET", "OPTIONS"])
@@ -53,6 +55,14 @@ def saldo():
 
     saldo_actual = recompensas_service().obtener_saldo(user)
     return jsonify({"tenant_id": tenant.id, "saldo": saldo_actual, "anonId": user.anon_id})
+
+
+@puntos_public_bp.route("/saldo", methods=["GET", "OPTIONS"])
+@cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
+def saldo_public():
+    """Alias público para /api/puntos/saldo."""
+
+    return saldo()
 
 
 @puntos_bp.route("/historial", methods=["GET", "OPTIONS"])
@@ -83,4 +93,12 @@ def historial():
         for tx in recompensas_service().historial(user)
     ]
     return jsonify({"tenant_id": tenant.id, "historial": historial_registros})
+
+
+@puntos_public_bp.route("/historial", methods=["GET", "OPTIONS"])
+@cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
+def historial_public():
+    """Alias público para /api/puntos/historial."""
+
+    return historial()
 
