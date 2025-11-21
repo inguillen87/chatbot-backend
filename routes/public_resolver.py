@@ -5,6 +5,7 @@ from services.tenant_resolver import (
     TenantResolutionError,
     inject_anon_cookie,
     resolve_tenant_and_user,
+    resolve_tenant_only,
 )
 
 public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/public")
@@ -40,4 +41,34 @@ def resolve_tenant_endpoint():
     )
     inject_anon_cookie(response, user.anon_id)
     return response
+
+
+@public_resolver_bp.route("/tenant-profile", methods=["GET", "OPTIONS"])
+def tenant_profile():
+    """Devuelve datos públicos del tenant sin requerir autenticación.
+
+    Se puede resolver por slug (``tenant``/``slug``), token de widget o número
+    de WhatsApp. Siempre responde JSON para evitar páginas HTML de error que
+    rompan el widget.
+    """
+
+    tenant_slug = request.args.get("tenant") or request.args.get("slug")
+    widget_token = request.args.get("widget_token") or request.headers.get("X-Widget-Token")
+    whatsapp_destination_number = request.args.get("whatsapp_destination_number")
+
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+
+    try:
+        tenant = resolve_tenant_only(
+            whatsapp_destination_number=whatsapp_destination_number,
+            widget_token=widget_token,
+            tenant_slug=tenant_slug,
+        )
+    except TenantResolutionError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+    tenant_info = tenant.to_public_dict()
+    tenant_info.setdefault("config", tenant.configuracion or {})
+    return jsonify({"tenant": tenant_info})
 

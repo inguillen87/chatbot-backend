@@ -144,6 +144,45 @@ def resolve_tenant_and_user(
     return tenant, user, True
 
 
+def resolve_tenant_only(
+    whatsapp_destination_number: Optional[str] = None,
+    widget_token: Optional[str] = None,
+    tenant_slug: Optional[str] = None,
+    host: Optional[str] = None,
+) -> TenantProfile:
+    """Resolve solo el tenant sin crear usuarios anónimos.
+
+    Usa las mismas fuentes que ``resolve_tenant_and_user`` pero evita efectos
+    secundarios como la creación de visitantes. Se recurre a ``request.host``
+    si no se pasa ``host`` de forma explícita.
+    """
+
+    hints_provided = bool(
+        tenant_slug or whatsapp_destination_number or widget_token
+    )
+
+    tenant = (
+        _tenant_by_slug(tenant_slug)
+        or _tenant_by_number(whatsapp_destination_number)
+        or _tenant_by_widget_token(widget_token)
+    )
+
+    if not tenant and not hints_provided:
+        tenant = _tenant_by_domain(host or request.host)
+
+    if not tenant and not hints_provided:
+        tenant = getattr(g, "tenant_profile", None)
+    if not tenant and not hints_provided:
+        fallback_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
+        tenant = _tenant_by_slug(fallback_slug)
+    if not tenant and not hints_provided:
+        tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
+    if not tenant:
+        raise TenantResolutionError("Tenant no encontrado para el contexto dado")
+
+    return tenant
+
+
 def inject_anon_cookie(response, anon_id: Optional[str]) -> None:
     if not anon_id:
         return

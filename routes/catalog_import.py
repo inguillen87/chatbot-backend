@@ -122,6 +122,13 @@ def importar_catalogo():
     return jsonify({"ok": True, "items_importados": creados})
 
 
+@catalog_import_bp.route("/importar", methods=["OPTIONS"])
+def importar_catalogo_options():
+    """Responde el preflight CORS con JSON para evitar HTML inesperado."""
+
+    return jsonify({"ok": True})
+
+
 @catalog_import_bp.app_errorhandler(HTTPException)
 def _http_error_handler(exc: HTTPException):
     """Garantiza respuestas JSON para errores HTTP en el blueprint."""

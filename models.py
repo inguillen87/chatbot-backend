@@ -227,7 +227,12 @@ class User(db.Model, UserMixin):
     accesibilidad = db.Column(JSONType, nullable=True)
     catalogo_items = db.relationship('CatalogoItem', backref='user', lazy=True)
     catalogo_embeddings = db.relationship('CatalogoEmbedding', backref='user', lazy=True)
-    municipio_tickets = db.relationship('MunicipioTicket', backref='municipio', lazy=True)
+    municipio_tickets = db.relationship(
+        'MunicipioTicket',
+        backref='municipio',
+        lazy=True,
+        foreign_keys='MunicipioTicket.municipio_id',
+    )
     fecha_creacion = db.Column(db.DateTime(timezone=True), default=get_local_now) # Nuevo campo
 
     def set_password(self, password):
