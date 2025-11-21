@@ -157,7 +157,11 @@ def obtener_productos():
             or current_app.config.get("PANEL_URL")
             or request.host_url.rstrip("/")
         )
-        target_base = f"{frontend_base.rstrip('/')}/productos"
+        tenant_slug = None
+        if tenant and getattr(tenant, "slug", None):
+            tenant_slug = str(tenant.slug).strip().strip("/")
+        path_prefix = f"/{tenant_slug}" if tenant_slug else ""
+        target_base = f"{frontend_base.rstrip('/')}{path_prefix}/productos"
         redirect_url = target_base + (f"?{share_query}" if share_query else "")
 
         return redirect(redirect_url, code=302)
