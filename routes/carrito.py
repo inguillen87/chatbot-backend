@@ -208,21 +208,27 @@ def _carrito_summary_response():
     return jsonify(get_summary(pyme_carts_data))
 
 
-@carrito_bp.route('', methods=['GET', 'POST'])
-@carrito_bp.route('/', methods=['GET', 'POST'])
+@carrito_bp.route('', methods=['GET', 'POST', 'OPTIONS'])
+@carrito_bp.route('/', methods=['GET', 'POST', 'OPTIONS'])
 @cross_origin()
 def carrito_root():
     """Permite consultar el carrito (GET) o agregar items (POST) desde la raíz."""
+    if request.method == 'OPTIONS':
+        return "", 204
+
     if request.method == 'GET':
         return _carrito_summary_response()
     return agregar()
 
 
-@carrito_bp.route('/agregar', methods=['POST'])
+@carrito_bp.route('/agregar', methods=['POST', 'OPTIONS'])
 @cross_origin()
 def agregar():
     data = request.get_json(silent=True) or {}
     tenant, owner = _resolve_owner_and_seed()
+
+    if request.method == 'OPTIONS':
+        return "", 204
 
     if owner:
         item = _lookup_catalog_item(owner, data)
@@ -253,11 +259,14 @@ def agregar():
     return _carrito_summary_response()
 
 
-@carrito_bp.route('/actualizar', methods=['POST'])
+@carrito_bp.route('/actualizar', methods=['POST', 'OPTIONS'])
 @cross_origin()
 def actualizar():
     data = request.get_json(silent=True) or {}
     tenant, owner = _resolve_owner_and_seed()
+
+    if request.method == 'OPTIONS':
+        return "", 204
 
     if owner:
         try:
@@ -290,11 +299,14 @@ def actualizar():
     return _carrito_summary_response()
 
 
-@carrito_bp.route('/eliminar', methods=['POST'])
+@carrito_bp.route('/eliminar', methods=['POST', 'OPTIONS'])
 @cross_origin()
 def eliminar():
     data = request.get_json(silent=True) or {}
     tenant, owner = _resolve_owner_and_seed()
+
+    if request.method == 'OPTIONS':
+        return "", 204
 
     if owner:
         try:
@@ -325,10 +337,13 @@ def eliminar():
     return _carrito_summary_response()
 
 
-@carrito_bp.route('/vaciar', methods=['POST'])
+@carrito_bp.route('/vaciar', methods=['POST', 'OPTIONS'])
 @cross_origin()
 def vaciar():
     tenant, owner = _resolve_owner_and_seed()
+
+    if request.method == 'OPTIONS':
+        return "", 204
     pyme_carts_data = _get_session_cart_data()
 
     if tenant and owner:
