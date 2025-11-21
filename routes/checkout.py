@@ -90,9 +90,21 @@ def crear_preferencia():
             ),
             401,
         )
+    rewards = recompensas_service()
     if total_points:
-        if not recompensas_service().canjear_puntos(user, tenant, total_points):
-            return jsonify({"error": "Saldo de puntos insuficiente"}), 400
+        saldo_actual = rewards.obtener_saldo(user)
+        if saldo_actual < total_points:
+            faltantes = total_points - saldo_actual
+            return (
+                jsonify(
+                    {
+                        "error": "Saldo de puntos insuficiente",
+                        "puntos_faltantes": faltantes,
+                    }
+                ),
+                400,
+            )
+        rewards.canjear_puntos(user, tenant, total_points)
 
     if is_anonymous:
         contacto = payload.get("contacto") or {}
