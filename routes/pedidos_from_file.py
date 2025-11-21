@@ -4,6 +4,7 @@ from typing import Dict, List
 
 import pandas as pd
 from flask import Blueprint, jsonify, request, session, g
+from flask_cors import cross_origin
 from sqlalchemy import func
 
 from database import db
@@ -13,14 +14,40 @@ from routes.productos import _resolve_public_owner
 from services.cart import _get_pyme_cart
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
 from services.vision_extractor import extract_table_from_file
+from config import ALLOWED_ORIGINS
 
 logger = logging.getLogger(__name__)
+
+_CORS_ALLOWED_HEADERS = [
+    "Content-Type",
+    "Authorization",
+    "X-Chatboc-Token",
+    "X-Entity-Token",
+    "X-Chat-Session-Id",
+    "X-Anon-Id",
+    "Anon-Id",
+    "Cache-Control",
+    "token",
+    "X-Tenant",
+    "X-Tenant-Id",
+    "X-Widget-Token",
+    "X-Whatsapp-Dst",
+]
 
 pedidos_from_file_bp = Blueprint("pedidos_from_file_bp", __name__, url_prefix="/api/pedidos")
 
 _PROMPT = """
 Identificá productos y cantidades del documento. Devuelve JSON {"items": [{"sku": "...", "nombre": "...", "cantidad": 1}]}.
 """
+
+
+def _cors_kwargs(methods: list[str]) -> dict:
+    return {
+        "origins": ALLOWED_ORIGINS,
+        "supports_credentials": True,
+        "allow_headers": _CORS_ALLOWED_HEADERS,
+        "methods": methods,
+    }
 
 
 def _normalize_items(owner_id: int, tenant_id: int, rows: List[dict]):
@@ -50,8 +77,12 @@ def _normalize_items(owner_id: int, tenant_id: int, rows: List[dict]):
     return cart, not_found
 
 
-@pedidos_from_file_bp.route("/from-file", methods=["POST"])
+@pedidos_from_file_bp.route("/from-file", methods=["POST", "OPTIONS"])
+@cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
 def pedidos_desde_archivo():
+    if request.method == "OPTIONS":
+        return "", 204
+
     archivo = request.files.get("archivo")
     if not archivo:
         return jsonify({"error": "Archivo requerido"}), 400
@@ -66,14 +97,18 @@ def pedidos_desde_archivo():
         if not tenant or not owner:
             return jsonify({"error": "Tenant no encontrado"}), 404
 
-    contenido = archivo.read()
-    rows = extract_table_from_file(contenido, _PROMPT)
-    if rows is None:
-        try:
-            df = pd.read_excel(io.BytesIO(contenido))
-        except Exception:
-            df = pd.read_csv(io.BytesIO(contenido))
-        rows = df.to_dict(orient="records")
+    try:
+        contenido = archivo.read()
+        rows = extract_table_from_file(contenido, _PROMPT)
+        if rows is None:
+            try:
+                df = pd.read_excel(io.BytesIO(contenido))
+            except Exception:
+                df = pd.read_csv(io.BytesIO(contenido))
+            rows = df.to_dict(orient="records")
+    except Exception as exc:  # pragma: no cover - errores dependientes del archivo
+        logger.exception("No se pudo procesar nota de pedido")
+        return jsonify({"error": f"No se pudo procesar el archivo: {exc}"}), 400
 
     cart, not_found = _normalize_items(owner.id, tenant.id, rows or [])
 
