@@ -271,6 +271,7 @@ def create_app(config_class=Config):
             r"/public/*": {"origins": "*"},
             r"/pwa/*": {"origins": "*"},
             r"/api/pwa/*": {"origins": "*"},
+            r"/api/public/*": {"origins": "*"},
             r"/admin/*": {
                 "origins": ["https://www.chatboc.ar", "https://chatboc.ar"],
             },
