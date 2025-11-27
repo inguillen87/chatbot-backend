@@ -10,12 +10,31 @@ from models import TenantProfile, User
 
 logger = logging.getLogger(__name__)
 
+RESERVED_TENANT_SLUGS = {"iframe", "embed", "widget"}
+
+
+def _clean_slug(slug: Optional[str]) -> Optional[str]:
+    """Return a normalized slug or ``None`` when empty/reserved."""
+
+    if not slug:
+        return None
+
+    normalized = slug.strip()
+    if not normalized:
+        return None
+
+    if normalized.lower() in RESERVED_TENANT_SLUGS:
+        return None
+
+    return normalized
+
 
 class TenantResolutionError(Exception):
     """Raised when a tenant cannot be resolved from the request."""
 
 
 def _tenant_by_slug(slug: Optional[str]) -> Optional[TenantProfile]:
+    slug = _clean_slug(slug)
     if not slug:
         return None
     return (
@@ -142,6 +161,8 @@ def resolve_tenant_and_user(
         except (TypeError, ValueError):
             explicit_tenant = None
 
+    tenant_slug = _clean_slug(tenant_slug)
+
     tenant = (
         explicit_tenant
         or _tenant_by_slug(tenant_slug)
@@ -197,6 +218,8 @@ def resolve_tenant_only(
     inválido (slug o token que no existe) se intenta degradar a dominio o
     tenant por defecto para evitar 404 innecesarios en rutas públicas.
     """
+
+    tenant_slug = _clean_slug(tenant_slug)
 
     tenant = (
         _tenant_by_slug(tenant_slug)

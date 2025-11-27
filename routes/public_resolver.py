@@ -1,7 +1,9 @@
 from flask import Blueprint, jsonify, request, g
+from flask_cors import cross_origin
 
 from models import TenantProfile
 from services.tenant_resolver import (
+    RESERVED_TENANT_SLUGS,
     TenantResolutionError,
     inject_anon_cookie,
     resolve_tenant_and_user,
@@ -44,6 +46,7 @@ def resolve_tenant_endpoint():
 
 
 @public_resolver_bp.route("/tenant-profile", methods=["GET", "OPTIONS"])
+@cross_origin(origins="*", supports_credentials=True, automatic_options=False)
 def tenant_profile():
     """Devuelve datos públicos del tenant sin requerir autenticación.
 
@@ -52,7 +55,20 @@ def tenant_profile():
     rompan el widget.
     """
 
+    resolved_from_fallback = False
+    resolution_error = None
+
     tenant_slug = request.args.get("tenant") or request.args.get("slug")
+    tenant_slug_original = tenant_slug
+    if tenant_slug and tenant_slug.strip().lower() in RESERVED_TENANT_SLUGS:
+        tenant_slug = None
+        resolved_from_fallback = True
+        resolution_error = (
+            f"Tenant slug '{tenant_slug_original}' is reserved; using default tenant"
+        )
+
+    if tenant_slug is not None:
+        tenant_slug = tenant_slug.strip() or None
     widget_token = (
         request.args.get("widget_token")
         or request.headers.get("X-Widget-Token")
@@ -63,9 +79,6 @@ def tenant_profile():
 
     if request.method == "OPTIONS":
         return jsonify({"ok": True})
-
-    resolved_from_fallback = False
-    resolution_error = None
 
     try:
         tenant = resolve_tenant_only(
@@ -97,6 +110,17 @@ def tenant_profile():
                 },
             }
             return jsonify(payload)
+
+    if (
+        tenant_slug_original
+        and tenant_slug
+        and tenant_slug.lower() != tenant.slug.lower()
+        and not resolved_from_fallback
+    ):
+        resolved_from_fallback = True
+        resolution_error = (
+            f"Tenant '{tenant_slug_original}' not found; using '{tenant.slug}' instead"
+        )
 
     tenant_info = tenant.to_public_dict()
     tenant_info.setdefault("config", tenant.configuracion or {})
