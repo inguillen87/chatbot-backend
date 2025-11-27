@@ -110,9 +110,10 @@ def _obtener_clientes(
     data = [
         {
             "id": c.id,
-            "name": c.name,
-            "email": c.email,
-            "telefono": c.telefono,
+            # Normalizamos strings para evitar valores None que rompan el front al aplicar toLowerCase
+            "name": c.name or "",
+            "email": c.email or "",
+            "telefono": c.telefono or "",
             "acepta_marketing": c.acepta_marketing,
             "latitud": c.latitud,
             "longitud": c.longitud,
