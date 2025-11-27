@@ -701,6 +701,8 @@ def register():
             "botones": [{"texto": "Volver al chat"}],
         }), 400
 
+    empresa_token = data.get("empresa_token") or obtener_token()
+
     # Permitir nombres alternativos para el rubro y términos
     rubro_raw = data.get("rubro") or data.get("rubro_id") or data.get("sector")
     terminos_flag = (
@@ -712,6 +714,14 @@ def register():
         if "terminos" in data
         else data.get("terms")
     )
+
+    # Si viene desde el widget/entidad y no se envía rubro, redirigir al flujo
+    # de registro simplificado para usuarios finales.
+    if empresa_token and not rubro_raw:
+        current_app.logger.info(
+            "[register] Delegando a chatuser_register_panel porque faltan datos de rubro/empresa"
+        )
+        return chatuser_register_panel()
 
     required_campos = {
         "name": data.get("name"),
