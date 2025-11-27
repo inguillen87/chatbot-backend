@@ -183,15 +183,19 @@ def serialize_ticket_to_json(ticket, ticket_type):
 
     assigned_user = getattr(ticket, "asignado_a", None)
 
+    estado_original = getattr(ticket, "estado", None) or "desconocido"
+    estado_serializado = "resuelto" if estado_original == "cerrado" else estado_original
+    categoria_ticket = getattr(ticket, "categoria", None) or "Sin categoría"
+    categoria_normalizada = normalize_category(categoria_ticket) or categoria_ticket
+
     serialized_data = {
         "id": ticket.id,
         "tipo": ticket_type,
         "nro_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
         "asunto": getattr(ticket, 'asunto', 'Sin Asunto'),
-        # Mapear "cerrado" a "resuelto" para una mejor UX en el panel.
-        "estado": "resuelto" if getattr(ticket, 'estado', None) == "cerrado" else ticket.estado,
+        "estado": estado_serializado,
         "fecha": datetime_to_iso_utc(ticket.fecha),
-        "categoria": normalize_category(getattr(ticket, 'categoria', 'Sin Categoría')),
+        "categoria": categoria_normalizada,
         "direccion": user_data.get("direccion", "No especificada"),
         "distrito": getattr(ticket, 'distrito', None),
         "latitud": getattr(ticket, 'latitud', None),
@@ -472,12 +476,14 @@ def get_mis_tickets(current_user: User):
         )
 
         def serialize(t, tipo):
+            estado_original = getattr(t, "estado", None) or "desconocido"
+            estado_serializado = "resuelto" if estado_original == "cerrado" else estado_original
             base = {
                 "id": t.id,
                 "tipo": tipo,
                 "nro_ticket": t.nro_ticket,
                 "asunto": getattr(t, "asunto", "N/A"),
-                "estado": t.estado,
+                "estado": estado_serializado,
                 "fecha": datetime_to_iso_utc(t.fecha),
                 "direccion": getattr(t, "direccion", None),
                 "latitud": getattr(t, "latitud", None),
@@ -492,7 +498,7 @@ def get_mis_tickets(current_user: User):
                 })
             else:
                 base.update({
-                    "categoria": getattr(t, "categoria", None),
+                    "categoria": getattr(t, "categoria", None) or "Sin categoría",
                     "dni": getattr(t, "dni", None) or getattr(t, "dni_vecino", None),
                 })
             return base

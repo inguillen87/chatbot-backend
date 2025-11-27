@@ -122,7 +122,45 @@ def listar_empleados(current_user: User):
 def obtener_categorias_empleado(current_user: User):
     """Devuelve la lista de categorías disponibles para asignar a empleados."""
 
-    categorias = [{"value": c, "label": c.title()} for c in CATEGORIAS_RECLAMO]
+    categorias_set = {c for c in CATEGORIAS_RECLAMO if c}
+
+    # Agregar categorías dinámicas detectadas en los tickets existentes para el
+    # tenant actual. Esto evita dejar al panel sin opciones cuando se cargaron
+    # reclamos con nuevas etiquetas o cuando las categorías iniciales todavía
+    # no se configuraron.
+    try:
+        if current_user.tipo_chat == "municipio" and current_user.municipio_id:
+            categorias_en_bd = (
+                db.session.query(MunicipioTicket.categoria)
+                .filter(
+                    MunicipioTicket.municipio_id == current_user.municipio_id,
+                    MunicipioTicket.categoria.isnot(None),
+                    MunicipioTicket.categoria != "",
+                )
+                .distinct()
+                .all()
+            )
+            categorias_set.update(item[0] for item in categorias_en_bd if item and item[0])
+        elif current_user.tipo_chat == "pyme" and current_user.rubro_id:
+            categorias_en_bd = (
+                db.session.query(PymeTicket.categoria)
+                .filter(
+                    PymeTicket.rubro_id == current_user.rubro_id,
+                    PymeTicket.categoria.isnot(None),
+                    PymeTicket.categoria != "",
+                )
+                .distinct()
+                .all()
+            )
+            categorias_set.update(item[0] for item in categorias_en_bd if item and item[0])
+    except Exception:
+        # Si hay algún problema consultando la base, devolvemos las categorías
+        # base en lugar de propagar un error al frontend.
+        categorias_set = categorias_set or set()
+
+    categorias = [
+        {"value": c, "label": c.title()} for c in sorted(categorias_set, key=str.casefold)
+    ]
     search_term = (request.args.get("q") or "").strip().lower()
     if search_term:
         categorias = [
