@@ -13,6 +13,7 @@ from services.tenant_resolver import (
 from utils.auth_helpers import _is_jwt_token
 
 public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/public")
+public_municipios_bp = Blueprint("public_municipios_bp", __name__)
 
 
 def _extract_widget_token() -> str | None:
@@ -245,17 +246,7 @@ def tenant_profile():
     return response
 
 
-@public_resolver_bp.route(
-    "/municipios", methods=["GET", "OPTIONS"], provide_automatic_options=False
-)
-@cross_origin(origins="*", automatic_options=False)
-def list_municipios():
-    """Lista pública de tenants tipo municipio con un payload JSON estable.
-
-    El widget la consulta para poblar catálogos; respondemos siempre JSON para
-    evitar que un 404 u otra página HTML dispare un ApiError en el frontend.
-    """
-
+def _municipios_response():
     if request.method == "OPTIONS":
         return jsonify({"ok": True})
 
@@ -277,4 +268,28 @@ def list_municipios():
     ]
 
     return jsonify({"municipios": payload})
+
+
+@public_resolver_bp.route(
+    "/municipios", methods=["GET", "OPTIONS"], provide_automatic_options=False
+)
+@cross_origin(origins="*", automatic_options=False)
+def list_municipios():
+    """Lista pública de tenants tipo municipio con un payload JSON estable.
+
+    El widget la consulta para poblar catálogos; respondemos siempre JSON para
+    evitar que un 404 u otra página HTML dispare un ApiError en el frontend.
+    """
+
+    return _municipios_response()
+
+
+@public_municipios_bp.route(
+    "/municipios", methods=["GET", "OPTIONS"], provide_automatic_options=False
+)
+@cross_origin(origins="*", automatic_options=False)
+def list_municipios_root():
+    """Alias sin prefijo para clientes legacy que llaman ``/municipios``."""
+
+    return _municipios_response()
 

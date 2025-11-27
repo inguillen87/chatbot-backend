@@ -407,7 +407,7 @@ def create_app(config_class=Config):
         encuestas_public_bp,
     )
     from routes.pwa_public import pwa_public_bp
-    from routes.public_resolver import public_resolver_bp
+    from routes.public_resolver import public_resolver_bp, public_municipios_bp
     from routes.subastas import subastas_bp
     from routes.pedidos_from_file import pedidos_from_file_bp
     from routes.kits import kits_bp
@@ -468,6 +468,7 @@ def create_app(config_class=Config):
     app.register_blueprint(pedidos_bp)
     app.register_blueprint(carrito_bp)
     app.register_blueprint(public_resolver_bp)
+    app.register_blueprint(public_municipios_bp)
     app.register_blueprint(subastas_bp)
     app.register_blueprint(puntos_public_bp)
     app.register_blueprint(puntos_bp)
