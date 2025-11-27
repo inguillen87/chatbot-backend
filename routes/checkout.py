@@ -187,6 +187,9 @@ def _resolve_tenant_user(payload: dict) -> tuple[TenantProfile, User]:
     tenant_arg = tenant_arg or request.args.get("tenant") or request.headers.get("X-Tenant")
     widget_token = request.headers.get("X-Widget-Token") or request.args.get("widget_token")
     tenant_id = request.headers.get("X-Tenant-Id") or request.args.get("tenant_id") or payload.get("tenant_id")
+    has_hint = bool(tenant_arg or tenant_id or widget_token or request.headers.get("X-Whatsapp-Dst"))
+    if not has_hint:
+        raise TenantResolutionError("Tenant requerido para checkout")
     try:
         tenant, user, _ = resolve_tenant_and_user(
             tenant_slug=tenant_arg,

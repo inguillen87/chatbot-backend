@@ -78,8 +78,13 @@ def _lookup_tenant_by_slug(slug: Optional[str]) -> Optional[TenantProfile]:
     return TenantProfile.query.filter(func.lower(TenantProfile.slug) == normalized).first()
 
 
-def _resolve_public_owner() -> Tuple[Optional[TenantProfile], Optional[User]]:
-    """Encuentra el owner asociado al catálogo público solicitado."""
+def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[TenantProfile], Optional[User]]:
+    """Encuentra el owner asociado al catálogo público solicitado.
+
+    Si ``require_explicit`` es True, sólo se acepta un tenant indicado por
+    slug/ID/headers/token. No se usan valores por defecto para evitar mezclar
+    catálogos entre tenants.
+    """
 
     tenant = getattr(g, "tenant_profile", None)
     owner = getattr(tenant, "municipio", None) or getattr(tenant, "pyme", None)
@@ -91,6 +96,9 @@ def _resolve_public_owner() -> Tuple[Optional[TenantProfile], Optional[User]]:
         or request.args.get("tenant_slug")
         or request.args.get("tenant")
     )
+    tenant_id = _coerce_int(request.headers.get("X-Tenant-Id") or request.args.get("tenant_id"))
+    has_explicit_hint = bool(tenant_slug or tenant_id or request.headers.get("X-Widget-Token") or request.args.get("widget_token"))
+
     if tenant_slug:
         tenant = _lookup_tenant_by_slug(tenant_slug)
         if tenant:
@@ -98,7 +106,6 @@ def _resolve_public_owner() -> Tuple[Optional[TenantProfile], Optional[User]]:
             if owner:
                 return tenant, owner
 
-    tenant_id = _coerce_int(request.headers.get("X-Tenant-Id") or request.args.get("tenant_id"))
     if tenant_id:
         tenant = TenantProfile.query.get(tenant_id)
         if tenant:
@@ -116,6 +123,9 @@ def _resolve_public_owner() -> Tuple[Optional[TenantProfile], Optional[User]]:
         if owner:
             tenant = getattr(owner, "tenant_profile", None)
             return tenant, owner
+
+    if require_explicit and not has_explicit_hint:
+        return None, None
 
     default_tenant_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
     if default_tenant_slug:
@@ -150,9 +160,9 @@ def obtener_productos():
     if user and not view_mode:
         return listar_catalogo.__wrapped__(user)
 
-    tenant, owner = _resolve_public_owner()
-    if not owner:
-        return jsonify({"error": "Catálogo no disponible"}), 404
+    tenant, owner = _resolve_public_owner(require_explicit=True)
+    if not owner or not tenant:
+        return jsonify({"error": "Tenant requerido para catálogo"}), 400
 
     ensure_seed_catalog(owner, tenant)
 
