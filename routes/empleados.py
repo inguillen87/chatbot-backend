@@ -102,10 +102,11 @@ def listar_empleados(current_user: User):
         datos.append({
             "key": e.id,
             "id": e.id,
-            "name": e.name,
-            "email": e.email,
+            "name": e.name or "",
+            "email": e.email or "",
             "rol": e.rol,
-            "categorias": categorias,
+            # Evitamos valores None en la lista de categorías
+            "categorias": [c for c in categorias if c],
             "tickets_respondidos_mes": tickets_respondidos_mes,
             "tickets_abiertos_categoria": open_tickets,
         })
