@@ -11,11 +11,12 @@ from extensions import db
 from functools import wraps
 import uuid
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import jwt
 from services.google_auth import login_o_crear_usuario
 from services.pymes import get_or_create_pyme_user_by_token
 from typing import Any, Callable, Dict, Optional
+import secrets
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 
@@ -27,6 +28,7 @@ from services.plan_config import (
     serialize_plan_catalog,
     serialize_plan_for_response,
 )
+from services.rewards import recompensas_service
 from services.user_service import (
     change_user_email,
     change_user_password,
@@ -97,6 +99,17 @@ def _resolve_owner_token(user: User) -> Optional[str]:
         return None
 
     try:
+        token = _resolve_owner_token(owner_user)
+    except Exception:
+        current_app.logger.exception(
+            "[auth] Owner token helper failed for user %s", getattr(user, "id", None)
+        )
+        token = None
+
+    if token:
+        return token
+
+    try:
         owner_user.token = generate_token()
         db.session.add(owner_user)
         db.session.commit()
@@ -108,6 +121,33 @@ def _resolve_owner_token(user: User) -> Optional[str]:
         )
         db.session.rollback()
         return None
+
+
+def _generate_email_verification_token() -> str:
+    return secrets.token_urlsafe(48)
+
+
+def _send_verification_email(user: User):
+    """Placeholder sender that logs verification dispatches."""
+
+    if not user.email_verification_token:
+        return
+    current_app.logger.info(
+        "[verify_email] Enviando email de verificación a %s con token %s",
+        user.email,
+        user.email_verification_token,
+    )
+
+
+def _tenant_for_user(user: User):
+    return getattr(user, "tenant_profile_municipio", None) or getattr(user, "tenant_profile_pyme", None)
+
+
+def _apply_welcome_points_if_configured(user: User):
+    try:
+        recompensas_service().apply_welcome_points(user, _tenant_for_user(user))
+    except Exception as exc:  # pragma: no cover - logging only
+        current_app.logger.warning("[welcome_points] No se pudieron acreditar puntos: %s", exc)
 
 
 def _timestamp_to_iso(value: Optional[object]) -> Optional[str]:
@@ -644,6 +684,9 @@ def register():
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
         tags=tags_value,
         tipo_chat=tipo_chat_final,  # Usar la variable final determinada
+        email_verified=False,
+        email_verification_token=_generate_email_verification_token(),
+        email_verification_sent_at=datetime.now(timezone.utc),
     )
     user.set_password(data['password'])
 
@@ -651,6 +694,9 @@ def register():
         db.session.add(user)
         db.session.commit()
         current_app.logger.info(f"Usuario registrado: {user.email} con ID {user.id}")
+
+        _send_verification_email(user)
+        _apply_welcome_points_if_configured(user)
 
         # Generar el token JWT
         jwt_payload = {
@@ -676,6 +722,25 @@ def register():
             "error": "Error interno al guardar el usuario.",
             "botones": [{"texto": "Volver al chat"}],
         }), 500
+
+
+@auth_bp.route('/verify-email', methods=['GET'])
+def verify_email():
+    token = request.args.get('token')
+    if not token:
+        return jsonify({"error": "Token requerido"}), 400
+
+    user = User.query.filter_by(email_verification_token=token).first()
+    if not user:
+        return jsonify({"error": "Token inválido"}), 400
+
+    user.email_verified = True
+    user.email_verification_token = None
+    user.email_verification_sent_at = None
+    db.session.add(user)
+    db.session.commit()
+
+    return jsonify({"mensaje": "Email verificado", "email_verified": True})
 
 
 @auth_bp.route('/widget/register', methods=['POST'])
@@ -728,6 +793,9 @@ def register_from_widget(user):
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
         tags=tags_value,
+        email_verified=False,
+        email_verification_token=_generate_email_verification_token(),
+        email_verification_sent_at=datetime.now(timezone.utc),
     )
     nuevo.set_password(password)
     try:
@@ -746,6 +814,9 @@ def register_from_widget(user):
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
         jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+
+        _send_verification_email(nuevo)
+        _apply_welcome_points_if_configured(nuevo)
 
         resp = jsonify({
             "id": nuevo.id,
@@ -954,6 +1025,9 @@ def chatuser_register_panel():
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
         tags=tags_value,
+        email_verified=False,
+        email_verification_token=_generate_email_verification_token(),
+        email_verification_sent_at=datetime.now(timezone.utc),
     )
     nuevo.set_password(password)
     try:
@@ -988,6 +1062,9 @@ def chatuser_register_panel():
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
         jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+
+        _send_verification_email(nuevo)
+        _apply_welcome_points_if_configured(nuevo)
 
         resp = jsonify({
             "id": nuevo.id,
