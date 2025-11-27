@@ -188,7 +188,11 @@ def obtener_productos():
     view_mode = (request.args.get("view") or "").strip().lower()
 
     user = _resolve_authenticated_user()
-    if user and not view_mode:
+    if user:
+        # Cuando el usuario está autenticado permitimos acceder al catálogo
+        # aunque se haya solicitado un modo de vista especial ("view=json|api").
+        # Esto evita errores 400 cuando el panel administrador consulta el
+        # catálogo sin enviar encabezados de tenant explícitos.
         return listar_catalogo.__wrapped__(user)
 
     tenant, owner = _resolve_public_owner(require_explicit=True)
