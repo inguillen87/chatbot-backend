@@ -81,7 +81,7 @@ def _tenant_cart(data: Dict[str, list], tenant: Optional[TenantProfile]) -> List
     return cart
 
 
-def _lookup_catalog_item(owner: User, payload: Dict[str, object]) -> Optional[CatalogoItem]:
+def _lookup_catalog_item(owner: User, payload: Dict[str, object], tenant: Optional[TenantProfile]) -> Optional[CatalogoItem]:
     identifier = payload.get('catalogo_item_id') or payload.get('item_id')
     sku = payload.get('sku')
     nombre = payload.get('nombre')
@@ -89,6 +89,8 @@ def _lookup_catalog_item(owner: User, payload: Dict[str, object]) -> Optional[Ca
     query = CatalogoItem.query.options(*CatalogoItem.legacy_safe_options()).filter(
         CatalogoItem.user_id == owner.id
     )
+    if tenant:
+        query = query.filter(func.coalesce(CatalogoItem.tenant_id, tenant.id) == tenant.id)
     if identifier is not None:
         try:
             identifier = int(identifier)  # type: ignore[assignment]
@@ -115,9 +117,10 @@ def _lookup_catalog_item(owner: User, payload: Dict[str, object]) -> Optional[Ca
 
 
 def _resolve_owner_and_seed() -> Tuple[Optional[TenantProfile], Optional[User]]:
-    tenant, owner = _resolve_public_owner()
-    if owner:
-        ensure_seed_catalog(owner, tenant)
+    tenant, owner = _resolve_public_owner(require_explicit=True)
+    if tenant is None or owner is None:
+        return None, None
+    ensure_seed_catalog(owner, tenant)
     return tenant, owner
 
 
@@ -142,6 +145,7 @@ def _enrich_cart_summary(pyme_carts_data: Dict[str, list], tenant: TenantProfile
             CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())
             .filter(
                 CatalogoItem.user_id == owner.id,
+                func.coalesce(CatalogoItem.tenant_id, tenant.id) == tenant.id,
                 CatalogoItem.id.in_(item_ids),
             )
             .all()
@@ -243,8 +247,7 @@ def _carrito_summary_response():
     if tenant and owner:
         return jsonify(_enrich_cart_summary(pyme_carts_data, tenant, owner))
 
-    # Compatibilidad heredada: devolver sólo nombre y cantidad
-    return jsonify(get_summary(pyme_carts_data))
+    return jsonify({"error": "Tenant requerido para carrito"}), 400
 
 
 @carrito_bp.route('', methods=['GET', 'POST', 'OPTIONS'])
@@ -269,8 +272,11 @@ def agregar():
     if request.method == 'OPTIONS':
         return "", 204
 
+    if not tenant or not owner:
+        return jsonify({"error": "Tenant requerido para carrito"}), 400
+
     if owner:
-        item = _lookup_catalog_item(owner, data)
+        item = _lookup_catalog_item(owner, data, tenant)
         if not item:
             return jsonify({'error': 'Producto no encontrado'}), 404
 
@@ -306,6 +312,9 @@ def actualizar():
 
     if request.method == 'OPTIONS':
         return "", 204
+
+    if not tenant or not owner:
+        return jsonify({"error": "Tenant requerido para carrito"}), 400
 
     if owner:
         try:
@@ -347,6 +356,9 @@ def eliminar():
     if request.method == 'OPTIONS':
         return "", 204
 
+    if not tenant or not owner:
+        return jsonify({"error": "Tenant requerido para carrito"}), 400
+
     if owner:
         try:
             item_id = int(data.get('catalogo_item_id') or data.get('item_id'))
@@ -385,11 +397,11 @@ def vaciar():
         return "", 204
     pyme_carts_data = _get_session_cart_data()
 
-    if tenant and owner:
-        cart = _tenant_cart(pyme_carts_data, tenant)
-        cart.clear()
-    else:
-        clear_cart(pyme_carts_data)
+    if not tenant or not owner:
+        return jsonify({"error": "Tenant requerido para carrito"}), 400
+
+    cart = _tenant_cart(pyme_carts_data, tenant)
+    cart.clear()
 
     _persist_session_cart_data(pyme_carts_data)
     return _carrito_summary_response()
