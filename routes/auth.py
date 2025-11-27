@@ -100,7 +100,18 @@ def _resolve_owner_token(user: User) -> Optional[str]:
     if token_value and _looks_like_jwt(token_value):
         token_value = None
     if token_value:
-        return token_value
+        if not getattr(owner_user, "entity_token", None):
+            try:
+                owner_user.entity_token = token_value
+                db.session.add(owner_user)
+                db.session.commit()
+            except Exception:
+                current_app.logger.exception(
+                    "[auth] Failed to persist legacy owner token for user %s",
+                    getattr(owner_user, "id", None),
+                )
+                db.session.rollback()
+        return getattr(owner_user, "entity_token", None) or token_value
 
     if callable(resolver):
         try:
