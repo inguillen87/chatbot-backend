@@ -28,6 +28,11 @@ _WIDGET_ALLOWED_GET_PATHS: Set[str] = {
     "/api/me",
     "/api/perfil",
     "/api/profile",
+    "/pwa/tenant-info",
+    "/api/pwa/tenant-info",
+    "/public/tenant",
+    "/api/public/tenant",
+    "/api/public/tenant-profile",
 }
 
 _WIDGET_ALLOWED_ANY_METHOD_PATHS: Set[str] = {

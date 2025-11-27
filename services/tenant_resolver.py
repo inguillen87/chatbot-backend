@@ -193,12 +193,10 @@ def resolve_tenant_only(
 
     Usa las mismas fuentes que ``resolve_tenant_and_user`` pero evita efectos
     secundarios como la creación de visitantes. Se recurre a ``request.host``
-    si no se pasa ``host`` de forma explícita.
+    si no se pasa ``host`` de forma explícita. Incluso si se recibe un hint
+    inválido (slug o token que no existe) se intenta degradar a dominio o
+    tenant por defecto para evitar 404 innecesarios en rutas públicas.
     """
-
-    hints_provided = bool(
-        tenant_slug or whatsapp_destination_number or widget_token
-    )
 
     tenant = (
         _tenant_by_slug(tenant_slug)
@@ -206,15 +204,15 @@ def resolve_tenant_only(
         or _tenant_by_widget_token(widget_token)
     )
 
-    if not tenant and not hints_provided:
+    if not tenant:
         tenant = _tenant_by_domain(host or request.host)
 
-    if not tenant and not hints_provided:
+    if not tenant:
         tenant = getattr(g, "tenant_profile", None)
-    if not tenant and not hints_provided:
+    if not tenant:
         fallback_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
         tenant = _tenant_by_slug(fallback_slug)
-    if not tenant and not hints_provided:
+    if not tenant:
         tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
     if not tenant:
         raise TenantResolutionError("Tenant no encontrado para el contexto dado")
