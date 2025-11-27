@@ -393,7 +393,7 @@ def create_app(config_class=Config):
     from routes.catalog_vector_sync import catalog_vector_sync_bp
     from routes.document_intelligence import document_intelligence_bp
     from routes.rewards_rules import rewards_rules_bp
-    from routes.api_aliases import api_aliases_bp
+    from routes.api_aliases import api_aliases_bp, public_aliases_bp
     from routes.whatsapp_webhook import webhook_bp as whatsapp_webhook_bp
     from routes.whatsapp_promocionar import whatsapp_promocionar_bp
     from routes.omnichannel import omnichannel_bp
@@ -498,6 +498,7 @@ def create_app(config_class=Config):
     app.register_blueprint(media_bp)
     app.register_blueprint(accessibility_bp)
     app.register_blueprint(api_aliases_bp)
+    app.register_blueprint(public_aliases_bp)
     app.register_blueprint(pwa_public_bp)
     app.register_blueprint(pwa_misc_bp)
     app.register_blueprint(pwa_app_bp)

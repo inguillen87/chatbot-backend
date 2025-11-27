@@ -26,9 +26,11 @@ from routes.ticket import (
 from routes.productos import obtener_productos
 from routes.pwa_app import follow_tenant, list_followed_tenants, unfollow_tenant
 from routes.pwa_misc import provide_anon_id
+from routes.public_resolver import tenant_profile
 
 
 api_aliases_bp = Blueprint("api_aliases", __name__, url_prefix="/api")
+public_aliases_bp = Blueprint("public_aliases", __name__)
 
 
 @api_aliases_bp.route("/productos", methods=["GET", "OPTIONS"], strict_slashes=False)
@@ -174,3 +176,31 @@ def tenants_alias_follow():
 @api_aliases_bp.route("/api/pwa/anon-id", methods=["GET", "OPTIONS"], strict_slashes=False)
 def anon_id_alias():
     return provide_anon_id()
+
+
+@api_aliases_bp.route("/pwa/tenant-info", methods=["GET", "OPTIONS"], strict_slashes=False)
+def pwa_tenant_info_alias():
+    """Alias so widgets hitting /api/pwa/tenant-info receive tenant details."""
+
+    return tenant_profile()
+
+
+@api_aliases_bp.route("/public/tenant", methods=["GET", "OPTIONS"], strict_slashes=False)
+def public_tenant_alias():
+    """Expose public tenant info under /api/public/tenant for legacy callers."""
+
+    return tenant_profile()
+
+
+@public_aliases_bp.route("/public/tenant", methods=["GET", "OPTIONS"], strict_slashes=False)
+def root_public_tenant_alias():
+    """Expose public tenant info for callers that omit the /api prefix."""
+
+    return tenant_profile()
+
+
+@public_aliases_bp.route("/pwa/tenant-info", methods=["GET", "OPTIONS"], strict_slashes=False)
+def root_pwa_tenant_info_alias():
+    """Alias without /api prefix for PWA tenant info requests."""
+
+    return tenant_profile()
