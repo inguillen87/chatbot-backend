@@ -447,6 +447,51 @@ def _finalize_token_candidate(
 
     return token_candidate or None
 
+
+def obtener_entity_token() -> Optional[str]:
+    """Extrae un token de entidad explícito sin interferir con JWT del usuario.
+
+    Esto permite que el widget envíe simultáneamente el JWT del visitante
+    (para autenticarlo) y el token de la entidad/tenant que define el contexto
+    del bot. Si se encuentra, se devuelve el primer candidato válido respetando
+    la misma lógica de _finalize_token_candidate.
+    """
+
+    def _extract_from_json(keys: tuple[str, ...]) -> list[str]:
+        if not request.is_json:
+            return []
+        data = request.get_json(silent=True) or {}
+        return [data.get(key) for key in keys if data.get(key)]
+
+    def _extract_from_form(keys: tuple[str, ...]) -> list[str]:
+        if not request.form:
+            return []
+        return [request.form.get(key) for key in keys if request.form.get(key)]
+
+    candidate_sources: list[Optional[str]] = []
+
+    # Headers take priority because the widget can set X-Entity-Token directly.
+    candidate_sources.append(request.headers.get("X-Entity-Token"))
+
+    # Cookies (ej. WIDGET_TOKEN_COOKIE_NAME) are next, useful after an iframe load.
+    widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME")
+    if widget_cookie_name:
+        candidate_sources.append(request.cookies.get(widget_cookie_name))
+
+    # Query params (entityToken/empresa_token) and JSON/body fallbacks
+    entity_keys = ("entityToken", "entity_token", "empresa_token")
+    for key in entity_keys:
+        candidate_sources.append(request.args.get(key))
+    candidate_sources.extend(_extract_from_json(entity_keys))
+    candidate_sources.extend(_extract_from_form(entity_keys))
+
+    for raw_candidate in candidate_sources:
+        finalized = _finalize_token_candidate(raw_candidate)
+        if finalized:
+            return finalized
+
+    return None
+
 def generar_token(user_id, rol, tipo_chat, municipio_id, pyme_id):
     """Genera un token de autenticación para un usuario."""
     payload = {
@@ -1000,6 +1045,22 @@ def anon_o_token_requerido(f):
                         demo_token_detected = demo_rubro_for_token(token) is not None
                     except Exception:
                         demo_token_detected = False
+
+        # Permitir que un token de entidad explícito tenga prioridad como owner,
+        # incluso si el usuario está autenticado con JWT (ej. login desde el widget).
+        explicit_entity_token = obtener_entity_token()
+        if explicit_entity_token:
+            entity_owner = _lookup_owner_for_static_token(explicit_entity_token) or User.query.filter_by(token=explicit_entity_token).first()
+            if entity_owner:
+                if owner_user and owner_user.id != entity_owner.id:
+                    current_app.logger.info(
+                        "[auth] Overriding owner_user %s with explicit entity owner %s from token %s",
+                        owner_user.id,
+                        entity_owner.id,
+                        explicit_entity_token[:10],
+                    )
+                owner_user = entity_owner
+                g.widget_owner_user = entity_owner
 
         # Si después de todo no hay owner (ej. request anónima sin token),
         # cargar el owner por defecto para el municipio.
