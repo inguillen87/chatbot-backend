@@ -76,9 +76,27 @@ def tenant_profile():
     except TenantResolutionError as exc:
         resolution_error = str(exc)
         tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
-        if not tenant:
-            return jsonify({"error": resolution_error}), 404
-        resolved_from_fallback = True
+        if tenant:
+            resolved_from_fallback = True
+        else:
+            placeholder = {
+                "id": None,
+                "slug": tenant_slug or "default",
+                "nombre": None,
+                "tipo": None,
+                "logo_url": None,
+                "dominio": request.host,
+                "tema": {},
+                "config": {},
+            }
+            payload = {
+                "tenant": placeholder,
+                "warning": {
+                    "message": resolution_error,
+                    "fallback": "placeholder",
+                },
+            }
+            return jsonify(payload)
 
     tenant_info = tenant.to_public_dict()
     tenant_info.setdefault("config", tenant.configuracion or {})
