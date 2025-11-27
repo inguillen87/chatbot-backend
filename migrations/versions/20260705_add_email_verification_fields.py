@@ -37,13 +37,20 @@ def upgrade() -> None:
         "user",
         sa.Column(
             "email_verification_sent_at",
-            sa.DateTime(),
+            sa.DateTime(timezone=True),
             nullable=True,
         ),
+    )
+    op.create_index(
+        op.f("ix_user_email_verification_token"),
+        "user",
+        ["email_verification_token"],
+        unique=False,
     )
 
 
 def downgrade() -> None:
+    op.drop_index(op.f("ix_user_email_verification_token"), table_name="user")
     op.drop_column("user", "email_verification_sent_at")
     op.drop_column("user", "email_verification_token")
     op.drop_column("user", "email_verified")
