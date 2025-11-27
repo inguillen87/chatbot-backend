@@ -210,6 +210,118 @@ class ServicioTickets:
 
         return empleado
 
+    def _resolve_pyme_owner_id(self, ticket: PymeTicket, actor_id: Optional[int]) -> Optional[int]:
+        if actor_id:
+            actor = db.session.get(User, actor_id)
+            if actor and actor.tipo_chat == "pyme":
+                return actor.id if actor.rol == "admin" else actor.empresa_id
+
+        admin_for_rubro = (
+            User.query.filter(
+                User.rubro_id == ticket.rubro_id,
+                User.tipo_chat == "pyme",
+                User.rol == "admin",
+            )
+            .order_by(User.id.asc())
+            .first()
+        )
+        return admin_for_rubro.id if admin_for_rubro else None
+
+    def _empleados_para_ticket_pyme(self, ticket: PymeTicket, actor_id: Optional[int]) -> list[User]:
+        owner_id = self._resolve_pyme_owner_id(ticket, actor_id)
+        if not owner_id:
+            return []
+
+        candidatos = (
+            User.query.filter(
+                User.empresa_id == owner_id,
+                User.rol.in_(["empleado", "admin"]),
+                User.tipo_chat == "pyme",
+            )
+            .order_by(User.id.asc())
+            .all()
+        )
+
+        categoria_normalizada = (ticket.categoria or "").strip().lower()
+        if not categoria_normalizada:
+            return candidatos
+
+        filtrados = []
+        for empleado in candidatos:
+            categorias_emp = [
+                c.strip().lower()
+                for c in (empleado.ticket_categorias or "").split(",")
+                if c.strip()
+            ]
+            if not categorias_emp or categoria_normalizada in categorias_emp:
+                filtrados.append(empleado)
+
+        return filtrados
+
+    def _calcular_carga_empleado_pyme(self, empleado: User, rubro_id: int) -> int:
+        return (
+            PymeTicket.query.filter(
+                PymeTicket.rubro_id == rubro_id,
+                PymeTicket.asignado_a_id == empleado.id,
+                ~PymeTicket.estado.in_(list(_CLOSED_STATES)),
+            )
+            .with_entities(func.count(PymeTicket.id))
+            .scalar()
+            or 0
+        )
+
+    def asignar_ticket_pyme(
+        self,
+        ticket: PymeTicket,
+        empleado_id: Optional[int] = None,
+        *,
+        auto: bool = False,
+        actor_id: Optional[int] = None,
+    ) -> Optional[User]:
+        """Asigna el ticket de pyme a un empleado compatible."""
+
+        if not ticket:
+            return None
+
+        if empleado_id:
+            owner_id = self._resolve_pyme_owner_id(ticket, actor_id)
+            empleado = User.query.filter(
+                User.id == empleado_id,
+                User.tipo_chat == "pyme",
+                User.rol.in_(["empleado", "admin"]),
+                User.empresa_id == owner_id,
+            ).first()
+        else:
+            candidatos = self._empleados_para_ticket_pyme(ticket, actor_id)
+            if not candidatos or (not auto and not self.auto_assign_enabled):
+                return None
+            empleado = min(
+                candidatos,
+                key=lambda emp: self._calcular_carga_empleado_pyme(emp, ticket.rubro_id),
+            )
+
+        if not empleado:
+            return None
+
+        if ticket.asignado_a_id == empleado.id:
+            return empleado
+
+        ticket.asignado_a = empleado
+        ticket.asignado_en = get_local_now()
+        if hasattr(ticket, "ultima_actividad"):
+            ticket.ultima_actividad = get_local_now()
+
+        comentario = TicketComentario(
+            pyme_ticket_id=ticket.id,
+            comentario=f"Ticket asignado a {empleado.name}",
+            user_id=actor_id,
+            es_admin=True,
+            origen="sistema",
+        )
+        db.session.add(comentario)
+
+        return empleado
+
     def crear_nuevo_ticket(
         self,
         tipo_ticket: Literal["municipio", "pyme"],

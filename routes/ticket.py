@@ -43,6 +43,18 @@ TICKET_ALLOWED_STATES = [
 ]
 
 
+def _validar_asignacion_empleado(ticket_obj, current_user: User):
+    """Devuelve una respuesta de error si el empleado no está asignado al ticket."""
+
+    if current_user.rol != "empleado":
+        return None
+
+    if getattr(ticket_obj, "asignado_a_id", None) != current_user.id:
+        return jsonify({"error": "Ticket no asignado a este empleado."}), 403
+
+    return None
+
+
 @ticket_bp.route('/tickets/estados', methods=['GET'])
 @token_requerido
 @admin_o_empleado_requerido
@@ -285,25 +297,8 @@ def get_tickets_del_usuario_logic(current_user: User):
             else:
                 query_base = query_base.filter(TicketModel.categoria == requested_categoria_filter)
 
-        # Aplicar filtro de categorías asignadas al empleado (afecta tanto al summary como a la lista)
-        employee_specific_categories = []
-        if current_user.rol == 'empleado' and current_user.ticket_categorias:
-            employee_specific_categories = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
-            if employee_specific_categories:
-                 # Usar ilike para búsquedas insensibles a mayúsculas/minúsculas si es necesario,
-                 # o asumir que las categorías se guardan normalizadas.
-                 # Por ahora, se asume que la comparación directa es suficiente si las categorías están normalizadas.
-                 # query_base = query_base.filter(TicketModel.categoria.in_(employee_specific_categories))
-                 # SQLAlchemy no tiene un `ANY` directo como SQL puro para listas de strings de esta forma.
-                 # Se puede usar OR:
-                category_conditions = []
-                for cat_name in employee_specific_categories:
-                    if cat_name.lower() == "luminarias":
-                        category_conditions.append(TicketModel.categoria.ilike("%lumin%"))
-                    else:
-                        category_conditions.append(TicketModel.categoria.ilike(cat_name))
-                query_base = query_base.filter(or_(*category_conditions))
-
+        if current_user.rol == 'empleado':
+            query_base = query_base.filter(TicketModel.asignado_a_id == current_user.id)
 
         # Obtener todos los tickets que cumplen con los filtros base (municipio/rubro y categoría
         # de empleado/request) para el resumen utilizando una consulta agregada en lugar de traer
@@ -729,6 +724,10 @@ def get_ticket_details(current_user: User, ticket_id: int):
     if ticket.municipio_id != current_user.municipio_id:
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
 
+    error_response = _validar_asignacion_empleado(ticket, current_user)
+    if error_response:
+        return error_response
+
     ticket_data = _serialize_ticket_details(ticket, "municipio")
     return jsonify(ticket_data)
 
@@ -737,16 +736,27 @@ def get_ticket_details(current_user: User, ticket_id: int):
 @token_requerido
 @require_role('admin', 'empleado')
 def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
-    if tipo != "municipio":
-        return jsonify({"error": "La asignación manual solo está disponible para tickets municipales."}), 400
+    if tipo not in {"municipio", "pyme"}:
+        return jsonify({"error": "Tipo de ticket no soportado para asignación."}), 400
 
-    ticket_obj = db.session.get(MunicipioTicket, ticket_id)
+    if tipo == "municipio":
+        ticket_obj = db.session.get(MunicipioTicket, ticket_id)
+    else:
+        ticket_obj = db.session.get(PymeTicket, ticket_id)
+
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    municipio_owner_id = current_user.municipio_id or current_user.empresa_id
-    if current_user.tipo_chat != "municipio" or municipio_owner_id != ticket_obj.municipio_id:
-        return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
+    if tipo == "municipio":
+        municipio_owner_id = current_user.municipio_id or current_user.empresa_id
+        if current_user.tipo_chat != "municipio" or municipio_owner_id != ticket_obj.municipio_id:
+            return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
+    else:
+        pyme_owner_id = current_user.id if current_user.rol == "admin" else current_user.empresa_id
+        if current_user.tipo_chat != "pyme" or ticket_obj.rubro_id != current_user.rubro_id:
+            return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
+        if pyme_owner_id is None:
+            return jsonify({"error": "Usuario PYME sin empresa asociada."}), 400
 
     data = request.get_json(silent=True) or {}
     requested_user_id = data.get("user_id")
@@ -758,12 +768,20 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
         requested_user_id = current_user.id
         auto = False
 
-    empleado_asignado = servicio_tickets.asignar_ticket_municipal(
-        ticket_obj,
-        empleado_id=requested_user_id,
-        auto=auto or requested_user_id is None,
-        actor_id=current_user.id,
-    )
+    if tipo == "municipio":
+        empleado_asignado = servicio_tickets.asignar_ticket_municipal(
+            ticket_obj,
+            empleado_id=requested_user_id,
+            auto=auto or requested_user_id is None,
+            actor_id=current_user.id,
+        )
+    else:
+        empleado_asignado = servicio_tickets.asignar_ticket_pyme(
+            ticket_obj,
+            empleado_id=requested_user_id,
+            auto=auto or requested_user_id is None,
+            actor_id=current_user.id,
+        )
 
     if not empleado_asignado:
         return jsonify({"error": "No se pudo asignar el ticket a un agente disponible."}), 400
@@ -797,6 +815,10 @@ def get_ticket_details_pyme(current_user: User, ticket_id: int):
 
     if ticket.rubro_id != current_user.rubro_id:
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
+
+    error_response = _validar_asignacion_empleado(ticket, current_user)
+    if error_response:
+        return error_response
 
     ticket_data = _serialize_ticket_details(ticket, "pyme")
     return jsonify(ticket_data)
@@ -857,6 +879,10 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
             ticket_obj.rubro_id == current_user.rubro_id
         ):
             return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
+
+    error_response = _validar_asignacion_empleado(ticket_obj, current_user)
+    if error_response:
+        return error_response
 
     log_ticket_debug(
         "responder_agente_con_archivos", # Acción actualizada
@@ -1075,6 +1101,10 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         ):
             return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
 
+    error_response = _validar_asignacion_empleado(ticket_obj, current_user)
+    if error_response:
+        return error_response
+
     log_ticket_debug(
         "cambiar_estado",
         ticket_id,
@@ -1173,6 +1203,11 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
         es_dueño_del_ticket = current_user and sala_de_chat.user_id == current_user.id
         es_anon_valido = anon_id and sala_de_chat.anon_id == anon_id
 
+        if es_agente_municipal:
+            error_response = _validar_asignacion_empleado(sala_de_chat, current_user)
+            if error_response:
+                return error_response
+
         log_ticket_debug("get_chat_mensajes", ticket_id, anon_id, sala_de_chat)
 
         if not (es_agente_municipal or es_dueño_del_ticket or es_anon_valido):
@@ -1223,6 +1258,11 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
 
         es_agente_pyme = current_user.rubro_id and sala_de_chat.rubro_id == current_user.rubro_id
         es_dueño = sala_de_chat.user_id == current_user.id
+
+        if es_agente_pyme:
+            error_response = _validar_asignacion_empleado(sala_de_chat, current_user)
+            if error_response:
+                return error_response
 
         log_ticket_debug("get_chat_mensajes_pyme", ticket_id, None, sala_de_chat)
 
@@ -1537,9 +1577,12 @@ def get_panel_por_categoria(current_user: User):
         # Por ahora, las métricas serán por categoría, y el empleado solo verá las categorías asignadas.
 
         tickets_to_process = all_tickets_for_user_municipio
-        if current_user.rol == 'empleado' and current_user.ticket_categorias:
-            employee_allowed_categories = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
-            tickets_to_process = [t for t in all_tickets_for_user_municipio if (t.categoria or '').lower() in employee_allowed_categories]
+        if current_user.rol == 'empleado':
+            tickets_to_process = [
+                t
+                for t in all_tickets_for_user_municipio
+                if t.asignado_a_id == current_user.id
+            ]
 
         # Agrupar tickets por categoría
         tickets_grouped_by_cat = defaultdict(list)
@@ -1629,9 +1672,12 @@ def get_panel_pyme(current_user: User):
         all_tickets_for_user_pyme = query.order_by(PymeTicket.fecha.desc()).all()
 
         tickets_to_process = all_tickets_for_user_pyme
-        if current_user.rol == 'empleado' and current_user.ticket_categorias:
-            employee_allowed_categories = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
-            tickets_to_process = [t for t in all_tickets_for_user_pyme if (t.categoria or '').lower() in employee_allowed_categories]
+        if current_user.rol == 'empleado':
+            tickets_to_process = [
+                t
+                for t in all_tickets_for_user_pyme
+                if t.asignado_a_id == current_user.id
+            ]
 
         tickets_grouped_by_cat = defaultdict(list)
         for t_obj in tickets_to_process:
