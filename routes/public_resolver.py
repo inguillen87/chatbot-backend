@@ -64,6 +64,9 @@ def tenant_profile():
     if request.method == "OPTIONS":
         return jsonify({"ok": True})
 
+    resolved_from_fallback = False
+    resolution_error = None
+
     try:
         tenant = resolve_tenant_only(
             whatsapp_destination_number=whatsapp_destination_number,
@@ -71,9 +74,21 @@ def tenant_profile():
             tenant_slug=tenant_slug,
         )
     except TenantResolutionError as exc:
-        return jsonify({"error": str(exc)}), 404
+        resolution_error = str(exc)
+        tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
+        if not tenant:
+            return jsonify({"error": resolution_error}), 404
+        resolved_from_fallback = True
 
     tenant_info = tenant.to_public_dict()
     tenant_info.setdefault("config", tenant.configuracion or {})
-    return jsonify({"tenant": tenant_info})
+
+    payload = {"tenant": tenant_info}
+    if resolved_from_fallback and resolution_error:
+        payload["warning"] = {
+            "message": resolution_error,
+            "fallback": "default_tenant",
+        }
+
+    return jsonify(payload)
 
