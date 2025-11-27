@@ -13,6 +13,13 @@ document_intelligence_bp = Blueprint(
     url_prefix="/api/pymes/<int:pyme_id>/document-intelligence",
 )
 
+# Alias sin /api para compatibilidad con paneles existentes
+document_intelligence_alias_bp = Blueprint(
+    "document_intelligence_alias",
+    __name__,
+    url_prefix="/pymes/<int:pyme_id>/document-intelligence",
+)
+
 
 def _build_columns(columns: List[Any]) -> List[dict[str, str]]:
     parsed: List[dict[str, str]] = []
@@ -84,4 +91,13 @@ def document_intelligence_preview(current_user, pyme_id: int):
         response_payload["headerRow"] = header_row
 
     return jsonify(response_payload)
+
+
+# Registrar alias sin /api reutilizando las mismas vistas
+document_intelligence_alias_bp.add_url_rule(
+    "/preview", view_func=document_intelligence_preview_options, methods=["OPTIONS"]
+)
+document_intelligence_alias_bp.add_url_rule(
+    "/preview", view_func=document_intelligence_preview, methods=["POST"]
+)
 

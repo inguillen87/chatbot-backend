@@ -390,9 +390,12 @@ def create_app(config_class=Config):
     from routes.ai_templates import ai_templates_bp
     from routes.ai import ai_bp as ai_suggest_bp
     from routes.promociones import promociones_bp
-    from routes.catalog_mappings import catalog_mappings_bp
+    from routes.catalog_mappings import catalog_mappings_bp, catalog_mappings_alias_bp
     from routes.catalog_vector_sync import catalog_vector_sync_bp
-    from routes.document_intelligence import document_intelligence_bp
+    from routes.document_intelligence import (
+        document_intelligence_alias_bp,
+        document_intelligence_bp,
+    )
     from routes.rewards_rules import rewards_rules_bp
     from routes.api_aliases import api_aliases_bp, public_aliases_bp
     from routes.whatsapp_webhook import webhook_bp as whatsapp_webhook_bp
@@ -490,7 +493,9 @@ def create_app(config_class=Config):
     app.register_blueprint(ai_suggest_bp)
     app.register_blueprint(promociones_bp)
     app.register_blueprint(catalog_mappings_bp)
+    app.register_blueprint(catalog_mappings_alias_bp)
     app.register_blueprint(document_intelligence_bp)
+    app.register_blueprint(document_intelligence_alias_bp)
     app.register_blueprint(catalog_vector_sync_bp)
     app.register_blueprint(whatsapp_webhook_bp)
     app.register_blueprint(whatsapp_promocionar_bp)
