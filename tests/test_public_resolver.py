@@ -66,6 +66,36 @@ class PublicResolverTest(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
 
+    def test_public_tenant_profile_prefers_widget_token_over_host(self):
+        other_owner = User(
+            name="Otra Empresa",
+            email="otra@example.com",
+            password_hash="hash",
+            tipo_chat="pyme",
+        )
+        db.session.add(other_owner)
+        db.session.commit()
+
+        other_tenant = TenantProfile(
+            slug="catalogo-demo",
+            nombre="Catálogo Demo",
+            tipo="pyme",
+            pyme_id=other_owner.id,
+            dominio="otra-empresa.com",
+            configuracion={"widget_tokens": ["otro-token"]},
+        )
+        db.session.add(other_tenant)
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/public/tenant-profile?widget_token=otro-token",
+            base_url="http://externo.example.com",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["tenant"]["slug"], other_tenant.slug)
+
     def test_public_tenant_profile_falls_back_to_widget_token_when_slug_invalid(self):
         response = self.client.get(
             "/api/public/tenant-profile?tenant=inexistente",
