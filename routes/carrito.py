@@ -119,6 +119,8 @@ def _lookup_catalog_item(owner: User, payload: Dict[str, object], tenant: Option
 def _resolve_owner_and_seed() -> Tuple[Optional[TenantProfile], Optional[User]]:
     tenant, owner = _resolve_public_owner(require_explicit=True)
     if tenant is None or owner is None:
+        tenant, owner = _resolve_public_owner(require_explicit=False)
+    if tenant is None or owner is None:
         return None, None
     ensure_seed_catalog(owner, tenant)
     return tenant, owner

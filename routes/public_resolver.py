@@ -116,30 +116,28 @@ def tenant_profile():
         )
     except TenantResolutionError as exc:
         resolution_error = resolution_error or str(exc)
-        if resolved_from_fallback:
-            tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
-            if not tenant:
-                placeholder = {
-                    "id": None,
-                    "slug": "default",
-                    "nombre": None,
-                    "tipo": None,
-                    "logo_url": None,
-                    "dominio": request.host,
-                    "tema": {},
-                    "config": {},
-                }
-                payload = {
-                    "tenant": placeholder,
-                    "warning": {
-                        "message": resolution_error,
-                        "fallback": "placeholder",
-                    },
-                }
-                return jsonify(payload)
-            resolved_from_fallback = True
-        else:
-            return jsonify({"error": resolution_error}), 404
+        tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
+        if not tenant:
+            placeholder = {
+                "id": None,
+                "slug": "default",
+                "nombre": None,
+                "tipo": None,
+                "logo_url": None,
+                "dominio": request.host,
+                "tema": {},
+                "config": {},
+            }
+            payload = {
+                "tenant": placeholder,
+                "warning": {
+                    "message": resolution_error,
+                    "fallback": "placeholder",
+                },
+            }
+            return jsonify(payload)
+
+        resolved_from_fallback = True
 
     if (
         tenant_slug_original
