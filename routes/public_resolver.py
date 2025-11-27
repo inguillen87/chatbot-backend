@@ -53,7 +53,12 @@ def tenant_profile():
     """
 
     tenant_slug = request.args.get("tenant") or request.args.get("slug")
-    widget_token = request.args.get("widget_token") or request.headers.get("X-Widget-Token")
+    widget_token = (
+        request.args.get("widget_token")
+        or request.headers.get("X-Widget-Token")
+        or request.args.get("entityToken")
+        or request.headers.get("X-Entity-Token")
+    )
     whatsapp_destination_number = request.args.get("whatsapp_destination_number")
 
     if request.method == "OPTIONS":
