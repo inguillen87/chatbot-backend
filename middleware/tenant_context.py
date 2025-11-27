@@ -33,6 +33,7 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
     * /pyme/<slug>/...
     * /pymes/<slug>/...
     * /p/<slug>/...
+    * /t/<slug>/... (alias used by the PWA router)
     """
 
     if not path:
@@ -45,7 +46,7 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
     prefix = segments[0].lower()
     slug = segments[1]
 
-    if prefix in {"municipio", "municipios", "m", "pyme", "pymes", "p"}:
+    if prefix in {"municipio", "municipios", "m", "pyme", "pymes", "p", "t"}:
         return _normalize_slug(slug)
 
     return None
