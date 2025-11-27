@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, request, g
+from flask import Blueprint, jsonify, request, g, current_app
 from flask_cors import cross_origin
 
 from models import TenantProfile
@@ -10,7 +10,41 @@ from services.tenant_resolver import (
     resolve_tenant_only,
 )
 
+from utils.auth_helpers import _is_jwt_token
+
 public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/public")
+
+
+def _extract_widget_token() -> str | None:
+    """Read the widget/entity token from query params, headers or cookies."""
+
+    widget_cookie_name = (
+        current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+        if current_app
+        else "widget_token"
+    )
+
+    candidates = [
+        request.args.get("widget_token"),
+        request.args.get("entityToken"),
+        request.args.get("owner_token") or request.args.get("ownerToken"),
+        request.headers.get("X-Widget-Token"),
+        request.headers.get("X-Entity-Token"),
+        request.headers.get("X-Owner-Token"),
+        request.cookies.get(widget_cookie_name),
+        request.cookies.get("owner_token"),
+    ]
+
+    auth_header = request.headers.get("Authorization") or ""
+    if auth_header.lower().startswith("bearer "):
+        candidate = auth_header.split(None, 1)[1]
+        if candidate and not _is_jwt_token(candidate):
+            candidates.append(candidate)
+
+    for token in candidates:
+        if token:
+            return token
+    return None
 
 
 @public_resolver_bp.route("/resolve-tenant", methods=["POST"])
@@ -67,12 +101,7 @@ def tenant_profile():
             f"Tenant slug '{tenant_slug_original}' is reserved; using default tenant"
         )
         tenant_slug = None
-    widget_token = (
-        request.args.get("widget_token")
-        or request.headers.get("X-Widget-Token")
-        or request.args.get("entityToken")
-        or request.headers.get("X-Entity-Token")
-    )
+    widget_token = _extract_widget_token()
     whatsapp_destination_number = request.args.get("whatsapp_destination_number")
 
     if request.method == "OPTIONS":

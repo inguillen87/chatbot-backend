@@ -107,6 +107,36 @@ class PublicResolverTest(unittest.TestCase):
         self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
         self.assertIn("warning", payload)
 
+    def test_public_tenant_profile_accepts_owner_token_header(self):
+        response = self.client.get(
+            "/api/public/tenant-profile?tenant=inexistente",
+            headers={"X-Owner-Token": "demo-token"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
+
+    def test_public_tenant_profile_uses_widget_cookie(self):
+        self.client.set_cookie("widget_token", "demo-token")
+
+        response = self.client.get("/api/public/tenant-profile?tenant=inexistente")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
+        self.assertIn("warning", payload)
+
+    def test_public_tenant_profile_accepts_bearer_owner_token(self):
+        response = self.client.get(
+            "/api/public/tenant-profile?tenant=inexistente",
+            headers={"Authorization": "Bearer demo-token"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
+
     def test_public_tenant_profile_reserved_slug(self):
         response = self.client.get("/api/public/tenant-profile?tenant=iframe")
         self.assertEqual(response.status_code, 200)
