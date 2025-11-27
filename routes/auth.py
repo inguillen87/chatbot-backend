@@ -199,7 +199,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "empresa_id": user.empresa_id,
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
-        "categorias": user.ticket_categorias or "",
+        "categorias": getattr(user, "categorias_lista", []),
         "nombre_empresa": getattr(user, "nombre_empresa", None),
         "badge_tipo": getattr(user, "badge_tipo", None),
         "catalogo_label": catalogo_label,
@@ -445,7 +445,7 @@ def login():
         "empresa_id": user.empresa_id,
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
-        "categorias": user.ticket_categorias or "",
+        "categorias": getattr(user, "categorias_lista", []),
     })
 
     cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
@@ -536,25 +536,25 @@ def google_login():
             "empresa_id": user.empresa_id,
             "rubro": rubro_nombre,
             "tipo_chat": tipo_chat,
-            "categorias": user.ticket_categorias or "",
+            "categorias": getattr(user, "categorias_lista", []),
         })
 
         cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
 
         if jwt_token:
-                cookie_args = {
-                    "key": cookie_name,
+            cookie_args = {
+                "key": cookie_name,
                 "value": jwt_token,
-                    "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
-                    "httponly": True,
-                    "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
-                }
+                "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
+                "httponly": True,
+                "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
+            }
 
-                cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
-                if cookie_domain:
-                    cookie_args["domain"] = cookie_domain
+            cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
+            if cookie_domain:
+                cookie_args["domain"] = cookie_domain
 
-                response.set_cookie(**cookie_args)
+            response.set_cookie(**cookie_args)
 
         return response
     except ValueError as e:
@@ -885,7 +885,7 @@ def login_from_widget(owner_user):
         "empresa_id": user.empresa_id,
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
-        "categorias": user.ticket_categorias or "",
+        "categorias": getattr(user, "categorias_lista", []),
     })
     if anon_id:
         resp.headers["X-Anon-Id"] = anon_id
