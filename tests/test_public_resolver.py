@@ -28,6 +28,7 @@ class PublicResolverTest(unittest.TestCase):
             password_hash="hash",
             tipo_chat="municipio",
         )
+        self.owner.token = "owner-latest-token"
         db.session.add(self.owner)
         db.session.commit()
 
@@ -170,6 +171,38 @@ class PublicResolverTest(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         payload = response.get_json()
         self.assertIn("error", payload)
+
+    def test_tenant_profile_returns_canonical_token_and_cookie(self):
+        response = self.client.get(
+            f"/api/public/tenant-profile?tenant={self.tenant.slug}"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("widget_token"), self.owner.token)
+
+        widget_cookie_name = self.app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+        cookie_headers = response.headers.getlist("Set-Cookie")
+        self.assertTrue(
+            any(
+                header.startswith(f"{widget_cookie_name}={self.owner.token}")
+                for header in cookie_headers
+            )
+        )
+
+    def test_tenant_profile_replaces_outdated_widget_token(self):
+        # Simular una rotación: el widget envía un token viejo que ya no está en la config
+        self.tenant.configuracion = {"widget_tokens": ["rotated-token"]}
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/public/tenant-profile",
+            headers={"X-Widget-Token": "demo-token"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("widget_token"), self.owner.token)
 
 
 if __name__ == "__main__":

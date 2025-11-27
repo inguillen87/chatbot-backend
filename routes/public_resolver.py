@@ -47,6 +47,37 @@ def _extract_widget_token() -> str | None:
     return None
 
 
+def _canonical_widget_token(tenant: TenantProfile, provided: str | None) -> str | None:
+    """Resolve the preferred token for embedding the widget.
+
+    The lookup prioritizes a provided token that is already registered for the
+    tenant, then falls back to the owner token (municipio/pyme) so rotations are
+    transparent for existing embeds. As a last resort it reuses the first stored
+    widget token.
+    """
+
+    cfg = tenant.configuracion or {}
+    tokens_cfg = cfg.get("widget_tokens")
+    tokens: list[str] = []
+
+    if isinstance(tokens_cfg, str):
+        tokens = [tokens_cfg]
+    elif isinstance(tokens_cfg, list):
+        tokens = [t for t in tokens_cfg if t]
+
+    if provided and provided in tokens:
+        return provided
+
+    owner = tenant.pyme or tenant.municipio
+    if owner and getattr(owner, "token", None):
+        return owner.token
+
+    if tokens:
+        return tokens[0]
+
+    return provided
+
+
 @public_resolver_bp.route("/resolve-tenant", methods=["POST"])
 def resolve_tenant_endpoint():
     payload = request.get_json(force=True, silent=True) or {}
@@ -101,6 +132,7 @@ def tenant_profile():
 
     resolved_from_fallback = False
     resolution_error = None
+    explicit_slug_failure = False
 
     tenant_slug_original = request.args.get("tenant") or request.args.get("slug")
     tenant_slug = tenant_slug_original.strip() if tenant_slug_original else None
@@ -126,6 +158,7 @@ def tenant_profile():
         )
     except TenantResolutionError as exc:
         resolution_error = resolution_error or str(exc)
+        explicit_slug_failure = bool(tenant_slug_original) and not widget_token and not whatsapp_destination_number
         tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
         if not tenant:
             placeholder = {
@@ -163,12 +196,39 @@ def tenant_profile():
     tenant_info = tenant.to_public_dict()
     tenant_info.setdefault("config", tenant.configuracion or {})
 
+    canonical_widget_token = _canonical_widget_token(tenant, widget_token)
+
+    if explicit_slug_failure:
+        return jsonify({"error": resolution_error}), 404
+
     payload = {"tenant": tenant_info}
+    if canonical_widget_token:
+        payload["widget_token"] = canonical_widget_token
+        payload["widget_token_cookie_name"] = current_app.config.get(
+            "WIDGET_TOKEN_COOKIE_NAME", "widget_token"
+        )
     if resolved_from_fallback and resolution_error:
         payload["warning"] = {
             "message": resolution_error,
             "fallback": "default_tenant",
         }
 
-    return jsonify(payload)
+    response = jsonify(payload)
+
+    if canonical_widget_token:
+        cookie_args = {
+            "key": current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token"),
+            "value": canonical_widget_token,
+            "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
+            "httponly": False,
+            "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
+        }
+
+        cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
+        if cookie_domain:
+            cookie_args["domain"] = cookie_domain
+
+        response.set_cookie(**cookie_args)
+
+    return response
 
