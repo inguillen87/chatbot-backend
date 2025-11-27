@@ -224,8 +224,20 @@ def resolve_tenant_only(
 
     tenant = _tenant_by_slug(tenant_slug)
 
+    if (
+        not tenant
+        and tenant_slug
+        and require_explicit_slug
+        and not widget_token
+        and not whatsapp_destination_number
+    ):
+        raise TenantResolutionError(f"Tenant '{tenant_slug}' no encontrado")
+
     if not tenant:
         tenant = _tenant_by_number(whatsapp_destination_number)
+
+    if not tenant:
+        tenant = _tenant_by_widget_token(widget_token)
 
     if not tenant:
         tenant = _tenant_by_domain(host or request.host)
