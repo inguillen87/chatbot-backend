@@ -31,7 +31,10 @@ def _normalize_categorias_input(categorias_raw):
 
     normalized = []
     for item in items:
-        candidate = str(item or "").strip()
+        if isinstance(item, dict):
+            candidate = str(item.get("value") or item.get("label") or "").strip()
+        else:
+            candidate = str(item or "").strip()
         if not candidate:
             continue
         key = candidate.lower()
@@ -102,14 +105,30 @@ def listar_empleados(current_user: User):
         datos.append({
             "key": e.id,
             "id": e.id,
-            "name": e.name,
-            "email": e.email,
+            "name": e.name or "",
+            "email": e.email or "",
             "rol": e.rol,
-            "categorias": categorias,
+            # Evitamos valores None en la lista de categorías
+            "categorias": [c for c in categorias if c],
             "tickets_respondidos_mes": tickets_respondidos_mes,
             "tickets_abiertos_categoria": open_tickets,
         })
     return jsonify(datos)
+
+
+@empleados_bp.route('/categorias', methods=['GET'])
+@token_requerido
+@solo_admin_requerido
+def obtener_categorias_empleado(current_user: User):
+    """Devuelve la lista de categorías disponibles para asignar a empleados."""
+
+    categorias = [{"value": c, "label": c.title()} for c in CATEGORIAS_RECLAMO]
+    search_term = (request.args.get("q") or "").strip().lower()
+    if search_term:
+        categorias = [
+            item for item in categorias if search_term in item["label"].lower()
+        ]
+    return jsonify({"categorias": categorias})
 
 @empleados_bp.route('', methods=['POST'])
 @token_requerido
