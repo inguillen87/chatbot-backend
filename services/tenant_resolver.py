@@ -188,6 +188,7 @@ def resolve_tenant_only(
     widget_token: Optional[str] = None,
     tenant_slug: Optional[str] = None,
     host: Optional[str] = None,
+    require_explicit_slug: bool = False,
 ) -> TenantProfile:
     """Resolve solo el tenant sin crear usuarios anónimos.
 
@@ -195,14 +196,22 @@ def resolve_tenant_only(
     secundarios como la creación de visitantes. Se recurre a ``request.host``
     si no se pasa ``host`` de forma explícita. Incluso si se recibe un hint
     inválido (slug o token que no existe) se intenta degradar a dominio o
-    tenant por defecto para evitar 404 innecesarios en rutas públicas.
+    tenant por defecto para evitar 404 innecesarios en rutas públicas, a
+    menos que ``require_explicit_slug`` solicite fallar cuando el slug no se
+    resuelva.
     """
 
-    tenant = (
-        _tenant_by_slug(tenant_slug)
-        or _tenant_by_number(whatsapp_destination_number)
-        or _tenant_by_widget_token(widget_token)
-    )
+    tenant = _tenant_by_slug(tenant_slug)
+
+    if not tenant and tenant_slug and require_explicit_slug:
+        raise TenantResolutionError(
+            f"Tenant no encontrado para el slug solicitado: {tenant_slug}"
+        )
+
+    if not tenant:
+        tenant = _tenant_by_number(whatsapp_destination_number) or _tenant_by_widget_token(
+            widget_token
+        )
 
     if not tenant:
         tenant = _tenant_by_domain(host or request.host)
