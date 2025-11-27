@@ -81,7 +81,7 @@ def _tenant_cart(data: Dict[str, list], tenant: Optional[TenantProfile]) -> List
     return cart
 
 
-def _lookup_catalog_item(owner: User, payload: Dict[str, object]) -> Optional[CatalogoItem]:
+def _lookup_catalog_item(owner: User, payload: Dict[str, object], tenant: Optional[TenantProfile]) -> Optional[CatalogoItem]:
     identifier = payload.get('catalogo_item_id') or payload.get('item_id')
     sku = payload.get('sku')
     nombre = payload.get('nombre')
@@ -89,6 +89,8 @@ def _lookup_catalog_item(owner: User, payload: Dict[str, object]) -> Optional[Ca
     query = CatalogoItem.query.options(*CatalogoItem.legacy_safe_options()).filter(
         CatalogoItem.user_id == owner.id
     )
+    if tenant:
+        query = query.filter(func.coalesce(CatalogoItem.tenant_id, tenant.id) == tenant.id)
     if identifier is not None:
         try:
             identifier = int(identifier)  # type: ignore[assignment]
@@ -142,6 +144,7 @@ def _enrich_cart_summary(pyme_carts_data: Dict[str, list], tenant: TenantProfile
             CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())
             .filter(
                 CatalogoItem.user_id == owner.id,
+                func.coalesce(CatalogoItem.tenant_id, tenant.id) == tenant.id,
                 CatalogoItem.id.in_(item_ids),
             )
             .all()
@@ -270,7 +273,7 @@ def agregar():
         return "", 204
 
     if owner:
-        item = _lookup_catalog_item(owner, data)
+        item = _lookup_catalog_item(owner, data, tenant)
         if not item:
             return jsonify({'error': 'Producto no encontrado'}), 404
 

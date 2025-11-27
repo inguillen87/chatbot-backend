@@ -86,13 +86,19 @@ def _resolve_public_owner() -> Tuple[Optional[TenantProfile], Optional[User]]:
     if owner:
         return tenant, owner
 
-    tenant = _lookup_tenant_by_slug(request.args.get("tenant"))
-    if tenant:
-        owner = tenant.municipio or tenant.pyme
-        if owner:
-            return tenant, owner
+    tenant_slug = (
+        request.headers.get("X-Tenant")
+        or request.args.get("tenant_slug")
+        or request.args.get("tenant")
+    )
+    if tenant_slug:
+        tenant = _lookup_tenant_by_slug(tenant_slug)
+        if tenant:
+            owner = tenant.municipio or tenant.pyme
+            if owner:
+                return tenant, owner
 
-    tenant_id = _coerce_int(request.args.get("tenant_id"))
+    tenant_id = _coerce_int(request.headers.get("X-Tenant-Id") or request.args.get("tenant_id"))
     if tenant_id:
         tenant = TenantProfile.query.get(tenant_id)
         if tenant:
@@ -108,7 +114,8 @@ def _resolve_public_owner() -> Tuple[Optional[TenantProfile], Optional[User]]:
     if owner_id:
         owner = User.query.get(owner_id)
         if owner:
-            return None, owner
+            tenant = getattr(owner, "tenant_profile", None)
+            return tenant, owner
 
     default_tenant_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
     if default_tenant_slug:
@@ -125,7 +132,8 @@ def _resolve_public_owner() -> Tuple[Optional[TenantProfile], Optional[User]]:
         .first()
     ) or User.query.order_by(User.id.asc()).first()
 
-    return None, owner
+    tenant = getattr(owner, "tenant_profile", None)
+    return tenant, owner
 
 
 @productos_bp.route("", methods=["GET", "OPTIONS"], strict_slashes=False)

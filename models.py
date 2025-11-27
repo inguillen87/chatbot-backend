@@ -1035,6 +1035,9 @@ class PedidoConversacional(db.Model, TimestampMixin):
     tipo = db.Column(db.String(20), nullable=False, default="compra")
     mp_preference_id = db.Column(db.String(120), nullable=True, index=True)
     mp_payment_id = db.Column(db.String(120), nullable=True, index=True)
+    mp_status = db.Column(db.String(40), nullable=True)
+    origen = db.Column(db.String(40), nullable=True)
+    anon_id = db.Column(db.String(120), nullable=True)
     items = db.Column(JSONType, nullable=False, default=list)
 
     tenant = db.relationship("TenantProfile")
