@@ -230,6 +230,10 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     catalogo_label = (
         "Cargar Catálogo de Trámites" if tipo_chat == "municipio" else "Cargar Catálogo de Productos"
     )
+    integration_guide_url = current_app.config.get(
+        "INTEGRATION_GUIDE_URL",
+        "https://docs.chatboc.ar/widget-integration",
+    )
 
     profile_data: Dict[str, Any] = {
         "id": user.id,
@@ -243,6 +247,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "nombre_empresa": getattr(user, "nombre_empresa", None),
         "badge_tipo": getattr(user, "badge_tipo", None),
         "catalogo_label": catalogo_label,
+        "integration_guide_url": integration_guide_url,
         "ciudad": getattr(user, "ciudad", None),
         "color_primario": getattr(user, "color_primario", None),
         "color_secundario": getattr(user, "color_secundario", None),
