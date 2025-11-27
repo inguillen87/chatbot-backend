@@ -41,6 +41,53 @@ def _require_tenant() -> TenantProfile:
     return tenant
 
 
+def _public_cart_base_url(tenant: TenantProfile) -> str:
+    """Return the base URL to be used when sharing/embedding the public cart.
+
+    Preference order (all optional, no migrations required):
+    1) ``configuracion.public_cart_base_url`` or ``configuracion.public_base_url``: scheme+host base.
+    2) ``configuracion.public_cart_host`` or ``tenant.dominio`` as host, keeping the request scheme.
+    3) Current request host (``request.url_root``).
+    """
+
+    cfg = tenant.configuracion or {}
+
+    base_url = cfg.get("public_cart_base_url") or cfg.get("public_base_url")
+    if isinstance(base_url, str) and base_url.strip():
+        return base_url.strip().rstrip("/")
+
+    host = cfg.get("public_cart_host") or tenant.dominio
+    if isinstance(host, str) and host.strip():
+        scheme = request.headers.get("X-Forwarded-Proto") or request.scheme or "https"
+        return f"{scheme}://{host.strip().strip('/')}"
+
+    return (request.url_root or "").rstrip("/")
+
+
+def _public_cart_path(tenant: TenantProfile) -> str:
+    cfg = tenant.configuracion or {}
+    explicit_path = cfg.get("public_cart_path")
+    if isinstance(explicit_path, str) and explicit_path.strip():
+        return explicit_path.lstrip("/")
+
+    slug_alias = cfg.get("public_cart_slug") or tenant.slug
+    prefix = cfg.get("public_cart_prefix") or "m"
+    return f"{prefix.rstrip('/')}/{slug_alias}"
+
+
+def _build_public_cart_url(tenant: TenantProfile) -> Tuple[str, str, str]:
+    cfg = tenant.configuracion or {}
+    override_url = cfg.get("public_cart_url")
+    if isinstance(override_url, str) and override_url.strip():
+        cleaned = override_url.strip()
+        return cleaned, cleaned, "override"
+
+    base_url = _public_cart_base_url(tenant).rstrip("/")
+    path = _public_cart_path(tenant)
+    full_url = f"{base_url}/{path}" if path else base_url
+    return full_url, base_url, path
+
+
 def _resolve_encuestas_tenant_id(tenant: TenantProfile) -> int | None:
     if tenant.encuestas_tenant_id:
         return tenant.encuestas_tenant_id
@@ -320,6 +367,20 @@ def public_catalog():
 def public_rewards():
     tenant = _require_tenant()
     return jsonify(reward_profile_for_tenant(tenant.id, 0.0))
+
+
+@pwa_public_bp.get("/cart/url")
+def public_cart_url():
+    tenant = _require_tenant()
+    full_url, base_url, path = _build_public_cart_url(tenant)
+    return jsonify(
+        {
+            "cart_url": full_url,
+            "base_url": base_url,
+            "path": path,
+            "tenant_slug": tenant.slug,
+        }
+    )
 
 
 @pwa_public_bp.get("/cart")
