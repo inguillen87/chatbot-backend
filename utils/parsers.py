@@ -12,7 +12,8 @@ from models import User
 import jwt
 
 from extensions import db
-from models import Rubro, User, generate_token
+from models import Rubro, User
+import secrets
 from services.demo_registry import demo_rubro_for_token
 
 
@@ -288,33 +289,53 @@ def _ensure_entity_token(owner_user: Optional[User]) -> None:
     if not owner_user:
         return
 
-    token_value = getattr(owner_user, "token", None)
+    token_value = getattr(owner_user, "entity_token", None)
     if token_value:
         return
 
-        if demo_entry.rubro_id:
-            owner_candidate = (
-                User.query.filter_by(rubro_id=demo_entry.rubro_id, rol="admin")
-                .order_by(User.id.asc())
-                .first()
-            )
+    try:
+        owner_user.entity_token = secrets.token_urlsafe(32)
+        db.session.add(owner_user)
+        db.session.commit()
+    except Exception:
+        current_app.logger.exception(
+            "[auth_helpers] Failed to ensure entity token for owner %s",
+            getattr(owner_user, "id", None),
+        )
+        db.session.rollback()
 
-        if not owner_candidate and demo_entry.rubro_clave:
-            rubro = Rubro.query.filter_by(clave=demo_entry.rubro_clave).first()
-            if rubro:
-                owner_candidate = (
-                    User.query.filter_by(rubro_id=rubro.id, rol="admin")
-                    .order_by(User.id.asc())
-                    .first()
-                )
+    return
+
 
 def get_or_create_owner_entity_token(user: Optional[User]) -> Optional[str]:
-    """Return the persistent entity token for the owner's account.
+    """Return the persistent entity token for the owner's account."""
 
-        if owner_candidate:
-            return owner_candidate
+    if not user:
+        return None
 
-    return None
+    owner_user = _resolve_owner_user(user)
+    if not owner_user:
+        return None
+
+    token_value = getattr(owner_user, "entity_token", None) or getattr(
+        owner_user, "token", None
+    )
+    if token_value:
+        if not getattr(owner_user, "entity_token", None):
+            try:
+                owner_user.entity_token = token_value
+                db.session.add(owner_user)
+                db.session.commit()
+            except Exception:
+                current_app.logger.exception(
+                    "[auth_helpers] Failed to persist legacy token as entity token for owner %s",
+                    getattr(owner_user, "id", None),
+                )
+                db.session.rollback()
+        return getattr(owner_user, "entity_token", None) or token_value
+
+    _ensure_entity_token(owner_user)
+    return getattr(owner_user, "entity_token", None)
 
 
 def _generate_widget_session_token(owner_user: User) -> Tuple[str, Dict[str, Any]]:
