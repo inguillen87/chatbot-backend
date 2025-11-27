@@ -198,6 +198,16 @@ def tenant_profile():
     tenant_info = tenant.to_public_dict()
     tenant_info.setdefault("config", tenant.configuracion or {})
 
+    # Garantizar que el frontend reciba una estructura de menú consistente
+    # aunque el tenant no tenga configuración explícita. El widget espera un
+    # objeto con la clave ``children`` para renderizar las secciones sin
+    # explotar en una desestructuración.
+    config = tenant_info["config"] if isinstance(tenant_info.get("config"), dict) else {}
+    menu_config = config.get("menu") if isinstance(config.get("menu"), dict) else None
+    if menu_config is None or "children" not in menu_config:
+        config.setdefault("menu", {"children": []})
+    tenant_info["config"] = config
+
     canonical_widget_token = _canonical_widget_token(tenant, widget_token)
 
     if explicit_slug_failure:
