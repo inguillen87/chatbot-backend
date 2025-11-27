@@ -72,6 +72,16 @@ class PublicCartUrlTest(unittest.TestCase):
         self.assertEqual(payload["path"], "override")
         self.assertEqual(payload["cart_url"], "https://white.label/app")
 
+    def test_cart_url_resolves_via_widget_token(self):
+        self.tenant.configuracion = {"widget_tokens": ["demo-anon"]}
+        db.session.commit()
+
+        response = self.client.get("/api/pwa/public/cart/url?widget_token=demo-anon")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["tenant_slug"], self.tenant.slug)
+        self.assertIn(self.tenant.slug, payload["cart_url"])
+
 
 if __name__ == "__main__":
     unittest.main()

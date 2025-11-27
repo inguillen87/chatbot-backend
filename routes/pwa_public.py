@@ -19,6 +19,7 @@ from services.catalog_seed import ensure_seed_catalog
 from services.common_utils import parse_precio_flexible
 from routes.catalogo import _formatear_producto
 from services.rewards_demo import reward_profile_for_tenant
+from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 
 
 pwa_public_bp = Blueprint("pwa_public", __name__, url_prefix="/api/pwa/public")
@@ -26,6 +27,30 @@ pwa_public_bp = Blueprint("pwa_public", __name__, url_prefix="/api/pwa/public")
 
 def _require_tenant() -> TenantProfile:
     tenant = getattr(g, "tenant_profile", None)
+
+    if tenant is None:
+        widget_token = (
+            request.args.get("widget_token")
+            or request.headers.get("X-Widget-Token")
+            or request.args.get("entityToken")
+            or request.headers.get("X-Entity-Token")
+        )
+        tenant_slug = request.args.get("tenant") or request.args.get("slug")
+        host_hint = request.headers.get("X-Forwarded-Host") or request.host
+
+        try:
+            tenant = resolve_tenant_only(
+                widget_token=widget_token,
+                tenant_slug=tenant_slug,
+                host=host_hint,
+                require_explicit_slug=False,
+            )
+        except TenantResolutionError:
+            tenant = None
+        else:
+            g.tenant_profile = tenant
+            g.tenant_profile_slug = tenant.slug
+
     if tenant is None:
         abort(
             make_response(
