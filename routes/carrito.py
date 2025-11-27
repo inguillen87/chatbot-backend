@@ -34,6 +34,22 @@ _CORS_ALLOWED_HEADERS = [
 _CORS_EXPOSE_HEADERS = ["Content-Type", "Authorization", "X-Anon-Id", "Anon-Id"]
 
 
+def _tenant_missing_response():
+    return (
+        jsonify(
+            {
+                "error": "Tenant requerido para carrito",
+                "detail": (
+                    "No se pudo resolver el municipio/pyme del widget. "
+                    "Incluí el header X-Tenant o X-Widget-Token, o el parámetro ?tenant= para continuar."
+                ),
+                "action": "select_tenant",
+            }
+        ),
+        400,
+    )
+
+
 def _cors_kwargs(methods: list[str]) -> dict:
     return {
         "origins": ALLOWED_ORIGINS,
@@ -249,7 +265,7 @@ def _carrito_summary_response():
     if tenant and owner:
         return jsonify(_enrich_cart_summary(pyme_carts_data, tenant, owner))
 
-    return jsonify({"error": "Tenant requerido para carrito"}), 400
+    return _tenant_missing_response()
 
 
 @carrito_bp.route('', methods=['GET', 'POST', 'OPTIONS'])
@@ -275,7 +291,7 @@ def agregar():
         return "", 204
 
     if not tenant or not owner:
-        return jsonify({"error": "Tenant requerido para carrito"}), 400
+        return _tenant_missing_response()
 
     if owner:
         item = _lookup_catalog_item(owner, data, tenant)
@@ -316,7 +332,7 @@ def actualizar():
         return "", 204
 
     if not tenant or not owner:
-        return jsonify({"error": "Tenant requerido para carrito"}), 400
+        return _tenant_missing_response()
 
     if owner:
         try:
@@ -359,7 +375,7 @@ def eliminar():
         return "", 204
 
     if not tenant or not owner:
-        return jsonify({"error": "Tenant requerido para carrito"}), 400
+        return _tenant_missing_response()
 
     if owner:
         try:
@@ -400,7 +416,7 @@ def vaciar():
     pyme_carts_data = _get_session_cart_data()
 
     if not tenant or not owner:
-        return jsonify({"error": "Tenant requerido para carrito"}), 400
+        return _tenant_missing_response()
 
     cart = _tenant_cart(pyme_carts_data, tenant)
     cart.clear()
