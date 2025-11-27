@@ -59,10 +59,26 @@ class ChatUserPanelAliasTests(unittest.TestCase):
             "/api/chatuserloginpanel",
             "/chatuserregisterpanel",
             "/chatuserloginpanel",
+            "/api/google-login",
+            "/google-login",
+            "/api/google-client-id",
+            "/google-client-id",
         ]:
             resp = self.client.options(path, headers={"Origin": "https://example.com"})
             self.assertEqual(resp.status_code, 200)
             self.assertEqual(resp.get_json(), {"ok": True})
+
+    def test_google_login_aliases_require_id_token(self):
+        for path in ["/api/google-login", "/google-login"]:
+            resp = self.client.post(path, headers={"Origin": "https://example.com"})
+            self.assertEqual(resp.status_code, 400)
+            self.assertEqual(resp.get_json().get("error"), "id_token requerido")
+
+    def test_google_client_id_aliases_return_payload(self):
+        for path in ["/api/google-client-id", "/google-client-id"]:
+            resp = self.client.get(path, headers={"Origin": "https://example.com"})
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn("client_id", resp.get_json())
 
 
 if __name__ == "__main__":

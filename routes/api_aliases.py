@@ -11,8 +11,10 @@ from flask import Blueprint, jsonify, request
 from routes.auth import (
     chatuser_login_panel,
     chatuser_register_panel,
+    get_google_client_id,
     login as login_view,
     me_perfil as perfil_view,
+    google_login,
 )
 from routes.chat import ask, ask_municipio, ask_pyme
 from routes.carrito import agregar, carrito_root, eliminar, vaciar, actualizar
@@ -120,6 +122,24 @@ def chatuser_login_panel_alias():
     return chatuser_login_panel()
 
 
+@api_aliases_bp.route(
+    "/google-login", methods=["POST", "OPTIONS"], strict_slashes=False
+)
+def google_login_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return google_login()
+
+
+@api_aliases_bp.route(
+    "/google-client-id", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def google_client_id_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return get_google_client_id()
+
+
 @api_aliases_bp.route("/notifications", methods=["GET"], strict_slashes=False)
 def notifications_alias():
     return get_notifications()  # token_requerido inside original view
@@ -182,6 +202,22 @@ def root_chatuser_login_panel_alias():
     if request.method == "OPTIONS":
         return _options_ok()
     return chatuser_login_panel()
+
+
+@public_aliases_bp.route("/google-login", methods=["POST", "OPTIONS"], strict_slashes=False)
+def root_google_login_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return google_login()
+
+
+@public_aliases_bp.route(
+    "/google-client-id", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def root_google_client_id_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return get_google_client_id()
 
 
 @api_aliases_bp.route(
