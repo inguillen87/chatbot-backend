@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Tuple
 
-from flask import Blueprint, abort, g, jsonify, request, session
+from flask import Blueprint, abort, g, jsonify, make_response, request, session
 from sqlalchemy import func
 
 from models import CatalogoItem, MunicipioPost, TenantProfile, User, CatalogoModalidad
@@ -27,7 +27,17 @@ pwa_public_bp = Blueprint("pwa_public", __name__, url_prefix="/api/pwa/public")
 def _require_tenant() -> TenantProfile:
     tenant = getattr(g, "tenant_profile", None)
     if tenant is None:
-        abort(404, description="Tenant no encontrado")
+        abort(
+            make_response(
+                jsonify(
+                    {
+                        "error": "Tenant no encontrado",
+                        "detail": "Revisa el slug o la URL del widget; no se pudo resolver el tenant para el carrito público.",
+                    }
+                ),
+                404,
+            )
+        )
     return tenant
 
 
