@@ -376,7 +376,7 @@ def create_app(config_class=Config):
     from routes.pedidos import pedidos_bp
     from routes.carrito import carrito_bp
     from routes.catalog_import import catalog_import_bp
-    from routes.checkout import checkout_bp
+    from routes.checkout import checkout_bp, pedidos_checkout_bp
     from routes.estadisticas import estadisticas_bp
     from routes.empleados import empleados_bp
     from routes.categorias import categorias_bp
@@ -473,6 +473,7 @@ def create_app(config_class=Config):
     app.register_blueprint(pedidos_from_file_bp)
     app.register_blueprint(kits_bp)
     app.register_blueprint(checkout_bp)
+    app.register_blueprint(pedidos_checkout_bp)
     app.register_blueprint(estadisticas_bp)
     app.register_blueprint(empleados_bp)
     app.register_blueprint(categorias_bp)
