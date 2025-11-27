@@ -12,6 +12,11 @@ document_intelligence_bp = Blueprint(
     __name__,
     url_prefix="/api/pymes/<int:pyme_id>/document-intelligence",
 )
+document_intelligence_public_bp = Blueprint(
+    "document_intelligence_public",
+    __name__,
+    url_prefix="/pymes/<int:pyme_id>/document-intelligence",
+)
 
 
 def _build_columns(columns: List[Any]) -> List[dict[str, str]]:
@@ -29,9 +34,7 @@ def document_intelligence_preview_options(pyme_id: int):
     return "", 204
 
 
-@document_intelligence_bp.route("/preview", methods=["POST"])
-@token_requerido
-def document_intelligence_preview(current_user, pyme_id: int):
+def _document_intelligence_preview(current_user, pyme_id: int):
     """Return a lightweight preview of the uploaded spreadsheet or CSV file."""
 
     if getattr(current_user, "id", None) != pyme_id:
@@ -84,4 +87,25 @@ def document_intelligence_preview(current_user, pyme_id: int):
         response_payload["headerRow"] = header_row
 
     return jsonify(response_payload)
+
+
+@document_intelligence_bp.route("/preview", methods=["POST"])
+@token_requerido
+def document_intelligence_preview(current_user, pyme_id: int):
+    return _document_intelligence_preview(current_user, pyme_id)
+
+
+@document_intelligence_public_bp.route("/preview", methods=["OPTIONS"])
+def document_intelligence_preview_options_public(pyme_id: int):
+    """Public alias for OPTIONS preflight when hitting /pymes/... paths."""
+
+    return "", 204
+
+
+@document_intelligence_public_bp.route("/preview", methods=["POST"])
+@token_requerido
+def document_intelligence_preview_public(current_user, pyme_id: int):
+    """Public alias that reuses the API handler for /pymes/... requests."""
+
+    return _document_intelligence_preview(current_user, pyme_id)
 
