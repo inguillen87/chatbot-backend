@@ -815,17 +815,30 @@ def _dedupe_sorted(values, fallback: str) -> list[str]:
     return cleaned
 
 
-@municipal_bp.route('/usuarios', methods=['GET'])
+@municipal_bp.route('/usuarios', methods=['GET', 'POST', 'OPTIONS'])
 @token_requerido
 @admin_o_empleado_requerido
 def municipal_usuarios(current_user):
-    tag = request.args.get('tag')
-    q = request.args.get('q')
-    marketing = request.args.get('acepta_marketing')
-    sort = request.args.get('sort')
-    order = request.args.get('order')
-    limit = request.args.get('limit')
-    offset = request.args.get('offset')
+    if request.method == 'OPTIONS':
+        return "", 204
+
+    if request.method == 'POST':
+        payload = request.get_json(silent=True) or {}
+        tag = payload.get('tag') or request.args.get('tag')
+        q = payload.get('q') or request.args.get('q')
+        marketing = payload.get('acepta_marketing') or request.args.get('acepta_marketing')
+        sort = payload.get('sort') or request.args.get('sort')
+        order = payload.get('order') or request.args.get('order')
+        limit = payload.get('limit') or request.args.get('limit')
+        offset = payload.get('offset') or request.args.get('offset')
+    else:
+        tag = request.args.get('tag')
+        q = request.args.get('q')
+        marketing = request.args.get('acepta_marketing')
+        sort = request.args.get('sort')
+        order = request.args.get('order')
+        limit = request.args.get('limit')
+        offset = request.args.get('offset')
     return jsonify(
         _obtener_clientes(
             current_user,

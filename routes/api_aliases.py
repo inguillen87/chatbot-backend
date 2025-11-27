@@ -12,6 +12,7 @@ from routes.auth import (
     chatuser_login_panel,
     chatuser_register_panel,
     get_google_client_id,
+    regenerar_token_integracion,
     login as login_view,
     me_perfil as perfil_view,
     google_login,
@@ -138,6 +139,15 @@ def google_client_id_alias():
     if request.method == "OPTIONS":
         return _options_ok()
     return get_google_client_id()
+
+
+@api_aliases_bp.route(
+    "/integracion/regenerar-token", methods=["POST", "OPTIONS"], strict_slashes=False
+)
+def regenerar_token_integracion_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return regenerar_token_integracion()  # token_requerido en la vista original
 
 
 @api_aliases_bp.route("/notifications", methods=["GET"], strict_slashes=False)
