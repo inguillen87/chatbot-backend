@@ -224,11 +224,6 @@ def resolve_tenant_only(
 
     tenant = _tenant_by_slug(tenant_slug)
 
-    if not tenant and tenant_slug and require_explicit_slug:
-        raise TenantResolutionError(
-            f"Tenant no encontrado para el slug solicitado: {tenant_slug}"
-        )
-
     if not tenant:
         tenant = _tenant_by_number(whatsapp_destination_number)
 

@@ -853,6 +853,22 @@ def municipal_categorias(current_user):
     }
     return jsonify(payload)
 
+
+@municipal_bp.route("/tickets/categorias", methods=["GET", "OPTIONS"])
+@token_requerido
+@require_role("admin", "empleado")
+def municipal_tickets_categorias(current_user):
+    """Alias de categorías pensado para el panel de tickets municipales."""
+
+    if request.method == "OPTIONS":
+        return "", 204
+
+    categorias = list(TODAS_LAS_CATEGORIAS_UNICAS)
+    return jsonify({
+        "categorias": categorias,
+        "categories": categorias,
+    })
+
 @municipal_bp.route('/estados', methods=['GET', 'OPTIONS'])
 def municipal_estados():
     """Devuelve la lista pública de estados permitidos para tickets municipales."""
