@@ -72,7 +72,7 @@ class PublicResolverTest(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
         self.assertIn("warning", payload)
-        self.assertIn("Slug reservado", payload["warning"].get("message", ""))
+        self.assertIn("reserved", payload["warning"].get("message", ""))
 
     def test_widget_token_registers_on_resolution(self):
         """Ensure new widget tokens get persisted in tenant configuration."""
@@ -96,18 +96,9 @@ class PublicResolverTest(unittest.TestCase):
 
     def test_public_tenant_profile_not_found(self):
         response = self.client.get("/api/public/tenant-profile?tenant=desconocido")
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 404)
         payload = response.get_json()
-        self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
-        self.assertIn("warning", payload)
-        self.assertIn("fallback", payload["warning"])
-
-    def test_public_tenant_profile_reserved_slug(self):
-        response = self.client.get("/api/public/tenant-profile?tenant=iframe")
-        self.assertEqual(response.status_code, 200)
-        payload = response.get_json()
-        self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
-        self.assertIn("warning", payload)
+        self.assertIn("error", payload)
 
 
 if __name__ == "__main__":

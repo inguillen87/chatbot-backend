@@ -230,9 +230,7 @@ def resolve_tenant_only(
         )
 
     if not tenant:
-        tenant = _tenant_by_number(whatsapp_destination_number) or _tenant_by_widget_token(
-            widget_token
-        )
+        tenant = _tenant_by_number(whatsapp_destination_number)
 
     if not tenant:
         tenant = _tenant_by_domain(host or request.host)
@@ -244,6 +242,7 @@ def resolve_tenant_only(
         tenant = _tenant_by_slug(fallback_slug)
     if not tenant:
         tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
+
     if not tenant:
         raise TenantResolutionError("Tenant no encontrado para el contexto dado")
 
