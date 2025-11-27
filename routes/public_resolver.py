@@ -244,3 +244,37 @@ def tenant_profile():
 
     return response
 
+
+@public_resolver_bp.route(
+    "/municipios", methods=["GET", "OPTIONS"], provide_automatic_options=False
+)
+@cross_origin(origins="*", automatic_options=False)
+def list_municipios():
+    """Lista pública de tenants tipo municipio con un payload JSON estable.
+
+    El widget la consulta para poblar catálogos; respondemos siempre JSON para
+    evitar que un 404 u otra página HTML dispare un ApiError en el frontend.
+    """
+
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+
+    tenants = (
+        TenantProfile.query.filter_by(tipo="municipio")
+        .order_by(TenantProfile.id.asc())
+        .all()
+    )
+
+    payload = [
+        {
+            "id": tenant.id,
+            "slug": tenant.slug,
+            "nombre": tenant.nombre,
+            "logo_url": tenant.logo_url,
+            "dominio": tenant.dominio,
+        }
+        for tenant in tenants
+    ]
+
+    return jsonify({"municipios": payload})
+
