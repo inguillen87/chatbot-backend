@@ -197,6 +197,8 @@ def obtener_productos():
 
     tenant, owner = _resolve_public_owner(require_explicit=True)
     if not owner or not tenant:
+        tenant, owner = _resolve_public_owner(require_explicit=False)
+    if not owner or not tenant:
         return jsonify({"error": "Tenant requerido para catálogo"}), 400
 
     ensure_seed_catalog(owner, tenant)
