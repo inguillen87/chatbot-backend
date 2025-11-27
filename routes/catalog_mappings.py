@@ -20,14 +20,7 @@ def catalog_mappings_options(pyme_id):
 
     return _options_ok()
 
-# Alias sin el prefijo /api para compatibilidad con paneles existentes
-catalog_mappings_alias_bp = Blueprint(
-    'catalog_mappings_alias', __name__, url_prefix='/pymes/<int:pyme_id>/catalog-mappings'
-)
-
-@catalog_mappings_bp.route('', methods=['GET', 'OPTIONS'])
-@token_requerido
-def get_all_mappings(user, pyme_id):
+def _get_all_mappings(pyme_id):
     """Returns a list of all catalog mapping configurations for a given pymeId."""
     if request.method == 'OPTIONS':
         return '', 204
@@ -35,9 +28,8 @@ def get_all_mappings(user, pyme_id):
     mappings = catalog_mapping_service.get_all_for_pyme(pyme_id)
     return jsonify(mappings), 200
 
-@catalog_mappings_bp.route('', methods=['POST', 'OPTIONS'])
-@token_requerido
-def create_mapping(user, pyme_id):
+
+def _create_mapping(pyme_id):
     """Creates a new catalog mapping configuration."""
     if request.method == 'OPTIONS':
         return '', 204
@@ -49,9 +41,8 @@ def create_mapping(user, pyme_id):
     new_mapping = catalog_mapping_service.create(pyme_id, data)
     return jsonify(new_mapping), 201
 
-@catalog_mappings_bp.route('/<string:mapping_id>', methods=['GET', 'OPTIONS'])
-@token_requerido
-def get_single_mapping(user, pyme_id, mapping_id):
+
+def _get_single_mapping(pyme_id, mapping_id):
     """Returns the complete details for a single mapping configuration."""
     if request.method == 'OPTIONS':
         return '', 204
@@ -61,9 +52,8 @@ def get_single_mapping(user, pyme_id, mapping_id):
         return jsonify({"error": "Mapping not found"}), 404
     return jsonify(mapping), 200
 
-@catalog_mappings_bp.route('/<string:mapping_id>', methods=['PUT', 'OPTIONS'])
-@token_requerido
-def update_mapping(user, pyme_id, mapping_id):
+
+def _update_mapping(pyme_id, mapping_id):
     """Updates an existing mapping configuration."""
     if request.method == 'OPTIONS':
         return '', 204
@@ -80,9 +70,8 @@ def update_mapping(user, pyme_id, mapping_id):
     updated_mapping = catalog_mapping_service.update(mapping_id, data)
     return jsonify(updated_mapping), 200
 
-@catalog_mappings_bp.route('/<string:mapping_id>', methods=['DELETE', 'OPTIONS'])
-@token_requerido
-def delete_mapping(user, pyme_id, mapping_id):
+
+def _delete_mapping(pyme_id, mapping_id):
     """Deletes a mapping configuration."""
     if request.method == 'OPTIONS':
         return '', 204
@@ -98,6 +87,35 @@ def delete_mapping(user, pyme_id, mapping_id):
         # This case should ideally not be reached if the above check passes
         return jsonify({"error": "Mapping not found during deletion"}), 404
 
+@catalog_mappings_bp.route('', methods=['GET'])
+@token_requerido
+def get_all_mappings(user, pyme_id):
+    return _get_all_mappings(pyme_id)
+
+
+@catalog_mappings_bp.route('', methods=['POST'])
+@token_requerido
+def create_mapping(user, pyme_id):
+    return _create_mapping(pyme_id)
+
+
+@catalog_mappings_bp.route('/<string:mapping_id>', methods=['GET'])
+@token_requerido
+def get_single_mapping(user, pyme_id, mapping_id):
+    return _get_single_mapping(pyme_id, mapping_id)
+
+
+@catalog_mappings_bp.route('/<string:mapping_id>', methods=['PUT'])
+@token_requerido
+def update_mapping(user, pyme_id, mapping_id):
+    return _update_mapping(pyme_id, mapping_id)
+
+
+@catalog_mappings_bp.route('/<string:mapping_id>', methods=['DELETE'])
+@token_requerido
+def delete_mapping(user, pyme_id, mapping_id):
+    return _delete_mapping(pyme_id, mapping_id)
+
 
 @catalog_mappings_public_bp.route('', methods=['OPTIONS'])
 def catalog_mappings_public_options(pyme_id):
@@ -111,7 +129,7 @@ def catalog_mappings_public_options(pyme_id):
 def get_all_mappings_public(user, pyme_id):
     """Expose GET mappings under /pymes to match the widget paths."""
 
-    return get_all_mappings(user, pyme_id)
+    return _get_all_mappings(pyme_id)
 
 
 @catalog_mappings_public_bp.route('', methods=['POST'])
@@ -119,7 +137,7 @@ def get_all_mappings_public(user, pyme_id):
 def create_mapping_public(user, pyme_id):
     """Expose POST mappings under /pymes to match the widget paths."""
 
-    return create_mapping(user, pyme_id)
+    return _create_mapping(pyme_id)
 
 
 @catalog_mappings_public_bp.route('/<string:mapping_id>', methods=['GET'])
@@ -127,7 +145,7 @@ def create_mapping_public(user, pyme_id):
 def get_single_mapping_public(user, pyme_id, mapping_id):
     """Expose single mapping fetch under /pymes to match the widget paths."""
 
-    return get_single_mapping(user, pyme_id, mapping_id)
+    return _get_single_mapping(pyme_id, mapping_id)
 
 
 @catalog_mappings_public_bp.route('/<string:mapping_id>', methods=['PUT'])
@@ -135,7 +153,7 @@ def get_single_mapping_public(user, pyme_id, mapping_id):
 def update_mapping_public(user, pyme_id, mapping_id):
     """Expose update under /pymes to match the widget paths."""
 
-    return update_mapping(user, pyme_id, mapping_id)
+    return _update_mapping(pyme_id, mapping_id)
 
 
 @catalog_mappings_public_bp.route('/<string:mapping_id>', methods=['DELETE'])
@@ -143,4 +161,4 @@ def update_mapping_public(user, pyme_id, mapping_id):
 def delete_mapping_public(user, pyme_id, mapping_id):
     """Expose delete under /pymes to match the widget paths."""
 
-    return delete_mapping(user, pyme_id, mapping_id)
+    return _delete_mapping(pyme_id, mapping_id)
