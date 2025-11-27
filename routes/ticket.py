@@ -799,6 +799,19 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
         },
     })
 
+
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/assign', methods=['POST'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/asignacion', methods=['POST'])
+@token_requerido
+@require_role('admin', 'empleado')
+def asignar_ticket_alias(current_user: User, tipo: str, ticket_id: int):
+    """Alias en inglés para compatibilidad con frontends que usan `/assign`.
+
+    Reutiliza la lógica de :func:`asignar_ticket` para evitar duplicaciones.
+    """
+
+    return asignar_ticket(current_user, tipo, ticket_id)
+
 @ticket_bp.route('/tickets/pyme/<int:ticket_id>', methods=['GET'])
 @token_requerido
 def get_ticket_details_pyme(current_user: User, ticket_id: int):
@@ -1384,6 +1397,28 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
         "timeline": timeline,
         "historial_chat": historial_chat,
     })
+
+
+@ticket_bp.route('/tickets/<int:ticket_id>/knowledge-base/suggestions', methods=['GET'])
+@anon_o_token_requerido
+def get_ticket_knowledge_base_suggestions(current_user: User, owner_user: User, anon_id: str, ticket_id: int):
+    """Devuelve sugerencias de base de conocimiento para un ticket.
+
+    Por ahora se devuelve una lista vacía, pero se mantiene la validación de
+    permisos para evitar exponer tickets a usuarios no autorizados.
+    """
+
+    ticket_obj = db.session.get(MunicipioTicket, ticket_id)
+    if not ticket_obj:
+        return jsonify({"error": "Ticket no encontrado."}), 404
+
+    es_agente = current_user and current_user.tipo_chat == "municipio"
+    es_dueno = current_user and ticket_obj.user_id == current_user.id
+    es_anon = anon_id and ticket_obj.anon_id == anon_id
+    if not (es_agente or es_dueno or es_anon):
+        return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+
+    return jsonify({"sugerencias": []})
 
 # ---------- CHAT EN VIVO: RESPONDER CIUDADANO (SOLO TOKEN) ----------
 @ticket_bp.route('/tickets/chat/<int:ticket_id>/responder_ciudadano', methods=['POST'])
