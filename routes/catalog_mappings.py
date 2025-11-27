@@ -22,14 +22,18 @@ def catalog_mappings_options(pyme_id):
 
 def _get_all_mappings(pyme_id):
     """Returns a list of all catalog mapping configurations for a given pymeId."""
-    # To unblock the frontend immediately, this can return an empty array.
-    # The service implementation will handle the actual fetching.
+    if request.method == 'OPTIONS':
+        return '', 204
+
     mappings = catalog_mapping_service.get_all_for_pyme(pyme_id)
     return jsonify(mappings), 200
 
 
 def _create_mapping(pyme_id):
     """Creates a new catalog mapping configuration."""
+    if request.method == 'OPTIONS':
+        return '', 204
+
     data = request.get_json()
     if not data:
         return jsonify({"error": "Invalid data"}), 400
@@ -40,6 +44,9 @@ def _create_mapping(pyme_id):
 
 def _get_single_mapping(pyme_id, mapping_id):
     """Returns the complete details for a single mapping configuration."""
+    if request.method == 'OPTIONS':
+        return '', 204
+
     mapping = catalog_mapping_service.get_by_id(mapping_id)
     if not mapping or mapping['pymeId'] != pyme_id:
         return jsonify({"error": "Mapping not found"}), 404
@@ -48,6 +55,9 @@ def _get_single_mapping(pyme_id, mapping_id):
 
 def _update_mapping(pyme_id, mapping_id):
     """Updates an existing mapping configuration."""
+    if request.method == 'OPTIONS':
+        return '', 204
+
     data = request.get_json()
     if not data:
         return jsonify({"error": "Invalid data"}), 400
@@ -63,6 +73,9 @@ def _update_mapping(pyme_id, mapping_id):
 
 def _delete_mapping(pyme_id, mapping_id):
     """Deletes a mapping configuration."""
+    if request.method == 'OPTIONS':
+        return '', 204
+
     # First, check if the mapping exists and belongs to the pyme
     existing_mapping = catalog_mapping_service.get_by_id(mapping_id)
     if not existing_mapping or existing_mapping['pymeId'] != pyme_id:
