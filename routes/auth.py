@@ -83,7 +83,9 @@ def _resolve_owner_token(user: User) -> Optional[str]:
             if looked_up:
                 owner_user = looked_up
 
-    token_value = getattr(owner_user, "token", None)
+    token_value = getattr(owner_user, "entity_token", None) or getattr(
+        owner_user, "token", None
+    )
     if token_value:
         return token_value
 
@@ -102,10 +104,10 @@ def _resolve_owner_token(user: User) -> Optional[str]:
         return None
 
     try:
-        owner_user.token = generate_token()
+        owner_user.entity_token = secrets.token_urlsafe(32)
         db.session.add(owner_user)
         db.session.commit()
-        return owner_user.token
+        return owner_user.entity_token
     except Exception:
         current_app.logger.exception(
             "[auth] Failed to generate fallback owner token for user %s",
@@ -124,6 +126,7 @@ def _include_entity_token_fields(
 
     if token_value:
         payload.setdefault("entity_token", token_value)
+        payload.setdefault("entityToken", token_value)
         payload.setdefault("owner_token", token_value)
         payload.setdefault("widget_embed_token", token_value)
         payload.setdefault("widget_embed_token_kind", "entity")
@@ -236,6 +239,9 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     plan_metadata = get_plan_metadata(profile_data.get("plan"))
     profile_data["plan_detalle"] = serialize_plan_for_response(plan_metadata)
     profile_data["planes_disponibles"] = serialize_plan_catalog()
+    tenant_slug_value = getattr(user, "tenant_slug", None)
+    profile_data["tenant_slug"] = tenant_slug_value
+    profile_data["tenantSlug"] = tenant_slug_value
 
     owner_token = _resolve_owner_token(user)
     widget_session_active = bool(getattr(g, "widget_session", False))
@@ -266,11 +272,13 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
 
     if owner_token:
         profile_data["entity_token"] = owner_token
+        profile_data["entityToken"] = owner_token
         profile_data["owner_token"] = owner_token
         profile_data["widget_embed_token"] = owner_token
         profile_data["widget_embed_token_kind"] = "entity"
     elif getattr(user, "token", None):
         profile_data["entity_token"] = user.token
+        profile_data.setdefault("entityToken", user.token)
         profile_data.setdefault("widget_embed_token", user.token)
         profile_data.setdefault("widget_embed_token_kind", "legacy")
 
@@ -477,6 +485,8 @@ def login():
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
         "categorias": getattr(user, "categorias_lista", []),
+        "tenant_slug": getattr(user, "tenant_slug", None),
+        "tenantSlug": getattr(user, "tenant_slug", None),
     }
 
     entity_token_value = _include_entity_token_fields(response_payload, owner_token)
@@ -504,6 +514,39 @@ def login():
     if entity_token_value:
         response.headers.setdefault("X-Entity-Token", entity_token_value)
     return response
+
+
+@auth_bp.route("/integracion/regenerar-token", methods=["POST"])
+@token_requerido
+def regenerar_token_integracion(user):
+    """Regenerates the persistent integration token for the current owner."""
+
+    owner_user = getattr(g, "owner_user", None) or user
+    empresa_id = getattr(owner_user, "empresa_id", None)
+    if empresa_id:
+        parent = User.query.get(empresa_id)
+        if parent:
+            owner_user = parent
+
+    try:
+        owner_user.entity_token = None
+        db.session.add(owner_user)
+        db.session.commit()
+    except Exception:
+        current_app.logger.exception(
+            "[integracion] No se pudo limpiar el entity_token para regeneración"
+        )
+        db.session.rollback()
+        return jsonify({"error": "No se pudo regenerar el token de integración."}), 500
+
+    owner_token = _resolve_owner_token(owner_user)
+    if not owner_token:
+        return jsonify({"error": "No se pudo generar un token estable."}), 500
+
+    response_payload = {"entity_token": owner_token, "entityToken": owner_token}
+    resp = jsonify(response_payload)
+    resp.headers.setdefault("X-Entity-Token", owner_token)
+    return resp
 
 @auth_bp.route('/google-client-id', methods=['GET'])
 def get_google_client_id():
@@ -578,6 +621,8 @@ def google_login():
             "rubro": rubro_nombre,
             "tipo_chat": tipo_chat,
             "categorias": getattr(user, "categorias_lista", []),
+            "tenant_slug": getattr(user, "tenant_slug", None),
+            "tenantSlug": getattr(user, "tenant_slug", None),
         }
 
         entity_token_value = _include_entity_token_fields(response_payload, owner_token)
@@ -762,6 +807,8 @@ def register():
             "rol": user.rol,
             "tipo_chat": user.tipo_chat,
             "empresa_id": user.empresa_id,
+            "tenant_slug": getattr(user, "tenant_slug", None),
+            "tenantSlug": getattr(user, "tenant_slug", None),
         }), 201
     except Exception as e:
         db.session.rollback()
@@ -874,6 +921,8 @@ def register_from_widget(user):
             "rol": nuevo.rol,
             "tipo_chat": nuevo.tipo_chat,
             "empresa_id": nuevo.empresa_id,
+            "tenant_slug": getattr(nuevo, "tenant_slug", None),
+            "tenantSlug": getattr(nuevo, "tenant_slug", None),
         })
         if anon_id:
             resp.headers["X-Anon-Id"] = anon_id
@@ -935,6 +984,8 @@ def login_from_widget(owner_user):
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
         "categorias": getattr(user, "categorias_lista", []),
+        "tenant_slug": getattr(user, "tenant_slug", None),
+        "tenantSlug": getattr(user, "tenant_slug", None),
     }
 
     entity_token_value = _include_entity_token_fields(response_payload, owner_token)

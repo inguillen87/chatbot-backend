@@ -12,7 +12,8 @@ from models import User
 import jwt
 
 from extensions import db
-from models import Rubro, User, generate_token
+from models import Rubro, User
+import secrets
 from services.demo_registry import demo_rubro_for_token
 
 
@@ -308,12 +309,12 @@ def _ensure_entity_token(owner_user: Optional[User]) -> None:
     if not owner_user:
         return
 
-    token_value = getattr(owner_user, "token", None)
+    token_value = getattr(owner_user, "entity_token", None)
     if token_value:
         return
 
     try:
-        owner_user.token = generate_token()
+        owner_user.entity_token = secrets.token_urlsafe(32)
         db.session.add(owner_user)
         db.session.commit()
     except Exception:
@@ -334,12 +335,25 @@ def get_or_create_owner_entity_token(user: Optional[User]) -> Optional[str]:
     if not owner_user:
         return None
 
-    token_value = getattr(owner_user, "token", None)
+    token_value = getattr(owner_user, "entity_token", None) or getattr(
+        owner_user, "token", None
+    )
     if token_value:
-        return token_value
+        if not getattr(owner_user, "entity_token", None):
+            try:
+                owner_user.entity_token = token_value
+                db.session.add(owner_user)
+                db.session.commit()
+            except Exception:
+                current_app.logger.exception(
+                    "[auth_helpers] Failed to persist legacy token as entity token for owner %s",
+                    getattr(owner_user, "id", None),
+                )
+                db.session.rollback()
+        return getattr(owner_user, "entity_token", None) or token_value
 
     _ensure_entity_token(owner_user)
-    return getattr(owner_user, "token", None)
+    return getattr(owner_user, "entity_token", None)
 
 
 def _generate_widget_session_token(owner_user: User) -> Tuple[str, Dict[str, Any]]:
