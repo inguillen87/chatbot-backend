@@ -43,13 +43,19 @@ def saldo():
     if request.method == "OPTIONS":
         return "", 204
 
-    tenant_arg = request.headers.get("X-Tenant") or request.args.get("tenant") or request.args.get("tenant_slug")
+    tenant_arg = (
+        request.headers.get("X-Tenant")
+        or request.args.get("tenant")
+        or request.args.get("tenant_slug")
+    )
+    tenant_id = request.headers.get("X-Tenant-Id") or request.args.get("tenant_id")
     widget_token = request.headers.get("X-Widget-Token") or request.args.get("widget_token")
     try:
         tenant, user, _ = resolve_tenant_and_user(
             whatsapp_destination_number=request.headers.get("X-Whatsapp-Dst"),
             widget_token=widget_token,
             tenant_slug=tenant_arg,
+            tenant_id=tenant_id,
             current_user=getattr(g, "user", None),
         )
     except TenantResolutionError as exc:
@@ -66,7 +72,28 @@ def saldo():
         return jsonify({"tenant_id": None, "saldo": 0, "anonId": getattr(user, "anon_id", None)})
 
     saldo_actual = recompensas_service().obtener_saldo(user)
-    return jsonify({"tenant_id": tenant.id, "saldo": saldo_actual, "anonId": getattr(user, "anon_id", None)})
+    limit = request.args.get("limit", type=int) or 5
+    include_history = request.args.get("include_history") in {"1", "true", "True"}
+    movimientos = []
+    if include_history:
+        for tx in recompensas_service().historial(user)[:limit]:
+            movimientos.append(
+                {
+                    "tipo": tx.tipo,
+                    "delta": tx.delta,
+                    "saldo_final": tx.saldo_final,
+                    "timestamp": tx.created_at.isoformat() if tx.created_at else None,
+                }
+            )
+
+    return jsonify(
+        {
+            "tenant_id": tenant.id,
+            "saldo": saldo_actual,
+            "anonId": getattr(user, "anon_id", None),
+            "movimientos": movimientos,
+        }
+    )
 
 
 @puntos_public_bp.route("/saldo", methods=["GET", "OPTIONS"], strict_slashes=False)
@@ -83,13 +110,19 @@ def historial():
     if request.method == "OPTIONS":
         return "", 204
 
-    tenant_arg = request.headers.get("X-Tenant") or request.args.get("tenant") or request.args.get("tenant_slug")
+    tenant_arg = (
+        request.headers.get("X-Tenant")
+        or request.args.get("tenant")
+        or request.args.get("tenant_slug")
+    )
+    tenant_id = request.headers.get("X-Tenant-Id") or request.args.get("tenant_id")
     widget_token = request.headers.get("X-Widget-Token") or request.args.get("widget_token")
     try:
         tenant, user, _ = resolve_tenant_and_user(
             whatsapp_destination_number=request.headers.get("X-Whatsapp-Dst"),
             widget_token=widget_token,
             tenant_slug=tenant_arg,
+            tenant_id=tenant_id,
             current_user=getattr(g, "user", None),
         )
     except TenantResolutionError as exc:

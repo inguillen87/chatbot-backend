@@ -1,6 +1,9 @@
 import io
+import io
 import logging
 from typing import Dict, List
+
+import logging
 
 import pandas as pd
 from flask import Blueprint, jsonify, request, session, g
@@ -8,10 +11,11 @@ from flask_cors import cross_origin
 from sqlalchemy import func
 
 from database import db
-from models import CatalogoItem
+from models import CatalogoItem, PedidoConversacional
 from routes.catalogo import _formatear_producto
 from routes.productos import _resolve_public_owner
 from services.cart import _get_pyme_cart
+from services.gcs_service import upload_to_gcs
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
 from services.vision_extractor import extract_table_from_file
 from config import ALLOWED_ORIGINS
@@ -109,22 +113,45 @@ def pedidos_desde_archivo():
     archivo = request.files.get("archivo")
     if not archivo:
         return _json_error(400, "archivo_requerido", "Archivo requerido")
+    if not archivo.filename:
+        return _json_error(400, "archivo_sin_nombre", "Archivo sin nombre")
 
-    tenant_slug = request.headers.get("X-Tenant") or request.args.get("tenant")
+    extension = archivo.filename.rsplit(".", 1)[-1].lower() if "." in archivo.filename else ""
+    allowed = {"pdf", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "webp"}
+    if extension not in allowed:
+        return _json_error(400, "formato_no_permitido", "Formato no permitido. Usa PDF, Excel o imagen.")
+
+    tenant_slug = request.headers.get("X-Tenant") or request.args.get("tenant") or request.args.get("tenant_slug")
+    tenant_id = request.headers.get("X-Tenant-Id") or request.args.get("tenant_id")
+    user = getattr(g, "user", None)
+    owner = None
     try:
-        tenant, owner, _ = resolve_tenant_and_user(
-            tenant_slug=tenant_slug, current_user=getattr(g, "user", None)
+        tenant, user, _ = resolve_tenant_and_user(
+            tenant_slug=tenant_slug,
+            tenant_id=tenant_id,
+            current_user=user,
+            widget_token=request.headers.get("X-Widget-Token") or request.args.get("widget_token"),
         )
     except TenantResolutionError:
         tenant, owner = _resolve_public_owner()
         if not tenant or not owner:
             return _json_error(404, "tenant_no_encontrado", "Tenant no encontrado")
 
+    if not owner:
+        owner = getattr(tenant, "municipio", None) or getattr(tenant, "pyme", None)
+
     try:
         contenido = archivo.read()
     except Exception as exc:  # noqa: BLE001
         logger.exception("Error al leer archivo de nota de pedido", exc_info=exc)
         return _json_error(400, "archivo_ilegible", "No se pudo leer el archivo subido")
+
+    if not contenido:
+        return _json_error(400, "archivo_vacio", "El archivo está vacío")
+
+    upload_meta = upload_to_gcs(archivo)
+    if not upload_meta or not upload_meta.get("public_url"):
+        return _json_error(500, "upload_fallido", "No se pudo guardar el archivo")
 
     try:
         rows = _extract_rows(contenido)
@@ -159,5 +186,40 @@ def pedidos_desde_archivo():
             )
             enriched.append({"catalogo_item_id": item.id, "cantidad": it.get("cantidad", 1), **formatted})
 
-    return jsonify({"tenant_id": tenant.id, "items": enriched, "no_encontrados": not_found})
+    pedido = PedidoConversacional(
+        tenant_id=tenant.id,
+        user_id=getattr(user, "id", None) or owner.id,
+        tipo="nota_de_pedido",
+        estado="confirmado",
+        items=[
+            {
+                "archivo_url": upload_meta.get("public_url"),
+                "archivo_nombre": upload_meta.get("original_name") or archivo.filename,
+                "items_detectados": enriched,
+                "no_encontrados": not_found,
+                "origen": request.headers.get("X-Checkout-Origin")
+                or request.args.get("origen")
+                or "web",
+            }
+        ],
+        monto_monetario=0,
+        monto_puntos=0,
+        anon_id=getattr(user, "anon_id", None),
+    )
+    db.session.add(pedido)
+    db.session.commit()
+
+    return (
+        jsonify(
+            {
+                "tenant_id": tenant.id,
+                "items": enriched,
+                "no_encontrados": not_found,
+                "pedido_id": pedido.id,
+                "archivo_url": upload_meta.get("public_url"),
+                "tipo": pedido.tipo,
+            }
+        ),
+        201,
+    )
 
