@@ -84,6 +84,7 @@ def mercadopago_webhook():
                 status = payment_info.get("status")
 
         pedido.mp_payment_id = str(payment_id)
+        pedido.mp_status = status
         if status == "approved":
             pedido.estado = "pagado"
         else:
