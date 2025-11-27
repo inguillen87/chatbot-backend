@@ -2,9 +2,23 @@ from flask import Blueprint, jsonify, request
 from services.catalog_mapping_service import catalog_mapping_service
 from routes.auth import token_requerido
 
+def _options_ok():
+    return "", 204
+
+
 # Note: The user requested the URL prefix /api/pymes/:pymeId/catalog-mappings
 # The :pymeId part is a dynamic parameter in Flask, written as <int:pyme_id>
 catalog_mappings_bp = Blueprint('catalog_mappings', __name__, url_prefix='/api/pymes/<int:pyme_id>/catalog-mappings')
+catalog_mappings_public_bp = Blueprint(
+    'catalog_mappings_public', __name__, url_prefix='/pymes/<int:pyme_id>/catalog-mappings'
+)
+
+
+@catalog_mappings_bp.route('', methods=['OPTIONS'])
+def catalog_mappings_options(pyme_id):
+    """Return an empty 204 for CORS preflight on the API prefix."""
+
+    return _options_ok()
 
 @catalog_mappings_bp.route('', methods=['GET'])
 @token_requerido
@@ -65,3 +79,50 @@ def delete_mapping(user, pyme_id, mapping_id):
     else:
         # This case should ideally not be reached if the above check passes
         return jsonify({"error": "Mapping not found during deletion"}), 404
+
+
+@catalog_mappings_public_bp.route('', methods=['OPTIONS'])
+def catalog_mappings_public_options(pyme_id):
+    """Return an empty 204 for CORS preflight on the public prefix."""
+
+    return _options_ok()
+
+
+@catalog_mappings_public_bp.route('', methods=['GET'])
+@token_requerido
+def get_all_mappings_public(user, pyme_id):
+    """Expose GET mappings under /pymes to match the widget paths."""
+
+    return get_all_mappings(user, pyme_id)
+
+
+@catalog_mappings_public_bp.route('', methods=['POST'])
+@token_requerido
+def create_mapping_public(user, pyme_id):
+    """Expose POST mappings under /pymes to match the widget paths."""
+
+    return create_mapping(user, pyme_id)
+
+
+@catalog_mappings_public_bp.route('/<string:mapping_id>', methods=['GET'])
+@token_requerido
+def get_single_mapping_public(user, pyme_id, mapping_id):
+    """Expose single mapping fetch under /pymes to match the widget paths."""
+
+    return get_single_mapping(user, pyme_id, mapping_id)
+
+
+@catalog_mappings_public_bp.route('/<string:mapping_id>', methods=['PUT'])
+@token_requerido
+def update_mapping_public(user, pyme_id, mapping_id):
+    """Expose update under /pymes to match the widget paths."""
+
+    return update_mapping(user, pyme_id, mapping_id)
+
+
+@catalog_mappings_public_bp.route('/<string:mapping_id>', methods=['DELETE'])
+@token_requerido
+def delete_mapping_public(user, pyme_id, mapping_id):
+    """Expose delete under /pymes to match the widget paths."""
+
+    return delete_mapping(user, pyme_id, mapping_id)
