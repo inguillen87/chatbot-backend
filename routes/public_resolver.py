@@ -12,8 +12,6 @@ from services.tenant_resolver import (
 
 public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/public")
 
-RESERVED_TENANT_SLUGS = {"iframe", "embed", "widget"}
-
 
 @public_resolver_bp.route("/resolve-tenant", methods=["POST"])
 def resolve_tenant_endpoint():
@@ -60,17 +58,15 @@ def tenant_profile():
     resolved_from_fallback = False
     resolution_error = None
 
-    tenant_slug = request.args.get("tenant") or request.args.get("slug")
-    tenant_slug_original = tenant_slug
-    if tenant_slug and tenant_slug.strip().lower() in RESERVED_TENANT_SLUGS:
-        tenant_slug = None
+    tenant_slug_original = request.args.get("tenant") or request.args.get("slug")
+    tenant_slug = tenant_slug_original.strip() if tenant_slug_original else None
+
+    if tenant_slug and tenant_slug.lower() in RESERVED_TENANT_SLUGS:
         resolved_from_fallback = True
         resolution_error = (
             f"Tenant slug '{tenant_slug_original}' is reserved; using default tenant"
         )
-
-    if tenant_slug is not None:
-        tenant_slug = tenant_slug.strip() or None
+        tenant_slug = None
     widget_token = (
         request.args.get("widget_token")
         or request.headers.get("X-Widget-Token")
@@ -79,17 +75,8 @@ def tenant_profile():
     )
     whatsapp_destination_number = request.args.get("whatsapp_destination_number")
 
-    placeholder_slug = False
-    resolution_error = None
-    if tenant_slug and tenant_slug.lower() in RESERVED_TENANT_SLUGS:
-        placeholder_slug = True
-        tenant_slug = None
-        resolution_error = "Slug reservado; se usará tenant por defecto"
-
     if request.method == "OPTIONS":
         return jsonify({"ok": True})
-
-    resolved_from_fallback = placeholder_slug
 
     try:
         tenant = resolve_tenant_only(
@@ -99,8 +86,8 @@ def tenant_profile():
             require_explicit_slug=bool(tenant_slug),
         )
     except TenantResolutionError as exc:
-        resolution_error = str(exc)
-        if placeholder_slug:
+        resolution_error = resolution_error or str(exc)
+        if resolved_from_fallback:
             tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
             if not tenant:
                 placeholder = {
