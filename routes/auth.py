@@ -123,6 +123,22 @@ def _resolve_owner_token(user: User) -> Optional[str]:
         return None
 
 
+def _include_entity_token_fields(
+    payload: Dict[str, Any], owner_token: Optional[str]
+) -> Optional[str]:
+    token_value = owner_token or payload.get("entity_token") or payload.get(
+        "owner_token"
+    )
+
+    if token_value:
+        payload.setdefault("entity_token", token_value)
+        payload.setdefault("owner_token", token_value)
+        payload.setdefault("widget_embed_token", token_value)
+        payload.setdefault("widget_embed_token_kind", "entity")
+
+    return token_value
+
+
 def _generate_email_verification_token() -> str:
     return secrets.token_urlsafe(48)
 
@@ -458,7 +474,7 @@ def login():
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
 
-    response = jsonify({
+    response_payload = {
         "mensaje": "Login exitoso",
         "id": user.id,
         "token": jwt_token,
@@ -469,7 +485,11 @@ def login():
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
         "categorias": getattr(user, "categorias_lista", []),
-    })
+    }
+
+    entity_token_value = _include_entity_token_fields(response_payload, owner_token)
+
+    response = jsonify(response_payload)
 
     cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
 
@@ -489,6 +509,8 @@ def login():
         response.set_cookie(**cookie_args)
 
     response.headers.setdefault('X-Anon-Id', anon_id)
+    if entity_token_value:
+        response.headers.setdefault("X-Entity-Token", entity_token_value)
     return response
 
 @auth_bp.route('/google-client-id', methods=['GET'])
@@ -529,11 +551,15 @@ def google_login():
                 'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
             }
             jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
-            resp = jsonify({
+            response_payload = {
                 "status": "falta_rubro",
                 "token": jwt_token,
                 "email": user.email,
-            })
+            }
+            entity_token_value = _include_entity_token_fields(response_payload, owner_token)
+            resp = jsonify(response_payload)
+            if entity_token_value:
+                resp.headers.setdefault("X-Entity-Token", entity_token_value)
             return resp
 
         rubro_nombre = user.rubro.nombre if user.rubro else "General"
@@ -550,7 +576,7 @@ def google_login():
         }
         jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
 
-        response = jsonify({
+        response_payload = {
             "id": user.id,
             "token": jwt_token,
             "name": user.name,
@@ -560,7 +586,11 @@ def google_login():
             "rubro": rubro_nombre,
             "tipo_chat": tipo_chat,
             "categorias": getattr(user, "categorias_lista", []),
-        })
+        }
+
+        entity_token_value = _include_entity_token_fields(response_payload, owner_token)
+
+        response = jsonify(response_payload)
 
         cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
 
@@ -578,6 +608,9 @@ def google_login():
                 cookie_args["domain"] = cookie_domain
 
             response.set_cookie(**cookie_args)
+
+        if entity_token_value:
+            response.headers.setdefault("X-Entity-Token", entity_token_value)
 
         return response
     except ValueError as e:
@@ -899,7 +932,8 @@ def login_from_widget(owner_user):
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
 
-    resp = jsonify({
+    owner_token = _resolve_owner_token(owner_user)
+    response_payload = {
         "id": user.id,
         "token": jwt_token,
         "name": user.name,
@@ -909,10 +943,16 @@ def login_from_widget(owner_user):
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
         "categorias": getattr(user, "categorias_lista", []),
-    })
+    }
+
+    entity_token_value = _include_entity_token_fields(response_payload, owner_token)
+
+    resp = jsonify(response_payload)
     if anon_id:
         resp.headers["X-Anon-Id"] = anon_id
         resp.headers["Anon-Id"] = anon_id
+    if entity_token_value:
+        resp.headers.setdefault("X-Entity-Token", entity_token_value)
     return resp
 
 
