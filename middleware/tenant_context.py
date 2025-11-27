@@ -23,6 +23,34 @@ def _find_tenant_by_slug(slug: str) -> Optional[TenantProfile]:
     return TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug.lower()).first()
 
 
+def _tenant_slug_from_path(path: str | None) -> Optional[str]:
+    """Return a tenant slug hinted via URL path segments.
+
+    Supported patterns (case-insensitive):
+    * /municipio/<slug>/...
+    * /municipios/<slug>/...
+    * /m/<slug>/...
+    * /pyme/<slug>/...
+    * /pymes/<slug>/...
+    * /p/<slug>/...
+    """
+
+    if not path:
+        return None
+
+    segments = [segment for segment in path.split("/") if segment]
+    if len(segments) < 2:
+        return None
+
+    prefix = segments[0].lower()
+    slug = segments[1]
+
+    if prefix in {"municipio", "municipios", "m", "pyme", "pymes", "p"}:
+        return _normalize_slug(slug)
+
+    return None
+
+
 def _resolve_tenant_profile() -> Optional[TenantProfile]:
     slug = _normalize_slug(request.headers.get("X-Tenant"))
     if slug:
@@ -40,6 +68,12 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
             return tenant
 
     slug = _normalize_slug(request.args.get("tenant"))
+    if slug:
+        tenant = _find_tenant_by_slug(slug)
+        if tenant:
+            return tenant
+
+    slug = _tenant_slug_from_path(request.path)
     if slug:
         tenant = _find_tenant_by_slug(slug)
         if tenant:

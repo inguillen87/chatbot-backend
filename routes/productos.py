@@ -78,6 +78,24 @@ def _lookup_tenant_by_slug(slug: Optional[str]) -> Optional[TenantProfile]:
     return TenantProfile.query.filter(func.lower(TenantProfile.slug) == normalized).first()
 
 
+def _tenant_slug_from_path(path: str | None) -> Optional[str]:
+    if not path:
+        return None
+
+    segments = [segment for segment in path.split("/") if segment]
+    if len(segments) < 2:
+        return None
+
+    prefix = segments[0].lower()
+    slug = segments[1]
+
+    if prefix in {"municipio", "municipios", "m", "pyme", "pymes", "p"}:
+        cleaned = slug.strip().lower()
+        return cleaned or None
+
+    return None
+
+
 def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[TenantProfile], Optional[User]]:
     """Encuentra el owner asociado al catálogo público solicitado.
 
@@ -91,19 +109,30 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
     if owner:
         return tenant, owner
 
+    path_tenant_slug = _tenant_slug_from_path(request.path)
+
     tenant_slug = (
         request.headers.get("X-Tenant")
         or request.args.get("tenant_slug")
         or request.args.get("tenant")
+        or path_tenant_slug
     )
     tenant_id = _coerce_int(request.headers.get("X-Tenant-Id") or request.args.get("tenant_id"))
-    has_explicit_hint = bool(tenant_slug or tenant_id or request.headers.get("X-Widget-Token") or request.args.get("widget_token"))
+    has_explicit_hint = bool(
+        tenant_slug
+        or tenant_id
+        or request.headers.get("X-Widget-Token")
+        or request.args.get("widget_token")
+        or path_tenant_slug
+    )
 
     if tenant_slug:
         tenant = _lookup_tenant_by_slug(tenant_slug)
         if tenant:
             owner = tenant.municipio or tenant.pyme
             if owner:
+                g.tenant_profile = tenant
+                g.tenant_profile_slug = tenant.slug
                 return tenant, owner
 
     if tenant_id:
@@ -111,6 +140,8 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
         if tenant:
             owner = tenant.municipio or tenant.pyme
             if owner:
+                g.tenant_profile = tenant
+                g.tenant_profile_slug = tenant.slug
                 return tenant, owner
 
     owner_id = _coerce_int(
