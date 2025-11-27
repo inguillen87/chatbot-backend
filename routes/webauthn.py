@@ -106,7 +106,7 @@ def _issue_login_response(user: User, anon_id: Optional[str]):
             "empresa_id": user.empresa_id,
             "rubro": rubro_nombre,
             "tipo_chat": tipo_chat,
-            "categorias": user.ticket_categorias or "",
+            "categorias": getattr(user, "categorias_lista", []),
         }
     )
 
