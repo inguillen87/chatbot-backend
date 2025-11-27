@@ -392,6 +392,7 @@ def create_app(config_class=Config):
     from routes.catalog_mappings import catalog_mappings_bp
     from routes.catalog_vector_sync import catalog_vector_sync_bp
     from routes.document_intelligence import document_intelligence_bp
+    from routes.rewards_rules import rewards_rules_bp
     from routes.api_aliases import api_aliases_bp
     from routes.whatsapp_webhook import webhook_bp as whatsapp_webhook_bp
     from routes.whatsapp_promocionar import whatsapp_promocionar_bp
@@ -469,6 +470,7 @@ def create_app(config_class=Config):
     app.register_blueprint(subastas_bp)
     app.register_blueprint(puntos_public_bp)
     app.register_blueprint(puntos_bp)
+    app.register_blueprint(rewards_rules_bp)
     app.register_blueprint(catalog_import_bp)
     app.register_blueprint(pedidos_from_file_bp)
     app.register_blueprint(kits_bp)

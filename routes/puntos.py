@@ -145,8 +145,13 @@ def historial():
         return jsonify({"tenant_id": None, "historial": [], "error": "Tenant no encontrado"}), 200
 
     limit = request.args.get("limit", type=int) or 50
+    page = request.args.get("page", type=int) or 1
+    offset = max(page - 1, 0) * limit
+
+    query = recompensas_service().historial_query(user)
+    total_registros = query.count()
     historial_registros = []
-    for tx in recompensas_service().historial(user)[:limit]:
+    for tx in query.offset(offset).limit(limit).all():
         timestamp_iso = tx.created_at.isoformat() if tx.created_at else None
         timestamp_local = None
         if tx.created_at:
@@ -165,7 +170,15 @@ def historial():
                 "timestamp_humano": timestamp_local,
             }
         )
-    return jsonify({"tenant_id": tenant.id, "historial": historial_registros})
+    return jsonify(
+        {
+            "tenant_id": tenant.id,
+            "historial": historial_registros,
+            "page": page,
+            "per_page": limit,
+            "total": total_registros,
+        }
+    )
 
 
 @puntos_public_bp.route("/historial", methods=["GET", "OPTIONS"], strict_slashes=False)
