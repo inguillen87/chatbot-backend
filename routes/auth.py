@@ -71,14 +71,6 @@ def _resolve_owner_token(user: User) -> Optional[str]:
         if callable(candidate):
             _OWNER_TOKEN_RESOLVER = resolver = candidate  # type: ignore[assignment]
 
-    if callable(resolver):
-        try:
-            return resolver(user)
-        except Exception:
-            current_app.logger.exception(
-                "[auth] Owner token helper failed for user %s", getattr(user, "id", None)
-            )
-
     owner_user = getattr(g, "owner_user", None) or user
 
     empresa_id = getattr(owner_user, "empresa_id", None)
@@ -95,19 +87,19 @@ def _resolve_owner_token(user: User) -> Optional[str]:
     if token_value:
         return token_value
 
+    if callable(resolver):
+        try:
+            resolved = resolver(owner_user)
+        except Exception:
+            current_app.logger.exception(
+                "[auth] Owner token helper failed for user %s", getattr(user, "id", None)
+            )
+        else:
+            if resolved:
+                return resolved
+
     if not owner_user:
         return None
-
-    try:
-        token = _resolve_owner_token(owner_user)
-    except Exception:
-        current_app.logger.exception(
-            "[auth] Owner token helper failed for user %s", getattr(user, "id", None)
-        )
-        token = None
-
-    if token:
-        return token
 
     try:
         owner_user.token = generate_token()
