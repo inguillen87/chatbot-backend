@@ -6,9 +6,14 @@ paths while the canonical blueprints live under non-/api prefixes (e.g.,
 behavior remain consistent with the original endpoints.
 """
 
-from flask import Blueprint, request
+from flask import Blueprint, jsonify, request
 
-from routes.auth import login as login_view, me_perfil as perfil_view
+from routes.auth import (
+    chatuser_login_panel,
+    chatuser_register_panel,
+    login as login_view,
+    me_perfil as perfil_view,
+)
 from routes.chat import ask, ask_municipio, ask_pyme
 from routes.carrito import agregar, carrito_root, eliminar, vaciar, actualizar
 from routes.estadisticas import (
@@ -93,6 +98,28 @@ def ask_municipio_alias():
     return ask_municipio()
 
 
+def _options_ok():
+    return jsonify({"ok": True})
+
+
+@api_aliases_bp.route(
+    "/chatuserregisterpanel", methods=["POST", "OPTIONS"], strict_slashes=False
+)
+def chatuser_register_panel_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return chatuser_register_panel()
+
+
+@api_aliases_bp.route(
+    "/chatuserloginpanel", methods=["POST", "OPTIONS"], strict_slashes=False
+)
+def chatuser_login_panel_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return chatuser_login_panel()
+
+
 @api_aliases_bp.route("/notifications", methods=["GET"], strict_slashes=False)
 def notifications_alias():
     return get_notifications()  # token_requerido inside original view
@@ -137,6 +164,24 @@ def municipal_categorias_alias():
 )
 def municipal_posts_alias():
     return list_municipal_posts()
+
+
+@public_aliases_bp.route(
+    "/chatuserregisterpanel", methods=["POST", "OPTIONS"], strict_slashes=False
+)
+def root_chatuser_register_panel_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return chatuser_register_panel()
+
+
+@public_aliases_bp.route(
+    "/chatuserloginpanel", methods=["POST", "OPTIONS"], strict_slashes=False
+)
+def root_chatuser_login_panel_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return chatuser_login_panel()
 
 
 @api_aliases_bp.route(
