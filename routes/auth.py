@@ -18,6 +18,12 @@ from services.pymes import get_or_create_pyme_user_by_token
 from typing import Any, Callable, Dict, Optional
 import secrets
 
+
+def _looks_like_jwt(token: Optional[str]) -> bool:
+    """Return True if the given token matches the typical JWT shape."""
+
+    return bool(token and isinstance(token, str) and token.count(".") == 2)
+
 auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 
 from utils.auth_helpers import token_requerido, obtener_token, get_or_create_anon_id, generar_token, user_from_token
@@ -86,8 +92,21 @@ def _resolve_owner_token(user: User) -> Optional[str]:
     token_value = getattr(owner_user, "entity_token", None) or getattr(
         owner_user, "token", None
     )
+    if token_value and _looks_like_jwt(token_value):
+        token_value = None
     if token_value:
-        return token_value
+        if not getattr(owner_user, "entity_token", None):
+            try:
+                owner_user.entity_token = token_value
+                db.session.add(owner_user)
+                db.session.commit()
+            except Exception:
+                current_app.logger.exception(
+                    "[auth] Failed to persist legacy owner token for user %s",
+                    getattr(owner_user, "id", None),
+                )
+                db.session.rollback()
+        return getattr(owner_user, "entity_token", None) or token_value
 
     if callable(resolver):
         try:
@@ -121,8 +140,10 @@ def _include_entity_token_fields(
     payload: Dict[str, Any], owner_token: Optional[str]
 ) -> Optional[str]:
     token_value = owner_token or payload.get("entity_token") or payload.get(
-        "owner_token"
-    )
+        "entityToken"
+    ) or payload.get("owner_token")
+    if _looks_like_jwt(token_value):
+        token_value = None
 
     if token_value:
         payload.setdefault("entity_token", token_value)
@@ -254,7 +275,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         profile_data["auth_token"] = auth_token
     else:
         fallback_token = owner_token or getattr(user, "token", None)
-        if fallback_token:
+        if fallback_token and not _looks_like_jwt(fallback_token):
             profile_data["token"] = fallback_token
 
     profile_data["auth_token"] = auth_token
@@ -276,7 +297,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         profile_data["owner_token"] = owner_token
         profile_data["widget_embed_token"] = owner_token
         profile_data["widget_embed_token_kind"] = "entity"
-    elif getattr(user, "token", None):
+    elif getattr(user, "token", None) and not _looks_like_jwt(user.token):
         profile_data["entity_token"] = user.token
         profile_data.setdefault("entityToken", user.token)
         profile_data.setdefault("widget_embed_token", user.token)
@@ -798,7 +819,8 @@ def register():
         }
         jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
 
-        return jsonify({
+        owner_token = _resolve_owner_token(user)
+        response_payload = {
             "mensaje": "Usuario registrado exitosamente.",
             "id": user.id,
             "token": jwt_token,
@@ -809,7 +831,13 @@ def register():
             "empresa_id": user.empresa_id,
             "tenant_slug": getattr(user, "tenant_slug", None),
             "tenantSlug": getattr(user, "tenant_slug", None),
-        }), 201
+        }
+        entity_token_value = _include_entity_token_fields(response_payload, owner_token)
+
+        resp = jsonify(response_payload)
+        if entity_token_value:
+            resp.headers.setdefault("X-Entity-Token", entity_token_value)
+        return resp, 201
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Error al registrar usuario: {e}", exc_info=True)
@@ -913,7 +941,8 @@ def register_from_widget(user):
         _send_verification_email(nuevo)
         _apply_welcome_points_if_configured(nuevo)
 
-        resp = jsonify({
+        owner_token = _resolve_owner_token(user)
+        response_payload = {
             "id": nuevo.id,
             "token": jwt_token,
             "name": nuevo.name,
@@ -923,10 +952,15 @@ def register_from_widget(user):
             "empresa_id": nuevo.empresa_id,
             "tenant_slug": getattr(nuevo, "tenant_slug", None),
             "tenantSlug": getattr(nuevo, "tenant_slug", None),
-        })
+        }
+        entity_token_value = _include_entity_token_fields(response_payload, owner_token)
+
+        resp = jsonify(response_payload)
         if anon_id:
             resp.headers["X-Anon-Id"] = anon_id
             resp.headers["Anon-Id"] = anon_id
+        if entity_token_value:
+            resp.headers.setdefault("X-Entity-Token", entity_token_value)
         return resp, 201
     except Exception as e:
         db.session.rollback()
