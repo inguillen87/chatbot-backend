@@ -25,6 +25,18 @@ _WIDGET_ALLOWED_GET_PATHS: Set[str] = {
     "/me",
     "/perfil",
     "/profile",
+    "/api/me",
+    "/api/perfil",
+    "/api/profile",
+}
+
+_WIDGET_ALLOWED_ANY_METHOD_PATHS: Set[str] = {
+    "/ask",
+    "/ask/pyme",
+    "/ask/municipio",
+    "/api/ask",
+    "/api/ask/pyme",
+    "/api/ask/municipio",
 }
 
 _DEMO_TOKEN_WARNED: Set[str] = set()
@@ -64,6 +76,9 @@ def _widget_session_allowed(path: Optional[str], method: Optional[str]) -> bool:
     method = (method or "GET").upper()
 
     if method == "OPTIONS":
+        return True
+
+    if normalized_path in _WIDGET_ALLOWED_ANY_METHOD_PATHS:
         return True
 
     for prefix in _WIDGET_ALLOWED_PREFIXES:

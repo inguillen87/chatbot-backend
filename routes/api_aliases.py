@@ -9,6 +9,7 @@ behavior remain consistent with the original endpoints.
 from flask import Blueprint, request
 
 from routes.auth import login as login_view, me_perfil as perfil_view
+from routes.chat import ask, ask_municipio, ask_pyme
 from routes.carrito import agregar, carrito_root, eliminar, vaciar, actualizar
 from routes.estadisticas import (
     estadisticas_tickets,
@@ -17,6 +18,11 @@ from routes.estadisticas import (
 )
 from routes.municipal_legacy import list_municipal_posts, municipal_categorias
 from routes.notifications import get_notifications, notifications_options
+from routes.ticket import (
+    get_chat_mensajes,
+    get_ticket_details,
+    get_tickets_del_usuario,
+)
 from routes.productos import obtener_productos
 from routes.pwa_app import follow_tenant, list_followed_tenants, unfollow_tenant
 from routes.pwa_misc import provide_anon_id
@@ -70,6 +76,21 @@ def me_alias():
     return perfil_view()
 
 
+@api_aliases_bp.route("/ask", methods=["POST", "OPTIONS"], strict_slashes=False)
+def ask_alias():
+    return ask()
+
+
+@api_aliases_bp.route("/ask/pyme", methods=["POST", "OPTIONS"], strict_slashes=False)
+def ask_pyme_alias():
+    return ask_pyme()
+
+
+@api_aliases_bp.route("/ask/municipio", methods=["POST", "OPTIONS"], strict_slashes=False)
+def ask_municipio_alias():
+    return ask_municipio()
+
+
 @api_aliases_bp.route("/notifications", methods=["GET"], strict_slashes=False)
 def notifications_alias():
     return get_notifications()  # token_requerido inside original view
@@ -78,6 +99,28 @@ def notifications_alias():
 @api_aliases_bp.route("/notifications", methods=["OPTIONS"], strict_slashes=False)
 def notifications_options_alias():
     return notifications_options()
+
+
+@api_aliases_bp.route("/tickets", methods=["GET"], strict_slashes=False)
+@api_aliases_bp.route("/tickets/", methods=["GET"], strict_slashes=False)
+def tickets_alias():
+    return get_tickets_del_usuario()
+
+
+@api_aliases_bp.route(
+    "/tickets/municipio/<int:ticket_id>", methods=["GET"], strict_slashes=False
+)
+def tickets_municipio_alias(ticket_id: int):
+    return get_ticket_details(ticket_id=ticket_id)
+
+
+@api_aliases_bp.route(
+    "/tickets/chat/<int:ticket_id>/mensajes",
+    methods=["GET"],
+    strict_slashes=False,
+)
+def tickets_chat_alias(ticket_id: int):
+    return get_chat_mensajes(ticket_id=ticket_id)
 
 
 @api_aliases_bp.route(

@@ -126,6 +126,7 @@ def resolve_tenant_and_user(
     whatsapp_destination_number: Optional[str] = None,
     widget_token: Optional[str] = None,
     tenant_slug: Optional[str] = None,
+    tenant_id: Optional[int] = None,
     current_user: Optional[User] = None,
 ) -> Tuple[TenantProfile, User, bool]:
     """Resolve tenant and user (auth or anonymous) from request context.
@@ -134,8 +135,16 @@ def resolve_tenant_and_user(
     Raises TenantResolutionError when tenant cannot be identified.
     """
 
+    explicit_tenant = None
+    if tenant_id:
+        try:
+            explicit_tenant = TenantProfile.query.get(int(tenant_id))
+        except (TypeError, ValueError):
+            explicit_tenant = None
+
     tenant = (
-        _tenant_by_slug(tenant_slug)
+        explicit_tenant
+        or _tenant_by_slug(tenant_slug)
         or _tenant_by_number(whatsapp_destination_number)
         or _tenant_by_widget_token(widget_token)
         or _tenant_by_domain(request.host)
