@@ -66,6 +66,17 @@ class PublicResolverTest(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
 
+    def test_public_tenant_profile_falls_back_to_widget_token_when_slug_invalid(self):
+        response = self.client.get(
+            "/api/public/tenant-profile?tenant=inexistente",
+            headers={"X-Widget-Token": "demo-token"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
+        self.assertIn("warning", payload)
+
     def test_public_tenant_profile_reserved_slug(self):
         response = self.client.get("/api/public/tenant-profile?tenant=iframe")
         self.assertEqual(response.status_code, 200)
