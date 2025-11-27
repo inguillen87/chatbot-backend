@@ -120,8 +120,10 @@ def resolve_tenant_endpoint():
     return response
 
 
-@public_resolver_bp.route("/tenant-profile", methods=["GET", "OPTIONS"])
-@cross_origin(origins="*")
+@public_resolver_bp.route(
+    "/tenant-profile", methods=["GET", "OPTIONS"], provide_automatic_options=False
+)
+@cross_origin(origins="*", automatic_options=False)
 def tenant_profile():
     """Devuelve datos públicos del tenant sin requerir autenticación.
 
@@ -129,6 +131,9 @@ def tenant_profile():
     de WhatsApp. Siempre responde JSON para evitar páginas HTML de error que
     rompan el widget.
     """
+
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
 
     resolved_from_fallback = False
     resolution_error = None
@@ -145,9 +150,6 @@ def tenant_profile():
         tenant_slug = None
     widget_token = _extract_widget_token()
     whatsapp_destination_number = request.args.get("whatsapp_destination_number")
-
-    if request.method == "OPTIONS":
-        return jsonify({"ok": True})
 
     try:
         tenant = resolve_tenant_only(

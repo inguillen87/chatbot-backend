@@ -347,6 +347,29 @@ def widget_token():
     if not owner_user:
         resp = _add_cors(jsonify({"error": "invalid_owner"}))
         return resp, 401
+
+    # Reutilizar un token de widget ya emitido para este owner si sigue siendo válido.
+    widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    existing_widget_token = request.cookies.get(widget_cookie_name)
+    if existing_widget_token:
+        try:
+            payload = jwt.decode(
+                existing_widget_token,
+                current_app.config["SECRET_KEY"],
+                algorithms=["HS256"],
+            )
+        except Exception:
+            payload = None
+
+        if payload and payload.get("session_kind") == "widget":
+            exp_ts = payload.get("exp")
+            user_id = payload.get("user_id")
+            if exp_ts and user_id == owner_user.id:
+                remaining = int(exp_ts - datetime.utcnow().timestamp())
+                if remaining > 0:
+                    return _add_cors(
+                        jsonify({"token": existing_widget_token, "expires_in": remaining})
+                    )
     owner = {
         "user_id": owner_user.id,
         "rol": owner_user.rol,
