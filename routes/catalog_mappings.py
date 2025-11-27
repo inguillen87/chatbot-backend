@@ -20,19 +20,28 @@ def catalog_mappings_options(pyme_id):
 
     return _options_ok()
 
-@catalog_mappings_bp.route('', methods=['GET'])
+# Alias sin el prefijo /api para compatibilidad con paneles existentes
+catalog_mappings_alias_bp = Blueprint(
+    'catalog_mappings_alias', __name__, url_prefix='/pymes/<int:pyme_id>/catalog-mappings'
+)
+
+@catalog_mappings_bp.route('', methods=['GET', 'OPTIONS'])
 @token_requerido
 def get_all_mappings(user, pyme_id):
     """Returns a list of all catalog mapping configurations for a given pymeId."""
-    # To unblock the frontend immediately, this can return an empty array.
-    # The service implementation will handle the actual fetching.
+    if request.method == 'OPTIONS':
+        return '', 204
+
     mappings = catalog_mapping_service.get_all_for_pyme(pyme_id)
     return jsonify(mappings), 200
 
-@catalog_mappings_bp.route('', methods=['POST'])
+@catalog_mappings_bp.route('', methods=['POST', 'OPTIONS'])
 @token_requerido
 def create_mapping(user, pyme_id):
     """Creates a new catalog mapping configuration."""
+    if request.method == 'OPTIONS':
+        return '', 204
+
     data = request.get_json()
     if not data:
         return jsonify({"error": "Invalid data"}), 400
@@ -40,19 +49,25 @@ def create_mapping(user, pyme_id):
     new_mapping = catalog_mapping_service.create(pyme_id, data)
     return jsonify(new_mapping), 201
 
-@catalog_mappings_bp.route('/<string:mapping_id>', methods=['GET'])
+@catalog_mappings_bp.route('/<string:mapping_id>', methods=['GET', 'OPTIONS'])
 @token_requerido
 def get_single_mapping(user, pyme_id, mapping_id):
     """Returns the complete details for a single mapping configuration."""
+    if request.method == 'OPTIONS':
+        return '', 204
+
     mapping = catalog_mapping_service.get_by_id(mapping_id)
     if not mapping or mapping['pymeId'] != pyme_id:
         return jsonify({"error": "Mapping not found"}), 404
     return jsonify(mapping), 200
 
-@catalog_mappings_bp.route('/<string:mapping_id>', methods=['PUT'])
+@catalog_mappings_bp.route('/<string:mapping_id>', methods=['PUT', 'OPTIONS'])
 @token_requerido
 def update_mapping(user, pyme_id, mapping_id):
     """Updates an existing mapping configuration."""
+    if request.method == 'OPTIONS':
+        return '', 204
+
     data = request.get_json()
     if not data:
         return jsonify({"error": "Invalid data"}), 400
@@ -65,10 +80,13 @@ def update_mapping(user, pyme_id, mapping_id):
     updated_mapping = catalog_mapping_service.update(mapping_id, data)
     return jsonify(updated_mapping), 200
 
-@catalog_mappings_bp.route('/<string:mapping_id>', methods=['DELETE'])
+@catalog_mappings_bp.route('/<string:mapping_id>', methods=['DELETE', 'OPTIONS'])
 @token_requerido
 def delete_mapping(user, pyme_id, mapping_id):
     """Deletes a mapping configuration."""
+    if request.method == 'OPTIONS':
+        return '', 204
+
     # First, check if the mapping exists and belongs to the pyme
     existing_mapping = catalog_mapping_service.get_by_id(mapping_id)
     if not existing_mapping or existing_mapping['pymeId'] != pyme_id:

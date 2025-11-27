@@ -18,6 +18,13 @@ document_intelligence_public_bp = Blueprint(
     url_prefix="/pymes/<int:pyme_id>/document-intelligence",
 )
 
+# Alias sin /api para compatibilidad con paneles existentes
+document_intelligence_alias_bp = Blueprint(
+    "document_intelligence_alias",
+    __name__,
+    url_prefix="/pymes/<int:pyme_id>/document-intelligence",
+)
+
 
 def _build_columns(columns: List[Any]) -> List[dict[str, str]]:
     parsed: List[dict[str, str]] = []
