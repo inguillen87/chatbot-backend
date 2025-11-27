@@ -12,6 +12,8 @@ from services.tenant_resolver import (
 
 public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/public")
 
+RESERVED_TENANT_SLUGS = {"iframe", "embed", "widget"}
+
 
 @public_resolver_bp.route("/resolve-tenant", methods=["POST"])
 def resolve_tenant_endpoint():
@@ -46,7 +48,7 @@ def resolve_tenant_endpoint():
 
 
 @public_resolver_bp.route("/tenant-profile", methods=["GET", "OPTIONS"])
-@cross_origin(origins="*", supports_credentials=True, automatic_options=False)
+@cross_origin(origins="*")
 def tenant_profile():
     """Devuelve datos públicos del tenant sin requerir autenticación.
 
@@ -77,39 +79,51 @@ def tenant_profile():
     )
     whatsapp_destination_number = request.args.get("whatsapp_destination_number")
 
+    placeholder_slug = False
+    resolution_error = None
+    if tenant_slug and tenant_slug.lower() in RESERVED_TENANT_SLUGS:
+        placeholder_slug = True
+        tenant_slug = None
+        resolution_error = "Slug reservado; se usará tenant por defecto"
+
     if request.method == "OPTIONS":
         return jsonify({"ok": True})
+
+    resolved_from_fallback = placeholder_slug
 
     try:
         tenant = resolve_tenant_only(
             whatsapp_destination_number=whatsapp_destination_number,
             widget_token=widget_token,
             tenant_slug=tenant_slug,
+            require_explicit_slug=bool(tenant_slug),
         )
     except TenantResolutionError as exc:
         resolution_error = str(exc)
-        tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
-        if tenant:
+        if placeholder_slug:
+            tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
+            if not tenant:
+                placeholder = {
+                    "id": None,
+                    "slug": "default",
+                    "nombre": None,
+                    "tipo": None,
+                    "logo_url": None,
+                    "dominio": request.host,
+                    "tema": {},
+                    "config": {},
+                }
+                payload = {
+                    "tenant": placeholder,
+                    "warning": {
+                        "message": resolution_error,
+                        "fallback": "placeholder",
+                    },
+                }
+                return jsonify(payload)
             resolved_from_fallback = True
         else:
-            placeholder = {
-                "id": None,
-                "slug": tenant_slug or "default",
-                "nombre": None,
-                "tipo": None,
-                "logo_url": None,
-                "dominio": request.host,
-                "tema": {},
-                "config": {},
-            }
-            payload = {
-                "tenant": placeholder,
-                "warning": {
-                    "message": resolution_error,
-                    "fallback": "placeholder",
-                },
-            }
-            return jsonify(payload)
+            return jsonify({"error": resolution_error}), 404
 
     if (
         tenant_slug_original

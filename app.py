@@ -268,9 +268,9 @@ def create_app(config_class=Config):
     # CORS y headers (solo runtime normal)
     if not MIGRATIONS_ONLY:
         cors_resources = {
-            r"/public/*": {
-                "origins": ["https://www.chatboc.ar", "https://chatboc.ar"],
-            },
+            r"/public/*": {"origins": "*"},
+            r"/pwa/*": {"origins": "*"},
+            r"/api/pwa/*": {"origins": "*"},
             r"/admin/*": {
                 "origins": ["https://www.chatboc.ar", "https://chatboc.ar"],
             },
