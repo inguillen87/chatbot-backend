@@ -310,7 +310,7 @@ def _ensure_entity_token(owner_user: Optional[User]) -> None:
         return
 
     token_value = getattr(owner_user, "entity_token", None)
-    if token_value:
+    if token_value and not _is_jwt_token(token_value):
         return
 
     try:
@@ -325,6 +325,32 @@ def _ensure_entity_token(owner_user: Optional[User]) -> None:
         db.session.rollback()
 
 
+def get_or_create_entity_token(user: Optional[User]) -> Optional[str]:
+    """Return a stable entity token for the owning account."""
+
+    owner_user = _resolve_owner_user(user)
+    if not owner_user:
+        return None
+
+    token_value = getattr(owner_user, "entity_token", None)
+    if token_value and not _is_jwt_token(token_value):
+        return token_value
+
+    try:
+        owner_user.entity_token = secrets.token_urlsafe(32)
+        db.session.add(owner_user)
+        db.session.commit()
+        db.session.refresh(owner_user)
+        return owner_user.entity_token
+    except Exception:
+        current_app.logger.exception(
+            "[auth_helpers] Failed to generate or persist entity token for owner %s",
+            getattr(owner_user, "id", None),
+        )
+        db.session.rollback()
+        return None
+
+
 def get_or_create_owner_entity_token(user: Optional[User]) -> Optional[str]:
     """Return the persistent entity token for the owner's account."""
 
@@ -335,25 +361,25 @@ def get_or_create_owner_entity_token(user: Optional[User]) -> Optional[str]:
     if not owner_user:
         return None
 
-    token_value = getattr(owner_user, "entity_token", None) or getattr(
-        owner_user, "token", None
-    )
-    if token_value:
-        if not getattr(owner_user, "entity_token", None):
-            try:
-                owner_user.entity_token = token_value
-                db.session.add(owner_user)
-                db.session.commit()
-            except Exception:
-                current_app.logger.exception(
-                    "[auth_helpers] Failed to persist legacy token as entity token for owner %s",
-                    getattr(owner_user, "id", None),
-                )
-                db.session.rollback()
-        return getattr(owner_user, "entity_token", None) or token_value
+    token_value = getattr(owner_user, "entity_token", None)
+    if token_value and not _is_jwt_token(token_value):
+        return token_value
 
-    _ensure_entity_token(owner_user)
-    return getattr(owner_user, "entity_token", None)
+    legacy_value = getattr(owner_user, "token", None)
+    if legacy_value and not _is_jwt_token(legacy_value):
+        try:
+            owner_user.entity_token = legacy_value
+            db.session.add(owner_user)
+            db.session.commit()
+            return legacy_value
+        except Exception:
+            current_app.logger.exception(
+                "[auth_helpers] Failed to persist legacy token as entity token for owner %s",
+                getattr(owner_user, "id", None),
+            )
+            db.session.rollback()
+
+    return get_or_create_entity_token(owner_user)
 
 
 def _generate_widget_session_token(owner_user: User) -> Tuple[str, Dict[str, Any]]:

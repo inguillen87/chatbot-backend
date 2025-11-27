@@ -26,7 +26,14 @@ def _looks_like_jwt(token: Optional[str]) -> bool:
 
 auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 
-from utils.auth_helpers import token_requerido, obtener_token, get_or_create_anon_id, generar_token, user_from_token
+from utils.auth_helpers import (
+    token_requerido,
+    obtener_token,
+    get_or_create_anon_id,
+    generar_token,
+    user_from_token,
+    get_or_create_entity_token,
+)
 from flask_login import current_user
 from utils.plan_limits import limite_para_usuario
 from services.plan_config import (
@@ -89,9 +96,7 @@ def _resolve_owner_token(user: User) -> Optional[str]:
             if looked_up:
                 owner_user = looked_up
 
-    token_value = getattr(owner_user, "entity_token", None) or getattr(
-        owner_user, "token", None
-    )
+    token_value = getattr(owner_user, "entity_token", None)
     if token_value and _looks_like_jwt(token_value):
         token_value = None
     if token_value:
@@ -116,24 +121,27 @@ def _resolve_owner_token(user: User) -> Optional[str]:
                 "[auth] Owner token helper failed for user %s", getattr(user, "id", None)
             )
         else:
-            if resolved:
+            if resolved and not _looks_like_jwt(resolved):
                 return resolved
 
     if not owner_user:
         return None
 
-    try:
-        owner_user.entity_token = secrets.token_urlsafe(32)
-        db.session.add(owner_user)
-        db.session.commit()
-        return owner_user.entity_token
-    except Exception:
-        current_app.logger.exception(
-            "[auth] Failed to generate fallback owner token for user %s",
-            getattr(owner_user, "id", None),
-        )
-        db.session.rollback()
-        return None
+    legacy_value = getattr(owner_user, "token", None)
+    if legacy_value and not _looks_like_jwt(legacy_value):
+        try:
+            owner_user.entity_token = legacy_value
+            db.session.add(owner_user)
+            db.session.commit()
+            return legacy_value
+        except Exception:
+            current_app.logger.exception(
+                "[auth] Failed to persist legacy owner token for user %s",
+                getattr(owner_user, "id", None),
+            )
+            db.session.rollback()
+
+    return get_or_create_entity_token(owner_user)
 
 
 def _include_entity_token_fields(

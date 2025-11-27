@@ -91,6 +91,32 @@ def _is_init_payload(payload) -> bool:
     return False
 
 
+def _log_widget_request(response, user):
+    """Log widget chat requests with tenant and token context."""
+
+    status_code = None
+    response_obj = response
+    if isinstance(response, tuple):
+        response_obj = response[0]
+        status_code = response[1] if len(response) > 1 else None
+    if status_code is None and hasattr(response_obj, "status_code"):
+        status_code = response_obj.status_code
+
+    tenant_slug = getattr(user, "tenant_slug", None) if user else None
+    entity_token = getattr(user, "entity_token", None) if user else None
+
+    current_app.logger.info(
+        "WIDGET_REQ path=%s user_id=%s tenant=%s entity_token=%s status=%s",
+        getattr(request, "path", None),
+        getattr(user, "id", None) if user else None,
+        tenant_slug,
+        entity_token,
+        status_code,
+    )
+
+    return response
+
+
 def _build_demo_selector_payload(opciones: List[Dict[str, Optional[str]]]) -> Dict[str, object]:
     mensaje = current_app.config.get(
         "DEMO_WELCOME_MESSAGE",
@@ -2485,19 +2511,22 @@ def _procesar_chat(
 @anon_o_token_requerido
 def ask(current_user=None, anon_id=None, owner_user=None):
     user = owner_user or current_user
-    return _procesar_chat(current_user=current_user, owner_user=user, anon_id=anon_id)
+    response = _procesar_chat(current_user=current_user, owner_user=user, anon_id=anon_id)
+    return _log_widget_request(response, user)
 
 @chat_bp.route("/ask/pyme", methods=["POST", "OPTIONS"])
 @anon_o_token_requerido
 def ask_pyme(current_user=None, anon_id=None, owner_user=None):
     user = owner_user or current_user
-    return _procesar_chat("pyme", current_user=current_user, owner_user=user, anon_id=anon_id)
+    response = _procesar_chat("pyme", current_user=current_user, owner_user=user, anon_id=anon_id)
+    return _log_widget_request(response, user)
 
 @chat_bp.route("/ask/municipio", methods=["POST", "OPTIONS"])
 @anon_o_token_requerido
 def ask_municipio(current_user=None, anon_id=None, owner_user=None):
     user = owner_user or current_user
-    return _procesar_chat("municipio", current_user=current_user, owner_user=user, anon_id=anon_id)
+    response = _procesar_chat("municipio", current_user=current_user, owner_user=user, anon_id=anon_id)
+    return _log_widget_request(response, user)
 
 
 @chat_bp.route("/profile-name", methods=["POST", "OPTIONS"])

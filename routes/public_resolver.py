@@ -16,6 +16,33 @@ public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/
 public_municipios_bp = Blueprint("public_municipios_bp", __name__)
 
 
+def _log_widget_public_request(response, tenant=None, *, entity_token=None):
+    """Centralized logging for widget-facing public endpoints."""
+
+    status_code = None
+    response_obj = response
+    if isinstance(response, tuple):
+        response_obj = response[0]
+        status_code = response[1] if len(response) > 1 else None
+    if status_code is None and hasattr(response_obj, "status_code"):
+        status_code = response_obj.status_code
+
+    tenant_slug = tenant
+    if tenant_slug is None and tenant is not None:
+        tenant_slug = getattr(tenant, "slug", None)
+
+    current_app.logger.info(
+        "WIDGET_REQ path=%s user_id=%s tenant=%s entity_token=%s status=%s",
+        getattr(request, "path", None),
+        getattr(getattr(g, "user", None), "id", None),
+        tenant_slug,
+        entity_token,
+        status_code,
+    )
+
+    return response
+
+
 def _extract_widget_token() -> str | None:
     """Read the widget/entity token from query params, headers or cookies."""
 
@@ -118,7 +145,7 @@ def resolve_tenant_endpoint():
         }
     )
     inject_anon_cookie(response, user.anon_id)
-    return response
+    return _log_widget_public_request(response, tenant, entity_token=widget_token)
 
 
 @public_resolver_bp.route(
@@ -181,7 +208,7 @@ def tenant_profile():
                     "fallback": "placeholder",
                 },
             }
-            return jsonify(payload)
+            return _log_widget_public_request(jsonify(payload), tenant)
 
         resolved_from_fallback = True
 
@@ -243,7 +270,7 @@ def tenant_profile():
 
         response.set_cookie(**cookie_args)
 
-    return response
+    return _log_widget_public_request(response, tenant, entity_token=widget_token)
 
 
 def _municipios_response():
