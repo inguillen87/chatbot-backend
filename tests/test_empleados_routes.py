@@ -95,6 +95,21 @@ class EmpleadosRouteTests(unittest.TestCase):
             response = self.client.put(f'/empleados/{empleado.id}', json=payload, headers=headers)
             self.assertEqual(response.status_code, 400)
 
+    def test_obtener_categorias_empleado(self):
+        with self.client:
+            login_response = self.client.post('/auth/login', json={'email': 'test@test.com', 'password': 'test'})
+            token = login_response.get_json()['token']
+            headers = {'Authorization': f'Bearer {token}'}
+
+            response = self.client.get('/empleados/categorias', headers=headers)
+            self.assertEqual(response.status_code, 200)
+            data = response.get_json()
+            self.assertIn('categorias', data)
+            self.assertGreaterEqual(len(data['categorias']), 1)
+            first = data['categorias'][0]
+            self.assertIn('value', first)
+            self.assertIn('label', first)
+
 
 if __name__ == '__main__':
     unittest.main()
