@@ -6985,9 +6985,24 @@ def responder_municipio(
         for key, value in kwargs.items():
             received_payload[key] = value
 
+    is_initial_handshake = (
+        isinstance(pregunta_str, str)
+        and pregunta_str.strip() == "__INIT__"
+    )
+
+    chat_db_context_live_data = {}
+    if chat_db_context and chat_db_context.context_data is not None:
+        chat_db_context_live_data = chat_db_context.context_data
+
+    if is_initial_handshake and not viewer_user:
+        if chat_db_context_live_data.pop(CONTEXTO_MUNICIPIO, None) is not None:
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+
     location_link_info = None
     if (
-        not received_payload.get("es_ubicacion")
+        not is_initial_handshake
+        and not received_payload.get("es_ubicacion")
         and isinstance(pregunta_str, str)
         and pregunta_str.strip()
     ):
@@ -7002,10 +7017,6 @@ def responder_municipio(
             if link_payload:
                 received_payload.setdefault("ubicacion_usuario", {}).update(link_payload)
             received_payload["es_ubicacion"] = True
-
-    chat_db_context_live_data = {}
-    if chat_db_context and chat_db_context.context_data is not None:
-        chat_db_context_live_data = chat_db_context.context_data
 
     contexto_municipio_actual = chat_db_context_live_data.get(CONTEXTO_MUNICIPIO, {})
     flow_activo = False
