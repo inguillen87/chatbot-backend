@@ -243,7 +243,8 @@ def _crear_pedido(payload: dict):
                 jsonify(
                     {
                         "error": "Saldo de puntos insuficiente",
-                        "puntos_faltantes": faltantes,
+                        "codigo": "SALDO_INSUFICIENTE",
+                        "puntos_necesarios": faltantes,
                     }
                 ),
                 400,

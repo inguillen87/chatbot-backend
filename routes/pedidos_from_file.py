@@ -117,9 +117,13 @@ def pedidos_desde_archivo():
         return _json_error(400, "archivo_sin_nombre", "Archivo sin nombre")
 
     extension = archivo.filename.rsplit(".", 1)[-1].lower() if "." in archivo.filename else ""
-    allowed = {"pdf", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "webp"}
+    allowed = {"pdf", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "webp", "doc", "docx", "txt"}
     if extension not in allowed:
-        return _json_error(400, "formato_no_permitido", "Formato no permitido. Usa PDF, Excel o imagen.")
+        return _json_error(
+            415,
+            "formato_no_permitido",
+            "Formato no permitido. Usa PDF, Excel, documento o imagen.",
+        )
 
     tenant_slug = request.headers.get("X-Tenant") or request.args.get("tenant") or request.args.get("tenant_slug")
     tenant_id = request.headers.get("X-Tenant-Id") or request.args.get("tenant_id")
@@ -186,6 +190,8 @@ def pedidos_desde_archivo():
             )
             enriched.append({"catalogo_item_id": item.id, "cantidad": it.get("cantidad", 1), **formatted})
 
+    origen = request.headers.get("X-Checkout-Origin") or request.args.get("origen") or "web"
+
     pedido = PedidoConversacional(
         tenant_id=tenant.id,
         user_id=getattr(user, "id", None) or owner.id,
@@ -197,14 +203,13 @@ def pedidos_desde_archivo():
                 "archivo_nombre": upload_meta.get("original_name") or archivo.filename,
                 "items_detectados": enriched,
                 "no_encontrados": not_found,
-                "origen": request.headers.get("X-Checkout-Origin")
-                or request.args.get("origen")
-                or "web",
+                "origen": origen,
             }
         ],
         monto_monetario=0,
         monto_puntos=0,
         anon_id=getattr(user, "anon_id", None),
+        origen=origen,
     )
     db.session.add(pedido)
     db.session.commit()
@@ -218,6 +223,7 @@ def pedidos_desde_archivo():
                 "pedido_id": pedido.id,
                 "archivo_url": upload_meta.get("public_url"),
                 "tipo": pedido.tipo,
+                "resumen": "Nota de pedido recibida. Un operador la revisará.",
             }
         ),
         201,
