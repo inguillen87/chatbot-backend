@@ -37,7 +37,7 @@ puntos_bp = Blueprint("puntos_bp", __name__, url_prefix="/api/puntos")
 puntos_public_bp = Blueprint("puntos_public_bp", __name__, url_prefix="/puntos")
 
 
-@puntos_bp.route("/saldo", methods=["GET", "OPTIONS"])
+@puntos_bp.route("/saldo", methods=["GET", "OPTIONS"], strict_slashes=False)
 @cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
 def saldo():
     if request.method == "OPTIONS":
@@ -66,10 +66,10 @@ def saldo():
         return jsonify({"tenant_id": None, "saldo": 0, "anonId": getattr(user, "anon_id", None)})
 
     saldo_actual = recompensas_service().obtener_saldo(user)
-    return jsonify({"tenant_id": tenant.id, "saldo": saldo_actual, "anonId": user.anon_id})
+    return jsonify({"tenant_id": tenant.id, "saldo": saldo_actual, "anonId": getattr(user, "anon_id", None)})
 
 
-@puntos_public_bp.route("/saldo", methods=["GET", "OPTIONS"])
+@puntos_public_bp.route("/saldo", methods=["GET", "OPTIONS"], strict_slashes=False)
 @cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
 def saldo_public():
     """Alias público para /api/puntos/saldo."""
@@ -77,7 +77,7 @@ def saldo_public():
     return saldo()
 
 
-@puntos_bp.route("/historial", methods=["GET", "OPTIONS"])
+@puntos_bp.route("/historial", methods=["GET", "OPTIONS"], strict_slashes=False)
 @cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
 def historial():
     if request.method == "OPTIONS":
@@ -105,8 +105,9 @@ def historial():
     if tenant is None:
         return jsonify({"tenant_id": None, "historial": [], "error": "Tenant no encontrado"}), 200
 
+    limit = request.args.get("limit", type=int) or 50
     historial_registros = []
-    for tx in recompensas_service().historial(user):
+    for tx in recompensas_service().historial(user)[:limit]:
         timestamp_iso = tx.created_at.isoformat() if tx.created_at else None
         timestamp_local = None
         if tx.created_at:
@@ -119,6 +120,7 @@ def historial():
             {
                 "tipo": tx.tipo,
                 "delta": tx.delta,
+                "motivo": (tx.metadata_payload or {}).get("motivo"),
                 "saldo_final": tx.saldo_final,
                 "timestamp": timestamp_iso,
                 "timestamp_humano": timestamp_local,
@@ -127,10 +129,26 @@ def historial():
     return jsonify({"tenant_id": tenant.id, "historial": historial_registros})
 
 
-@puntos_public_bp.route("/historial", methods=["GET", "OPTIONS"])
+@puntos_public_bp.route("/historial", methods=["GET", "OPTIONS"], strict_slashes=False)
 @cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
 def historial_public():
     """Alias público para /api/puntos/historial."""
+
+    return historial()
+
+
+@puntos_bp.route("/movimientos", methods=["GET", "OPTIONS"], strict_slashes=False)
+@cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
+def movimientos():
+    """Alias más descriptivo para historial de puntos con límite configurable."""
+
+    return historial()
+
+
+@puntos_public_bp.route("/movimientos", methods=["GET", "OPTIONS"], strict_slashes=False)
+@cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
+def movimientos_public():
+    """Alias público para /api/puntos/movimientos."""
 
     return historial()
 
