@@ -7,6 +7,7 @@ from socket_service import emit_ticket_update, emit_ticket_comment, emit_new_tic
 from models import (
     MunicipioTicket,
     PymeTicket,
+    Rubro,
     User,
     TicketComentario,
     TicketSatisfaccion,
@@ -1415,7 +1416,7 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
     })
 
 
-@ticket_bp.route('/tickets/<int:ticket_id>/knowledge-base/suggestions', methods=['GET'])
+@ticket_bp.route('/tickets/<int:ticket_id>/knowledge-base/suggestions', methods=['GET', 'POST'])
 @anon_o_token_requerido
 def get_ticket_knowledge_base_suggestions(current_user: User, owner_user: User, anon_id: str, ticket_id: int):
     """Devuelve sugerencias de base de conocimiento para un ticket.
@@ -1425,16 +1426,42 @@ def get_ticket_knowledge_base_suggestions(current_user: User, owner_user: User, 
     """
 
     ticket_obj = db.session.get(MunicipioTicket, ticket_id)
+    ticket_tipo = "municipio"
+
+    if not ticket_obj:
+        ticket_obj = db.session.get(PymeTicket, ticket_id)
+        ticket_tipo = "pyme" if ticket_obj else None
+
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    es_agente = current_user and current_user.tipo_chat == "municipio"
-    es_dueno = current_user and ticket_obj.user_id == current_user.id
-    es_anon = anon_id and ticket_obj.anon_id == anon_id
+    if ticket_tipo == "municipio":
+        es_agente = current_user and current_user.tipo_chat == "municipio"
+        es_dueno = current_user and ticket_obj.user_id == current_user.id
+        es_anon = anon_id and ticket_obj.anon_id == anon_id
+    else:  # pyme
+        es_agente = current_user and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id
+        es_dueno = current_user and ticket_obj.user_id == current_user.id
+        es_anon = anon_id and ticket_obj.anon_id == anon_id
+
     if not (es_agente or es_dueno or es_anon):
         return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
-    return jsonify({"sugerencias": []})
+    sugerencias = []
+    try:
+        from services.utils_placeholders import sugerencias_por_rubro
+
+        if ticket_tipo == "municipio":
+            sugerencias = sugerencias_por_rubro("municipios")
+        else:
+            rubro = db.session.get(Rubro, ticket_obj.rubro_id) if ticket_obj.rubro_id else None
+            rubro_nombre = (rubro.nombre or rubro.clave) if rubro else None
+            if rubro_nombre:
+                sugerencias = sugerencias_por_rubro(rubro_nombre)
+    except Exception as e:  # pragma: no cover - fallback defensivo
+        logger.warning(f"No se pudieron cargar sugerencias predefinidas: {e}")
+
+    return jsonify({"sugerencias": sugerencias[:5]})
 
 # ---------- CHAT EN VIVO: RESPONDER CIUDADANO (SOLO TOKEN) ----------
 @ticket_bp.route('/tickets/chat/<int:ticket_id>/responder_ciudadano', methods=['POST'])
