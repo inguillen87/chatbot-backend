@@ -270,7 +270,12 @@ def anon_id_alias():
     return provide_anon_id()
 
 
-@api_aliases_bp.route("/pwa/tenant-info", methods=["GET", "OPTIONS"], strict_slashes=False)
+@api_aliases_bp.route(
+    "/pwa/tenant-info",
+    methods=["GET", "OPTIONS"],
+    strict_slashes=False,
+    provide_automatic_options=False,
+)
 @cross_origin(origins="*", supports_credentials=True)
 def pwa_tenant_info_alias():
     """Alias so widgets hitting /api/pwa/tenant-info receive tenant details."""
@@ -292,7 +297,12 @@ def root_public_tenant_alias():
     return tenant_profile()
 
 
-@public_aliases_bp.route("/pwa/tenant-info", methods=["GET", "OPTIONS"], strict_slashes=False)
+@public_aliases_bp.route(
+    "/pwa/tenant-info",
+    methods=["GET", "OPTIONS"],
+    strict_slashes=False,
+    provide_automatic_options=False,
+)
 @cross_origin(origins="*", supports_credentials=True)
 def root_pwa_tenant_info_alias():
     """Alias without /api prefix for PWA tenant info requests."""
