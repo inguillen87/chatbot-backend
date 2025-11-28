@@ -3,65 +3,30 @@ import uuid
 import logging
 from werkzeug.utils import secure_filename
 from flask import Blueprint, request, jsonify, current_app, send_from_directory, render_template
-from socket_service import emit_ticket_update, emit_ticket_comment, emit_new_ticket
+from socket_service import emit_ticket_update
 from models import (
     MunicipioTicket,
     PymeTicket,
-    Rubro,
     User,
     TicketComentario,
     TicketSatisfaccion,
-    Conversacion,
     ArchivoAdjunto,
     db,
 )
 from datetime import datetime, timedelta
 from services.ticket_service import servicio_tickets
 from services.gcs_service import upload_to_gcs # Import the new GCS service
-from services.geo.route import obtener_ruta
 from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
 from utils.permissions import require_role
 from collections import defaultdict
-from sqlalchemy import or_, func
-from utils.ticket_utils import normalize_category
-from utils.time_utils import datetime_to_iso_utc, get_local_now
 logger = logging.getLogger("app")
-
-from utils.recaptcha import verify_recaptcha
 
 ticket_bp = Blueprint('ticket_bp', __name__)
 
+TICKET_ALLOWED_STATES = ["nuevo", "en_proceso", "cerrado", "en_vivo", "esperando_agente_en_vivo"]
+
 MENSAJE_CHAT_CERRADO = "El chat fue cerrado"
 MENSAJE_SIN_PERMISOS = "No tienes permiso para acceder a este chat."
-
-# Estados válidos para los tickets que pueden ser utilizados por la UI.
-TICKET_ALLOWED_STATES = [
-    "nuevo",
-    "en_proceso",
-    "en_vivo",
-    "esperando_agente_en_vivo",
-    "cerrado",
-]
-
-
-def _validar_asignacion_empleado(ticket_obj, current_user: User):
-    """Devuelve una respuesta de error si el empleado no está asignado al ticket."""
-
-    if current_user.rol != "empleado":
-        return None
-
-    if getattr(ticket_obj, "asignado_a_id", None) != current_user.id:
-        return jsonify({"error": "Ticket no asignado a este empleado."}), 403
-
-    return None
-
-
-@ticket_bp.route('/tickets/estados', methods=['GET'])
-@token_requerido
-@admin_o_empleado_requerido
-def obtener_estados_ticket(current_user: User):
-    """Devuelve la lista de estados permitidos para los tickets."""
-    return jsonify({"estados": TICKET_ALLOWED_STATES})
 
 def guardar_archivo_adjunto_ticket(file_storage, user_id, ticket_id, tipo_ticket) -> ArchivoAdjunto | None:
     """
@@ -161,42 +126,15 @@ def serialize_ticket_to_json(ticket, ticket_type):
 
     historial_chat = servicio_tickets.obtener_historial_chat(ticket)
 
-
     # Construir el diccionario con la estructura deseada
-    dni_vecino = user_data.get("dni")
-    if dni_vecino == "No especificado" or not dni_vecino:
-        dni_vecino = None
-
-    municipio_id = getattr(ticket, 'municipio_id', None) if ticket_type == 'municipio' else None
-    rubro_id = getattr(ticket, 'rubro_id', None) if ticket_type == 'pyme' else None
-
-    tenant_type = ticket_type
-    tenant_id = None
-    if ticket_type == 'municipio':
-        tenant_id = municipio_id or getattr(ticket, 'user_id', None)
-    elif ticket_type == 'pyme':
-        tenant_id = rubro_id or getattr(ticket, 'pyme_id', None) or getattr(ticket, 'user_id', None)
-
-    socket_room = None
-    if tenant_id:
-        room_prefix = 'municipio' if ticket_type == 'municipio' else 'pyme'
-        socket_room = f"{room_prefix}_{tenant_id}"
-
-    assigned_user = getattr(ticket, "asignado_a", None)
-
-    estado_original = getattr(ticket, "estado", None) or "desconocido"
-    estado_serializado = "resuelto" if estado_original == "cerrado" else estado_original
-    categoria_ticket = getattr(ticket, "categoria", None) or "Sin categoría"
-    categoria_normalizada = normalize_category(categoria_ticket) or categoria_ticket
-
     serialized_data = {
         "id": ticket.id,
         "tipo": ticket_type,
         "nro_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
         "asunto": getattr(ticket, 'asunto', 'Sin Asunto'),
-        "estado": estado_serializado,
-        "fecha": datetime_to_iso_utc(ticket.fecha),
-        "categoria": categoria_normalizada,
+        "estado": ticket.estado,
+        "fecha": ticket.fecha.isoformat() + "Z",  # Asegurar formato ISO con Z para UTC
+        "categoria": getattr(ticket, 'categoria', 'Sin Categoría'),
         "direccion": user_data.get("direccion", "No especificada"),
         "distrito": getattr(ticket, 'distrito', None),
         "latitud": getattr(ticket, 'latitud', None),
@@ -204,64 +142,12 @@ def serialize_ticket_to_json(ticket, ticket_type):
         "nombre_usuario": user_data.get("nombre", "No especificado"),
         "email": user_data.get("email", "No especificado"),
         "telefono": user_data.get("telefono", "No especificado"),
-        "dni": dni_vecino,
         "description": description,
         "channel": getattr(ticket, 'canal_ingreso', 'desconocido'),
         "comentarios": comentarios_serializados,
         "historial_chat": historial_chat,
-        "informacion_personal_vecino": {
-            "nombre": user_data.get("nombre", "No especificado"),
-            "dni": dni_vecino,
-            "direccion": user_data.get("direccion", "No especificada"),
-            "email": user_data.get("email", "No especificado"),
-            "telefono": user_data.get("telefono", "No especificado")
-        },
-        "municipio_id": municipio_id,
-        "rubro_id": rubro_id,
-        "tenant_type": tenant_type,
-        "tenant_id": tenant_id,
-        "socket_room": socket_room,
-        "asignado_a": (
-            {
-                "id": assigned_user.id,
-                "nombre": assigned_user.name,
-                "email": assigned_user.email,
-            }
-            if assigned_user
-            else None
-        ),
-        "asignado_en": datetime_to_iso_utc(getattr(ticket, "asignado_en", None)),
     }
     return serialized_data
-
-
-def build_ticket_comment_payload(ticket, ticket_type, comment_obj, ticket_snapshot=None):
-    """Return a socket payload for comment broadcasts with consistent metadata."""
-    if ticket_snapshot is None:
-        ticket_snapshot = serialize_ticket_to_json(ticket, ticket_type)
-
-    comment_dict = comment_obj.to_dict() if hasattr(comment_obj, "to_dict") else comment_obj
-
-    payload = {
-        "ticket": ticket_snapshot,
-        "ticket_id": ticket.id,
-        "ticketId": ticket.id,
-        "nro_ticket": ticket_snapshot.get("nro_ticket"),
-        "tenant_type": ticket_snapshot.get("tenant_type"),
-        "tenant_id": ticket_snapshot.get("tenant_id"),
-        "municipio_id": ticket_snapshot.get("municipio_id"),
-        "rubro_id": ticket_snapshot.get("rubro_id"),
-        "socket_room": ticket_snapshot.get("socket_room"),
-        "estado": ticket_snapshot.get("estado"),
-        "tipo": ticket_type,
-        "comment": comment_dict,
-    }
-
-    if isinstance(comment_dict, dict):
-        payload["mensaje"] = comment_dict.get("comentario")
-        payload["actor"] = "agent" if comment_dict.get("es_admin") else "neighbor"
-
-    return payload
 
 
 def get_tickets_del_usuario_logic(current_user: User):
@@ -275,10 +161,7 @@ def get_tickets_del_usuario_logic(current_user: User):
         TicketModel = None
         tipo_ticket_str = '' # Para usar en la serialización
 
-        # Determinar el tipo de ticket usando `tipo_chat` y, como fallback, los IDs asociados
-        if current_user.tipo_chat == "municipio" or (
-            not current_user.tipo_chat and current_user.municipio_id
-        ):
+        if current_user.tipo_chat == "municipio":
             TicketModel = MunicipioTicket
             current_app.logger.info(f"[DEBUG] Usuario municipal: id={current_user.id}, municipio_id={current_user.municipio_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
             if not current_user.municipio_id:
@@ -288,9 +171,7 @@ def get_tickets_del_usuario_logic(current_user: User):
             query_base = TicketModel.query.filter(TicketModel.municipio_id == current_user.municipio_id)
             current_app.logger.info(f"[DEBUG] Querying for municipio_id: {current_user.municipio_id}")
             tipo_ticket_str = 'municipio'
-        elif current_user.tipo_chat == "pyme" or (
-            not current_user.tipo_chat and current_user.rubro_id
-        ):
+        else:
             TicketModel = PymeTicket
             current_app.logger.info(f"[DEBUG] Usuario PYME: id={current_user.id}, rubro_id={current_user.rubro_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
             if current_user.rubro_id:
@@ -299,146 +180,64 @@ def get_tickets_del_usuario_logic(current_user: User):
                 current_app.logger.warning(f"Usuario PYME {current_user.id} sin rubro_id intentando acceder a /tickets")
                 return jsonify({"error": "Usuario PYME no tiene rubro asignado o configuración incorrecta."}), 400
             tipo_ticket_str = 'pyme'
-        else:
-            current_app.logger.warning(
-                f"[DEBUG] Usuario {current_user.id} no tiene tipo_chat ni IDs asociados para tickets"
-            )
-            return jsonify({"error": "Usuario no tiene configuración de tickets asociada."}), 400
 
         # Aplicar filtro de categoría si se proveyó (afecta tanto al summary como a la lista)
         if requested_categoria_filter:
-            if requested_categoria_filter.lower() == "luminarias":
-                query_base = query_base.filter(TicketModel.categoria.ilike("%lumin%"))
-            else:
-                query_base = query_base.filter(TicketModel.categoria == requested_categoria_filter)
+            query_base = query_base.filter(TicketModel.categoria == requested_categoria_filter)
 
-        if current_user.rol == 'empleado':
-            query_base = query_base.filter(TicketModel.asignado_a_id == current_user.id)
+        # Aplicar filtro de categorías asignadas al empleado (afecta tanto al summary como a la lista)
+        employee_specific_categories = []
+        if current_user.rol == 'empleado' and current_user.ticket_categorias:
+            employee_specific_categories = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
+            if employee_specific_categories:
+                 # Usar ilike para búsquedas insensibles a mayúsculas/minúsculas si es necesario,
+                 # o asumir que las categorías se guardan normalizadas.
+                 # Por ahora, se asume que la comparación directa es suficiente si las categorías están normalizadas.
+                 # query_base = query_base.filter(TicketModel.categoria.in_(employee_specific_categories))
+                 # SQLAlchemy no tiene un `ANY` directo como SQL puro para listas de strings de esta forma.
+                 # Se puede usar OR:
+                from sqlalchemy import or_
+                category_conditions = [TicketModel.categoria.ilike(cat_name) for cat_name in employee_specific_categories]
+                query_base = query_base.filter(or_(*category_conditions))
 
-        # Obtener todos los tickets que cumplen con los filtros base (municipio/rubro y categoría
-        # de empleado/request) para el resumen utilizando una consulta agregada en lugar de traer
-        # todas las filas a memoria. Esto mejora la latencia percibida en clientes móviles y
-        # reduce el consumo de recursos en escenarios con grandes volúmenes de tickets.
+
+        # Obtener todos los tickets que cumplen con los filtros base (municipio/rubro y categoría de empleado/request) para el resumen
+        all_tickets_for_summary_calculation = query_base.all()
+
         summary_by_status = defaultdict(int)
-        defined_statuses = list(TICKET_ALLOWED_STATES) + ["resuelto"]
+        defined_statuses = ["nuevo", "en_proceso", "en_vivo", "esperando_agente_en_vivo", "cerrado"]
 
-        for st in defined_statuses:
-            summary_by_status[st] = 0
-
-        status_counts = (
-            query_base.with_entities(
-                TicketModel.estado,
-                func.count(TicketModel.id)
-            )
-            .group_by(TicketModel.estado)
-            .all()
-        )
-
-        total_tickets = 0
-        for estado_original, cantidad in status_counts:
-            estado_original = estado_original or "desconocido"
-            estado_actual = "resuelto" if estado_original == "cerrado" else estado_original
-            total_tickets += cantidad
-
-            if estado_actual in defined_statuses:
-                summary_by_status[estado_actual] += cantidad
+        for t_sum in all_tickets_for_summary_calculation:
+            # El filtro de categoría de empleado ya se aplicó en la query_base
+            if t_sum.estado in defined_statuses:
+                summary_by_status[t_sum.estado] += 1
             else:
-                summary_by_status["otros"] += cantidad
-
-        summary_by_status["total"] = total_tickets
-        # Unificar los tickets cerrados dentro de la cuenta de "resuelto" para que el frontend
-        # los trate como reclamos resueltos.
-        summary_by_status["resuelto"] += summary_by_status.get("cerrado", 0)
+                summary_by_status["otros"] += 1 # Contar otros estados
+        summary_by_status["total"] = len(all_tickets_for_summary_calculation)
 
         # Ahora, obtener la lista de tickets para la página actual, aplicando el filtro de estado si existe
         current_app.logger.info(f"Filtros aplicados: estado={requested_estado_filter}, categoria={requested_categoria_filter}")
         final_tickets_query = query_base  # query_base ya tiene los filtros de categoria y rol
-
-        search_query = request.args.get("q")
-        if search_query:
-            like_pattern = f"%{search_query}%"
-            search_filters = [
-                User.name.ilike(like_pattern),
-                TicketModel.nro_ticket.ilike(like_pattern),
-                TicketModel.estado.ilike(like_pattern),
-            ]
-            if hasattr(TicketModel, "nombre_vecino"):
-                search_filters.append(TicketModel.nombre_vecino.ilike(like_pattern))
-            if hasattr(TicketModel, "dni"):
-                search_filters.append(TicketModel.dni.ilike(like_pattern))
-            if hasattr(TicketModel, "dni_vecino"):
-                search_filters.append(TicketModel.dni_vecino.ilike(like_pattern))
-            final_tickets_query = (
-                final_tickets_query
-                .join(User, TicketModel.user_id == User.id)
-                .filter(or_(*search_filters))
-            )
-
         if requested_estado_filter and requested_estado_filter != 'todos':
-            if requested_estado_filter == 'resuelto':
-                final_tickets_query = final_tickets_query.filter(TicketModel.estado.in_(["resuelto", "cerrado"]))
-            else:
-                final_tickets_query = final_tickets_query.filter(TicketModel.estado == requested_estado_filter)
+            final_tickets_query = final_tickets_query.filter(TicketModel.estado == requested_estado_filter)
 
-        try:
-            page = int(request.args.get("page", 1))
-        except (TypeError, ValueError):
-            page = 1
-        if page < 1:
-            page = 1
+        page = int(request.args.get("page", 1))
+        per_page = int(request.args.get("per_page", current_app.config.get("TICKETS_PER_PAGE_DEFAULT", 50)))
 
-        per_page_default = current_app.config.get("TICKETS_PER_PAGE_DEFAULT", 50)
-        per_page_raw = request.args.get("per_page")
-        try:
-            per_page = int(per_page_raw) if per_page_raw is not None else int(per_page_default)
-        except (TypeError, ValueError):
-            per_page = int(per_page_default)
-
-        # Interpret per_page <= 0 as a request for all records (no pagination)
-        if per_page <= 0:
-            per_page = 0
-            page = 1  # Cuando no hay paginación, forzamos la página a 1
-
-        ordered_query = final_tickets_query.order_by(TicketModel.fecha.desc())
-        if per_page > 0:
-            tickets_for_list_page = (
-                ordered_query
-                .offset((page - 1) * per_page)
-                .limit(per_page)
-                .all()
-            )
-        else:
-            tickets_for_list_page = ordered_query.all()
+        tickets_for_list_page = (
+            final_tickets_query
+            .order_by(TicketModel.fecha.desc())
+            .offset((page - 1) * per_page)
+            .limit(per_page)
+            .all()
+        )
 
         serialized_tickets = [serialize_ticket_to_json(t, tipo_ticket_str) for t in tickets_for_list_page]
 
-        if per_page > 0:
-            total_pages = max(1, (total_tickets + per_page - 1) // per_page)
-            has_next = page * per_page < total_tickets
-            has_prev = page > 1
-            per_page_value = per_page
-        else:
-            total_pages = 1
-            has_next = False
-            has_prev = False
-            # Reportar 0 para mantener compatibilidad con el valor solicitado "sin límite"
-            per_page_value = 0
-
-        pagination_info = {
-            "page": page,
-            "per_page": per_page_value,
-            "total_items": total_tickets,
-            "total_pages": total_pages,
-            "has_next": has_next,
-            "has_prev": has_prev,
-        }
-
-        # Devolver tanto la lista de tickets para la página actual como el resumen y metadatos
-        # de paginación para facilitar experiencias responsivas (por ejemplo, vistas móviles).
+        # Devolver tanto la lista de tickets para la página actual como el resumen
         return jsonify({
             "tickets": serialized_tickets,
-            "summary": dict(summary_by_status),
-            "pagination": pagination_info,
+            "summary": summary_by_status
         })
 
     except Exception as e:
@@ -487,15 +286,13 @@ def get_mis_tickets(current_user: User):
         )
 
         def serialize(t, tipo):
-            estado_original = getattr(t, "estado", None) or "desconocido"
-            estado_serializado = "resuelto" if estado_original == "cerrado" else estado_original
             base = {
                 "id": t.id,
                 "tipo": tipo,
                 "nro_ticket": t.nro_ticket,
                 "asunto": getattr(t, "asunto", "N/A"),
-                "estado": estado_serializado,
-                "fecha": datetime_to_iso_utc(t.fecha),
+                "estado": t.estado,
+                "fecha": t.fecha.isoformat(),
                 "direccion": getattr(t, "direccion", None),
                 "latitud": getattr(t, "latitud", None),
                 "longitud": getattr(t, "longitud", None),
@@ -509,8 +306,7 @@ def get_mis_tickets(current_user: User):
                 })
             else:
                 base.update({
-                    "categoria": getattr(t, "categoria", None) or "Sin categoría",
-                    "dni": getattr(t, "dni", None) or getattr(t, "dni_vecino", None),
+                    "categoria": getattr(t, "categoria", None),
                 })
             return base
 
@@ -532,49 +328,45 @@ def get_mis_tickets(current_user: User):
 
 # ---------- DETALLE DE TICKET ----------
 def _get_user_info(ticket, user_model):
-    """
-    Consolidate user info giving precedence to the data stored on the ticket
-    itself. This ensures the panel displays the information provided when the
-    ticket was created even if the user's profile has outdated values.
-    """
-    # 1. Initialize with None to clearly distinguish from empty strings
-    user_info = {"nombre": None, "telefono": None, "email": None, "direccion": None, "dni": None, "descripcion": None}
+    """Helper to consolidate user info extraction."""
+    user_info = {
+        "nombre": "No especificado",
+        "telefono": "No especificado",
+        "email": "No especificado",
+        "direccion": "No especificada",
+        "dni": "No especificado",
+        "descripcion": ""
+    }
 
-    # 2. Start with the explicit data saved on the ticket
-    user_info["nombre"] = getattr(ticket, 'nombre_vecino', None)
-    user_info["telefono"] = getattr(ticket, 'telefono_vecino', None) or getattr(ticket, 'telefono', None)
-    user_info["email"] = getattr(ticket, 'email_vecino', None) or getattr(ticket, 'email', None)
-    user_info["direccion"] = getattr(ticket, 'direccion', None)
-    user_info["dni"] = getattr(ticket, 'dni', None) or getattr(ticket, 'dni_vecino', None)
-
-    # 3. Fill remaining data with the associated User model as fallback
+    # 1. Get data from User model if available
     ticket_owner_user = db.session.get(user_model, ticket.user_id) if ticket.user_id else None
     if ticket_owner_user:
-        user_info["nombre"] = user_info["nombre"] or ticket_owner_user.name
-        user_info["telefono"] = user_info["telefono"] or ticket_owner_user.telefono
-        user_info["email"] = user_info["email"] or ticket_owner_user.email
-        user_info["direccion"] = user_info["direccion"] or getattr(ticket_owner_user, "direccion", None)
-        user_info["dni"] = user_info["dni"] or getattr(ticket_owner_user, "dni", None)
+        user_info["nombre"] = ticket_owner_user.name or user_info["nombre"]
+        user_info["telefono"] = ticket_owner_user.telefono or user_info["telefono"]
+        user_info["email"] = ticket_owner_user.email or user_info["email"]
+        user_info["direccion"] = ticket_owner_user.direccion or user_info["direccion"]
+        # El modelo User no tiene DNI, así que no lo sacamos de aquí.
 
-    # 4. Fallback to 'detalles' field for any missing info
+    # 2. Fallback to ticket fields (for anonymous or overriding)
+    user_info["nombre"] = getattr(ticket, 'nombre_vecino', user_info["nombre"]) or user_info["nombre"]
+    user_info["telefono"] = getattr(ticket, 'telefono_vecino', getattr(ticket, 'telefono', user_info["telefono"])) or user_info["telefono"]
+    user_info["email"] = getattr(ticket, 'email_vecino', getattr(ticket, 'email', user_info["email"])) or user_info["email"]
+    user_info["direccion"] = getattr(ticket, 'direccion', user_info["direccion"]) or user_info["direccion"]
+    user_info["dni"] = getattr(ticket, 'dni', user_info["dni"]) or user_info["dni"] # Para PymeTicket
+
+    # 3. Fallback to 'detalles' field for any missing info
     detalles_texto = getattr(ticket, 'detalles', '') or ''
     user_info["descripcion"] = detalles_texto
-    if detalles_texto:
-        if not user_info["nombre"]:
-            if "Nombre:" in detalles_texto: user_info["nombre"] = detalles_texto.split("Nombre:")[1].split("\n")[0].strip()
-        if not user_info["telefono"]:
-            if "Teléfono:" in detalles_texto: user_info["telefono"] = detalles_texto.split("Teléfono:")[1].split("\n")[0].strip()
-        if not user_info["email"]:
-            if "Email:" in detalles_texto: user_info["email"] = detalles_texto.split("Email:")[1].split("\n")[0].strip()
-        if not user_info["direccion"]:
-            if "Dirección:" in detalles_texto: user_info["direccion"] = detalles_texto.split("Dirección:")[1].split("\n")[0].strip()
-        if not user_info["dni"]:
-            if "DNI:" in detalles_texto: user_info["dni"] = detalles_texto.split("DNI:")[1].split("\n")[0].strip()
-
-    # 5. Final cleanup: replace any remaining None/empty with "No especificado" for display
-    for key, value in user_info.items():
-        if not value: # Catches None and empty strings
-            user_info[key] = "No especificado"
+    if "Nombre:" in detalles_texto and user_info["nombre"] == "No especificado":
+        user_info["nombre"] = detalles_texto.split("Nombre:")[1].split("\n")[0].strip()
+    if "Teléfono:" in detalles_texto and user_info["telefono"] == "No especificado":
+        user_info["telefono"] = detalles_texto.split("Teléfono:")[1].split("\n")[0].strip()
+    if "Email:" in detalles_texto and user_info["email"] == "No especificado":
+        user_info["email"] = detalles_texto.split("Email:")[1].split("\n")[0].strip()
+    if "Dirección:" in detalles_texto and user_info["direccion"] == "No especificada":
+        user_info["direccion"] = detalles_texto.split("Dirección:")[1].split("\n")[0].strip()
+    if "DNI:" in detalles_texto and user_info["dni"] == "No especificado":
+        user_info["dni"] = detalles_texto.split("DNI:")[1].split("\n")[0].strip()
 
     return user_info
 
@@ -582,12 +374,9 @@ def _serialize_ticket_details(ticket, ticket_type):
     """Serializa los detalles de un ticket (municipio o pyme) a un diccionario JSON."""
     user_data = _get_user_info(ticket, User)
 
-    comentarios = [c.to_dict() for c in ticket.comentarios]
-
-    timeline = servicio_tickets.obtener_timeline_ticket(ticket)
-    progreso_estados = servicio_tickets.obtener_estado_progreso(ticket)
-
-    historial_chat = servicio_tickets.obtener_historial_chat(ticket)
+    comentarios = [
+        c.to_dict() for c in ticket.comentarios
+    ]
 
     archivos_adjuntos_data = []
     if hasattr(ticket, 'archivos'):
@@ -598,13 +387,13 @@ def _serialize_ticket_details(ticket, ticket_type):
                 analisis = adj.analisis
                 analisis_data = {
                     "id": analisis.id, "resumen": analisis.resumen, "estado_analisis": analisis.estado_analisis,
-                    "fecha_analisis": datetime_to_iso_utc(analisis.fecha_analisis) if analisis.fecha_analisis else None,
+                    "fecha_analisis": analisis.fecha_analisis.isoformat() if analisis.fecha_analisis else None,
                     "error_analisis": analisis.error_analisis, "texto_extraido": analisis.texto_extraido,
                     "datos_estructurados": analisis.datos_estructurados, "tipo_analisis": analisis.tipo_analisis,
                 }
             archivos_adjuntos_data.append({
                 "id": adj.id, "name": adj.nombre_original or adj.filename, "mimeType": adj.mime,
-                "size": adj.tamano, "url": adj.url, "fecha": datetime_to_iso_utc(adj.fecha) if adj.fecha else None,
+                "size": adj.tamano, "url": adj.url, "fecha": adj.fecha.isoformat() if adj.fecha else None,
                 "analisis": analisis_data
             })
 
@@ -616,12 +405,6 @@ def _serialize_ticket_details(ticket, ticket_type):
             "dni": user_data["dni"]
         }
 
-    canal_ingreso_valor = getattr(ticket, 'canal_ingreso', None)
-    canal_normalizado = canal_ingreso_valor or 'desconocido'
-    ultima_actualizacion_dt = getattr(ticket, 'ultima_actividad', None) or getattr(ticket, 'fecha', None)
-
-    assigned_user = getattr(ticket, "asignado_a", None)
-
     ticket_data = {
         "id": ticket.id,
         "id_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
@@ -630,7 +413,7 @@ def _serialize_ticket_details(ticket, ticket_type):
         "asunto": getattr(ticket, 'asunto', ''),
         "categoria_reclamo": getattr(ticket, 'categoria', ''),
         "estado_ticket": ticket.estado,
-        "fecha_hora_creacion": datetime_to_iso_utc(ticket.fecha),
+        "fecha_hora_creacion": ticket.fecha.isoformat(),
         "descripcion_completa_reclamo": getattr(ticket, 'pregunta', ''),
         "detalles_adicionales": user_data["descripcion"], # Datos extraídos del campo 'detalles'
         "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
@@ -643,86 +426,14 @@ def _serialize_ticket_details(ticket, ticket_type):
         "ubicacion_geografica": {
             "latitud": getattr(ticket, 'latitud', None),
             "longitud": getattr(ticket, 'longitud', None),
-            "distrito": getattr(ticket, 'distrito', None),
-            "direccion": getattr(ticket, 'direccion', None),
         },
-        "canal_ingreso": canal_ingreso_valor,
-        "channel": canal_normalizado,
+        "canal_ingreso": getattr(ticket, 'canal_ingreso', None),
         "contacto_seguimiento": getattr(ticket, 'contacto_seguimiento', None),
-        "nombre_y_avatar_whatsapp": {
-            "nombre": getattr(ticket, 'nombre_display_whatsapp', None),
-            "avatar_url": getattr(ticket, 'url_avatar_whatsapp', None),
+        "nombre_y_avatar_whatsapp": { "nombre": getattr(ticket, 'nombre_display_whatsapp', None), "avatar_url": getattr(ticket, 'url_avatar_whatsapp', None)
         },
-        "informacion_personal_vecino": informacion_personal,
-        "historial_chat": historial_chat,
-        "timeline": timeline,
-        "progreso_estados": progreso_estados,
-        "ultima_actualizacion": datetime_to_iso_utc(ultima_actualizacion_dt),
-        "asignado_a": (
-            {
-                "id": assigned_user.id,
-                "nombre": assigned_user.name,
-                "email": assigned_user.email,
-            }
-            if assigned_user
-            else None
-        ),
-        "asignado_en": datetime_to_iso_utc(getattr(ticket, "asignado_en", None)),
+        "informacion_personal_vecino": informacion_personal
     }
-
-    if hasattr(ticket, 'foto_url_directa'):
-        ticket_data['foto_url_directa'] = ticket.foto_url_directa
-
-    if ticket_type == "municipio":
-        ruta_data = None
-        if getattr(ticket, 'latitud', None) is not None and getattr(ticket, 'longitud', None) is not None:
-            municipio_usuario = db.session.get(User, ticket.municipio_id)
-            if municipio_usuario and municipio_usuario.latitud is not None and municipio_usuario.longitud is not None:
-                ruta_osrm = obtener_ruta((municipio_usuario.latitud, municipio_usuario.longitud), (ticket.latitud, ticket.longitud))
-                if ruta_osrm:
-                    ruta_data = {
-                        "origen": {"lat": municipio_usuario.latitud, "lng": municipio_usuario.longitud},
-                        "destino": {"lat": ticket.latitud, "lng": ticket.longitud},
-                        **ruta_osrm,
-                    }
-                else:
-                    ruta_data = {
-                        "origen": {"lat": municipio_usuario.latitud, "lng": municipio_usuario.longitud},
-                        "destino": {"lat": ticket.latitud, "lng": ticket.longitud},
-                    }
-        ticket_data["ruta"] = ruta_data
     return ticket_data
-
-
-@ticket_bp.route('/tickets/municipio/por_numero/<string:nro_ticket>', methods=['GET'])
-@anon_o_token_requerido
-def get_ticket_by_number_public(current_user, owner_user, anon_id, nro_ticket: str):
-    """Consulta un ticket municipal por su número."""
-
-    normalizado = str(nro_ticket).upper()
-    if normalizado.startswith("M-"):
-        normalizado = normalizado.split("-", 1)[1]
-
-    ticket = None
-    if current_user:
-        # Petición autenticada: no requiere PIN ni reCAPTCHA
-        ticket = MunicipioTicket.query.filter_by(nro_ticket=normalizado).first()
-    else:
-        pin = request.args.get("pin")
-        if not pin:
-            return jsonify({"error": "PIN requerido."}), 400
-        token = request.args.get("recaptcha_token")
-        if token and token.lower() not in ("undefined", "null"):
-            if not verify_recaptcha(token):
-                return jsonify({"error": "Verificación reCAPTCHA fallida."}), 400
-
-        ticket = MunicipioTicket.query.filter_by(nro_ticket=normalizado, consulta_pin=pin).first()
-
-    if not ticket:
-        return jsonify({"error": "Ticket no encontrado."}), 404
-
-    ticket_data = _serialize_ticket_details(ticket, "municipio")
-    return jsonify(ticket_data)
 
 @ticket_bp.route('/tickets/municipio/<int:ticket_id>', methods=['GET'])
 @token_requerido
@@ -741,93 +452,8 @@ def get_ticket_details(current_user: User, ticket_id: int):
     if ticket.municipio_id != current_user.municipio_id:
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
 
-    error_response = _validar_asignacion_empleado(ticket, current_user)
-    if error_response:
-        return error_response
-
     ticket_data = _serialize_ticket_details(ticket, "municipio")
     return jsonify(ticket_data)
-
-
-@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/asignar', methods=['POST', 'PUT'])
-@token_requerido
-@require_role('admin', 'empleado')
-def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
-    if tipo not in {"municipio", "pyme"}:
-        return jsonify({"error": "Tipo de ticket no soportado para asignación."}), 400
-
-    if tipo == "municipio":
-        ticket_obj = db.session.get(MunicipioTicket, ticket_id)
-    else:
-        ticket_obj = db.session.get(PymeTicket, ticket_id)
-
-    if not ticket_obj:
-        return jsonify({"error": "Ticket no encontrado."}), 404
-
-    if tipo == "municipio":
-        municipio_owner_id = current_user.municipio_id or current_user.empresa_id
-        if current_user.tipo_chat != "municipio" or municipio_owner_id != ticket_obj.municipio_id:
-            return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
-    else:
-        pyme_owner_id = current_user.id if current_user.rol == "admin" else current_user.empresa_id
-        if current_user.tipo_chat != "pyme" or ticket_obj.rubro_id != current_user.rubro_id:
-            return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
-        if pyme_owner_id is None:
-            return jsonify({"error": "Usuario PYME sin empresa asociada."}), 400
-
-    data = request.get_json(silent=True) or {}
-    requested_user_id = data.get("user_id")
-    auto = bool(data.get("auto"))
-
-    if current_user.rol == 'empleado':
-        if ticket_obj.asignado_a_id and ticket_obj.asignado_a_id != current_user.id:
-            return jsonify({"error": "El ticket ya está asignado a otro agente."}), 400
-        requested_user_id = current_user.id
-        auto = False
-
-    if tipo == "municipio":
-        empleado_asignado = servicio_tickets.asignar_ticket_municipal(
-            ticket_obj,
-            empleado_id=requested_user_id,
-            auto=auto or requested_user_id is None,
-            actor_id=current_user.id,
-        )
-    else:
-        empleado_asignado = servicio_tickets.asignar_ticket_pyme(
-            ticket_obj,
-            empleado_id=requested_user_id,
-            auto=auto or requested_user_id is None,
-            actor_id=current_user.id,
-        )
-
-    if not empleado_asignado:
-        return jsonify({"error": "No se pudo asignar el ticket a un agente disponible."}), 400
-
-    db.session.commit()
-    ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
-    emit_ticket_update(ticket_json)
-
-    return jsonify({
-        "ticket": ticket_json,
-        "asignado_a": {
-            "id": empleado_asignado.id,
-            "nombre": empleado_asignado.name,
-            "email": empleado_asignado.email,
-        },
-    })
-
-
-@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/assign', methods=['POST', 'PUT'])
-@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/asignacion', methods=['POST', 'PUT'])
-@token_requerido
-@require_role('admin', 'empleado')
-def asignar_ticket_alias(current_user: User, tipo: str, ticket_id: int):
-    """Alias en inglés para compatibilidad con frontends que usan `/assign`.
-
-    Reutiliza la lógica de :func:`asignar_ticket` para evitar duplicaciones.
-    """
-
-    return asignar_ticket(current_user, tipo, ticket_id)
 
 @ticket_bp.route('/tickets/pyme/<int:ticket_id>', methods=['GET'])
 @token_requerido
@@ -845,10 +471,6 @@ def get_ticket_details_pyme(current_user: User, ticket_id: int):
 
     if ticket.rubro_id != current_user.rubro_id:
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
-
-    error_response = _validar_asignacion_empleado(ticket, current_user)
-    if error_response:
-        return error_response
 
     ticket_data = _serialize_ticket_details(ticket, "pyme")
     return jsonify(ticket_data)
@@ -909,10 +531,6 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
             ticket_obj.rubro_id == current_user.rubro_id
         ):
             return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
-
-    error_response = _validar_asignacion_empleado(ticket_obj, current_user)
-    if error_response:
-        return error_response
 
     log_ticket_debug(
         "responder_agente_con_archivos", # Acción actualizada
@@ -990,8 +608,6 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     try:
         if ticket_obj.estado == "nuevo" and (comentario_texto.strip() or archivos_adjuntados_db): # Si hay nuevo contenido (texto o archivos)
             ticket_obj.estado = "en_proceso"
-            if hasattr(ticket_obj, "estado_cliente"):
-                ticket_obj.estado_cliente = "en_proceso"
 
         db.session.commit() # Commit después de todas las operaciones (comentario y archivos)
     except Exception as e:
@@ -1027,22 +643,6 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
         emit_ticket_update(ticket_json)
 
-        for comentario in comentarios_creados:
-            try:
-                comment_payload = build_ticket_comment_payload(
-                    ticket_obj,
-                    tipo,
-                    comentario,
-                    ticket_snapshot=ticket_json,
-                )
-                emit_ticket_comment(comment_payload)
-            except Exception as socket_exc:  # pragma: no cover - defensive log
-                current_app.logger.exception(
-                    "Error emitting comment event for ticket %s: %s",
-                    ticket_id,
-                    socket_exc,
-                )
-
 
     except Exception as e_notif:
         current_app.logger.error(f"Error durante el envío de notificaciones para respuesta de ticket {ticket_id}: {e_notif}", exc_info=True)
@@ -1075,14 +675,14 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
                 "mimeType": adj.mime,
                 "size": adj.tamano,
                 "url": adj.url, 
-                "fecha": datetime_to_iso_utc(adj.fecha) if adj.fecha else None,
+                "fecha": adj.fecha.isoformat() if adj.fecha else None,
                 "analisis": None 
             })
 
     ticket_data_respuesta = {
         "id": ticket_obj.id, "tipo": tipo, "nro_ticket": ticket_obj.nro_ticket,
         "asunto": getattr(ticket_obj, 'asunto', ''), "estado": ticket_obj.estado,
-        "fecha": datetime_to_iso_utc(ticket_obj.fecha),
+        "fecha": ticket_obj.fecha.isoformat(),
         "detalles": getattr(ticket_obj, 'detalles', getattr(ticket_obj, 'pregunta', '')),
         "comentarios": comentarios_actualizados, # Usar la lista actualizada
         "archivos_adjuntos": archivos_actualizados_data, # Usar la lista actualizada
@@ -1099,18 +699,6 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     nuevo_estado = data.get("estado")
     if not nuevo_estado:
         return jsonify({"error": "Falta el nuevo estado."}), 400
-
-    # Permitir "resuelto" como alias de "cerrado" para la UI
-    if nuevo_estado == "resuelto":
-        nuevo_estado = "cerrado"
-
-    if nuevo_estado not in TICKET_ALLOWED_STATES:
-        return (
-            jsonify({
-                "error": f"Estado '{nuevo_estado}' no es válido. Permitidos: {', '.join(TICKET_ALLOWED_STATES + ['resuelto'])}",
-            }),
-            400,
-        )
 
     TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
     ticket_obj = db.session.get(TicketModel, ticket_id)
@@ -1131,10 +719,6 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         ):
             return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
 
-    error_response = _validar_asignacion_empleado(ticket_obj, current_user)
-    if error_response:
-        return error_response
-
     log_ticket_debug(
         "cambiar_estado",
         ticket_id,
@@ -1143,28 +727,6 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     )
 
     ticket_obj.estado = nuevo_estado
-    if hasattr(ticket_obj, "estado_cliente"):
-        ticket_obj.estado_cliente = nuevo_estado
-    if hasattr(ticket_obj, "ultima_actividad"):
-        ticket_obj.ultima_actividad = get_local_now()
-    if nuevo_estado == "cerrado":
-        encuesta = TicketSatisfaccion(
-            ticket_id=ticket_obj.id,
-            tipo=tipo,
-            puntuacion=5,
-            comentario="Cierre automático",
-        )
-        db.session.add(encuesta)
-    comentario_estado = TicketComentario(
-        municipio_ticket_id=ticket_obj.id if tipo == "municipio" else None,
-        pyme_ticket_id=ticket_obj.id if tipo == "pyme" else None,
-        comentario=f"Estado actualizado a '{nuevo_estado}'",
-        user_id=current_user.id,
-        es_admin=True,
-        origen="sistema",
-        estado_ticket=nuevo_estado,
-    )
-    db.session.add(comentario_estado)
     db.session.commit()
     try:
         from services.email_service import (
@@ -1174,11 +736,7 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         )
         mensaje_notificacion = f"El estado de tu ticket #{ticket_obj.nro_ticket} ha sido actualizado a: '{nuevo_estado}'."
 
-        enviar_email_ticket_novedad(
-            ticket_obj,
-            mensaje_notificacion,
-            comentario_reciente=comentario_estado,
-        )
+        enviar_email_ticket_novedad(ticket_obj, mensaje_notificacion)
         enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion)
         if tipo == "municipio": # Por ahora, WhatsApp solo para municipio
             enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion)
@@ -1186,94 +744,121 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     except Exception as e:  # pragma: no cover - ignore notif errors in tests
         current_app.logger.error(f"Error notificando cambio de estado para ticket {ticket_id} (tipo {tipo}): {e}", exc_info=True)
 
-    # Notificación por Websocket
-    ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
-    emit_ticket_update(ticket_json)
 
-    comentarios = [
-        {
-            "id": c.id,
-            "comentario": c.comentario,
-            "fecha": datetime_to_iso_utc(c.fecha),
-            "es_admin": c.es_admin,
-        }
-        for c in ticket_obj.comentarios
-    ]
-    ticket_data = {
-        "id": ticket_obj.id, "tipo": tipo, "nro_ticket": ticket_obj.nro_ticket,
-        "asunto": getattr(ticket_obj, 'asunto', ''), "estado": ticket_obj.estado,
-        "fecha": datetime_to_iso_utc(ticket_obj.fecha),
-        "detalles": getattr(ticket_obj, 'detalles', getattr(ticket_obj, 'pregunta', '')),
-        "comentarios": sorted(comentarios, key=lambda c: c['fecha']),
-        "rubro_id": getattr(ticket_obj, 'rubro_id', None),
-        "telefono": getattr(ticket_obj, 'telefono', None),
-        "email": getattr(ticket_obj, 'email', None),
-        "dni": getattr(ticket_obj, 'dni', None),
-        "estado_cliente": getattr(ticket_obj, 'estado_cliente', None),
-        "archivo_url": getattr(ticket_obj, 'archivo_url', None),
-        "latitud": getattr(ticket_obj, 'latitud', None),
-        "longitud": getattr(ticket_obj, 'longitud', None)
+def test_login_echoes_anon_id(client):
+    user = User(email="anon@test.com", name="Anon", token="anon-token")
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
+
+    anon_header = {"X-Anon-Id": "test-anon"}
+    response = client.post(
+        '/auth/login',
+        json={"email": "anon@test.com", "password": "pw"},
+        headers=anon_header,
+    )
+    assert response.status_code == 200
+    assert response.headers.get("X-Anon-Id") == "test-anon"
+
+
+def test_login_accepts_legacy_anon_id(client):
+    user = User(email="legacy@test.com", name="Legacy", token="legacy-token")
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
+
+    headers = {"Anon-Id": "legacy-anon"}
+    response = client.post(
+        '/auth/login',
+        json={"email": "legacy@test.com", "password": "pw"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.headers.get("X-Anon-Id") == "legacy-anon"
+
+
+def test_login_echoes_anon_id(client):
+    user = User(email="anon@test.com", name="Anon", token="anon-token")
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
+
+    anon_header = {"X-Anon-Id": "test-anon"}
+    response = client.post(
+        '/auth/login',
+        json={"email": "anon@test.com", "password": "pw"},
+        headers=anon_header,
+    )
+    assert response.status_code == 200
+    assert response.headers.get("X-Anon-Id") == "test-anon"
+
+
+def test_login_accepts_legacy_anon_id(client):
+    user = User(email="legacy@test.com", name="Legacy", token="legacy-token")
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
+
+    headers = {"Anon-Id": "legacy-anon"}
+    response = client.post(
+        '/auth/login',
+        json={"email": "legacy@test.com", "password": "pw"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.headers.get("X-Anon-Id") == "legacy-anon"
+
+from models import Rubro, User
+def test_register_creates_admin_user(client):
+    """
+    Verifica que el endpoint de registro crea un nuevo usuario con rol de admin.
+    """
+    # Primero, asegúrate de que exista un Rubro para asociar al usuario
+    rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+    db.session.add(rubro)
+    db.session.commit()
+
+    register_data = {
+        "name": "Test Admin",
+        "email": "newadmin@test.com",
+        "password": "password123",
+        "nombre_empresa": "Test Company",
+        "rubro": rubro.id,
+        "tipo_chat": "pyme",
+        "acepto_terminos": True
     }
-    return jsonify(ticket_data)
+    response = client.post('/auth/register', json=register_data)
 
-# ---------- CHAT EN VIVO: MENSAJES (SOLO TOKEN) ----------
-@ticket_bp.route('/tickets/chat/<int:ticket_id>/mensajes', methods=['GET'])
-@anon_o_token_requerido
-def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, owner_user: User = None):
-    """
-    Devuelve los mensajes del chat en vivo para un ticket.
-    Requiere que el usuario esté autenticado o que proporcione un anon_id válido.
-    """
-    try:
-        sala_de_chat = db.session.get(MunicipioTicket, ticket_id)
-        if not sala_de_chat:
-            return jsonify({"error": "Sala de chat no encontrada."}), 404
+    assert response.status_code == 201
 
-        es_agente_municipal = current_user and current_user.tipo_chat == "municipio"
-        es_dueño_del_ticket = current_user and sala_de_chat.user_id == current_user.id
-        es_anon_valido = anon_id and sala_de_chat.anon_id == anon_id
+    # Verificar que el usuario fue creado en la base de datos
+    user = User.query.filter_by(email="newadmin@test.com").first()
+    assert user is not None
+    assert user.name == "Test Admin"
+    assert user.rol == "admin" # El registro por defecto crea un admin de su propia empresa
 
-        if es_agente_municipal:
-            error_response = _validar_asignacion_empleado(sala_de_chat, current_user)
-            if error_response:
-                return error_response
 
-        log_ticket_debug("get_chat_mensajes", ticket_id, anon_id, sala_de_chat)
+def test_login_alias_works(client):
+    """Verifica que el alias /login funciona correctamente."""
+    # Asegúrate de que exista un Rubro para asociar al usuario
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
 
-        if not (es_agente_municipal or es_dueño_del_ticket or es_anon_valido):
-            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+    user = User(email="alias@test.com", name="Alias", token="alias-token", rubro_id=rubro.id)
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
 
-        if sala_de_chat.estado == "cerrado" and not es_agente_municipal:
-            return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
-
-        ultimo_mensaje_id = request.args.get('ultimo_mensaje_id', default=0, type=int)
-        mensajes_nuevos = (
-            TicketComentario.query
-            .filter(
-                TicketComentario.municipio_ticket_id == ticket_id,
-                TicketComentario.id > ultimo_mensaje_id
-            )
-            .order_by(TicketComentario.fecha.asc())
-            .all()
-        )
-        # Formatear los mensajes, renombrando "comentario" -> "texto" para
-        # mantener consistencia con el historial completo del ticket.
-        mensajes_formateados = []
-        for msg in mensajes_nuevos:
-            data = msg.to_dict()
-            if "texto" not in data:
-                data["texto"] = data.get("comentario")
-            data.pop("comentario", None)
-            mensajes_formateados.append(data)
-
-        respuesta_final = {
-            "estado_chat": sala_de_chat.estado,
-            "mensajes": mensajes_formateados,
-        }
-        return jsonify(respuesta_final)
-    except Exception as e:
-        current_app.logger.error(f"Error en get_chat_mensajes para ticket {ticket_id}: {e}", exc_info=True)
-        return jsonify({"error": "Error interno al obtener los mensajes del chat."}), 500
+    response = client.post(
+        '/login',
+        json={"email": "alias@test.com", "password": "pw"},
+    )
+    assert response.status_code == 200
+    json_data = response.get_json()
+    assert json_data["email"] == "alias@test.com"
 
 
 # ---------- CHAT EN VIVO PYME: MENSAJES ----------
@@ -1288,11 +873,6 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
 
         es_agente_pyme = current_user.rubro_id and sala_de_chat.rubro_id == current_user.rubro_id
         es_dueño = sala_de_chat.user_id == current_user.id
-
-        if es_agente_pyme:
-            error_response = _validar_asignacion_empleado(sala_de_chat, current_user)
-            if error_response:
-                return error_response
 
         log_ticket_debug("get_chat_mensajes_pyme", ticket_id, None, sala_de_chat)
 
@@ -1315,153 +895,21 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int):
             .order_by(TicketComentario.fecha.asc())
             .all()
         )
-        # Formatear los mensajes, renombrando "comentario" -> "texto" para
-        # mantener consistencia con el historial completo del ticket.
-        mensajes_formateados = []
-        for msg in mensajes_nuevos:
-            data = msg.to_dict()
-            if "texto" not in data:
-                data["texto"] = data.get("comentario")
-            data.pop("comentario", None)
-            mensajes_formateados.append(data)
 
-        # Devolver una estructura consistente con get_chat_mensajes
-        respuesta_final = {
-            "estado_chat": sala_de_chat.estado,
-            "mensajes": mensajes_formateados,
-        }
-        return jsonify(respuesta_final)
+        mensajes_formateados = [
+            {
+                "id": msg.id,
+                "texto": msg.comentario,
+                "fecha": msg.fecha.isoformat(),
+                "es_admin": msg.es_admin
+            }
+            for msg in mensajes_nuevos
+        ]
+
+        return jsonify({"estado_chat": sala_de_chat.estado, "mensajes": mensajes_formateados})
     except Exception as e:
         current_app.logger.error(f"Error en get_chat_mensajes_pyme para ticket {ticket_id}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al obtener los mensajes del chat."}), 500
-
-# ---------- RUTA HACIA EL TICKET ----------
-@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/ruta', methods=['GET'])
-@anon_o_token_requerido
-def get_ticket_route(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
-    """Devuelve la ruta desde el municipio hasta la ubicación del ticket."""
-    if tipo != "municipio":
-        return jsonify({"error": "Ruta solo disponible para tickets de municipio."}), 400
-
-    ticket_obj = db.session.get(MunicipioTicket, ticket_id)
-    if not ticket_obj:
-        return jsonify({"error": "Ticket no encontrado."}), 404
-
-    es_agente = current_user and current_user.tipo_chat == "municipio"
-    es_dueno = current_user and ticket_obj.user_id == current_user.id
-    es_anon = anon_id and ticket_obj.anon_id == anon_id
-    if not (es_agente or es_dueno or es_anon):
-        return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-
-    if ticket_obj.latitud is None or ticket_obj.longitud is None:
-        return jsonify({"error": "El ticket no tiene coordenadas."}), 400
-
-    municipio = db.session.get(User, ticket_obj.municipio_id)
-    if not municipio or municipio.latitud is None or municipio.longitud is None:
-        return jsonify({"error": "El municipio no tiene coordenadas."}), 400
-
-    ruta_data = obtener_ruta((municipio.latitud, municipio.longitud), (ticket_obj.latitud, ticket_obj.longitud))
-    if not ruta_data:
-        return jsonify({"error": "No se pudo obtener la ruta."}), 500
-
-    return jsonify({
-        "origen": {"lat": municipio.latitud, "lng": municipio.longitud},
-        "destino": {"lat": ticket_obj.latitud, "lng": ticket_obj.longitud},
-        **ruta_data,
-    })
-
-# ---------- TIMELINE DEL TICKET ----------
-@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/timeline', methods=['GET'])
-@anon_o_token_requerido
-def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
-    """Devuelve la línea de tiempo de un ticket con mensajes y cambios de estado.
-
-    Además de la timeline basada en comentarios y modificaciones de estado,
-    ahora se incluye el historial de conversación asociado al ``anon_id`` del
-    ticket. Esto permite que el frontend muestre una vista completa del flujo de
-    interacción del reclamo o pedido, combinando mensajes del chat y estados.
-    """
-    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket if tipo == "pyme" else None
-    if not TicketModel:
-        return jsonify({"error": f"Tipo de ticket no válido: {tipo}"}), 400
-
-    ticket_obj = db.session.get(TicketModel, ticket_id)
-    if not ticket_obj:
-        return jsonify({"error": "Ticket no encontrado."}), 404
-
-    if tipo == "municipio":
-        es_agente = current_user and current_user.tipo_chat == "municipio"
-        es_dueno = current_user and ticket_obj.user_id == current_user.id
-        es_anon = anon_id and ticket_obj.anon_id == anon_id
-        if not (es_agente or es_dueno or es_anon):
-            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-        if ticket_obj.estado == "cerrado" and not es_agente:
-            return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
-    else:  # pyme
-        es_agente = current_user and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id
-        es_dueno = current_user and ticket_obj.user_id == current_user.id
-        es_anon = anon_id and ticket_obj.anon_id == anon_id
-        if not (es_agente or es_dueno or es_anon):
-            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-        if ticket_obj.estado == "cerrado" and not es_agente:
-            return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
-
-    timeline = servicio_tickets.obtener_timeline_ticket(ticket_obj)
-    historial_chat = servicio_tickets.obtener_historial_chat(ticket_obj)
-
-    return jsonify({
-        "estado_chat": ticket_obj.estado,
-        "timeline": timeline,
-        "historial_chat": historial_chat,
-    })
-
-
-@ticket_bp.route('/tickets/<int:ticket_id>/knowledge-base/suggestions', methods=['GET', 'POST'])
-@anon_o_token_requerido
-def get_ticket_knowledge_base_suggestions(current_user: User, owner_user: User, anon_id: str, ticket_id: int):
-    """Devuelve sugerencias de base de conocimiento para un ticket.
-
-    Por ahora se devuelve una lista vacía, pero se mantiene la validación de
-    permisos para evitar exponer tickets a usuarios no autorizados.
-    """
-
-    ticket_obj = db.session.get(MunicipioTicket, ticket_id)
-    ticket_tipo = "municipio"
-
-    if not ticket_obj:
-        ticket_obj = db.session.get(PymeTicket, ticket_id)
-        ticket_tipo = "pyme" if ticket_obj else None
-
-    if not ticket_obj:
-        return jsonify({"error": "Ticket no encontrado."}), 404
-
-    if ticket_tipo == "municipio":
-        es_agente = current_user and current_user.tipo_chat == "municipio"
-        es_dueno = current_user and ticket_obj.user_id == current_user.id
-        es_anon = anon_id and ticket_obj.anon_id == anon_id
-    else:  # pyme
-        es_agente = current_user and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id
-        es_dueno = current_user and ticket_obj.user_id == current_user.id
-        es_anon = anon_id and ticket_obj.anon_id == anon_id
-
-    if not (es_agente or es_dueno or es_anon):
-        return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-
-    sugerencias = []
-    try:
-        from services.utils_placeholders import sugerencias_por_rubro
-
-        if ticket_tipo == "municipio":
-            sugerencias = sugerencias_por_rubro("municipios")
-        else:
-            rubro = db.session.get(Rubro, ticket_obj.rubro_id) if ticket_obj.rubro_id else None
-            rubro_nombre = (rubro.nombre or rubro.clave) if rubro else None
-            if rubro_nombre:
-                sugerencias = sugerencias_por_rubro(rubro_nombre)
-    except Exception as e:  # pragma: no cover - fallback defensivo
-        logger.warning(f"No se pudieron cargar sugerencias predefinidas: {e}")
-
-    return jsonify({"sugerencias": sugerencias[:5]})
 
 # ---------- CHAT EN VIVO: RESPONDER CIUDADANO (SOLO TOKEN) ----------
 @ticket_bp.route('/tickets/chat/<int:ticket_id>/responder_ciudadano', methods=['POST'])
@@ -1501,7 +949,6 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
         }
     )
     if nuevo_comentario:
-        db.session.commit()
         # Notificación por Websocket
         data = {
             "message": f"Nuevo mensaje en tu ticket #{sala_de_chat.nro_ticket}",
@@ -1510,22 +957,6 @@ def responder_ciudadano_a_chat(current_user: User, ticket_id: int):
             "comentario": nuevo_comentario.to_dict()
         }
         emit_ticket_update(data)
-
-        try:
-            ticket_snapshot = serialize_ticket_to_json(sala_de_chat, "municipio")
-            comment_payload = build_ticket_comment_payload(
-                sala_de_chat,
-                "municipio",
-                nuevo_comentario,
-                ticket_snapshot=ticket_snapshot,
-            )
-            emit_ticket_comment(comment_payload)
-        except Exception as socket_exc:  # pragma: no cover - defensive log
-            current_app.logger.exception(
-                "Error emitting citizen comment event for ticket %s: %s",
-                ticket_id,
-                socket_exc,
-            )
         return jsonify({"success": True, "mensaje_id": nuevo_comentario.id}), 201
 
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
@@ -1563,7 +994,6 @@ def responder_cliente_a_chat(current_user: User, ticket_id: int):
         },
     )
     if nuevo_comentario:
-        db.session.commit()
         data = {
             "message": f"El estado de tu ticket #{sala_de_chat.nro_ticket} ha sido actualizado a: '{sala_de_chat.estado}'.",
             "ticket_id": ticket_id,
@@ -1571,22 +1001,6 @@ def responder_cliente_a_chat(current_user: User, ticket_id: int):
             "nuevo_estado": sala_de_chat.estado
         }
         emit_ticket_update(data)
-
-        try:
-            ticket_snapshot = serialize_ticket_to_json(sala_de_chat, "pyme")
-            comment_payload = build_ticket_comment_payload(
-                sala_de_chat,
-                "pyme",
-                nuevo_comentario,
-                ticket_snapshot=ticket_snapshot,
-            )
-            emit_ticket_comment(comment_payload)
-        except Exception as socket_exc:  # pragma: no cover - defensive log
-            current_app.logger.exception(
-                "Error emitting pyme comment event for ticket %s: %s",
-                ticket_id,
-                socket_exc,
-            )
         return jsonify({"success": True, "mensaje_id": nuevo_comentario.id}), 201
 
     return jsonify({"error": "No se pudo guardar la respuesta."}), 500
@@ -1655,12 +1069,9 @@ def get_panel_por_categoria(current_user: User):
         # Por ahora, las métricas serán por categoría, y el empleado solo verá las categorías asignadas.
 
         tickets_to_process = all_tickets_for_user_municipio
-        if current_user.rol == 'empleado':
-            tickets_to_process = [
-                t
-                for t in all_tickets_for_user_municipio
-                if t.asignado_a_id == current_user.id
-            ]
+        if current_user.rol == 'empleado' and current_user.ticket_categorias:
+            employee_allowed_categories = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
+            tickets_to_process = [t for t in all_tickets_for_user_municipio if (t.categoria or '').lower() in employee_allowed_categories]
 
         # Agrupar tickets por categoría
         tickets_grouped_by_cat = defaultdict(list)
@@ -1668,7 +1079,7 @@ def get_panel_por_categoria(current_user: User):
             tickets_grouped_by_cat[t_obj.categoria or "Sin Categoría"].append(t_obj)
 
         final_panel_data = {}
-        defined_statuses = list(TICKET_ALLOWED_STATES)
+        defined_statuses = ["nuevo", "en_proceso", "en_vivo", "esperando_agente_en_vivo", "cerrado"]
 
         for categoria_key, tickets_in_category_list in tickets_grouped_by_cat.items():
             summary_by_status_for_cat = defaultdict(int)
@@ -1692,22 +1103,12 @@ def get_panel_por_categoria(current_user: User):
                 ticket_data_serialized = {
                     "id": ticket_obj.id, "tipo": "municipio", "nro_ticket": ticket_obj.nro_ticket,
                     "asunto": ticket_obj.asunto, "estado": ticket_obj.estado,
-                    "fecha": datetime_to_iso_utc(ticket_obj.fecha), "direccion": direccion,
+                    "fecha": ticket_obj.fecha.isoformat(), "direccion": direccion,
                     "latitud": getattr(ticket_obj, 'latitud', None), "longitud": getattr(ticket_obj, 'longitud', None),
                     "nombre_usuario": user_data["nombre"],
                     "telefono": user_data["telefono"],
                     "email_usuario": user_data["email"],
                     "dni": user_data["dni"],
-                    "asignado_a": (
-                        {
-                            "id": getattr(ticket_obj.asignado_a, 'id', None),
-                            "nombre": getattr(ticket_obj.asignado_a, 'name', None),
-                            "email": getattr(ticket_obj.asignado_a, 'email', None),
-                        }
-                        if getattr(ticket_obj, 'asignado_a', None)
-                        else None
-                    ),
-                    "asignado_en": datetime_to_iso_utc(getattr(ticket_obj, 'asignado_en', None)),
                 }
                 serialized_tickets_for_cat.append(ticket_data_serialized)
 
@@ -1750,19 +1151,16 @@ def get_panel_pyme(current_user: User):
         all_tickets_for_user_pyme = query.order_by(PymeTicket.fecha.desc()).all()
 
         tickets_to_process = all_tickets_for_user_pyme
-        if current_user.rol == 'empleado':
-            tickets_to_process = [
-                t
-                for t in all_tickets_for_user_pyme
-                if t.asignado_a_id == current_user.id
-            ]
+        if current_user.rol == 'empleado' and current_user.ticket_categorias:
+            employee_allowed_categories = [c.strip().lower() for c in current_user.ticket_categorias.split(',') if c.strip()]
+            tickets_to_process = [t for t in all_tickets_for_user_pyme if (t.categoria or '').lower() in employee_allowed_categories]
 
         tickets_grouped_by_cat = defaultdict(list)
         for t_obj in tickets_to_process:
             tickets_grouped_by_cat[t_obj.categoria or "Sin Categoría"].append(t_obj)
 
         final_panel_data = {}
-        defined_statuses = list(TICKET_ALLOWED_STATES)
+        defined_statuses = ["nuevo", "en_proceso", "en_vivo", "esperando_agente_en_vivo", "cerrado"]
 
         for categoria_key, tickets_in_category_list in tickets_grouped_by_cat.items():
             summary_by_status_for_cat = defaultdict(int)
@@ -1779,7 +1177,7 @@ def get_panel_pyme(current_user: User):
                 ticket_data_serialized = {
                     "id": ticket_obj.id, "tipo": "pyme", "nro_ticket": ticket_obj.nro_ticket,
                     "asunto": ticket_obj.asunto, "estado": ticket_obj.estado,
-                    "fecha": datetime_to_iso_utc(ticket_obj.fecha),
+                    "fecha": ticket_obj.fecha.isoformat(),
                     "direccion": getattr(ticket_obj, 'direccion', None),
                     "latitud": getattr(ticket_obj, 'latitud', None), "longitud": getattr(ticket_obj, 'longitud', None),
                      # PYME specific fields for serialization if needed by frontend for this view
@@ -1787,16 +1185,6 @@ def get_panel_pyme(current_user: User):
                     "telefono": user_data["telefono"],
                     "email_usuario": user_data["email"],
                     "dni": user_data["dni"],
-                    "asignado_a": (
-                        {
-                            "id": getattr(ticket_obj.asignado_a, 'id', None),
-                            "nombre": getattr(ticket_obj.asignado_a, 'name', None),
-                            "email": getattr(ticket_obj.asignado_a, 'email', None),
-                        }
-                        if getattr(ticket_obj, 'asignado_a', None)
-                        else None
-                    ),
-                    "asignado_en": datetime_to_iso_utc(getattr(ticket_obj, 'asignado_en', None)),
                 }
                 serialized_tickets_for_cat.append(ticket_data_serialized)
 
@@ -1968,7 +1356,7 @@ def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
         "tipo": encuesta.tipo,
         "puntuacion": encuesta.puntuacion,
         "comentario": encuesta.comentario,
-        "fecha": datetime_to_iso_utc(encuesta.fecha) if encuesta.fecha else None,
+        "fecha": encuesta.fecha.isoformat() if encuesta.fecha else None,
     })
 
 # ---------- MAPA DE TICKETS ABIERTOS ----------
@@ -1985,16 +1373,6 @@ def mapa_de_tickets(current_user: User, tipo: str):
     fecha_fin = request.args.get("fecha_fin")
     categoria = request.args.get("categoria")
     estado = request.args.get("estado") # Nuevo filtro de estado
-
-    logger.info(
-        "[MAPA_TICKETS] tipo=%s user_id=%s filtros: fecha_inicio=%s fecha_fin=%s categoria=%s estado=%s",
-        tipo,
-        getattr(current_user, "id", None),
-        fecha_inicio,
-        fecha_fin,
-        categoria,
-        estado,
-    )
 
     if tipo == "municipio":
         if not (current_user.tipo_chat == "municipio"):
@@ -2023,173 +1401,8 @@ def mapa_de_tickets(current_user: User, tipo: str):
         )
     else:
         return jsonify({"error": "Tipo de mapa no válido."}), 400
-    logger.info(
-        "[MAPA_TICKETS] puntos_retornados=%s ejemplo=%s",
-        len(datos),
-        datos[:3] if datos else [],
-    )
 
-    # Convert the aggregated points to a GeoJSON FeatureCollection for MapLibre
-    features = [
-        {
-            "type": "Feature",
-            "properties": {
-                "weight": punto.get("weight", 1),
-                "categoria": punto.get("categoria"),
-            },
-            "geometry": {
-                "type": "Point",
-                "coordinates": [
-                    punto.get("location", {}).get("lng"),
-                    punto.get("location", {}).get("lat"),
-                ],
-            },
-        }
-        for punto in datos
-        if punto.get("location")
-    ]
-
-    return jsonify({"type": "FeatureCollection", "features": features})
-
-# ---------- ENVIAR HISTORIAL POR CORREO ----------
-def _format_datetime_safe(value) -> str:
-    """Formatea valores de fecha evitando errores cuando son nulos o strings."""
-    if not value:
-        return "Sin fecha"
-    if isinstance(value, str):
-        value = value.strip()
-        return value or "Sin fecha"
-    try:
-        return value.strftime("%d/%m/%Y %H:%M")
-    except Exception:
-        try:
-            parsed = datetime.fromisoformat(str(value))
-            return parsed.strftime("%d/%m/%Y %H:%M")
-        except Exception:
-            return str(value)
-
-
-@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/send-history', methods=['POST'])
-@token_requerido
-@admin_o_empleado_requerido
-def send_ticket_history(current_user: User, tipo: str, ticket_id: int):
-    """
-    Recupera el historial completo de un ticket y lo envía por correo electrónico
-    al cliente y al correo de contacto del agente/municipio.
-    """
-    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
-    ticket_obj = db.session.get(TicketModel, ticket_id)
-
-    if not ticket_obj:
-        return jsonify({"error": "Ticket no encontrado."}), 404
-
-    # --- Verificación de Permisos ---
-    if tipo == 'municipio':
-        if not (current_user.tipo_chat == "municipio" and ticket_obj.municipio_id == current_user.municipio_id):
-            return jsonify({"error": "No tienes permiso para realizar esta acción."}), 403
-    elif tipo == 'pyme':
-        if not (current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id):
-            return jsonify({"error": "No tienes permiso para realizar esta acción."}), 403
-    else:
-        return jsonify({"error": f"Tipo de ticket no válido: {tipo}"}), 400
-
-    # --- Recopilación de Datos ---
-    try:
-        comentarios = ticket_obj.comentarios.order_by(TicketComentario.fecha.asc()).all()
-
-        adjuntos_unicos = []
-        adjunto_ids = set()
-        for c in comentarios:
-            if c.archivo_adjunto and c.archivo_adjunto.id not in adjunto_ids:
-                adjuntos_unicos.append(c.archivo_adjunto)
-                adjunto_ids.add(c.archivo_adjunto.id)
-
-        # --- Obtener Destinatarios ---
-        cliente_info = _get_user_info(ticket_obj, User)
-        email_cliente = cliente_info.get("email") if cliente_info.get("email") != "No especificado" else None
-
-        email_agente = None
-        if tipo == 'municipio' and ticket_obj.municipio_id:
-            agente_user = db.session.get(User, ticket_obj.municipio_id)
-            if agente_user:
-                email_agente = agente_user.email
-        elif tipo == 'pyme' and ticket_obj.rubro_id:
-            # Asumiendo que el rubro tiene un usuario asociado o una forma de encontrar el email
-            # Por ahora, usamos el email del usuario que realiza la acción como fallback.
-            email_agente = current_user.email
-
-        destinos = [d for d in [email_cliente, email_agente] if d]
-        if not destinos:
-            return jsonify({"error": "No se encontraron correos de destino válidos para el cliente o el agente."}), 400
-
-        # --- Renderizar y Enviar Correo ---
-        asunto = f"Historial de conversación del Ticket #{ticket_obj.nro_ticket}"
-
-        ticket_info = {
-            "nro_ticket": ticket_obj.nro_ticket or "",
-            "asunto": ticket_obj.asunto or "Sin asunto",
-            "estado": ticket_obj.estado or "Sin estado",
-            "fecha_creacion": _format_datetime_safe(getattr(ticket_obj, "fecha", None)),
-            "ultima_actividad": _format_datetime_safe(getattr(ticket_obj, "ultima_actividad", None)),
-            "canal_ingreso": ticket_obj.canal_ingreso or None,
-        }
-
-        comentarios_info = []
-        for comentario in comentarios:
-            adjunto = None
-            if comentario.archivo_adjunto:
-                nombre_adjunto = (
-                    comentario.archivo_adjunto.nombre_original
-                    or comentario.archivo_adjunto.filename
-                    or "Archivo adjunto"
-                )
-                adjunto = {
-                    "nombre": nombre_adjunto,
-                    "url": comentario.archivo_adjunto.url,
-                }
-
-            comentarios_info.append({
-                "es_admin": bool(comentario.es_admin),
-                "autor": "Agente" if comentario.es_admin else "Vecino/a",
-                "fecha": _format_datetime_safe(getattr(comentario, "fecha", None)),
-                "mensaje": comentario.comentario or "",
-                "adjunto": adjunto,
-            })
-
-        cuerpo_html = render_template(
-            "email/ticket_history.html",
-            ticket=ticket_info,
-            comentarios=comentarios_info
-        )
-
-        from services.email_service import (
-            enviar_email_con_multiples_adjuntos,
-            validar_configuracion_smtp,
-        )
-
-        smtp_valida, smtp_error = validar_configuracion_smtp(require_auth=True)
-        if not smtp_valida:
-            current_app.logger.error(
-                f"SMTP no configurado correctamente al enviar historial del ticket {ticket_id}: {smtp_error}"
-            )
-            return jsonify({"error": smtp_error}), 503
-
-        exito = enviar_email_con_multiples_adjuntos(
-            destinos=destinos,
-            asunto=asunto,
-            cuerpo_html=cuerpo_html,
-            adjuntos=adjuntos_unicos
-        )
-
-        if exito:
-            return jsonify({"success": True, "message": "El historial del ticket ha sido enviado por correo."})
-        else:
-            return jsonify({"error": "Hubo un problema al enviar el correo con el historial."}), 500
-
-    except Exception as e:
-        current_app.logger.error(f"Error en send_ticket_history para ticket {ticket_id}: {e}", exc_info=True)
-        return jsonify({"error": "Error interno al procesar el envío del historial."}), 500
-
+    return jsonify(datos)
 
 # The local file serving route is no longer needed as files are served from GCS public URLs.
 # from flask_login import login_required, current_user as flask_login_current_user

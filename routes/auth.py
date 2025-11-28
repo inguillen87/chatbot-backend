@@ -1272,7 +1272,14 @@ def chatuser_login_panel():
     if not empresa_token:
         return jsonify({"error": "Falta empresa_token"}), 400
 
-    owner_user = User.query.filter_by(token=empresa_token.strip()).first()
+    from sqlalchemy import or_
+    token_stripped = empresa_token.strip()
+    owner_user = User.query.filter(
+        or_(
+            User.entity_token == token_stripped,
+            User.token == token_stripped
+        )
+    ).first()
     if not owner_user:
         return jsonify({"error": "Token de empresa inválido"}), 404
 

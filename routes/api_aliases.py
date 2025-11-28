@@ -28,7 +28,6 @@ from routes.estadisticas import (
 from routes.municipal_legacy import list_municipal_posts, municipal_categorias
 from routes.notifications import get_notifications, notifications_options
 from routes.ticket import (
-    get_chat_mensajes,
     get_ticket_details,
     get_tickets_del_usuario,
 )
