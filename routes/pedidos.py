@@ -23,7 +23,8 @@ def listar_pedidos_pyme(current_user: User):
             return get_tickets_del_usuario_logic(current_user)
         return jsonify({"error": "Acceso denegado. Esta sección es solo para PYMEs."}), 403
 
-    query = PymePedido.query.filter(PymePedido.pyme_id == current_user.id)
+    pyme_id_context = current_user.empresa_id or current_user.id
+    query = PymePedido.query.filter(PymePedido.pyme_id == pyme_id_context)
 
     estado_filter = request.args.get('estado')
     fecha_inicio_str = request.args.get('fecha_inicio')
@@ -70,7 +71,8 @@ def obtener_pedido_pyme(current_user: User, pedido_id: int):
     if not pedido:
         return jsonify({"error": "Pedido no encontrado."}), 404
 
-    if pedido.pyme_id != current_user.id:
+    pyme_id_context = current_user.empresa_id or current_user.id
+    if pedido.pyme_id != pyme_id_context:
         return jsonify({"error": "Acceso denegado a este pedido."}), 403
 
     return jsonify(_serialize_pedido(pedido))
@@ -83,7 +85,8 @@ def actualizar_estado_pedido_pyme(current_user: User, pedido_id: int):
     if not pedido:
         return jsonify({"error": "Pedido no encontrado."}), 404
 
-    if pedido.pyme_id != current_user.id:
+    pyme_id_context = current_user.empresa_id or current_user.id
+    if pedido.pyme_id != pyme_id_context:
         return jsonify({"error": "Acceso denegado a este pedido."}), 403
 
     data = request.get_json()
@@ -124,8 +127,9 @@ def crear_pedido_pyme(current_user: User):
     except (TypeError, ValueError):
         return jsonify({"error": "Formato de 'detalles' inválido. Debe ser un JSON serializable."}), 400
 
+    pyme_id_context = current_user.empresa_id or current_user.id
     nuevo_pedido = PymePedido(
-        pyme_id=current_user.id,
+        pyme_id=pyme_id_context,
         asunto=data.get('asunto', f'Pedido de {data.get("nombre_cliente", "cliente")}'),
         detalles=detalles_str,
         monto_total=data.get('monto_total'),

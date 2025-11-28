@@ -9,6 +9,7 @@ from models import (
     PymeTicket,
     Rubro,
     User,
+    TenantProfile,
     TicketComentario,
     TicketSatisfaccion,
     Conversacion,
@@ -293,7 +294,11 @@ def get_tickets_del_usuario_logic(current_user: User):
         ):
             TicketModel = PymeTicket
             current_app.logger.info(f"[DEBUG] Usuario PYME: id={current_user.id}, rubro_id={current_user.rubro_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
-            if current_user.rubro_id:
+
+            tenant_pyme = getattr(current_user, "tenant_profile_pyme", None)
+            if tenant_pyme:
+                query_base = TicketModel.query.filter(PymeTicket.tenant_id == tenant_pyme.id)
+            elif current_user.rubro_id:
                 query_base = TicketModel.query.filter(PymeTicket.rubro_id == current_user.rubro_id)
             else:
                 current_app.logger.warning(f"Usuario PYME {current_user.id} sin rubro_id intentando acceder a /tickets")

@@ -15,7 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from flask import current_app
+from flask import current_app, g
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, load_only
@@ -724,6 +724,10 @@ def _generate_unique_slug(initial_slug: str) -> str:
 
 
 def _determine_tenant_id(user: Any) -> int:
+    tenant_profile = getattr(g, "tenant_profile", None)
+    if tenant_profile and getattr(user, "rol", None) == "super_admin":
+        return tenant_profile.id
+
     tenant_candidate = (
         getattr(user, "municipio_id", None)
         or getattr(user, "empresa_id", None)
@@ -925,6 +929,8 @@ def _apply_common_updates(encuesta: EncEncuesta, data: Dict[str, Any]) -> None:
     encuesta.tipo = data.get("tipo", encuesta.tipo)
     encuesta.inicio_at = _parse_datetime(data.get("inicio_at")) or encuesta.inicio_at
     encuesta.fin_at = _parse_datetime(data.get("fin_at")) or encuesta.fin_at
+    if "puntos_recompensa" in data:
+        encuesta.puntos_recompensa = _coerce_int_or_none(data.get("puntos_recompensa"))
     if "requiere_identidad" in data:
         encuesta.requiere_identidad = bool(data["requiere_identidad"])
     if "politica_unicidad" in data and data["politica_unicidad"]:
@@ -1206,6 +1212,7 @@ def create_encuesta(data: Dict[str, Any], user: Any) -> EncEncuesta:
         politica_unicidad=payload.get("politica_unicidad", "libre"),
         anonimo_permitido=bool(payload.get("anonimo_permitido", True)),
         created_by=getattr(user, "id", None),
+        puntos_recompensa=_coerce_int_or_none(payload.get("puntos_recompensa")),
     )
 
     preguntas_payload = payload.get("preguntas") or []
@@ -3125,6 +3132,7 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
         "estado": encuesta.estado,
         "inicio_at": encuesta.inicio_at.isoformat() if encuesta.inicio_at else None,
         "fin_at": encuesta.fin_at.isoformat() if encuesta.fin_at else None,
+        "puntos_recompensa": encuesta.puntos_recompensa or 0,
         "requiere_identidad": encuesta.requiere_identidad,
         "politica_unicidad": encuesta.politica_unicidad,
         "anonimo_permitido": encuesta.anonimo_permitido,
