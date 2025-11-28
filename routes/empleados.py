@@ -53,11 +53,18 @@ def _build_ticket_query_for_owner(current_user: User):
             ),
             MunicipioTicket,
         )
-    if current_user.tipo_chat == "pyme" and current_user.rubro_id:
-        return (
-            PymeTicket.query.filter(PymeTicket.rubro_id == current_user.rubro_id),
-            PymeTicket,
-        )
+    if current_user.tipo_chat == "pyme":
+        tenant_pyme = getattr(current_user, "tenant_profile_pyme", None)
+        if tenant_pyme:
+            return (
+                PymeTicket.query.filter(PymeTicket.tenant_id == tenant_pyme.id),
+                PymeTicket,
+            )
+        elif current_user.rubro_id:
+            return (
+                PymeTicket.query.filter(PymeTicket.rubro_id == current_user.rubro_id),
+                PymeTicket,
+            )
     return None, None
 
 empleados_bp = Blueprint('empleados', __name__, url_prefix='/empleados')

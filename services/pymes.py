@@ -2040,9 +2040,13 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         rubro_nombre_para_contexto = "general"
     rubro_nombre_para_contexto = rubro_nombre_para_contexto.lower()
 
+    tenant_profile = getattr(owner_user, "tenant_profile_pyme", None)
+    tenant_id = tenant_profile.id if tenant_profile else None
+
     global_context_for_orchestrator = {
         CONTEXTO_PYME: pyme_ctx_actual,
         "user_id": getattr(owner_user, "id", None), # ID de la PYME (owner)
+        "tenant_id": tenant_id,
         "nombre_pyme": nombre_pyme_display,
         "rubro_nombre": rubro_nombre_para_contexto,
         "viewer_user_obj": viewer_user,

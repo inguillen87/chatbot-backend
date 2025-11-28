@@ -504,6 +504,10 @@ def login():
     # Generar el token JWT
     jwt_payload = {
         'user_id': user.id,
+        'rol': user.rol,
+        'tipo_chat': tipo_chat,
+        'empresa_id': user.empresa_id,
+        'municipio_id': user.municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -641,6 +645,10 @@ def google_login():
         # Generar el token JWT
         jwt_payload = {
             'user_id': user.id,
+            'rol': user.rol,
+            'tipo_chat': tipo_chat,
+            'empresa_id': user.empresa_id,
+            'municipio_id': user.municipio_id,
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
         jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -838,6 +846,10 @@ def register():
         # Generar el token JWT
         jwt_payload = {
             'user_id': user.id,
+            'rol': user.rol,
+            'tipo_chat': user.tipo_chat,
+            'empresa_id': user.empresa_id,
+            'municipio_id': user.municipio_id,
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
         jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -960,6 +972,10 @@ def register_from_widget(user):
         # Generar el token JWT
         jwt_payload = {
             'user_id': nuevo.id,
+            'rol': nuevo.rol,
+            'tipo_chat': nuevo.tipo_chat,
+            'empresa_id': nuevo.empresa_id,
+            'municipio_id': nuevo.municipio_id,
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
         jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -1029,6 +1045,10 @@ def login_from_widget(owner_user):
     # Generar el token JWT
     jwt_payload = {
         'user_id': user.id,
+        'rol': user.rol,
+        'tipo_chat': tipo_chat,
+        'empresa_id': user.empresa_id,
+        'municipio_id': user.municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -1142,6 +1162,10 @@ def chatuser_register_panel():
             # Generar el token JWT
             jwt_payload = {
                 'user_id': existing_user.id,
+                'rol': existing_user.rol,
+                'tipo_chat': existing_user.tipo_chat,
+                'empresa_id': existing_user.empresa_id,
+                'municipio_id': existing_user.municipio_id,
                 'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
             }
             jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -1230,6 +1254,10 @@ def chatuser_register_panel():
         # Generar el token JWT
         jwt_payload = {
             'user_id': nuevo.id,
+            'rol': nuevo.rol,
+            'tipo_chat': nuevo.tipo_chat,
+            'empresa_id': nuevo.empresa_id,
+            'municipio_id': nuevo.municipio_id,
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
         jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -1301,6 +1329,10 @@ def chatuser_login_panel():
     # Generar el token JWT
     jwt_payload = {
         'user_id': user.id,
+        'rol': user.rol,
+        'tipo_chat': tipo_chat,
+        'empresa_id': user.empresa_id,
+        'municipio_id': user.municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")

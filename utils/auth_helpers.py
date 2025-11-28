@@ -796,18 +796,6 @@ def token_requerido(f):
         anon_id = get_or_create_anon_id()
         if request.method == 'OPTIONS':
             resp = make_response('', 204)
-            origin = request.headers.get('Origin')
-            if origin:
-                resp.headers['Access-Control-Allow-Origin'] = origin
-                resp.headers['Vary'] = 'Origin'
-            else:
-                resp.headers['Access-Control-Allow-Origin'] = '*'
-            resp.headers['Access-Control-Allow-Headers'] = (
-                'Authorization, Content-Type, Origin, Accept, '
-                'X-Entity-Token, X-Chat-Session-Id, X-Anon-Id, Anon-Id'
-            )
-            resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-            resp.headers['Access-Control-Allow-Credentials'] = 'true'
             resp.headers.setdefault("X-Anon-Id", anon_id)
             resp.headers.setdefault("Anon-Id", anon_id)
             return _set_anon_cookie(resp, anon_id)
@@ -989,18 +977,6 @@ def anon_o_token_requerido(f):
         if request.method == "OPTIONS":
             # Pre-flight request. Reply successfully.
             resp = make_response("", 204)
-            origin = request.headers.get("Origin")
-            if origin:
-                resp.headers["Access-Control-Allow-Origin"] = origin
-                resp.headers["Vary"] = "Origin"
-            else:
-                resp.headers["Access-Control-Allow-Origin"] = "*"
-            resp.headers["Access-Control-Allow-Headers"] = (
-                "Authorization, Content-Type, Origin, Accept, "
-                "X-Entity-Token, X-Chat-Session-Id, X-Anon-Id, Anon-Id"
-            )
-            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-            resp.headers["Access-Control-Allow-Credentials"] = "true"
             resp.headers.setdefault("X-Anon-Id", anon_id)
             resp.headers.setdefault("Anon-Id", anon_id)
             return _set_anon_cookie(resp, anon_id)

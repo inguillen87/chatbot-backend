@@ -1,7 +1,7 @@
 import json
 import logging
 
-from models import db, Rubro, QA, Sugerencia, User
+from models import db, Rubro, QA, Sugerencia, User, TenantProfile
 from werkzeug.security import generate_password_hash
 
 from services.logic import es_rubro_publico
@@ -226,6 +226,21 @@ def cargar_usuarios_demo():
             print(f"✅ Usuario demo creado: {data['email']}")
 
         db.session.flush()
+
+        # Create TenantProfile if needed
+        profile_slug = data.get("rubro_clave") or f"tenant-{user_obj.id}"
+        existing_profile = TenantProfile.query.filter_by(slug=profile_slug).first()
+        if not existing_profile:
+             new_profile = TenantProfile(
+                 slug=profile_slug,
+                 nombre=user_obj.nombre_empresa or user_obj.name,
+                 tipo=user_obj.tipo_chat,
+                 municipio_id=user_obj.id if user_obj.tipo_chat == 'municipio' else None,
+                 pyme_id=user_obj.id if user_obj.tipo_chat == 'pyme' else None
+             )
+             db.session.add(new_profile)
+             print(f"✅ TenantProfile creado: {profile_slug}")
+
         whatsapp_results = assign_whatsapp_numbers(
             user_obj,
             data.get("whatsapp_numbers"),

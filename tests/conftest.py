@@ -1,4 +1,8 @@
 import os
+import sys
+
+# Workaround for eventlet + Python 3.12 issue
+os.environ.setdefault("EVENTLET_NO_GREENDNS", "YES")
 
 import eventlet
 eventlet.monkey_patch()

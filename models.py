@@ -189,7 +189,7 @@ class User(db.Model, UserMixin):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(128), nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
     token = db.Column(db.String(255), nullable=True)
     entity_token = db.Column(db.String(255), unique=True, index=True, nullable=True)
     tenant_slug = db.Column(db.String(150), index=True, nullable=True)
@@ -615,6 +615,7 @@ class WebAuthnCredential(db.Model, TimestampMixin):
 class PymeTicket(db.Model):
     __tablename__ = "pyme_ticket"
     id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True, index=True)
     pregunta = db.Column(db.Text, nullable=False)
     asunto = db.Column(db.String(200), nullable=True)
     categoria = db.Column(db.String(100), nullable=True)
@@ -1453,6 +1454,7 @@ class PromocionAlcance(db.Model):
 class ChatSessionContext(db.Model):
     __tablename__ = "chat_session_context"
     chat_session_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
     anon_id = db.Column(db.String(80), nullable=True, index=True) # Similar to MunicipioTicket.anon_id
     context_data = db.Column(JSONType, nullable=True) # Stores combined context (municipio, pyme, history, idempotency keys)
@@ -1523,6 +1525,7 @@ class EncEncuesta(db.Model, TimestampMixin):
     descripcion = db.Column(db.Text, nullable=True)
     tipo = db.Column(db.String(50), nullable=False, default="opinion")
     estado = db.Column(db.String(30), nullable=False, default="borrador")
+    puntos_recompensa = db.Column(db.Integer, default=0, nullable=True)
     inicio_at = db.Column(db.DateTime(timezone=True), nullable=True)
     fin_at = db.Column(db.DateTime(timezone=True), nullable=True)
     requiere_identidad = db.Column(db.Boolean, default=False, nullable=False)
