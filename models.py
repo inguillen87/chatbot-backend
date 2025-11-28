@@ -1525,6 +1525,7 @@ class EncEncuesta(db.Model, TimestampMixin):
     descripcion = db.Column(db.Text, nullable=True)
     tipo = db.Column(db.String(50), nullable=False, default="opinion")
     estado = db.Column(db.String(30), nullable=False, default="borrador")
+    puntos_recompensa = db.Column(db.Integer, default=0, nullable=True)
     inicio_at = db.Column(db.DateTime(timezone=True), nullable=True)
     fin_at = db.Column(db.DateTime(timezone=True), nullable=True)
     requiere_identidad = db.Column(db.Boolean, default=False, nullable=False)

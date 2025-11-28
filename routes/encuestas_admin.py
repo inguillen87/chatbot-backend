@@ -1,7 +1,7 @@
 """Administrative endpoints for managing surveys."""
 from __future__ import annotations
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, jsonify, request, g
 
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_service import (
@@ -115,11 +115,29 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
     def listar_encuestas_endpoint(current_user):
         estado = request.args.get("estado")
         try:
-            tenant_id = (
-                getattr(current_user, "municipio_id", None)
-                or getattr(current_user, "empresa_id", None)
-                or current_user.id
-            )
+            tenant_id = None
+            tenant_profile = getattr(g, "tenant_profile", None)
+
+            if tenant_profile:
+                if current_user.rol == "super_admin":
+                    tenant_id = tenant_profile.id
+                else:
+                    user_tenant_id = (
+                        getattr(current_user, "municipio_id", None)
+                        or getattr(current_user, "empresa_id", None)
+                        or current_user.id
+                    )
+                    if user_tenant_id == tenant_profile.id:
+                        tenant_id = user_tenant_id
+                    else:
+                        return jsonify({"error": "No autorizado para este tenant"}), 403
+
+            if not tenant_id:
+                tenant_id = (
+                    getattr(current_user, "municipio_id", None)
+                    or getattr(current_user, "empresa_id", None)
+                    or current_user.id
+                )
             encuestas = list_encuestas(tenant_id, estado)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
