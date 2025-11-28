@@ -33,7 +33,7 @@ market_admin_bp = Blueprint("market_admin", __name__, url_prefix="/api/admin/mar
 def _resolve_tenant(slug: str) -> TenantProfile:
     slug_clean = (slug or "").strip().lower()
     if not slug_clean:
-        abort(make_response(jsonify({"error": "Slug requerido"}), 400))
+        abort(400, description="Slug requerido")
 
     try:
         # Reutilizamos el mismo resolver multitenant usado en el resto de la app
@@ -50,7 +50,7 @@ def _resolve_tenant(slug: str) -> TenantProfile:
         )
 
     if tenant is None:
-        abort(make_response(jsonify({"error": "Tenant no encontrado"}), 404))
+        abort(404, description="Tenant no encontrado")
 
     g.tenant_profile = tenant
     g.tenant_profile_slug = tenant.slug
@@ -120,10 +120,10 @@ def _resolve_admin_tenant(current_user: User, payload: Optional[dict] = None) ->
             ).first()
 
     if tenant is None:
-        abort(make_response(jsonify({"error": "Tenant no encontrado"}), 404))
+        abort(404, description="Tenant no encontrado")
 
     if not _user_can_manage_tenant(current_user, tenant):
-        abort(make_response(jsonify({"error": "No autorizado para este tenant"}), 403))
+        abort(403, description="No autorizado para este tenant")
 
     return tenant
 
@@ -161,9 +161,22 @@ def _get_or_create_cart_for_user(
     """
 
     if not user or not getattr(user, "is_authenticated", False):
-        abort(make_response(jsonify({"error": "Autenticación requerida"}), 401))
+        abort(401, description="Autenticación requerida")
 
-    cart = (
+    # Check for anonymous cart to merge/claim
+    session_id = _ensure_session_id()
+    anon_cart = (
+        MarketCart.query.filter(
+            MarketCart.tenant_id == tenant.id,
+            MarketCart.status == "open",
+            MarketCart.session_id == session_id,
+            MarketCart.user_id.is_(None),
+        )
+        .order_by(MarketCart.updated_at.desc())
+        .first()
+    )
+
+    user_cart = (
         MarketCart.query.filter(
             MarketCart.tenant_id == tenant.id,
             MarketCart.status == "open",
@@ -173,11 +186,30 @@ def _get_or_create_cart_for_user(
         .first()
     )
 
+    if anon_cart:
+        if user_cart:
+            # Merge items from anon_cart to user_cart
+            for anon_item in anon_cart.items:
+                existing_item = user_cart.items.filter_by(product_id=anon_item.product_id).first()
+                if existing_item:
+                    existing_item.quantity += anon_item.quantity
+                else:
+                    anon_item.cart_id = user_cart.id
+            db.session.delete(anon_cart)
+            cart = user_cart
+        else:
+            # Claim anon_cart
+            anon_cart.user_id = user.id
+            cart = anon_cart
+        db.session.commit()
+    else:
+        cart = user_cart
+
     if cart is None and create_if_missing:
         cart = MarketCart(
             tenant_id=tenant.id,
             user_id=user.id,
-            session_id=_ensure_session_id(),
+            session_id=session_id,
             contact_phone=getattr(user, "telefono", None),
             contact_name=getattr(user, "name", None),
         )
@@ -356,7 +388,7 @@ def public_catalog(slug: str):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
     if owner is None:
-        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
+        abort(404, description="Tenant sin propietario")
 
     ensure_seed_catalog(owner, tenant)
 
@@ -418,7 +450,7 @@ def public_product_detail(slug: str, product_id: int):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
     if owner is None:
-        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
+        abort(404, description="Tenant sin propietario")
 
     ensure_seed_catalog(owner, tenant)
     producto = (
@@ -457,7 +489,7 @@ def public_cart_summary(current_user, slug: str):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
     if owner is None:
-        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
+        abort(404, description="Tenant sin propietario")
 
     ensure_seed_catalog(owner, tenant)
     cart = _get_or_create_cart_for_user(tenant, current_user, create_if_missing=False)
@@ -475,7 +507,7 @@ def public_cart_add(current_user, slug: str):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
     if owner is None:
-        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
+        abort(404, description="Tenant sin propietario")
 
     ensure_seed_catalog(owner, tenant)
     payload = request.get_json(silent=True) or {}
@@ -529,7 +561,7 @@ def public_cart_remove(current_user, slug: str):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
     if owner is None:
-        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
+        abort(404, description="Tenant sin propietario")
 
     payload = request.get_json(silent=True) or {}
     item_id = payload.get("product_id") or payload.get("catalogo_item_id") or payload.get("item_id")
@@ -557,7 +589,7 @@ def public_cart_clear(current_user, slug: str):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
     if owner is None:
-        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
+        abort(404, description="Tenant sin propietario")
 
     cart = _get_or_create_cart_for_user(tenant, current_user, create_if_missing=False)
     if cart is None:
@@ -579,7 +611,7 @@ def public_cart_checkout(current_user, slug: str):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
     if owner is None:
-        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
+        abort(404, description="Tenant sin propietario")
 
     cart = _get_or_create_cart_for_user(tenant, current_user, create_if_missing=False)
     if cart is None:
@@ -604,7 +636,7 @@ def start_checkout(current_user, slug: str):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
     if owner is None:
-        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
+        abort(404, description="Tenant sin propietario")
 
     cart = _get_or_create_cart_for_user(tenant, current_user, create_if_missing=False)
     if cart is None:

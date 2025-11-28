@@ -8,6 +8,7 @@ from flask import Blueprint, abort, g, jsonify, make_response, request, session
 from sqlalchemy import func
 
 from models import CatalogoItem, MunicipioPost, TenantProfile, User, CatalogoModalidad
+from middleware import require_tenant
 from services.encuestas_service import (
     EncuestaError,
     get_public_encuesta,
@@ -19,70 +20,18 @@ from services.catalog_seed import ensure_seed_catalog
 from services.common_utils import parse_precio_flexible
 from routes.catalogo import _formatear_producto
 from services.rewards_demo import reward_profile_for_tenant
-from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 
 
 pwa_public_bp = Blueprint("pwa_public", __name__, url_prefix="/api/pwa/public")
 
 
-def _require_tenant() -> TenantProfile:
-    tenant = getattr(g, "tenant_profile", None)
-
-    if tenant is None:
-        widget_token = (
-            request.args.get("widget_token")
-            or request.headers.get("X-Widget-Token")
-            or request.args.get("entityToken")
-            or request.headers.get("X-Entity-Token")
-        )
-        tenant_slug = request.args.get("tenant") or request.args.get("slug")
-        host_hint = request.headers.get("X-Forwarded-Host") or request.host
-
-        try:
-            tenant = resolve_tenant_only(
-                widget_token=widget_token,
-                tenant_slug=tenant_slug,
-                host=host_hint,
-                require_explicit_slug=False,
-            )
-        except TenantResolutionError:
-            tenant = None
-        else:
-            g.tenant_profile = tenant
-            g.tenant_profile_slug = tenant.slug
-
-    if tenant is None:
-        abort(
-            make_response(
-                jsonify(
-                    {
-                        "error": "Tenant no especificado o no encontrado",
-                        "detail": "Incluye el slug del tenant en la ruta o cabeceras para acceder a este recurso.",
-                    }
-                ),
-                404,
-            )
-        )
-    return tenant
-
-
 def _require_tenant_for_slug(tenant_slug: str | None) -> TenantProfile:
-    tenant = _require_tenant()
+    tenant = require_tenant()
 
     if tenant_slug:
         expected_slug = tenant_slug.strip().lower()
         if tenant.slug.lower() != expected_slug:
-            abort(
-                make_response(
-                    jsonify(
-                        {
-                            "error": "Tenant no coincide con la ruta",
-                            "detail": "El slug indicado en la URL no corresponde al tenant resuelto.",
-                        }
-                    ),
-                    404,
-                )
-            )
+            abort(404, description="Tenant no coincide con la ruta")
 
     return tenant
 
