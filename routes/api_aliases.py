@@ -7,6 +7,7 @@ behavior remain consistent with the original endpoints.
 """
 
 from flask import Blueprint, jsonify, request
+from flask_cors import cross_origin
 
 from routes.auth import (
     chatuser_login_panel,
@@ -270,6 +271,7 @@ def anon_id_alias():
 
 
 @api_aliases_bp.route("/pwa/tenant-info", methods=["GET", "OPTIONS"], strict_slashes=False)
+@cross_origin(origins="*", supports_credentials=True)
 def pwa_tenant_info_alias():
     """Alias so widgets hitting /api/pwa/tenant-info receive tenant details."""
 
@@ -291,6 +293,7 @@ def root_public_tenant_alias():
 
 
 @public_aliases_bp.route("/pwa/tenant-info", methods=["GET", "OPTIONS"], strict_slashes=False)
+@cross_origin(origins="*", supports_credentials=True)
 def root_pwa_tenant_info_alias():
     """Alias without /api prefix for PWA tenant info requests."""
 
