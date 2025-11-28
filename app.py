@@ -528,6 +528,22 @@ def create_app(config_class=Config):
     # Comandos CLI
     register_commands(app)
 
+    # --- Robustness: Ensure DB tables exist if they are missing in production ---
+    if not MIGRATIONS_ONLY:
+        # Check if we should attempt to create tables.
+        # We assume if the user is running the app, they expect it to work.
+        # Catching specific errors is hard without making a query.
+        # But create_all is idempotent if tables exist.
+        # We wrap in try/except to avoid crashing if connection fails (let gunicorn retry or fail later).
+        with app.app_context():
+            try:
+                # This will create tables if they don't exist.
+                # It does NOT handle migrations (schema updates), but it fixes "UndefinedTable" for new deployments.
+                db.create_all()
+            except Exception as e:
+                # Log warning but proceed; maybe DB is readonly or connection transiently failed.
+                app.logger.warning(f"Startup db.create_all() failed (ignoring): {e}")
+
     # Inicializar SocketIO solo en runtime normal
     if socketio is not None:
         socketio.init_app(app)
