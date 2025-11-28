@@ -274,7 +274,10 @@ def get_tickets_del_usuario_logic(current_user: User):
         TicketModel = None
         tipo_ticket_str = '' # Para usar en la serialización
 
-        if current_user.tipo_chat == "municipio":
+        # Determinar el tipo de ticket usando `tipo_chat` y, como fallback, los IDs asociados
+        if current_user.tipo_chat == "municipio" or (
+            not current_user.tipo_chat and current_user.municipio_id
+        ):
             TicketModel = MunicipioTicket
             current_app.logger.info(f"[DEBUG] Usuario municipal: id={current_user.id}, municipio_id={current_user.municipio_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
             if not current_user.municipio_id:
@@ -284,7 +287,9 @@ def get_tickets_del_usuario_logic(current_user: User):
             query_base = TicketModel.query.filter(TicketModel.municipio_id == current_user.municipio_id)
             current_app.logger.info(f"[DEBUG] Querying for municipio_id: {current_user.municipio_id}")
             tipo_ticket_str = 'municipio'
-        else:
+        elif current_user.tipo_chat == "pyme" or (
+            not current_user.tipo_chat and current_user.rubro_id
+        ):
             TicketModel = PymeTicket
             current_app.logger.info(f"[DEBUG] Usuario PYME: id={current_user.id}, rubro_id={current_user.rubro_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
             if current_user.rubro_id:
@@ -293,6 +298,11 @@ def get_tickets_del_usuario_logic(current_user: User):
                 current_app.logger.warning(f"Usuario PYME {current_user.id} sin rubro_id intentando acceder a /tickets")
                 return jsonify({"error": "Usuario PYME no tiene rubro asignado o configuración incorrecta."}), 400
             tipo_ticket_str = 'pyme'
+        else:
+            current_app.logger.warning(
+                f"[DEBUG] Usuario {current_user.id} no tiene tipo_chat ni IDs asociados para tickets"
+            )
+            return jsonify({"error": "Usuario no tiene configuración de tickets asociada."}), 400
 
         # Aplicar filtro de categoría si se proveyó (afecta tanto al summary como a la lista)
         if requested_categoria_filter:
