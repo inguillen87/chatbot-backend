@@ -1,3 +1,4 @@
+
 import unittest
 from unittest.mock import patch
 from app import create_app, db
@@ -8,6 +9,7 @@ class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     WTF_CSRF_ENABLED = False
+    SQLALCHEMY_ENGINE_OPTIONS = {}
 
 from routes.catalogo import catalogo_bp
 

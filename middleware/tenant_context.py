@@ -1,3 +1,4 @@
+
 """Resolve tenant context for public and citizen endpoints."""
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
     * /pymes/<slug>/...
     * /p/<slug>/...
     * /t/<slug>/... (alias used by the PWA router)
+    * /market/<slug>/...
     """
 
     if not path:
@@ -46,7 +48,7 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
     prefix = segments[0].lower()
     slug = segments[1]
 
-    if prefix in {"municipio", "municipios", "m", "pyme", "pymes", "p", "t"}:
+    if prefix in {"municipio", "municipios", "m", "pyme", "pymes", "p", "t", "market"}:
         return _normalize_slug(slug)
 
     return None

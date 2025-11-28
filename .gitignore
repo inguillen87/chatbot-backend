@@ -1,3 +1,4 @@
+
 # Ignora todo el contenido de instance, menos la carpeta en sí
 instance/*
 !instance/.gitkeep   # Un archivo vacío solo para mantener la carpeta en git
@@ -32,3 +33,4 @@ sandbox_venv/
 # Pero permite que la estructura instance/ exista
 node_modules
 !data/estacionamiento/camaras.json
+flask_session/
