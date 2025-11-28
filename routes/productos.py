@@ -121,6 +121,21 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
     if owner:
         return tenant, owner
 
+    # Si el widget envía un JWT del usuario autenticado pero no incluye pistas de
+    # tenant explícitas, aún podemos recuperar el tenant asociado a ese usuario
+    # para evitar errores 400 cuando el catálogo se consulta desde paneles o
+    # iframes.
+    token = obtener_token()
+    token_user = user_from_token(token) if token else None
+    if token_user:
+        tenant = _tenant_for_user(token_user)
+        if tenant:
+            owner = tenant.municipio or tenant.pyme
+            if owner:
+                g.tenant_profile = tenant
+                g.tenant_profile_slug = tenant.slug
+                return tenant, owner
+
     path_tenant_slug = _tenant_slug_from_path(request.path)
 
     tenant_slug = (
@@ -141,7 +156,12 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
     )
 
     has_explicit_hint = bool(
-        tenant_slug or tenant_id or widget_token or whatsapp_destination or path_tenant_slug
+        tenant_slug
+        or tenant_id
+        or widget_token
+        or whatsapp_destination
+        or path_tenant_slug
+        or token
     )
 
     if tenant_id:
