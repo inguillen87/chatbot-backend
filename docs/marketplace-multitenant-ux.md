@@ -27,3 +27,21 @@ Este memo resume por qué el modelo multi-tenant encaja con el marketplace munic
 ## Diferencias respecto a encuestas compartibles
 - Se mantiene el esquema de enlaces/QR por tenant y vista pública, pero el marketplace añade lógica de e-commerce: stock, precios dinámicos, cálculo de totales, checkout y pagos.
 - Requiere más validaciones y manejo de estado (carrito, stock, pagos) que una encuesta estática.
+
+## API Flask multi-tenant (backend)
+- **Modelos clave** (todos con `tenant_id`):
+  - `MarketCart` + `MarketCartItem`: carrito abierto por tenant + usuario/sesión, con snapshot de precio/puntos y modalidad (venta/canje/donación).
+  - `MarketOrder` + `MarketOrderItem`: pedido confirmado a partir del carrito, guardando totales y contacto (nombre/teléfono) para pagos o seguimiento.
+  - `CatalogoItem`: producto multi-tenant existente; se filtra por `tenant_id` y dueño (`municipio/pyme`).
+- **Rutas nuevas** (`/api/market/<slug>/...`, siempre resolviendo el tenant por el slug de la URL):
+  - `GET /catalog`: catálogo público del tenant (opciones `?q` y `?categoria`).
+  - `GET /cart`: estado del carrito para ese tenant (session-first, pero si el usuario está logueado se asocia a su `user_id`).
+  - `POST /cart/add` y `POST /cart/remove`: agregar/quitar ítems con `catalogo_item_id` y `cantidad`.
+  - `POST /checkout/start`: valida que exista carrito y teléfono (`telefono`/`phone` o user logueado), crea `MarketOrder` y deja el carrito en estado `submitted` listo para integrar pago/whatsapp.
+  - `GET /cart/url`: devuelve el link compartible `/market/<slug>/cart` usando la configuración pública del tenant.
+- **Notas de tenencia y aislamiento**: todos los queries de catálogo y carrito incluyen `tenant_id` y dueño, evitando mezclar productos entre municipios.
+
+## Consumo desde frontend
+- **Catálogo**: consumir `GET /api/market/{slug}/catalog` y renderizar productos (precio, puntos, imagen, categoría). Respetar `tenant_slug` para los links/QR.
+- **Carrito**: `GET /api/market/{slug}/cart` devuelve `items`, totales por moneda y `contacto` (nombre/teléfono si se conoce). Los endpoints de add/remove devuelven el mismo summary para actualizar la UI.
+- **Checkout**: llamar a `POST /api/market/{slug}/checkout/start` con `telefono` (y opcional `nombre`) una vez que el usuario confirma. La respuesta entrega `order_id`, totales y `checkout_options` para enchufar MercadoPago o flujo de puntos.

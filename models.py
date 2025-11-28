@@ -975,6 +975,116 @@ class SitioWebInfo(db.Model):
     def __repr__(self):
         return f"<SitioWebInfo id={self.id} url={self.url}>"
 
+
+class MarketCart(db.Model, TimestampMixin):
+    __tablename__ = "market_cart"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    session_id = db.Column(db.String(120), nullable=False, index=True)
+    status = db.Column(db.String(20), nullable=False, default="open")
+    contact_name = db.Column(db.String(255), nullable=True)
+    contact_phone = db.Column(db.String(50), nullable=True)
+    metadata = db.Column(JSONType, nullable=True)
+
+    tenant = db.relationship("TenantProfile")
+    user = db.relationship("User")
+
+    items = db.relationship(
+        "MarketCartItem",
+        back_populates="cart",
+        cascade="all, delete-orphan",
+        lazy="dynamic",
+    )
+
+    __table_args__ = (
+        db.Index("ix_market_cart_tenant_session", "tenant_id", "session_id", "status"),
+    )
+
+
+class MarketCartItem(db.Model, TimestampMixin):
+    __tablename__ = "market_cart_item"
+
+    id = db.Column(db.Integer, primary_key=True)
+    cart_id = db.Column(
+        db.Integer,
+        db.ForeignKey("market_cart.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    product_id = db.Column(
+        db.Integer,
+        db.ForeignKey("catalogo_item.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    quantity = db.Column(db.Integer, nullable=False, default=1)
+    price_text = db.Column(db.String(100), nullable=True)
+    price_monetary = db.Column(db.Numeric(12, 2), nullable=True)
+    price_points = db.Column(db.Integer, nullable=True)
+    currency = db.Column(db.String(10), nullable=True)
+    modalidad = db.Column(db.String(20), nullable=True)
+    name_snapshot = db.Column(db.String(255), nullable=True)
+    extra = db.Column(JSONType, nullable=True)
+
+    cart = db.relationship("MarketCart", back_populates="items")
+    product = db.relationship("CatalogoItem")
+
+
+class MarketOrder(db.Model, TimestampMixin):
+    __tablename__ = "market_order"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    cart_id = db.Column(
+        db.Integer,
+        db.ForeignKey("market_cart.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    status = db.Column(db.String(20), nullable=False, default="pending")
+    contact_name = db.Column(db.String(255), nullable=True)
+    contact_phone = db.Column(db.String(50), nullable=True)
+    total_monetary = db.Column(db.Numeric(12, 2), nullable=True)
+    total_points = db.Column(db.Integer, nullable=True)
+    currency = db.Column(db.String(10), nullable=True)
+    metadata = db.Column(JSONType, nullable=True)
+
+    tenant = db.relationship("TenantProfile")
+    user = db.relationship("User")
+    cart = db.relationship("MarketCart")
+
+    items = db.relationship(
+        "MarketOrderItem",
+        back_populates="order",
+        cascade="all, delete-orphan",
+    )
+
+
+class MarketOrderItem(db.Model, TimestampMixin):
+    __tablename__ = "market_order_item"
+
+    id = db.Column(db.Integer, primary_key=True)
+    order_id = db.Column(
+        db.Integer,
+        db.ForeignKey("market_order.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    product_id = db.Column(db.Integer, db.ForeignKey("catalogo_item.id", ondelete="SET NULL"), nullable=True)
+    quantity = db.Column(db.Integer, nullable=False, default=1)
+    price_monetary = db.Column(db.Numeric(12, 2), nullable=True)
+    price_points = db.Column(db.Integer, nullable=True)
+    currency = db.Column(db.String(10), nullable=True)
+    modalidad = db.Column(db.String(20), nullable=True)
+    name_snapshot = db.Column(db.String(255), nullable=True)
+    extra = db.Column(JSONType, nullable=True)
+
+    order = db.relationship("MarketOrder", back_populates="items")
+    product = db.relationship("CatalogoItem")
+
 class Log(db.Model):
     __tablename__ = "logs"
     id = db.Column(db.Integer, primary_key=True)
