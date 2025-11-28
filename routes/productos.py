@@ -78,6 +78,17 @@ def _lookup_tenant_by_slug(slug: Optional[str]) -> Optional[TenantProfile]:
     return TenantProfile.query.filter(func.lower(TenantProfile.slug) == normalized).first()
 
 
+def _tenant_for_user(user: Optional[User]) -> Optional[TenantProfile]:
+    if not user:
+        return None
+
+    return (
+        getattr(user, "tenant_profile", None)
+        or getattr(user, "tenant_profile_municipio", None)
+        or getattr(user, "tenant_profile_pyme", None)
+    )
+
+
 def _tenant_slug_from_path(path: str | None) -> Optional[str]:
     if not path:
         return None
@@ -152,7 +163,7 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
     if owner_id:
         owner = User.query.get(owner_id)
         if owner:
-            tenant = getattr(owner, "tenant_profile", None)
+            tenant = _tenant_for_user(owner)
             return tenant, owner
 
     if require_explicit and not has_explicit_hint:
@@ -173,7 +184,7 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
         .first()
     ) or User.query.order_by(User.id.asc()).first()
 
-    tenant = getattr(owner, "tenant_profile", None)
+    tenant = _tenant_for_user(owner)
     return tenant, owner
 
 
