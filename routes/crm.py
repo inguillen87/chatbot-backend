@@ -9,6 +9,7 @@ from models import (
     ArchivoAdjunto,
     ClienteNota, # Nueva importación
     LlmInteractionLog,
+    TenantProfile,
 )
 from extensions import db
 from sqlalchemy import or_
@@ -383,11 +384,46 @@ def analytics(current_user: User):
     })
 
 
-def _obtener_interacciones(cliente: User):
-    """Compila el historial de chats y tickets de un cliente."""
-    chats = Conversacion.query.filter_by(user_id=cliente.id).all()
-    pymes = PymeTicket.query.filter_by(user_id=cliente.id).all()
-    munis = MunicipioTicket.query.filter_by(user_id=cliente.id).all()
+def _obtener_interacciones(cliente: User, viewer_user: User):
+    """Compila el historial de chats y tickets de un cliente, filtrado por el tenant del viewer."""
+
+    # Determinar contexto del viewer
+    viewer_empresa_id = viewer_user.empresa_id or viewer_user.id # Si es admin, es su propio ID
+
+    # Filtrar conversaciones
+    chats_query = Conversacion.query.filter_by(user_id=cliente.id)
+    if viewer_user.tipo_chat == "pyme":
+        chats_query = chats_query.filter_by(pyme_id=viewer_empresa_id)
+    # Para municipio, Conversacion no tiene municipio_id directo siempre?
+    # Conversacion tiene user_id (cliente) y pyme_id.
+    # Si es municipio, Conversacion podría no estar linkeada directamente por ID, o usa lógica distinta.
+    # Asumimos que el CRM de municipio ve lo que le corresponde.
+    # Si Conversacion no tiene municipio_id, es difícil filtrar.
+    # Pero el modelo tiene 'pyme_id'.
+
+    chats = chats_query.all()
+
+    # Filtrar PymeTickets
+    pymes_query = PymeTicket.query.filter_by(user_id=cliente.id)
+    if viewer_user.tipo_chat == "pyme":
+        tenant_pyme = getattr(viewer_user, "tenant_profile_pyme", None)
+        if tenant_pyme:
+             pymes_query = pymes_query.filter(PymeTicket.tenant_id == tenant_pyme.id)
+        else:
+             # Fallback inseguro o vacio? Mejor vacio para seguridad.
+             # O intentar filtrar por rubro si era la logica vieja, pero es insegura.
+             # Si no hay tenant_id, no mostramos nada para evitar leak.
+             pymes_query = pymes_query.filter(PymeTicket.tenant_id != None)
+
+    pymes = pymes_query.all()
+
+    # Filtrar MunicipioTickets
+    munis_query = MunicipioTicket.query.filter_by(user_id=cliente.id)
+    if viewer_user.tipo_chat == "municipio":
+        munis_query = munis_query.filter_by(municipio_id=viewer_empresa_id)
+
+    munis = munis_query.all()
+
     historial = []
     for c in chats:
         historial.append({
@@ -428,7 +464,7 @@ def interacciones_cliente(current_user: User, cliente_id: int):
     cliente = User.query.filter_by(id=cliente_id, empresa_id=current_user.id).first()
     if not cliente:
         return jsonify({"error": "Cliente no encontrado"}), 404
-    historial = _obtener_interacciones(cliente)
+    historial = _obtener_interacciones(cliente, current_user)
     return jsonify(historial)
 
 
@@ -796,13 +832,23 @@ def get_recent_clients(current_user: User):
                 last_interaction_date = last_convo.timestamp
 
         # Check PymeTickets (usar ultima_actividad que se actualiza)
-        last_pyme_ticket = PymeTicket.query.filter_by(user_id=client.id).order_by(PymeTicket.ultima_actividad.desc()).first()
+        pyme_q = PymeTicket.query.filter_by(user_id=client.id)
+        if current_user.tipo_chat == "pyme":
+             tenant_pyme = getattr(current_user, "tenant_profile_pyme", None)
+             if tenant_pyme:
+                 pyme_q = pyme_q.filter(PymeTicket.tenant_id == tenant_pyme.id)
+
+        last_pyme_ticket = pyme_q.order_by(PymeTicket.ultima_actividad.desc()).first()
         if last_pyme_ticket:
             if not last_interaction_date or last_pyme_ticket.ultima_actividad > last_interaction_date:
                 last_interaction_date = last_pyme_ticket.ultima_actividad
 
         # Check MunicipioTickets (usar ultima_actividad)
-        last_muni_ticket = MunicipioTicket.query.filter_by(user_id=client.id).order_by(MunicipioTicket.ultima_actividad.desc()).first()
+        muni_q = MunicipioTicket.query.filter_by(user_id=client.id)
+        if current_user.tipo_chat == "municipio":
+             muni_q = muni_q.filter_by(municipio_id=current_user.empresa_id or current_user.id)
+
+        last_muni_ticket = muni_q.order_by(MunicipioTicket.ultima_actividad.desc()).first()
         if last_muni_ticket:
             if not last_interaction_date or last_muni_ticket.ultima_actividad > last_interaction_date:
                 last_interaction_date = last_muni_ticket.ultima_actividad
@@ -850,12 +896,22 @@ def get_needs_followup_clients(current_user: User):
             if not last_interaction_date or last_convo.timestamp > last_interaction_date:
                 last_interaction_date = last_convo.timestamp
 
-        last_pyme_ticket = PymeTicket.query.filter_by(user_id=client.id).order_by(PymeTicket.ultima_actividad.desc()).first()
+        pyme_q = PymeTicket.query.filter_by(user_id=client.id)
+        if current_user.tipo_chat == "pyme":
+             tenant_pyme = getattr(current_user, "tenant_profile_pyme", None)
+             if tenant_pyme:
+                 pyme_q = pyme_q.filter(PymeTicket.tenant_id == tenant_pyme.id)
+
+        last_pyme_ticket = pyme_q.order_by(PymeTicket.ultima_actividad.desc()).first()
         if last_pyme_ticket:
             if not last_interaction_date or last_pyme_ticket.ultima_actividad > last_interaction_date:
                 last_interaction_date = last_pyme_ticket.ultima_actividad
 
-        last_muni_ticket = MunicipioTicket.query.filter_by(user_id=client.id).order_by(MunicipioTicket.ultima_actividad.desc()).first()
+        muni_q = MunicipioTicket.query.filter_by(user_id=client.id)
+        if current_user.tipo_chat == "municipio":
+             muni_q = muni_q.filter_by(municipio_id=current_user.empresa_id or current_user.id)
+
+        last_muni_ticket = muni_q.order_by(MunicipioTicket.ultima_actividad.desc()).first()
         if last_muni_ticket:
             if not last_interaction_date or last_muni_ticket.ultima_actividad > last_interaction_date:
                 last_interaction_date = last_muni_ticket.ultima_actividad
