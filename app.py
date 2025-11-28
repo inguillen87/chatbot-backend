@@ -253,7 +253,24 @@ def create_app(config_class=Config):
     @app.errorhandler(500)
     def handle_server_error(error):
         app.logger.exception("Unhandled server error: %s", error)
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
         return jsonify({"error": "server_error"}), 500
+
+    @app.errorhandler(Exception)
+    def handle_generic_exception(error):
+        """Handle non-HTTP exceptions."""
+        if isinstance(error, HTTPException):
+            return error
+
+        app.logger.exception("Unhandled Exception: %s", error)
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        return jsonify({"error": "server_error", "detail": str(error)}), 500
 
     @app.errorhandler(HTTPException)
     def handle_http_exception(error: HTTPException):
@@ -527,6 +544,25 @@ def create_app(config_class=Config):
 
     # Comandos CLI
     register_commands(app)
+
+    # --- Robustness: Ensure DB tables exist if they are missing in production ---
+    if not MIGRATIONS_ONLY:
+        # Check if we should attempt to create tables.
+        # We assume if the user is running the app, they expect it to work.
+        # Catching specific errors is hard without making a query.
+        # But create_all is idempotent if tables exist.
+        # We wrap in try/except to avoid crashing if connection fails (let gunicorn retry or fail later).
+        with app.app_context():
+            try:
+                # Force import of models to ensure all tables are registered
+                import models  # noqa: F401
+                # This will create tables if they don't exist.
+                # It does NOT handle migrations (schema updates), but it fixes "UndefinedTable" for new deployments.
+                db.create_all()
+                app.logger.info("Startup: db.create_all() executed successfully (tables ensured).")
+            except Exception as e:
+                # Log warning but proceed; maybe DB is readonly or connection transiently failed.
+                app.logger.warning(f"Startup db.create_all() failed (ignoring): {e}")
 
     # Inicializar SocketIO solo en runtime normal
     if socketio is not None:
