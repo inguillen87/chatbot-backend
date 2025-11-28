@@ -986,7 +986,7 @@ class MarketCart(db.Model, TimestampMixin):
     status = db.Column(db.String(20), nullable=False, default="open")
     contact_name = db.Column(db.String(255), nullable=True)
     contact_phone = db.Column(db.String(50), nullable=True)
-    metadata_payload = db.Column("metadata", JSONType, nullable=True)
+    metadata = db.Column(JSONType, nullable=True)
 
     tenant = db.relationship("TenantProfile")
     user = db.relationship("User")
@@ -1050,7 +1050,7 @@ class MarketOrder(db.Model, TimestampMixin):
     total_monetary = db.Column(db.Numeric(12, 2), nullable=True)
     total_points = db.Column(db.Integer, nullable=True)
     currency = db.Column(db.String(10), nullable=True)
-    metadata_payload = db.Column("metadata", JSONType, nullable=True)
+    metadata = db.Column(JSONType, nullable=True)
 
     tenant = db.relationship("TenantProfile")
     user = db.relationship("User")

@@ -66,15 +66,22 @@ def _ensure_session_id() -> str:
     return session_id
 
 
+def _require_authenticated_user():
+    if not current_user.is_authenticated:
+        abort(make_response(jsonify({"error": "Autenticación requerida"}), 401))
+
+
 def _get_or_create_cart(tenant: TenantProfile) -> MarketCart:
+    _require_authenticated_user()
+
     session_id = _ensure_session_id()
-    user_id = current_user.id if current_user.is_authenticated else None
+    user_id = current_user.id
 
     cart = (
         MarketCart.query.filter(
             MarketCart.tenant_id == tenant.id,
             MarketCart.status == "open",
-            or_(MarketCart.session_id == session_id, MarketCart.user_id == user_id),
+            MarketCart.user_id == user_id,
         )
         .order_by(MarketCart.updated_at.desc())
         .first()
@@ -85,8 +92,8 @@ def _get_or_create_cart(tenant: TenantProfile) -> MarketCart:
             tenant_id=tenant.id,
             user_id=user_id,
             session_id=session_id,
-            contact_phone=getattr(current_user, "telefono", None) if current_user.is_authenticated else None,
-            contact_name=getattr(current_user, "name", None) if current_user.is_authenticated else None,
+            contact_phone=getattr(current_user, "telefono", None),
+            contact_name=getattr(current_user, "name", None),
         )
         db.session.add(cart)
         db.session.commit()
