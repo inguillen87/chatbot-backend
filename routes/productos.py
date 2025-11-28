@@ -13,6 +13,7 @@ from sqlalchemy import func
 from models import TenantProfile, User
 from routes.catalogo import listar_catalogo
 from services.catalog_seed import ensure_seed_catalog
+from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 from utils.auth_helpers import obtener_token, user_from_token
 
 from config import ALLOWED_ORIGINS
@@ -120,6 +121,21 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
     if owner:
         return tenant, owner
 
+    # Si el widget envía un JWT del usuario autenticado pero no incluye pistas de
+    # tenant explícitas, aún podemos recuperar el tenant asociado a ese usuario
+    # para evitar errores 400 cuando el catálogo se consulta desde paneles o
+    # iframes.
+    token = obtener_token()
+    token_user = user_from_token(token) if token else None
+    if token_user:
+        tenant = _tenant_for_user(token_user)
+        if tenant:
+            owner = tenant.municipio or tenant.pyme
+            if owner:
+                g.tenant_profile = tenant
+                g.tenant_profile_slug = tenant.slug
+                return tenant, owner
+
     path_tenant_slug = _tenant_slug_from_path(request.path)
 
     tenant_slug = (
@@ -129,22 +145,24 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
         or path_tenant_slug
     )
     tenant_id = _coerce_int(request.headers.get("X-Tenant-Id") or request.args.get("tenant_id"))
+    widget_token = (
+        request.headers.get("X-Widget-Token")
+        or request.headers.get("X-Entity-Token")
+        or request.args.get("widget_token")
+        or request.args.get("entityToken")
+    )
+    whatsapp_destination = request.headers.get("X-Whatsapp-Dst") or request.args.get(
+        "whatsapp_destination_number"
+    )
+
     has_explicit_hint = bool(
         tenant_slug
         or tenant_id
-        or request.headers.get("X-Widget-Token")
-        or request.args.get("widget_token")
+        or widget_token
+        or whatsapp_destination
         or path_tenant_slug
+        or token
     )
-
-    if tenant_slug:
-        tenant = _lookup_tenant_by_slug(tenant_slug)
-        if tenant:
-            owner = tenant.municipio or tenant.pyme
-            if owner:
-                g.tenant_profile = tenant
-                g.tenant_profile_slug = tenant.slug
-                return tenant, owner
 
     if tenant_id:
         tenant = TenantProfile.query.get(tenant_id)
@@ -154,6 +172,23 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
                 g.tenant_profile = tenant
                 g.tenant_profile_slug = tenant.slug
                 return tenant, owner
+
+    try:
+        tenant = resolve_tenant_only(
+            tenant_slug=tenant_slug,
+            widget_token=widget_token,
+            whatsapp_destination_number=whatsapp_destination,
+            require_explicit_slug=require_explicit and bool(tenant_slug),
+        )
+    except TenantResolutionError:
+        tenant = None
+
+    if tenant:
+        owner = tenant.municipio or tenant.pyme
+        if owner:
+            g.tenant_profile = tenant
+            g.tenant_profile_slug = tenant.slug
+            return tenant, owner
 
     owner_id = _coerce_int(
         request.args.get("owner_id")
