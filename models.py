@@ -864,6 +864,8 @@ class CatalogoItem(db.Model):
     texto = db.Column(db.Text, nullable=True)
     embedding = db.Column(db.PickleType, nullable=True) # Este campo podría eliminarse si los embeddings solo viven en Qdrant
     imagen_url = db.Column(db.String(512), nullable=True)
+    pdf_url = db.Column(db.String(512), nullable=True)
+    disponible = db.Column(db.Boolean, nullable=False, default=True)
     timestamp = db.Column(db.DateTime(timezone=True), default=get_local_now)
 
     def __repr__(self):
@@ -1001,6 +1003,23 @@ class MarketCart(db.Model, TimestampMixin):
     __table_args__ = (
         db.Index("ix_market_cart_tenant_session", "tenant_id", "session_id", "status"),
     )
+
+    @property
+    def estado(self) -> str:
+        """Estado legible alineado con las rutas públicas del marketplace."""
+
+        mapping = {"open": "abierto", "submitted": "confirmado", "cancelled": "cancelado"}
+        return mapping.get(self.status, self.status)
+
+    @estado.setter
+    def estado(self, value: str) -> None:  # pragma: no cover - trivial setter
+        normalized = (value or "").strip().lower()
+        inverse = {
+            "abierto": "open",
+            "confirmado": "submitted",
+            "cancelado": "cancelled",
+        }
+        self.status = inverse.get(normalized, normalized or "open")
 
 
 class MarketCartItem(db.Model, TimestampMixin):
