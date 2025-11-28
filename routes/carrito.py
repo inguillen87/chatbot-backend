@@ -9,7 +9,11 @@ from sqlalchemy import func
 from config import ALLOWED_ORIGINS
 from models import CatalogoItem, TenantProfile, User, CatalogoModalidad
 from routes.catalogo import _formatear_producto
-from routes.productos import _resolve_public_owner, _resolve_authenticated_user
+from routes.productos import (
+    _resolve_public_owner,
+    _resolve_authenticated_user,
+    _tenant_for_user,
+)
 from services.catalog_seed import ensure_seed_catalog
 from services.cart import add_item, clear_cart, get_summary, remove_item, update_item
 from services.common_utils import parse_precio_flexible
@@ -134,7 +138,7 @@ def _lookup_catalog_item(owner: User, payload: Dict[str, object], tenant: Option
 
 def _resolve_owner_and_seed() -> Tuple[Optional[TenantProfile], Optional[User]]:
     user = _resolve_authenticated_user()
-    tenant = getattr(user, "tenant_profile", None) if user else None
+    tenant = _tenant_for_user(user)
     if tenant and user:
         ensure_seed_catalog(user, tenant)
         return tenant, user
