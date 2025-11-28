@@ -122,31 +122,17 @@ class ServicioTickets:
         if not ticket.municipio_id:
             return []
 
-        candidatos = (
-            User.query.filter(
-                User.empresa_id == ticket.municipio_id,
-                User.rol == "empleado",
-                User.tipo_chat == "municipio",
-            )
-            .order_by(User.id.asc())
-            .all()
+        query = User.query.filter(
+            User.empresa_id == ticket.municipio_id,
+            User.rol == "empleado",
+            User.tipo_chat == "municipio",
         )
 
         categoria_normalizada = (ticket.categoria or "").strip().lower()
-        if not categoria_normalizada:
-            return candidatos
+        if categoria_normalizada:
+            query = query.join(User.categorias).filter(func.lower(Categoria.nombre) == categoria_normalizada)
 
-        filtrados = []
-        for empleado in candidatos:
-            categorias_emp = [
-                c.strip().lower()
-                for c in (empleado.ticket_categorias or "").split(",")
-                if c.strip()
-            ]
-            if not categorias_emp or categoria_normalizada in categorias_emp:
-                filtrados.append(empleado)
-
-        return filtrados
+        return query.order_by(User.id.asc()).all()
 
     def _calcular_carga_empleado_municipal(self, empleado: User, municipio_id: int) -> int:
         return (

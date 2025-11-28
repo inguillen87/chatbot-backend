@@ -1,49 +1,42 @@
 from flask import Blueprint, request, jsonify
-from models import User, TicketComentario, db, MunicipioTicket, PymeTicket
+from models import User, Categoria, TicketComentario, db, MunicipioTicket, PymeTicket
 from routes.auth import token_requerido, solo_admin_requerido
 from services.logic import es_rubro_publico
 import uuid
-from datetime import datetime, timedelta # Importar datetime y timedelta
-from sqlalchemy import func # Importar func para count
+from datetime import datetime, timedelta
+from sqlalchemy import func
 from routes.ticket import TICKET_ALLOWED_STATES
 from services.categorias_municipio import CATEGORIAS_RECLAMO
 
-_ALLOWED_CATEGORIES = {c.lower(): c for c in CATEGORIAS_RECLAMO}
-
-
-def _normalize_categorias_input(categorias_raw):
-    """Return a normalized, deduplicated list of allowed categories.
-
-    If an unknown category is provided, returns ``None`` to signal an error.
-    Empty inputs return an empty list so callers can decide whether to reject
-    or keep previous values.
+def _normalize_categorias_input(categorias_raw, municipio_id):
     """
-
-    if categorias_raw is None:
+    Return a list of Categoria objects.
+    Accepts a list of IDs or a list of dictionaries.
+    """
+    if not categorias_raw:
         return []
 
-    if isinstance(categorias_raw, str):
-        items = categorias_raw.split(',')
-    elif isinstance(categorias_raw, list):
-        items = categorias_raw
-    else:
-        return []
-
-    normalized = []
-    for item in items:
+    categoria_ids = []
+    for item in categorias_raw:
         if isinstance(item, dict):
-            candidate = str(item.get("value") or item.get("label") or "").strip()
-        else:
-            candidate = str(item or "").strip()
-        if not candidate:
-            continue
-        key = candidate.lower()
-        if key not in _ALLOWED_CATEGORIES:
-            return None
-        canonical = _ALLOWED_CATEGORIES[key]
-        if canonical not in normalized:
-            normalized.append(canonical)
-    return normalized
+            categoria_ids.append(item.get('id'))
+        elif isinstance(item, int):
+            categoria_ids.append(item)
+
+    # Filter out None values and duplicates
+    categoria_ids = list(set(filter(None, categoria_ids)))
+
+    # Fetch Categoria objects from the database
+    categorias = Categoria.query.filter(
+        Categoria.id.in_(categoria_ids),
+        Categoria.municipio_id == municipio_id
+    ).all()
+
+    if len(categorias) != len(categoria_ids):
+        # This means some of the provided IDs were invalid or didn't belong to the municipality
+        return None
+
+    return categorias
 
 
 def _build_ticket_query_for_owner(current_user: User):
@@ -178,7 +171,11 @@ def crear_empleado(current_user: User):
     email = data.get('email')
     password = data.get('password')
     categorias = data.get('categorias')
-    categorias_normalizadas = _normalize_categorias_input(categorias)
+
+    if not current_user.municipio_id:
+        return jsonify({"error": "El usuario no está asociado a un municipio."}), 400
+
+    categorias_normalizadas = _normalize_categorias_input(categorias, current_user.municipio_id)
     if categorias_normalizadas is None or not categorias_normalizadas:
         return jsonify({"error": "Debe asignar al menos una categoría válida"}), 400
     if not all([name, email, password]):
@@ -195,7 +192,7 @@ def crear_empleado(current_user: User):
         or (
             "municipio" if es_rubro_publico(current_user.rubro) else "pyme"
         ),
-        ticket_categorias=','.join(categorias_normalizadas),
+        categorias=categorias_normalizadas,
     )
     nuevo.set_password(password)
     db.session.add(nuevo)
@@ -209,7 +206,7 @@ def crear_empleado(current_user: User):
         "name": nuevo.name,
         "email": nuevo.email,
         "rol": nuevo.rol,
-        "categorias": nuevo.ticket_categorias.split(",") if nuevo.ticket_categorias else [],
+        "categorias": [c.nombre for c in nuevo.categorias],
     }), 201
 
 @empleados_bp.route('/<int:emp_id>/historial', methods=['GET'])
@@ -309,17 +306,21 @@ def actualizar_empleado(current_user: User, emp_id: int):
     if 'password' in data and data['password']:
         empleado.set_password(data['password'])
     if 'categorias' in data:
-        cats = _normalize_categorias_input(data['categorias'])
+        if not current_user.municipio_id:
+            return jsonify({"error": "El usuario no está asociado a un municipio."}), 400
+        cats = _normalize_categorias_input(data['categorias'], current_user.municipio_id)
         if cats is None or not cats:
             return jsonify({"error": "Debe asignar al menos una categoría válida"}), 400
-        empleado.ticket_categorias = ','.join(cats)
+        empleado.categorias = cats
     try:
         db.session.commit()
     except Exception:
         db.session.rollback()
         return jsonify({"error": "Error al actualizar"}), 500
+
+    # Recalculate open tickets after update
     ticket_query_base, TicketModel = _build_ticket_query_for_owner(current_user)
-    categorias = empleado.ticket_categorias.split(",") if empleado.ticket_categorias else []
+    categorias = [c.nombre for c in empleado.categorias]
     normalized_categories = [c.strip().lower() for c in categorias if c.strip()]
     open_statuses = [estado for estado in TICKET_ALLOWED_STATES if estado != "cerrado"]
     open_tickets = 0
@@ -330,6 +331,7 @@ def actualizar_empleado(current_user: User, emp_id: int):
                 func.lower(TicketModel.categoria).in_(normalized_categories),
             ).count()
         )
+
     return jsonify({
         "id": empleado.id,
         "name": empleado.name,

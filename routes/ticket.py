@@ -749,7 +749,7 @@ def get_ticket_details(current_user: User, ticket_id: int):
     return jsonify(ticket_data)
 
 
-@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/asignar', methods=['POST'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/asignar', methods=['POST', 'PUT'])
 @token_requerido
 @require_role('admin', 'empleado')
 def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
@@ -817,8 +817,8 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
     })
 
 
-@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/assign', methods=['POST'])
-@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/asignacion', methods=['POST'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/assign', methods=['POST', 'PUT'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/asignacion', methods=['POST', 'PUT'])
 @token_requerido
 @require_role('admin', 'empleado')
 def asignar_ticket_alias(current_user: User, tipo: str, ticket_id: int):
