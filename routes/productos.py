@@ -1,3 +1,4 @@
+
 """Alias para exponer el catálogo como ``/productos`` con modo público opcional."""
 
 from __future__ import annotations
@@ -100,7 +101,7 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
     prefix = segments[0].lower()
     slug = segments[1]
 
-    if prefix in {"municipio", "municipios", "m", "pyme", "pymes", "p", "t"}:
+    if prefix in {"municipio", "municipios", "m", "pyme", "pymes", "p", "t", "market"}:
         cleaned = slug.strip().lower()
         return cleaned or None
 
