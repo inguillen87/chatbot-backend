@@ -900,6 +900,8 @@ def register_from_widget(user):
     name = data.get('name') or "Sin nombre"
     email = data.get('email')
     password = data.get('password')
+    telefono_raw = data.get('telefono') or data.get('phone')
+    telefono = telefono_raw.strip() if isinstance(telefono_raw, str) and telefono_raw.strip() else None
     anon_id = (
         request.headers.get("X-Anon-Id")
         or request.headers.get("Anon-Id")
@@ -936,6 +938,7 @@ def register_from_widget(user):
         plan="gratis",
         rol="usuario",
         tipo_chat=getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(user.rubro) else "pyme"),
+        telefono=telefono,
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
         tags=tags_value,
@@ -1101,6 +1104,8 @@ def chatuser_register_panel():
         "municipio" if es_rubro_publico(owner_user.rubro) else "pyme"
     )
     owner_municipio_id = getattr(owner_user, "municipio_id", None)
+    telefono_raw = data.get('telefono') or data.get('phone')
+    telefono = telefono_raw.strip() if isinstance(telefono_raw, str) and telefono_raw.strip() else None
 
     # If the user is anonymous, we can assign a default password
     if not password:
@@ -1125,6 +1130,8 @@ def chatuser_register_panel():
                 existing_user.municipio_id = owner_municipio_id
             if not existing_user.tipo_chat:
                 existing_user.tipo_chat = owner_tipo_chat
+            if telefono and not existing_user.telefono:
+                existing_user.telefono = telefono
             db.session.add(existing_user)
             db.session.commit()
             # Migrate tickets if anon_id is present
@@ -1185,6 +1192,7 @@ def chatuser_register_panel():
         plan="gratis",
         rol="lead" if not data.get('password') else "usuario",
         tipo_chat=owner_tipo_chat,
+        telefono=telefono,
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
         tags=tags_value,
