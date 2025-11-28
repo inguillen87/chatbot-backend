@@ -233,7 +233,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     integration_guide_url = current_app.config.get(
         "INTEGRATION_GUIDE_URL",
         "https://docs.chatboc.ar/widget-integration",
-    )
+    ) or "https://docs.chatboc.ar/widget-integration"
 
     profile_data: Dict[str, Any] = {
         "id": user.id,
