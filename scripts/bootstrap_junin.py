@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional
 from app import create_app
 from extensions import db
 from models import Rubro, TenantProfile, User
+from services.user_service import assign_whatsapp_numbers
 
 
 DEFAULT_CONFIG_PATH = Path("data/municipios/default/config.json")
@@ -178,6 +179,7 @@ def bootstrap(password: str, config_path: Path, *, tenant_slug: str, widget_toke
         widget_token=widget_token,
         whatsapp_number=OFFICIAL_WHATSAPP,
     )
+    assign_whatsapp_numbers(user, [OFFICIAL_WHATSAPP], activate=True, commit=False)
     _remove_widget_token_from_others(widget_token, tenant_slug)
     db.session.commit()
     print("🎉 Base de datos de Junín lista.")
