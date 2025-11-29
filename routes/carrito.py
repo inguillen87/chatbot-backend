@@ -18,6 +18,7 @@ from services.catalog_seed import ensure_seed_catalog
 from services.cart import add_item, clear_cart, get_summary, remove_item, update_item
 from services.common_utils import parse_precio_flexible
 from services.rewards_demo import reward_profile_for_tenant
+from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 
 _CORS_ALLOWED_HEADERS = [
     "Content-Type",
@@ -149,6 +150,32 @@ def _resolve_owner_and_seed() -> Tuple[Optional[TenantProfile], Optional[User]]:
     if tenant is None or owner is None:
         return None, None
     ensure_seed_catalog(owner, tenant)
+    return tenant, owner
+
+
+def _resolve_public_tenant_by_slug(
+    tenant_slug: str,
+) -> Tuple[Optional[TenantProfile], Optional[User]]:
+    slug_clean = (tenant_slug or "").strip().lower()
+    if not slug_clean:
+        return None, None
+
+    try:
+        tenant = resolve_tenant_only(tenant_slug=slug_clean, require_explicit_slug=False)
+    except TenantResolutionError:
+        tenant = None
+
+    if tenant is None:
+        tenant = (
+            TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug_clean)
+            .order_by(TenantProfile.id.desc())
+            .first()
+        )
+
+    owner = tenant.municipio or tenant.pyme if tenant else None
+    if tenant and owner:
+        ensure_seed_catalog(owner, tenant)
+
     return tenant, owner
 
 
@@ -289,6 +316,43 @@ def carrito_root():
     if request.method == 'GET':
         return _carrito_summary_response()
     return agregar()
+
+
+@carrito_bp.route('/pwa/public/<tenant_slug>/carrito', methods=['GET', 'POST', 'OPTIONS'])
+@cross_origin(**_cors_kwargs(["GET", "POST", "OPTIONS"]))
+def carrito_pwa_public(tenant_slug: str):
+    """Alias legacy para exponer el carrito público por slug."""
+
+    if request.method == 'OPTIONS':
+        return "", 204
+
+    tenant, owner = _resolve_public_tenant_by_slug(tenant_slug)
+    if tenant is None:
+        return jsonify({'error': 'tenant_not_found'}), 404
+    if owner is None:
+        return jsonify({'error': 'owner_not_found', 'detail': 'Tenant sin propietario configurado'}), 404
+
+    pyme_carts_data = _get_session_cart_data()
+    cart = _tenant_cart(pyme_carts_data, tenant)
+
+    if request.method == 'GET':
+        return jsonify(_enrich_cart_summary(pyme_carts_data, tenant, owner))
+
+    data = request.get_json(silent=True) or {}
+    item = _lookup_catalog_item(owner, data, tenant)
+    if not item:
+        return jsonify({'error': 'Producto no encontrado'}), 404
+
+    cantidad = _normalize_quantity(data.get('cantidad', 1))
+    for entry in cart:
+        if entry.get('catalogo_item_id') == item.id:
+            entry['cantidad'] = entry.get('cantidad', 0) + cantidad
+            break
+    else:
+        cart.append({'catalogo_item_id': item.id, 'cantidad': cantidad})
+
+    _persist_session_cart_data(pyme_carts_data)
+    return jsonify(_enrich_cart_summary(pyme_carts_data, tenant, owner))
 
 
 @carrito_bp.route('/agregar', methods=['POST', 'OPTIONS'])
