@@ -7,8 +7,9 @@ from typing import Dict, List, Tuple
 from flask import Blueprint, abort, g, jsonify, make_response, request, session
 from sqlalchemy import func
 
-from models import CatalogoItem, MunicipioPost, TenantProfile, User, CatalogoModalidad
+from models import CatalogoItem, CatalogoModalidad, MunicipioPost, TenantProfile, User
 from middleware import require_tenant
+from routes.public_resolver import tenant_profile as tenant_profile_view
 from services.encuestas_service import (
     EncuestaError,
     get_public_encuesta,
@@ -20,9 +21,31 @@ from services.catalog_seed import ensure_seed_catalog
 from services.common_utils import parse_precio_flexible
 from routes.catalogo import _formatear_producto
 from services.rewards_demo import reward_profile_for_tenant
+from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 
 
 pwa_public_bp = Blueprint("pwa_public", __name__, url_prefix="/api/pwa/public")
+pwa_tenant_info_bp = Blueprint("pwa_tenant_info", __name__)
+
+
+@pwa_tenant_info_bp.route("/api/pwa/tenant-info", methods=["GET", "OPTIONS"])
+def api_pwa_tenant_info():
+    """Alias JSON de /api/public/tenant-profile para el PWA del widget."""
+
+    if request.method == "OPTIONS":
+        return "", 204
+
+    return tenant_profile_view()
+
+
+@pwa_tenant_info_bp.route("/pwa/tenant-info", methods=["GET", "OPTIONS"])
+def pwa_tenant_info_alias():
+    """Alias sin prefijo /api usado por algunos embeds del widget."""
+
+    if request.method == "OPTIONS":
+        return "", 204
+
+    return tenant_profile_view()
 
 
 def _require_tenant() -> TenantProfile:
