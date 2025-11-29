@@ -8,11 +8,11 @@ from datetime import datetime, timedelta, timezone
 
 from flask import current_app, g, jsonify, make_response, request
 from flask_login import current_user
-from models import User
+from models import TenantProfile, User
 import jwt
 
 from extensions import db
-from models import Rubro, User
+from models import Rubro
 import secrets
 from services.demo_registry import demo_rubro_for_token
 
@@ -249,6 +249,22 @@ def _lookup_owner_for_static_token(token: Optional[str]) -> Optional[User]:
     owner = User.query.filter_by(token=token).first()
     if owner:
         return owner
+
+    tenant = (
+        TenantProfile.query.filter(
+            TenantProfile.configuracion["widget_tokens"].astext.contains(token)  # type: ignore[index]
+        )
+        .limit(1)
+        .first()
+    )
+
+    if tenant:
+        resolved_owner = tenant.municipio or tenant.pyme
+        if resolved_owner:
+            current_app.logger.info(
+                "[auth] Resolved widget token to tenant %s owner %s", tenant.id, resolved_owner.id
+            )
+            return resolved_owner
 
     try:
         demo_entry = demo_rubro_for_token(token)
