@@ -223,13 +223,20 @@ def tenant_profile():
                 },
             }
             return _log_widget_public_request(jsonify(payload), tenant)
+
         resolved_from_fallback = True
 
         if fallback_tenant and normalized_slug in {"municipio", "pyme"}:
-            explicit_slug_failure = False
             resolution_error = resolution_error or (
                 f"Tenant slug '{tenant_slug_original}' not found; using first {normalized_slug} tenant"
             )
+
+        # Si encontramos un tenant de respaldo, no devolvemos 404 aun cuando el
+        # slug explícito sea inválido. Esto evita errores en widgets que envían
+        # slugs genéricos (ej. "municipio") y permite servir el tenant
+        # disponible con una advertencia en vez de romper el flujo.
+        if tenant:
+            explicit_slug_failure = False
 
     if (
         tenant_slug_original
