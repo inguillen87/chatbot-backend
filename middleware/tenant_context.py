@@ -34,8 +34,6 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
     * /pymes/<slug>/...
     * /p/<slug>/...
     * /t/<slug>/... (alias used by the PWA router)
-    * /api/pwa/public/<slug>/...
-    * /api/market/<slug>/...
     """
 
     if not path:
@@ -51,24 +49,10 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
     if prefix in {"municipio", "municipios", "m", "pyme", "pymes", "p", "t"}:
         return _normalize_slug(slug)
 
-    if prefix == "api" and len(segments) >= 4:
-        scope = segments[1].lower()
-        namespace = segments[2].lower()
-        if scope in {"pwa", "market"} and namespace in {"public", "tenant", "t"}:
-            return _normalize_slug(segments[3])
-
     return None
 
 
 def _resolve_tenant_profile() -> Optional[TenantProfile]:
-    view_args = request.view_args or {}
-
-    slug = _normalize_slug(view_args.get("tenant_slug") or view_args.get("slug"))
-    if slug:
-        tenant = _find_tenant_by_slug(slug)
-        if tenant:
-            return tenant
-
     slug = _normalize_slug(request.headers.get("X-Tenant"))
     if slug:
         tenant = _find_tenant_by_slug(slug)

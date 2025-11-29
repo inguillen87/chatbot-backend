@@ -56,34 +56,13 @@ def _require_tenant() -> TenantProfile:
             make_response(
                 jsonify(
                     {
-                        "error": "Tenant no especificado o no encontrado",
-                        "detail": "Incluye el slug del tenant en la ruta o cabeceras para acceder a este recurso.",
+                        "error": "Tenant no encontrado",
+                        "detail": "Revisa el slug o la URL del widget; no se pudo resolver el tenant para el carrito público.",
                     }
                 ),
                 404,
             )
         )
-    return tenant
-
-
-def _require_tenant_for_slug(tenant_slug: str | None) -> TenantProfile:
-    tenant = _require_tenant()
-
-    if tenant_slug:
-        expected_slug = tenant_slug.strip().lower()
-        if tenant.slug.lower() != expected_slug:
-            abort(
-                make_response(
-                    jsonify(
-                        {
-                            "error": "Tenant no coincide con la ruta",
-                            "detail": "El slug indicado en la URL no corresponde al tenant resuelto.",
-                        }
-                    ),
-                    404,
-                )
-            )
-
     return tenant
 
 
@@ -348,8 +327,9 @@ def _enrich_cart_summary(tenant: TenantProfile, owner: User) -> Dict[str, object
     }
 
 
-def _public_catalog_response(tenant_slug: str | None = None):
-    tenant = _require_tenant_for_slug(tenant_slug)
+@pwa_public_bp.get("/catalog")
+def public_catalog():
+    tenant = _require_tenant()
     owner = _require_owner(tenant)
     ensure_seed_catalog(owner, tenant)
 
@@ -408,8 +388,15 @@ def _public_catalog_response(tenant_slug: str | None = None):
     return jsonify(productos)
 
 
-def _public_cart_url_response(tenant_slug: str | None = None):
-    tenant = _require_tenant_for_slug(tenant_slug)
+@pwa_public_bp.get("/rewards")
+def public_rewards():
+    tenant = _require_tenant()
+    return jsonify(reward_profile_for_tenant(tenant.id, 0.0))
+
+
+@pwa_public_bp.get("/cart/url")
+def public_cart_url():
+    tenant = _require_tenant()
     full_url, base_url, path = _build_public_cart_url(tenant)
     return jsonify(
         {
@@ -421,15 +408,17 @@ def _public_cart_url_response(tenant_slug: str | None = None):
     )
 
 
-def _public_cart_summary_response(tenant_slug: str | None = None):
-    tenant = _require_tenant_for_slug(tenant_slug)
+@pwa_public_bp.get("/cart")
+def public_cart_summary():
+    tenant = _require_tenant()
     owner = _require_owner(tenant)
     ensure_seed_catalog(owner, tenant)
     return jsonify(_enrich_cart_summary(tenant, owner))
 
 
-def _public_cart_add_response(tenant_slug: str | None = None):
-    tenant = _require_tenant_for_slug(tenant_slug)
+@pwa_public_bp.post("/cart/add")
+def public_cart_add():
+    tenant = _require_tenant()
     owner = _require_owner(tenant)
     ensure_seed_catalog(owner, tenant)
 
@@ -452,8 +441,9 @@ def _public_cart_add_response(tenant_slug: str | None = None):
     return jsonify(_enrich_cart_summary(tenant, owner))
 
 
-def _public_cart_update_response(tenant_slug: str | None = None):
-    tenant = _require_tenant_for_slug(tenant_slug)
+@pwa_public_bp.post("/cart/update")
+def public_cart_update():
+    tenant = _require_tenant()
     owner = _require_owner(tenant)
     payload = request.get_json(silent=True) or {}
     item_id = _coerce_item_id(payload.get("catalogo_item_id") or payload.get("item_id"))
@@ -475,8 +465,9 @@ def _public_cart_update_response(tenant_slug: str | None = None):
     return jsonify({"error": "Item no encontrado en el carrito"}), 404
 
 
-def _public_cart_remove_response(tenant_slug: str | None = None):
-    tenant = _require_tenant_for_slug(tenant_slug)
+@pwa_public_bp.post("/cart/remove")
+def public_cart_remove():
+    tenant = _require_tenant()
     owner = _require_owner(tenant)
     payload = request.get_json(silent=True) or {}
     item_id = _coerce_item_id(payload.get("catalogo_item_id") or payload.get("item_id"))
@@ -496,8 +487,9 @@ def _public_cart_remove_response(tenant_slug: str | None = None):
     return jsonify({"error": "Item no encontrado en el carrito"}), 404
 
 
-def _public_cart_clear_response(tenant_slug: str | None = None):
-    tenant = _require_tenant_for_slug(tenant_slug)
+@pwa_public_bp.post("/cart/clear")
+def public_cart_clear():
+    tenant = _require_tenant()
     owner = _require_owner(tenant)
     data = _public_cart_storage()
     data[str(tenant.id)] = []
@@ -505,13 +497,15 @@ def _public_cart_clear_response(tenant_slug: str | None = None):
     return jsonify(_enrich_cart_summary(tenant, owner))
 
 
-def _tenant_info_response(tenant_slug: str | None = None):
-    tenant = _require_tenant_for_slug(tenant_slug)
+@pwa_public_bp.get("/tenant")
+def tenant_info():
+    tenant = _require_tenant()
     return jsonify(tenant.to_public_dict())
 
 
-def _list_surveys_response(tenant_slug: str | None = None):
-    tenant = _require_tenant_for_slug(tenant_slug)
+@pwa_public_bp.get("/surveys")
+def list_surveys():
+    tenant = _require_tenant()
     tenant_id = _resolve_encuestas_tenant_id(tenant)
     if not tenant_id:
         return jsonify([])
@@ -524,8 +518,9 @@ def _list_surveys_response(tenant_slug: str | None = None):
     return jsonify(payload)
 
 
-def _get_survey_response(tenant_slug: str | None, slug: str):
-    tenant = _require_tenant_for_slug(tenant_slug)
+@pwa_public_bp.get("/surveys/<slug>")
+def get_survey(slug: str):
+    tenant = _require_tenant()
     tenant_id = _resolve_encuestas_tenant_id(tenant)
     try:
         encuesta = get_public_encuesta(slug)
@@ -538,8 +533,9 @@ def _get_survey_response(tenant_slug: str | None, slug: str):
     return jsonify(serialize_public_encuesta(encuesta, slug_publico=slug))
 
 
-def _respond_survey_response(tenant_slug: str | None, slug: str):
-    tenant = _require_tenant_for_slug(tenant_slug)
+@pwa_public_bp.post("/surveys/<slug>/respond")
+def respond_survey(slug: str):
+    tenant = _require_tenant()
     tenant_id = _resolve_encuestas_tenant_id(tenant)
     try:
         encuesta = get_public_encuesta(slug)
@@ -563,8 +559,9 @@ def _respond_survey_response(tenant_slug: str | None, slug: str):
     return jsonify({"id": respuesta.id})
 
 
-def _news_response(tenant_slug: str | None = None):
-    tenant = _require_tenant_for_slug(tenant_slug)
+@pwa_public_bp.get("/news")
+def list_news():
+    tenant = _require_tenant()
     query = _posts_query_for_tenant(tenant).filter(MunicipioPost.tipo_post != "evento")
     items = (
         query.order_by(MunicipioPost.fecha_publicacion.desc())
@@ -574,8 +571,9 @@ def _news_response(tenant_slug: str | None = None):
     return jsonify([item.to_dict() for item in items])
 
 
-def _events_response(tenant_slug: str | None = None):
-    tenant = _require_tenant_for_slug(tenant_slug)
+@pwa_public_bp.get("/events")
+def list_events():
+    tenant = _require_tenant()
     query = _posts_query_for_tenant(tenant).filter(MunicipioPost.tipo_post == "evento")
     items = (
         query.order_by(MunicipioPost.fecha_evento_inicio.asc().nullslast())
@@ -583,145 +581,3 @@ def _events_response(tenant_slug: str | None = None):
         .all()
     )
     return jsonify([item.to_dict() for item in items])
-
-
-@pwa_public_bp.get("/catalog")
-def public_catalog():
-    return _public_catalog_response()
-
-
-@pwa_public_bp.get("/<tenant_slug>/catalog")
-def public_catalog_with_slug(tenant_slug: str):
-    return _public_catalog_response(tenant_slug)
-
-
-@pwa_public_bp.get("/rewards")
-def public_rewards():
-    tenant = _require_tenant_for_slug(None)
-    return jsonify(reward_profile_for_tenant(tenant.id, 0.0))
-
-
-@pwa_public_bp.get("/<tenant_slug>/rewards")
-def public_rewards_with_slug(tenant_slug: str):
-    tenant = _require_tenant_for_slug(tenant_slug)
-    return jsonify(reward_profile_for_tenant(tenant.id, 0.0))
-
-
-@pwa_public_bp.get("/cart/url")
-def public_cart_url():
-    return _public_cart_url_response()
-
-
-@pwa_public_bp.get("/<tenant_slug>/cart/url")
-def public_cart_url_with_slug(tenant_slug: str):
-    return _public_cart_url_response(tenant_slug)
-
-
-@pwa_public_bp.get("/cart")
-def public_cart_summary():
-    return _public_cart_summary_response()
-
-
-@pwa_public_bp.get("/<tenant_slug>/cart")
-def public_cart_summary_with_slug(tenant_slug: str):
-    return _public_cart_summary_response(tenant_slug)
-
-
-@pwa_public_bp.post("/cart/add")
-def public_cart_add():
-    return _public_cart_add_response()
-
-
-@pwa_public_bp.post("/<tenant_slug>/cart/add")
-def public_cart_add_with_slug(tenant_slug: str):
-    return _public_cart_add_response(tenant_slug)
-
-
-@pwa_public_bp.post("/cart/update")
-def public_cart_update():
-    return _public_cart_update_response()
-
-
-@pwa_public_bp.post("/<tenant_slug>/cart/update")
-def public_cart_update_with_slug(tenant_slug: str):
-    return _public_cart_update_response(tenant_slug)
-
-
-@pwa_public_bp.post("/cart/remove")
-def public_cart_remove():
-    return _public_cart_remove_response()
-
-
-@pwa_public_bp.post("/<tenant_slug>/cart/remove")
-def public_cart_remove_with_slug(tenant_slug: str):
-    return _public_cart_remove_response(tenant_slug)
-
-
-@pwa_public_bp.post("/cart/clear")
-def public_cart_clear():
-    return _public_cart_clear_response()
-
-
-@pwa_public_bp.post("/<tenant_slug>/cart/clear")
-def public_cart_clear_with_slug(tenant_slug: str):
-    return _public_cart_clear_response(tenant_slug)
-
-
-@pwa_public_bp.get("/tenant")
-def tenant_info():
-    return _tenant_info_response()
-
-
-@pwa_public_bp.get("/<tenant_slug>/tenant")
-def tenant_info_with_slug(tenant_slug: str):
-    return _tenant_info_response(tenant_slug)
-
-
-@pwa_public_bp.get("/surveys")
-def list_surveys():
-    return _list_surveys_response()
-
-
-@pwa_public_bp.get("/<tenant_slug>/surveys")
-def list_surveys_with_slug(tenant_slug: str):
-    return _list_surveys_response(tenant_slug)
-
-
-@pwa_public_bp.get("/surveys/<slug>")
-def get_survey(slug: str):
-    return _get_survey_response(None, slug)
-
-
-@pwa_public_bp.get("/<tenant_slug>/surveys/<slug>")
-def get_survey_with_slug(tenant_slug: str, slug: str):
-    return _get_survey_response(tenant_slug, slug)
-
-
-@pwa_public_bp.post("/surveys/<slug>/respond")
-def respond_survey(slug: str):
-    return _respond_survey_response(None, slug)
-
-
-@pwa_public_bp.post("/<tenant_slug>/surveys/<slug>/respond")
-def respond_survey_with_slug(tenant_slug: str, slug: str):
-    return _respond_survey_response(tenant_slug, slug)
-
-
-@pwa_public_bp.get("/news")
-def list_news():
-    return _news_response()
-
-
-@pwa_public_bp.get("/<tenant_slug>/news")
-def list_news_with_slug(tenant_slug: str):
-    return _news_response(tenant_slug)
-
-
-@pwa_public_bp.get("/events")
-def list_events():
-    return _events_response()
-
-
-@pwa_public_bp.get("/<tenant_slug>/events")
-def list_events_with_slug(tenant_slug: str):
-    return _events_response(tenant_slug)
