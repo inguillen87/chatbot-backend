@@ -277,7 +277,7 @@ def register_commands(app):
             widget_tokens.add(widget_token)
         config["widget_tokens"] = list(widget_tokens)
 
-        config.setdefault("whatsapp_oficial", "+5492610000000")
+        config.setdefault("whatsapp_oficial", "+17432643718")
         config.setdefault(
             "descripcion_corta", "Atención ciudadana 24/7 - Municipio de Junín"
         )
