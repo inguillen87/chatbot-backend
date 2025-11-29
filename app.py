@@ -315,7 +315,7 @@ def create_app(config_class=Config):
             "X-Whatsapp-Dst",
         ]
 
-        allow_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+        allow_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 
         CORS(
             app,

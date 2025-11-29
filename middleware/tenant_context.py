@@ -47,20 +47,38 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
     * /pymes/<slug>/...
     * /p/<slug>/...
     * /t/<slug>/... (alias used by the PWA router)
+    * /api/public/<slug>/...
+    * /api/pwa/public/<slug>/...
+    * /api/pwa/<slug>/...
     """
 
     if not path:
         return None
 
     segments = [segment for segment in path.split("/") if segment]
-    if len(segments) < 2:
-        return None
+    lower_segments = [segment.lower() for segment in segments]
 
-    prefix = segments[0].lower()
-    slug = segments[1]
+    # Direct tenant slugs prefixed at the root (e.g. /m/<slug>/...)
+    if len(segments) >= 2 and lower_segments[0] in {
+        "municipio",
+        "municipios",
+        "m",
+        "pyme",
+        "pymes",
+        "p",
+        "t",
+    }:
+        return _normalize_slug(segments[1])
 
-    if prefix in {"municipio", "municipios", "m", "pyme", "pymes", "p", "t"}:
-        return _normalize_slug(slug)
+    # Nested API prefixes where the slug is later in the path
+    if lower_segments[:2] == ["api", "public"] and len(segments) >= 3:
+        return _normalize_slug(segments[2])
+
+    if lower_segments[:3] == ["api", "pwa", "public"] and len(segments) >= 4:
+        return _normalize_slug(segments[3])
+
+    if lower_segments[:2] == ["api", "pwa"] and len(segments) >= 3:
+        return _normalize_slug(segments[2])
 
     return None
 
