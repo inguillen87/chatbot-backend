@@ -87,6 +87,39 @@ def _user_can_manage_tenant(user: User, tenant: TenantProfile) -> bool:
     return False
 
 
+def _resolve_tenant_soft(slug: str) -> Optional[TenantProfile]:
+    slug_clean = (slug or "").strip().lower()
+    if not slug_clean:
+        return None
+
+    try:
+        return resolve_tenant_only(tenant_slug=slug_clean, require_explicit_slug=False)
+    except TenantResolutionError:
+        pass
+
+    return (
+        TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug_clean)
+        .order_by(TenantProfile.id.desc())
+        .first()
+    )
+
+
+def _modalidad_value(producto: CatalogoItem) -> str:
+    modalidad = getattr(producto, "modalidad", None)
+    try:
+        from enum import Enum
+
+        if isinstance(modalidad, Enum):
+            return modalidad.value
+    except Exception:
+        pass
+
+    if modalidad:
+        return str(modalidad)
+
+    return "venta"
+
+
 def _resolve_admin_tenant(current_user: User, payload: Optional[dict] = None) -> TenantProfile:
     payload = payload or {}
     tenant = None
@@ -724,6 +757,48 @@ def public_cart_url(slug: str):
         path = f"market/{tenant.slug}/cart"
 
     return jsonify({"cart_url": full_url, "base_url": base_url, "tenant_slug": tenant.slug, "path": path})
+
+
+@market_bp.route("/pwa/public/<tenant_slug>/productos", methods=["GET", "OPTIONS"])
+def market_pwa_public_productos(tenant_slug: str):
+    """Alias legacy para exponer productos del catálogo por tenant."""
+
+    if request.method == "OPTIONS":
+        return "", 204
+
+    tenant = _resolve_tenant_soft(tenant_slug)
+    if tenant is None:
+        return jsonify({"error": "tenant_not_found"}), 404
+
+    owner = tenant.municipio or tenant.pyme
+    if owner:
+        ensure_seed_catalog(owner, tenant)
+
+    query = CatalogoItem.query.options(*CatalogoItem.legacy_safe_options()).filter(
+        CatalogoItem.tenant_id == tenant.id
+    )
+
+    items: list[dict] = []
+    for producto in query.all():
+        precio_raw = getattr(producto, "precio", None) or getattr(
+            producto, "precio_monetario", None
+        )
+        _, precio_float, _ = parse_precio_flexible(precio_raw)
+        items.append(
+            {
+                "id": producto.id,
+                "nombre": producto.nombre,
+                "descripcion": producto.descripcion,
+                "precio": float(precio_float) if precio_float is not None else None,
+                "precio_str": getattr(producto, "precio", None),
+                "modalidad": _modalidad_value(producto),
+                "puntos": getattr(producto, "puntos", 0) or 0,
+                "imagen_url": getattr(producto, "imagen_url", None),
+                "categoria": getattr(producto, "categoria", None),
+            }
+        )
+
+    return jsonify(items)
 
 
 @market_admin_bp.post("/catalog")
