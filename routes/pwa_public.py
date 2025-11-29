@@ -8,6 +8,7 @@ from flask import Blueprint, abort, g, jsonify, make_response, request, session
 from sqlalchemy import func
 
 from models import CatalogoItem, MunicipioPost, TenantProfile, User, CatalogoModalidad
+from middleware import require_tenant
 from services.encuestas_service import (
     EncuestaError,
     get_public_encuesta,
@@ -19,7 +20,6 @@ from services.catalog_seed import ensure_seed_catalog
 from services.common_utils import parse_precio_flexible
 from routes.catalogo import _formatear_producto
 from services.rewards_demo import reward_profile_for_tenant
-from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 
 
 pwa_public_bp = Blueprint("pwa_public", __name__, url_prefix="/api/pwa/public")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from flask import current_app, g, request
+from flask import current_app, g, request, abort
 from sqlalchemy import func
 
 from models import TenantProfile
@@ -21,6 +21,19 @@ def _find_tenant_by_slug(slug: str) -> Optional[TenantProfile]:
     if not slug:
         return None
     return TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug.lower()).first()
+
+
+def _find_tenant_by_widget_token(token: str) -> Optional[TenantProfile]:
+    if not token:
+        return None
+    # Using the same logic as services/tenant_resolver.py
+    try:
+        return TenantProfile.query.filter(
+            TenantProfile.configuracion["widget_tokens"].astext.contains(token)
+        ).first()
+    except Exception:
+        # In case of database dialect issues (e.g. SQLite vs Postgres JSON)
+        return None
 
 
 def _tenant_slug_from_path(path: str | None) -> Optional[str]:
@@ -68,6 +81,18 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         if tenant:
             return tenant
 
+    # Check for Widget Token (used by ChatWidget)
+    widget_token = (
+        request.headers.get("X-Widget-Token")
+        or request.args.get("widget_token")
+        or request.headers.get("X-Entity-Token")
+        or request.args.get("entityToken")
+    )
+    if widget_token:
+        tenant = _find_tenant_by_widget_token(widget_token)
+        if tenant:
+            return tenant
+
     slug = _normalize_slug(request.args.get("tenant"))
     if slug:
         tenant = _find_tenant_by_slug(slug)
@@ -98,3 +123,18 @@ def tenant_middleware(app) -> None:
         tenant = _resolve_tenant_profile()
         g.tenant_profile = tenant
         g.tenant_profile_slug = tenant.slug if tenant else None
+
+
+def require_tenant() -> TenantProfile:
+    """Ensure a tenant is resolved in the current context or abort with 404."""
+    if getattr(g, "tenant_profile", None):
+        return g.tenant_profile
+
+    # Attempt resolution if for some reason it wasn't done or failed
+    tenant = _resolve_tenant_profile()
+    if tenant:
+        g.tenant_profile = tenant
+        g.tenant_profile_slug = tenant.slug
+        return tenant
+
+    abort(404, description="Tenant no especificado o no encontrado")
