@@ -172,6 +172,15 @@ class PublicResolverTest(unittest.TestCase):
         payload = response.get_json()
         self.assertIn("error", payload)
 
+    def test_public_tenant_profile_generic_municipio_slug(self):
+        response = self.client.get("/api/public/tenant-profile?tenant=municipio")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
+        self.assertIn("warning", payload)
+        self.assertIn("municipio", payload["warning"].get("message", "").lower())
+
     def test_tenant_profile_returns_canonical_token_and_cookie(self):
         response = self.client.get(
             f"/api/public/tenant-profile?tenant={self.tenant.slug}"

@@ -189,7 +189,21 @@ def tenant_profile():
     except TenantResolutionError as exc:
         resolution_error = resolution_error or str(exc)
         explicit_slug_failure = bool(tenant_slug_original) and not widget_token and not whatsapp_destination_number
-        tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
+
+        normalized_slug = tenant_slug_original.strip().lower() if tenant_slug_original else None
+
+        fallback_tenant = None
+        if normalized_slug in {"municipio", "pyme"}:
+            fallback_tenant = (
+                TenantProfile.query.filter_by(tipo=normalized_slug)
+                .order_by(TenantProfile.id.asc())
+                .first()
+            )
+
+        if not fallback_tenant:
+            fallback_tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
+
+        tenant = fallback_tenant
         if not tenant:
             placeholder = {
                 "id": None,
@@ -209,8 +223,13 @@ def tenant_profile():
                 },
             }
             return _log_widget_public_request(jsonify(payload), tenant)
-
         resolved_from_fallback = True
+
+        if fallback_tenant and normalized_slug in {"municipio", "pyme"}:
+            explicit_slug_failure = False
+            resolution_error = resolution_error or (
+                f"Tenant slug '{tenant_slug_original}' not found; using first {normalized_slug} tenant"
+            )
 
     if (
         tenant_slug_original
