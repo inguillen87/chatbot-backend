@@ -21,8 +21,10 @@ from models import Rubro, TenantProfile, User
 DEFAULT_CONFIG_PATH = Path("data/municipios/default/config.json")
 DEFAULT_EMAIL = "mauricio@junin.com"
 DEFAULT_PASSWORD = "junin1234"
-DEFAULT_TENANT_SLUG = "junin"
-DEFAULT_TENANT_NAME = "Municipalidad de Junín"
+DEFAULT_TENANT_SLUG = "municipio"
+DEFAULT_TENANT_NAME = "Municipio de Junín"
+DEFAULT_WIDGET_TOKEN = "1146cb3e-eaef-4230-b54e-1c340ac062d8"
+OFFICIAL_WHATSAPP = "+17432643718"
 
 
 def _load_config(path: Path) -> Optional[Dict[str, Any]]:
@@ -46,7 +48,7 @@ def _ensure_rubro() -> Rubro:
     return rubro
 
 
-def _ensure_user(password: str, rubro: Rubro) -> User:
+def _ensure_user(password: str, rubro: Rubro, tenant_slug: str) -> User:
     user = User.query.filter_by(email=DEFAULT_EMAIL).first()
     created = False
 
@@ -57,7 +59,7 @@ def _ensure_user(password: str, rubro: Rubro) -> User:
             rol="admin",
             tipo_chat="municipio",
             nombre_empresa=DEFAULT_TENANT_NAME,
-            tenant_slug=DEFAULT_TENANT_SLUG,
+            tenant_slug=tenant_slug,
             rubro_id=rubro.id,
         )
         created = True
@@ -65,7 +67,7 @@ def _ensure_user(password: str, rubro: Rubro) -> User:
         user.rol = "admin"
         user.tipo_chat = "municipio"
         user.nombre_empresa = user.nombre_empresa or DEFAULT_TENANT_NAME
-        user.tenant_slug = user.tenant_slug or DEFAULT_TENANT_SLUG
+        user.tenant_slug = user.tenant_slug or tenant_slug
         if not user.rubro_id:
             user.rubro_id = rubro.id
 
@@ -78,17 +80,24 @@ def _ensure_user(password: str, rubro: Rubro) -> User:
     return user
 
 
-def _ensure_tenant(user: User, config_data: Optional[Dict[str, Any]]) -> TenantProfile:
-    tenant = TenantProfile.query.filter_by(slug=DEFAULT_TENANT_SLUG).first()
+def _ensure_tenant(
+    user: User,
+    config_data: Optional[Dict[str, Any]],
+    *,
+    tenant_slug: str,
+    widget_token: str,
+    whatsapp_number: str,
+) -> TenantProfile:
+    tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
     created = False
 
     if not tenant:
         tenant = TenantProfile(
-            slug=DEFAULT_TENANT_SLUG,
+            slug=tenant_slug,
             nombre=DEFAULT_TENANT_NAME,
             tipo="municipio",
             municipio_id=user.id,
-            dominio=f"{DEFAULT_TENANT_SLUG}.chatboc.ar",
+            dominio=f"{tenant_slug}.chatboc.ar",
             configuracion={},
         )
         created = True
@@ -96,13 +105,29 @@ def _ensure_tenant(user: User, config_data: Optional[Dict[str, Any]]) -> TenantP
         tenant.municipio_id = tenant.municipio_id or user.id
         tenant.nombre = tenant.nombre or DEFAULT_TENANT_NAME
         tenant.tipo = tenant.tipo or "municipio"
-        tenant.dominio = tenant.dominio or f"{DEFAULT_TENANT_SLUG}.chatboc.ar"
+        tenant.dominio = tenant.dominio or f"{tenant_slug}.chatboc.ar"
         if tenant.configuracion is None:
             tenant.configuracion = {}
 
     cfg = tenant.configuracion or {}
     if config_data:
         cfg.setdefault("municipio_config", config_data)
+
+    tokens = cfg.get("widget_tokens") or []
+    if isinstance(tokens, str):
+        tokens = [tokens]
+    if widget_token and widget_token not in tokens:
+        tokens.append(widget_token)
+    cfg["widget_tokens"] = tokens
+
+    whatsapp_numbers = cfg.get("whatsapp_numbers") or []
+    if isinstance(whatsapp_numbers, str):
+        whatsapp_numbers = [whatsapp_numbers]
+    if whatsapp_number and whatsapp_number not in whatsapp_numbers:
+        whatsapp_numbers.append(whatsapp_number)
+    cfg["whatsapp_numbers"] = whatsapp_numbers
+    cfg["whatsapp_oficial"] = whatsapp_number
+
     tenant.configuracion = cfg
 
     db.session.add(tenant)
@@ -113,11 +138,47 @@ def _ensure_tenant(user: User, config_data: Optional[Dict[str, Any]]) -> TenantP
     return tenant
 
 
-def bootstrap(password: str, config_path: Path) -> None:
+def _remove_widget_token_from_others(widget_token: str, keep_slug: str) -> None:
+    if not widget_token:
+        return
+
+    conflicts = (
+        TenantProfile.query.filter(
+            TenantProfile.slug != keep_slug,
+            TenantProfile.configuracion["widget_tokens"].astext.contains(widget_token),
+        )
+        .order_by(TenantProfile.id.asc())
+        .all()
+    )
+
+    for tenant in conflicts:
+        cfg = tenant.configuracion or {}
+        tokens = cfg.get("widget_tokens")
+        cleaned: list[str] = []
+
+        if isinstance(tokens, str):
+            cleaned = [t for t in [tokens] if t != widget_token]
+        elif isinstance(tokens, list):
+            cleaned = [t for t in tokens if t != widget_token]
+
+        cfg["widget_tokens"] = cleaned
+        tenant.configuracion = cfg
+        db.session.add(tenant)
+        print(f"🔁 Removido widget_token {widget_token} del tenant {tenant.slug}.")
+
+
+def bootstrap(password: str, config_path: Path, *, tenant_slug: str, widget_token: str) -> None:
     config_data = _load_config(config_path)
     rubro = _ensure_rubro()
-    user = _ensure_user(password, rubro)
-    _ensure_tenant(user, config_data)
+    user = _ensure_user(password, rubro, tenant_slug)
+    _ensure_tenant(
+        user,
+        config_data,
+        tenant_slug=tenant_slug,
+        widget_token=widget_token,
+        whatsapp_number=OFFICIAL_WHATSAPP,
+    )
+    _remove_widget_token_from_others(widget_token, tenant_slug)
     db.session.commit()
     print("🎉 Base de datos de Junín lista.")
 
@@ -137,11 +198,28 @@ def main() -> None:
         type=Path,
         help=f"Ruta al JSON de configuración municipal (default: {DEFAULT_CONFIG_PATH})",
     )
+    parser.add_argument(
+        "--slug",
+        dest="slug",
+        default=DEFAULT_TENANT_SLUG,
+        help=f"Slug del tenant municipal (default: {DEFAULT_TENANT_SLUG})",
+    )
+    parser.add_argument(
+        "--widget-token",
+        dest="widget_token",
+        default=DEFAULT_WIDGET_TOKEN,
+        help="Widget token a registrar para el tenant municipal",
+    )
     args = parser.parse_args()
 
     app = create_app()
     with app.app_context():
-        bootstrap(args.password, args.config)
+        bootstrap(
+            args.password,
+            args.config,
+            tenant_slug=args.slug,
+            widget_token=args.widget_token,
+        )
 
 
 if __name__ == "__main__":

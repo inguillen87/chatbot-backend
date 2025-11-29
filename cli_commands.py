@@ -193,6 +193,7 @@ def register_commands(app):
         from werkzeug.security import generate_password_hash
 
         from models import Rubro, TenantProfile, User
+        from services.user_service import assign_whatsapp_numbers
 
         ensure_seed_catalog = None
         catalog_seed_spec = importlib.util.find_spec("services.catalog_seed")
@@ -213,6 +214,7 @@ def register_commands(app):
             os.getenv("DEMO_WIDGET_TOKEN_JUNIN")
             or "1146cb3e-eaef-4230-b54e-1c340ac062d8"
         )
+        official_whatsapp = "+17432643718"
 
         user = User.query.filter_by(email=email).first()
         if not user:
@@ -277,17 +279,59 @@ def register_commands(app):
             widget_tokens.add(widget_token)
         config["widget_tokens"] = list(widget_tokens)
 
-        config.setdefault("whatsapp_oficial", "+17432643718")
+        whatsapp_numbers = set()
+        if isinstance(config.get("whatsapp_numbers"), list):
+            whatsapp_numbers.update(filter(None, config.get("whatsapp_numbers")))
+        elif isinstance(config.get("whatsapp_numbers"), str):
+            whatsapp_numbers.add(config["whatsapp_numbers"])
+        if official_whatsapp:
+            whatsapp_numbers.add(official_whatsapp)
+        if whatsapp_numbers:
+            config["whatsapp_numbers"] = list(whatsapp_numbers)
+
+        config["whatsapp_oficial"] = official_whatsapp
         config.setdefault(
             "descripcion_corta", "Atención ciudadana 24/7 - Municipio de Junín"
         )
         config.setdefault("tema", "municipio_junin")
+
+        assign_whatsapp_numbers(user, [official_whatsapp], activate=True, commit=False)
 
         tenant.configuracion = config
 
         if rubro is not None:
             if hasattr(tenant, "rubro_id") and getattr(tenant, "rubro_id", None) is None:
                 tenant.rubro_id = rubro.id
+
+        conflicting_tenants = []
+        if widget_token:
+            conflicting_tenants = (
+                TenantProfile.query.filter(
+                    TenantProfile.slug != tenant.slug,
+                    TenantProfile.configuracion["widget_tokens"].astext.contains(widget_token),
+                )
+                .order_by(TenantProfile.id.asc())
+                .all()
+            )
+
+        for other in conflicting_tenants:
+            cfg = other.configuracion or {}
+            tokens = cfg.get("widget_tokens")
+            updated_tokens: list[str] = []
+
+            if isinstance(tokens, str):
+                updated_tokens = [t for t in [tokens] if t != widget_token]
+            elif isinstance(tokens, list):
+                updated_tokens = [t for t in tokens if t != widget_token]
+
+            cfg["widget_tokens"] = updated_tokens
+            other.configuracion = cfg
+            db.session.add(other)
+            current_app.logger.info(
+                "Removiendo widget_token %s del tenant %s para evitar colisiones.",
+                widget_token,
+                other.slug,
+            )
 
         db.session.commit()
         current_app.logger.info("Usuario + tenant municipal guardados.")
