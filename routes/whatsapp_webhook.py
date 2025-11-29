@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, abort, current_app, g  # Basic Flask components
+from flask import Blueprint, request, jsonify, abort, current_app, g, has_app_context  # Basic Flask components
 from twilio.request_validator import RequestValidator  # For validating Twilio requests
 from twilio.rest import Client  # For sending messages via Twilio
 import os  # For accessing environment variables
@@ -8,7 +8,7 @@ import json
 import threading
 import re
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
 from extensions import db  # Import db instance for database operations
@@ -36,6 +36,73 @@ webhook_bp = Blueprint('whatsapp_webhook', __name__)
 # chunks that comply with Twilio's limits and send them sequentially.
 
 MAX_TWILIO_BODY_LENGTH = 1600
+ALLOWED_MEDIA_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".mp3",
+    ".wav",
+    ".ogg",
+    ".mp4",
+}
+
+
+def _is_valid_media_url(url: Optional[str]) -> bool:
+    """Return True when the URL uses HTTPS and has an allowed extension."""
+
+    if not url:
+        return False
+
+    parsed = urlsplit(str(url))
+    if parsed.scheme.lower() != "https":
+        return False
+
+    path = (parsed.path or "").lower()
+    if "." not in path:
+        return False
+
+    extension = path.rsplit(".", 1)[-1]
+    return f".{extension}" in ALLOWED_MEDIA_EXTENSIONS
+
+
+def _normalize_media_base(url: str) -> str:
+    base_url = None
+    if has_app_context():
+        base_url = current_app.config.get("BASE_URL") or current_app.config.get("PUBLIC_BASE_URL")
+    if not base_url:
+        return url
+    base = str(base_url).rstrip("/")
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+    return urljoin(f"{base}/", url.lstrip("/"))
+
+
+def _prepare_media_param(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate and normalize Twilio media parameters.
+
+    Twilio rejects unsupported media types. This helper filters out
+    unsafe URLs (non-HTTPS or disallowed extensions) and expands relative
+    URLs using the configured ``BASE_URL`` so outbound webhooks can reach
+    static assets reliably.
+    """
+
+    prepared = dict(params or {})
+    media_urls = prepared.get("media_url") or []
+    normalized_urls: list[str] = []
+
+    for candidate in media_urls:
+        normalized = _normalize_media_base(str(candidate))
+        if _is_valid_media_url(normalized):
+            normalized_urls.append(normalized)
+
+    if normalized_urls:
+        prepared["media_url"] = normalized_urls
+    else:
+        prepared.pop("media_url", None)
+
+    return prepared
 
 
 def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
