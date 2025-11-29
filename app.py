@@ -268,6 +268,7 @@ def create_app(config_class=Config):
         app.logger.exception("Unhandled Exception: %s", error)
         try:
             db.session.rollback()
+            db.session.remove()
         except Exception:
             pass
         return jsonify({"error": "server_error", "detail": str(error)}), 500
@@ -559,10 +560,15 @@ def create_app(config_class=Config):
                 # This will create tables if they don't exist.
                 # It does NOT handle migrations (schema updates), but it fixes "UndefinedTable" for new deployments.
                 db.create_all()
+                db.session.remove()
                 app.logger.info("Startup: db.create_all() executed successfully (tables ensured).")
             except Exception as e:
                 # Log warning but proceed; maybe DB is readonly or connection transiently failed.
                 app.logger.warning(f"Startup db.create_all() failed (ignoring): {e}")
+                try:
+                    db.session.remove()
+                except Exception:
+                    pass
 
     # Inicializar SocketIO solo en runtime normal
     if socketio is not None:
