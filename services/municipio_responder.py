@@ -3755,6 +3755,19 @@ MENU_KEYWORDS = {
         "votación",
         "participar",
     ],
+    "mostrar_menu_catalogo": [
+        "catalogo",
+        "catálogo",
+        "catalogos",
+        "catálogos",
+        "catalogo y beneficios",
+        "beneficios",
+        "canje",
+        "canje de puntos",
+        "puntos",
+        "productos",
+        "tienda",
+    ],
     "limpiar_contexto": [
         "cancelar",
         "volver al inicio",
@@ -5139,10 +5152,48 @@ def _resolve_tenant_identifiers(context: Optional[dict]) -> tuple[Optional[str],
     return _clean(tenant_slug), _clean(tenant_id), _clean(owner_id)
 
 
+def _resolve_viewer_phone(context: Optional[dict]) -> Optional[str]:
+    """Try to infer the viewer's phone number from context or stored contact."""
+
+    context = context or {}
+    viewer = context.get("viewer_user_obj")
+    candidates = [
+        getattr(viewer, "telefono", None) if viewer else None,
+        getattr(viewer, "phone", None) if viewer else None,
+        context.get("telefono_usuario_contexto"),
+        context.get("telefono_detectado"),
+    ]
+
+    chat_ctx = context.get("chat_db_context_data") or {}
+    ctx_muni = chat_ctx.get(CONTEXTO_MUNICIPIO, {}) or {}
+    contacto_usuario = ctx_muni.get("contacto_usuario") or {}
+    candidates.extend(
+        [
+            contacto_usuario.get("telefono"),
+            contacto_usuario.get("whatsapp"),
+        ]
+    )
+
+    for candidate in candidates:
+        normalized = _normalize_phone_value(candidate)
+        if normalized:
+            return normalized
+
+    return None
+
+
 def _append_tenant_param(
-    raw_url: Optional[str], tenant_slug: Optional[str], tenant_id: Optional[str], owner_id: Optional[str]
+    raw_url: Optional[str],
+    tenant_slug: Optional[str],
+    tenant_id: Optional[str],
+    owner_id: Optional[str],
+    viewer_phone: Optional[str] = None,
 ) -> Optional[str]:
-    """Ensure catalog links carry tenant/owner hints so the right store is loaded."""
+    """Ensure catalog links carry tenant/owner hints so the right store is loaded.
+
+    Also propagates the viewer phone when available so downstream experiences (puntos,
+    canjes, donaciones) can associate the session to the WhatsApp identity.
+    """
 
     if not raw_url or not isinstance(raw_url, str):
         return raw_url
@@ -5158,6 +5209,11 @@ def _append_tenant_param(
 
     if owner_id and "owner_id" not in query_params:
         query_params["owner_id"] = [owner_id]
+
+    if viewer_phone:
+        existing_phone_keys = {k.lower() for k in query_params.keys()}
+        if not existing_phone_keys.intersection({"phone", "telefono", "waid", "whatsapp"}):
+            query_params["phone"] = [viewer_phone]
 
     new_query = urlencode(query_params, doseq=True)
     return parsed._replace(query=new_query).geturl()
@@ -5208,6 +5264,7 @@ def _build_catalogo_link_map(context: Optional[dict]) -> Dict[str, str]:
 
     base_url = _resolve_catalogo_base_url(context)
     tenant_slug, tenant_id, owner_id = _resolve_tenant_identifiers(context)
+    viewer_phone = _resolve_viewer_phone(context)
     default_paths = {
         "catalogo_ver": "/productos",
         "catalogo_canje_puntos": "/productos?view=canje",
@@ -5220,7 +5277,9 @@ def _build_catalogo_link_map(context: Optional[dict]) -> Dict[str, str]:
         raw_url = override_maps.get(action_id)
         if not raw_url and base_url:
             raw_url = f"{base_url}{default_path}"
-        raw_url = _append_tenant_param(raw_url, tenant_slug, tenant_id, owner_id)
+        raw_url = _append_tenant_param(
+            raw_url, tenant_slug, tenant_id, owner_id, viewer_phone
+        )
         normalized = _normalize_public_url(raw_url, context)
         if normalized:
             link_map[action_id] = normalized
@@ -6265,12 +6324,6 @@ def _get_encuestas_menu(context: dict) -> dict:
     )
     banner_image_url = share_image_default
 
-    suppress_whatsapp_share_line = False
-    if is_whatsapp_channel:
-        suppress_whatsapp_share_line = _is_domain_mapped_base_url_for_tenant(
-            base_url, tenant_id
-        )
-
     general_lines: List[str] = []
     whatsapp_blocks: List[Dict[str, str]] = []
     survey_buttons: List[Dict[str, Any]] = []
@@ -6329,11 +6382,7 @@ def _get_encuestas_menu(context: dict) -> dict:
 
         if is_whatsapp_channel:
             whatsapp_share_line = ""
-            if (
-                share_url_for_body
-                and whatsapp_share_url
-                and not suppress_whatsapp_share_line
-            ):
+            if share_url_for_body and whatsapp_share_url:
                 whatsapp_share_line = f"   • *Compartir*: {share_url_for_body}"
 
             whatsapp_parts_with_desc = [whatsapp_title_line]
@@ -6385,17 +6434,16 @@ def _get_encuestas_menu(context: dict) -> dict:
                 }
             )
 
-        if not is_whatsapp_channel:
-            share_button: Dict[str, Any] = {
-                "texto": f"Compartir {share_button_title}",
-                "action_id": share_action_id,
-            }
-            if is_widget_channel and whatsapp_share_url:
-                share_button.pop("action_id", None)
-                share_button["url"] = whatsapp_share_url
-                share_button["type"] = "url"
+        share_button: Dict[str, Any] = {
+            "texto": f"Compartir {share_button_title}",
+            "action_id": share_action_id,
+        }
+        if is_widget_channel and whatsapp_share_url:
+            share_button.pop("action_id", None)
+            share_button["url"] = whatsapp_share_url
+            share_button["type"] = "url"
 
-            survey_buttons.append(share_button)
+        survey_buttons.append(share_button)
 
         survey_metadata.append(
             {
