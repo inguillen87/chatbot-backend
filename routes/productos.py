@@ -199,7 +199,15 @@ def obtener_productos():
     view_mode = (request.args.get("view") or "").strip().lower()
 
     user = _resolve_authenticated_user()
+    tenant_for_user = _tenant_for_user(user) if user else None
     if user:
+        if tenant_for_user:
+            g.tenant_profile = tenant_for_user
+            g.tenant_profile_slug = tenant_for_user.slug
+            owner_for_user = tenant_for_user.municipio or tenant_for_user.pyme or user
+            ensure_seed_catalog(owner_for_user, tenant_for_user)
+            return listar_catalogo.__wrapped__(owner_for_user)
+
         # Cuando el usuario está autenticado permitimos acceder al catálogo
         # aunque se haya solicitado un modo de vista especial ("view=json|api").
         # Esto evita errores 400 cuando el panel administrador consulta el
