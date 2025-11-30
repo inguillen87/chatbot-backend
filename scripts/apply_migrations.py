@@ -1,11 +1,18 @@
 # scripts/apply_migrations.py
 import os
-from sqlalchemy import create_engine
-from alembic.config import Config
-from alembic import command
-from alembic.util import CommandError
 
-dburl = os.environ.get("SQLALCHEMY_DATABASE_URI") or os.environ["DATABASE_URL"]
+from alembic import command
+from alembic.config import Config
+from alembic.util import CommandError
+from sqlalchemy import create_engine
+
+dburl = os.environ.get("SQLALCHEMY_DATABASE_URI") or os.environ.get("DATABASE_URL")
+
+if not dburl:
+    raise RuntimeError("Definí SQLALCHEMY_DATABASE_URI o DATABASE_URL antes de correr migraciones.")
+
+# Alinear explícitamente la URL de Alembic con la misma que usa SQLAlchemy
+os.environ["ALEMBIC_DB_URL"] = dburl
 
 # Engine que SABEMOS que conecta
 engine = create_engine(dburl, pool_pre_ping=True)
