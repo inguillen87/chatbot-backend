@@ -9,7 +9,6 @@ from sqlalchemy import func
 
 from models import CatalogoItem, CatalogoModalidad, MunicipioPost, TenantProfile, User
 from middleware import require_tenant
-from routes.public_resolver import tenant_profile as tenant_profile_view
 from services.encuestas_service import (
     EncuestaError,
     get_public_encuesta,
@@ -31,6 +30,7 @@ pwa_tenant_info_bp = Blueprint("pwa_tenant_info", __name__)
 @pwa_tenant_info_bp.route("/api/pwa/tenant-info", methods=["GET", "OPTIONS"])
 def api_pwa_tenant_info():
     """Alias JSON de /api/public/tenant-profile para el PWA del widget."""
+    from routes.public_resolver import tenant_profile as tenant_profile_view
 
     if request.method == "OPTIONS":
         return "", 204
@@ -41,6 +41,7 @@ def api_pwa_tenant_info():
 @pwa_tenant_info_bp.route("/pwa/tenant-info", methods=["GET", "OPTIONS"])
 def pwa_tenant_info_alias():
     """Alias sin prefijo /api usado por algunos embeds del widget."""
+    from routes.public_resolver import tenant_profile as tenant_profile_view
 
     if request.method == "OPTIONS":
         return "", 204
