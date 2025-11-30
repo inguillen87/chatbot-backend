@@ -16,7 +16,7 @@ import uuid
 from services.logic import responder_chatboc  # Import the correct chatbot logic processor
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm import joinedload  # To potentially eager load User.rubro
-from utils.db_utils import safe_flag_modified
+from utils.db_utils import ensure_chat_session_context_schema, safe_flag_modified
 from services.gcs_service import upload_to_gcs
 from services.attachment_service import create_attachment_with_thumbnail
 from services.llm_utils import extract_multiple_contact_details_llm
@@ -826,6 +826,8 @@ def whatsapp_webhook():
     end_user = get_or_create_user_by_phone(from_number_cleaned, client_user)
 
     chat_session_id_internal = f"whatsapp_{empresa_id}_{from_number_cleaned}"
+
+    ensure_chat_session_context_schema(db.session)
     try:
         session_context_db_entry = ChatSessionContext.query.filter_by(
             chat_session_id=chat_session_id_internal

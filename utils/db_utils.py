@@ -1,7 +1,9 @@
 import logging
 import time
-from sqlalchemy.orm.attributes import flag_modified
+
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import InvalidRequestError, OperationalError
+from sqlalchemy.orm.attributes import flag_modified
 
 logger = logging.getLogger(__name__)
 
@@ -43,3 +45,27 @@ def commit_with_retry(session, retries: int = 3, delay: float = 0.1) -> bool:
             session.rollback()
             raise
     return False
+
+
+def ensure_chat_session_context_schema(session) -> None:
+    """Guarantee ``tenant_id`` exists on ``chat_session_context`` to avoid runtime errors.
+
+    This is a safety net for environments where migrations may not have run yet.
+    It is idempotent and cheap (inspects metadata before altering).
+    """
+
+    try:
+        bind = session.get_bind()
+        inspector = inspect(bind)
+        columns = {col["name"] for col in inspector.get_columns("chat_session_context")}
+        if "tenant_id" not in columns:
+            bind.execute(
+                text(
+                    "ALTER TABLE chat_session_context "
+                    "ADD COLUMN IF NOT EXISTS tenant_id INTEGER"
+                )
+            )
+    except Exception as exc:  # pragma: no cover - best-effort safeguard
+        logger.warning(
+            "No se pudo asegurar la columna tenant_id en chat_session_context", exc_info=exc
+        )

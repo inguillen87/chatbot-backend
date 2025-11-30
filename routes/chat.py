@@ -16,9 +16,10 @@ if project_root_chat_routes not in sys.path:
 
 from flask import Blueprint, request, jsonify, current_app
 from sqlalchemy import func, desc
+from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified # Importado para flag_modified
 from models import User, Rubro, Conversacion, db, ChatSessionContext # Added ChatSessionContext
-from utils.db_utils import commit_with_retry
+from utils.db_utils import commit_with_retry, ensure_chat_session_context_schema
 from socket_service import socketio # Import socketio
 from services.logic import (
     responder_chatboc,
@@ -1238,7 +1239,37 @@ def _procesar_chat(
             )
 
     actor_principal = current_user
-    chat_context_obj = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id_header).first()
+
+    # Failsafe: make sure schema is aligned even if migrations lag behind
+    ensure_chat_session_context_schema(db.session)
+    try:
+        chat_context_obj = ChatSessionContext.query.filter_by(
+            chat_session_id=chat_session_id_header
+        ).first()
+    except ProgrammingError as exc:
+        current_app.logger.exception(
+            "[CHAT] Error accediendo a chat_session_context (schema mismatch)",
+            exc_info=exc,
+        )
+        db.session.rollback()
+        return (
+            jsonify(
+                {
+                    "error": "Estamos ajustando el servicio. Por favor, reintentá en unos minutos.",
+                }
+            ),
+            200,
+        )
+    except SQLAlchemyError as exc:
+        current_app.logger.exception(
+            "[CHAT] Error de base de datos obteniendo el contexto de sesión",
+            exc_info=exc,
+        )
+        db.session.rollback()
+        return (
+            jsonify({"error": "Hubo un problema momentáneo. Probá de nuevo en breve."}),
+            200,
+        )
 
     if not chat_context_obj:
         current_app.logger.info(f"No ChatSessionContext found for {chat_session_id_header}. Creating new one.")
