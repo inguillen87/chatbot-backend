@@ -14,8 +14,9 @@ from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # I
 from extensions import db  # Import db instance for database operations
 import uuid
 from services.logic import responder_chatboc  # Import the correct chatbot logic processor
+from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm import joinedload  # To potentially eager load User.rubro
-from utils.db_utils import safe_flag_modified
+from utils.db_utils import ensure_chat_session_context_schema, safe_flag_modified
 from services.gcs_service import upload_to_gcs
 from services.attachment_service import create_attachment_with_thumbnail
 from services.llm_utils import extract_multiple_contact_details_llm
@@ -815,11 +816,53 @@ def whatsapp_webhook():
     g.owner_user = client_user
 
     empresa_id = client_user.id
+    tenant_profile = (
+        getattr(client_user, "tenant_profile", None)
+        or getattr(client_user, "tenant_profile_municipio", None)
+        or getattr(client_user, "tenant_profile_pyme", None)
+    )
+    tenant_id = getattr(tenant_profile, "id", None)
     from services.pymes import get_or_create_user_by_phone
     end_user = get_or_create_user_by_phone(from_number_cleaned, client_user)
 
     chat_session_id_internal = f"whatsapp_{empresa_id}_{from_number_cleaned}"
-    session_context_db_entry = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id_internal).first()
+
+    ensure_chat_session_context_schema(db.session)
+    try:
+        session_context_db_entry = ChatSessionContext.query.filter_by(
+            chat_session_id=chat_session_id_internal
+        ).first()
+    except ProgrammingError as exc:
+        current_app.logger.warning(
+            "[WHATSAPP_WEBHOOK] tenant_id missing when querying chat_session_context; retrying after safeguard",
+            exc_info=exc,
+        )
+        db.session.rollback()
+        ensure_chat_session_context_schema(db.session)
+        try:
+            session_context_db_entry = ChatSessionContext.query.filter_by(
+                chat_session_id=chat_session_id_internal
+            ).first()
+        except ProgrammingError as exc_retry:
+            current_app.logger.exception(
+                "[WHATSAPP_WEBHOOK] Error accediendo a chat_session_context (schema mismatch)",
+                exc_info=exc_retry,
+            )
+            db.session.rollback()
+            return (
+                "Recibimos tu mensaje pero estamos ajustando el servicio. Intentalo nuevamente en unos minutos.",
+                200,
+            )
+    except SQLAlchemyError as exc:
+        current_app.logger.exception(
+            "[WHATSAPP_WEBHOOK] Error de base de datos obteniendo el contexto de sesión",
+            exc_info=exc,
+        )
+        db.session.rollback()
+        return (
+            "Estamos teniendo un problema momentáneo al procesar tu mensaje. Probá de nuevo en breve.",
+            200,
+        )
 
     if not session_context_db_entry:
         initial_session_data = {
@@ -831,9 +874,16 @@ def whatsapp_webhook():
             "mensajes_previos_llm_formato": []
         }
         session_context_db_entry = ChatSessionContext(
-            chat_session_id=chat_session_id_internal, user_id=empresa_id,
-            anon_id=from_number_cleaned, context_data=initial_session_data
+            chat_session_id=chat_session_id_internal,
+            user_id=empresa_id,
+            tenant_id=tenant_id,
+            anon_id=from_number_cleaned,
+            context_data=initial_session_data,
         )
+        db.session.add(session_context_db_entry)
+        db.session.commit()
+    elif tenant_id and not session_context_db_entry.tenant_id:
+        session_context_db_entry.tenant_id = tenant_id
         db.session.add(session_context_db_entry)
         db.session.commit()
 
