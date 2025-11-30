@@ -210,6 +210,9 @@ def _tenant_market_payload(tenant: Optional[TenantProfile]) -> Dict[str, object]
     return get_or_create_entity_token(owner_user)
 
 
+# --- Entity token propagation helpers -------------------------------------------------
+
+
 def _include_entity_token_fields(
     payload: Dict[str, Any], owner_token: Optional[str]
 ) -> Optional[str]:
