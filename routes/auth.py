@@ -4,9 +4,18 @@ from flask import Blueprint, current_app, g, jsonify, make_response, request
 from flask_cors import cross_origin
 from services.logic import es_rubro_publico, normalizar_rubro
 import os
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm.attributes import flag_modified
-from models import ChatSessionContext, MunicipioTicket, PymeTicket, Rubro, TicketComentario, User, generate_token
+from models import (
+    ChatSessionContext,
+    MunicipioTicket,
+    PymeTicket,
+    Rubro,
+    TenantProfile,
+    TicketComentario,
+    User,
+    generate_token,
+)
 from extensions import db
 from functools import wraps
 import uuid
@@ -125,7 +134,64 @@ def _resolve_owner_token(user: User) -> Optional[str]:
                 return resolved
 
     if not owner_user:
+    return None
+
+
+def _tenant_for_owner(owner: Optional[User]) -> Optional[TenantProfile]:
+    """Return the TenantProfile owned by ``owner`` if present."""
+
+    if owner is None:
         return None
+
+    return (
+        TenantProfile.query.filter(
+            or_(
+                TenantProfile.municipio_id == owner.id,
+                TenantProfile.pyme_id == owner.id,
+            )
+        )
+        .order_by(TenantProfile.id.desc())
+        .first()
+    )
+
+
+def _attach_user_to_tenant(user: User, tenant: Optional[TenantProfile]) -> None:
+    """Persist the tenant_id on the user if it's missing or outdated."""
+
+    if not tenant or not user:
+        return
+
+    if user.tenant_id != tenant.id:
+        user.tenant_id = tenant.id
+        db.session.add(user)
+
+
+def _tenant_market_payload(tenant: Optional[TenantProfile]) -> Dict[str, object]:
+    """Expose marketplace hints so the widget can redirect after login."""
+
+    if not tenant:
+        return {"enabled": False}
+
+    from routes.pwa_public import _build_public_cart_url
+
+    enabled = (tenant.tipo or "").lower() == "pyme"
+    full_url, _, _ = _build_public_cart_url(tenant)
+
+    payload: Dict[str, object] = {
+        "enabled": enabled,
+        "tenant_id": tenant.id,
+        "tenant_slug": tenant.slug,
+        "tenant_tipo": tenant.tipo,
+        "public_cart_url": full_url,
+    }
+
+    catalog_enabled = tenant.configuracion.get("widget_catalog_enabled") if isinstance(tenant.configuracion, dict) else None
+    if isinstance(catalog_enabled, bool):
+        payload["catalog_enabled"] = catalog_enabled
+    else:
+        payload["catalog_enabled"] = enabled
+
+    return payload
 
     legacy_value = getattr(owner_user, "token", None)
     if legacy_value and not _looks_like_jwt(legacy_value):
@@ -1111,6 +1177,8 @@ def chatuser_register_panel():
             404,
         )
 
+    owner_tenant = _tenant_for_owner(owner_user)
+
     name = data.get('name')
     email = data.get('email')
     password = data.get('password')
@@ -1152,6 +1220,7 @@ def chatuser_register_panel():
                 existing_user.tipo_chat = owner_tipo_chat
             if telefono and not existing_user.telefono:
                 existing_user.telefono = telefono
+            _attach_user_to_tenant(existing_user, owner_tenant)
             db.session.add(existing_user)
             db.session.commit()
             # Migrate tickets if anon_id is present
@@ -1179,8 +1248,11 @@ def chatuser_register_panel():
                 "tipo_chat": existing_user.tipo_chat or owner_tipo_chat,
                 "municipio_id": existing_user.municipio_id,
                 "empresa_id": existing_user.empresa_id,
+                "tenant_id": owner_tenant.id if owner_tenant else None,
+                "tenant_slug": owner_tenant.slug if owner_tenant else None,
                 "already_registered": True,
-                "message": "Usuario ya registrado con esta entidad."
+                "message": "Usuario ya registrado con esta entidad.",
+                "marketplace": _tenant_market_payload(owner_tenant),
             })
             if anon_id:
                 resp.headers["X-Anon-Id"] = anon_id
@@ -1229,6 +1301,10 @@ def chatuser_register_panel():
         db.session.add(nuevo)
         db.session.commit()
 
+        if owner_tenant:
+            _attach_user_to_tenant(nuevo, owner_tenant)
+            db.session.commit()
+
         # Log successful registration and association
         current_app.logger.info(f"[chatuser_register_panel] Nuevo usuario '{nuevo.email}' (ID: {nuevo.id}) registrado y asociado con la empresa/owner ID: {owner_user.id} ({owner_user.nombre_empresa if owner_user.nombre_empresa else owner_user.email}).")
 
@@ -1274,7 +1350,10 @@ def chatuser_register_panel():
             "tipo_chat": nuevo.tipo_chat,
             "municipio_id": nuevo.municipio_id,
             "empresa_id": nuevo.empresa_id,
+            "tenant_id": owner_tenant.id if owner_tenant else None,
+            "tenant_slug": owner_tenant.slug if owner_tenant else None,
             "already_registered": False,
+            "marketplace": _tenant_market_payload(owner_tenant),
         })
         if anon_id:
             resp.headers["X-Anon-Id"] = anon_id
@@ -1304,6 +1383,8 @@ def chatuser_login_panel():
     if not owner_user:
         return jsonify({"error": "Token de empresa inválido"}), 404
 
+    owner_tenant = _tenant_for_owner(owner_user)
+
     email = data.get('email')
     password = data.get('password')
     anon_id = (
@@ -1322,6 +1403,10 @@ def chatuser_login_panel():
     if anon_id:
         from services.ticket_service import servicio_tickets
         servicio_tickets.migrar_tickets_de_anonimo(anon_id, user.id)
+
+    _attach_user_to_tenant(user, owner_tenant)
+    db.session.add(user)
+    db.session.commit()
 
     rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
     tipo_chat = getattr(user, "tipo_chat", None) or getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
@@ -1346,6 +1431,9 @@ def chatuser_login_panel():
         "empresa_id": user.empresa_id,
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
+        "tenant_id": owner_tenant.id if owner_tenant else None,
+        "tenant_slug": owner_tenant.slug if owner_tenant else None,
+        "marketplace": _tenant_market_payload(owner_tenant),
     })
     if anon_id:
         resp.headers["X-Anon-Id"] = anon_id
