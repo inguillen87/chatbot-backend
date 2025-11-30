@@ -3772,6 +3772,19 @@ MENU_KEYWORDS = {
         "votación",
         "participar",
     ],
+    "mostrar_menu_catalogo": [
+        "catalogo",
+        "catálogo",
+        "catalogos",
+        "catálogos",
+        "catalogo y beneficios",
+        "beneficios",
+        "canje",
+        "canje de puntos",
+        "puntos",
+        "productos",
+        "tienda",
+    ],
     "limpiar_contexto": [
         "cancelar",
         "volver al inicio",
@@ -6483,17 +6496,16 @@ def _get_encuestas_menu(context: dict) -> dict:
                 }
             )
 
-        if not is_whatsapp_channel:
-            share_button: Dict[str, Any] = {
-                "texto": f"Compartir {share_button_title}",
-                "action_id": share_action_id,
-            }
-            if is_widget_channel and whatsapp_share_url:
-                share_button.pop("action_id", None)
-                share_button["url"] = whatsapp_share_url
-                share_button["type"] = "url"
+        share_button: Dict[str, Any] = {
+            "texto": f"Compartir {share_button_title}",
+            "action_id": share_action_id,
+        }
+        if is_widget_channel and whatsapp_share_url:
+            share_button.pop("action_id", None)
+            share_button["url"] = whatsapp_share_url
+            share_button["type"] = "url"
 
-            survey_buttons.append(share_button)
+        survey_buttons.append(share_button)
 
         survey_metadata.append(
             {

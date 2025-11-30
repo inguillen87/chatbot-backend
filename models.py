@@ -926,6 +926,7 @@ class CatalogoItem(db.Model):
             defer(cls.precio_por_caja),
             defer(cls.unidad_por_caja),
             defer(cls.precio_monetario),
+            defer(cls.pdf_url),
         )
 
 class CatalogoEmbedding(db.Model):
