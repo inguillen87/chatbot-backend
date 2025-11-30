@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, load_only
 
 from database import db
+from utils.db_utils import ensure_enc_encuesta_schema
 from models import (
     EncEncuesta,
     EncPregunta,
@@ -1531,6 +1532,9 @@ def _resolve_geo_metadata_for_tenant(tenant_id: int) -> Optional[Dict[str, Any]]
 
 
 def _bootstrap_sample_if_needed(tenant_id: int) -> None:
+    # Safety net if migrations lag: ensure the reward column exists to avoid 500s
+    ensure_enc_encuesta_schema(db.session)
+
     if not _BOOTSTRAP_SAMPLE_ENABLED:
         return
 

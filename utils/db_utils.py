@@ -56,31 +56,77 @@ def ensure_chat_session_context_schema(session) -> None:
 
     try:
         bind = session.get_bind()
-        conn = bind.connect() if hasattr(bind, "connect") else bind
-        inspector = inspect(conn)
-        columns = {col["name"] for col in inspector.get_columns("chat_session_context")}
-        if "tenant_id" in columns:
-            return
+        with bind.begin() as conn:
+            inspector = inspect(conn)
+            columns = {col["name"] for col in inspector.get_columns("chat_session_context")}
+            if "tenant_id" in columns:
+                return
 
-        logger.warning("tenant_id missing in chat_session_context; attempting auto-add")
+            logger.warning("tenant_id missing in chat_session_context; attempting auto-add")
 
-        conn.execute(
-            text(
-                "ALTER TABLE chat_session_context "
-                "ADD COLUMN IF NOT EXISTS tenant_id INTEGER"
+            conn.execute(
+                text(
+                    "ALTER TABLE chat_session_context "
+                    "ADD COLUMN IF NOT EXISTS tenant_id INTEGER"
+                )
             )
-        )
-        conn.commit()
 
-        inspector = inspect(conn)
-        columns = {col["name"] for col in inspector.get_columns("chat_session_context")}
-        if "tenant_id" not in columns:
-            logger.error(
-                "tenant_id creation attempt did not persist; manual migration required"
-            )
-        else:
-            logger.info("tenant_id column ensured on chat_session_context via runtime safeguard")
+            inspector = inspect(conn)
+            columns = {col["name"] for col in inspector.get_columns("chat_session_context")}
+            if "tenant_id" not in columns:
+                logger.error(
+                    "tenant_id creation attempt did not persist; manual migration required"
+                )
+            else:
+                logger.info(
+                    "tenant_id column ensured on chat_session_context via runtime safeguard"
+                )
     except Exception as exc:  # pragma: no cover - best-effort safeguard
         logger.warning(
             "No se pudo asegurar la columna tenant_id en chat_session_context", exc_info=exc
+        )
+
+
+def ensure_enc_encuesta_schema(session) -> None:
+    """Guarantee ``puntos_recompensa`` exists on ``enc_encuesta`` to avoid runtime errors."""
+
+    try:
+        bind = session.get_bind()
+        with bind.begin() as conn:
+            inspector = inspect(conn)
+            columns = {col["name"] for col in inspector.get_columns("enc_encuesta")}
+            if "puntos_recompensa" in columns:
+                return
+
+            logger.warning(
+                "puntos_recompensa missing in enc_encuesta; attempting auto-add with default 0"
+            )
+
+            conn.execute(
+                text(
+                    "ALTER TABLE enc_encuesta "
+                    "ADD COLUMN IF NOT EXISTS puntos_recompensa INTEGER DEFAULT 0"
+                )
+            )
+
+            # Drop default to match model (nullable=True, default handled in code)
+            conn.execute(
+                text(
+                    "ALTER TABLE enc_encuesta ALTER COLUMN puntos_recompensa DROP DEFAULT"
+                )
+            )
+
+            inspector = inspect(conn)
+            columns = {col["name"] for col in inspector.get_columns("enc_encuesta")}
+            if "puntos_recompensa" not in columns:
+                logger.error(
+                    "puntos_recompensa creation attempt did not persist; manual migration required"
+                )
+            else:
+                logger.info(
+                    "puntos_recompensa ensured on enc_encuesta via runtime safeguard"
+                )
+    except Exception as exc:  # pragma: no cover - best-effort safeguard
+        logger.warning(
+            "No se pudo asegurar la columna puntos_recompensa en enc_encuesta", exc_info=exc
         )
