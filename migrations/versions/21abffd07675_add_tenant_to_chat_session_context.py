@@ -7,7 +7,7 @@ Create Date: 2025-11-30 07:54:37.496296
 """
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
 
 # revision identifiers, used by Alembic.
@@ -21,15 +21,17 @@ def upgrade():
     bind = op.get_bind()
     inspector = inspect(bind)
 
-    columns = {col["name"] for col in inspector.get_columns("chat_session_context")}
-    if "tenant_id" not in columns:
-        op.add_column(
-            "chat_session_context",
-            sa.Column("tenant_id", sa.Integer(), nullable=True),
+    # Guarantee column creation even if previous attempts partially ran
+    bind.execute(
+        text(
+            "ALTER TABLE chat_session_context ADD COLUMN IF NOT EXISTS tenant_id INTEGER"
         )
+    )
+
+    columns = {col["name"] for col in inspector.get_columns("chat_session_context")}
 
     indexes = {idx["name"] for idx in inspector.get_indexes("chat_session_context")}
-    if "ix_chat_session_context_tenant_id" not in indexes:
+    if "tenant_id" in columns and "ix_chat_session_context_tenant_id" not in indexes:
         op.create_index(
             op.f("ix_chat_session_context_tenant_id"),
             "chat_session_context",
@@ -38,7 +40,7 @@ def upgrade():
         )
 
     fks = {fk["name"] for fk in inspector.get_foreign_keys("chat_session_context")}
-    if "fk_chat_session_context_tenant_id" not in fks:
+    if "tenant_id" in columns and "fk_chat_session_context_tenant_id" not in fks:
         op.create_foreign_key(
             "fk_chat_session_context_tenant_id",
             "chat_session_context",

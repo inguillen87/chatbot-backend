@@ -2,7 +2,7 @@
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
 revision = 'add_tenant_id_chat_session_context'
 down_revision = '21abffd07675'
@@ -14,14 +14,18 @@ def upgrade():
     conn = op.get_bind()
     inspector = inspect(conn)
 
-    columns = {col["name"] for col in inspector.get_columns("chat_session_context")}
-    if "tenant_id" not in columns:
-        op.add_column(
-            "chat_session_context", sa.Column("tenant_id", sa.Integer(), nullable=True)
+    # Make sure the column exists even if prior runs partially applied changes
+    conn.execute(
+        text(
+            "ALTER TABLE chat_session_context ADD COLUMN IF NOT EXISTS tenant_id INTEGER"
         )
-        print("🟢 tenant_id agregado correctamente en chat_session_context")
+    )
+
+    columns = {col["name"] for col in inspector.get_columns("chat_session_context")}
+    if "tenant_id" in columns:
+        print("🟢 tenant_id presente en chat_session_context (creado o ya existente)")
     else:
-        print("🟡 tenant_id ya existía, no se aplicó ningún cambio")
+        print("🟡 tenant_id no se detectó tras el intento de creación; revisar manualmente")
 
     indexes = {idx["name"] for idx in inspector.get_indexes("chat_session_context")}
     if "ix_chat_session_context_tenant_id" not in indexes:
