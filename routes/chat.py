@@ -1247,19 +1247,30 @@ def _procesar_chat(
             chat_session_id=chat_session_id_header
         ).first()
     except ProgrammingError as exc:
-        current_app.logger.exception(
-            "[CHAT] Error accediendo a chat_session_context (schema mismatch)",
+        current_app.logger.warning(
+            "[CHAT] tenant_id missing when querying chat_session_context; retrying after safeguard",
             exc_info=exc,
         )
         db.session.rollback()
-        return (
-            jsonify(
-                {
-                    "error": "Estamos ajustando el servicio. Por favor, reintentá en unos minutos.",
-                }
-            ),
-            200,
-        )
+        ensure_chat_session_context_schema(db.session)
+        try:
+            chat_context_obj = ChatSessionContext.query.filter_by(
+                chat_session_id=chat_session_id_header
+            ).first()
+        except ProgrammingError as exc_retry:
+            current_app.logger.exception(
+                "[CHAT] Error accediendo a chat_session_context (schema mismatch)",
+                exc_info=exc_retry,
+            )
+            db.session.rollback()
+            return (
+                jsonify(
+                    {
+                        "error": "Estamos ajustando el servicio. Por favor, reintentá en unos minutos.",
+                    }
+                ),
+                200,
+            )
     except SQLAlchemyError as exc:
         current_app.logger.exception(
             "[CHAT] Error de base de datos obteniendo el contexto de sesión",

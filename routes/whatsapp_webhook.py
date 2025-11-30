@@ -833,15 +833,26 @@ def whatsapp_webhook():
             chat_session_id=chat_session_id_internal
         ).first()
     except ProgrammingError as exc:
-        current_app.logger.exception(
-            "[WHATSAPP_WEBHOOK] Error accediendo a chat_session_context (schema mismatch)",
+        current_app.logger.warning(
+            "[WHATSAPP_WEBHOOK] tenant_id missing when querying chat_session_context; retrying after safeguard",
             exc_info=exc,
         )
         db.session.rollback()
-        return (
-            "Recibimos tu mensaje pero estamos ajustando el servicio. Intentalo nuevamente en unos minutos.",
-            200,
-        )
+        ensure_chat_session_context_schema(db.session)
+        try:
+            session_context_db_entry = ChatSessionContext.query.filter_by(
+                chat_session_id=chat_session_id_internal
+            ).first()
+        except ProgrammingError as exc_retry:
+            current_app.logger.exception(
+                "[WHATSAPP_WEBHOOK] Error accediendo a chat_session_context (schema mismatch)",
+                exc_info=exc_retry,
+            )
+            db.session.rollback()
+            return (
+                "Recibimos tu mensaje pero estamos ajustando el servicio. Intentalo nuevamente en unos minutos.",
+                200,
+            )
     except SQLAlchemyError as exc:
         current_app.logger.exception(
             "[WHATSAPP_WEBHOOK] Error de base de datos obteniendo el contexto de sesión",
