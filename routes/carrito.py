@@ -153,6 +153,37 @@ def _resolve_owner_and_seed() -> Tuple[Optional[TenantProfile], Optional[User]]:
         ensure_seed_catalog(owner, tenant)
         return tenant, owner
 
+    widget_token = (
+        request.headers.get("X-Widget-Token")
+        or request.headers.get("X-Entity-Token")
+        or request.args.get("widget_token")
+        or request.args.get("entity_token")
+        or request.args.get("entityToken")
+    )
+
+    tenant_slug_hint = (
+        request.headers.get("X-Tenant")
+        or request.args.get("tenant_slug")
+        or request.args.get("tenant")
+    )
+
+    if tenant_slug_hint or widget_token:
+        try:
+            tenant = resolve_tenant_only(
+                tenant_slug=tenant_slug_hint,
+                widget_token=widget_token,
+                require_explicit_slug=False,
+            )
+        except TenantResolutionError:
+            tenant = None
+        if tenant:
+            owner = tenant.municipio or tenant.pyme
+            if owner:
+                g.tenant_profile = tenant
+                g.tenant_profile_slug = getattr(tenant, "slug", None)
+                ensure_seed_catalog(owner, tenant)
+                return tenant, owner
+
     tenant, owner = _resolve_public_owner(require_explicit=True)
     if tenant is None or owner is None:
         tenant, owner = _resolve_public_owner(require_explicit=False)

@@ -13,6 +13,7 @@ from sqlalchemy import func
 from models import TenantProfile, User
 from routes.catalogo import listar_catalogo
 from services.catalog_seed import ensure_seed_catalog
+from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 from utils.auth_helpers import obtener_token, user_from_token
 
 from config import ALLOWED_ORIGINS
@@ -136,6 +137,31 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
         or request.args.get("widget_token")
         or path_tenant_slug
     )
+
+    widget_token = (
+        request.headers.get("X-Widget-Token")
+        or request.headers.get("X-Entity-Token")
+        or request.args.get("widget_token")
+        or request.args.get("entity_token")
+        or request.args.get("entityToken")
+    )
+
+    # Try explicit tenant resolution via shared resolver (handles widget tokens/domains)
+    if tenant_slug or widget_token:
+        try:
+            tenant = resolve_tenant_only(
+                tenant_slug=tenant_slug or path_tenant_slug,
+                widget_token=widget_token,
+                require_explicit_slug=False,
+            )
+            if tenant:
+                owner = tenant.municipio or tenant.pyme
+                if owner:
+                    g.tenant_profile = tenant
+                    g.tenant_profile_slug = tenant.slug
+                    return tenant, owner
+        except TenantResolutionError:
+            pass
 
     if tenant_slug:
         tenant = _lookup_tenant_by_slug(tenant_slug)

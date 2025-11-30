@@ -10,8 +10,17 @@ branch_labels = None
 depends_on = None
 
 
+def _get_connection():
+    bind = op.get_bind()
+    if hasattr(bind, "execute"):
+        return bind
+    if hasattr(bind, "connect"):
+        return bind.connect()
+    raise RuntimeError("No suitable bind/connection available for migration")
+
+
 def upgrade():
-    conn = op.get_bind()
+    conn = _get_connection()
     inspector = inspect(conn)
 
     # Make sure the column exists even if prior runs partially applied changes

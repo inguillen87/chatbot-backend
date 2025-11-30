@@ -56,23 +56,23 @@ def ensure_chat_session_context_schema(session) -> None:
 
     try:
         bind = session.get_bind()
-        inspector = inspect(bind)
+        conn = bind.connect() if hasattr(bind, "connect") else bind
+        inspector = inspect(conn)
         columns = {col["name"] for col in inspector.get_columns("chat_session_context")}
         if "tenant_id" in columns:
             return
 
         logger.warning("tenant_id missing in chat_session_context; attempting auto-add")
 
-        ddl_conn = bind.execution_options(isolation_level="AUTOCOMMIT")
-        ddl_conn.execute(
+        conn.execute(
             text(
                 "ALTER TABLE chat_session_context "
                 "ADD COLUMN IF NOT EXISTS tenant_id INTEGER"
             )
         )
+        conn.commit()
 
-        # Re-validate after attempting the DDL
-        inspector = inspect(bind)
+        inspector = inspect(conn)
         columns = {col["name"] for col in inspector.get_columns("chat_session_context")}
         if "tenant_id" not in columns:
             logger.error(

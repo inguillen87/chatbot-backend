@@ -17,12 +17,21 @@ branch_labels = None
 depends_on = None
 
 
-def upgrade():
+def _get_connection():
     bind = op.get_bind()
-    inspector = inspect(bind)
+    if hasattr(bind, "execute"):
+        return bind
+    if hasattr(bind, "connect"):
+        return bind.connect()
+    raise RuntimeError("No suitable bind/connection available for migration")
+
+
+def upgrade():
+    conn = _get_connection()
+    inspector = inspect(conn)
 
     # Guarantee column creation even if previous attempts partially ran
-    bind.execute(
+    conn.execute(
         text(
             "ALTER TABLE chat_session_context ADD COLUMN IF NOT EXISTS tenant_id INTEGER"
         )
