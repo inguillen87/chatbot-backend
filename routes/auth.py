@@ -134,7 +134,7 @@ def _resolve_owner_token(user: User) -> Optional[str]:
                 return resolved
 
     if not owner_user:
-    return None
+        return None
 
 
 def _tenant_for_owner(owner: Optional[User]) -> Optional[TenantProfile]:
