@@ -9,6 +9,7 @@ from services.tenant_resolver import (
     resolve_tenant_and_user,
     resolve_tenant_only,
 )
+from routes.pwa_public import _build_public_cart_url
 
 from utils.auth_helpers import _is_jwt_token
 
@@ -106,6 +107,136 @@ def _canonical_widget_token(tenant: TenantProfile, provided: str | None) -> str 
     return provided
 
 
+def _catalog_widget_enabled_for_tenant(tenant: TenantProfile) -> bool:
+    cfg = tenant.configuracion or {}
+    flags = [
+        cfg.get("widget_catalog_enabled"),
+        cfg.get("catalogo_widget_visible"),
+        cfg.get("catalog_widget_visible"),
+    ]
+
+    catalog_cfg = cfg.get("catalogo") or cfg.get("catalogos")
+    if isinstance(catalog_cfg, dict):
+        flags.extend(
+            [
+                catalog_cfg.get("widget_enabled"),
+                catalog_cfg.get("widget_visible"),
+                catalog_cfg.get("catalogo_widget_visible"),
+            ]
+        )
+
+    for flag in flags:
+        if isinstance(flag, bool):
+            return flag
+
+    # Default: only enable for PyMEs unless explicitly allowed.
+    return (tenant.tipo or "").lower() == "pyme"
+
+
+def _marketplace_meta(tenant: TenantProfile) -> dict:
+    enabled = _catalog_widget_enabled_for_tenant(tenant)
+    full_url, _, _ = _build_public_cart_url(tenant)
+
+    return {
+        "enabled": enabled,
+        "tenant_slug": tenant.slug,
+        "tenant_id": tenant.id,
+        "tenant_tipo": tenant.tipo,
+        "public_cart_url": full_url,
+    }
+
+
+def _theme_from_tenant(tenant: TenantProfile) -> dict:
+    """Return widget-ready theme tokens derived from tenant config."""
+
+    tema = tenant.tema or {}
+    cfg = tenant.configuracion or {}
+
+    def pick(*keys, default=None):
+        for key in keys:
+            if isinstance(tema, dict) and tema.get(key):
+                return tema[key]
+            if isinstance(cfg, dict) and cfg.get(key):
+                return cfg[key]
+        return default
+
+    tipo = (tenant.tipo or "").lower()
+
+    primary_default = "#006c3f" if tipo == "municipio" else "#2563eb"
+    accent_default = "#d4a01a" if tipo == "municipio" else "#22c55e"
+
+    return {
+        "primary": pick("primary", "color_primario", "primary_color", default=primary_default),
+        "accent": pick("accent", "color_secundario", "accent_color", default=accent_default),
+        "background": pick("background", "fondo", "bg", default="#ffffff"),
+        "surface": pick("surface", default="#ffffff"),
+        "text": pick("text", "texto", default="#1f2937"),
+        "launcher": pick("launcher", "color_launcher", default=None),
+        "logo": pick("widget_logo", "logo_widget", "logo", "logo_url", default=tenant.logo_url),
+        "animation": pick("widget_logo_animation", "logo_animation", default=None),
+    }
+
+
+def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | None) -> dict:
+    """Expose a rich embed configuration so `integracion.tsx` can render a SaaS builder."""
+
+    canonical_token = _canonical_widget_token(tenant, provided_token)
+    theme = _theme_from_tenant(tenant)
+    marketplace = _marketplace_meta(tenant)
+
+    cfg = tenant.configuracion or {}
+
+    welcome_title = cfg.get("widget_welcome_title") or cfg.get("welcome_title") or tenant.nombre
+    welcome_subtitle = cfg.get("widget_welcome_subtitle") or cfg.get("welcome_subtitle") or "Asistente Virtual"
+
+    width = cfg.get("widget_width") or "460px"
+    height = cfg.get("widget_height") or "680px"
+    closed_size = cfg.get("widget_closed_size") or "108px"
+
+    script_url = current_app.config.get("WIDGET_SCRIPT_URL", "https://www.chatboc.ar/widget.js")
+
+    attrs = {
+        "data-owner-token": canonical_token,
+        "data-default-open": str(cfg.get("widget_default_open", False)).lower(),
+        "data-width": width,
+        "data-height": height,
+        "data-closed-width": closed_size,
+        "data-closed-height": closed_size,
+        "data-bottom": cfg.get("widget_bottom", "20px"),
+        "data-right": cfg.get("widget_right", "20px"),
+        "data-z-index": cfg.get("widget_z_index", "100000"),
+        "data-endpoint": cfg.get("widget_endpoint") or tenant.tipo or "municipio",
+        "data-theme": cfg.get("widget_theme") or cfg.get("tema") or "light",
+        "data-primary-color": theme.get("primary"),
+        "data-accent-color": theme.get("accent"),
+        "data-logo-url": theme.get("logo"),
+        "data-logo-animation": theme.get("animation"),
+        "data-welcome-title": welcome_title,
+        "data-welcome-subtitle": welcome_subtitle,
+        "data-allow-attachments": str(cfg.get("widget_allow_attachments", True)).lower(),
+        "data-allow-location": str(cfg.get("widget_allow_location", True)).lower(),
+        "data-allow-audio": str(cfg.get("widget_allow_audio", True)).lower(),
+        "data-domain": tenant.dominio or None,
+    }
+
+    # Remove None values so the frontend only renders concrete attributes
+    attrs = {k: v for k, v in attrs.items() if v is not None}
+
+    # Prebuild a copy-paste snippet for convenience
+    attr_snippet = " ".join(f"{k}='{v}'" for k, v in attrs.items())
+    embed_snippet = f"<script src='{script_url}' async {attr_snippet}></script>"
+
+    return {
+        "script_url": script_url,
+        "attributes": attrs,
+        "embed_snippet": embed_snippet,
+        "theme": theme,
+        "marketplace": marketplace,
+        "widget_token": canonical_token,
+        "widget_token_cookie_name": current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token"),
+    }
+
+
 @public_resolver_bp.route("/resolve-tenant", methods=["POST"])
 def resolve_tenant_endpoint():
     payload = request.get_json(force=True, silent=True) or {}
@@ -125,6 +256,7 @@ def resolve_tenant_endpoint():
 
     tenant_info = tenant.to_public_dict()
     tenant_info.setdefault("config", tenant.configuracion or {})
+    tenant_info["marketplace"] = _marketplace_meta(tenant)
 
     # Garantizar que el frontend reciba una estructura de menú consistente
     # aunque el tenant no tenga configuración explícita. El widget espera un
@@ -251,6 +383,7 @@ def tenant_profile():
 
     tenant_info = tenant.to_public_dict()
     tenant_info.setdefault("config", tenant.configuracion or {})
+    tenant_info["marketplace"] = _marketplace_meta(tenant)
 
     # Garantizar que el frontend reciba una estructura de menú consistente
     # aunque el tenant no tenga configuración explícita. El widget espera un
@@ -297,6 +430,43 @@ def tenant_profile():
         response.set_cookie(**cookie_args)
 
     return _log_widget_public_request(response, tenant, entity_token=widget_token)
+
+
+@public_resolver_bp.route(
+    "/widget-config", methods=["GET", "OPTIONS"], provide_automatic_options=False
+)
+@cross_origin(origins="*", automatic_options=False)
+def widget_config():
+    """Expose a SaaS-style embed configuration for builder/preview UIs.
+
+    This endpoint feeds ``integracion.tsx`` with all the tokens, theme colors and
+    script attributes needed to render a live preview and a ready-to-copy embed
+    snippet. Always responds JSON to avoid HTML errors crashing widget loaders.
+    """
+
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+
+    widget_token = _extract_widget_token()
+    tenant_slug = request.args.get("tenant") or request.args.get("slug")
+    whatsapp_destination_number = request.args.get("whatsapp_destination_number")
+
+    try:
+        tenant = resolve_tenant_only(
+            whatsapp_destination_number=whatsapp_destination_number,
+            widget_token=widget_token,
+            tenant_slug=tenant_slug,
+            require_explicit_slug=bool(tenant_slug),
+        )
+    except TenantResolutionError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+    payload = {
+        "tenant": tenant.to_public_dict(),
+        "widget": _build_widget_embed_payload(tenant, widget_token),
+    }
+
+    return _log_widget_public_request(jsonify(payload), tenant, entity_token=widget_token)
 
 
 def _municipios_response():

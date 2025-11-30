@@ -2580,6 +2580,23 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             flag_modified(chat_db_context, "context_data")
         return submenu
 
+    if action_id in {
+        "mostrar_menu_catalogo",
+        "mostrar_carrito_catalogo",
+        "finalizar_pedido_catalogo_demo",
+    } or action_id.startswith("catalogo_"):
+        if not _catalogo_widget_visible(context):
+            return {
+                "message_body": "El catálogo no está habilitado en este widget municipal.",
+                "message_type": "interactive_buttons",
+                "options_list": [
+                    {"texto": "Menú principal", "action_id": "menu_principal"},
+                    {"texto": "Volver", "action_id": "cancelar"},
+                ],
+                "fuente": "catalogo_desactivado_municipio",
+                "generar_audio": True,
+            }
+
     if action_id == "mostrar_menu_catalogo":
         submenu = _get_catalogo_menu(context)
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
@@ -5104,6 +5121,40 @@ def _resolve_catalogo_base_url(context: Optional[dict]) -> Optional[str]:
     return None
 
 
+def _catalogo_widget_visible(context: Optional[dict]) -> bool:
+    """Return True if the catalog should be exposed inside the widget."""
+
+    municipio_config = (context or {}).get("municipio_config_actual") or {}
+
+    flags: list[Optional[bool]] = [
+        municipio_config.get("catalogo_widget_visible"),
+        municipio_config.get("widget_catalog_visible"),
+        municipio_config.get("catalogo_visible_en_widget"),
+    ]
+
+    catalogo_cfg = None
+    if isinstance(municipio_config.get("catalogo"), dict):
+        catalogo_cfg = municipio_config["catalogo"]
+    elif isinstance(municipio_config.get("catalogos"), dict):
+        catalogo_cfg = municipio_config["catalogos"]
+
+    if isinstance(catalogo_cfg, dict):
+        flags.extend(
+            [
+                catalogo_cfg.get("widget_visible"),
+                catalogo_cfg.get("widget_enabled"),
+                catalogo_cfg.get("catalogo_widget_visible"),
+            ]
+        )
+
+    for flag in flags:
+        if isinstance(flag, bool):
+            return flag
+
+    # Por defecto evitamos mostrar catálogo en municipios a menos que sea explícito.
+    return False
+
+
 def _resolve_tenant_identifiers(context: Optional[dict]) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """Return (tenant_slug, tenant_id, owner_id) best-effort from the context/config."""
 
@@ -5230,6 +5281,17 @@ def _build_catalogo_link_map(context: Optional[dict]) -> Dict[str, str]:
 
 def _get_catalogo_menu(context: Optional[dict] = None):
     context = context or {}
+    if not _catalogo_widget_visible(context):
+        return {
+            "message_body": "El catálogo no está habilitado para este municipio.",
+            "message_type": "interactive_buttons",
+            "options_list": [
+                {"texto": "Menú principal", "action_id": "menu_principal"},
+                {"texto": "Volver", "action_id": "cancelar"},
+            ],
+            "fuente": "catalogo_desactivado_municipio",
+            "generar_audio": True,
+        }
     direct_links = _build_catalogo_link_map(context)
     banner_image = _resolve_catalogo_banner_image(context)
 
