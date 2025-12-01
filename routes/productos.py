@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Optional, Tuple
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from flask import Blueprint, current_app, g, jsonify, redirect, request
 from flask_cors import cross_origin
@@ -153,6 +153,33 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
     return None
 
 
+def _tenant_slug_from_url(url: str | None) -> Optional[str]:
+    """Extrae el slug del tenant desde una URL completa (referer)."""
+
+    if not url:
+        return None
+
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+
+    # Primero intentamos con la ruta (p.ej. https://host/<slug>/productos).
+    slug_from_path = _tenant_slug_from_path(parsed.path)
+    if slug_from_path:
+        return slug_from_path
+
+    # Si no hay slug en la ruta, intentamos detectar un subdominio como slug
+    # (e.g. <slug>.chatboc.ar). Esto permite que el marketplace funcione
+    # cuando se navega por dominios dedicados.
+    hostname = (parsed.hostname or "").split(".")
+    if len(hostname) >= 3:  # ej: slug.dominio.com
+        candidate = hostname[0].strip().lower()
+        return candidate or None
+
+    return None
+
+
 def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[TenantProfile], Optional[User]]:
     """Encuentra el owner asociado al catálogo público solicitado.
 
@@ -177,12 +204,14 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
         return tenant_for_user, owner
 
     path_tenant_slug = _tenant_slug_from_path(request.path)
+    referrer_slug = _tenant_slug_from_url(request.referrer)
 
     tenant_slug = (
         request.headers.get("X-Tenant")
         or request.args.get("tenant_slug")
         or request.args.get("tenant")
         or path_tenant_slug
+        or referrer_slug
     )
     tenant_id = _coerce_int(request.headers.get("X-Tenant-Id") or request.args.get("tenant_id"))
     has_explicit_hint = bool(
@@ -191,6 +220,7 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
         or request.headers.get("X-Widget-Token")
         or request.args.get("widget_token")
         or path_tenant_slug
+        or referrer_slug
     )
 
     widget_token = (

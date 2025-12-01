@@ -13,6 +13,7 @@ from routes.productos import (
     _resolve_public_owner,
     _resolve_authenticated_user,
     _tenant_for_user,
+    _tenant_slug_from_url,
 )
 from services.catalog_seed import ensure_seed_catalog
 from services.cart import add_item, clear_cart, get_summary, remove_item, update_item
@@ -165,6 +166,7 @@ def _resolve_owner_and_seed() -> Tuple[Optional[TenantProfile], Optional[User]]:
         request.headers.get("X-Tenant")
         or request.args.get("tenant_slug")
         or request.args.get("tenant")
+        or _tenant_slug_from_url(request.referrer)
     )
 
     if tenant_slug_hint or widget_token:
