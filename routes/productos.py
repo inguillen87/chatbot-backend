@@ -92,6 +92,25 @@ def _tenant_for_user(user: Optional[User]) -> Optional[TenantProfile]:
     if tenant:
         return tenant
 
+    # Algunos usuarios legacy sólo guardan ``municipio_id``/``pyme_id`` sin
+    # asociar explícitamente un ``tenant_profile``. Para permitir que el
+    # marketplace/autenticación resuelvan correctamente el catálogo y el
+    # carrito, intentamos buscar el tenant asociado usando esos campos.
+    municipio_id = getattr(user, "municipio_id", None)
+    pyme_id = getattr(user, "pyme_id", None)
+    if municipio_id:
+        tenant = TenantProfile.query.filter_by(municipio_id=municipio_id).first()
+        if tenant:
+            g.tenant_profile = tenant
+            g.tenant_profile_slug = getattr(tenant, "slug", None)
+            return tenant
+    if pyme_id:
+        tenant = TenantProfile.query.filter_by(pyme_id=pyme_id).first()
+        if tenant:
+            g.tenant_profile = tenant
+            g.tenant_profile_slug = getattr(tenant, "slug", None)
+            return tenant
+
     slug = getattr(user, "tenant_slug", None)
     if slug:
         tenant = _lookup_tenant_by_slug(slug)
@@ -225,6 +244,17 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
             owner = tenant.municipio or tenant.pyme
             if owner:
                 return tenant, owner
+
+    # Como último recurso (cuando no hay hints ni tenant por defecto),
+    # elegimos el primer tenant disponible para evitar errores 400 en
+    # catálogos públicos/marketplace. Esto replica el degradado usado por
+    # ``services.tenant_resolver`` y permite navegar el catálogo aunque la
+    # app cliente no envíe los headers/parámetros de tenant.
+    tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
+    if tenant:
+        owner = tenant.municipio or tenant.pyme
+        if owner:
+            return tenant, owner
 
     return None, None
 
