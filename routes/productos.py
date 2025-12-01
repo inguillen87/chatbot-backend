@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from typing import Optional, Tuple
 from urllib.parse import urlencode, urlparse
 
@@ -73,10 +74,41 @@ def _coerce_int(value: object) -> Optional[int]:
 def _lookup_tenant_by_slug(slug: Optional[str]) -> Optional[TenantProfile]:
     if not slug:
         return None
-    normalized = slug.strip().lower()
+    normalized = _normalize_slug(slug)
     if not normalized:
         return None
-    return TenantProfile.query.filter(func.lower(TenantProfile.slug) == normalized).first()
+
+    # Fast path: direct case-insensitive match
+    tenant = (
+        TenantProfile.query.filter(func.lower(TenantProfile.slug) == normalized)
+        .order_by(TenantProfile.id.asc())
+        .first()
+    )
+    if tenant:
+        return tenant
+
+    # Fallback for slugs with accents/spacing variants stored in DB.
+    for candidate in TenantProfile.query.with_entities(TenantProfile).all():
+        candidate_slug = getattr(candidate, "slug", None)
+        if candidate_slug and _normalize_slug(candidate_slug) == normalized:
+            return candidate
+
+    return None
+
+
+def _normalize_slug(value: str) -> str:
+    """Normalize slugs removing accents and harmonizing separators."""
+
+    cleaned = unicodedata.normalize("NFKD", value or "")
+    cleaned = "".join(ch for ch in cleaned if not unicodedata.combining(ch))
+    cleaned = cleaned.replace("_", "-")
+    cleaned = cleaned.strip().lower()
+    cleaned = cleaned.replace(" ", "-")
+
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+
+    return cleaned.strip("-")
 
 
 def _tenant_for_user(user: Optional[User]) -> Optional[TenantProfile]:

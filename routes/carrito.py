@@ -10,6 +10,7 @@ from config import ALLOWED_ORIGINS
 from models import CatalogoItem, TenantProfile, User, CatalogoModalidad
 from routes.catalogo import _formatear_producto
 from routes.productos import (
+    _lookup_tenant_by_slug,
     _resolve_public_owner,
     _resolve_authenticated_user,
     _tenant_for_user,
@@ -208,11 +209,7 @@ def _resolve_public_tenant_by_slug(
         tenant = None
 
     if tenant is None:
-        tenant = (
-            TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug_clean)
-            .order_by(TenantProfile.id.desc())
-            .first()
-        )
+        tenant = _lookup_tenant_by_slug(slug_clean)
 
     owner = tenant.municipio or tenant.pyme if tenant else None
     if tenant and owner:
