@@ -1426,8 +1426,10 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
 def get_ticket_knowledge_base_suggestions(current_user: User, owner_user: User, anon_id: str, ticket_id: int):
     """Devuelve sugerencias de base de conocimiento para un ticket.
 
-    Por ahora se devuelve una lista vacía, pero se mantiene la validación de
-    permisos para evitar exponer tickets a usuarios no autorizados.
+    Para evitar ruidos en la vista pública (CORS/preflight o 403 al no estar
+    autenticado), cuando el usuario no tiene permisos se devuelve una respuesta
+    vacía y marcada como deshabilitada en lugar de un error. Los agentes y
+    dueños siguen recibiendo sugerencias contextualizadas por rubro.
     """
 
     ticket_obj = db.session.get(MunicipioTicket, ticket_id)
@@ -1449,8 +1451,10 @@ def get_ticket_knowledge_base_suggestions(current_user: User, owner_user: User, 
         es_dueno = current_user and ticket_obj.user_id == current_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id
 
+    # Los usuarios sin permisos obtienen un stub vacío para evitar errores
+    # visibles en la UI pública sin exponer datos sensibles.
     if not (es_agente or es_dueno or es_anon):
-        return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+        return jsonify({"sugerencias": [], "disabled": True})
 
     sugerencias = []
     try:
