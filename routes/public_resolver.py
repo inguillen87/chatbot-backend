@@ -464,6 +464,10 @@ def widget_config():
     payload = {
         "tenant": tenant.to_public_dict(),
         "widget": _build_widget_embed_payload(tenant, widget_token),
+        # The integration builder renders its own preview iframe; the global
+        # site-wide widget bubble must stay hidden to avoid duplicated widgets
+        # on /t/[tenant]/integracion.
+        "suppress_global_widget": True,
     }
 
     return _log_widget_public_request(jsonify(payload), tenant, entity_token=widget_token)
