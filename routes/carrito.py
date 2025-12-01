@@ -170,22 +170,21 @@ def _resolve_owner_and_seed() -> Tuple[Optional[TenantProfile], Optional[User]]:
         or _tenant_slug_from_url(request.referrer)
     )
 
-    if tenant_slug_hint or widget_token:
-        try:
-            tenant = resolve_tenant_only(
-                tenant_slug=tenant_slug_hint,
-                widget_token=widget_token,
-                require_explicit_slug=False,
-            )
-        except TenantResolutionError:
-            tenant = None
-        if tenant:
-            owner = tenant.municipio or tenant.pyme
-            if owner:
-                g.tenant_profile = tenant
-                g.tenant_profile_slug = getattr(tenant, "slug", None)
-                ensure_seed_catalog(owner, tenant)
-                return tenant, owner
+    try:
+        tenant = resolve_tenant_only(
+            tenant_slug=tenant_slug_hint,
+            widget_token=widget_token,
+            require_explicit_slug=False,
+        )
+    except TenantResolutionError:
+        tenant = None
+    if tenant:
+        owner = tenant.municipio or tenant.pyme
+        if owner:
+            g.tenant_profile = tenant
+            g.tenant_profile_slug = getattr(tenant, "slug", None)
+            ensure_seed_catalog(owner, tenant)
+            return tenant, owner
 
     tenant, owner = _resolve_public_owner(require_explicit=True)
     if tenant is None or owner is None:

@@ -264,12 +264,13 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
     )
 
     # Try explicit tenant resolution via shared resolver (handles widget tokens/domains)
-    if tenant_slug or widget_token:
+    allow_resolution = bool(tenant_slug or widget_token or path_tenant_slug or referrer_slug or not require_explicit)
+    if allow_resolution:
         try:
             tenant = resolve_tenant_only(
-                tenant_slug=tenant_slug or path_tenant_slug,
+                tenant_slug=tenant_slug or path_tenant_slug or referrer_slug,
                 widget_token=widget_token,
-                require_explicit_slug=False,
+                require_explicit_slug=bool(require_explicit and (tenant_slug or path_tenant_slug or referrer_slug or widget_token)),
             )
             if tenant:
                 owner = tenant.municipio or tenant.pyme
