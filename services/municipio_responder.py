@@ -1544,8 +1544,17 @@ def _try_handle_emoji_shortcut(
     pregunta_str_menu = ""
     if isinstance(pregunta_original, str):
         pregunta_str_menu = pregunta_original
-    elif isinstance(pregunta_original, dict) and "pregunta" in pregunta_original:
-        pregunta_str_menu = pregunta_original["pregunta"]
+    elif isinstance(pregunta_original, dict):
+        if "pregunta" in pregunta_original:
+            pregunta_str_menu = pregunta_original["pregunta"]
+        # Cuando el cliente envía un emoji en un campo dedicado, usarlo como
+        # entrada principal para que los atajos funcionen en todos los estados.
+        if not pregunta_str_menu:
+            pregunta_str_menu = (
+                pregunta_original.get("emoji")
+                or pregunta_original.get("icon")
+                or pregunta_str_menu
+            )
 
     pregunta_str_menu = strip_variation_selector(pregunta_str_menu.strip())
 
@@ -7086,6 +7095,16 @@ def responder_municipio(
     if isinstance(pregunta_original, dict):
         received_payload = pregunta_original
         pregunta_str = received_payload.get("pregunta", "")
+
+        # Permitir que los mensajes compuestos solo por emoji se traten como
+        # texto de entrada principal (por ejemplo, 💧 para iniciar un reclamo
+        # de agua). Algunos clientes envían el emoji en un campo dedicado y
+        # dejan la pregunta vacía.
+        if not pregunta_str:
+            emoji_value = received_payload.get("emoji") or received_payload.get("icon")
+            if emoji_value:
+                pregunta_str = str(emoji_value)
+                received_payload["pregunta"] = pregunta_str
     elif isinstance(pregunta_original, str):
         pregunta_str = pregunta_original
         received_payload["pregunta"] = pregunta_original
