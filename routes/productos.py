@@ -12,6 +12,7 @@ from flask_login import current_user
 from sqlalchemy import func
 
 from models import TenantProfile, User
+from middleware import require_tenant
 from routes.catalogo import listar_catalogo
 from services.catalog_seed import ensure_seed_catalog
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
@@ -359,6 +360,7 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
 
 @productos_bp.route("", methods=["GET", "OPTIONS"], strict_slashes=False)
 @cross_origin(**_cors_kwargs())
+@require_tenant
 def obtener_productos():
     """Devuelve el catálogo de productos, autenticado o público."""
 
@@ -369,23 +371,19 @@ def obtener_productos():
 
     user = _resolve_authenticated_user()
     tenant_for_user = _tenant_for_user(user) if user else None
-    if user:
-        if tenant_for_user:
-            g.tenant_profile = tenant_for_user
-            g.tenant_profile_slug = tenant_for_user.slug
-            owner_for_user = tenant_for_user.municipio or tenant_for_user.pyme or user
-            ensure_seed_catalog(owner_for_user, tenant_for_user)
-            return listar_catalogo.__wrapped__(owner_for_user)
+    tenant = getattr(g, "tenant_profile", None) or getattr(g, "current_tenant", None)
+    owner_for_user = None
 
-        # Cuando el usuario está autenticado permitimos acceder al catálogo
-        # aunque se haya solicitado un modo de vista especial ("view=json|api").
-        # Esto evita errores 400 cuando el panel administrador consulta el
-        # catálogo sin enviar encabezados de tenant explícitos.
-        return listar_catalogo.__wrapped__(user)
+    if user and tenant_for_user and tenant and tenant_for_user.id == tenant.id:
+        g.tenant_profile = tenant_for_user
+        g.tenant_profile_slug = tenant_for_user.slug
+        owner_for_user = tenant_for_user.municipio or tenant_for_user.pyme or user
 
-    tenant, owner = _resolve_public_owner(require_explicit=True)
-    if not owner or not tenant:
-        tenant, owner = _resolve_public_owner(require_explicit=False)
+    owner = owner_for_user or getattr(tenant, "municipio", None) or getattr(tenant, "pyme", None)
+
+    if not owner and user:
+        owner = user
+
     if not owner or not tenant:
         return jsonify({"error": "Tenant requerido para catálogo"}), 400
 
