@@ -17,7 +17,11 @@ import secrets
 from services.demo_registry import demo_rubro_for_token
 
 
-_WIDGET_ALLOWED_PREFIXES: Tuple[str, ...] = ("/auth/widget/",)
+_WIDGET_ALLOWED_PREFIXES: Tuple[str, ...] = (
+    "/auth/widget/",
+    "/api/market/",
+    "/market/",
+)
 _WIDGET_ALLOWED_GET_PATHS: Set[str] = {
     "/auth/me",
     "/auth/perfil",
