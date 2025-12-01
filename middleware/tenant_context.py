@@ -92,6 +92,8 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         get_current_tenant_slug()
         or view_args.get("tenant_slug")
         or view_args.get("tenant")
+        or request.args.get("tenant_slug")
+        or request.args.get("tenant")
         or request.headers.get("X-Tenant")
     )
     if slug:
@@ -120,11 +122,33 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         if tenant:
             return tenant
 
-    slug = _normalize_slug(request.args.get("tenant") or view_args.get("slug"))
-    if slug:
-        tenant = _find_tenant_by_slug(slug)
+    # Try resolving by slug hint (query params) using the shared resolver to honor
+    # widget tokens and explicit slugs coming from the web widget/marketplace.
+    slug_hint = _normalize_slug(
+        request.args.get("tenant_slug")
+        or request.args.get("tenant")
+        or view_args.get("slug")
+    )
+    if slug_hint:
+        # First attempt direct DB lookup (fast path)
+        tenant = _find_tenant_by_slug(slug_hint)
         if tenant:
             return tenant
+
+        # Fallback to the more robust resolver which understands widget tokens
+        # and explicit slug requirements.
+        from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
+
+        try:
+            tenant = resolve_tenant_only(
+                tenant_slug=slug_hint,
+                widget_token=widget_token,
+                require_explicit_slug=False,
+            )
+            if tenant:
+                return tenant
+        except TenantResolutionError:
+            pass
 
     slug = _tenant_slug_from_path(request.path)
     if slug:
