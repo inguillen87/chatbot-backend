@@ -918,6 +918,24 @@ class ServicioTickets:
                     }
                 )
 
+        estado_actual = _estado_publico(getattr(ticket, "estado", None))
+        if estado_actual:
+            estado_ya_registrado = any(
+                evento.get("tipo") == "estado" and evento.get("estado") == estado_actual
+                for evento in timeline
+            )
+            if not estado_ya_registrado:
+                fecha_estado = getattr(ticket, "ultima_actividad", None) or ticket.fecha
+                timeline.append(
+                    {
+                        "tipo": "estado",
+                        "estado": estado_actual,
+                        "fecha": datetime_to_iso_utc(fecha_estado),
+                    }
+                )
+
+        timeline.sort(key=lambda evento: evento.get("fecha") or "")
+
         return timeline
 
     def obtener_estado_progreso(self, ticket: Union[MunicipioTicket, PymeTicket]) -> list[dict]:
