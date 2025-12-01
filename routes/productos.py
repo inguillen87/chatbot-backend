@@ -226,6 +226,17 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
             if owner:
                 return tenant, owner
 
+    # Como último recurso (cuando no hay hints ni tenant por defecto),
+    # elegimos el primer tenant disponible para evitar errores 400 en
+    # catálogos públicos/marketplace. Esto replica el degradado usado por
+    # ``services.tenant_resolver`` y permite navegar el catálogo aunque la
+    # app cliente no envíe los headers/parámetros de tenant.
+    tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
+    if tenant:
+        owner = tenant.municipio or tenant.pyme
+        if owner:
+            return tenant, owner
+
     return None, None
 
 
