@@ -123,19 +123,32 @@ def _tenant_for_user(user: Optional[User]) -> Optional[TenantProfile]:
 
 
 def _tenant_slug_from_path(path: str | None) -> Optional[str]:
+    """Best-effort slug extraction from the URL path.
+
+    Supports both legacy prefixes (e.g. ``/municipio/<slug>/...``) and the
+    newer direct tenant paths used by the marketplace frontend (``/<slug>/...``).
+    """
+
     if not path:
         return None
 
     segments = [segment for segment in path.split("/") if segment]
-    if len(segments) < 2:
+    if not segments:
         return None
 
-    prefix = segments[0].lower()
-    slug = segments[1]
+    # Legacy prefixed pattern: /municipio/<slug>/..., /pyme/<slug>/...
+    if len(segments) >= 2:
+        prefix = segments[0].lower()
+        slug = segments[1]
+        if prefix in {"municipio", "municipios", "m", "pyme", "pymes", "p", "t"}:
+            cleaned = slug.strip().lower()
+            return cleaned or None
 
-    if prefix in {"municipio", "municipios", "m", "pyme", "pymes", "p", "t"}:
-        cleaned = slug.strip().lower()
-        return cleaned or None
+    # Marketplace path style: /<slug>/productos, /<slug>/marketplace, etc.
+    # Ignore obviously non-tenant prefixes that map to our API paths.
+    first_segment = segments[0].strip().lower()
+    if first_segment and first_segment not in {"api", "productos", "carrito"}:
+        return first_segment
 
     return None
 
@@ -246,11 +259,18 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
                 return tenant, owner
 
     # Como último recurso (cuando no hay hints ni tenant por defecto),
-    # elegimos el primer tenant disponible para evitar errores 400 en
-    # catálogos públicos/marketplace. Esto replica el degradado usado por
-    # ``services.tenant_resolver`` y permite navegar el catálogo aunque la
-    # app cliente no envíe los headers/parámetros de tenant.
-    tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
+    # elegimos el primer tenant que tenga un owner asociado para evitar
+    # errores 400 en catálogos públicos/marketplace. Esto replica el
+    # degradado usado por ``services.tenant_resolver`` y permite navegar el
+    # catálogo aunque la app cliente no envíe los headers/parámetros de
+    # tenant.
+    tenant = (
+        TenantProfile.query.filter(
+            (TenantProfile.municipio_id.isnot(None)) | (TenantProfile.pyme_id.isnot(None))
+        )
+        .order_by(TenantProfile.id.asc())
+        .first()
+    )
     if tenant:
         owner = tenant.municipio or tenant.pyme
         if owner:
