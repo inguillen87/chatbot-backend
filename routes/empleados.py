@@ -1,5 +1,12 @@
 from flask import Blueprint, request, jsonify
-from models import User, TicketComentario, db, MunicipioTicket, PymeTicket
+from models import (
+    CatalogoItem,
+    MunicipioTicket,
+    PymeTicket,
+    TicketComentario,
+    User,
+    db,
+)
 from routes.auth import token_requerido, solo_admin_requerido
 from services.logic import es_rubro_publico
 import uuid
@@ -148,7 +155,7 @@ def obtener_categorias_empleado(current_user: User):
                 .all()
             )
             categorias_set.update(item[0] for item in categorias_en_bd if item and item[0])
-        elif current_user.tipo_chat == "pyme" and current_user.rubro_id:
+        elif current_user.tipo_chat == "pyme":
             categorias_en_bd = (
                 db.session.query(PymeTicket.categoria)
                 .filter(
@@ -160,6 +167,23 @@ def obtener_categorias_empleado(current_user: User):
                 .all()
             )
             categorias_set.update(item[0] for item in categorias_en_bd if item and item[0])
+
+            tenant_profile = getattr(current_user, "tenant_profile_pyme", None)
+            catalogo_query = CatalogoItem.query.filter(
+                CatalogoItem.user_id == current_user.id,
+                CatalogoItem.categoria.isnot(None),
+                CatalogoItem.categoria != "",
+            )
+            if tenant_profile:
+                catalogo_query = catalogo_query.filter(
+                    func.coalesce(CatalogoItem.tenant_id, tenant_profile.id)
+                    == tenant_profile.id
+                )
+
+            catalogo_categorias = catalogo_query.with_entities(
+                CatalogoItem.categoria
+            ).distinct()
+            categorias_set.update(item[0] for item in catalogo_categorias if item and item[0])
     except Exception:
         # Si hay algún problema consultando la base, devolvemos las categorías
         # base en lugar de propagar un error al frontend.
