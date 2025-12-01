@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from typing import Optional, Tuple
 from urllib.parse import urlencode, urlparse
 
@@ -73,10 +74,41 @@ def _coerce_int(value: object) -> Optional[int]:
 def _lookup_tenant_by_slug(slug: Optional[str]) -> Optional[TenantProfile]:
     if not slug:
         return None
-    normalized = slug.strip().lower()
+    normalized = _normalize_slug(slug)
     if not normalized:
         return None
-    return TenantProfile.query.filter(func.lower(TenantProfile.slug) == normalized).first()
+
+    # Fast path: direct case-insensitive match
+    tenant = (
+        TenantProfile.query.filter(func.lower(TenantProfile.slug) == normalized)
+        .order_by(TenantProfile.id.asc())
+        .first()
+    )
+    if tenant:
+        return tenant
+
+    # Fallback for slugs with accents/spacing variants stored in DB.
+    for candidate in TenantProfile.query.with_entities(TenantProfile).all():
+        candidate_slug = getattr(candidate, "slug", None)
+        if candidate_slug and _normalize_slug(candidate_slug) == normalized:
+            return candidate
+
+    return None
+
+
+def _normalize_slug(value: str) -> str:
+    """Normalize slugs removing accents and harmonizing separators."""
+
+    cleaned = unicodedata.normalize("NFKD", value or "")
+    cleaned = "".join(ch for ch in cleaned if not unicodedata.combining(ch))
+    cleaned = cleaned.replace("_", "-")
+    cleaned = cleaned.strip().lower()
+    cleaned = cleaned.replace(" ", "-")
+
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+
+    return cleaned.strip("-")
 
 
 def _tenant_for_user(user: Optional[User]) -> Optional[TenantProfile]:
@@ -120,6 +152,22 @@ def _tenant_for_user(user: Optional[User]) -> Optional[TenantProfile]:
             return tenant
 
     return None
+
+
+def _first_tenant_with_owner() -> tuple[Optional[TenantProfile], Optional[User]]:
+    """Return the first tenant that has an owner configured."""
+
+    tenant = (
+        TenantProfile.query.filter(
+            (TenantProfile.municipio_id.isnot(None)) | (TenantProfile.pyme_id.isnot(None))
+        )
+        .order_by(TenantProfile.id.asc())
+        .first()
+    )
+    owner = tenant.municipio or tenant.pyme if tenant else None
+    if tenant and owner:
+        return tenant, owner
+    return None, None
 
 
 def _tenant_slug_from_path(path: str | None) -> Optional[str]:
@@ -232,12 +280,13 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
     )
 
     # Try explicit tenant resolution via shared resolver (handles widget tokens/domains)
-    if tenant_slug or widget_token:
+    allow_resolution = bool(tenant_slug or widget_token or path_tenant_slug or referrer_slug or not require_explicit)
+    if allow_resolution:
         try:
             tenant = resolve_tenant_only(
-                tenant_slug=tenant_slug or path_tenant_slug,
+                tenant_slug=tenant_slug or path_tenant_slug or referrer_slug,
                 widget_token=widget_token,
-                require_explicit_slug=False,
+                require_explicit_slug=bool(require_explicit and (tenant_slug or path_tenant_slug or referrer_slug or widget_token)),
             )
             if tenant:
                 owner = tenant.municipio or tenant.pyme
@@ -245,6 +294,11 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
                     g.tenant_profile = tenant
                     g.tenant_profile_slug = tenant.slug
                     return tenant, owner
+                fallback_tenant, fallback_owner = _first_tenant_with_owner()
+                if fallback_tenant and fallback_owner:
+                    g.tenant_profile = fallback_tenant
+                    g.tenant_profile_slug = getattr(fallback_tenant, "slug", None)
+                    return fallback_tenant, fallback_owner
         except TenantResolutionError:
             pass
 
@@ -286,6 +340,8 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
         if tenant:
             owner = tenant.municipio or tenant.pyme
             if owner:
+                g.tenant_profile = tenant
+                g.tenant_profile_slug = getattr(tenant, "slug", None)
                 return tenant, owner
 
     # Como último recurso (cuando no hay hints ni tenant por defecto),
@@ -294,17 +350,9 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
     # degradado usado por ``services.tenant_resolver`` y permite navegar el
     # catálogo aunque la app cliente no envíe los headers/parámetros de
     # tenant.
-    tenant = (
-        TenantProfile.query.filter(
-            (TenantProfile.municipio_id.isnot(None)) | (TenantProfile.pyme_id.isnot(None))
-        )
-        .order_by(TenantProfile.id.asc())
-        .first()
-    )
-    if tenant:
-        owner = tenant.municipio or tenant.pyme
-        if owner:
-            return tenant, owner
+    fallback_tenant, fallback_owner = _first_tenant_with_owner()
+    if fallback_tenant and fallback_owner:
+        return fallback_tenant, fallback_owner
 
     return None, None
 
