@@ -122,6 +122,23 @@ class ProductosTenantResolutionTest(unittest.TestCase):
         self.assertEqual(tenant.id, self.tenant.id)
         self.assertEqual(owner.id, self.owner.id)
 
+    def test_resolve_public_owner_falls_back_when_resolver_returns_ownerless(self):
+        """Si el resolver devuelve un tenant sin owner, debe degradar a uno válido."""
+
+        ownerless_tenant = TenantProfile(slug="ownerless", nombre="Sin owner", tipo="municipio")
+
+        with patch("routes.productos.resolve_tenant_only") as mock_resolver:
+            mock_resolver.return_value = ownerless_tenant
+
+            with self.app.test_request_context("/productos"):
+                tenant, owner = productos._resolve_public_owner(require_explicit=False)
+
+        mock_resolver.assert_called_once()
+        self.assertIsNotNone(tenant)
+        self.assertIsNotNone(owner)
+        self.assertEqual(tenant.id, self.tenant.id)
+        self.assertEqual(owner.id, self.owner.id)
+
 
 if __name__ == "__main__":
     unittest.main()

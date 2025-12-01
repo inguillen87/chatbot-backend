@@ -154,6 +154,22 @@ def _tenant_for_user(user: Optional[User]) -> Optional[TenantProfile]:
     return None
 
 
+def _first_tenant_with_owner() -> tuple[Optional[TenantProfile], Optional[User]]:
+    """Return the first tenant that has an owner configured."""
+
+    tenant = (
+        TenantProfile.query.filter(
+            (TenantProfile.municipio_id.isnot(None)) | (TenantProfile.pyme_id.isnot(None))
+        )
+        .order_by(TenantProfile.id.asc())
+        .first()
+    )
+    owner = tenant.municipio or tenant.pyme if tenant else None
+    if tenant and owner:
+        return tenant, owner
+    return None, None
+
+
 def _tenant_slug_from_path(path: str | None) -> Optional[str]:
     """Best-effort slug extraction from the URL path.
 
@@ -278,6 +294,11 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
                     g.tenant_profile = tenant
                     g.tenant_profile_slug = tenant.slug
                     return tenant, owner
+                fallback_tenant, fallback_owner = _first_tenant_with_owner()
+                if fallback_tenant and fallback_owner:
+                    g.tenant_profile = fallback_tenant
+                    g.tenant_profile_slug = getattr(fallback_tenant, "slug", None)
+                    return fallback_tenant, fallback_owner
         except TenantResolutionError:
             pass
 
@@ -319,6 +340,8 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
         if tenant:
             owner = tenant.municipio or tenant.pyme
             if owner:
+                g.tenant_profile = tenant
+                g.tenant_profile_slug = getattr(tenant, "slug", None)
                 return tenant, owner
 
     # Como último recurso (cuando no hay hints ni tenant por defecto),
@@ -327,17 +350,9 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
     # degradado usado por ``services.tenant_resolver`` y permite navegar el
     # catálogo aunque la app cliente no envíe los headers/parámetros de
     # tenant.
-    tenant = (
-        TenantProfile.query.filter(
-            (TenantProfile.municipio_id.isnot(None)) | (TenantProfile.pyme_id.isnot(None))
-        )
-        .order_by(TenantProfile.id.asc())
-        .first()
-    )
-    if tenant:
-        owner = tenant.municipio or tenant.pyme
-        if owner:
-            return tenant, owner
+    fallback_tenant, fallback_owner = _first_tenant_with_owner()
+    if fallback_tenant and fallback_owner:
+        return fallback_tenant, fallback_owner
 
     return None, None
 

@@ -11,6 +11,7 @@ from models import CatalogoItem, TenantProfile, User, CatalogoModalidad
 from routes.catalogo import _formatear_producto
 from routes.productos import (
     _lookup_tenant_by_slug,
+    _first_tenant_with_owner,
     _resolve_public_owner,
     _resolve_authenticated_user,
     _tenant_for_user,
@@ -185,6 +186,12 @@ def _resolve_owner_and_seed() -> Tuple[Optional[TenantProfile], Optional[User]]:
             g.tenant_profile_slug = getattr(tenant, "slug", None)
             ensure_seed_catalog(owner, tenant)
             return tenant, owner
+        fallback_tenant, fallback_owner = _first_tenant_with_owner()
+        if fallback_tenant and fallback_owner:
+            g.tenant_profile = fallback_tenant
+            g.tenant_profile_slug = getattr(fallback_tenant, "slug", None)
+            ensure_seed_catalog(fallback_owner, fallback_tenant)
+            return fallback_tenant, fallback_owner
 
     tenant, owner = _resolve_public_owner(require_explicit=True)
     if tenant is None or owner is None:
