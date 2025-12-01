@@ -161,9 +161,15 @@ def _attach_user_to_tenant(user: User, tenant: Optional[TenantProfile]) -> None:
     if not tenant or not user:
         return
 
-    if user.tenant_id != tenant.id:
-        user.tenant_id = tenant.id
-        db.session.add(user)
+    if hasattr(user, "tenant_id"):
+        if user.tenant_id != tenant.id:
+            user.tenant_id = tenant.id
+            db.session.add(user)
+    else:
+        current_slug = getattr(user, "tenant_slug", None)
+        if current_slug != tenant.slug:
+            user.tenant_slug = tenant.slug
+            db.session.add(user)
 
 
 def _tenant_market_payload(tenant: Optional[TenantProfile]) -> Dict[str, object]:
@@ -995,6 +1001,13 @@ def register_from_widget(user):
             "botones": [{"texto": "Volver al chat"}],
         }), 400
 
+    owner_tenant = _tenant_for_owner(user)
+    if not owner_tenant:
+        return (
+            jsonify({"error": "Tenant no especificado o no encontrado para el widget"}),
+            404,
+        )
+
     if User.query.filter_by(email=email.strip().lower()).first():
         return jsonify({
             "error": "Email ya registrado.",
@@ -1032,6 +1045,9 @@ def register_from_widget(user):
         db.session.add(nuevo)
         db.session.commit()
 
+        _attach_user_to_tenant(nuevo, owner_tenant)
+        db.session.commit()
+
         # --------- BLOQUE CRÍTICO --------------
         if anon_id:
             from services.ticket_service import servicio_tickets
@@ -1061,8 +1077,10 @@ def register_from_widget(user):
             "rol": nuevo.rol,
             "tipo_chat": nuevo.tipo_chat,
             "empresa_id": nuevo.empresa_id,
-            "tenant_slug": getattr(nuevo, "tenant_slug", None),
-            "tenantSlug": getattr(nuevo, "tenant_slug", None),
+            "tenant_id": owner_tenant.id if owner_tenant else None,
+            "tenant_slug": owner_tenant.slug if owner_tenant else getattr(nuevo, "tenant_slug", None),
+            "tenantSlug": owner_tenant.slug if owner_tenant else getattr(nuevo, "tenant_slug", None),
+            "marketplace": _tenant_market_payload(owner_tenant),
         }
         entity_token_value = _include_entity_token_fields(response_payload, owner_token)
 
@@ -1098,6 +1116,10 @@ def login_from_widget(owner_user):
     if not email or not password:
         return jsonify({"error": "Email y contraseña requeridos."}), 400
 
+    owner_tenant = _tenant_for_owner(owner_user)
+    if not owner_tenant:
+        return jsonify({"error": "Tenant no especificado o no encontrado para el widget"}), 404
+
     user = User.query.filter_by(
         email=email.strip().lower(), empresa_id=owner_user.id
     ).first()
@@ -1108,7 +1130,13 @@ def login_from_widget(owner_user):
         from services.ticket_service import servicio_tickets
         servicio_tickets.migrar_tickets_de_anonimo(anon_id, user.id)
 
-    rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
+    _attach_user_to_tenant(user, owner_tenant)
+    db.session.add(user)
+    db.session.commit()
+
+    user_rubro = getattr(user, "rubro", None)
+    owner_rubro = getattr(owner_user, "rubro", None)
+    rubro_nombre = user_rubro.nombre if user_rubro else owner_rubro.nombre if owner_rubro else "General"
     tipo_chat = getattr(user, "tipo_chat", None) or getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
 
     # Generar el token JWT
@@ -1133,8 +1161,10 @@ def login_from_widget(owner_user):
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
         "categorias": getattr(user, "categorias_lista", []),
-        "tenant_slug": getattr(user, "tenant_slug", None),
-        "tenantSlug": getattr(user, "tenant_slug", None),
+        "tenant_id": owner_tenant.id if owner_tenant else None,
+        "tenant_slug": owner_tenant.slug if owner_tenant else getattr(user, "tenant_slug", None),
+        "tenantSlug": owner_tenant.slug if owner_tenant else getattr(user, "tenant_slug", None),
+        "marketplace": _tenant_market_payload(owner_tenant),
     }
 
     entity_token_value = _include_entity_token_fields(response_payload, owner_token)
