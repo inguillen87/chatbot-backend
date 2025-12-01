@@ -92,6 +92,25 @@ def _tenant_for_user(user: Optional[User]) -> Optional[TenantProfile]:
     if tenant:
         return tenant
 
+    # Algunos usuarios legacy sólo guardan ``municipio_id``/``pyme_id`` sin
+    # asociar explícitamente un ``tenant_profile``. Para permitir que el
+    # marketplace/autenticación resuelvan correctamente el catálogo y el
+    # carrito, intentamos buscar el tenant asociado usando esos campos.
+    municipio_id = getattr(user, "municipio_id", None)
+    pyme_id = getattr(user, "pyme_id", None)
+    if municipio_id:
+        tenant = TenantProfile.query.filter_by(municipio_id=municipio_id).first()
+        if tenant:
+            g.tenant_profile = tenant
+            g.tenant_profile_slug = getattr(tenant, "slug", None)
+            return tenant
+    if pyme_id:
+        tenant = TenantProfile.query.filter_by(pyme_id=pyme_id).first()
+        if tenant:
+            g.tenant_profile = tenant
+            g.tenant_profile_slug = getattr(tenant, "slug", None)
+            return tenant
+
     slug = getattr(user, "tenant_slug", None)
     if slug:
         tenant = _lookup_tenant_by_slug(slug)
