@@ -7,6 +7,7 @@ from flask_cors import cross_origin
 from sqlalchemy import func
 
 from config import ALLOWED_ORIGINS
+from middleware import require_tenant
 from models import CatalogoItem, TenantProfile, User, CatalogoModalidad
 from routes.catalogo import _formatear_producto
 from routes.productos import (
@@ -22,6 +23,7 @@ from services.cart import add_item, clear_cart, get_summary, remove_item, update
 from services.common_utils import parse_precio_flexible
 from services.rewards_demo import reward_profile_for_tenant
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
+from utils.tenant import get_current_tenant
 
 _CORS_ALLOWED_HEADERS = [
     "Content-Type",
@@ -143,8 +145,9 @@ def _lookup_catalog_item(owner: User, payload: Dict[str, object], tenant: Option
 def _resolve_owner_and_seed() -> Tuple[Optional[TenantProfile], Optional[User]]:
     user = _resolve_authenticated_user()
     tenant = _tenant_for_user(user)
+
     if not tenant:
-        tenant = getattr(g, "tenant_profile", None)
+        tenant = getattr(g, "tenant_profile", None) or get_current_tenant()
 
     owner = None
     if tenant:
@@ -175,10 +178,11 @@ def _resolve_owner_and_seed() -> Tuple[Optional[TenantProfile], Optional[User]]:
         tenant = resolve_tenant_only(
             tenant_slug=tenant_slug_hint,
             widget_token=widget_token,
-            require_explicit_slug=False,
+            require_explicit_slug=True,
         )
     except TenantResolutionError:
         tenant = None
+
     if tenant:
         owner = tenant.municipio or tenant.pyme
         if owner:
@@ -186,20 +190,8 @@ def _resolve_owner_and_seed() -> Tuple[Optional[TenantProfile], Optional[User]]:
             g.tenant_profile_slug = getattr(tenant, "slug", None)
             ensure_seed_catalog(owner, tenant)
             return tenant, owner
-        fallback_tenant, fallback_owner = _first_tenant_with_owner()
-        if fallback_tenant and fallback_owner:
-            g.tenant_profile = fallback_tenant
-            g.tenant_profile_slug = getattr(fallback_tenant, "slug", None)
-            ensure_seed_catalog(fallback_owner, fallback_tenant)
-            return fallback_tenant, fallback_owner
 
-    tenant, owner = _resolve_public_owner(require_explicit=True)
-    if tenant is None or owner is None:
-        tenant, owner = _resolve_public_owner(require_explicit=False)
-    if tenant is None or owner is None:
-        return None, None
-    ensure_seed_catalog(owner, tenant)
-    return tenant, owner
+    return None, None
 
 
 def _resolve_public_tenant_by_slug(
@@ -353,6 +345,7 @@ def _carrito_summary_response():
 @carrito_bp.route('', methods=['GET', 'POST', 'OPTIONS'])
 @carrito_bp.route('/', methods=['GET', 'POST', 'OPTIONS'])
 @cross_origin(**_cors_kwargs(["GET", "POST", "OPTIONS"]))
+@require_tenant
 def carrito_root():
     """Permite consultar el carrito (GET) o agregar items (POST) desde la raíz."""
     if request.method == 'OPTIONS':
@@ -402,6 +395,7 @@ def carrito_pwa_public(tenant_slug: str):
 
 @carrito_bp.route('/agregar', methods=['POST', 'OPTIONS'])
 @cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
+@require_tenant
 def agregar():
     data = request.get_json(silent=True) or {}
     tenant, owner = _resolve_owner_and_seed()
@@ -443,6 +437,7 @@ def agregar():
 
 @carrito_bp.route('/actualizar', methods=['POST', 'OPTIONS'])
 @cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
+@require_tenant
 def actualizar():
     data = request.get_json(silent=True) or {}
     tenant, owner = _resolve_owner_and_seed()
@@ -486,6 +481,7 @@ def actualizar():
 
 @carrito_bp.route('/eliminar', methods=['POST', 'OPTIONS'])
 @cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
+@require_tenant
 def eliminar():
     data = request.get_json(silent=True) or {}
     tenant, owner = _resolve_owner_and_seed()
@@ -527,6 +523,7 @@ def eliminar():
 
 @carrito_bp.route('/vaciar', methods=['POST', 'OPTIONS'])
 @cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
+@require_tenant
 def vaciar():
     tenant, owner = _resolve_owner_and_seed()
 
@@ -546,6 +543,7 @@ def vaciar():
 
 @carrito_bp.route('/resumen', methods=['GET'])
 @cross_origin(**_cors_kwargs(["GET"]))
+@require_tenant
 def resumen():
     return _carrito_summary_response()
 

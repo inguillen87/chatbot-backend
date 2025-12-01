@@ -9,6 +9,7 @@ from werkzeug.exceptions import HTTPException
 from sqlalchemy import func
 
 from models import TenantProfile
+from utils.tenant import get_current_tenant, get_current_tenant_slug, require_tenant as _decorator_require_tenant
 
 
 def _normalize_slug(value: Optional[str]) -> Optional[str]:
@@ -88,7 +89,8 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
     view_args = getattr(request, "view_args", None) or {}
 
     slug = _normalize_slug(
-        view_args.get("tenant_slug")
+        get_current_tenant_slug()
+        or view_args.get("tenant_slug")
         or view_args.get("tenant")
         or request.headers.get("X-Tenant")
     )
@@ -148,24 +150,35 @@ def tenant_middleware(app) -> None:
         tenant = _resolve_tenant_profile()
         g.tenant_profile = tenant
         g.tenant_profile_slug = tenant.slug if tenant else None
+        if tenant:
+            g.current_tenant = tenant
+            g.current_tenant_slug = tenant.slug
 
 
-def require_tenant() -> TenantProfile:
-    """Ensure a tenant is resolved in the current context or abort with JSON."""
-    if getattr(g, "tenant_profile", None):
-        return g.tenant_profile
+def require_tenant(func=None) -> TenantProfile:
+    """Ensure a tenant is resolved in the current context or abort with JSON.
 
-    # Attempt resolution if for some reason it wasn't done or failed
-    tenant = _resolve_tenant_profile()
+    The callable can be used as a direct helper (returning the tenant or
+    raising an HTTPException) or as a decorator for view functions.
+    """
+
+    if func is not None and callable(func):
+        return _decorator_require_tenant(func)
+
+    tenant = getattr(g, "tenant_profile", None) or getattr(g, "current_tenant", None)
+    if tenant:
+        return tenant
+
+    tenant = get_current_tenant()
     if tenant:
         g.tenant_profile = tenant
         g.tenant_profile_slug = tenant.slug
+        g.current_tenant = tenant
+        g.current_tenant_slug = tenant.slug
         return tenant
 
-    response = make_response(
-        jsonify({"error": "Tenant no especificado o no encontrado"}), 404
-    )
-    error = HTTPException(description="Tenant no especificado o no encontrado")
-    error.code = 404
+    response = make_response(jsonify({"error": "tenant requerido"}), 400)
+    error = HTTPException(description="tenant requerido")
+    error.code = 400
     error.response = response
     raise error

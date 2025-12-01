@@ -71,8 +71,8 @@ class TenantContextResolutionTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as ctx:
                 require_tenant()
 
-            self.assertEqual(ctx.exception.code, 404)
-            self.assertEqual(ctx.exception.response.get_json(), {"error": "Tenant no especificado o no encontrado"})
+            self.assertEqual(ctx.exception.code, 400)
+            self.assertEqual(ctx.exception.response.get_json(), {"error": "tenant requerido"})
 
     def test_resolves_tenant_from_view_args(self):
         with self.app.test_request_context("/api/demo/productos") as ctx:
