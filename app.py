@@ -356,17 +356,15 @@ def create_app(config_class=Config):
             if not _origin_is_allowed(origin):
                 return resp
 
-            resp.headers.setdefault("Access-Control-Allow-Origin", origin)
-            resp.headers.setdefault("Access-Control-Allow-Credentials", "true")
+            # Override any duplicate CORS headers emitted upstream so browsers
+            # don't reject responses with repeated origins.
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
 
             # Echo CORS allowances for preflight responses to ensure custom headers like
             # "x-anon-id" are accepted by browsers.
-            resp.headers.setdefault(
-                "Access-Control-Allow-Headers", ", ".join(allow_headers)
-            )
-            resp.headers.setdefault(
-                "Access-Control-Allow-Methods", ", ".join(allow_methods)
-            )
+            resp.headers["Access-Control-Allow-Headers"] = ", ".join(allow_headers)
+            resp.headers["Access-Control-Allow-Methods"] = ", ".join(allow_methods)
 
             vary_header = resp.headers.get("Vary")
             if vary_header:
