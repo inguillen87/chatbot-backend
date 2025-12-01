@@ -3,7 +3,16 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Optional
 
-from flask import Blueprint, abort, jsonify, make_response, request, g, session
+from flask import (
+    Blueprint,
+    abort,
+    current_app,
+    jsonify,
+    make_response,
+    request,
+    g,
+    session,
+)
 from flask_login import current_user
 from sqlalchemy import func, or_
 
@@ -32,7 +41,7 @@ market_admin_bp = Blueprint("market_admin", __name__, url_prefix="/api/admin/mar
 
 
 def _resolve_tenant(slug: str) -> TenantProfile:
-    slug_clean = (slug or "").strip().lower()
+    slug_clean = _canonical_slug(slug)
     if not slug_clean:
         abort(400, description="Slug requerido")
 
@@ -51,6 +60,17 @@ def _resolve_tenant(slug: str) -> TenantProfile:
         )
 
     if tenant is None:
+        fallback_slug = _canonical_slug(
+            (current_app.config or {}).get("MARKETPLACE_DEFAULT_TENANT")
+        )
+        if fallback_slug and fallback_slug != slug_clean:
+            tenant = (
+                TenantProfile.query.filter(func.lower(TenantProfile.slug) == fallback_slug)
+                .order_by(TenantProfile.id.desc())
+                .first()
+            )
+
+    if tenant is None:
         abort(404, description="Tenant no encontrado")
 
     g.tenant_profile = tenant
@@ -60,6 +80,30 @@ def _resolve_tenant(slug: str) -> TenantProfile:
 
 def _tenant_owner(tenant: TenantProfile) -> Optional[User]:
     return tenant.municipio or tenant.pyme
+
+
+def _canonical_slug(slug: Optional[str]) -> Optional[str]:
+    slug_clean = (slug or "").strip().lower()
+    if not slug_clean:
+        return slug_clean
+
+    alias_map = {
+        "municipio": "municipalidad-de-junin",
+        "muni": "municipalidad-de-junin",
+        "municipalidad": "municipalidad-de-junin",
+        "market": "municipalidad-de-junin",
+    }
+
+    resolved = alias_map.get(slug_clean, slug_clean)
+    default_hint = (current_app.config or {}).get(
+        "MARKETPLACE_DEFAULT_TENANT", "municipalidad-de-junin"
+    )
+
+    # Permite que el slug "market" sin contexto apunte a un tenant demo configurable.
+    if resolved in {"market", "demo"}:
+        resolved = default_hint
+
+    return resolved
 
 
 def _ensure_session_id() -> str:
@@ -89,7 +133,7 @@ def _user_can_manage_tenant(user: User, tenant: TenantProfile) -> bool:
 
 
 def _resolve_tenant_soft(slug: str) -> Optional[TenantProfile]:
-    slug_clean = (slug or "").strip().lower()
+    slug_clean = _canonical_slug(slug)
     if not slug_clean:
         return None
 
@@ -98,11 +142,24 @@ def _resolve_tenant_soft(slug: str) -> Optional[TenantProfile]:
     except TenantResolutionError:
         pass
 
-    return (
+    tenant = (
         TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug_clean)
         .order_by(TenantProfile.id.desc())
         .first()
     )
+
+    if tenant is None:
+        fallback_slug = _canonical_slug(
+            (current_app.config or {}).get("MARKETPLACE_DEFAULT_TENANT")
+        )
+        if fallback_slug and fallback_slug != slug_clean:
+            tenant = (
+                TenantProfile.query.filter(func.lower(TenantProfile.slug) == fallback_slug)
+                .order_by(TenantProfile.id.desc())
+                .first()
+            )
+
+    return tenant
 
 
 def _modalidad_value(producto: CatalogoItem) -> str:
