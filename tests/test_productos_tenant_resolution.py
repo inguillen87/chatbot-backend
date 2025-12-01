@@ -139,6 +139,20 @@ class ProductosTenantResolutionTest(unittest.TestCase):
         self.assertEqual(tenant.id, self.tenant.id)
         self.assertEqual(owner.id, self.owner.id)
 
+    def test_resolve_public_owner_from_market_referrer(self):
+        """Debe extraer el slug desde rutas tipo /market/<slug>/... del referer."""
+
+        with self.app.test_request_context(
+            "/productos",
+            headers={"Referer": "https://www.chatboc.ar/market/municipalidad-de-junin/cart"},
+        ):
+            tenant, owner = productos._resolve_public_owner(require_explicit=False)
+
+        self.assertIsNotNone(tenant)
+        self.assertIsNotNone(owner)
+        self.assertEqual(tenant.id, self.tenant.id)
+        self.assertEqual(owner.id, self.owner.id)
+
 
 if __name__ == "__main__":
     unittest.main()

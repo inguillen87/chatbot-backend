@@ -188,14 +188,14 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
     if len(segments) >= 2:
         prefix = segments[0].lower()
         slug = segments[1]
-        if prefix in {"municipio", "municipios", "m", "pyme", "pymes", "p", "t"}:
+        if prefix in {"municipio", "municipios", "m", "pyme", "pymes", "p", "t", "market", "marketplace", "shop"}:
             cleaned = slug.strip().lower()
             return cleaned or None
 
     # Marketplace path style: /<slug>/productos, /<slug>/marketplace, etc.
     # Ignore obviously non-tenant prefixes that map to our API paths.
     first_segment = segments[0].strip().lower()
-    if first_segment and first_segment not in {"api", "productos", "carrito"}:
+    if first_segment and first_segment not in {"api", "productos", "carrito", "market", "marketplace", "shop"}:
         return first_segment
 
     return None
