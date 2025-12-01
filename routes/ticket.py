@@ -1355,8 +1355,12 @@ def get_ticket_route(current_user: User, tipo: str, ticket_id: int, anon_id: str
     es_agente = current_user and current_user.tipo_chat == "municipio"
     es_dueno = current_user and ticket_obj.user_id == current_user.id
     es_anon = anon_id and ticket_obj.anon_id == anon_id
+    # Evitar que el frontend público genere errores al cargar esta sección.
+    # Como las sugerencias son un placeholder y no exponen datos sensibles,
+    # respondemos con una lista vacía para usuarios sin permisos en lugar de
+    # devolver 403.
     if not (es_agente or es_dueno or es_anon):
-        return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+        return jsonify({"sugerencias": [], "habilitado": False})
 
     if ticket_obj.latitud is None or ticket_obj.longitud is None:
         return jsonify({"error": "El ticket no tiene coordenadas."}), 400
@@ -2176,7 +2180,7 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int):
             validar_configuracion_smtp,
         )
 
-        smtp_valida, smtp_error = validar_configuracion_smtp(require_auth=True)
+        smtp_valida, smtp_error = validar_configuracion_smtp(require_auth=False)
         if not smtp_valida:
             current_app.logger.error(
                 f"SMTP no configurado correctamente al enviar historial del ticket {ticket_id}: {smtp_error}"
