@@ -5360,11 +5360,21 @@ def _build_catalogo_link_map(context: Optional[dict]) -> Dict[str, str]:
     base_url = _resolve_catalogo_base_url(context)
     tenant_slug, tenant_id, owner_id = _resolve_tenant_identifiers(context)
     viewer_phone = _resolve_viewer_phone(context)
+    market_base = None
+    if tenant_slug:
+        market_base = f"/market/{tenant_slug.strip('/')}"
+
     default_paths = {
-        "catalogo_ver": "/productos",
-        "catalogo_canje_puntos": "/productos?view=canje",
-        "catalogo_compras": "/productos?view=compras",
-        "catalogo_donaciones": "/productos?view=donaciones",
+        "catalogo_ver": f"{market_base}/catalog" if market_base else "/productos",
+        "catalogo_canje_puntos": f"{market_base}/catalog?view=canje"
+        if market_base
+        else "/productos?view=canje",
+        "catalogo_compras": f"{market_base}/catalog?view=compras"
+        if market_base
+        else "/productos?view=compras",
+        "catalogo_donaciones": f"{market_base}/catalog?view=donaciones"
+        if market_base
+        else "/productos?view=donaciones",
     }
 
     link_map: Dict[str, str] = {}
