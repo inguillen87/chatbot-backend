@@ -1544,8 +1544,17 @@ def _try_handle_emoji_shortcut(
     pregunta_str_menu = ""
     if isinstance(pregunta_original, str):
         pregunta_str_menu = pregunta_original
-    elif isinstance(pregunta_original, dict) and "pregunta" in pregunta_original:
-        pregunta_str_menu = pregunta_original["pregunta"]
+    elif isinstance(pregunta_original, dict):
+        if "pregunta" in pregunta_original:
+            pregunta_str_menu = pregunta_original["pregunta"]
+        # Cuando el cliente envía un emoji en un campo dedicado, usarlo como
+        # entrada principal para que los atajos funcionen en todos los estados.
+        if not pregunta_str_menu:
+            pregunta_str_menu = (
+                pregunta_original.get("emoji")
+                or pregunta_original.get("icon")
+                or pregunta_str_menu
+            )
 
     pregunta_str_menu = strip_variation_selector(pregunta_str_menu.strip())
 
@@ -1942,7 +1951,18 @@ def _normalize_pedir_info_value(pedir_info: Any) -> Optional[str]:
 
     if isinstance(pedir_info, str):
         cleaned = pedir_info.strip()
-        return cleaned or None
+        if not cleaned:
+            return None
+
+        # Handle values like "ubicacion, distrito" by picking the first
+        # meaningful pending field so we don't persist composite keys.
+        parts = [p.strip() for p in cleaned.replace(" y ", ",").split(",") if p.strip()]
+        for part in parts:
+            normalized_part = unicodedata.normalize("NFKD", part).encode("ascii", "ignore").decode("ascii").lower()
+            if normalized_part in CLAIM_PENDING_FIELDS:
+                return normalized_part
+
+        return cleaned
 
     return None
 
@@ -1992,6 +2012,57 @@ def _extract_value_for_expected_field(
         return raw_text.strip() or None
 
     return raw_text.strip() or None
+
+
+def _extract_additional_fields_from_message(raw_text: str, context: dict) -> Dict[str, str]:
+    """Extract as many structured fields as possible from a single user message.
+
+    This is used when the user provides multiple data points in one turn (e.g.,
+    email + teléfono + nombre + dirección). We keep it lightweight and purely
+    regex/heuristic-based, delegating full understanding to the LLM.
+    """
+
+    extracted: Dict[str, str] = {}
+    raw_text = raw_text or ""
+
+    email = extract_email(raw_text)
+    if email:
+        extracted["email"] = email
+
+    phones = extract_phone(raw_text)
+    if phones:
+        extracted["telefono"] = phones[0]
+
+    dni_values = extract_dni(raw_text)
+    if dni_values:
+        extracted["dni"] = dni_values[0]
+
+    name_value = extract_name(raw_text)
+    if name_value:
+        extracted["nombre"] = name_value
+
+    # If the user shared a structured location payload, prefer that.
+    if context.get("es_ubicacion") and context.get("ubicacion_usuario"):
+        location_payload = context.get("ubicacion_usuario") or {}
+        address = location_payload.get("address")
+        if address:
+            extracted["ubicacion"] = address
+        else:
+            lat = location_payload.get("latitude")
+            lon = location_payload.get("longitude")
+            if lat is not None and lon is not None:
+                extracted["ubicacion"] = f"Lat: {lat}, Lon: {lon}"
+
+    # Lightweight heuristic: if the text clearly looks like an address, capture
+    # it as 'ubicacion' without overriding a structured location already found.
+    if "ubicacion" not in extracted:
+        lowered = raw_text.lower()
+        if any(keyword in lowered for keyword in ["calle", "avenida", "av ", "esquina", "altura", "entre", "direccion"]):
+            cleaned_text = raw_text.strip()
+            if cleaned_text:
+                extracted["ubicacion"] = cleaned_text
+
+    return extracted
 
 _PRODUCT_CATALOG_CACHE = None
 def cargar_catalogo_productos():
@@ -3324,6 +3395,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             contexto_municipio_actual["esperando_info_llm"] = campo_esperado
         estabamos_esperando_dato = bool(campo_esperado)
 
+        datos_parciales = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
+
         expected_value_captured = False
 
         if context.get("es_ubicacion") and context.get("ubicacion_usuario"):
@@ -3333,8 +3406,6 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             logger_actual.info(
                 f"Guardando dato esperado '{campo_esperado}' en el contexto antes de llamar al LLM."
             )
-            datos_parciales = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
-
             valor_a_guardar: Optional[str] = None
             if campo_esperado == "ubicacion":
                 if context.get("ubicacion_usuario"):
@@ -3372,6 +3443,29 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 logger_actual.info(
                     f"No se pudo extraer un valor válido para '{campo_esperado}'. Se mantendrá la solicitud pendiente."
                 )
+
+        # Incluso si estábamos esperando un dato específico, intenta capturar otros
+        # campos de contacto/ubicación que el usuario pudo haber enviado en el mismo mensaje.
+        additional_fields = _extract_additional_fields_from_message(pregunta_str, context)
+        if additional_fields:
+            merged_fields = 0
+            for key, value in additional_fields.items():
+                if value and key not in datos_parciales:
+                    datos_parciales[key] = value
+                    merged_fields += 1
+            if merged_fields:
+                logger_actual.info(
+                    f"Datos adicionales detectados en un solo mensaje: {additional_fields}"
+                )
+
+            if (
+                campo_esperado
+                and not expected_value_captured
+                and campo_esperado in datos_parciales
+            ):
+                expected_value_captured = True
+                contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                contexto_municipio_actual.pop("esperando_info_llm", None)
 
         if expected_value_captured and (estabamos_esperando_dato or waiting_state_active):
             logger_actual.info(
@@ -7086,6 +7180,16 @@ def responder_municipio(
     if isinstance(pregunta_original, dict):
         received_payload = pregunta_original
         pregunta_str = received_payload.get("pregunta", "")
+
+        # Permitir que los mensajes compuestos solo por emoji se traten como
+        # texto de entrada principal (por ejemplo, 💧 para iniciar un reclamo
+        # de agua). Algunos clientes envían el emoji en un campo dedicado y
+        # dejan la pregunta vacía.
+        if not pregunta_str:
+            emoji_value = received_payload.get("emoji") or received_payload.get("icon")
+            if emoji_value:
+                pregunta_str = str(emoji_value)
+                received_payload["pregunta"] = pregunta_str
     elif isinstance(pregunta_original, str):
         pregunta_str = pregunta_original
         received_payload["pregunta"] = pregunta_original
