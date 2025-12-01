@@ -72,6 +72,40 @@ class ProductosTenantResolutionTest(unittest.TestCase):
         self.assertEqual(tenant.id, self.tenant.id)
         self.assertEqual(owner.id, self.owner.id)
 
+    def test_resolve_public_owner_requires_hint_when_anonymous(self):
+        """Sin token ni hints no debe devolver un tenant por defecto."""
+
+        with self.app.test_request_context("/productos"):
+            tenant, owner = productos._resolve_public_owner(require_explicit=True)
+
+        self.assertIsNone(tenant)
+        self.assertIsNone(owner)
+
+    def test_resolve_public_owner_from_user_tenant_slug(self):
+        """Debe usar tenant_slug del usuario cuando no tiene tenant_profile asociado."""
+
+        citizen = User(
+            name="Ciudadano", email="ciudadano@example.com", password_hash="hash", rol="usuario"
+        )
+        citizen.tenant_slug = self.tenant.slug
+        db.session.add(citizen)
+        db.session.commit()
+
+        token = generar_token(
+            citizen.id, citizen.rol, citizen.tipo_chat, getattr(citizen, "municipio_id", None), getattr(citizen, "pyme_id", None)
+        )
+
+        with self.app.test_request_context(
+            "/productos",
+            headers={"Authorization": f"Bearer {token}"},
+        ):
+            tenant, owner = productos._resolve_public_owner(require_explicit=True)
+
+        self.assertIsNotNone(tenant)
+        self.assertIsNotNone(owner)
+        self.assertEqual(tenant.id, self.tenant.id)
+        self.assertEqual(owner.id, self.owner.id)
+
 
 if __name__ == "__main__":
     unittest.main()
