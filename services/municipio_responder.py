@@ -1529,6 +1529,48 @@ def strip_variation_selector(s: str) -> str:
     return s.replace(VARIATION_SELECTOR, "") if isinstance(s, str) else s
 
 
+def _try_handle_emoji_shortcut(
+    pregunta_original,
+    contexto_municipio_actual: dict,
+    context,
+    chat_db_context,
+):
+    """Trigger quick actions when the user sends a single emoji.
+
+    This works regardless of the current conversation state so accessibility
+    users can always start a flow with an emoji-only message.
+    """
+
+    pregunta_str_menu = ""
+    if isinstance(pregunta_original, str):
+        pregunta_str_menu = pregunta_original
+    elif isinstance(pregunta_original, dict) and "pregunta" in pregunta_original:
+        pregunta_str_menu = pregunta_original["pregunta"]
+
+    pregunta_str_menu = strip_variation_selector(pregunta_str_menu.strip())
+
+    if not pregunta_str_menu:
+        return None
+
+    emoji_category = EMOJI_RECLAMO_CATEGORIES.get(pregunta_str_menu)
+    if emoji_category:
+        handler = ReclamoFlowHandler(context, chat_db_context)
+        response_dict = handler.start_flow(categoria_inicial=emoji_category)
+        contexto_municipio_actual["estado_conversacion"] = "EN_FLUJO_RECLAMO"
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return response_dict
+
+    emoji_action = EMOJI_MAIN_MENU_ACTIONS.get(pregunta_str_menu)
+    if emoji_action:
+        contexto_municipio_actual["estado_conversacion"] = None
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return handle_main_menu_action(emoji_action, context, chat_db_context)
+
+    return None
+
+
 def _can_use_global_emoji_shortcuts(estado_conversacion: str | None) -> bool:
     """Allow emoji shortcuts even when asking for the initial name.
 
@@ -6906,6 +6948,7 @@ def _get_ayuda_menu():
         ("❓", "Ayuda"),
         ("📝", "Iniciar un Reclamo"),
         ("💡", "Enviar una Sugerencia"),
+        ("💧", "Reportar pérdida de agua"),
         ("📞", "Contactos Útiles"),
         ("📅", "Solicitar Turnos"),
         ("💵", "Pagar Tasas Municipales"),
@@ -7331,35 +7374,12 @@ def responder_municipio(
             "fuente": "handler_consultar_reclamo",
         })
 
-    # Permitir atajos por emoji incluso si la conversación aún no tiene estado
-    # (p.ej., primer mensaje del usuario) o si está esperando una selección
-    # del menú principal.
-    if _can_use_global_emoji_shortcuts(estado_conversacion):
-        pregunta_str_menu = ""
-        if isinstance(pregunta_original, str):
-            pregunta_str_menu = pregunta_original
-        elif isinstance(pregunta_original, dict) and "pregunta" in pregunta_original:
-            pregunta_str_menu = pregunta_original["pregunta"]
-
-        pregunta_str_menu = strip_variation_selector(pregunta_str_menu.strip())
-
-        emoji_category = EMOJI_RECLAMO_CATEGORIES.get(pregunta_str_menu)
-        if emoji_category:
-            handler = ReclamoFlowHandler(context, chat_db_context)
-            response_dict = handler.start_flow(categoria_inicial=emoji_category)
-            contexto_municipio_actual['estado_conversacion'] = 'EN_FLUJO_RECLAMO'
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-            return _finalize_response(response_dict)
-
-        emoji_action = EMOJI_MAIN_MENU_ACTIONS.get(pregunta_str_menu)
-        if emoji_action:
-            contexto_municipio_actual['estado_conversacion'] = None
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-            response = handle_main_menu_action(emoji_action, context, chat_db_context)
-            if response:
-                return _finalize_response(response)
+    # Permitir atajos por emoji en cualquier estado para accesibilidad.
+    emoji_response = _try_handle_emoji_shortcut(
+        pregunta_original, contexto_municipio_actual, context, chat_db_context
+    )
+    if emoji_response:
+        return _finalize_response(emoji_response)
 
     # 1. Handle active conversation states first.
     if estado_conversacion:
