@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
@@ -101,6 +102,21 @@ class ProductosTenantResolutionTest(unittest.TestCase):
         ):
             tenant, owner = productos._resolve_public_owner(require_explicit=True)
 
+        self.assertIsNotNone(tenant)
+        self.assertIsNotNone(owner)
+        self.assertEqual(tenant.id, self.tenant.id)
+        self.assertEqual(owner.id, self.owner.id)
+
+    def test_resolve_public_owner_falls_back_to_resolver_when_anonymous(self):
+        """Debe degradar al resolver común aun sin hints cuando se permite público."""
+
+        with patch("routes.productos.resolve_tenant_only") as mock_resolver:
+            mock_resolver.return_value = self.tenant
+
+            with self.app.test_request_context("/productos"):
+                tenant, owner = productos._resolve_public_owner(require_explicit=False)
+
+        mock_resolver.assert_called_once()
         self.assertIsNotNone(tenant)
         self.assertIsNotNone(owner)
         self.assertEqual(tenant.id, self.tenant.id)
