@@ -810,11 +810,19 @@ def token_requerido(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         anon_id = get_or_create_anon_id()
-        if request.method == 'OPTIONS':
-            resp = make_response('', 204)
+
+        def _finalize_response(resp_obj, status: int | None = None):
+            resp = make_response(resp_obj, status) if status is not None else make_response(resp_obj)
             resp.headers.setdefault("X-Anon-Id", anon_id)
             resp.headers.setdefault("Anon-Id", anon_id)
-            return _set_anon_cookie(resp, anon_id)
+            try:
+                from routes.auth import _add_cors as _cors_helper
+            except Exception:
+                _cors_helper = lambda r, allow_credentials=False: r  # type: ignore[assignment]
+            return _cors_helper(_set_anon_cookie(resp, anon_id), allow_credentials=True)
+
+        if request.method == 'OPTIONS':
+            return _finalize_response('', 204)
 
         # Siempre intentar recuperar el token para exponerlo a las vistas que lo necesiten.
         raw_token = obtener_token()
@@ -833,11 +841,7 @@ def token_requerido(f):
             return f(current_user, *args, **kwargs)
 
         if not raw_token:
-            resp = jsonify({"error": "Token faltante o malformado"})
-            resp.headers.setdefault("X-Anon-Id", anon_id)
-            resp.headers.setdefault("Anon-Id", anon_id)
-            _set_anon_cookie(resp, anon_id)
-            return resp, 401
+            return _finalize_response(jsonify({"error": "Token faltante o malformado"}), 401)
 
         token = raw_token
         token_payload: Dict[str, Any] = {}
@@ -849,11 +853,7 @@ def token_requerido(f):
             owner_user = _lookup_owner_for_static_token(raw_token)
             if owner_user:
                 if not _widget_session_allowed(request.path, request.method):
-                    resp = jsonify({"error": "Token inválido o sesión expirada"})
-                    resp.headers.setdefault("X-Anon-Id", anon_id)
-                    resp.headers.setdefault("Anon-Id", anon_id)
-                    _set_anon_cookie(resp, anon_id)
-                    return resp, 403
+                    return _finalize_response(jsonify({"error": "Token inválido o sesión expirada"}), 403)
 
                 token, token_payload = _generate_widget_session_token(owner_user)
                 g.widget_session = True
@@ -865,18 +865,10 @@ def token_requerido(f):
                     request.path,
                 )
             else:
-                resp = jsonify({"error": "Token inválido o sesión expirada"})
-                resp.headers.setdefault("X-Anon-Id", anon_id)
-                resp.headers.setdefault("Anon-Id", anon_id)
-                _set_anon_cookie(resp, anon_id)
-                return resp, 401
+                return _finalize_response(jsonify({"error": "Token inválido o sesión expirada"}), 401)
 
         if token_payload.get("session_kind") == "widget" and not _widget_session_allowed(request.path, request.method):
-            resp = jsonify({"error": "Token inválido o sesión expirada"})
-            resp.headers.setdefault("X-Anon-Id", anon_id)
-            resp.headers.setdefault("Anon-Id", anon_id)
-            _set_anon_cookie(resp, anon_id)
-            return resp, 403
+            return _finalize_response(jsonify({"error": "Token inválido o sesión expirada"}), 403)
 
         g.token_payload = dict(token_payload) if token_payload else {}
         g.auth_token = token
@@ -913,14 +905,9 @@ def token_requerido(f):
                 cookie_args["domain"] = cookie_domain
 
             resp.set_cookie(**cookie_args)
-            resp.headers.setdefault("X-Anon-Id", anon_id)
-            resp.headers.setdefault("Anon-Id", anon_id)
-            return _set_anon_cookie(resp, anon_id)
+            return _finalize_response(resp)
 
-        resp = make_response(response)
-        resp.headers.setdefault("X-Anon-Id", anon_id)
-        resp.headers.setdefault("Anon-Id", anon_id)
-        return _set_anon_cookie(resp, anon_id)
+        return _finalize_response(response)
 
     return decorated
 
