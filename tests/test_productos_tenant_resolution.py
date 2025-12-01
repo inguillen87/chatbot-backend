@@ -72,6 +72,15 @@ class ProductosTenantResolutionTest(unittest.TestCase):
         self.assertEqual(tenant.id, self.tenant.id)
         self.assertEqual(owner.id, self.owner.id)
 
+    def test_resolve_public_owner_requires_hint_when_anonymous(self):
+        """Sin token ni hints no debe devolver un tenant por defecto."""
+
+        with self.app.test_request_context("/productos"):
+            tenant, owner = productos._resolve_public_owner(require_explicit=True)
+
+        self.assertIsNone(tenant)
+        self.assertIsNone(owner)
+
 
 if __name__ == "__main__":
     unittest.main()

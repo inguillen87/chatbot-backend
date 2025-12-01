@@ -121,6 +121,16 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
     if owner:
         return tenant, owner
 
+    # If the requester is authenticated, honor their tenant even without
+    # explicit hints to avoid leaking catalogs across tenants.
+    user = _resolve_authenticated_user()
+    tenant_for_user = _tenant_for_user(user) if user else None
+    if tenant_for_user:
+        g.tenant_profile = tenant_for_user
+        g.tenant_profile_slug = getattr(tenant_for_user, "slug", None)
+        owner = tenant_for_user.municipio or tenant_for_user.pyme or user
+        return tenant_for_user, owner
+
     path_tenant_slug = _tenant_slug_from_path(request.path)
 
     tenant_slug = (
@@ -203,15 +213,7 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
             if owner:
                 return tenant, owner
 
-    preferred_tipo = request.args.get("tipo") or "municipio"
-    owner = (
-        User.query.filter(func.lower(User.tipo_chat) == preferred_tipo.lower())
-        .order_by(User.id.asc())
-        .first()
-    ) or User.query.order_by(User.id.asc()).first()
-
-    tenant = _tenant_for_user(owner)
-    return tenant, owner
+    return None, None
 
 
 @productos_bp.route("", methods=["GET", "OPTIONS"], strict_slashes=False)
