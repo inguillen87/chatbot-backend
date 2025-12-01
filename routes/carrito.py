@@ -10,6 +10,8 @@ from config import ALLOWED_ORIGINS
 from models import CatalogoItem, TenantProfile, User, CatalogoModalidad
 from routes.catalogo import _formatear_producto
 from routes.productos import (
+    _lookup_tenant_by_slug,
+    _first_tenant_with_owner,
     _resolve_public_owner,
     _resolve_authenticated_user,
     _tenant_for_user,
@@ -169,22 +171,27 @@ def _resolve_owner_and_seed() -> Tuple[Optional[TenantProfile], Optional[User]]:
         or _tenant_slug_from_url(request.referrer)
     )
 
-    if tenant_slug_hint or widget_token:
-        try:
-            tenant = resolve_tenant_only(
-                tenant_slug=tenant_slug_hint,
-                widget_token=widget_token,
-                require_explicit_slug=False,
-            )
-        except TenantResolutionError:
-            tenant = None
-        if tenant:
-            owner = tenant.municipio or tenant.pyme
-            if owner:
-                g.tenant_profile = tenant
-                g.tenant_profile_slug = getattr(tenant, "slug", None)
-                ensure_seed_catalog(owner, tenant)
-                return tenant, owner
+    try:
+        tenant = resolve_tenant_only(
+            tenant_slug=tenant_slug_hint,
+            widget_token=widget_token,
+            require_explicit_slug=False,
+        )
+    except TenantResolutionError:
+        tenant = None
+    if tenant:
+        owner = tenant.municipio or tenant.pyme
+        if owner:
+            g.tenant_profile = tenant
+            g.tenant_profile_slug = getattr(tenant, "slug", None)
+            ensure_seed_catalog(owner, tenant)
+            return tenant, owner
+        fallback_tenant, fallback_owner = _first_tenant_with_owner()
+        if fallback_tenant and fallback_owner:
+            g.tenant_profile = fallback_tenant
+            g.tenant_profile_slug = getattr(fallback_tenant, "slug", None)
+            ensure_seed_catalog(fallback_owner, fallback_tenant)
+            return fallback_tenant, fallback_owner
 
     tenant, owner = _resolve_public_owner(require_explicit=True)
     if tenant is None or owner is None:
@@ -208,11 +215,7 @@ def _resolve_public_tenant_by_slug(
         tenant = None
 
     if tenant is None:
-        tenant = (
-            TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug_clean)
-            .order_by(TenantProfile.id.desc())
-            .first()
-        )
+        tenant = _lookup_tenant_by_slug(slug_clean)
 
     owner = tenant.municipio or tenant.pyme if tenant else None
     if tenant and owner:

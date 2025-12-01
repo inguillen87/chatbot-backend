@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
@@ -100,6 +101,52 @@ class ProductosTenantResolutionTest(unittest.TestCase):
             headers={"Authorization": f"Bearer {token}"},
         ):
             tenant, owner = productos._resolve_public_owner(require_explicit=True)
+
+        self.assertIsNotNone(tenant)
+        self.assertIsNotNone(owner)
+        self.assertEqual(tenant.id, self.tenant.id)
+        self.assertEqual(owner.id, self.owner.id)
+
+    def test_resolve_public_owner_falls_back_to_resolver_when_anonymous(self):
+        """Debe degradar al resolver común aun sin hints cuando se permite público."""
+
+        with patch("routes.productos.resolve_tenant_only") as mock_resolver:
+            mock_resolver.return_value = self.tenant
+
+            with self.app.test_request_context("/productos"):
+                tenant, owner = productos._resolve_public_owner(require_explicit=False)
+
+        mock_resolver.assert_called_once()
+        self.assertIsNotNone(tenant)
+        self.assertIsNotNone(owner)
+        self.assertEqual(tenant.id, self.tenant.id)
+        self.assertEqual(owner.id, self.owner.id)
+
+    def test_resolve_public_owner_falls_back_when_resolver_returns_ownerless(self):
+        """Si el resolver devuelve un tenant sin owner, debe degradar a uno válido."""
+
+        ownerless_tenant = TenantProfile(slug="ownerless", nombre="Sin owner", tipo="municipio")
+
+        with patch("routes.productos.resolve_tenant_only") as mock_resolver:
+            mock_resolver.return_value = ownerless_tenant
+
+            with self.app.test_request_context("/productos"):
+                tenant, owner = productos._resolve_public_owner(require_explicit=False)
+
+        mock_resolver.assert_called_once()
+        self.assertIsNotNone(tenant)
+        self.assertIsNotNone(owner)
+        self.assertEqual(tenant.id, self.tenant.id)
+        self.assertEqual(owner.id, self.owner.id)
+
+    def test_resolve_public_owner_from_market_referrer(self):
+        """Debe extraer el slug desde rutas tipo /market/<slug>/... del referer."""
+
+        with self.app.test_request_context(
+            "/productos",
+            headers={"Referer": "https://www.chatboc.ar/market/municipalidad-de-junin/cart"},
+        ):
+            tenant, owner = productos._resolve_public_owner(require_explicit=False)
 
         self.assertIsNotNone(tenant)
         self.assertIsNotNone(owner)
