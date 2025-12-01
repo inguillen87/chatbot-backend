@@ -461,12 +461,32 @@ def widget_config():
     except TenantResolutionError as exc:
         return jsonify({"error": str(exc)}), 404
 
+    is_integration_preview = "/integracion" in (request.headers.get("Referer", "") or "")
+
     payload = {
         "tenant": tenant.to_public_dict(),
         "widget": _build_widget_embed_payload(tenant, widget_token),
+        # The integration builder renders its own preview iframe; the global
+        # site-wide widget bubble must stay hidden to avoid duplicated widgets
+        # on /t/[tenant]/integracion.
+        "suppress_global_widget": True,
+        "integration_preview": is_integration_preview,
     }
 
-    return _log_widget_public_request(jsonify(payload), tenant, entity_token=widget_token)
+    response = jsonify(payload)
+
+    if is_integration_preview:
+        response.headers.setdefault("X-Suppress-Global-Widget", "true")
+        response.set_cookie(
+            key="suppress_global_widget",
+            value="true",
+            secure=current_app.config.get("SESSION_COOKIE_SECURE", True),
+            httponly=False,
+            samesite=current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
+            path="/",
+        )
+
+    return _log_widget_public_request(response, tenant, entity_token=widget_token)
 
 
 def _municipios_response():
