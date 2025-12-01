@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from flask import current_app, g, request, abort
+from flask import current_app, g, jsonify, make_response, request
+from werkzeug.exceptions import HTTPException
 from sqlalchemy import func
 
 from models import TenantProfile
+from utils.tenant import get_current_tenant, get_current_tenant_slug, require_tenant as _decorator_require_tenant
 
 
 def _normalize_slug(value: Optional[str]) -> Optional[str]:
@@ -84,7 +86,14 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
 
 
 def _resolve_tenant_profile() -> Optional[TenantProfile]:
-    slug = _normalize_slug(request.headers.get("X-Tenant"))
+    view_args = getattr(request, "view_args", None) or {}
+
+    slug = _normalize_slug(
+        get_current_tenant_slug()
+        or view_args.get("tenant_slug")
+        or view_args.get("tenant")
+        or request.headers.get("X-Tenant")
+    )
     if slug:
         tenant = _find_tenant_by_slug(slug)
         if tenant:
@@ -111,7 +120,7 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         if tenant:
             return tenant
 
-    slug = _normalize_slug(request.args.get("tenant"))
+    slug = _normalize_slug(request.args.get("tenant") or view_args.get("slug"))
     if slug:
         tenant = _find_tenant_by_slug(slug)
         if tenant:
@@ -141,18 +150,35 @@ def tenant_middleware(app) -> None:
         tenant = _resolve_tenant_profile()
         g.tenant_profile = tenant
         g.tenant_profile_slug = tenant.slug if tenant else None
+        if tenant:
+            g.current_tenant = tenant
+            g.current_tenant_slug = tenant.slug
 
 
-def require_tenant() -> TenantProfile:
-    """Ensure a tenant is resolved in the current context or abort with 404."""
-    if getattr(g, "tenant_profile", None):
-        return g.tenant_profile
+def require_tenant(func=None) -> TenantProfile:
+    """Ensure a tenant is resolved in the current context or abort with JSON.
 
-    # Attempt resolution if for some reason it wasn't done or failed
-    tenant = _resolve_tenant_profile()
+    The callable can be used as a direct helper (returning the tenant or
+    raising an HTTPException) or as a decorator for view functions.
+    """
+
+    if func is not None and callable(func):
+        return _decorator_require_tenant(func)
+
+    tenant = getattr(g, "tenant_profile", None) or getattr(g, "current_tenant", None)
+    if tenant:
+        return tenant
+
+    tenant = get_current_tenant()
     if tenant:
         g.tenant_profile = tenant
         g.tenant_profile_slug = tenant.slug
+        g.current_tenant = tenant
+        g.current_tenant_slug = tenant.slug
         return tenant
 
-    abort(404, description="Tenant no especificado o no encontrado")
+    response = make_response(jsonify({"error": "tenant requerido"}), 400)
+    error = HTTPException(description="tenant requerido")
+    error.code = 400
+    error.response = response
+    raise error
