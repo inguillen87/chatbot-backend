@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from flask import current_app, g, request, abort
+from flask import current_app, g, jsonify, make_response, request
+from werkzeug.exceptions import HTTPException
 from sqlalchemy import func
 
 from models import TenantProfile
@@ -84,7 +85,13 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
 
 
 def _resolve_tenant_profile() -> Optional[TenantProfile]:
-    slug = _normalize_slug(request.headers.get("X-Tenant"))
+    view_args = getattr(request, "view_args", None) or {}
+
+    slug = _normalize_slug(
+        view_args.get("tenant_slug")
+        or view_args.get("tenant")
+        or request.headers.get("X-Tenant")
+    )
     if slug:
         tenant = _find_tenant_by_slug(slug)
         if tenant:
@@ -111,7 +118,7 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         if tenant:
             return tenant
 
-    slug = _normalize_slug(request.args.get("tenant"))
+    slug = _normalize_slug(request.args.get("tenant") or view_args.get("slug"))
     if slug:
         tenant = _find_tenant_by_slug(slug)
         if tenant:
@@ -144,7 +151,7 @@ def tenant_middleware(app) -> None:
 
 
 def require_tenant() -> TenantProfile:
-    """Ensure a tenant is resolved in the current context or abort with 404."""
+    """Ensure a tenant is resolved in the current context or abort with JSON."""
     if getattr(g, "tenant_profile", None):
         return g.tenant_profile
 
@@ -155,4 +162,10 @@ def require_tenant() -> TenantProfile:
         g.tenant_profile_slug = tenant.slug
         return tenant
 
-    abort(404, description="Tenant no especificado o no encontrado")
+    response = make_response(
+        jsonify({"error": "Tenant no especificado o no encontrado"}), 404
+    )
+    error = HTTPException(description="Tenant no especificado o no encontrado")
+    error.code = 404
+    error.response = response
+    raise error

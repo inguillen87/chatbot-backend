@@ -66,15 +66,20 @@ class TenantContextResolutionTests(unittest.TestCase):
             tenant = require_tenant()
             self.assertEqual(tenant.slug, "demo")
 
-    def test_missing_tenant_aborts_with_clear_message(self):
+    def test_missing_tenant_aborts_with_json_payload(self):
         with self.app.test_request_context("/api/pwa/public/unknown/encuestas"):
             with self.assertRaises(HTTPException) as ctx:
                 require_tenant()
 
             self.assertEqual(ctx.exception.code, 404)
-            self.assertIn(
-                "Tenant no especificado o no encontrado", ctx.exception.description
-            )
+            self.assertEqual(ctx.exception.response.get_json(), {"error": "Tenant no especificado o no encontrado"})
+
+    def test_resolves_tenant_from_view_args(self):
+        with self.app.test_request_context("/api/demo/productos") as ctx:
+            ctx.request.view_args = {"tenant_slug": "demo"}
+            tenant = require_tenant()
+
+            self.assertEqual(tenant.slug, "demo")
 
 
 if __name__ == "__main__":

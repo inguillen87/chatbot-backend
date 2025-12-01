@@ -437,19 +437,33 @@ def _refresh(tok, minutes):
     return ntok
 
 
-def _add_cors(resp):
+def _add_cors(resp, *, allow_credentials: bool = False):
     origin = request.headers.get("Origin")
     allowed = os.getenv("CORS_ALLOWED_ORIGINS", "*").strip()
-    if allowed == "*" and origin:
+
+    # Permitir orígenes explícitos; si se necesitan credenciales no podemos usar "*".
+    if allowed == "*" and origin and allow_credentials:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
+    elif allowed == "*" and origin:
         resp.headers["Access-Control-Allow-Origin"] = "*"
     else:
         allowed_set = {x.strip() for x in allowed.split(",") if x.strip()}
         if origin in allowed_set:
             resp.headers["Access-Control-Allow-Origin"] = origin
             resp.headers["Vary"] = "Origin"
+
     resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    resp.headers[
+        "Access-Control-Allow-Headers"
+    ] = "Content-Type, Authorization, X-Anon-Id, Anon-Id, X-Widget-Token, X-Tenant"
     resp.headers["Access-Control-Max-Age"] = "600"
+    if allow_credentials:
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
+        resp.headers.setdefault(
+            "Access-Control-Expose-Headers",
+            "X-Entity-Token, X-Widget-Token, X-Anon-Id, Anon-Id",
+        )
     return resp
 
 
