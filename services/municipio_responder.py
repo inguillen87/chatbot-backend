@@ -5164,8 +5164,10 @@ def _catalogo_widget_visible(context: Optional[dict]) -> bool:
         if isinstance(flag, bool):
             return flag
 
-    # Por defecto evitamos mostrar catálogo en municipios a menos que sea explícito.
-    return False
+    # Si no hay flags explícitos, habilitamos catálogo cuando podemos construir URLs.
+    # Esto permite mantener el menú visible en tenantes legados que no setean los flags
+    # nuevos, pero sí usan las rutas de catálogo anteriores.
+    return bool(_resolve_catalogo_base_url(context))
 
 
 def _resolve_tenant_identifiers(context: Optional[dict]) -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -5828,6 +5830,42 @@ def _resolve_encuestas_short_base_url(context: dict, base_url: str) -> str:
     return short_base.rstrip("/")
 
 
+def _build_fallback_encuestas_for_junin(
+    base_url: str, context: Optional[dict] = None
+) -> list[dict]:
+    """Return a curated list of encuestas for Junín with short share URLs."""
+
+    context = context or {}
+    cleaned_base = _clean_url_candidate(base_url) or "https://chatboc.ar"
+    cleaned_base = cleaned_base.rstrip("/")
+    short_base = _resolve_encuestas_short_base_url(context, cleaned_base)
+
+    titulo = "Participación Ciudadana Junín 2025"
+    descripcion = (
+        "Queremos conocer tus prioridades para planificar obras, seguridad y "
+        "actividades en todo Junín. Contanos qué es importante para tu barrio."
+    )
+    slug = "9df156"
+
+    share_url = urljoin(f"{cleaned_base}/", f"e/{slug}")
+    share_short_url = urljoin(f"{short_base}/", f"e/{slug}") if short_base else share_url
+    share_message = f"Participá en {titulo}: {share_short_url or share_url}"
+
+    return [
+        {
+            "data": {
+                "titulo": titulo,
+                "descripcion": descripcion,
+                "slug": slug,
+            },
+            "slug_publico": slug,
+            "share_url": share_url,
+            "share_short_url": share_short_url,
+            "share_message": share_message,
+        }
+    ]
+
+
 def _is_domain_mapped_base_url_for_tenant(
     base_url: str, tenant_id: Optional[int]
 ) -> bool:
@@ -5873,7 +5911,12 @@ def _format_url_for_display(
     prefer_text_param: bool = False,
     widget: bool = False,
 ) -> str:
-    """Return a compact, human-friendly representation of a public URL."""
+    """Return a compact, human-friendly representation of a public URL.
+
+    When used inside the widget/WhatsApp menus we keep the query string so the
+    user can copy a fully functional URL that already incluye parámetros de
+    tenant/owner requeridos por catálogo y beneficios.
+    """
 
     if not isinstance(url, str):
         return ""
@@ -5888,7 +5931,9 @@ def _format_url_for_display(
         netloc = netloc[4:]
 
     path = parsed.path or ""
-    display = f"{netloc}{path}".strip()
+    query = parsed.query or ""
+    query_suffix = f"?{query}" if widget and query else ""
+    display = f"{netloc}{path}{query_suffix}".strip()
 
     if prefer_text_param:
         params = parse_qs(parsed.query)
@@ -5902,8 +5947,9 @@ def _format_url_for_display(
             return display
 
     if widget and "canal=widget_chat" in parsed.query:
-        display = f"{display}?widget" if display else "?widget"
-    elif parsed.query:
+        connector = "&" if "?" in display else "?"
+        display = f"{display}{connector}widget" if display else "?widget"
+    elif parsed.query and not query_suffix:
         display = f"{display}?{parsed.query}" if display else parsed.query
 
     if parsed.fragment:
@@ -6363,7 +6409,24 @@ def _get_encuestas_menu(context: dict) -> dict:
             "generar_audio": True,
         }
 
-    if not encuestas:
+    base_url = _resolve_encuestas_base_url(context) or "https://chatboc.ar"
+    api_base_url = _resolve_encuestas_api_base_url(context)
+
+    encuestas_data: list[dict] = []
+    for encuesta, slug_publico in encuestas:
+        try:
+            data = serialize_public_encuesta(encuesta, slug_publico=slug_publico)
+        except Exception:
+            logger.exception("[encuestas] No se pudo serializar la encuesta %s", slug_publico)
+            continue
+        encuestas_data.append({"data": data, "slug_publico": slug_publico})
+
+    if not encuestas_data:
+        encuestas_data = _build_fallback_encuestas_for_junin(
+            base_url or "https://chatboc.ar", context
+        )
+
+    if not encuestas_data:
         return {
             "message_body": (
                 "Por el momento no hay encuestas activas. Te avisaremos cuando "
@@ -6374,9 +6437,6 @@ def _get_encuestas_menu(context: dict) -> dict:
             "fuente": "submenu_encuestas_v1",
             "generar_audio": True,
         }
-
-    base_url = _resolve_encuestas_base_url(context)
-    api_base_url = _resolve_encuestas_api_base_url(context)
     primary_banner_url, media_attachments = _resolve_encuestas_menu_media_urls(
         context, api_base_url
     )
@@ -6390,8 +6450,11 @@ def _get_encuestas_menu(context: dict) -> dict:
     whatsapp_blocks: List[Dict[str, str]] = []
     survey_buttons: List[Dict[str, Any]] = []
     survey_metadata: List[Dict[str, Any]] = []
-    for index, (encuesta, slug_publico) in enumerate(encuestas, start=1):
-        data = serialize_public_encuesta(encuesta, slug_publico=slug_publico)
+    for index, encuesta_entry in enumerate(encuestas_data, start=1):
+        data = encuesta_entry.get("data") or {}
+        slug_publico = encuesta_entry.get("slug_publico") or data.get("slug")
+        if not slug_publico:
+            continue
         titulo = data.get("titulo") or "Encuesta ciudadana"
         descripcion = (data.get("descripcion") or "").strip()
         if descripcion:
@@ -6399,17 +6462,24 @@ def _get_encuestas_menu(context: dict) -> dict:
             if len(descripcion) > 180:
                 descripcion = descripcion[:177].rstrip() + "…"
 
-        share_url = urljoin(f"{base_url}/", f"e/{slug_publico}")
+        share_url = encuesta_entry.get("share_url") or urljoin(
+            f"{base_url}/", f"e/{slug_publico}"
+        )
         short_slug = _extract_short_public_slug(slug_publico)
         short_base_url = _resolve_encuestas_short_base_url(context, base_url)
-        share_short_url = urljoin(f"{short_base_url}/", f"e/{short_slug}")
+        share_short_url = encuesta_entry.get("share_short_url") or urljoin(
+            f"{short_base_url}/", f"e/{short_slug}"
+        )
         qr_url: Optional[str] = None
         if api_base_url:
             qr_url = urljoin(
                 f"{api_base_url}/", f"api/public/encuestas/{slug_publico}/qr"
             )
-        share_message = f"Participá en {titulo}: {share_short_url}"
+        share_message = encuesta_entry.get("share_message") or (
+            f"Participá en {titulo}: {share_short_url or share_url}"
+        )
         whatsapp_share_url = f"https://wa.me/?text={quote_plus(share_message)}"
+        whatsapp_share_short_url = f"https://wa.me/?text={quote_plus(share_short_url or share_url)}"
         whatsapp_share_display_url = None
         share_target_for_display = share_short_url or share_url
         if share_target_for_display:
@@ -6429,7 +6499,9 @@ def _get_encuestas_menu(context: dict) -> dict:
 
         open_line = f"   • *Abrir*: {display_share_url}"
         share_line_full = None
-        share_url_for_body = whatsapp_share_url or whatsapp_share_display_url
+        share_url_for_body = (
+            whatsapp_share_short_url or whatsapp_share_url or whatsapp_share_display_url
+        )
         if share_url_for_body:
             share_line_full = f"   • *Compartir*: {share_url_for_body}"
 
