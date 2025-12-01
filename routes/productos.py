@@ -83,11 +83,24 @@ def _tenant_for_user(user: Optional[User]) -> Optional[TenantProfile]:
     if not user:
         return None
 
-    return (
+    tenant = (
         getattr(user, "tenant_profile", None)
         or getattr(user, "tenant_profile_municipio", None)
         or getattr(user, "tenant_profile_pyme", None)
     )
+
+    if tenant:
+        return tenant
+
+    slug = getattr(user, "tenant_slug", None)
+    if slug:
+        tenant = _lookup_tenant_by_slug(slug)
+        if tenant:
+            g.tenant_profile = tenant
+            g.tenant_profile_slug = getattr(tenant, "slug", None)
+            return tenant
+
+    return None
 
 
 def _tenant_slug_from_path(path: str | None) -> Optional[str]:
