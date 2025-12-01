@@ -27,6 +27,7 @@ from utils.permissions import require_role
 
 
 market_bp = Blueprint("market", __name__, url_prefix="/api/market")
+market_public_bp = Blueprint("market_public", __name__, url_prefix="/market")
 market_admin_bp = Blueprint("market_admin", __name__, url_prefix="/api/admin/market")
 
 
@@ -757,6 +758,69 @@ def public_cart_url(slug: str):
         path = f"market/{tenant.slug}/cart"
 
     return jsonify({"cart_url": full_url, "base_url": base_url, "tenant_slug": tenant.slug, "path": path})
+
+
+@market_public_bp.route("/<slug>/catalog", methods=["GET", "OPTIONS"])
+def public_catalog_alias(slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+    return public_catalog(slug)
+
+
+@market_public_bp.route("/<slug>/catalog/<int:product_id>", methods=["GET", "OPTIONS"])
+def public_product_detail_alias(slug: str, product_id: int):
+    if request.method == "OPTIONS":
+        return "", 204
+    return public_product_detail(slug, product_id)
+
+
+@market_public_bp.route("/<slug>/cart", methods=["GET", "OPTIONS"])
+def public_cart_summary_alias(slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+    return public_cart_summary(slug)
+
+
+@market_public_bp.route("/<slug>/cart/add", methods=["POST", "OPTIONS"])
+def public_cart_add_alias(slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+    return public_cart_add(slug)
+
+
+@market_public_bp.route("/<slug>/cart/remove", methods=["POST", "OPTIONS"])
+def public_cart_remove_alias(slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+    return public_cart_remove(slug)
+
+
+@market_public_bp.route("/<slug>/cart/clear", methods=["POST", "OPTIONS"])
+def public_cart_clear_alias(slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+    return public_cart_clear(slug)
+
+
+@market_public_bp.route("/<slug>/cart/checkout", methods=["POST", "OPTIONS"])
+def public_cart_checkout_alias(slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+    return public_cart_checkout(slug)
+
+
+@market_public_bp.route("/<slug>/checkout/start", methods=["POST", "OPTIONS"])
+def start_checkout_alias(slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+    return start_checkout(slug)
+
+
+@market_public_bp.route("/<slug>/cart/url", methods=["GET", "OPTIONS"])
+def public_cart_url_alias(slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+    return public_cart_url(slug)
 
 
 @market_bp.route("/pwa/public/<tenant_slug>/productos", methods=["GET", "OPTIONS"])
