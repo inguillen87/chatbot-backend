@@ -244,6 +244,29 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     }
 
 
+def _normalize_widget_config(config: dict | None) -> dict:
+    """Return a widget-friendly config with consistent shapes.
+
+    The frontend expects certain objects (menu, copy) to always be dictionaries
+    with the keys it deserializes. When tenants store strings or lists by
+    mistake, React components can end up invoking methods on non-callable
+    values (e.g., `_t is not a function`). This helper coerces the structure to
+    predictable defaults so the widget renders safely.
+    """
+
+    cfg = config if isinstance(config, dict) else {}
+
+    menu_config = cfg.get("menu") if isinstance(cfg.get("menu"), dict) else None
+    if menu_config is None or "children" not in menu_config:
+        cfg.setdefault("menu", {"children": []})
+
+    copy_config = cfg.get("copy") if isinstance(cfg.get("copy"), dict) else None
+    if copy_config is None:
+        cfg.setdefault("copy", {})
+
+    return cfg
+
+
 @public_resolver_bp.route("/resolve-tenant", methods=["POST"])
 def resolve_tenant_endpoint():
     payload = request.get_json(force=True, silent=True) or {}
@@ -262,17 +285,14 @@ def resolve_tenant_endpoint():
         return jsonify({"error": str(exc)}), 404
 
     tenant_info = tenant.to_public_dict()
-    tenant_info.setdefault("config", tenant.configuracion or {})
+    tenant_info.setdefault("config", _normalize_widget_config(tenant.configuracion))
     tenant_info["marketplace"] = _marketplace_meta(tenant)
 
     # Garantizar que el frontend reciba una estructura de menú consistente
     # aunque el tenant no tenga configuración explícita. El widget espera un
     # objeto con la clave ``children`` para renderizar las secciones sin
     # explotar en una desestructuración.
-    config = tenant_info["config"] if isinstance(tenant_info.get("config"), dict) else {}
-    menu_config = config.get("menu") if isinstance(config.get("menu"), dict) else None
-    if menu_config is None or "children" not in menu_config:
-        config.setdefault("menu", {"children": []})
+    config = _normalize_widget_config(tenant_info.get("config"))
     tenant_info["config"] = config
 
     response = jsonify(
@@ -389,17 +409,14 @@ def tenant_profile():
         )
 
     tenant_info = tenant.to_public_dict()
-    tenant_info.setdefault("config", tenant.configuracion or {})
+    tenant_info.setdefault("config", _normalize_widget_config(tenant.configuracion))
     tenant_info["marketplace"] = _marketplace_meta(tenant)
 
     # Garantizar que el frontend reciba una estructura de menú consistente
     # aunque el tenant no tenga configuración explícita. El widget espera un
     # objeto con la clave ``children`` para renderizar las secciones sin
     # explotar en una desestructuración.
-    config = tenant_info["config"] if isinstance(tenant_info.get("config"), dict) else {}
-    menu_config = config.get("menu") if isinstance(config.get("menu"), dict) else None
-    if menu_config is None or "children" not in menu_config:
-        config.setdefault("menu", {"children": []})
+    config = _normalize_widget_config(tenant_info.get("config"))
     tenant_info["config"] = config
 
     canonical_widget_token = _canonical_widget_token(tenant, widget_token)
