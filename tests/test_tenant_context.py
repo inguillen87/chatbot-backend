@@ -84,6 +84,12 @@ class TenantContextResolutionTests(unittest.TestCase):
 
             self.assertEqual(tenant.slug, "demo")
 
+    def test_resolves_tenant_from_query_params(self):
+        with self.app.test_request_context("/productos?tenant=demo"):
+            tenant = require_tenant()
+
+            self.assertEqual(tenant.slug, "demo")
+
 
 if __name__ == "__main__":
     unittest.main()
