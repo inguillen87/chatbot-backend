@@ -67,26 +67,40 @@ def _ensure_session_id() -> str:
     return session_id
 
 
-def _require_authenticated_user():
-    if not current_user.is_authenticated:
-        abort(make_response(jsonify({"error": "Autenticación requerida"}), 401))
-
-
 def _get_or_create_cart(tenant: TenantProfile) -> MarketCart:
-    _require_authenticated_user()
-
     session_id = _ensure_session_id()
-    user_id = current_user.id
+    user_id = current_user.id if current_user.is_authenticated else None
 
-    cart = (
-        MarketCart.query.filter(
-            MarketCart.tenant_id == tenant.id,
-            MarketCart.status == "open",
-            MarketCart.user_id == user_id,
-        )
-        .order_by(MarketCart.updated_at.desc())
-        .first()
+    base_query = MarketCart.query.filter(
+        MarketCart.tenant_id == tenant.id,
+        MarketCart.status == "open",
     )
+
+    stored_carts = session.get("market_cart_ids") or {}
+    cart_id = stored_carts.get(tenant.slug)
+    cart = None
+
+    if cart_id:
+        cart = base_query.filter(MarketCart.id == cart_id).first()
+        if cart and not (
+            cart.session_id == session_id
+            or (user_id and cart.user_id == user_id)
+        ):
+            cart = None
+
+    if cart is None and user_id:
+        cart = (
+            base_query.filter(MarketCart.user_id == user_id)
+            .order_by(MarketCart.updated_at.desc())
+            .first()
+        )
+
+    if cart is None:
+        cart = (
+            base_query.filter(MarketCart.session_id == session_id)
+            .order_by(MarketCart.updated_at.desc())
+            .first()
+        )
 
     if cart is None:
         cart = MarketCart(
@@ -98,8 +112,21 @@ def _get_or_create_cart(tenant: TenantProfile) -> MarketCart:
         )
         db.session.add(cart)
         db.session.commit()
+    else:
+        modified = False
+        if cart.session_id != session_id:
+            cart.session_id = session_id
+            modified = True
+        if user_id and cart.user_id is None:
+            cart.user_id = user_id
+            if not cart.contact_phone:
+                cart.contact_phone = getattr(current_user, "telefono", None)
+            if not cart.contact_name:
+                cart.contact_name = getattr(current_user, "name", None)
+            modified = True
+        if modified:
+            db.session.commit()
 
-    stored_carts = session.get("market_cart_ids") or {}
     if stored_carts.get(tenant.slug) != cart.id:
         stored_carts[tenant.slug] = cart.id
         session["market_cart_ids"] = stored_carts
@@ -544,7 +571,7 @@ def start_checkout(slug: str):
         total_monetary=total_monetary,
         total_points=total_points,
         currency="ARS",
-        metadata={"totales_monedas": summary.get("totales_monedas", {})},
+        metadata_payload={"totales_monedas": summary.get("totales_monedas", {})},
     )
     db.session.add(order)
 
