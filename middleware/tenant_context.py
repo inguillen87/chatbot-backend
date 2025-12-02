@@ -32,6 +32,11 @@ def _fallback_default_tenant() -> Optional[TenantProfile]:
     ``require_explicit_slug`` is False, ensuring anonymous/public
     endpoints never fail with a hard 400 when at least one tenant exists.
     """
+    preferred_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
+    if preferred_slug:
+        tenant = _find_tenant_by_slug(preferred_slug)
+        if tenant:
+            return tenant
 
     return TenantProfile.query.order_by(TenantProfile.id.asc()).first()
 
