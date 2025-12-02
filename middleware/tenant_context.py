@@ -25,6 +25,17 @@ def _find_tenant_by_slug(slug: str) -> Optional[TenantProfile]:
     return TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug.lower()).first()
 
 
+def _fallback_default_tenant() -> Optional[TenantProfile]:
+    """Return the first available tenant as a last-resort fallback.
+
+    This mirrors the behavior of ``resolve_tenant_only`` when
+    ``require_explicit_slug`` is False, ensuring anonymous/public
+    endpoints never fail with a hard 400 when at least one tenant exists.
+    """
+
+    return TenantProfile.query.order_by(TenantProfile.id.asc()).first()
+
+
 def _find_tenant_by_widget_token(token: str) -> Optional[TenantProfile]:
     if not token:
         return None
@@ -173,7 +184,9 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         if tenant:
             return tenant
 
-    host = request.host.split(":", 1)[0].lower() if request.host else None
+    forwarded_host = request.headers.get("X-Forwarded-Host")
+    host_header = forwarded_host or request.host
+    host = host_header.split(":", 1)[0].lower() if host_header else None
     if host:
         mapping = current_app.config.get("TENANT_DOMAIN_MAP", {})
         mapped = mapping.get(host)
@@ -196,7 +209,12 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         if tenant:
             return tenant
 
-    return None
+    # As a defensive fallback, return the first available tenant so
+    # anonymous/public endpoints do not hard-fail when at least one tenant
+    # exists in the database. This mirrors the lenient behavior of
+    # ``resolve_tenant_only(require_explicit_slug=False)`` used by public
+    # endpoints and avoids 400/401 responses during domain discovery.
+    return _fallback_default_tenant()
 
 
 def tenant_middleware(app) -> None:
@@ -281,6 +299,14 @@ def require_tenant(func=None) -> TenantProfile:
     except TenantResolutionError:
         tenant = None
 
+    if tenant:
+        g.tenant_profile = tenant
+        g.tenant_profile_slug = tenant.slug
+        g.current_tenant = tenant
+        g.current_tenant_slug = tenant.slug
+        return tenant
+
+    tenant = _fallback_default_tenant()
     if tenant:
         g.tenant_profile = tenant
         g.tenant_profile_slug = tenant.slug

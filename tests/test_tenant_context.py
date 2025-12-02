@@ -71,8 +71,21 @@ class TenantContextResolutionTests(unittest.TestCase):
             tenant = require_tenant()
             self.assertEqual(tenant.slug, "demo")
 
+    def test_resolves_tenant_from_forwarded_host_mapping(self):
+        self.app.config["TENANT_DOMAIN_MAP"] = {"custom.chatboc.ar": "demo"}
+        with self.app.test_request_context("/", headers={"X-Forwarded-Host": "custom.chatboc.ar"}):
+            tenant = require_tenant()
+
+        self.assertEqual(tenant.slug, "demo")
+
     def test_unknown_tenant_slug_falls_back_to_first_available(self):
         with self.app.test_request_context("/api/pwa/public/unknown/encuestas"):
+            tenant = require_tenant()
+
+        self.assertEqual(tenant.slug, self.tenant.slug)
+
+    def test_fallback_to_first_tenant_when_no_hints(self):
+        with self.app.test_request_context("/"):
             tenant = require_tenant()
 
         self.assertEqual(tenant.slug, self.tenant.slug)
