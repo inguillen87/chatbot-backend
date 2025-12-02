@@ -4,9 +4,18 @@ from flask import Blueprint, current_app, g, jsonify, make_response, request
 from flask_cors import cross_origin
 from services.logic import es_rubro_publico, normalizar_rubro
 import os
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm.attributes import flag_modified
-from models import ChatSessionContext, MunicipioTicket, PymeTicket, Rubro, TicketComentario, User, generate_token
+from models import (
+    ChatSessionContext,
+    MunicipioTicket,
+    PymeTicket,
+    Rubro,
+    TenantProfile,
+    TicketComentario,
+    User,
+    generate_token,
+)
 from extensions import db
 from functools import wraps
 import uuid
@@ -127,6 +136,69 @@ def _resolve_owner_token(user: User) -> Optional[str]:
     if not owner_user:
         return None
 
+
+def _tenant_for_owner(owner: Optional[User]) -> Optional[TenantProfile]:
+    """Return the TenantProfile owned by ``owner`` if present."""
+
+    if owner is None:
+        return None
+
+    return (
+        TenantProfile.query.filter(
+            or_(
+                TenantProfile.municipio_id == owner.id,
+                TenantProfile.pyme_id == owner.id,
+            )
+        )
+        .order_by(TenantProfile.id.desc())
+        .first()
+    )
+
+
+def _attach_user_to_tenant(user: User, tenant: Optional[TenantProfile]) -> None:
+    """Persist the tenant_id on the user if it's missing or outdated."""
+
+    if not tenant or not user:
+        return
+
+    if hasattr(user, "tenant_id"):
+        if user.tenant_id != tenant.id:
+            user.tenant_id = tenant.id
+            db.session.add(user)
+    else:
+        current_slug = getattr(user, "tenant_slug", None)
+        if current_slug != tenant.slug:
+            user.tenant_slug = tenant.slug
+            db.session.add(user)
+
+
+def _tenant_market_payload(tenant: Optional[TenantProfile]) -> Dict[str, object]:
+    """Expose marketplace hints so the widget can redirect after login."""
+
+    if not tenant:
+        return {"enabled": False}
+
+    from routes.pwa_public import _build_public_cart_url
+
+    enabled = (tenant.tipo or "").lower() == "pyme"
+    full_url, _, _ = _build_public_cart_url(tenant)
+
+    payload: Dict[str, object] = {
+        "enabled": enabled,
+        "tenant_id": tenant.id,
+        "tenant_slug": tenant.slug,
+        "tenant_tipo": tenant.tipo,
+        "public_cart_url": full_url,
+    }
+
+    catalog_enabled = tenant.configuracion.get("widget_catalog_enabled") if isinstance(tenant.configuracion, dict) else None
+    if isinstance(catalog_enabled, bool):
+        payload["catalog_enabled"] = catalog_enabled
+    else:
+        payload["catalog_enabled"] = enabled
+
+    return payload
+
     legacy_value = getattr(owner_user, "token", None)
     if legacy_value and not _looks_like_jwt(legacy_value):
         try:
@@ -142,6 +214,9 @@ def _resolve_owner_token(user: User) -> Optional[str]:
             db.session.rollback()
 
     return get_or_create_entity_token(owner_user)
+
+
+# --- Entity token propagation helpers -------------------------------------------------
 
 
 def _include_entity_token_fields(
@@ -362,19 +437,44 @@ def _refresh(tok, minutes):
     return ntok
 
 
-def _add_cors(resp):
+_DEFAULT_CORS_HEADERS = (
+    "Content-Type, Authorization, X-Anon-Id, Anon-Id, "
+    "X-Widget-Token, X-Tenant, x-tenant, X-Tenant-Id, x-tenant-id"
+)
+
+
+def _add_cors(
+    resp,
+    *,
+    allow_credentials: bool = False,
+    allow_methods: list[str] | tuple[str, ...] | None = None,
+    allow_headers: str | None = None,
+):
     origin = request.headers.get("Origin")
     allowed = os.getenv("CORS_ALLOWED_ORIGINS", "*").strip()
-    if allowed == "*" and origin:
+
+    # Permitir orígenes explícitos; si se necesitan credenciales no podemos usar "*".
+    if allowed == "*" and origin and allow_credentials:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
+    elif allowed == "*" and origin:
         resp.headers["Access-Control-Allow-Origin"] = "*"
     else:
         allowed_set = {x.strip() for x in allowed.split(",") if x.strip()}
         if origin in allowed_set:
             resp.headers["Access-Control-Allow-Origin"] = origin
             resp.headers["Vary"] = "Origin"
-    resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+
+    methods_header = ", ".join(allow_methods) if allow_methods else "POST, OPTIONS"
+    resp.headers["Access-Control-Allow-Methods"] = methods_header
+    resp.headers["Access-Control-Allow-Headers"] = allow_headers or _DEFAULT_CORS_HEADERS
     resp.headers["Access-Control-Max-Age"] = "600"
+    if allow_credentials:
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
+        resp.headers.setdefault(
+            "Access-Control-Expose-Headers",
+            "X-Entity-Token, X-Widget-Token, X-Anon-Id, Anon-Id",
+        )
     return resp
 
 
@@ -504,6 +604,10 @@ def login():
     # Generar el token JWT
     jwt_payload = {
         'user_id': user.id,
+        'rol': user.rol,
+        'tipo_chat': tipo_chat,
+        'empresa_id': user.empresa_id,
+        'municipio_id': user.municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -641,6 +745,10 @@ def google_login():
         # Generar el token JWT
         jwt_payload = {
             'user_id': user.id,
+            'rol': user.rol,
+            'tipo_chat': tipo_chat,
+            'empresa_id': user.empresa_id,
+            'municipio_id': user.municipio_id,
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
         jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -838,6 +946,10 @@ def register():
         # Generar el token JWT
         jwt_payload = {
             'user_id': user.id,
+            'rol': user.rol,
+            'tipo_chat': user.tipo_chat,
+            'empresa_id': user.empresa_id,
+            'municipio_id': user.municipio_id,
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
         jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -900,6 +1012,8 @@ def register_from_widget(user):
     name = data.get('name') or "Sin nombre"
     email = data.get('email')
     password = data.get('password')
+    telefono_raw = data.get('telefono') or data.get('phone')
+    telefono = telefono_raw.strip() if isinstance(telefono_raw, str) and telefono_raw.strip() else None
     anon_id = (
         request.headers.get("X-Anon-Id")
         or request.headers.get("Anon-Id")
@@ -911,6 +1025,13 @@ def register_from_widget(user):
             "error": "Faltan datos obligatorios.",
             "botones": [{"texto": "Volver al chat"}],
         }), 400
+
+    owner_tenant = _tenant_for_owner(user)
+    if not owner_tenant:
+        return (
+            jsonify({"error": "Tenant no especificado o no encontrado para el widget"}),
+            404,
+        )
 
     if User.query.filter_by(email=email.strip().lower()).first():
         return jsonify({
@@ -936,6 +1057,7 @@ def register_from_widget(user):
         plan="gratis",
         rol="usuario",
         tipo_chat=getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(user.rubro) else "pyme"),
+        telefono=telefono,
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
         tags=tags_value,
@@ -948,6 +1070,9 @@ def register_from_widget(user):
         db.session.add(nuevo)
         db.session.commit()
 
+        _attach_user_to_tenant(nuevo, owner_tenant)
+        db.session.commit()
+
         # --------- BLOQUE CRÍTICO --------------
         if anon_id:
             from services.ticket_service import servicio_tickets
@@ -957,6 +1082,10 @@ def register_from_widget(user):
         # Generar el token JWT
         jwt_payload = {
             'user_id': nuevo.id,
+            'rol': nuevo.rol,
+            'tipo_chat': nuevo.tipo_chat,
+            'empresa_id': nuevo.empresa_id,
+            'municipio_id': nuevo.municipio_id,
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
         jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -973,8 +1102,10 @@ def register_from_widget(user):
             "rol": nuevo.rol,
             "tipo_chat": nuevo.tipo_chat,
             "empresa_id": nuevo.empresa_id,
-            "tenant_slug": getattr(nuevo, "tenant_slug", None),
-            "tenantSlug": getattr(nuevo, "tenant_slug", None),
+            "tenant_id": owner_tenant.id if owner_tenant else None,
+            "tenant_slug": owner_tenant.slug if owner_tenant else getattr(nuevo, "tenant_slug", None),
+            "tenantSlug": owner_tenant.slug if owner_tenant else getattr(nuevo, "tenant_slug", None),
+            "marketplace": _tenant_market_payload(owner_tenant),
         }
         entity_token_value = _include_entity_token_fields(response_payload, owner_token)
 
@@ -1010,6 +1141,10 @@ def login_from_widget(owner_user):
     if not email or not password:
         return jsonify({"error": "Email y contraseña requeridos."}), 400
 
+    owner_tenant = _tenant_for_owner(owner_user)
+    if not owner_tenant:
+        return jsonify({"error": "Tenant no especificado o no encontrado para el widget"}), 404
+
     user = User.query.filter_by(
         email=email.strip().lower(), empresa_id=owner_user.id
     ).first()
@@ -1020,12 +1155,22 @@ def login_from_widget(owner_user):
         from services.ticket_service import servicio_tickets
         servicio_tickets.migrar_tickets_de_anonimo(anon_id, user.id)
 
-    rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
+    _attach_user_to_tenant(user, owner_tenant)
+    db.session.add(user)
+    db.session.commit()
+
+    user_rubro = getattr(user, "rubro", None)
+    owner_rubro = getattr(owner_user, "rubro", None)
+    rubro_nombre = user_rubro.nombre if user_rubro else owner_rubro.nombre if owner_rubro else "General"
     tipo_chat = getattr(user, "tipo_chat", None) or getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
 
     # Generar el token JWT
     jwt_payload = {
         'user_id': user.id,
+        'rol': user.rol,
+        'tipo_chat': tipo_chat,
+        'empresa_id': user.empresa_id,
+        'municipio_id': user.municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -1041,8 +1186,10 @@ def login_from_widget(owner_user):
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
         "categorias": getattr(user, "categorias_lista", []),
-        "tenant_slug": getattr(user, "tenant_slug", None),
-        "tenantSlug": getattr(user, "tenant_slug", None),
+        "tenant_id": owner_tenant.id if owner_tenant else None,
+        "tenant_slug": owner_tenant.slug if owner_tenant else getattr(user, "tenant_slug", None),
+        "tenantSlug": owner_tenant.slug if owner_tenant else getattr(user, "tenant_slug", None),
+        "marketplace": _tenant_market_payload(owner_tenant),
     }
 
     entity_token_value = _include_entity_token_fields(response_payload, owner_token)
@@ -1088,6 +1235,8 @@ def chatuser_register_panel():
             404,
         )
 
+    owner_tenant = _tenant_for_owner(owner_user)
+
     name = data.get('name')
     email = data.get('email')
     password = data.get('password')
@@ -1101,6 +1250,8 @@ def chatuser_register_panel():
         "municipio" if es_rubro_publico(owner_user.rubro) else "pyme"
     )
     owner_municipio_id = getattr(owner_user, "municipio_id", None)
+    telefono_raw = data.get('telefono') or data.get('phone')
+    telefono = telefono_raw.strip() if isinstance(telefono_raw, str) and telefono_raw.strip() else None
 
     # If the user is anonymous, we can assign a default password
     if not password:
@@ -1125,6 +1276,9 @@ def chatuser_register_panel():
                 existing_user.municipio_id = owner_municipio_id
             if not existing_user.tipo_chat:
                 existing_user.tipo_chat = owner_tipo_chat
+            if telefono and not existing_user.telefono:
+                existing_user.telefono = telefono
+            _attach_user_to_tenant(existing_user, owner_tenant)
             db.session.add(existing_user)
             db.session.commit()
             # Migrate tickets if anon_id is present
@@ -1135,6 +1289,10 @@ def chatuser_register_panel():
             # Generar el token JWT
             jwt_payload = {
                 'user_id': existing_user.id,
+                'rol': existing_user.rol,
+                'tipo_chat': existing_user.tipo_chat,
+                'empresa_id': existing_user.empresa_id,
+                'municipio_id': existing_user.municipio_id,
                 'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
             }
             jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -1148,8 +1306,11 @@ def chatuser_register_panel():
                 "tipo_chat": existing_user.tipo_chat or owner_tipo_chat,
                 "municipio_id": existing_user.municipio_id,
                 "empresa_id": existing_user.empresa_id,
+                "tenant_id": owner_tenant.id if owner_tenant else None,
+                "tenant_slug": owner_tenant.slug if owner_tenant else None,
                 "already_registered": True,
-                "message": "Usuario ya registrado con esta entidad."
+                "message": "Usuario ya registrado con esta entidad.",
+                "marketplace": _tenant_market_payload(owner_tenant),
             })
             if anon_id:
                 resp.headers["X-Anon-Id"] = anon_id
@@ -1185,6 +1346,7 @@ def chatuser_register_panel():
         plan="gratis",
         rol="lead" if not data.get('password') else "usuario",
         tipo_chat=owner_tipo_chat,
+        telefono=telefono,
         acepta_marketing=acepta_marketing,
         fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
         tags=tags_value,
@@ -1196,6 +1358,10 @@ def chatuser_register_panel():
     try:
         db.session.add(nuevo)
         db.session.commit()
+
+        if owner_tenant:
+            _attach_user_to_tenant(nuevo, owner_tenant)
+            db.session.commit()
 
         # Log successful registration and association
         current_app.logger.info(f"[chatuser_register_panel] Nuevo usuario '{nuevo.email}' (ID: {nuevo.id}) registrado y asociado con la empresa/owner ID: {owner_user.id} ({owner_user.nombre_empresa if owner_user.nombre_empresa else owner_user.email}).")
@@ -1222,6 +1388,10 @@ def chatuser_register_panel():
         # Generar el token JWT
         jwt_payload = {
             'user_id': nuevo.id,
+            'rol': nuevo.rol,
+            'tipo_chat': nuevo.tipo_chat,
+            'empresa_id': nuevo.empresa_id,
+            'municipio_id': nuevo.municipio_id,
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
         jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -1238,7 +1408,10 @@ def chatuser_register_panel():
             "tipo_chat": nuevo.tipo_chat,
             "municipio_id": nuevo.municipio_id,
             "empresa_id": nuevo.empresa_id,
+            "tenant_id": owner_tenant.id if owner_tenant else None,
+            "tenant_slug": owner_tenant.slug if owner_tenant else None,
             "already_registered": False,
+            "marketplace": _tenant_market_payload(owner_tenant),
         })
         if anon_id:
             resp.headers["X-Anon-Id"] = anon_id
@@ -1268,6 +1441,8 @@ def chatuser_login_panel():
     if not owner_user:
         return jsonify({"error": "Token de empresa inválido"}), 404
 
+    owner_tenant = _tenant_for_owner(owner_user)
+
     email = data.get('email')
     password = data.get('password')
     anon_id = (
@@ -1287,12 +1462,20 @@ def chatuser_login_panel():
         from services.ticket_service import servicio_tickets
         servicio_tickets.migrar_tickets_de_anonimo(anon_id, user.id)
 
+    _attach_user_to_tenant(user, owner_tenant)
+    db.session.add(user)
+    db.session.commit()
+
     rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
     tipo_chat = getattr(user, "tipo_chat", None) or getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
 
     # Generar el token JWT
     jwt_payload = {
         'user_id': user.id,
+        'rol': user.rol,
+        'tipo_chat': tipo_chat,
+        'empresa_id': user.empresa_id,
+        'municipio_id': user.municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
@@ -1306,6 +1489,9 @@ def chatuser_login_panel():
         "empresa_id": user.empresa_id,
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
+        "tenant_id": owner_tenant.id if owner_tenant else None,
+        "tenant_slug": owner_tenant.slug if owner_tenant else None,
+        "marketplace": _tenant_market_payload(owner_tenant),
     })
     if anon_id:
         resp.headers["X-Anon-Id"] = anon_id
@@ -1390,9 +1576,16 @@ def dashboard_info(user: User):
         # }
     })
 
-@auth_bp.route('/me', methods=['GET', 'PUT', 'OPTIONS'])
-@auth_bp.route('/perfil', methods=['GET', 'PUT', 'OPTIONS'])
-@auth_bp.route('/profile', methods=['GET', 'PUT', 'OPTIONS'])
+@auth_bp.route(
+    '/me', methods=['GET', 'PUT', 'OPTIONS'], provide_automatic_options=False
+)
+@auth_bp.route(
+    '/perfil', methods=['GET', 'PUT', 'OPTIONS'], provide_automatic_options=False
+)
+@auth_bp.route(
+    '/profile', methods=['GET', 'PUT', 'OPTIONS'], provide_automatic_options=False
+)
+@cross_origin(supports_credentials=True)
 @token_requerido
 def me_perfil(user):
     """

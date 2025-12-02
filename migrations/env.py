@@ -61,6 +61,7 @@ def _choose_raw_url() -> str:
 
     # 3) env vars
     env_candidates = [
+        "ALEMBIC_DB_URL",  # permite inyectar explícitamente la URL desde scripts externos
         "SQLALCHEMY_DATABASE_URI",
         "DATABASE_URL",
         "PG_EXTERNAL",

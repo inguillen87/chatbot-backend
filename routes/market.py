@@ -2,8 +2,19 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Optional
+from urllib.parse import quote
 
-from flask import Blueprint, abort, jsonify, make_response, request, g, session
+from flask import (
+    Blueprint,
+    abort,
+    current_app,
+    jsonify,
+    make_response,
+    render_template,
+    request,
+    g,
+    session,
+)
 from flask_login import current_user
 from sqlalchemy import func, or_
 
@@ -31,9 +42,9 @@ market_admin_bp = Blueprint("market_admin", __name__, url_prefix="/api/admin/mar
 
 
 def _resolve_tenant(slug: str) -> TenantProfile:
-    slug_clean = (slug or "").strip().lower()
+    slug_clean = _canonical_slug(slug)
     if not slug_clean:
-        abort(make_response(jsonify({"error": "Slug requerido"}), 400))
+        abort(400, description="Slug requerido")
 
     try:
         # Reutilizamos el mismo resolver multitenant usado en el resto de la app
@@ -50,7 +61,18 @@ def _resolve_tenant(slug: str) -> TenantProfile:
         )
 
     if tenant is None:
-        abort(make_response(jsonify({"error": "Tenant no encontrado"}), 404))
+        fallback_slug = _canonical_slug(
+            (current_app.config or {}).get("MARKETPLACE_DEFAULT_TENANT")
+        )
+        if fallback_slug and fallback_slug != slug_clean:
+            tenant = (
+                TenantProfile.query.filter(func.lower(TenantProfile.slug) == fallback_slug)
+                .order_by(TenantProfile.id.desc())
+                .first()
+            )
+
+    if tenant is None:
+        abort(404, description="Tenant no encontrado")
 
     g.tenant_profile = tenant
     g.tenant_profile_slug = tenant.slug
@@ -59,6 +81,30 @@ def _resolve_tenant(slug: str) -> TenantProfile:
 
 def _tenant_owner(tenant: TenantProfile) -> Optional[User]:
     return tenant.municipio or tenant.pyme
+
+
+def _canonical_slug(slug: Optional[str]) -> Optional[str]:
+    slug_clean = (slug or "").strip().lower()
+    if not slug_clean:
+        return slug_clean
+
+    alias_map = {
+        "municipio": "municipalidad-de-junin",
+        "muni": "municipalidad-de-junin",
+        "municipalidad": "municipalidad-de-junin",
+        "market": "municipalidad-de-junin",
+    }
+
+    resolved = alias_map.get(slug_clean, slug_clean)
+    default_hint = (current_app.config or {}).get(
+        "MARKETPLACE_DEFAULT_TENANT", "municipalidad-de-junin"
+    )
+
+    # Permite que el slug "market" sin contexto apunte a un tenant demo configurable.
+    if resolved in {"market", "demo"}:
+        resolved = default_hint
+
+    return resolved
 
 
 def _ensure_session_id() -> str:
@@ -163,7 +209,7 @@ def _get_or_create_cart_for_user(
     if not user or not getattr(user, "is_authenticated", False):
         abort(make_response(jsonify({"error": "Autenticación requerida"}), 401))
 
-    cart = (
+    user_cart = (
         MarketCart.query.filter(
             MarketCart.tenant_id == tenant.id,
             MarketCart.status == "open",
@@ -355,7 +401,7 @@ def public_catalog(slug: str):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
     if owner is None:
-        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
+        abort(404, description="Tenant sin propietario")
 
     ensure_seed_catalog(owner, tenant)
 
@@ -456,7 +502,7 @@ def public_cart_summary(current_user, slug: str):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
     if owner is None:
-        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
+        abort(404, description="Tenant sin propietario")
 
     ensure_seed_catalog(owner, tenant)
     cart = _get_or_create_cart_for_user(tenant, current_user, create_if_missing=False)
@@ -474,7 +520,7 @@ def public_cart_add(current_user, slug: str):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
     if owner is None:
-        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
+        abort(404, description="Tenant sin propietario")
 
     ensure_seed_catalog(owner, tenant)
     payload = request.get_json(silent=True) or {}
@@ -528,7 +574,7 @@ def public_cart_remove(current_user, slug: str):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
     if owner is None:
-        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
+        abort(404, description="Tenant sin propietario")
 
     payload = request.get_json(silent=True) or {}
     item_id = payload.get("product_id") or payload.get("catalogo_item_id") or payload.get("item_id")
@@ -603,7 +649,7 @@ def start_checkout(current_user, slug: str):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
     if owner is None:
-        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
+        abort(404, description="Tenant sin propietario")
 
     cart = _get_or_create_cart_for_user(tenant, current_user, create_if_missing=False)
     if cart is None:

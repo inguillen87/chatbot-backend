@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, abort, current_app, g  # Basic Flask components
+from flask import Blueprint, request, jsonify, abort, current_app, g, has_app_context  # Basic Flask components
 from twilio.request_validator import RequestValidator  # For validating Twilio requests
 from twilio.rest import Client  # For sending messages via Twilio
 import os  # For accessing environment variables
@@ -8,14 +8,15 @@ import json
 import threading
 import re
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
 from extensions import db  # Import db instance for database operations
 import uuid
 from services.logic import responder_chatboc  # Import the correct chatbot logic processor
+from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm import joinedload  # To potentially eager load User.rubro
-from utils.db_utils import safe_flag_modified
+from utils.db_utils import ensure_chat_session_context_schema, safe_flag_modified
 from services.gcs_service import upload_to_gcs
 from services.attachment_service import create_attachment_with_thumbnail
 from services.llm_utils import extract_multiple_contact_details_llm
@@ -36,6 +37,73 @@ webhook_bp = Blueprint('whatsapp_webhook', __name__)
 # chunks that comply with Twilio's limits and send them sequentially.
 
 MAX_TWILIO_BODY_LENGTH = 1600
+ALLOWED_MEDIA_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".mp3",
+    ".wav",
+    ".ogg",
+    ".mp4",
+}
+
+
+def _is_valid_media_url(url: Optional[str]) -> bool:
+    """Return True when the URL uses HTTPS and has an allowed extension."""
+
+    if not url:
+        return False
+
+    parsed = urlsplit(str(url))
+    if parsed.scheme.lower() != "https":
+        return False
+
+    path = (parsed.path or "").lower()
+    if "." not in path:
+        return False
+
+    extension = path.rsplit(".", 1)[-1]
+    return f".{extension}" in ALLOWED_MEDIA_EXTENSIONS
+
+
+def _normalize_media_base(url: str) -> str:
+    base_url = None
+    if has_app_context():
+        base_url = current_app.config.get("BASE_URL") or current_app.config.get("PUBLIC_BASE_URL")
+    if not base_url:
+        return url
+    base = str(base_url).rstrip("/")
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+    return urljoin(f"{base}/", url.lstrip("/"))
+
+
+def _prepare_media_param(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate and normalize Twilio media parameters.
+
+    Twilio rejects unsupported media types. This helper filters out
+    unsafe URLs (non-HTTPS or disallowed extensions) and expands relative
+    URLs using the configured ``BASE_URL`` so outbound webhooks can reach
+    static assets reliably.
+    """
+
+    prepared = dict(params or {})
+    media_urls = prepared.get("media_url") or []
+    normalized_urls: list[str] = []
+
+    for candidate in media_urls:
+        normalized = _normalize_media_base(str(candidate))
+        if _is_valid_media_url(normalized):
+            normalized_urls.append(normalized)
+
+    if normalized_urls:
+        prepared["media_url"] = normalized_urls
+    else:
+        prepared.pop("media_url", None)
+
+    return prepared
 
 
 def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
@@ -748,11 +816,53 @@ def whatsapp_webhook():
     g.owner_user = client_user
 
     empresa_id = client_user.id
+    tenant_profile = (
+        getattr(client_user, "tenant_profile", None)
+        or getattr(client_user, "tenant_profile_municipio", None)
+        or getattr(client_user, "tenant_profile_pyme", None)
+    )
+    tenant_id = getattr(tenant_profile, "id", None)
     from services.pymes import get_or_create_user_by_phone
     end_user = get_or_create_user_by_phone(from_number_cleaned, client_user)
 
     chat_session_id_internal = f"whatsapp_{empresa_id}_{from_number_cleaned}"
-    session_context_db_entry = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id_internal).first()
+
+    ensure_chat_session_context_schema(db.session)
+    try:
+        session_context_db_entry = ChatSessionContext.query.filter_by(
+            chat_session_id=chat_session_id_internal
+        ).first()
+    except ProgrammingError as exc:
+        current_app.logger.warning(
+            "[WHATSAPP_WEBHOOK] tenant_id missing when querying chat_session_context; retrying after safeguard",
+            exc_info=exc,
+        )
+        db.session.rollback()
+        ensure_chat_session_context_schema(db.session)
+        try:
+            session_context_db_entry = ChatSessionContext.query.filter_by(
+                chat_session_id=chat_session_id_internal
+            ).first()
+        except ProgrammingError as exc_retry:
+            current_app.logger.exception(
+                "[WHATSAPP_WEBHOOK] Error accediendo a chat_session_context (schema mismatch)",
+                exc_info=exc_retry,
+            )
+            db.session.rollback()
+            return (
+                "Recibimos tu mensaje pero estamos ajustando el servicio. Intentalo nuevamente en unos minutos.",
+                200,
+            )
+    except SQLAlchemyError as exc:
+        current_app.logger.exception(
+            "[WHATSAPP_WEBHOOK] Error de base de datos obteniendo el contexto de sesión",
+            exc_info=exc,
+        )
+        db.session.rollback()
+        return (
+            "Estamos teniendo un problema momentáneo al procesar tu mensaje. Probá de nuevo en breve.",
+            200,
+        )
 
     if not session_context_db_entry:
         initial_session_data = {
@@ -764,9 +874,16 @@ def whatsapp_webhook():
             "mensajes_previos_llm_formato": []
         }
         session_context_db_entry = ChatSessionContext(
-            chat_session_id=chat_session_id_internal, user_id=empresa_id,
-            anon_id=from_number_cleaned, context_data=initial_session_data
+            chat_session_id=chat_session_id_internal,
+            user_id=empresa_id,
+            tenant_id=tenant_id,
+            anon_id=from_number_cleaned,
+            context_data=initial_session_data,
         )
+        db.session.add(session_context_db_entry)
+        db.session.commit()
+    elif tenant_id and not session_context_db_entry.tenant_id:
+        session_context_db_entry.tenant_id = tenant_id
         db.session.add(session_context_db_entry)
         db.session.commit()
 

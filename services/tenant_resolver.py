@@ -72,6 +72,36 @@ def _tenant_by_widget_token(token: Optional[str]) -> Optional[TenantProfile]:
     )
 
 
+def _prune_widget_token_from_other_tenants(token: str, keep_slug: str | None) -> None:
+    """Remove ``token`` from tenants other than ``keep_slug`` to avoid collisions."""
+
+    if not token:
+        return
+
+    query = TenantProfile.query.filter(
+        TenantProfile.configuracion["widget_tokens"].astext.contains(token)  # type: ignore[index]
+    )
+
+    if keep_slug:
+        query = query.filter(func.lower(TenantProfile.slug) != keep_slug.lower())
+
+    for tenant in query.all():
+        cfg = tenant.configuracion or {}
+        tokens = cfg.get("widget_tokens")
+        cleaned: list[str] = []
+
+        if isinstance(tokens, str):
+            cleaned = [t for t in [tokens] if t != token]
+        elif isinstance(tokens, list):
+            cleaned = [t for t in tokens if t != token]
+
+        cfg["widget_tokens"] = cleaned
+        tenant.configuracion = cfg
+        db.session.add(tenant)
+
+    db.session.commit()
+
+
 def _register_widget_token(tenant: Optional[TenantProfile], token: Optional[str]) -> None:
     """Persist the widget token inside the tenant configuration for reuse."""
 
@@ -180,6 +210,12 @@ def resolve_tenant_and_user(
                 (TenantProfile.municipio_id == owner_id) | (TenantProfile.pyme_id == owner_id)
             ).first()
 
+    preferred_slug = _clean_slug(tenant_slug)
+    if tenant and preferred_slug and tenant.slug.lower() != preferred_slug.lower():
+        slug_match = _tenant_by_slug(preferred_slug)
+        if slug_match:
+            tenant = slug_match
+
     if not tenant:
         fallback_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
         tenant = _tenant_by_slug(fallback_slug)
@@ -191,6 +227,8 @@ def resolve_tenant_and_user(
         raise TenantResolutionError("Tenant no encontrado para el contexto dado")
 
     _register_widget_token(tenant, widget_token)
+    if widget_token and preferred_slug and tenant.slug.lower() == preferred_slug.lower():
+        _prune_widget_token_from_other_tenants(widget_token, tenant.slug)
 
     if current_user and getattr(current_user, "is_authenticated", False):
         return tenant, current_user, False
@@ -222,7 +260,8 @@ def resolve_tenant_only(
     resuelva.
     """
 
-    tenant = _tenant_by_slug(tenant_slug)
+    preferred_slug = _clean_slug(tenant_slug)
+    tenant = _tenant_by_slug(preferred_slug)
 
     if (
         not tenant
@@ -244,6 +283,11 @@ def resolve_tenant_only(
 
     if not tenant:
         tenant = getattr(g, "tenant_profile", None)
+    if tenant and preferred_slug and tenant.slug.lower() != preferred_slug.lower():
+        slug_match = _tenant_by_slug(preferred_slug)
+        if slug_match:
+            tenant = slug_match
+
     if not tenant:
         fallback_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
         tenant = _tenant_by_slug(fallback_slug)
@@ -254,6 +298,8 @@ def resolve_tenant_only(
         raise TenantResolutionError("Tenant no encontrado para el contexto dado")
 
     _register_widget_token(tenant, widget_token)
+    if widget_token and preferred_slug and tenant.slug.lower() == preferred_slug.lower():
+        _prune_widget_token_from_other_tenants(widget_token, tenant.slug)
 
     return tenant
 

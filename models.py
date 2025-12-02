@@ -150,6 +150,22 @@ class Rubro(db.Model):
     def __repr__(self):
         return f"<Rubro {self.nombre}>"
 
+class Categoria(db.Model):
+    __tablename__ = "categoria"
+    id = db.Column(db.Integer, primary_key=True)
+    nombre = db.Column(db.String(100), nullable=False)
+    municipio_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    users = db.relationship('User', secondary='user_categorias', back_populates='categorias')
+
+    def __repr__(self):
+        return f"<Categoria {self.nombre}>"
+
+# Association table for User and Categoria
+user_categorias = db.Table('user_categorias',
+    db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
+    db.Column('categoria_id', db.Integer, db.ForeignKey('categoria.id'), primary_key=True)
+)
+
 class QA(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, nullable=True)
@@ -238,6 +254,7 @@ class User(db.Model, UserMixin):
         lazy=True,
         foreign_keys='MunicipioTicket.municipio_id',
     )
+    categorias = db.relationship('Categoria', secondary='user_categorias', back_populates='users')
     fecha_creacion = db.Column(db.DateTime(timezone=True), default=get_local_now) # Nuevo campo
 
     def set_password(self, password):
@@ -598,6 +615,7 @@ class WebAuthnCredential(db.Model, TimestampMixin):
 class PymeTicket(db.Model):
     __tablename__ = "pyme_ticket"
     id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True, index=True)
     pregunta = db.Column(db.Text, nullable=False)
     asunto = db.Column(db.String(200), nullable=True)
     categoria = db.Column(db.String(100), nullable=True)
@@ -908,6 +926,7 @@ class CatalogoItem(db.Model):
             defer(cls.precio_por_caja),
             defer(cls.unidad_por_caja),
             defer(cls.precio_monetario),
+            defer(cls.pdf_url),
         )
 
 class CatalogoEmbedding(db.Model):
@@ -1436,6 +1455,7 @@ class PromocionAlcance(db.Model):
 class ChatSessionContext(db.Model):
     __tablename__ = "chat_session_context"
     chat_session_id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
     anon_id = db.Column(db.String(80), nullable=True, index=True) # Similar to MunicipioTicket.anon_id
     context_data = db.Column(JSONType, nullable=True) # Stores combined context (municipio, pyme, history, idempotency keys)
@@ -1506,6 +1526,7 @@ class EncEncuesta(db.Model, TimestampMixin):
     descripcion = db.Column(db.Text, nullable=True)
     tipo = db.Column(db.String(50), nullable=False, default="opinion")
     estado = db.Column(db.String(30), nullable=False, default="borrador")
+    puntos_recompensa = db.Column(db.Integer, default=0, nullable=True)
     inicio_at = db.Column(db.DateTime(timezone=True), nullable=True)
     fin_at = db.Column(db.DateTime(timezone=True), nullable=True)
     requiere_identidad = db.Column(db.Boolean, default=False, nullable=False)

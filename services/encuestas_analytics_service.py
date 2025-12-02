@@ -578,14 +578,17 @@ def get_heatmap(
     provider_hint = map_config.get("provider") if isinstance(map_config, dict) else None
     if not provider_hint or provider_hint == "none":
         provider_hint = "maplibre"
-    metadata["heatmap_layer"] = {
+    heatmap_layer = {
         "kind": "heatmap",
         "supported_formats": supported_formats,
         "preferred_format": preferred_format,
         "provider_hint": provider_hint,
         "supports_filters": bool(map_filter["keys"]),
         "filter_keys": map_filter["keys"],
+        "source_keys": {"points": "points", "geojson": "points_geojson"},
     }
+    metadata["heatmap_layer"] = heatmap_layer
+    metadata["map_layers"] = {"heatmap": heatmap_layer}
     metadata["map_filter"] = map_filter
     return {"points": points, "cells": cells, "metadata": metadata}
 

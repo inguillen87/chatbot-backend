@@ -2,22 +2,28 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-from flask import Blueprint, jsonify, request, session
+from flask import Blueprint, g, jsonify, request, session
 from flask_cors import cross_origin
 from sqlalchemy import func
 
 from config import ALLOWED_ORIGINS
+from middleware import require_tenant
 from models import CatalogoItem, TenantProfile, User, CatalogoModalidad
 from routes.catalogo import _formatear_producto
 from routes.productos import (
+    _lookup_tenant_by_slug,
+    _first_tenant_with_owner,
     _resolve_public_owner,
     _resolve_authenticated_user,
     _tenant_for_user,
+    _tenant_slug_from_url,
 )
 from services.catalog_seed import ensure_seed_catalog
 from services.cart import add_item, clear_cart, get_summary, remove_item, update_item
 from services.common_utils import parse_precio_flexible
 from services.rewards_demo import reward_profile_for_tenant
+from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
+from utils.tenant import get_current_tenant
 
 _CORS_ALLOWED_HEADERS = [
     "Content-Type",
@@ -139,16 +145,74 @@ def _lookup_catalog_item(owner: User, payload: Dict[str, object], tenant: Option
 def _resolve_owner_and_seed() -> Tuple[Optional[TenantProfile], Optional[User]]:
     user = _resolve_authenticated_user()
     tenant = _tenant_for_user(user)
-    if tenant and user:
-        ensure_seed_catalog(user, tenant)
-        return tenant, user
 
-    tenant, owner = _resolve_public_owner(require_explicit=True)
-    if tenant is None or owner is None:
-        tenant, owner = _resolve_public_owner(require_explicit=False)
-    if tenant is None or owner is None:
+    if not tenant:
+        tenant = getattr(g, "tenant_profile", None) or get_current_tenant()
+
+    owner = None
+    if tenant:
+        owner = tenant.municipio or tenant.pyme or user
+
+    if tenant and owner:
+        g.tenant_profile = tenant
+        g.tenant_profile_slug = getattr(tenant, "slug", None)
+        ensure_seed_catalog(owner, tenant)
+        return tenant, owner
+
+    widget_token = (
+        request.headers.get("X-Widget-Token")
+        or request.headers.get("X-Entity-Token")
+        or request.args.get("widget_token")
+        or request.args.get("entity_token")
+        or request.args.get("entityToken")
+    )
+
+    tenant_slug_hint = (
+        request.headers.get("X-Tenant")
+        or request.args.get("tenant_slug")
+        or request.args.get("tenant")
+        or _tenant_slug_from_url(request.referrer)
+    )
+
+    try:
+        tenant = resolve_tenant_only(
+            tenant_slug=tenant_slug_hint,
+            widget_token=widget_token,
+            require_explicit_slug=True,
+        )
+    except TenantResolutionError:
+        tenant = None
+
+    if tenant:
+        owner = tenant.municipio or tenant.pyme
+        if owner:
+            g.tenant_profile = tenant
+            g.tenant_profile_slug = getattr(tenant, "slug", None)
+            ensure_seed_catalog(owner, tenant)
+            return tenant, owner
+
+    return None, None
+
+
+def _resolve_public_tenant_by_slug(
+    tenant_slug: str,
+) -> Tuple[Optional[TenantProfile], Optional[User]]:
+    slug_clean = (tenant_slug or "").strip().lower()
+    if not slug_clean:
         return None, None
-    ensure_seed_catalog(owner, tenant)
+
+    try:
+        tenant = resolve_tenant_only(tenant_slug=slug_clean, require_explicit_slug=False)
+    except TenantResolutionError:
+        tenant = None
+
+    if tenant is None:
+        tenant = _lookup_tenant_by_slug(slug_clean)
+
+    owner = tenant.municipio or tenant.pyme if tenant else None
+    if tenant and owner:
+        ensure_seed_catalog(owner, tenant)
+
     return tenant, owner
 
 
@@ -281,6 +345,7 @@ def _carrito_summary_response():
 @carrito_bp.route('', methods=['GET', 'POST', 'OPTIONS'])
 @carrito_bp.route('/', methods=['GET', 'POST', 'OPTIONS'])
 @cross_origin(**_cors_kwargs(["GET", "POST", "OPTIONS"]))
+@require_tenant
 def carrito_root():
     """Permite consultar el carrito (GET) o agregar items (POST) desde la raíz."""
     if request.method == 'OPTIONS':
@@ -291,8 +356,46 @@ def carrito_root():
     return agregar()
 
 
+@carrito_bp.route('/pwa/public/<tenant_slug>/carrito', methods=['GET', 'POST', 'OPTIONS'])
+@cross_origin(**_cors_kwargs(["GET", "POST", "OPTIONS"]))
+def carrito_pwa_public(tenant_slug: str):
+    """Alias legacy para exponer el carrito público por slug."""
+
+    if request.method == 'OPTIONS':
+        return "", 204
+
+    tenant, owner = _resolve_public_tenant_by_slug(tenant_slug)
+    if tenant is None:
+        return jsonify({'error': 'tenant_not_found'}), 404
+    if owner is None:
+        return jsonify({'error': 'owner_not_found', 'detail': 'Tenant sin propietario configurado'}), 404
+
+    pyme_carts_data = _get_session_cart_data()
+    cart = _tenant_cart(pyme_carts_data, tenant)
+
+    if request.method == 'GET':
+        return jsonify(_enrich_cart_summary(pyme_carts_data, tenant, owner))
+
+    data = request.get_json(silent=True) or {}
+    item = _lookup_catalog_item(owner, data, tenant)
+    if not item:
+        return jsonify({'error': 'Producto no encontrado'}), 404
+
+    cantidad = _normalize_quantity(data.get('cantidad', 1))
+    for entry in cart:
+        if entry.get('catalogo_item_id') == item.id:
+            entry['cantidad'] = entry.get('cantidad', 0) + cantidad
+            break
+    else:
+        cart.append({'catalogo_item_id': item.id, 'cantidad': cantidad})
+
+    _persist_session_cart_data(pyme_carts_data)
+    return jsonify(_enrich_cart_summary(pyme_carts_data, tenant, owner))
+
+
 @carrito_bp.route('/agregar', methods=['POST', 'OPTIONS'])
 @cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
+@require_tenant
 def agregar():
     data = request.get_json(silent=True) or {}
     tenant, owner = _resolve_owner_and_seed()
@@ -334,6 +437,7 @@ def agregar():
 
 @carrito_bp.route('/actualizar', methods=['POST', 'OPTIONS'])
 @cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
+@require_tenant
 def actualizar():
     data = request.get_json(silent=True) or {}
     tenant, owner = _resolve_owner_and_seed()
@@ -377,6 +481,7 @@ def actualizar():
 
 @carrito_bp.route('/eliminar', methods=['POST', 'OPTIONS'])
 @cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
+@require_tenant
 def eliminar():
     data = request.get_json(silent=True) or {}
     tenant, owner = _resolve_owner_and_seed()
@@ -418,6 +523,7 @@ def eliminar():
 
 @carrito_bp.route('/vaciar', methods=['POST', 'OPTIONS'])
 @cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
+@require_tenant
 def vaciar():
     tenant, owner = _resolve_owner_and_seed()
 
@@ -437,6 +543,7 @@ def vaciar():
 
 @carrito_bp.route('/resumen', methods=['GET'])
 @cross_origin(**_cors_kwargs(["GET"]))
+@require_tenant
 def resumen():
     return _carrito_summary_response()
 
