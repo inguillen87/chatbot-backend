@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Optional
 
@@ -331,11 +332,6 @@ def _cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = None)
 
     resumen["recompensas_demo"] = reward_profile_for_tenant(cart.tenant_id, total_points)
     resumen["wallet"] = resumen["recompensas_demo"].get("balance_resumen")
-    resumen["ui_signals"] = {
-        "animation": "cart-burst",
-        "badge": "pulse",
-        "progress": "snap"
-    }
     return resumen
 
 
