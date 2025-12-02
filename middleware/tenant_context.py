@@ -90,6 +90,13 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
         return _normalize_slug(segments[3])
 
     if lower_segments[:2] == ["api", "pwa"] and len(segments) >= 3:
+        # Endpoints such as /api/pwa/anon-id and /api/pwa/tenant-info do not
+        # include the slug in the path; they pass it via query parameters. Avoid
+        # treating those endpoint names as slugs so we can resolve using the
+        # query args or widget tokens instead of falling through to a 400.
+        if lower_segments[2] in {"anon-id", "tenant-info", "manifest.json", "manifest"}:
+            return None
+
         return _normalize_slug(segments[2])
 
     return None

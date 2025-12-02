@@ -90,6 +90,14 @@ class TenantContextResolutionTests(unittest.TestCase):
 
             self.assertEqual(tenant.slug, "demo")
 
+    def test_pwa_endpoint_uses_query_params_not_path_segment(self):
+        with self.app.test_request_context(
+            "/api/pwa/anon-id?tenant_slug=demo&tenant=demo"
+        ):
+            tenant = require_tenant()
+
+            self.assertEqual(tenant.slug, "demo")
+
 
 if __name__ == "__main__":
     unittest.main()
