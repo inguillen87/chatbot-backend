@@ -73,108 +73,42 @@ def _ensure_session_id() -> str:
     return session_id
 
 
-def _user_can_manage_tenant(user: User, tenant: TenantProfile) -> bool:
-    tenant_owner_ids = {tenant.municipio_id, tenant.pyme_id}
-    if user.id in tenant_owner_ids:
-        return True
+def _get_or_create_cart(tenant: TenantProfile) -> MarketCart:
+    session_id = _ensure_session_id()
+    user_id = current_user.id if current_user.is_authenticated else None
 
-    # Staff members pueden tener empresa_id/municipio_id o un slug asociado al tenant.
-    if getattr(user, "empresa_id", None) and user.empresa_id in tenant_owner_ids:
-        return True
-    if getattr(user, "municipio_id", None) and user.municipio_id in tenant_owner_ids:
-        return True
-    if getattr(user, "tenant_slug", None) and user.tenant_slug == tenant.slug:
-        return True
-    return False
-
-
-def _resolve_admin_tenant(current_user: User, payload: Optional[dict] = None) -> TenantProfile:
-    payload = payload or {}
-    tenant = None
-
-    tenant_id = payload.get("tenant_id") or request.args.get("tenant_id")
-    tenant_slug = (
-        payload.get("tenant_slug")
-        or request.args.get("tenant_slug")
-        or request.args.get("slug")
-        or getattr(current_user, "tenant_slug", None)
+    base_query = MarketCart.query.filter(
+        MarketCart.tenant_id == tenant.id,
+        MarketCart.status == "open",
     )
 
-    if tenant_id:
-        try:
-            tenant = TenantProfile.query.get(int(tenant_id))
-        except (TypeError, ValueError):
-            tenant = None
+    stored_carts = session.get("market_cart_ids") or {}
+    cart_id = stored_carts.get(tenant.slug)
+    cart = None
 
-    if tenant is None and tenant_slug:
-        try:
-            tenant = resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=False)
-        except TenantResolutionError:
-            tenant = None
+    if cart_id:
+        cart = base_query.filter(MarketCart.id == cart_id).first()
+        if cart and not (
+            cart.session_id == session_id
+            or (user_id and cart.user_id == user_id)
+        ):
+            cart = None
 
-    if tenant is None:
-        # Último recurso: si el usuario es dueño de un municipio/pyme usamos ese tenant.
-        owner_id = getattr(current_user, "municipio_id", None) or getattr(current_user, "empresa_id", None)
-        if owner_id:
-            tenant = TenantProfile.query.filter(
-                (TenantProfile.municipio_id == owner_id) | (TenantProfile.pyme_id == owner_id)
-            ).first()
-
-    if tenant is None:
-        abort(make_response(jsonify({"error": "Tenant no encontrado"}), 404))
-
-    if not _user_can_manage_tenant(current_user, tenant):
-        abort(make_response(jsonify({"error": "No autorizado para este tenant"}), 403))
-
-    return tenant
-
-
-def _serialize_catalog_item(item: CatalogoItem) -> Dict[str, object]:
-    price_value = None
-    try:
-        if item.precio_monetario is not None:
-            price_value = float(item.precio_monetario)
-    except (TypeError, ValueError):
-        price_value = None
-
-    return {
-        "id": item.id,
-        "tenant_id": item.tenant_id,
-        "nombre": item.nombre,
-        "descripcion": item.descripcion,
-        "precio": price_value,
-        "precio_texto": item.precio,
-        "moneda": item.moneda,
-        "imagen_url": item.imagen_url,
-        "pdf_url": getattr(item, "pdf_url", None),
-        "categoria": item.categoria,
-        "disponible": getattr(item, "disponible", True),
-    }
-
-def _get_or_create_cart_for_user(
-    tenant: TenantProfile, user: User, *, create_if_missing: bool = False
-) -> Optional[MarketCart]:
-    """Return the open cart for the given tenant/user, optionally creating it.
-
-    Always scopes by ``tenant_id`` and ``user_id`` to avoid mezclar productos de
-    distintos tenants. When ``create_if_missing`` is False, no new cart is
-    persisted (útil para GET /cart o para validar estado tras checkout).
-    """
-
-    if not user or not getattr(user, "is_authenticated", False):
-        abort(make_response(jsonify({"error": "Autenticación requerida"}), 401))
-
-    cart = (
-        MarketCart.query.filter(
-            MarketCart.tenant_id == tenant.id,
-            MarketCart.status == "open",
-            MarketCart.user_id == user.id,
+    if cart is None and user_id:
+        cart = (
+            base_query.filter(MarketCart.user_id == user_id)
+            .order_by(MarketCart.updated_at.desc())
+            .first()
         )
-        .order_by(MarketCart.updated_at.desc())
-        .first()
-    )
 
-    if cart is None and create_if_missing:
+    if cart is None:
+        cart = (
+            base_query.filter(MarketCart.session_id == session_id)
+            .order_by(MarketCart.updated_at.desc())
+            .first()
+        )
+
+    if cart is None:
         cart = MarketCart(
             tenant_id=tenant.id,
             user_id=user.id,
@@ -184,9 +118,22 @@ def _get_or_create_cart_for_user(
         )
         db.session.add(cart)
         db.session.commit()
+    else:
+        modified = False
+        if cart.session_id != session_id:
+            cart.session_id = session_id
+            modified = True
+        if user_id and cart.user_id is None:
+            cart.user_id = user_id
+            if not cart.contact_phone:
+                cart.contact_phone = getattr(current_user, "telefono", None)
+            if not cart.contact_name:
+                cart.contact_name = getattr(current_user, "name", None)
+            modified = True
+        if modified:
+            db.session.commit()
 
-    stored_carts = session.get("market_cart_ids") or {}
-    if cart and stored_carts.get(tenant.slug) != cart.id:
+    if stored_carts.get(tenant.slug) != cart.id:
         stored_carts[tenant.slug] = cart.id
         session["market_cart_ids"] = stored_carts
         session.modified = True
