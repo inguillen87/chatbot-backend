@@ -73,9 +73,22 @@ def _ensure_session_id() -> str:
     return session_id
 
 
-def _get_or_create_cart(tenant: TenantProfile) -> MarketCart:
+def _get_or_create_cart_for_user(
+    tenant: TenantProfile,
+    user: User,
+    *,
+    create_if_missing: bool = True,
+) -> Optional[MarketCart]:
+    """Return the open cart for the given tenant/user combination.
+
+    The cart is anchored to ``user.id`` when available and falls back to a
+    session identifier to preserve continuity for partially authenticated
+    flows.  If ``create_if_missing`` is False, None is returned instead of
+    creating a new record.
+    """
+
     session_id = _ensure_session_id()
-    user_id = current_user.id if current_user.is_authenticated else None
+    user_id = getattr(user, "id", None)
 
     base_query = MarketCart.query.filter(
         MarketCart.tenant_id == tenant.id,
@@ -109,10 +122,13 @@ def _get_or_create_cart(tenant: TenantProfile) -> MarketCart:
         )
 
     if cart is None:
+        if not create_if_missing:
+            return None
+
         cart = MarketCart(
             tenant_id=tenant.id,
-            user_id=user.id,
-            session_id=_ensure_session_id(),
+            user_id=user_id,
+            session_id=session_id,
             contact_phone=getattr(user, "telefono", None),
             contact_name=getattr(user, "name", None),
         )
@@ -126,9 +142,9 @@ def _get_or_create_cart(tenant: TenantProfile) -> MarketCart:
         if user_id and cart.user_id is None:
             cart.user_id = user_id
             if not cart.contact_phone:
-                cart.contact_phone = getattr(current_user, "telefono", None)
+                cart.contact_phone = getattr(user, "telefono", None)
             if not cart.contact_name:
-                cart.contact_name = getattr(current_user, "name", None)
+                cart.contact_name = getattr(user, "name", None)
             modified = True
         if modified:
             db.session.commit()
@@ -139,6 +155,10 @@ def _get_or_create_cart(tenant: TenantProfile) -> MarketCart:
         session.modified = True
 
     return cart
+
+
+def _get_or_create_cart(tenant: TenantProfile) -> MarketCart:
+    return _get_or_create_cart_for_user(tenant, current_user)
 
 
 def _product_query_for_tenant(owner: User, tenant: TenantProfile, *, include_unavailable: bool = False):
@@ -283,6 +303,9 @@ def _cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = None)
         )
 
     total_default_currency = totals_by_currency.get("ARS", 0.0)
+    wallet_balance = _resolve_wallet_balance(cart.tenant)
+    balances = {"wallet_balance": wallet_balance} if wallet_balance is not None else {}
+
     resumen = {
         "tenant_id": cart.tenant_id,
         "cart_id": cart.id,
@@ -541,7 +564,8 @@ def public_cart_remove(current_user, slug: str):
 
 
 @market_bp.post("/<slug>/cart/update")
-def public_cart_update(slug: str):
+@token_requerido
+def public_cart_update(current_user, slug: str):
     """Update item quantity within the tenant cart.
 
     Accepts ``product_id`` (or ``catalogo_item_id``/``item_id``) and ``quantity``.
@@ -566,7 +590,12 @@ def public_cart_update(slug: str):
     except (TypeError, ValueError):
         return jsonify({"error": "Cantidad inválida"}), 400
 
-    cart = _get_or_create_cart(tenant)
+    cart = _get_or_create_cart_for_user(tenant, current_user, create_if_missing=False)
+    if cart is None:
+        return jsonify({"error": "Carrito no encontrado"}), 404
+    if cart.status != "open":
+        return jsonify({"error": "El carrito ya está confirmado o cancelado"}), 400
+
     cart_item = cart.items.filter(MarketCartItem.product_id == item_id_int).first()
 
     if cart_item is None:
@@ -579,21 +608,6 @@ def public_cart_update(slug: str):
 
     db.session.commit()
     return jsonify(_cart_summary(cart, owner, event="update"))
-
-
-@market_bp.post("/<slug>/cart/clear")
-def public_cart_clear(slug: str):
-    tenant = _resolve_tenant(slug)
-    owner = _tenant_owner(tenant)
-    if owner is None:
-        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
-
-    cart = _get_or_create_cart(tenant)
-    for entry in cart.items.all():
-        db.session.delete(entry)
-
-    db.session.commit()
-    return jsonify(_cart_summary(cart, owner, event="clear"))
 
 
 @market_bp.post("/<slug>/cart/clear")
@@ -615,7 +629,7 @@ def public_cart_clear_authenticated(current_user, slug: str):
 
     cart.estado = "abierto"
     db.session.commit()
-    return jsonify(_cart_summary(cart, owner))
+    return jsonify(_cart_summary(cart, owner, event="clear"))
 
 
 @market_bp.post("/<slug>/cart/checkout")
