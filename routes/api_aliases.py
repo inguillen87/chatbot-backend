@@ -29,10 +29,17 @@ from routes.municipal_legacy import list_municipal_posts, municipal_categorias
 from routes.notifications import get_notifications, notifications_options
 from routes.ticket import (
     get_chat_mensajes,
+    get_ticket_by_number_public,
     get_ticket_details,
     get_tickets_del_usuario,
 )
 from routes.productos import obtener_productos
+from routes.pedidos import (
+    listar_pedidos_pyme,
+    obtener_pedido_pyme,
+    actualizar_estado_pedido_pyme,
+    crear_pedido_pyme,
+)
 from routes.pwa_app import follow_tenant, list_followed_tenants, unfollow_tenant
 from routes.pwa_misc import provide_anon_id
 from routes.public_resolver import tenant_profile
@@ -186,6 +193,19 @@ def tickets_alias():
 
 
 @api_aliases_bp.route(
+    "/tickets/municipio/por_numero/<string:nro_ticket>",
+    methods=["GET", "OPTIONS"],
+    strict_slashes=False,
+)
+def tickets_municipio_por_numero_alias(nro_ticket: str):
+    """Expose the public ticket lookup under the /api namespace."""
+
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return get_ticket_by_number_public(nro_ticket=nro_ticket)
+
+
+@api_aliases_bp.route(
     "/tickets/municipio/<int:ticket_id>", methods=["GET"], strict_slashes=False
 )
 def tickets_municipio_alias(ticket_id: int):
@@ -199,6 +219,37 @@ def tickets_municipio_alias(ticket_id: int):
 )
 def tickets_chat_alias(ticket_id: int):
     return get_chat_mensajes(ticket_id=ticket_id)
+
+
+@api_aliases_bp.route("/pedidos", methods=["GET", "POST", "OPTIONS"], strict_slashes=False)
+def pedidos_alias():
+    """Expose pedidos endpoints under /api for the widget."""
+
+    if request.method == "OPTIONS":
+        return _options_ok()
+    if request.method == "POST":
+        return crear_pedido_pyme()
+    return listar_pedidos_pyme()
+
+
+@api_aliases_bp.route(
+    "/pedidos/<int:pedido_id>", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def pedidos_detalle_alias(pedido_id: int):
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return obtener_pedido_pyme(pedido_id=pedido_id)
+
+
+@api_aliases_bp.route(
+    "/pedidos/<int:pedido_id>/estado",
+    methods=["PUT", "OPTIONS"],
+    strict_slashes=False,
+)
+def pedidos_estado_alias(pedido_id: int):
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return actualizar_estado_pedido_pyme(pedido_id=pedido_id)
 
 
 @api_aliases_bp.route(
