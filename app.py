@@ -425,7 +425,7 @@ def create_app(config_class=Config):
         encuestas_admin_bp,
         encuestas_public_bp,
     )
-    from routes.pwa_public import pwa_public_bp
+    from routes.pwa_public import pwa_public_bp, pwa_tenant_info_bp
     from routes.market import market_admin_bp, market_bp
     from routes.public_resolver import public_resolver_bp, public_municipios_bp
     from routes.subastas import subastas_bp
