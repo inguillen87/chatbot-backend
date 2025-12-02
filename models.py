@@ -1023,6 +1023,23 @@ class MarketCart(db.Model, TimestampMixin):
         db.Index("ix_market_cart_tenant_session", "tenant_id", "session_id", "status"),
     )
 
+    @property
+    def estado(self) -> str:
+        """Estado legible alineado con las rutas públicas del marketplace."""
+
+        mapping = {"open": "abierto", "submitted": "confirmado", "cancelled": "cancelado"}
+        return mapping.get(self.status, self.status)
+
+    @estado.setter
+    def estado(self, value: str) -> None:  # pragma: no cover - trivial setter
+        normalized = (value or "").strip().lower()
+        inverse = {
+            "abierto": "open",
+            "confirmado": "submitted",
+            "cancelado": "cancelled",
+        }
+        self.status = inverse.get(normalized, normalized or "open")
+
 
 class MarketCartItem(db.Model, TimestampMixin):
     __tablename__ = "market_cart_item"

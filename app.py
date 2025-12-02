@@ -526,6 +526,7 @@ def create_app(config_class=Config):
     app.register_blueprint(pwa_tenant_info_bp)
     app.register_blueprint(pwa_public_bp)
     app.register_blueprint(market_bp)
+    app.register_blueprint(market_admin_bp)
     app.register_blueprint(pwa_misc_bp)
     app.register_blueprint(pwa_app_bp)
     app.register_blueprint(pwa_app_legacy_bp)
