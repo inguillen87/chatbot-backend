@@ -25,6 +25,17 @@ def _find_tenant_by_slug(slug: str) -> Optional[TenantProfile]:
     return TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug.lower()).first()
 
 
+def _fallback_default_tenant() -> Optional[TenantProfile]:
+    """Return the first available tenant as a last-resort fallback.
+
+    This mirrors the behavior of ``resolve_tenant_only`` when
+    ``require_explicit_slug`` is False, ensuring anonymous/public
+    endpoints never fail with a hard 400 when at least one tenant exists.
+    """
+
+    return TenantProfile.query.order_by(TenantProfile.id.asc()).first()
+
+
 def _find_tenant_by_widget_token(token: str) -> Optional[TenantProfile]:
     if not token:
         return None
@@ -76,6 +87,9 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
         "pymes",
         "p",
         "t",
+        "market",
+        "marketplace",
+        "shop",
     }:
         return _normalize_slug(segments[1])
 
@@ -87,6 +101,13 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
         return _normalize_slug(segments[3])
 
     if lower_segments[:2] == ["api", "pwa"] and len(segments) >= 3:
+        # Endpoints such as /api/pwa/anon-id and /api/pwa/tenant-info do not
+        # include the slug in the path; they pass it via query parameters. Avoid
+        # treating those endpoint names as slugs so we can resolve using the
+        # query args or widget tokens instead of falling through to a 400.
+        if lower_segments[2] in {"anon-id", "tenant-info", "manifest.json", "manifest"}:
+            return None
+
         return _normalize_slug(segments[2])
 
     return None
@@ -163,7 +184,9 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         if tenant:
             return tenant
 
-    host = request.host.split(":", 1)[0].lower() if request.host else None
+    forwarded_host = request.headers.get("X-Forwarded-Host")
+    host_header = forwarded_host or request.host
+    host = host_header.split(":", 1)[0].lower() if host_header else None
     if host:
         mapping = current_app.config.get("TENANT_DOMAIN_MAP", {})
         mapped = mapping.get(host)
@@ -186,7 +209,12 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         if tenant:
             return tenant
 
-    return None
+    # As a defensive fallback, return the first available tenant so
+    # anonymous/public endpoints do not hard-fail when at least one tenant
+    # exists in the database. This mirrors the lenient behavior of
+    # ``resolve_tenant_only(require_explicit_slug=False)`` used by public
+    # endpoints and avoids 400/401 responses during domain discovery.
+    return _fallback_default_tenant()
 
 
 def tenant_middleware(app) -> None:
@@ -222,16 +250,63 @@ def require_tenant(func=None) -> TenantProfile:
         g.current_tenant_slug = tenant.slug
         return tenant
 
-    # As a last resort, try resolving using the host hint so custom domains or
-    # fallback tenants avoid returning a hard 400 for public endpoints.
+    # Attempt to resolve using explicit hints (slug/widget token) before
+    # falling back to host-based resolution so marketplace/catalog requests
+    # that only send query params still get a tenant.
     from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 
     host_hint = request.headers.get("X-Forwarded-Host") or request.host
+    slug_hint = _normalize_slug(
+        request.args.get("tenant_slug")
+        or request.args.get("tenant")
+        or getattr(getattr(request, "view_args", None) or {}, "get", lambda k: None)(
+            "tenant_slug"
+        )
+        or getattr(getattr(request, "view_args", None) or {}, "get", lambda k: None)(
+            "tenant"
+        )
+        or _tenant_slug_from_path(getattr(request, "path", ""))
+    )
+
+    widget_token = (
+        request.headers.get("X-Widget-Token")
+        or request.args.get("widget_token")
+        or request.headers.get("X-Entity-Token")
+        or request.args.get("entityToken")
+    )
+
+    try:
+        tenant = resolve_tenant_only(
+            tenant_slug=slug_hint,
+            widget_token=widget_token,
+            host=host_hint,
+            require_explicit_slug=False,
+        )
+    except TenantResolutionError:
+        tenant = None
+
+    if tenant:
+        g.tenant_profile = tenant
+        g.tenant_profile_slug = tenant.slug
+        g.current_tenant = tenant
+        g.current_tenant_slug = tenant.slug
+        return tenant
+
+    # As a last resort, try resolving using the host hint so custom domains or
+    # fallback tenants avoid returning a hard 400 for public endpoints.
     try:
         tenant = resolve_tenant_only(host=host_hint, require_explicit_slug=False)
     except TenantResolutionError:
         tenant = None
 
+    if tenant:
+        g.tenant_profile = tenant
+        g.tenant_profile_slug = tenant.slug
+        g.current_tenant = tenant
+        g.current_tenant_slug = tenant.slug
+        return tenant
+
+    tenant = _fallback_default_tenant()
     if tenant:
         g.tenant_profile = tenant
         g.tenant_profile_slug = tenant.slug
