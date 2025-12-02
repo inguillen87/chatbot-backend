@@ -66,17 +66,26 @@ class TenantContextResolutionTests(unittest.TestCase):
             tenant = require_tenant()
             self.assertEqual(tenant.slug, "demo")
 
-    def test_missing_tenant_aborts_with_json_payload(self):
-        with self.app.test_request_context("/api/pwa/public/unknown/encuestas"):
-            with self.assertRaises(HTTPException) as ctx:
-                require_tenant()
+    def test_resolves_tenant_from_marketplace_path(self):
+        with self.app.test_request_context("/market/demo/catalog"):
+            tenant = require_tenant()
+            self.assertEqual(tenant.slug, "demo")
 
-            self.assertEqual(ctx.exception.code, 400)
-            self.assertEqual(ctx.exception.response.get_json(), {"error": "tenant requerido"})
+    def test_unknown_tenant_slug_falls_back_to_first_available(self):
+        with self.app.test_request_context("/api/pwa/public/unknown/encuestas"):
+            tenant = require_tenant()
+
+        self.assertEqual(tenant.slug, self.tenant.slug)
 
     def test_resolves_tenant_from_view_args(self):
         with self.app.test_request_context("/api/demo/productos") as ctx:
             ctx.request.view_args = {"tenant_slug": "demo"}
+            tenant = require_tenant()
+
+            self.assertEqual(tenant.slug, "demo")
+
+    def test_resolves_tenant_from_query_params(self):
+        with self.app.test_request_context("/productos?tenant=demo"):
             tenant = require_tenant()
 
             self.assertEqual(tenant.slug, "demo")
