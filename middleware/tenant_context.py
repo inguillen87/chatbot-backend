@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Optional
+from urllib.parse import urlparse
 
 from flask import current_app, g, jsonify, make_response, request
 from werkzeug.exceptions import HTTPException
@@ -19,6 +20,42 @@ def _normalize_slug(value: Optional[str]) -> Optional[str]:
     return slug or None
 
 
+def _tenant_slug_from_body() -> Optional[str]:
+    """Extract tenant slug hints from JSON or form payloads.
+
+    Some widget calls send the tenant or tenant_slug inside the request body
+    instead of query parameters. Reading it here allows the middleware to
+    resolve a tenant without returning a 400 even when no query args are
+    present.
+    """
+
+    json_payload = request.get_json(silent=True) or {}
+    if isinstance(json_payload, dict):
+        slug = json_payload.get("tenant_slug") or json_payload.get("tenant")
+        if slug:
+            return str(slug)
+
+    form_slug = request.form.get("tenant_slug") or request.form.get("tenant")
+    if form_slug:
+        return str(form_slug)
+
+    return None
+
+
+def _tenant_slug_from_url(url: Optional[str]) -> Optional[str]:
+    """Best-effort slug extraction from a full URL (e.g. Referer)."""
+
+    if not url:
+        return None
+
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+
+    return _tenant_slug_from_path(parsed.path)
+
+
 def _find_tenant_by_slug(slug: str) -> Optional[TenantProfile]:
     if not slug:
         return None
@@ -32,6 +69,11 @@ def _fallback_default_tenant() -> Optional[TenantProfile]:
     ``require_explicit_slug`` is False, ensuring anonymous/public
     endpoints never fail with a hard 400 when at least one tenant exists.
     """
+    preferred_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
+    if preferred_slug:
+        tenant = _find_tenant_by_slug(preferred_slug)
+        if tenant:
+            return tenant
 
     return TenantProfile.query.order_by(TenantProfile.id.asc()).first()
 
@@ -122,6 +164,8 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         or view_args.get("tenant")
         or request.args.get("tenant_slug")
         or request.args.get("tenant")
+        or _tenant_slug_from_body()
+        or _tenant_slug_from_url(request.headers.get("Referer") or getattr(request, "referrer", None))
         or request.headers.get("X-Tenant")
     )
     if slug:
@@ -156,6 +200,7 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         request.args.get("tenant_slug")
         or request.args.get("tenant")
         or view_args.get("slug")
+        or _tenant_slug_from_url(request.headers.get("Referer") or getattr(request, "referrer", None))
     )
     if slug_hint:
         # First attempt direct DB lookup (fast path)
@@ -265,6 +310,7 @@ def require_tenant(func=None) -> TenantProfile:
         or getattr(getattr(request, "view_args", None) or {}, "get", lambda k: None)(
             "tenant"
         )
+        or _tenant_slug_from_body()
         or _tenant_slug_from_path(getattr(request, "path", ""))
     )
 
