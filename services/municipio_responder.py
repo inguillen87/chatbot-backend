@@ -6501,6 +6501,7 @@ def _get_encuestas_menu(context: dict) -> dict:
 
     base_options = [
         {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
+        {"texto": "Cancelar", "action_id": "cancelar"},
     ]
 
     channel_value = (context.get("channel") or "").strip().lower()
@@ -6632,6 +6633,8 @@ def _get_encuestas_menu(context: dict) -> dict:
             whatsapp_share_display_url = (
                 f"https://wa.me/?text={quote_plus(share_target_for_display)}"
             )
+        if not whatsapp_share_url and (share_short_url or share_url):
+            whatsapp_share_url = f"https://wa.me/?text={quote_plus(share_short_url or share_url)}"
         share_action_id = f"encuesta_compartir::{slug_publico}"
 
         short_title = _shorten_button_label(titulo)
@@ -6716,12 +6719,12 @@ def _get_encuestas_menu(context: dict) -> dict:
 
         share_button: Dict[str, Any] = {
             "texto": f"Compartir {share_button_title}",
-            "action_id": share_action_id,
         }
-        if is_widget_channel and whatsapp_share_url:
-            share_button.pop("action_id", None)
+        if (is_whatsapp_channel or is_widget_channel) and whatsapp_share_url:
             share_button["url"] = whatsapp_share_url
             share_button["type"] = "url"
+        else:
+            share_button["action_id"] = share_action_id
 
         survey_buttons.append(share_button)
 
@@ -6743,6 +6746,57 @@ def _get_encuestas_menu(context: dict) -> dict:
                 "share_media_urls": list(share_media_defaults),
             }
         )
+
+    if is_whatsapp_channel and (survey_metadata or survey_buttons):
+        has_whatsapp_share_button = any(
+            option.get("type") == "url"
+            and isinstance(option.get("url"), str)
+            and option.get("url", "").startswith("https://wa.me/")
+            for option in survey_buttons
+        )
+
+        if not has_whatsapp_share_button:
+            fallback_meta = survey_metadata[0] if survey_metadata else encuestas_data[0]
+            titulo = fallback_meta.get("titulo") if survey_metadata else (
+                (fallback_meta.get("data") or {}).get("titulo")
+            )
+            slug_publico = fallback_meta.get("slug") if survey_metadata else (
+                fallback_meta.get("slug_publico")
+                or (fallback_meta.get("data") or {}).get("slug")
+            )
+            share_url = fallback_meta.get("share_url") if survey_metadata else None
+            if not share_url and slug_publico:
+                share_url = urljoin(f"{base_url}/", f"e/{slug_publico}")
+
+            share_short_url = (
+                fallback_meta.get("share_short_url") if survey_metadata else None
+            )
+            if not share_short_url and slug_publico:
+                share_short_url = urljoin(
+                    f"{short_base_url}/", f"e/{_extract_short_public_slug(slug_publico)}"
+                )
+
+            whatsapp_share_url = fallback_meta.get("share_whatsapp_url") if survey_metadata else None
+            if not whatsapp_share_url:
+                share_message_fallback = fallback_meta.get("share_message") if survey_metadata else None
+                if not share_message_fallback:
+                    share_message_fallback = f"Participá en {titulo or 'la encuesta'}: {share_short_url or share_url}"
+
+                if share_message_fallback:
+                    whatsapp_share_url = f"https://wa.me/?text={quote_plus(share_message_fallback)}"
+                elif share_short_url or share_url:
+                    whatsapp_share_url = f"https://wa.me/?text={quote_plus(share_short_url or share_url)}"
+
+            if whatsapp_share_url:
+                share_button_title = _shorten_button_label(titulo or "Encuesta")
+                survey_buttons.insert(
+                    0,
+                    {
+                        "texto": f"Compartir {share_button_title}",
+                        "url": whatsapp_share_url,
+                        "type": "url",
+                    },
+                )
 
     header = "*Participación Ciudadana*\n"
 

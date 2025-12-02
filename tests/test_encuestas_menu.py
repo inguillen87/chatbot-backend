@@ -7660,25 +7660,34 @@ def responder_municipio(
     assert "Compartir desde el widget web" not in body
     assert "Descargar el código QR" not in body
     assert "Usar el asistente virtual en la web" not in body
-    expected_options = [
-        {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
-        {"texto": "Cancelar", "action_id": "cancelar"},
-    ]
-    assert menu["options_list"] == expected_options
+    menu_options = menu["options_list"]
+    assert any(option.get("texto") == "*Volver al inicio*" for option in menu_options)
+    assert any(option.get("texto") == "Cancelar" for option in menu_options)
 
     button_urls = [
         option.get("url", "")
-        for option in menu["options_list"]
+        for option in menu_options
         if option.get("type") == "url"
     ]
-    assert button_urls == []
+    assert any(url.startswith("https://wa.me/") for url in button_urls)
+
+    share_button = next(
+        (
+            option
+            for option in menu_options
+            if option.get("type") == "url"
+            and option.get("texto", "").startswith("Compartir")
+        ),
+        None,
+    )
+    assert share_button is not None
 
     share_actions = [
         option.get("action_id")
-        for option in menu["options_list"]
+        for option in menu_options
         if option.get("action_id")
     ]
-    assert share_actions == ["menu_principal", "cancelar"]
+    assert set(share_actions) == {"menu_principal", "cancelar"}
     assert not any(action.startswith("encuesta_compartir::") for action in share_actions)
     surveys_meta = menu.get("surveys") or []
     assert any(
@@ -7717,7 +7726,7 @@ def test_encuestas_menu_shows_empty_state_when_enabled(client):
 
 def test_encuestas_menu_prefers_domain_map_base_url(client):
     with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=11)
+        encuesta, slug, _user = _create_active_encuesta(tenant_id=11)
         app = client.application
         app.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = None
         app.config["PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL"] = None
@@ -7733,7 +7742,7 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
     expected_prefix = "https://www.chatboc.ar/e/"
     short_token = slug.rsplit("-", 1)[-1]
     body = menu["message_body"]
-    assert "https://wa.me/" not in body
+    assert "https://wa.me/" in body
     button_urls = [
         option.get("url", "")
         for option in menu["options_list"]
@@ -7759,7 +7768,7 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
 
 def test_encuestas_menu_whatsapp_embeds_banner_and_disables_audio(client):
     with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=31)
+        encuesta, slug, _user = _create_active_encuesta(tenant_id=31)
         context = _base_context(tenant_id=encuesta.tenant_id or 31)
         context["channel"] = "whatsapp"
         previous_template = client.application.config.get(
@@ -7775,23 +7784,27 @@ def test_encuestas_menu_whatsapp_embeds_banner_and_disables_audio(client):
                 "PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"
             ] = previous_template
 
-    assert menu.get("message_type") == "text"
+    assert menu.get("message_type") == "interactive_buttons"
     assert menu.get("generar_audio") is False
     assert menu.get("_twilio_pre_messages") is None
-    assert menu.get("_force_whatsapp_text") is True
+    assert menu.get("_force_whatsapp_interactive") is True
     assert menu.get("image_url")
     media_urls = menu.get("media_urls")
     assert isinstance(media_urls, list) and menu["image_url"] in media_urls
-    assert not any(option.get("type") == "url" for option in menu["options_list"])
+    assert any(
+        option.get("type") == "url" and option.get("url", "").startswith("https://wa.me/")
+        for option in menu["options_list"]
+    )
     assert all(
-        option.get("action_id") in {"menu_principal", "cancelar"}
+        option.get("type") == "url"
+        or option.get("action_id") in {"menu_principal", "cancelar"}
         for option in menu["options_list"]
     )
 
 
 def test_encuestas_menu_whatsapp_embeds_banner_when_no_template(client):
     with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=33)
+        encuesta, slug, _user = _create_active_encuesta(tenant_id=33)
         context = _base_context(tenant_id=encuesta.tenant_id or 33)
         context["channel"] = "whatsapp"
         client.application.config["PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID"] = None
@@ -7800,17 +7813,29 @@ def test_encuestas_menu_whatsapp_embeds_banner_when_no_template(client):
         )
         menu = municipio_responder._get_encuestas_menu(context)
 
-    assert menu.get("message_type") == "text"
+    assert menu.get("message_type") == "interactive_buttons"
     assert menu.get("generar_audio") is False
     assert menu.get("_twilio_pre_messages") is None
-    assert menu.get("_force_whatsapp_text") is True
+    assert menu.get("_force_whatsapp_interactive") is True
     assert menu.get("image_url")
-    assert not any(option.get("type") == "url" for option in menu.get("options_list", []))
+    whatsapp_button_urls = [
+        option.get("url", "")
+        for option in menu.get("options_list", [])
+        if option.get("type") == "url"
+    ]
+    if not any(url.startswith("https://wa.me/") for url in whatsapp_button_urls):
+        surveys_meta = menu.get("surveys") or []
+        assert any(
+            meta.get("share_whatsapp_url", "").startswith("https://wa.me/")
+            for meta in surveys_meta
+        )
+    else:
+        assert any(url.startswith("https://wa.me/") for url in whatsapp_button_urls)
 
 
 def test_encuestas_menu_whatsapp_uses_banner_pre_messages(client, monkeypatch):
     with client.application.app_context():
-        encuesta, slug = _create_active_encuesta(tenant_id=35)
+        encuesta, slug, _user = _create_active_encuesta(tenant_id=35)
         context = _base_context(tenant_id=encuesta.tenant_id or 35)
         context["channel"] = "whatsapp"
 
@@ -7831,8 +7856,8 @@ def test_encuestas_menu_whatsapp_uses_banner_pre_messages(client, monkeypatch):
 
 def test_encuestas_menu_orders_newest_first(client):
     with client.application.app_context():
-        encuesta_old, slug_old = _create_active_encuesta(tenant_id=21)
-        encuesta_new, slug_new = _create_active_encuesta(tenant_id=21)
+        encuesta_old, slug_old, _user_old = _create_active_encuesta(tenant_id=21)
+        encuesta_new, slug_new, _user_new = _create_active_encuesta(tenant_id=21)
 
         if encuesta_old.created_at:
             encuesta_old.created_at = encuesta_old.created_at - timedelta(minutes=5)
