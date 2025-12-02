@@ -258,7 +258,24 @@ def _pricing_snapshot(product: CatalogoItem) -> Dict[str, object]:
     }
 
 
-def _cart_summary(cart: MarketCart, owner: User) -> Dict[str, object]:
+def _resolve_wallet_balance(tenant: TenantProfile) -> Optional[float]:
+    """Return a virtual wallet balance if configured for the tenant.
+
+    Some tenants may preload a demo balance for pesos/dinero; if absent we
+    return ``None`` so the UI can gracefully omit the indicator.
+    """
+
+    cfg = getattr(tenant, "configuracion", None) or {}
+    balance = cfg.get("wallet_balance")
+    if balance is None:
+        balance = cfg.get("saldo_virtual")
+    try:
+        return float(balance) if balance is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = None) -> Dict[str, object]:
     items = list(cart.items.all())
     product_ids = [item.product_id for item in items if item.product_id]
     products: Dict[int, CatalogoItem] = {}
@@ -329,9 +346,16 @@ def _cart_summary(cart: MarketCart, owner: User) -> Dict[str, object]:
         "total_puntos_estimado": total_points,
         "moneda": "ARS",
         "badge_count": total_count,
+        "balances": balances,
         "contacto": {
             "nombre": cart.contact_name,
             "telefono": cart.contact_phone,
+        },
+        "ui_signals": {
+            "event": event or "refresh",
+            "animation": "cart-burst" if event else "soft-pulse",
+            "badge": total_count,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     }
 
@@ -536,7 +560,7 @@ def public_cart_add(current_user, slug: str):
         db.session.add(cart_item)
 
     db.session.commit()
-    return jsonify(_cart_summary(cart, owner))
+    return jsonify(_cart_summary(cart, owner, event="add"))
 
 
 @market_bp.post("/<slug>/cart/remove")
@@ -566,7 +590,63 @@ def public_cart_remove(current_user, slug: str):
 
     db.session.delete(cart_item)
     db.session.commit()
-    return jsonify(_cart_summary(cart, owner))
+    return jsonify(_cart_summary(cart, owner, event="remove"))
+
+
+@market_bp.post("/<slug>/cart/update")
+def public_cart_update(slug: str):
+    """Update item quantity within the tenant cart.
+
+    Accepts ``product_id`` (or ``catalogo_item_id``/``item_id``) and ``quantity``.
+    Quantity ``0`` removes the item. Positive quantities replace the stored amount.
+    """
+
+    tenant = _resolve_tenant(slug)
+    owner = _tenant_owner(tenant)
+    if owner is None:
+        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
+
+    payload = request.get_json(silent=True) or {}
+    item_id = payload.get("product_id") or payload.get("catalogo_item_id") or payload.get("item_id")
+    try:
+        item_id_int = int(item_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "catalogo_item_id requerido"}), 400
+
+    cantidad = payload.get("cantidad") or payload.get("quantity")
+    try:
+        cantidad_int = int(cantidad)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Cantidad inválida"}), 400
+
+    cart = _get_or_create_cart(tenant)
+    cart_item = cart.items.filter(MarketCartItem.product_id == item_id_int).first()
+
+    if cart_item is None:
+        return jsonify({"error": "Item no encontrado en el carrito"}), 404
+
+    if cantidad_int <= 0:
+        db.session.delete(cart_item)
+    else:
+        cart_item.quantity = cantidad_int
+
+    db.session.commit()
+    return jsonify(_cart_summary(cart, owner, event="update"))
+
+
+@market_bp.post("/<slug>/cart/clear")
+def public_cart_clear(slug: str):
+    tenant = _resolve_tenant(slug)
+    owner = _tenant_owner(tenant)
+    if owner is None:
+        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
+
+    cart = _get_or_create_cart(tenant)
+    for entry in cart.items.all():
+        db.session.delete(entry)
+
+    db.session.commit()
+    return jsonify(_cart_summary(cart, owner, event="clear"))
 
 
 @market_bp.post("/<slug>/cart/clear")
@@ -647,7 +727,20 @@ def start_checkout(current_user, slug: str):
     if current_user.is_authenticated and cart.user_id is None:
         cart.user_id = current_user.id
 
-    summary = _cart_summary(cart, owner)
+    summary = _cart_summary(cart, owner, event="checkout")
+
+    balances = summary.get("balances") or {}
+    if balances.get("insufficient_points"):
+        return (
+            jsonify({
+                "error": "Puntos insuficientes para confirmar el pedido",
+                "detalle": {
+                    "puntos_disponibles": balances.get("points_available"),
+                    "puntos_requeridos": summary.get("total_puntos_estimado"),
+                },
+            }),
+            400,
+        )
 
     total_monetary = summary.get("total_estimado")
     total_points = summary.get("total_puntos_estimado")

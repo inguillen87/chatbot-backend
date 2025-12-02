@@ -1529,6 +1529,57 @@ def strip_variation_selector(s: str) -> str:
     return s.replace(VARIATION_SELECTOR, "") if isinstance(s, str) else s
 
 
+def _try_handle_emoji_shortcut(
+    pregunta_original,
+    contexto_municipio_actual: dict,
+    context,
+    chat_db_context,
+):
+    """Trigger quick actions when the user sends a single emoji.
+
+    This works regardless of the current conversation state so accessibility
+    users can always start a flow with an emoji-only message.
+    """
+
+    pregunta_str_menu = ""
+    if isinstance(pregunta_original, str):
+        pregunta_str_menu = pregunta_original
+    elif isinstance(pregunta_original, dict):
+        if "pregunta" in pregunta_original:
+            pregunta_str_menu = pregunta_original["pregunta"]
+        # Cuando el cliente envía un emoji en un campo dedicado, usarlo como
+        # entrada principal para que los atajos funcionen en todos los estados.
+        if not pregunta_str_menu:
+            pregunta_str_menu = (
+                pregunta_original.get("emoji")
+                or pregunta_original.get("icon")
+                or pregunta_str_menu
+            )
+
+    pregunta_str_menu = strip_variation_selector(pregunta_str_menu.strip())
+
+    if not pregunta_str_menu:
+        return None
+
+    emoji_category = EMOJI_RECLAMO_CATEGORIES.get(pregunta_str_menu)
+    if emoji_category:
+        handler = ReclamoFlowHandler(context, chat_db_context)
+        response_dict = handler.start_flow(categoria_inicial=emoji_category)
+        contexto_municipio_actual["estado_conversacion"] = "EN_FLUJO_RECLAMO"
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return response_dict
+
+    emoji_action = EMOJI_MAIN_MENU_ACTIONS.get(pregunta_str_menu)
+    if emoji_action:
+        contexto_municipio_actual["estado_conversacion"] = None
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return handle_main_menu_action(emoji_action, context, chat_db_context)
+
+    return None
+
+
 def _can_use_global_emoji_shortcuts(estado_conversacion: str | None) -> bool:
     """Allow emoji shortcuts even when asking for the initial name.
 
@@ -1900,7 +1951,18 @@ def _normalize_pedir_info_value(pedir_info: Any) -> Optional[str]:
 
     if isinstance(pedir_info, str):
         cleaned = pedir_info.strip()
-        return cleaned or None
+        if not cleaned:
+            return None
+
+        # Handle values like "ubicacion, distrito" by picking the first
+        # meaningful pending field so we don't persist composite keys.
+        parts = [p.strip() for p in cleaned.replace(" y ", ",").split(",") if p.strip()]
+        for part in parts:
+            normalized_part = unicodedata.normalize("NFKD", part).encode("ascii", "ignore").decode("ascii").lower()
+            if normalized_part in CLAIM_PENDING_FIELDS:
+                return normalized_part
+
+        return cleaned
 
     return None
 
@@ -1950,6 +2012,57 @@ def _extract_value_for_expected_field(
         return raw_text.strip() or None
 
     return raw_text.strip() or None
+
+
+def _extract_additional_fields_from_message(raw_text: str, context: dict) -> Dict[str, str]:
+    """Extract as many structured fields as possible from a single user message.
+
+    This is used when the user provides multiple data points in one turn (e.g.,
+    email + teléfono + nombre + dirección). We keep it lightweight and purely
+    regex/heuristic-based, delegating full understanding to the LLM.
+    """
+
+    extracted: Dict[str, str] = {}
+    raw_text = raw_text or ""
+
+    email = extract_email(raw_text)
+    if email:
+        extracted["email"] = email
+
+    phones = extract_phone(raw_text)
+    if phones:
+        extracted["telefono"] = phones[0]
+
+    dni_values = extract_dni(raw_text)
+    if dni_values:
+        extracted["dni"] = dni_values[0]
+
+    name_value = extract_name(raw_text)
+    if name_value:
+        extracted["nombre"] = name_value
+
+    # If the user shared a structured location payload, prefer that.
+    if context.get("es_ubicacion") and context.get("ubicacion_usuario"):
+        location_payload = context.get("ubicacion_usuario") or {}
+        address = location_payload.get("address")
+        if address:
+            extracted["ubicacion"] = address
+        else:
+            lat = location_payload.get("latitude")
+            lon = location_payload.get("longitude")
+            if lat is not None and lon is not None:
+                extracted["ubicacion"] = f"Lat: {lat}, Lon: {lon}"
+
+    # Lightweight heuristic: if the text clearly looks like an address, capture
+    # it as 'ubicacion' without overriding a structured location already found.
+    if "ubicacion" not in extracted:
+        lowered = raw_text.lower()
+        if any(keyword in lowered for keyword in ["calle", "avenida", "av ", "esquina", "altura", "entre", "direccion"]):
+            cleaned_text = raw_text.strip()
+            if cleaned_text:
+                extracted["ubicacion"] = cleaned_text
+
+    return extracted
 
 _PRODUCT_CATALOG_CACHE = None
 def cargar_catalogo_productos():
@@ -2579,6 +2692,23 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return submenu
+
+    if action_id in {
+        "mostrar_menu_catalogo",
+        "mostrar_carrito_catalogo",
+        "finalizar_pedido_catalogo_demo",
+    } or action_id.startswith("catalogo_"):
+        if not _catalogo_widget_visible(context):
+            return {
+                "message_body": "El catálogo no está habilitado en este widget municipal.",
+                "message_type": "interactive_buttons",
+                "options_list": [
+                    {"texto": "Menú principal", "action_id": "menu_principal"},
+                    {"texto": "Volver", "action_id": "cancelar"},
+                ],
+                "fuente": "catalogo_desactivado_municipio",
+                "generar_audio": True,
+            }
 
     if action_id == "mostrar_menu_catalogo":
         submenu = _get_catalogo_menu(context)
@@ -3265,6 +3395,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             contexto_municipio_actual["esperando_info_llm"] = campo_esperado
         estabamos_esperando_dato = bool(campo_esperado)
 
+        datos_parciales = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
+
         expected_value_captured = False
 
         if context.get("es_ubicacion") and context.get("ubicacion_usuario"):
@@ -3274,8 +3406,6 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             logger_actual.info(
                 f"Guardando dato esperado '{campo_esperado}' en el contexto antes de llamar al LLM."
             )
-            datos_parciales = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
-
             valor_a_guardar: Optional[str] = None
             if campo_esperado == "ubicacion":
                 if context.get("ubicacion_usuario"):
@@ -3313,6 +3443,29 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 logger_actual.info(
                     f"No se pudo extraer un valor válido para '{campo_esperado}'. Se mantendrá la solicitud pendiente."
                 )
+
+        # Incluso si estábamos esperando un dato específico, intenta capturar otros
+        # campos de contacto/ubicación que el usuario pudo haber enviado en el mismo mensaje.
+        additional_fields = _extract_additional_fields_from_message(pregunta_str, context)
+        if additional_fields:
+            merged_fields = 0
+            for key, value in additional_fields.items():
+                if value and key not in datos_parciales:
+                    datos_parciales[key] = value
+                    merged_fields += 1
+            if merged_fields:
+                logger_actual.info(
+                    f"Datos adicionales detectados en un solo mensaje: {additional_fields}"
+                )
+
+            if (
+                campo_esperado
+                and not expected_value_captured
+                and campo_esperado in datos_parciales
+            ):
+                expected_value_captured = True
+                contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                contexto_municipio_actual.pop("esperando_info_llm", None)
 
         if expected_value_captured and (estabamos_esperando_dato or waiting_state_active):
             logger_actual.info(
@@ -3754,6 +3907,19 @@ MENU_KEYWORDS = {
         "votacion",
         "votación",
         "participar",
+    ],
+    "mostrar_menu_catalogo": [
+        "catalogo",
+        "catálogo",
+        "catalogos",
+        "catálogos",
+        "catalogo y beneficios",
+        "beneficios",
+        "canje",
+        "canje de puntos",
+        "puntos",
+        "productos",
+        "tienda",
     ],
     "limpiar_contexto": [
         "cancelar",
@@ -5104,6 +5270,42 @@ def _resolve_catalogo_base_url(context: Optional[dict]) -> Optional[str]:
     return None
 
 
+def _catalogo_widget_visible(context: Optional[dict]) -> bool:
+    """Return True if the catalog should be exposed inside the widget."""
+
+    municipio_config = (context or {}).get("municipio_config_actual") or {}
+
+    flags: list[Optional[bool]] = [
+        municipio_config.get("catalogo_widget_visible"),
+        municipio_config.get("widget_catalog_visible"),
+        municipio_config.get("catalogo_visible_en_widget"),
+    ]
+
+    catalogo_cfg = None
+    if isinstance(municipio_config.get("catalogo"), dict):
+        catalogo_cfg = municipio_config["catalogo"]
+    elif isinstance(municipio_config.get("catalogos"), dict):
+        catalogo_cfg = municipio_config["catalogos"]
+
+    if isinstance(catalogo_cfg, dict):
+        flags.extend(
+            [
+                catalogo_cfg.get("widget_visible"),
+                catalogo_cfg.get("widget_enabled"),
+                catalogo_cfg.get("catalogo_widget_visible"),
+            ]
+        )
+
+    for flag in flags:
+        if isinstance(flag, bool):
+            return flag
+
+    # Si no hay flags explícitos, habilitamos catálogo cuando podemos construir URLs.
+    # Esto permite mantener el menú visible en tenantes legados que no setean los flags
+    # nuevos, pero sí usan las rutas de catálogo anteriores.
+    return bool(_resolve_catalogo_base_url(context))
+
+
 def _resolve_tenant_identifiers(context: Optional[dict]) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """Return (tenant_slug, tenant_id, owner_id) best-effort from the context/config."""
 
@@ -5139,10 +5341,48 @@ def _resolve_tenant_identifiers(context: Optional[dict]) -> tuple[Optional[str],
     return _clean(tenant_slug), _clean(tenant_id), _clean(owner_id)
 
 
+def _resolve_viewer_phone(context: Optional[dict]) -> Optional[str]:
+    """Try to infer the viewer's phone number from context or stored contact."""
+
+    context = context or {}
+    viewer = context.get("viewer_user_obj")
+    candidates = [
+        getattr(viewer, "telefono", None) if viewer else None,
+        getattr(viewer, "phone", None) if viewer else None,
+        context.get("telefono_usuario_contexto"),
+        context.get("telefono_detectado"),
+    ]
+
+    chat_ctx = context.get("chat_db_context_data") or {}
+    ctx_muni = chat_ctx.get(CONTEXTO_MUNICIPIO, {}) or {}
+    contacto_usuario = ctx_muni.get("contacto_usuario") or {}
+    candidates.extend(
+        [
+            contacto_usuario.get("telefono"),
+            contacto_usuario.get("whatsapp"),
+        ]
+    )
+
+    for candidate in candidates:
+        normalized = _normalize_phone_value(candidate)
+        if normalized:
+            return normalized
+
+    return None
+
+
 def _append_tenant_param(
-    raw_url: Optional[str], tenant_slug: Optional[str], tenant_id: Optional[str], owner_id: Optional[str]
+    raw_url: Optional[str],
+    tenant_slug: Optional[str],
+    tenant_id: Optional[str],
+    owner_id: Optional[str],
+    viewer_phone: Optional[str] = None,
 ) -> Optional[str]:
-    """Ensure catalog links carry tenant/owner hints so the right store is loaded."""
+    """Ensure catalog links carry tenant/owner hints so the right store is loaded.
+
+    Also propagates the viewer phone when available so downstream experiences (puntos,
+    canjes, donaciones) can associate the session to the WhatsApp identity.
+    """
 
     if not raw_url or not isinstance(raw_url, str):
         return raw_url
@@ -5158,6 +5398,11 @@ def _append_tenant_param(
 
     if owner_id and "owner_id" not in query_params:
         query_params["owner_id"] = [owner_id]
+
+    if viewer_phone:
+        existing_phone_keys = {k.lower() for k in query_params.keys()}
+        if not existing_phone_keys.intersection({"phone", "telefono", "waid", "whatsapp"}):
+            query_params["phone"] = [viewer_phone]
 
     new_query = urlencode(query_params, doseq=True)
     return parsed._replace(query=new_query).geturl()
@@ -5208,11 +5453,22 @@ def _build_catalogo_link_map(context: Optional[dict]) -> Dict[str, str]:
 
     base_url = _resolve_catalogo_base_url(context)
     tenant_slug, tenant_id, owner_id = _resolve_tenant_identifiers(context)
+    viewer_phone = _resolve_viewer_phone(context)
+    market_base = None
+    if tenant_slug:
+        market_base = f"/market/{tenant_slug.strip('/')}"
+
     default_paths = {
-        "catalogo_ver": "/productos",
-        "catalogo_canje_puntos": "/productos?view=canje",
-        "catalogo_compras": "/productos?view=compras",
-        "catalogo_donaciones": "/productos?view=donaciones",
+        "catalogo_ver": f"{market_base}/catalog" if market_base else "/productos",
+        "catalogo_canje_puntos": f"{market_base}/catalog?view=canje"
+        if market_base
+        else "/productos?view=canje",
+        "catalogo_compras": f"{market_base}/catalog?view=compras"
+        if market_base
+        else "/productos?view=compras",
+        "catalogo_donaciones": f"{market_base}/catalog?view=donaciones"
+        if market_base
+        else "/productos?view=donaciones",
     }
 
     link_map: Dict[str, str] = {}
@@ -5220,7 +5476,9 @@ def _build_catalogo_link_map(context: Optional[dict]) -> Dict[str, str]:
         raw_url = override_maps.get(action_id)
         if not raw_url and base_url:
             raw_url = f"{base_url}{default_path}"
-        raw_url = _append_tenant_param(raw_url, tenant_slug, tenant_id, owner_id)
+        raw_url = _append_tenant_param(
+            raw_url, tenant_slug, tenant_id, owner_id, viewer_phone
+        )
         normalized = _normalize_public_url(raw_url, context)
         if normalized:
             link_map[action_id] = normalized
@@ -5230,6 +5488,17 @@ def _build_catalogo_link_map(context: Optional[dict]) -> Dict[str, str]:
 
 def _get_catalogo_menu(context: Optional[dict] = None):
     context = context or {}
+    if not _catalogo_widget_visible(context):
+        return {
+            "message_body": "El catálogo no está habilitado para este municipio.",
+            "message_type": "interactive_buttons",
+            "options_list": [
+                {"texto": "Menú principal", "action_id": "menu_principal"},
+                {"texto": "Volver", "action_id": "cancelar"},
+            ],
+            "fuente": "catalogo_desactivado_municipio",
+            "generar_audio": True,
+        }
     direct_links = _build_catalogo_link_map(context)
     banner_image = _resolve_catalogo_banner_image(context)
 
@@ -5707,6 +5976,42 @@ def _resolve_encuestas_short_base_url(context: dict, base_url: str) -> str:
     return short_base.rstrip("/")
 
 
+def _build_fallback_encuestas_for_junin(
+    base_url: str, context: Optional[dict] = None
+) -> list[dict]:
+    """Return a curated list of encuestas for Junín with short share URLs."""
+
+    context = context or {}
+    cleaned_base = _clean_url_candidate(base_url) or "https://chatboc.ar"
+    cleaned_base = cleaned_base.rstrip("/")
+    short_base = _resolve_encuestas_short_base_url(context, cleaned_base)
+
+    titulo = "Participación Ciudadana Junín 2025"
+    descripcion = (
+        "Queremos conocer tus prioridades para planificar obras, seguridad y "
+        "actividades en todo Junín. Contanos qué es importante para tu barrio."
+    )
+    slug = "9df156"
+
+    share_url = urljoin(f"{cleaned_base}/", f"e/{slug}")
+    share_short_url = urljoin(f"{short_base}/", f"e/{slug}") if short_base else share_url
+    share_message = f"Participá en {titulo}: {share_short_url or share_url}"
+
+    return [
+        {
+            "data": {
+                "titulo": titulo,
+                "descripcion": descripcion,
+                "slug": slug,
+            },
+            "slug_publico": slug,
+            "share_url": share_url,
+            "share_short_url": share_short_url,
+            "share_message": share_message,
+        }
+    ]
+
+
 def _is_domain_mapped_base_url_for_tenant(
     base_url: str, tenant_id: Optional[int]
 ) -> bool:
@@ -5752,7 +6057,12 @@ def _format_url_for_display(
     prefer_text_param: bool = False,
     widget: bool = False,
 ) -> str:
-    """Return a compact, human-friendly representation of a public URL."""
+    """Return a compact, human-friendly representation of a public URL.
+
+    When used inside the widget/WhatsApp menus we keep the query string so the
+    user can copy a fully functional URL that already incluye parámetros de
+    tenant/owner requeridos por catálogo y beneficios.
+    """
 
     if not isinstance(url, str):
         return ""
@@ -5767,7 +6077,9 @@ def _format_url_for_display(
         netloc = netloc[4:]
 
     path = parsed.path or ""
-    display = f"{netloc}{path}".strip()
+    query = parsed.query or ""
+    query_suffix = f"?{query}" if widget and query else ""
+    display = f"{netloc}{path}{query_suffix}".strip()
 
     if prefer_text_param:
         params = parse_qs(parsed.query)
@@ -5781,8 +6093,9 @@ def _format_url_for_display(
             return display
 
     if widget and "canal=widget_chat" in parsed.query:
-        display = f"{display}?widget" if display else "?widget"
-    elif parsed.query:
+        connector = "&" if "?" in display else "?"
+        display = f"{display}{connector}widget" if display else "?widget"
+    elif parsed.query and not query_suffix:
         display = f"{display}?{parsed.query}" if display else parsed.query
 
     if parsed.fragment:
@@ -6242,7 +6555,24 @@ def _get_encuestas_menu(context: dict) -> dict:
             "generar_audio": True,
         }
 
-    if not encuestas:
+    base_url = _resolve_encuestas_base_url(context) or "https://chatboc.ar"
+    api_base_url = _resolve_encuestas_api_base_url(context)
+
+    encuestas_data: list[dict] = []
+    for encuesta, slug_publico in encuestas:
+        try:
+            data = serialize_public_encuesta(encuesta, slug_publico=slug_publico)
+        except Exception:
+            logger.exception("[encuestas] No se pudo serializar la encuesta %s", slug_publico)
+            continue
+        encuestas_data.append({"data": data, "slug_publico": slug_publico})
+
+    if not encuestas_data:
+        encuestas_data = _build_fallback_encuestas_for_junin(
+            base_url or "https://chatboc.ar", context
+        )
+
+    if not encuestas_data:
         return {
             "message_body": (
                 "Por el momento no hay encuestas activas. Te avisaremos cuando "
@@ -6253,9 +6583,6 @@ def _get_encuestas_menu(context: dict) -> dict:
             "fuente": "submenu_encuestas_v1",
             "generar_audio": True,
         }
-
-    base_url = _resolve_encuestas_base_url(context)
-    api_base_url = _resolve_encuestas_api_base_url(context)
     primary_banner_url, media_attachments = _resolve_encuestas_menu_media_urls(
         context, api_base_url
     )
@@ -6265,18 +6592,15 @@ def _get_encuestas_menu(context: dict) -> dict:
     )
     banner_image_url = share_image_default
 
-    suppress_whatsapp_share_line = False
-    if is_whatsapp_channel:
-        suppress_whatsapp_share_line = _is_domain_mapped_base_url_for_tenant(
-            base_url, tenant_id
-        )
-
     general_lines: List[str] = []
     whatsapp_blocks: List[Dict[str, str]] = []
     survey_buttons: List[Dict[str, Any]] = []
     survey_metadata: List[Dict[str, Any]] = []
-    for index, (encuesta, slug_publico) in enumerate(encuestas, start=1):
-        data = serialize_public_encuesta(encuesta, slug_publico=slug_publico)
+    for index, encuesta_entry in enumerate(encuestas_data, start=1):
+        data = encuesta_entry.get("data") or {}
+        slug_publico = encuesta_entry.get("slug_publico") or data.get("slug")
+        if not slug_publico:
+            continue
         titulo = data.get("titulo") or "Encuesta ciudadana"
         descripcion = (data.get("descripcion") or "").strip()
         if descripcion:
@@ -6284,17 +6608,24 @@ def _get_encuestas_menu(context: dict) -> dict:
             if len(descripcion) > 180:
                 descripcion = descripcion[:177].rstrip() + "…"
 
-        share_url = urljoin(f"{base_url}/", f"e/{slug_publico}")
+        share_url = encuesta_entry.get("share_url") or urljoin(
+            f"{base_url}/", f"e/{slug_publico}"
+        )
         short_slug = _extract_short_public_slug(slug_publico)
         short_base_url = _resolve_encuestas_short_base_url(context, base_url)
-        share_short_url = urljoin(f"{short_base_url}/", f"e/{short_slug}")
+        share_short_url = encuesta_entry.get("share_short_url") or urljoin(
+            f"{short_base_url}/", f"e/{short_slug}"
+        )
         qr_url: Optional[str] = None
         if api_base_url:
             qr_url = urljoin(
                 f"{api_base_url}/", f"api/public/encuestas/{slug_publico}/qr"
             )
-        share_message = f"Participá en {titulo}: {share_short_url}"
+        share_message = encuesta_entry.get("share_message") or (
+            f"Participá en {titulo}: {share_short_url or share_url}"
+        )
         whatsapp_share_url = f"https://wa.me/?text={quote_plus(share_message)}"
+        whatsapp_share_short_url = f"https://wa.me/?text={quote_plus(share_short_url or share_url)}"
         whatsapp_share_display_url = None
         share_target_for_display = share_short_url or share_url
         if share_target_for_display:
@@ -6314,7 +6645,9 @@ def _get_encuestas_menu(context: dict) -> dict:
 
         open_line = f"   • *Abrir*: {display_share_url}"
         share_line_full = None
-        share_url_for_body = whatsapp_share_url or whatsapp_share_display_url
+        share_url_for_body = (
+            whatsapp_share_short_url or whatsapp_share_url or whatsapp_share_display_url
+        )
         if share_url_for_body:
             share_line_full = f"   • *Compartir*: {share_url_for_body}"
 
@@ -6329,11 +6662,7 @@ def _get_encuestas_menu(context: dict) -> dict:
 
         if is_whatsapp_channel:
             whatsapp_share_line = ""
-            if (
-                share_url_for_body
-                and whatsapp_share_url
-                and not suppress_whatsapp_share_line
-            ):
+            if share_url_for_body and whatsapp_share_url:
                 whatsapp_share_line = f"   • *Compartir*: {share_url_for_body}"
 
             whatsapp_parts_with_desc = [whatsapp_title_line]
@@ -6385,17 +6714,16 @@ def _get_encuestas_menu(context: dict) -> dict:
                 }
             )
 
-        if not is_whatsapp_channel:
-            share_button: Dict[str, Any] = {
-                "texto": f"Compartir {share_button_title}",
-                "action_id": share_action_id,
-            }
-            if is_widget_channel and whatsapp_share_url:
-                share_button.pop("action_id", None)
-                share_button["url"] = whatsapp_share_url
-                share_button["type"] = "url"
+        share_button: Dict[str, Any] = {
+            "texto": f"Compartir {share_button_title}",
+            "action_id": share_action_id,
+        }
+        if is_widget_channel and whatsapp_share_url:
+            share_button.pop("action_id", None)
+            share_button["url"] = whatsapp_share_url
+            share_button["type"] = "url"
 
-            survey_buttons.append(share_button)
+        survey_buttons.append(share_button)
 
         survey_metadata.append(
             {
@@ -6724,6 +7052,7 @@ def _get_ayuda_menu():
         ("❓", "Ayuda"),
         ("📝", "Iniciar un Reclamo"),
         ("💡", "Enviar una Sugerencia"),
+        ("💧", "Reportar pérdida de agua"),
         ("📞", "Contactos Útiles"),
         ("📅", "Solicitar Turnos"),
         ("💵", "Pagar Tasas Municipales"),
@@ -6851,6 +7180,16 @@ def responder_municipio(
     if isinstance(pregunta_original, dict):
         received_payload = pregunta_original
         pregunta_str = received_payload.get("pregunta", "")
+
+        # Permitir que los mensajes compuestos solo por emoji se traten como
+        # texto de entrada principal (por ejemplo, 💧 para iniciar un reclamo
+        # de agua). Algunos clientes envían el emoji en un campo dedicado y
+        # dejan la pregunta vacía.
+        if not pregunta_str:
+            emoji_value = received_payload.get("emoji") or received_payload.get("icon")
+            if emoji_value:
+                pregunta_str = str(emoji_value)
+                received_payload["pregunta"] = pregunta_str
     elif isinstance(pregunta_original, str):
         pregunta_str = pregunta_original
         received_payload["pregunta"] = pregunta_original
@@ -7149,35 +7488,12 @@ def responder_municipio(
             "fuente": "handler_consultar_reclamo",
         })
 
-    # Permitir atajos por emoji incluso si la conversación aún no tiene estado
-    # (p.ej., primer mensaje del usuario) o si está esperando una selección
-    # del menú principal.
-    if _can_use_global_emoji_shortcuts(estado_conversacion):
-        pregunta_str_menu = ""
-        if isinstance(pregunta_original, str):
-            pregunta_str_menu = pregunta_original
-        elif isinstance(pregunta_original, dict) and "pregunta" in pregunta_original:
-            pregunta_str_menu = pregunta_original["pregunta"]
-
-        pregunta_str_menu = strip_variation_selector(pregunta_str_menu.strip())
-
-        emoji_category = EMOJI_RECLAMO_CATEGORIES.get(pregunta_str_menu)
-        if emoji_category:
-            handler = ReclamoFlowHandler(context, chat_db_context)
-            response_dict = handler.start_flow(categoria_inicial=emoji_category)
-            contexto_municipio_actual['estado_conversacion'] = 'EN_FLUJO_RECLAMO'
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-            return _finalize_response(response_dict)
-
-        emoji_action = EMOJI_MAIN_MENU_ACTIONS.get(pregunta_str_menu)
-        if emoji_action:
-            contexto_municipio_actual['estado_conversacion'] = None
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-            response = handle_main_menu_action(emoji_action, context, chat_db_context)
-            if response:
-                return _finalize_response(response)
+    # Permitir atajos por emoji en cualquier estado para accesibilidad.
+    emoji_response = _try_handle_emoji_shortcut(
+        pregunta_original, contexto_municipio_actual, context, chat_db_context
+    )
+    if emoji_response:
+        return _finalize_response(emoji_response)
 
     # 1. Handle active conversation states first.
     if estado_conversacion:

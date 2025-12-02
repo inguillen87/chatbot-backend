@@ -37,11 +37,14 @@ Este memo resume por qué el modelo multi-tenant encaja con el marketplace munic
   - `GET /catalog`: catálogo público del tenant (opciones `?q` y `?categoria`).
   - `GET /cart`: estado del carrito para ese tenant (session-first, pero si el usuario está logueado se asocia a su `user_id`).
   - `POST /cart/add` y `POST /cart/remove`: agregar/quitar ítems con `catalogo_item_id` y `cantidad`.
+  - `POST /cart/update`: ajusta cantidades (si queda en 0, elimina), devolviendo el mismo summary para animar badge/mini-cart.
+  - `POST /cart/clear`: vacía el carrito y reinicia contadores para el tenant actual.
   - `POST /checkout/start`: valida que exista carrito y teléfono (`telefono`/`phone` o user logueado), crea `MarketOrder` y deja el carrito en estado `submitted` listo para integrar pago/whatsapp.
   - `GET /cart/url`: devuelve el link compartible `/market/<slug>/cart` usando la configuración pública del tenant.
 - **Notas de tenencia y aislamiento**: todos los queries de catálogo y carrito incluyen `tenant_id` y dueño, evitando mezclar productos entre municipios.
 
 ## Consumo desde frontend
 - **Catálogo**: consumir `GET /api/market/{slug}/catalog` y renderizar productos (precio, puntos, imagen, categoría). Respetar `tenant_slug` para los links/QR.
-- **Carrito**: `GET /api/market/{slug}/cart` devuelve `items`, totales por moneda y `contacto` (nombre/teléfono si se conoce). Los endpoints de add/remove devuelven el mismo summary para actualizar la UI.
-- **Checkout**: llamar a `POST /api/market/{slug}/checkout/start` con `telefono` (y opcional `nombre`) una vez que el usuario confirma. La respuesta entrega `order_id`, totales y `checkout_options` para enchufar MercadoPago o flujo de puntos.
+- **Carrito**: `GET /api/market/{slug}/cart` devuelve `items`, totales por moneda y `contacto` (nombre/teléfono si se conoce). Los endpoints de add/remove/update/clear devuelven el mismo summary con `ui_signals` (por ejemplo `animation: "cart-burst"` y `badge`) para refrescar en tiempo real.
+- **Balances en vivo**: las respuestas incluyen `balances.points_available` y `points_after_cart` (si el usuario está autenticado) más `wallet_after_cart` si el tenant configuró saldo virtual; si no alcanza el saldo en puntos se devuelve error 400 al iniciar checkout.
+- **Checkout**: llamar a `POST /api/market/{slug}/checkout/start` con `telefono` (y opcional `nombre`) una vez que el usuario confirma. La respuesta entrega `order_id`, totales, `balances` y `checkout_options` para enchufar MercadoPago o flujo de puntos.

@@ -23,6 +23,9 @@ def _get_config_value(name: str) -> str:
     return env_value.strip()
 
 
+DEFAULT_STYLE_URL = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+
+
 def _normalize_style_url(style_url: str, maptiler_key: str) -> str:
     """Return a style URL that always works with MapTiler hosted styles.
 
@@ -71,7 +74,7 @@ def get_map_config() -> Dict[str, str]:
     style_url = _normalize_style_url(
         _get_config_value("MAPLIBRE_STYLE_URL")
         or _get_config_value("MAPTILER_STYLE_URL")
-        or "https://api.maptiler.com/maps/streets/style.json",
+        or DEFAULT_STYLE_URL,
         maptiler_key,
     )
 
@@ -84,7 +87,10 @@ def get_map_config() -> Dict[str, str]:
     else:
         if google_key:
             provider = "google"
-        elif maptiler_key:
+        elif maptiler_key or style_url:
+            # Favor MapLibre/MapTiler when we at least have a style URL so that
+            # the frontend can render a basemap even if API keys are not
+            # configured (e.g. using the open Carto style fallback).
             provider = "maptiler"
 
     return {

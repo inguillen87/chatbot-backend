@@ -35,6 +35,7 @@ class PlaceholderEndpointTests(unittest.TestCase):
         resp = self.client.options("/municipal/whatsapp", headers={"Origin": "https://example.com"})
         self.assertEqual(resp.status_code, 204)
         self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://example.com")
+        self.assertIn("PATCH", resp.headers.get("Access-Control-Allow-Methods", ""))
 
     def test_municipal_integrations_placeholder(self):
         resp = self.client.get("/municipal/integrations", headers={"Origin": "https://example.com"})
@@ -48,6 +49,7 @@ class PlaceholderEndpointTests(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 204)
         self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://example.com")
+        self.assertIn("PATCH", resp.headers.get("Access-Control-Allow-Methods", ""))
 
     def test_public_tenant_profile_preflight(self):
         resp = self.client.options(

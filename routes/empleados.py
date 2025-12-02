@@ -1,49 +1,56 @@
 from flask import Blueprint, request, jsonify
-from models import User, TicketComentario, db, MunicipioTicket, PymeTicket
+from models import (
+    CatalogoItem,
+    MunicipioTicket,
+    PymeTicket,
+    TicketComentario,
+    User,
+    db,
+)
 from routes.auth import token_requerido, solo_admin_requerido
 from services.logic import es_rubro_publico
 import uuid
-from datetime import datetime, timedelta # Importar datetime y timedelta
-from sqlalchemy import func # Importar func para count
+from datetime import datetime, timedelta
+from sqlalchemy import func
 from routes.ticket import TICKET_ALLOWED_STATES
 from services.categorias_municipio import CATEGORIAS_RECLAMO
 
-_ALLOWED_CATEGORIES = {c.lower(): c for c in CATEGORIAS_RECLAMO}
-
-
 def _normalize_categorias_input(categorias_raw):
-    """Return a normalized, deduplicated list of allowed categories.
+    """Normaliza una lista de categorías proveniente del frontend.
 
-    If an unknown category is provided, returns ``None`` to signal an error.
-    Empty inputs return an empty list so callers can decide whether to reject
-    or keep previous values.
+    Acepta strings simples o diccionarios con las claves ``value`` / ``label``
+    y devuelve una lista de nombres en minúsculas, sin duplicados ni valores
+    vacíos.  No requiere que las categorías existan previamente en la base ya
+    que se almacenan directamente en ``User.ticket_categorias`` para controlar
+    el scope de cada empleado.
     """
-
-    if categorias_raw is None:
+    if not categorias_raw:
         return []
 
-    if isinstance(categorias_raw, str):
-        items = categorias_raw.split(',')
-    elif isinstance(categorias_raw, list):
-        items = categorias_raw
-    else:
-        return []
+    nombres = []
+    for item in categorias_raw:
+        if isinstance(item, str):
+            nombres.append(item)
+        elif isinstance(item, dict):
+            nombres.append(
+                item.get("value")
+                or item.get("label")
+                or item.get("nombre")
+                or item.get("name")
+            )
+        elif isinstance(item, int):
+            # Permitimos IDs heredados de implementaciones anteriores, aunque
+            # actualmente trabajamos solo con nombres.
+            nombres.append(str(item))
 
-    normalized = []
-    for item in items:
-        if isinstance(item, dict):
-            candidate = str(item.get("value") or item.get("label") or "").strip()
-        else:
-            candidate = str(item or "").strip()
-        if not candidate:
-            continue
-        key = candidate.lower()
-        if key not in _ALLOWED_CATEGORIES:
-            return None
-        canonical = _ALLOWED_CATEGORIES[key]
-        if canonical not in normalized:
-            normalized.append(canonical)
-    return normalized
+    normalizadas = []
+    for nombre in nombres:
+        limpio = (nombre or "").strip().lower()
+        if limpio:
+            normalizadas.append(limpio)
+
+    # Remover duplicados preservando orden
+    return list(dict.fromkeys(normalizadas))
 
 
 def _build_ticket_query_for_owner(current_user: User):
@@ -60,11 +67,18 @@ def _build_ticket_query_for_owner(current_user: User):
             ),
             MunicipioTicket,
         )
-    if current_user.tipo_chat == "pyme" and current_user.rubro_id:
-        return (
-            PymeTicket.query.filter(PymeTicket.rubro_id == current_user.rubro_id),
-            PymeTicket,
-        )
+    if current_user.tipo_chat == "pyme":
+        tenant_pyme = getattr(current_user, "tenant_profile_pyme", None)
+        if tenant_pyme:
+            return (
+                PymeTicket.query.filter(PymeTicket.tenant_id == tenant_pyme.id),
+                PymeTicket,
+            )
+        elif current_user.rubro_id:
+            return (
+                PymeTicket.query.filter(PymeTicket.rubro_id == current_user.rubro_id),
+                PymeTicket,
+            )
     return None, None
 
 empleados_bp = Blueprint('empleados', __name__, url_prefix='/empleados')
@@ -141,7 +155,7 @@ def obtener_categorias_empleado(current_user: User):
                 .all()
             )
             categorias_set.update(item[0] for item in categorias_en_bd if item and item[0])
-        elif current_user.tipo_chat == "pyme" and current_user.rubro_id:
+        elif current_user.tipo_chat == "pyme":
             categorias_en_bd = (
                 db.session.query(PymeTicket.categoria)
                 .filter(
@@ -153,6 +167,23 @@ def obtener_categorias_empleado(current_user: User):
                 .all()
             )
             categorias_set.update(item[0] for item in categorias_en_bd if item and item[0])
+
+            tenant_profile = getattr(current_user, "tenant_profile_pyme", None)
+            catalogo_query = CatalogoItem.query.filter(
+                CatalogoItem.user_id == current_user.id,
+                CatalogoItem.categoria.isnot(None),
+                CatalogoItem.categoria != "",
+            )
+            if tenant_profile:
+                catalogo_query = catalogo_query.filter(
+                    func.coalesce(CatalogoItem.tenant_id, tenant_profile.id)
+                    == tenant_profile.id
+                )
+
+            catalogo_categorias = catalogo_query.with_entities(
+                CatalogoItem.categoria
+            ).distinct()
+            categorias_set.update(item[0] for item in catalogo_categorias if item and item[0])
     except Exception:
         # Si hay algún problema consultando la base, devolvemos las categorías
         # base en lugar de propagar un error al frontend.
@@ -178,6 +209,7 @@ def crear_empleado(current_user: User):
     email = data.get('email')
     password = data.get('password')
     categorias = data.get('categorias')
+
     categorias_normalizadas = _normalize_categorias_input(categorias)
     if categorias_normalizadas is None or not categorias_normalizadas:
         return jsonify({"error": "Debe asignar al menos una categoría válida"}), 400
@@ -195,7 +227,7 @@ def crear_empleado(current_user: User):
         or (
             "municipio" if es_rubro_publico(current_user.rubro) else "pyme"
         ),
-        ticket_categorias=','.join(categorias_normalizadas),
+        ticket_categorias=",".join(categorias_normalizadas),
     )
     nuevo.set_password(password)
     db.session.add(nuevo)
@@ -209,7 +241,7 @@ def crear_empleado(current_user: User):
         "name": nuevo.name,
         "email": nuevo.email,
         "rol": nuevo.rol,
-        "categorias": nuevo.ticket_categorias.split(",") if nuevo.ticket_categorias else [],
+        "categorias": categorias_normalizadas,
     }), 201
 
 @empleados_bp.route('/<int:emp_id>/historial', methods=['GET'])
@@ -312,12 +344,14 @@ def actualizar_empleado(current_user: User, emp_id: int):
         cats = _normalize_categorias_input(data['categorias'])
         if cats is None or not cats:
             return jsonify({"error": "Debe asignar al menos una categoría válida"}), 400
-        empleado.ticket_categorias = ','.join(cats)
+        empleado.ticket_categorias = ",".join(cats)
     try:
         db.session.commit()
     except Exception:
         db.session.rollback()
         return jsonify({"error": "Error al actualizar"}), 500
+
+    # Recalculate open tickets after update
     ticket_query_base, TicketModel = _build_ticket_query_for_owner(current_user)
     categorias = empleado.ticket_categorias.split(",") if empleado.ticket_categorias else []
     normalized_categories = [c.strip().lower() for c in categorias if c.strip()]
@@ -330,6 +364,7 @@ def actualizar_empleado(current_user: User, emp_id: int):
                 func.lower(TicketModel.categoria).in_(normalized_categories),
             ).count()
         )
+
     return jsonify({
         "id": empleado.id,
         "name": empleado.name,
