@@ -1007,7 +1007,7 @@ class MarketCart(db.Model, TimestampMixin):
     status = db.Column(db.String(20), nullable=False, default="open")
     contact_name = db.Column(db.String(255), nullable=True)
     contact_phone = db.Column(db.String(50), nullable=True)
-    extra_metadata = db.Column("metadata", JSONType, nullable=True)
+    metadata = db.Column(JSONType, nullable=True)
 
     tenant = db.relationship("TenantProfile")
     user = db.relationship("User")
@@ -1022,23 +1022,6 @@ class MarketCart(db.Model, TimestampMixin):
     __table_args__ = (
         db.Index("ix_market_cart_tenant_session", "tenant_id", "session_id", "status"),
     )
-
-    @property
-    def estado(self) -> str:
-        """Estado legible alineado con las rutas públicas del marketplace."""
-
-        mapping = {"open": "abierto", "submitted": "confirmado", "cancelled": "cancelado"}
-        return mapping.get(self.status, self.status)
-
-    @estado.setter
-    def estado(self, value: str) -> None:  # pragma: no cover - trivial setter
-        normalized = (value or "").strip().lower()
-        inverse = {
-            "abierto": "open",
-            "confirmado": "submitted",
-            "cancelado": "cancelled",
-        }
-        self.status = inverse.get(normalized, normalized or "open")
 
 
 class MarketCartItem(db.Model, TimestampMixin):
@@ -1088,7 +1071,7 @@ class MarketOrder(db.Model, TimestampMixin):
     total_monetary = db.Column(db.Numeric(12, 2), nullable=True)
     total_points = db.Column(db.Integer, nullable=True)
     currency = db.Column(db.String(10), nullable=True)
-    extra_metadata = db.Column("metadata", JSONType, nullable=True)
+    metadata = db.Column(JSONType, nullable=True)
 
     tenant = db.relationship("TenantProfile")
     user = db.relationship("User")
