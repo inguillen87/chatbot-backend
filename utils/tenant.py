@@ -39,13 +39,45 @@ def get_current_tenant() -> Optional[TenantProfile]:
 
     slug = get_current_tenant_slug()
     if not slug:
-        return None
+        slug = None
 
-    return (
-        TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug.lower())
-        .order_by(TenantProfile.id.asc())
-        .first()
+    tenant: Optional[TenantProfile] = None
+
+    if slug:
+        tenant = (
+            TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug.lower())
+            .order_by(TenantProfile.id.asc())
+            .first()
+        )
+
+    if tenant:
+        return tenant
+
+    # Fallback: rely on the shared resolver so widget tokens, host hints and
+    # relaxed slug requirements behave the same across endpoints.
+    from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
+
+    widget_token = (
+        request.headers.get("X-Widget-Token")
+        or request.headers.get("X-Entity-Token")
+        or request.args.get("widget_token")
+        or request.args.get("entity_token")
+        or request.args.get("entityToken")
     )
+
+    host_hint = request.headers.get("X-Forwarded-Host") or request.host
+
+    try:
+        tenant = resolve_tenant_only(
+            tenant_slug=slug,
+            widget_token=widget_token,
+            host=host_hint,
+            require_explicit_slug=False,
+        )
+    except TenantResolutionError:
+        tenant = None
+
+    return tenant
 
 
 def _store_tenant_in_context(tenant: TenantProfile) -> None:
