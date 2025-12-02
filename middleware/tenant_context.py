@@ -172,6 +172,20 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
             if tenant:
                 return tenant
 
+        # Fall back to the shared resolver so custom domains configured on the
+        # tenant (``tenant.dominio``) are honored even when ``TENANT_DOMAIN_MAP``
+        # is not set. This mirrors the logic of ``resolve_tenant_only`` used by
+        # public endpoints and prevents 400 responses on vanity domains.
+        from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
+
+        try:
+            tenant = resolve_tenant_only(host=host, require_explicit_slug=False)
+        except TenantResolutionError:
+            tenant = None
+
+        if tenant:
+            return tenant
+
     return None
 
 
@@ -201,6 +215,23 @@ def require_tenant(func=None) -> TenantProfile:
         return tenant
 
     tenant = get_current_tenant()
+    if tenant:
+        g.tenant_profile = tenant
+        g.tenant_profile_slug = tenant.slug
+        g.current_tenant = tenant
+        g.current_tenant_slug = tenant.slug
+        return tenant
+
+    # As a last resort, try resolving using the host hint so custom domains or
+    # fallback tenants avoid returning a hard 400 for public endpoints.
+    from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
+
+    host_hint = request.headers.get("X-Forwarded-Host") or request.host
+    try:
+        tenant = resolve_tenant_only(host=host_hint, require_explicit_slug=False)
+    except TenantResolutionError:
+        tenant = None
+
     if tenant:
         g.tenant_profile = tenant
         g.tenant_profile_slug = tenant.slug
