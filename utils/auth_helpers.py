@@ -819,14 +819,35 @@ def token_requerido(f):
             resp = make_response(resp_obj, status) if status is not None else make_response(resp_obj)
             resp.headers.setdefault("X-Anon-Id", anon_id)
             resp.headers.setdefault("Anon-Id", anon_id)
-            try:
-                from routes.auth import _add_cors as _cors_helper
-            except Exception:
-                _cors_helper = lambda r, allow_credentials=False: r  # type: ignore[assignment]
-            return _cors_helper(_set_anon_cookie(resp, anon_id), allow_credentials=True)
+            from routes.auth import (
+                _DEFAULT_CORS_HEADERS,
+                _add_cors as _cors_helper,
+            )
+
+            requested_method = request.headers.get("Access-Control-Request-Method")
+            allow_methods = set()
+            if request.url_rule and request.url_rule.methods:
+                allow_methods.update(request.url_rule.methods)
+            allow_methods.add(request.method)
+            if requested_method:
+                allow_methods.add(requested_method)
+            allow_methods.add("OPTIONS")
+
+            requested_headers = request.headers.get("Access-Control-Request-Headers")
+            allow_headers = _DEFAULT_CORS_HEADERS
+            if requested_headers:
+                allow_headers = f"{_DEFAULT_CORS_HEADERS}, {requested_headers}"
+
+            return _cors_helper(
+                _set_anon_cookie(resp, anon_id),
+                allow_credentials=True,
+                allow_methods=sorted(allow_methods),
+                allow_headers=allow_headers,
+            )
 
         if request.method == 'OPTIONS':
-            return _finalize_response('', 204)
+            status_code = 200 if request.blueprint == "legacy_auth" else 204
+            return _finalize_response('', status_code)
 
         # Siempre intentar recuperar el token para exponerlo a las vistas que lo necesiten.
         raw_token = obtener_token()

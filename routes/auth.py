@@ -1689,7 +1689,7 @@ def dashboard_info(user: User):
 @auth_bp.route(
     '/profile', methods=['GET', 'PUT', 'OPTIONS'], provide_automatic_options=False
 )
-@cross_origin(supports_credentials=True)
+@cross_origin(supports_credentials=True, automatic_options=False)
 @token_requerido
 def me_perfil(user):
     """
