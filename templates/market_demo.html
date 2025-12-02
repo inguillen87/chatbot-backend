@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Marketplace demo - {{ tenant_name }}</title>
+  <style>
+    :root {
+      --primary: #0f766e;
+      --accent: #fbbf24;
+      --bg: #f8fafc;
+      --text: #0f172a;
+      --muted: #475569;
+      --card: #ffffff;
+      --border: #e2e8f0;
+      --shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+    }
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: linear-gradient(180deg, #ecfeff 0%, #f8fafc 30%, #ffffff 100%);
+      color: var(--text);
+      margin: 0;
+      padding: 0;
+      line-height: 1.6;
+    }
+    header {
+      padding: 28px 36px 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .brand .pill {
+      background: #0ea5e9;
+      color: #e0f2fe;
+      padding: 8px 14px;
+      border-radius: 999px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      border: 1px solid rgba(14, 165, 233, 0.2);
+    }
+    .hero {
+      padding: 10px 36px 36px;
+    }
+    .hero-card {
+      background: linear-gradient(135deg, rgba(16, 185, 129, 0.08), rgba(14, 165, 233, 0.16));
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 32px;
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 24px;
+      box-shadow: var(--shadow);
+    }
+    @media (max-width: 900px) {
+      .hero-card { grid-template-columns: 1fr; }
+    }
+    .hero h1 {
+      font-size: 32px;
+      margin: 0 0 12px;
+    }
+    .hero p { margin: 0 0 18px; color: var(--muted); }
+    .chips { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0; }
+    .chip {
+      background: #fff;
+      border: 1px solid var(--border);
+      padding: 8px 14px;
+      border-radius: 999px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .mockup {
+      background: #0f172a;
+      color: #e2e8f0;
+      border-radius: 14px;
+      padding: 18px;
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+    }
+    .mockup small { color: #cbd5e1; }
+    .search {
+      margin: 24px 0 12px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .search input {
+      flex: 1;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      font-size: 15px;
+      box-shadow: inset 0 1px 2px rgba(0,0,0,0.04);
+    }
+    .tag { color: #0ea5e9; font-weight: 700; }
+    .section { padding: 0 36px 26px; }
+    .section h2 {
+      margin: 0 0 12px;
+      font-size: 22px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 14px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px;
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      transition: transform 0.12s ease, box-shadow 0.12s ease;
+    }
+    .card:hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(15,23,42,0.12); }
+    .card img {
+      width: 100%;
+      height: 150px;
+      object-fit: cover;
+      border-radius: 10px;
+      background: #f1f5f9;
+    }
+    .card .title { font-weight: 700; margin: 4px 0; }
+    .card .desc { color: var(--muted); font-size: 14px; min-height: 44px; }
+    .pill-group { display: flex; gap: 8px; flex-wrap: wrap; }
+    .pill { background: #e0f2fe; color: #0369a1; padding: 6px 10px; border-radius: 999px; font-size: 12px; }
+    .price { font-weight: 800; font-size: 18px; color: var(--text); }
+    .section-note { color: var(--muted); margin: 0 0 12px; }
+    .features {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 12px;
+    }
+    .feature {
+      background: #0f172a;
+      color: #e2e8f0;
+      border-radius: 12px;
+      padding: 14px 16px;
+      box-shadow: var(--shadow);
+    }
+    .cart {
+      margin-top: 16px;
+      background: #fff7ed;
+      border: 1px solid #fed7aa;
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: var(--shadow);
+    }
+    .cart h3 { margin-top: 0; }
+    .cart-item { display: flex; justify-content: space-between; margin-bottom: 8px; color: #7c2d12; }
+    footer { padding: 24px 36px 36px; color: var(--muted); font-size: 14px; }
+    .badge {
+      background: #f0fdf4;
+      color: #166534;
+      border: 1px solid #bbf7d0;
+      padding: 4px 10px;
+      border-radius: 8px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="pill">{{ tenant_tipo }}</span>
+      <div>
+        <div style="font-size:18px; font-weight:800;">{{ tenant_name }}</div>
+        <div style="color: var(--muted);">Marketplace demo · /market/{{ tenant_slug }}/cart</div>
+      </div>
+    </div>
+    <div class="badge">Catálogo listo para presentar</div>
+  </header>
+
+  <section class="hero">
+    <div class="hero-card">
+      <div>
+        <h1>Experiencia de compra con fotos, categorías, canjes y carrito</h1>
+        <p>{{ hero_subtitle }}</p>
+        <div class="chips">
+          <span class="chip">Productos con imágenes y descripciones</span>
+          <span class="chip">Canjes y recompensas</span>
+          <span class="chip">Checkout listo para demos</span>
+        </div>
+        <div class="search">
+          <input id="search" type="search" placeholder="Buscar por producto, categoría o puntos" aria-label="Buscar en el catálogo">
+          <span class="tag">/market/{{ tenant_slug }}/cart</span>
+        </div>
+        <p class="section-note">Tip profesional: mantener imágenes nítidas, fichas claras y precios en ARS/PTS para cada empresa o municipio.</p>
+      </div>
+      <div class="mockup">
+        <small>Vista rápida del carrito</small>
+        <div class="cart">
+          <h3>Carrito demo</h3>
+          {% for item in cart_preview %}
+            <div class="cart-item">
+              <span>{{ item.nombre }} · x{{ item.cantidad }}</span>
+              <strong>{{ item.precio }}</strong>
+            </div>
+          {% endfor %}
+          <hr>
+          {% if cart_totals.monetary %}
+            <div class="cart-item"><span>Total ARS</span><strong>${{ '%.2f' % cart_totals.monetary }}</strong></div>
+          {% endif %}
+          {% if cart_totals.points %}
+            <div class="cart-item"><span>Total puntos</span><strong>{{ cart_totals.points }} pts</strong></div>
+          {% endif %}
+          <div style="margin-top:10px; font-size: 13px; color:#ef4444;">Checkout demo habilitado · pagos, canjes y reservas.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  {% for section in catalog_sections %}
+  <section class="section">
+    <h2>📂 {{ section.title }}</h2>
+    <p class="section-note">Secciones listas para navegaciones rápidas, filtrado y búsquedas por rubro.</p>
+    <div class="grid" data-grid>
+      {% for item in section.items %}
+        <article class="card" data-card data-text="{{ (item.nombre ~ ' ' ~ (item.categoria or '') ~ ' ' ~ (item.precio or '') ~ ' ' ~ (item.modalidad or '')) | lower }}">
+          <img src="{{ item.imagen }}" alt="{{ item.nombre }}">
+          <div class="pill-group">
+            <span class="pill">{{ item.categoria }}</span>
+            <span class="pill">{{ item.modalidad|capitalize }}</span>
+          </div>
+          <div class="title">{{ item.nombre }}</div>
+          <div class="desc">{{ item.descripcion }}</div>
+          <div class="price">{{ item.precio }}</div>
+        </article>
+      {% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+
+  {% if canjes %}
+  <section class="section">
+    <h2>🎁 Canjes con puntos</h2>
+    <p class="section-note">Ideal para clubes, incentivos municipales o campañas de fidelización.</p>
+    <div class="grid" data-grid>
+      {% for item in canjes %}
+        <article class="card" data-card data-text="{{ (item.nombre ~ ' ' ~ (item.categoria or '') ~ ' ' ~ (item.precio or '') ~ ' ' ~ (item.modalidad or '')) | lower }}">
+          <img src="{{ item.imagen }}" alt="{{ item.nombre }}">
+          <div class="pill-group">
+            <span class="pill">{{ item.categoria }}</span>
+            <span class="pill">Puntos</span>
+          </div>
+          <div class="title">{{ item.nombre }}</div>
+          <div class="desc">{{ item.descripcion }}</div>
+          <div class="price">{{ item.precio }}</div>
+        </article>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="section">
+    <h2>✅ Qué se entrega a cada empresa o municipio</h2>
+    <div class="features">
+      {% for feature in features %}
+        <div class="feature">{{ feature }}</div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <footer>
+    <strong>Recomendación profesional:</strong> mantener catálogos con fotos 1:1 o 4:3, activar recompensas y canjes, y compartir el enlace corto /market/{{ tenant_slug }}/cart en campañas de WhatsApp o email.
+  </footer>
+
+  <script>
+    const search = document.getElementById('search');
+    const cards = Array.from(document.querySelectorAll('[data-card]'));
+    function filterCards(term) {
+      const value = term.trim().toLowerCase();
+      cards.forEach(card => {
+        const text = card.getAttribute('data-text');
+        card.style.display = !value || text.includes(value) ? 'flex' : 'none';
+      });
+    }
+    search?.addEventListener('input', (e) => filterCards(e.target.value));
+  </script>
+</body>
+</html>

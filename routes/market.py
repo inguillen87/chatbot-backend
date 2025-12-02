@@ -10,6 +10,7 @@ from flask import (
     current_app,
     jsonify,
     make_response,
+    render_template,
     request,
     g,
     session,
@@ -162,6 +163,113 @@ def _resolve_tenant_soft(slug: str) -> Optional[TenantProfile]:
             )
 
     return tenant
+
+
+def _want_market_demo_html() -> bool:
+    accept = request.accept_mimetypes
+    prefers_html = accept.accept_html and (
+        accept.best == "text/html"
+        or accept["text/html"] >= accept["application/json"]
+    )
+    return prefers_html or request.args.get("demo") in {"1", "true", "yes", "demo"}
+
+
+def _market_demo_context(slug: str) -> dict:
+    tenant = _resolve_tenant_soft(slug) or _resolve_tenant(slug)
+    g.tenant_profile = tenant
+    g.tenant_profile_slug = tenant.slug
+    owner = _tenant_owner(tenant)
+    if owner is None:
+        abort(404, description="Tenant sin propietario")
+
+    ensure_seed_catalog(owner, tenant)
+    productos_raw = (
+        _product_query_for_tenant(owner, tenant).limit(18).all()
+    )
+
+    fallback_image = "https://placehold.co/800x600?text=Marketplace"
+    cards: List[Dict[str, object]] = []
+    for item in productos_raw:
+        pricing = _pricing_snapshot(item)
+        formatted = pricing.get("formatted", {}) if isinstance(pricing, dict) else {}
+        cards.append(
+            {
+                "id": item.id,
+                "nombre": formatted.get("nombre") or item.nombre,
+                "descripcion": formatted.get("descripcion")
+                or "Catálogo listo para mostrar imágenes, precios y detalles.",
+                "categoria": formatted.get("categoria") or "General",
+                "presentacion": formatted.get("presentacion") or item.unidad,
+                "modalidad": pricing.get("modalidad")
+                or formatted.get("modalidad")
+                or "compra",
+                "precio": pricing.get("price_text")
+                or formatted.get("precio_texto")
+                or "Consultar",
+                "precio_monetario": pricing.get("price_monetary"),
+                "precio_puntos": pricing.get("price_points"),
+                "moneda": pricing.get("currency") or formatted.get("moneda") or "ARS",
+                "imagen": formatted.get("imagen_url") or item.imagen_url or fallback_image,
+                "destacado": bool(getattr(item, "promocion_info", None)),
+            }
+        )
+
+    canjes = [c for c in cards if (c.get("moneda") == "PTS" or c.get("modalidad") == "canje")]
+    productos = [c for c in cards if c not in canjes]
+
+    cart_preview: List[Dict[str, object]] = []
+    total_monetary = Decimal("0")
+    total_points = 0
+    for idx, card in enumerate(cards[:3]):
+        quantity = 1 if idx == 0 else 2
+        cart_preview.append(
+            {
+                "nombre": card.get("nombre"),
+                "precio": card.get("precio"),
+                "moneda": card.get("moneda"),
+                "cantidad": quantity,
+                "modalidad": card.get("modalidad"),
+            }
+        )
+        if card.get("moneda") == "PTS" and isinstance(card.get("precio_puntos"), (int, float)):
+            total_points += int(card["precio_puntos"]) * quantity
+        elif card.get("precio_monetario") is not None:
+            try:
+                price = Decimal(str(card["precio_monetario"]))
+            except (InvalidOperation, TypeError, ValueError):
+                price = Decimal("0")
+            total_monetary += price * quantity
+
+    display_name = tenant.nombre or tenant.slug
+    return {
+        "tenant_name": display_name,
+        "tenant_slug": tenant.slug,
+        "tenant_tipo": (tenant.tipo or "organización").capitalize(),
+        "hero_subtitle": "Catálogo listo con fotos, secciones, buscador y carrito demo",
+        "productos": productos,
+        "canjes": canjes,
+        "catalog_sections": [
+            {"title": "Productos destacados", "items": productos[:8] or cards[:8]},
+            {"title": "Canjes con puntos", "items": canjes[:6] or cards[:6]},
+        ],
+        "cart_preview": cart_preview,
+        "cart_totals": {
+            "monetary": float(total_monetary) if total_monetary else None,
+            "points": total_points or None,
+        },
+        "features": [
+            "Fotos optimizadas con descripción corta y ficha técnica.",
+            "Buscador y filtros por categoría para catálogos grandes.",
+            "Carrito omnicanal con totales en dinero y puntos.",
+            "Secciones destacadas por empresa o municipio con branding.",
+            "Canjes, promociones y recompensas listos para demo.",
+        ],
+    }
+
+
+def _render_market_demo(slug: str):
+    context = _market_demo_context(slug)
+    return render_template("market_demo.html", **context)
 
 
 def _modalidad_value(producto: CatalogoItem) -> str:
@@ -884,6 +992,8 @@ def public_product_detail_alias(slug: str, product_id: int):
 def public_cart_summary_alias(slug: str):
     if request.method == "OPTIONS":
         return "", 204
+    if _want_market_demo_html():
+        return _render_market_demo(slug)
     return public_cart_summary(slug)
 
 
@@ -947,6 +1057,8 @@ def public_product_detail_root(slug: str, product_id: int):
 def public_cart_summary_root(slug: str):
     if request.method == "OPTIONS":
         return "", 204
+    if _want_market_demo_html():
+        return _render_market_demo(slug)
     return public_cart_summary(slug)
 
 
