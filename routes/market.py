@@ -598,7 +598,7 @@ def public_cart_clear(slug: str):
 
 @market_bp.post("/<slug>/cart/clear")
 @token_requerido
-def public_cart_clear(current_user, slug: str):
+def public_cart_clear_authenticated(current_user, slug: str):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
     if owner is None:
