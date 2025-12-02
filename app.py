@@ -438,6 +438,7 @@ def create_app(config_class=Config):
 
     if FEATURE_ENCUESTAS:
         from routes.encuestas_admin import (
+            encuestas_admin_api_bp,
             encuestas_admin_bp,
             encuestas_admin_legacy_bp,
         )
@@ -536,6 +537,7 @@ def create_app(config_class=Config):
     app.register_blueprint(encuestas_admin_bp)
     app.register_blueprint(encuestas_public_bp)
     if FEATURE_ENCUESTAS:
+        app.register_blueprint(encuestas_admin_api_bp)
         app.register_blueprint(encuestas_admin_legacy_bp)
         app.register_blueprint(encuestas_public_legacy_bp)
         app.register_blueprint(encuestas_public_share_bp)

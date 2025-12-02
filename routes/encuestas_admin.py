@@ -268,3 +268,7 @@ encuestas_admin_bp = _create_admin_blueprint("encuestas_admin_bp", "/api/encuest
 encuestas_admin_legacy_bp = _create_admin_blueprint(
     "encuestas_admin_legacy_bp", "/admin/encuestas"
 )
+# Alias para clientes que consultan el API admin bajo /api/admin/encuestas
+encuestas_admin_api_bp = _create_admin_blueprint(
+    "encuestas_admin_api_bp", "/api/admin/encuestas"
+)
