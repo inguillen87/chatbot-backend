@@ -90,7 +90,7 @@ def carrito_alias_vaciar():
     return vaciar()
 
 
-@api_aliases_bp.route("/auth/login", methods=["POST", "OPTIONS"], strict_slashes=False)
+@api_aliases_bp.route("/auth/login", methods=["GET", "POST", "OPTIONS"], strict_slashes=False)
 def auth_login_alias():
     return login_view()
 
