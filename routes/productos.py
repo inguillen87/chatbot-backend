@@ -185,6 +185,13 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
     if not segments:
         return None
 
+    # API aliases like /api/<slug>/productos coming from the widget/PWA.
+    if segments[0].lower() == "api" and len(segments) >= 2:
+        # Avoid conflicting with prefixes that already encode the slug later
+        if segments[1].lower() not in {"public", "pwa"}:
+            cleaned = segments[1].strip().lower()
+            return cleaned or None
+
     # Legacy prefixed pattern: /municipio/<slug>/..., /pyme/<slug>/...
     if len(segments) >= 2:
         prefix = segments[0].lower()

@@ -4,6 +4,8 @@ from unittest.mock import patch
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
+from flask import request
+
 from app import create_app, db
 from config import Config
 from models import TenantProfile, User
@@ -138,6 +140,14 @@ class ProductosTenantResolutionTest(unittest.TestCase):
         self.assertIsNotNone(owner)
         self.assertEqual(tenant.id, self.tenant.id)
         self.assertEqual(owner.id, self.owner.id)
+
+    def test_tenant_slug_from_api_prefix_path(self):
+        """Debe extraer el slug cuando viene en rutas /api/<slug>/productos."""
+
+        with self.app.test_request_context("/api/municipio/productos"):
+            slug = productos._tenant_slug_from_path(request.path)
+
+        self.assertEqual(slug, "municipio")
 
     def test_resolve_public_owner_from_market_referrer(self):
         """Debe extraer el slug desde rutas tipo /market/<slug>/... del referer."""

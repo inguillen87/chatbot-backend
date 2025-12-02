@@ -52,6 +52,7 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
     * /api/public/<slug>/...
     * /api/pwa/public/<slug>/...
     * /api/pwa/<slug>/...
+    * /api/<slug>/... (direct API aliases used by el widget/PWA)
     """
 
     if not path:
@@ -59,6 +60,12 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
 
     segments = [segment for segment in path.split("/") if segment]
     lower_segments = [segment.lower() for segment in segments]
+
+    # Direct API prefix where the slug comes right after `/api/<slug>/...`.
+    if lower_segments[:1] == ["api"] and len(segments) >= 2:
+        # Skip reserved prefixes that already have dedicated handling below
+        if lower_segments[1] not in {"public", "pwa"}:
+            return _normalize_slug(segments[1])
 
     # Direct tenant slugs prefixed at the root (e.g. /m/<slug>/...)
     if len(segments) >= 2 and lower_segments[0] in {
