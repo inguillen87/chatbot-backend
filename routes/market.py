@@ -701,7 +701,7 @@ def start_checkout(current_user, slug: str):
         total_monetary=total_monetary,
         total_points=total_points,
         currency="ARS",
-        metadata={"totales_monedas": summary.get("totales_monedas", {})},
+        metadata_payload={"totales_monedas": summary.get("totales_monedas", {})},
     )
     db.session.add(order)
 
