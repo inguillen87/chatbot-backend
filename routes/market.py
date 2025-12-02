@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Optional
+from urllib.parse import quote
 
 from flask import (
     Blueprint,
@@ -37,6 +38,7 @@ from utils.permissions import require_role
 
 market_bp = Blueprint("market", __name__, url_prefix="/api/market")
 market_public_bp = Blueprint("market_public", __name__, url_prefix="/market")
+market_public_alias_bp = Blueprint("market_public_alias", __name__)
 market_admin_bp = Blueprint("market_admin", __name__, url_prefix="/api/admin/market")
 
 
@@ -219,13 +221,37 @@ def _resolve_admin_tenant(current_user: User, payload: Optional[dict] = None) ->
     return tenant
 
 
-def _serialize_catalog_item(item: CatalogoItem) -> Dict[str, object]:
+def _public_market_base(tenant: TenantProfile) -> tuple[str, str, str]:
+    """Return (full_url, base_url, path) for the tenant's public market."""
+
+    return _build_public_cart_url(tenant)
+
+
+def _whatsapp_share_link(text: str) -> str:
+    return f"https://wa.me/?text={quote(text)}"
+
+
+def _serialize_catalog_item(
+    item: CatalogoItem, tenant: Optional[TenantProfile] = None
+) -> Dict[str, object]:
     price_value = None
     try:
         if item.precio_monetario is not None:
             price_value = float(item.precio_monetario)
     except (TypeError, ValueError):
         price_value = None
+
+    public_url = None
+    whatsapp_share = None
+    if tenant:
+        full_url, _, path = _public_market_base(tenant)
+        product_path = f"/catalog/{item.id}" if path != "override" else ""
+        public_url = f"{full_url}{product_path}" if full_url else None
+        if public_url:
+            share_text = (
+                f"Mirá {item.nombre} en el marketplace de {tenant.nombre or tenant.slug}: {public_url}"
+            )
+            whatsapp_share = _whatsapp_share_link(share_text)
 
     return {
         "id": item.id,
@@ -238,7 +264,17 @@ def _serialize_catalog_item(item: CatalogoItem) -> Dict[str, object]:
         "imagen_url": item.imagen_url,
         "pdf_url": getattr(item, "pdf_url", None),
         "categoria": item.categoria,
-        "disponible": getattr(item, "disponible", True),
+        "unidad": item.unidad,
+        "cantidad": item.cantidad,
+        "sku": item.sku,
+        "marca": item.marca,
+        "modalidad": _modalidad_value(item),
+        "puntos": item.precio_puntos,
+        "disponible": bool(getattr(item, "disponible", True)),
+        "descripcion_corta": getattr(item, "descripcion_corta", None),
+        "promocion_info": getattr(item, "promocion_info", None),
+        "public_url": public_url,
+        "whatsapp_share_url": whatsapp_share,
     }
 
 def _get_or_create_cart_for_user(
@@ -814,7 +850,20 @@ def public_cart_url(slug: str):
     if path == "override":
         path = f"market/{tenant.slug}/cart"
 
-    return jsonify({"cart_url": full_url, "base_url": base_url, "tenant_slug": tenant.slug, "path": path})
+    whatsapp_share = None
+    if full_url:
+        share_text = f"Entrá al carrito de {tenant.nombre or tenant.slug}: {full_url}"
+        whatsapp_share = _whatsapp_share_link(share_text)
+
+    return jsonify(
+        {
+            "cart_url": full_url,
+            "base_url": base_url,
+            "tenant_slug": tenant.slug,
+            "path": path,
+            "whatsapp_share_url": whatsapp_share,
+        }
+    )
 
 
 @market_public_bp.route("/<slug>/catalog", methods=["GET", "OPTIONS"])
@@ -880,6 +929,69 @@ def public_cart_url_alias(slug: str):
     return public_cart_url(slug)
 
 
+@market_public_alias_bp.route("/<slug>/catalog", methods=["GET", "OPTIONS"])
+def public_catalog_root(slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+    return public_catalog(slug)
+
+
+@market_public_alias_bp.route("/<slug>/catalog/<int:product_id>", methods=["GET", "OPTIONS"])
+def public_product_detail_root(slug: str, product_id: int):
+    if request.method == "OPTIONS":
+        return "", 204
+    return public_product_detail(slug, product_id)
+
+
+@market_public_alias_bp.route("/<slug>/cart", methods=["GET", "OPTIONS"])
+def public_cart_summary_root(slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+    return public_cart_summary(slug)
+
+
+@market_public_alias_bp.route("/<slug>/cart/add", methods=["POST", "OPTIONS"])
+def public_cart_add_root(slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+    return public_cart_add(slug)
+
+
+@market_public_alias_bp.route("/<slug>/cart/remove", methods=["POST", "OPTIONS"])
+def public_cart_remove_root(slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+    return public_cart_remove(slug)
+
+
+@market_public_alias_bp.route("/<slug>/cart/clear", methods=["POST", "OPTIONS"])
+def public_cart_clear_root(slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+    return public_cart_clear(slug)
+
+
+@market_public_alias_bp.route("/<slug>/cart/checkout", methods=["POST", "OPTIONS"])
+def public_cart_checkout_root(slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+    return public_cart_checkout(slug)
+
+
+@market_public_alias_bp.route("/<slug>/checkout/start", methods=["POST", "OPTIONS"])
+def start_checkout_root(slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+    return start_checkout(slug)
+
+
+@market_public_alias_bp.route("/<slug>/cart/url", methods=["GET", "OPTIONS"])
+def public_cart_url_root(slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+    return public_cart_url(slug)
+
+
 @market_bp.route("/pwa/public/<tenant_slug>/productos", methods=["GET", "OPTIONS"])
 def market_pwa_public_productos(tenant_slug: str):
     """Alias legacy para exponer productos del catálogo por tenant."""
@@ -938,11 +1050,17 @@ def admin_create_product(current_user):
 
     precio_decimal = None
     precio_texto = payload.get("precio") or payload.get("price")
+    precio_puntos = payload.get("puntos") or payload.get("price_points")
     if precio_texto is not None:
         try:
             precio_decimal = Decimal(str(precio_texto))
         except (InvalidOperation, ValueError):
             return jsonify({"error": "precio inválido"}), 400
+    if precio_puntos is not None:
+        try:
+            precio_puntos = int(precio_puntos)
+        except (TypeError, ValueError):
+            return jsonify({"error": "puntos inválidos"}), 400
 
     producto = CatalogoItem(
         user_id=owner.id,
@@ -951,15 +1069,23 @@ def admin_create_product(current_user):
         descripcion=payload.get("descripcion") or payload.get("description"),
         precio=str(precio_texto) if precio_texto is not None else None,
         precio_monetario=precio_decimal,
+        precio_puntos=precio_puntos,
         moneda=(payload.get("moneda") or payload.get("currency") or "ARS").upper(),
         categoria=payload.get("categoria"),
         imagen_url=payload.get("imagen_url") or payload.get("image_url"),
         pdf_url=payload.get("pdf_url"),
+        modalidad=payload.get("modalidad") or payload.get("mode") or "venta",
+        unidad=payload.get("unidad"),
+        cantidad=payload.get("cantidad"),
+        sku=payload.get("sku"),
+        marca=payload.get("marca"),
+        descripcion_corta=payload.get("descripcion_corta") or payload.get("short_description"),
+        promocion_info=payload.get("promocion_info") or payload.get("promo"),
         disponible=bool(payload.get("disponible", True)),
     )
     db.session.add(producto)
     db.session.commit()
-    return jsonify(_serialize_catalog_item(producto)), 201
+    return jsonify(_serialize_catalog_item(producto, tenant)), 201
 
 
 @market_admin_bp.put("/catalog/<int:product_id>")
@@ -987,6 +1113,20 @@ def admin_update_product(current_user, product_id: int):
         producto.moneda = (payload.get("moneda") or payload.get("currency") or producto.moneda or "ARS").upper()
     if "disponible" in payload:
         producto.disponible = bool(payload.get("disponible"))
+    if "modalidad" in payload or "mode" in payload:
+        producto.modalidad = payload.get("modalidad") or payload.get("mode") or producto.modalidad
+    if "unidad" in payload:
+        producto.unidad = payload.get("unidad")
+    if "cantidad" in payload:
+        producto.cantidad = payload.get("cantidad")
+    if "sku" in payload:
+        producto.sku = payload.get("sku")
+    if "marca" in payload:
+        producto.marca = payload.get("marca")
+    if "descripcion_corta" in payload or "short_description" in payload:
+        producto.descripcion_corta = payload.get("descripcion_corta") or payload.get("short_description")
+    if "promocion_info" in payload or "promo" in payload:
+        producto.promocion_info = payload.get("promocion_info") or payload.get("promo")
 
     if "precio" in payload or "price" in payload:
         precio_texto = payload.get("precio") or payload.get("price")
@@ -999,9 +1139,18 @@ def admin_update_product(current_user, product_id: int):
             except (InvalidOperation, ValueError):
                 return jsonify({"error": "precio inválido"}), 400
             producto.precio = str(precio_texto)
+    if "puntos" in payload or "price_points" in payload:
+        puntos_val = payload.get("puntos") or payload.get("price_points")
+        if puntos_val is None:
+            producto.precio_puntos = None
+        else:
+            try:
+                producto.precio_puntos = int(puntos_val)
+            except (TypeError, ValueError):
+                return jsonify({"error": "puntos inválidos"}), 400
 
     db.session.commit()
-    return jsonify(_serialize_catalog_item(producto))
+    return jsonify(_serialize_catalog_item(producto, tenant))
 
 
 @market_admin_bp.delete("/catalog/<int:product_id>")

@@ -136,6 +136,12 @@ def _catalog_widget_enabled_for_tenant(tenant: TenantProfile) -> bool:
 def _marketplace_meta(tenant: TenantProfile) -> dict:
     enabled = _catalog_widget_enabled_for_tenant(tenant)
     full_url, _, _ = _build_public_cart_url(tenant)
+    whatsapp_share_url = None
+    if full_url:
+        share_text = f"Entrá al marketplace de {tenant.nombre or tenant.slug}: {full_url}"
+        from routes.market import _whatsapp_share_link
+
+        whatsapp_share_url = _whatsapp_share_link(share_text)
 
     return {
         "enabled": enabled,
@@ -143,6 +149,7 @@ def _marketplace_meta(tenant: TenantProfile) -> dict:
         "tenant_id": tenant.id,
         "tenant_tipo": tenant.tipo,
         "public_cart_url": full_url,
+        "whatsapp_share_url": whatsapp_share_url,
     }
 
 
