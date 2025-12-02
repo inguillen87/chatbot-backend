@@ -38,6 +38,7 @@ class PymesTestCase(unittest.TestCase):
             owner_user = MagicMock()
             owner_user.id = 1
             owner_user.rubro.nombre = "general"
+            owner_user.rubro.slug = "general"
 
             chat_db_context = MagicMock()
             chat_db_context.context_data = {CONTEXTO_PYME: {}}

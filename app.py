@@ -253,7 +253,25 @@ def create_app(config_class=Config):
     @app.errorhandler(500)
     def handle_server_error(error):
         app.logger.exception("Unhandled server error: %s", error)
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
         return jsonify({"error": "server_error"}), 500
+
+    @app.errorhandler(Exception)
+    def handle_generic_exception(error):
+        """Handle non-HTTP exceptions."""
+        if isinstance(error, HTTPException):
+            return error
+
+        app.logger.exception("Unhandled Exception: %s", error)
+        try:
+            db.session.rollback()
+            db.session.remove()
+        except Exception:
+            pass
+        return jsonify({"error": "server_error", "detail": str(error)}), 500
 
     @app.errorhandler(HTTPException)
     def handle_http_exception(error: HTTPException):
@@ -297,7 +315,7 @@ def create_app(config_class=Config):
             "X-Whatsapp-Dst",
         ]
 
-        allow_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+        allow_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 
         CORS(
             app,
@@ -338,17 +356,15 @@ def create_app(config_class=Config):
             if not _origin_is_allowed(origin):
                 return resp
 
-            resp.headers.setdefault("Access-Control-Allow-Origin", origin)
-            resp.headers.setdefault("Access-Control-Allow-Credentials", "true")
+            # Override any duplicate CORS headers emitted upstream so browsers
+            # don't reject responses with repeated origins.
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
 
             # Echo CORS allowances for preflight responses to ensure custom headers like
             # "x-anon-id" are accepted by browsers.
-            resp.headers.setdefault(
-                "Access-Control-Allow-Headers", ", ".join(allow_headers)
-            )
-            resp.headers.setdefault(
-                "Access-Control-Allow-Methods", ", ".join(allow_methods)
-            )
+            resp.headers["Access-Control-Allow-Headers"] = ", ".join(allow_headers)
+            resp.headers["Access-Control-Allow-Methods"] = ", ".join(allow_methods)
 
             vary_header = resp.headers.get("Vary")
             if vary_header:
@@ -507,6 +523,7 @@ def create_app(config_class=Config):
     app.register_blueprint(accessibility_bp)
     app.register_blueprint(api_aliases_bp)
     app.register_blueprint(public_aliases_bp)
+    app.register_blueprint(pwa_tenant_info_bp)
     app.register_blueprint(pwa_public_bp)
     app.register_blueprint(market_bp)
     app.register_blueprint(pwa_misc_bp)
@@ -526,6 +543,30 @@ def create_app(config_class=Config):
 
     # Comandos CLI
     register_commands(app)
+
+    # --- Robustness: Ensure DB tables exist if they are missing in production ---
+    if not MIGRATIONS_ONLY:
+        # Check if we should attempt to create tables.
+        # We assume if the user is running the app, they expect it to work.
+        # Catching specific errors is hard without making a query.
+        # But create_all is idempotent if tables exist.
+        # We wrap in try/except to avoid crashing if connection fails (let gunicorn retry or fail later).
+        with app.app_context():
+            try:
+                # Force import of models to ensure all tables are registered
+                import models  # noqa: F401
+                # This will create tables if they don't exist.
+                # It does NOT handle migrations (schema updates), but it fixes "UndefinedTable" for new deployments.
+                db.create_all()
+                db.session.remove()
+                app.logger.info("Startup: db.create_all() executed successfully (tables ensured).")
+            except Exception as e:
+                # Log warning but proceed; maybe DB is readonly or connection transiently failed.
+                app.logger.warning(f"Startup db.create_all() failed (ignoring): {e}")
+                try:
+                    db.session.remove()
+                except Exception:
+                    pass
 
     # Inicializar SocketIO solo en runtime normal
     if socketio is not None:

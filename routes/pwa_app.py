@@ -13,18 +13,12 @@ from models import TenantFollower, TenantProfile, TenantTicket
 from utils.auth_decorators import require_auth, require_auth_optional
 from utils.fingerprint import hash_fingerprint
 from utils.time_utils import datetime_to_iso_utc
+from middleware import require_tenant
 
 
 pwa_app_bp = Blueprint("pwa_app", __name__, url_prefix="/api/pwa/app")
 # Blueprint con rutas espejo para compatibilidad con versiones previas de la PWA
 pwa_app_legacy_bp = Blueprint("pwa_app_legacy", __name__, url_prefix="/app")
-
-
-def _require_tenant() -> TenantProfile:
-    tenant = getattr(g, "tenant_profile", None)
-    if tenant is None:
-        abort(400, description="Debe indicar un tenant")
-    return tenant
 
 
 def _coerce_float(value: Any) -> float | None:
@@ -150,7 +144,7 @@ def unfollow_tenant():
 @pwa_app_bp.post("/tickets")
 @require_auth_optional
 def create_ticket():
-    tenant = _require_tenant()
+    tenant = require_tenant()
     payload = request.get_json(silent=True) or {}
     descripcion_raw = payload.get("descripcion")
     descripcion = descripcion_raw.strip() if isinstance(descripcion_raw, str) else None
@@ -184,7 +178,7 @@ def create_ticket():
 @pwa_app_bp.get("/tickets")
 @require_auth_optional
 def list_tickets():
-    tenant = _require_tenant()
+    tenant = require_tenant()
     user = getattr(g, "viewer", None)
     fingerprint = hash_fingerprint(request)
 

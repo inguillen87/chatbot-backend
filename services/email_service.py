@@ -374,6 +374,16 @@ def _clean_config_value(val: Optional[str]):
     return val
 
 
+def _smtp_auth_required(*, default: bool = True) -> bool:
+    """Obtiene si se requiere autenticación SMTP desde config/env.
+
+    El valor por defecto puede ajustarse según el contexto del llamado
+    para preservar compatibilidad con comportamientos previos.
+    """
+
+    return _coerce_bool(_get_config_val("SMTP_REQUIRE_AUTH"), default=default)
+
+
 def _resolve_config_key(key: str, *, campaign_specific: bool = False):
     """Intenta múltiples claves equivalentes para una configuración SMTP.
 
@@ -436,6 +446,7 @@ def validar_configuracion_smtp(require_auth: bool = True) -> Tuple[bool, Optiona
     smtp_user = _get_config_val("SMTP_USER")
     smtp_password = _get_config_val("SMTP_PASSWORD")
     from_email = _get_config_val("MAIL_FROM_ADDRESS")
+    resolved_require_auth = _smtp_auth_required(default=bool(smtp_password) or require_auth)
 
     if not smtp_user and from_email:
         smtp_user = from_email
@@ -443,7 +454,7 @@ def validar_configuracion_smtp(require_auth: bool = True) -> Tuple[bool, Optiona
     if not smtp_host or not smtp_port:
         return False, "Configuración SMTP incompleta: faltan host o puerto."
 
-    if require_auth and (not smtp_user or not smtp_password):
+    if resolved_require_auth and (not smtp_user or not smtp_password):
         return (
             False,
             "Configuración SMTP inválida: se requiere autenticación pero faltan credenciales.",
@@ -518,6 +529,7 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str 
     use_ssl = _coerce_bool(
         _get_config_val("SMTP_USE_SSL", False, campaign_specific=es_campana)
     )
+    require_auth = _smtp_auth_required(default=bool(smtp_password))
 
     if not smtp_user and from_email:
         smtp_user = from_email
@@ -556,7 +568,7 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str 
             use_ssl=use_ssl,
             username=smtp_user,
             password=smtp_password,
-            require_auth=True,
+            require_auth=require_auth,
         )
 
         server.send_message(msg)
@@ -585,6 +597,7 @@ def enviar_email_con_adjunto(destino: str, asunto: str, cuerpo_html: str, nombre
     from_name = _get_config_val("MAIL_FROM_NAME", from_email)
     use_tls = _coerce_bool(_get_config_val("SMTP_USE_TLS", True), default=True)
     use_ssl = _coerce_bool(_get_config_val("SMTP_USE_SSL", False))
+    require_auth = _smtp_auth_required(default=bool(smtp_password))
 
     if not smtp_user and from_email:
         smtp_user = from_email
@@ -625,7 +638,7 @@ def enviar_email_con_adjunto(destino: str, asunto: str, cuerpo_html: str, nombre
             use_ssl=use_ssl,
             username=smtp_user,
             password=smtp_password,
-            require_auth=True,
+            require_auth=require_auth,
         )
         server.send_message(msg)  # send_message es mejor para MIME
         server.quit()
@@ -829,6 +842,7 @@ def enviar_email_con_multiples_adjuntos(destinos: List[str], asunto: str, cuerpo
     from_name = _get_config_val("MAIL_FROM_NAME", from_email)
     use_tls = _coerce_bool(_get_config_val("SMTP_USE_TLS", True), default=True)
     use_ssl = _coerce_bool(_get_config_val("SMTP_USE_SSL", False))
+    require_auth = _smtp_auth_required(default=bool(smtp_password))
 
     if not smtp_user and from_email:
         smtp_user = from_email
@@ -881,7 +895,7 @@ def enviar_email_con_multiples_adjuntos(destinos: List[str], asunto: str, cuerpo
             use_ssl=use_ssl,
             username=smtp_user,
             password=smtp_password,
-            require_auth=True,
+            require_auth=require_auth,
         )
         server.send_message(msg)
         server.quit()

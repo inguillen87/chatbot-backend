@@ -91,6 +91,7 @@ class PymeTicketCreator(TicketCreator):
         )
         return PymeTicket(
             user_id=ticket_data.get("user_id"),
+            tenant_id=ticket_data.get("tenant_id"),
             anon_id=ticket_data.get("anon_id"),
             asunto=ticket_data.get("asunto", "Sin Asunto"),
             categoria=ticket_data.get("categoria", "General"),
@@ -122,31 +123,17 @@ class ServicioTickets:
         if not ticket.municipio_id:
             return []
 
-        candidatos = (
-            User.query.filter(
-                User.empresa_id == ticket.municipio_id,
-                User.rol == "empleado",
-                User.tipo_chat == "municipio",
-            )
-            .order_by(User.id.asc())
-            .all()
+        query = User.query.filter(
+            User.empresa_id == ticket.municipio_id,
+            User.rol == "empleado",
+            User.tipo_chat == "municipio",
         )
 
         categoria_normalizada = (ticket.categoria or "").strip().lower()
-        if not categoria_normalizada:
-            return candidatos
+        if categoria_normalizada:
+            query = query.join(User.categorias).filter(func.lower(Categoria.nombre) == categoria_normalizada)
 
-        filtrados = []
-        for empleado in candidatos:
-            categorias_emp = [
-                c.strip().lower()
-                for c in (empleado.ticket_categorias or "").split(",")
-                if c.strip()
-            ]
-            if not categorias_emp or categoria_normalizada in categorias_emp:
-                filtrados.append(empleado)
-
-        return filtrados
+        return query.order_by(User.id.asc()).all()
 
     def _calcular_carga_empleado_municipal(self, empleado: User, municipio_id: int) -> int:
         return (
@@ -930,6 +917,24 @@ class ServicioTickets:
                         "autor_nombre": nombre_autor,
                     }
                 )
+
+        estado_actual = _estado_publico(getattr(ticket, "estado", None))
+        if estado_actual:
+            estado_ya_registrado = any(
+                evento.get("tipo") == "estado" and evento.get("estado") == estado_actual
+                for evento in timeline
+            )
+            if not estado_ya_registrado:
+                fecha_estado = getattr(ticket, "ultima_actividad", None) or ticket.fecha
+                timeline.append(
+                    {
+                        "tipo": "estado",
+                        "estado": estado_actual,
+                        "fecha": datetime_to_iso_utc(fecha_estado),
+                    }
+                )
+
+        timeline.sort(key=lambda evento: evento.get("fecha") or "")
 
         return timeline
 

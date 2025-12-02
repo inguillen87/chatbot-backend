@@ -50,9 +50,15 @@ def saldo():
     )
     tenant_id = request.headers.get("X-Tenant-Id") or request.args.get("tenant_id")
     widget_token = request.headers.get("X-Widget-Token") or request.args.get("widget_token")
-    has_hint = bool(tenant_arg or tenant_id or widget_token or request.headers.get("X-Whatsapp-Dst"))
-    if not has_hint:
-        return jsonify({"error": "Tenant requerido"}), 400
+    has_hint = bool(
+        tenant_arg
+        or tenant_id
+        or widget_token
+        or request.headers.get("X-Whatsapp-Dst")
+        or request.headers.get("Authorization")
+        or request.headers.get("token")
+        or getattr(g, "user", None)
+    )
     try:
         tenant, user, _ = resolve_tenant_and_user(
             whatsapp_destination_number=request.headers.get("X-Whatsapp-Dst"),
@@ -120,9 +126,15 @@ def historial():
     )
     tenant_id = request.headers.get("X-Tenant-Id") or request.args.get("tenant_id")
     widget_token = request.headers.get("X-Widget-Token") or request.args.get("widget_token")
-    has_hint = bool(tenant_arg or tenant_id or widget_token or request.headers.get("X-Whatsapp-Dst"))
-    if not has_hint:
-        return jsonify({"error": "Tenant requerido"}), 400
+    has_hint = bool(
+        tenant_arg
+        or tenant_id
+        or widget_token
+        or request.headers.get("X-Whatsapp-Dst")
+        or request.headers.get("Authorization")
+        or request.headers.get("token")
+        or getattr(g, "user", None)
+    )
     try:
         tenant, user, _ = resolve_tenant_and_user(
             whatsapp_destination_number=request.headers.get("X-Whatsapp-Dst"),

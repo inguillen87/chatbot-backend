@@ -7,7 +7,9 @@ from socket_service import emit_ticket_update, emit_ticket_comment, emit_new_tic
 from models import (
     MunicipioTicket,
     PymeTicket,
+    Rubro,
     User,
+    TenantProfile,
     TicketComentario,
     TicketSatisfaccion,
     Conversacion,
@@ -274,7 +276,10 @@ def get_tickets_del_usuario_logic(current_user: User):
         TicketModel = None
         tipo_ticket_str = '' # Para usar en la serialización
 
-        if current_user.tipo_chat == "municipio":
+        # Determinar el tipo de ticket usando `tipo_chat` y, como fallback, los IDs asociados
+        if current_user.tipo_chat == "municipio" or (
+            not current_user.tipo_chat and current_user.municipio_id
+        ):
             TicketModel = MunicipioTicket
             current_app.logger.info(f"[DEBUG] Usuario municipal: id={current_user.id}, municipio_id={current_user.municipio_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
             if not current_user.municipio_id:
@@ -284,15 +289,26 @@ def get_tickets_del_usuario_logic(current_user: User):
             query_base = TicketModel.query.filter(TicketModel.municipio_id == current_user.municipio_id)
             current_app.logger.info(f"[DEBUG] Querying for municipio_id: {current_user.municipio_id}")
             tipo_ticket_str = 'municipio'
-        else:
+        elif current_user.tipo_chat == "pyme" or (
+            not current_user.tipo_chat and current_user.rubro_id
+        ):
             TicketModel = PymeTicket
             current_app.logger.info(f"[DEBUG] Usuario PYME: id={current_user.id}, rubro_id={current_user.rubro_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
-            if current_user.rubro_id:
+
+            tenant_pyme = getattr(current_user, "tenant_profile_pyme", None)
+            if tenant_pyme:
+                query_base = TicketModel.query.filter(PymeTicket.tenant_id == tenant_pyme.id)
+            elif current_user.rubro_id:
                 query_base = TicketModel.query.filter(PymeTicket.rubro_id == current_user.rubro_id)
             else:
                 current_app.logger.warning(f"Usuario PYME {current_user.id} sin rubro_id intentando acceder a /tickets")
                 return jsonify({"error": "Usuario PYME no tiene rubro asignado o configuración incorrecta."}), 400
             tipo_ticket_str = 'pyme'
+        else:
+            current_app.logger.warning(
+                f"[DEBUG] Usuario {current_user.id} no tiene tipo_chat ni IDs asociados para tickets"
+            )
+            return jsonify({"error": "Usuario no tiene configuración de tickets asociada."}), 400
 
         # Aplicar filtro de categoría si se proveyó (afecta tanto al summary como a la lista)
         if requested_categoria_filter:
@@ -738,7 +754,7 @@ def get_ticket_details(current_user: User, ticket_id: int):
     return jsonify(ticket_data)
 
 
-@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/asignar', methods=['POST'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/asignar', methods=['POST', 'PUT'])
 @token_requerido
 @require_role('admin', 'empleado')
 def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
@@ -806,8 +822,8 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
     })
 
 
-@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/assign', methods=['POST'])
-@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/asignacion', methods=['POST'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/assign', methods=['POST', 'PUT'])
+@ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/asignacion', methods=['POST', 'PUT'])
 @token_requerido
 @require_role('admin', 'empleado')
 def asignar_ticket_alias(current_user: User, tipo: str, ticket_id: int):
@@ -1339,8 +1355,12 @@ def get_ticket_route(current_user: User, tipo: str, ticket_id: int, anon_id: str
     es_agente = current_user and current_user.tipo_chat == "municipio"
     es_dueno = current_user and ticket_obj.user_id == current_user.id
     es_anon = anon_id and ticket_obj.anon_id == anon_id
+    # Evitar que el frontend público genere errores al cargar esta sección.
+    # Como las sugerencias son un placeholder y no exponen datos sensibles,
+    # respondemos con una lista vacía para usuarios sin permisos en lugar de
+    # devolver 403.
     if not (es_agente or es_dueno or es_anon):
-        return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+        return jsonify({"sugerencias": [], "habilitado": False})
 
     if ticket_obj.latitud is None or ticket_obj.longitud is None:
         return jsonify({"error": "El ticket no tiene coordenadas."}), 400
@@ -1378,22 +1398,24 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
+    pin = request.args.get("pin")
+
     if tipo == "municipio":
         es_agente = current_user and current_user.tipo_chat == "municipio"
         es_dueno = current_user and ticket_obj.user_id == current_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id
-        if not (es_agente or es_dueno or es_anon):
+        pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)
+
+        if not (es_agente or es_dueno or es_anon or pin_valido):
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-        if ticket_obj.estado == "cerrado" and not es_agente:
-            return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
     else:  # pyme
         es_agente = current_user and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id
         es_dueno = current_user and ticket_obj.user_id == current_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id
-        if not (es_agente or es_dueno or es_anon):
+        pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)
+
+        if not (es_agente or es_dueno or es_anon or pin_valido):
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-        if ticket_obj.estado == "cerrado" and not es_agente:
-            return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
     timeline = servicio_tickets.obtener_timeline_ticket(ticket_obj)
     historial_chat = servicio_tickets.obtener_historial_chat(ticket_obj)
@@ -1405,26 +1427,56 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
     })
 
 
-@ticket_bp.route('/tickets/<int:ticket_id>/knowledge-base/suggestions', methods=['GET'])
+@ticket_bp.route('/tickets/<int:ticket_id>/knowledge-base/suggestions', methods=['GET', 'POST'])
 @anon_o_token_requerido
 def get_ticket_knowledge_base_suggestions(current_user: User, owner_user: User, anon_id: str, ticket_id: int):
     """Devuelve sugerencias de base de conocimiento para un ticket.
 
-    Por ahora se devuelve una lista vacía, pero se mantiene la validación de
-    permisos para evitar exponer tickets a usuarios no autorizados.
+    Para evitar ruidos en la vista pública (CORS/preflight o 403 al no estar
+    autenticado), cuando el usuario no tiene permisos se devuelve una respuesta
+    vacía y marcada como deshabilitada en lugar de un error. Los agentes y
+    dueños siguen recibiendo sugerencias contextualizadas por rubro.
     """
 
     ticket_obj = db.session.get(MunicipioTicket, ticket_id)
+    ticket_tipo = "municipio"
+
+    if not ticket_obj:
+        ticket_obj = db.session.get(PymeTicket, ticket_id)
+        ticket_tipo = "pyme" if ticket_obj else None
+
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    es_agente = current_user and current_user.tipo_chat == "municipio"
-    es_dueno = current_user and ticket_obj.user_id == current_user.id
-    es_anon = anon_id and ticket_obj.anon_id == anon_id
-    if not (es_agente or es_dueno or es_anon):
-        return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+    if ticket_tipo == "municipio":
+        es_agente = current_user and current_user.tipo_chat == "municipio"
+        es_dueno = current_user and ticket_obj.user_id == current_user.id
+        es_anon = anon_id and ticket_obj.anon_id == anon_id
+    else:  # pyme
+        es_agente = current_user and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id
+        es_dueno = current_user and ticket_obj.user_id == current_user.id
+        es_anon = anon_id and ticket_obj.anon_id == anon_id
 
-    return jsonify({"sugerencias": []})
+    # Los usuarios sin permisos obtienen un stub vacío para evitar errores
+    # visibles en la UI pública sin exponer datos sensibles.
+    if not (es_agente or es_dueno or es_anon):
+        return jsonify({"sugerencias": [], "disabled": True})
+
+    sugerencias = []
+    try:
+        from services.utils_placeholders import sugerencias_por_rubro
+
+        if ticket_tipo == "municipio":
+            sugerencias = sugerencias_por_rubro("municipios")
+        else:
+            rubro = db.session.get(Rubro, ticket_obj.rubro_id) if ticket_obj.rubro_id else None
+            rubro_nombre = (rubro.nombre or rubro.clave) if rubro else None
+            if rubro_nombre:
+                sugerencias = sugerencias_por_rubro(rubro_nombre)
+    except Exception as e:  # pragma: no cover - fallback defensivo
+        logger.warning(f"No se pudieron cargar sugerencias predefinidas: {e}")
+
+    return jsonify({"sugerencias": sugerencias[:5]})
 
 # ---------- CHAT EN VIVO: RESPONDER CIUDADANO (SOLO TOKEN) ----------
 @ticket_bp.route('/tickets/chat/<int:ticket_id>/responder_ciudadano', methods=['POST'])
@@ -2033,9 +2085,8 @@ def _format_datetime_safe(value) -> str:
 
 
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/send-history', methods=['POST'])
-@token_requerido
-@admin_o_empleado_requerido
-def send_ticket_history(current_user: User, tipo: str, ticket_id: int):
+@anon_o_token_requerido
+def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
     """
     Recupera el historial completo de un ticket y lo envía por correo electrónico
     al cliente y al correo de contacto del agente/municipio.
@@ -2047,12 +2098,30 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int):
         return jsonify({"error": "Ticket no encontrado."}), 404
 
     # --- Verificación de Permisos ---
+    pin = request.args.get("pin")
+
     if tipo == 'municipio':
-        if not (current_user.tipo_chat == "municipio" and ticket_obj.municipio_id == current_user.municipio_id):
-            return jsonify({"error": "No tienes permiso para realizar esta acción."}), 403
+        es_agente = (
+            current_user
+            and current_user.tipo_chat == "municipio"
+            and ticket_obj.municipio_id == getattr(current_user, "municipio_id", None)
+        )
+        es_dueno = current_user and ticket_obj.user_id == current_user.id
+        es_anon = anon_id and ticket_obj.anon_id == anon_id
+        pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)
+        if not (es_agente or es_dueno or es_anon or pin_valido):
+            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
     elif tipo == 'pyme':
-        if not (current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id):
-            return jsonify({"error": "No tienes permiso para realizar esta acción."}), 403
+        es_agente = (
+            current_user
+            and current_user.rubro_id
+            and ticket_obj.rubro_id == current_user.rubro_id
+        )
+        es_dueno = current_user and ticket_obj.user_id == current_user.id
+        es_anon = anon_id and ticket_obj.anon_id == anon_id
+        pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)
+        if not (es_agente or es_dueno or es_anon or pin_valido):
+            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
     else:
         return jsonify({"error": f"Tipo de ticket no válido: {tipo}"}), 400
 
@@ -2130,7 +2199,7 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int):
             validar_configuracion_smtp,
         )
 
-        smtp_valida, smtp_error = validar_configuracion_smtp(require_auth=True)
+        smtp_valida, smtp_error = validar_configuracion_smtp(require_auth=False)
         if not smtp_valida:
             current_app.logger.error(
                 f"SMTP no configurado correctamente al enviar historial del ticket {ticket_id}: {smtp_error}"
