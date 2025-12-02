@@ -120,11 +120,14 @@ def _public_cart_path(tenant: TenantProfile) -> str:
         return explicit_path.lstrip("/")
 
     slug_alias = cfg.get("public_cart_slug") or tenant.slug
-    prefix = (cfg.get("public_cart_prefix") or "market").rstrip("/")
-    suffix = cfg.get("public_cart_suffix") or ".cart"
-    cleaned_suffix = suffix.lstrip("/")
-    # Estilo profesional tipo ``chatboc.ar/market/<slug>/.cart``.
-    return f"{prefix}/{slug_alias}/{cleaned_suffix}"
+    prefix = (cfg.get("public_cart_prefix") or "m").rstrip("/")
+    suffix = cfg.get("public_cart_suffix")
+    normalized_suffix = str(suffix).strip("/") if isinstance(suffix, str) else ""
+
+    # Estilo profesional tipo ``chatboc.ar/m/<slug>`` por defecto.
+    if normalized_suffix:
+        return f"{prefix}/{slug_alias}/{normalized_suffix}"
+    return f"{prefix}/{slug_alias}"
 
 
 def _build_public_cart_url(tenant: TenantProfile) -> Tuple[str, str, str]:
