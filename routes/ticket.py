@@ -1398,22 +1398,24 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
+    pin = request.args.get("pin")
+
     if tipo == "municipio":
         es_agente = current_user and current_user.tipo_chat == "municipio"
         es_dueno = current_user and ticket_obj.user_id == current_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id
-        if not (es_agente or es_dueno or es_anon):
+        pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)
+
+        if not (es_agente or es_dueno or es_anon or pin_valido):
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-        if ticket_obj.estado == "cerrado" and not es_agente:
-            return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
     else:  # pyme
         es_agente = current_user and current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id
         es_dueno = current_user and ticket_obj.user_id == current_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id
-        if not (es_agente or es_dueno or es_anon):
+        pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)
+
+        if not (es_agente or es_dueno or es_anon or pin_valido):
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
-        if ticket_obj.estado == "cerrado" and not es_agente:
-            return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
     timeline = servicio_tickets.obtener_timeline_ticket(ticket_obj)
     historial_chat = servicio_tickets.obtener_historial_chat(ticket_obj)
@@ -2083,9 +2085,8 @@ def _format_datetime_safe(value) -> str:
 
 
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/send-history', methods=['POST'])
-@token_requerido
-@admin_o_empleado_requerido
-def send_ticket_history(current_user: User, tipo: str, ticket_id: int):
+@anon_o_token_requerido
+def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
     """
     Recupera el historial completo de un ticket y lo envía por correo electrónico
     al cliente y al correo de contacto del agente/municipio.
@@ -2097,12 +2098,30 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int):
         return jsonify({"error": "Ticket no encontrado."}), 404
 
     # --- Verificación de Permisos ---
+    pin = request.args.get("pin")
+
     if tipo == 'municipio':
-        if not (current_user.tipo_chat == "municipio" and ticket_obj.municipio_id == current_user.municipio_id):
-            return jsonify({"error": "No tienes permiso para realizar esta acción."}), 403
+        es_agente = (
+            current_user
+            and current_user.tipo_chat == "municipio"
+            and ticket_obj.municipio_id == getattr(current_user, "municipio_id", None)
+        )
+        es_dueno = current_user and ticket_obj.user_id == current_user.id
+        es_anon = anon_id and ticket_obj.anon_id == anon_id
+        pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)
+        if not (es_agente or es_dueno or es_anon or pin_valido):
+            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
     elif tipo == 'pyme':
-        if not (current_user.rubro_id and ticket_obj.rubro_id == current_user.rubro_id):
-            return jsonify({"error": "No tienes permiso para realizar esta acción."}), 403
+        es_agente = (
+            current_user
+            and current_user.rubro_id
+            and ticket_obj.rubro_id == current_user.rubro_id
+        )
+        es_dueno = current_user and ticket_obj.user_id == current_user.id
+        es_anon = anon_id and ticket_obj.anon_id == anon_id
+        pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)
+        if not (es_agente or es_dueno or es_anon or pin_valido):
+            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
     else:
         return jsonify({"error": f"Tipo de ticket no válido: {tipo}"}), 400
 
