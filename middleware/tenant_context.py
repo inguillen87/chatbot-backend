@@ -76,6 +76,9 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
         "pymes",
         "p",
         "t",
+        "market",
+        "marketplace",
+        "shop",
     }:
         return _normalize_slug(segments[1])
 
