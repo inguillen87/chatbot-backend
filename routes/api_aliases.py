@@ -47,8 +47,26 @@ def productos_alias():
     return obtener_productos()
 
 
+@api_aliases_bp.route(
+    "/<tenant_slug>/productos", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def productos_alias_with_slug(tenant_slug: str):
+    """Alias that allows /api/<slug>/productos to hit the catalog endpoint."""
+
+    return obtener_productos()
+
+
 @api_aliases_bp.route("/carrito", methods=["GET", "POST", "OPTIONS"], strict_slashes=False)
 def carrito_alias_root():
+    return carrito_root()
+
+
+@api_aliases_bp.route(
+    "/<tenant_slug>/carrito", methods=["GET", "POST", "OPTIONS"], strict_slashes=False
+)
+def carrito_alias_with_slug(tenant_slug: str):
+    """Alias that allows /api/<slug>/carrito to reach the cart endpoint."""
+
     return carrito_root()
 
 
@@ -308,3 +326,21 @@ def root_pwa_tenant_info_alias():
     """Alias without /api prefix for PWA tenant info requests."""
 
     return tenant_profile()
+
+
+@public_aliases_bp.route(
+    "/<tenant_slug>/productos", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def root_productos_alias_with_slug(tenant_slug: str):
+    """Public alias to serve /<slug>/productos via the catalog endpoint."""
+
+    return obtener_productos()
+
+
+@public_aliases_bp.route(
+    "/<tenant_slug>/carrito", methods=["GET", "POST", "OPTIONS"], strict_slashes=False
+)
+def root_carrito_alias_with_slug(tenant_slug: str):
+    """Public alias to serve /<slug>/carrito via the cart endpoint."""
+
+    return carrito_root()
