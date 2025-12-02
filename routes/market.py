@@ -38,8 +38,6 @@ from utils.permissions import require_role
 
 
 market_bp = Blueprint("market", __name__, url_prefix="/api/market")
-market_public_bp = Blueprint("market_public", __name__, url_prefix="/market")
-market_public_alias_bp = Blueprint("market_public_alias", __name__)
 market_admin_bp = Blueprint("market_admin", __name__, url_prefix="/api/admin/market")
 
 
@@ -135,159 +133,6 @@ def _user_can_manage_tenant(user: User, tenant: TenantProfile) -> bool:
     return False
 
 
-def _resolve_tenant_soft(slug: str) -> Optional[TenantProfile]:
-    slug_clean = _canonical_slug(slug)
-    if not slug_clean:
-        return None
-
-    try:
-        return resolve_tenant_only(tenant_slug=slug_clean, require_explicit_slug=False)
-    except TenantResolutionError:
-        pass
-
-    tenant = (
-        TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug_clean)
-        .order_by(TenantProfile.id.desc())
-        .first()
-    )
-
-    if tenant is None:
-        fallback_slug = _canonical_slug(
-            (current_app.config or {}).get("MARKETPLACE_DEFAULT_TENANT")
-        )
-        if fallback_slug and fallback_slug != slug_clean:
-            tenant = (
-                TenantProfile.query.filter(func.lower(TenantProfile.slug) == fallback_slug)
-                .order_by(TenantProfile.id.desc())
-                .first()
-            )
-
-    return tenant
-
-
-def _want_market_demo_html() -> bool:
-    accept = request.accept_mimetypes
-    prefers_html = accept.accept_html and (
-        accept.best == "text/html"
-        or accept["text/html"] >= accept["application/json"]
-    )
-    return prefers_html or request.args.get("demo") in {"1", "true", "yes", "demo"}
-
-
-def _market_demo_context(slug: str) -> dict:
-    tenant = _resolve_tenant_soft(slug) or _resolve_tenant(slug)
-    g.tenant_profile = tenant
-    g.tenant_profile_slug = tenant.slug
-    owner = _tenant_owner(tenant)
-    if owner is None:
-        abort(404, description="Tenant sin propietario")
-
-    ensure_seed_catalog(owner, tenant)
-    productos_raw = (
-        _product_query_for_tenant(owner, tenant).limit(18).all()
-    )
-
-    fallback_image = "https://placehold.co/800x600?text=Marketplace"
-    cards: List[Dict[str, object]] = []
-    for item in productos_raw:
-        pricing = _pricing_snapshot(item)
-        formatted = pricing.get("formatted", {}) if isinstance(pricing, dict) else {}
-        cards.append(
-            {
-                "id": item.id,
-                "nombre": formatted.get("nombre") or item.nombre,
-                "descripcion": formatted.get("descripcion")
-                or "Catálogo listo para mostrar imágenes, precios y detalles.",
-                "categoria": formatted.get("categoria") or "General",
-                "presentacion": formatted.get("presentacion") or item.unidad,
-                "modalidad": pricing.get("modalidad")
-                or formatted.get("modalidad")
-                or "compra",
-                "precio": pricing.get("price_text")
-                or formatted.get("precio_texto")
-                or "Consultar",
-                "precio_monetario": pricing.get("price_monetary"),
-                "precio_puntos": pricing.get("price_points"),
-                "moneda": pricing.get("currency") or formatted.get("moneda") or "ARS",
-                "imagen": formatted.get("imagen_url") or item.imagen_url or fallback_image,
-                "destacado": bool(getattr(item, "promocion_info", None)),
-            }
-        )
-
-    canjes = [c for c in cards if (c.get("moneda") == "PTS" or c.get("modalidad") == "canje")]
-    productos = [c for c in cards if c not in canjes]
-
-    cart_preview: List[Dict[str, object]] = []
-    total_monetary = Decimal("0")
-    total_points = 0
-    for idx, card in enumerate(cards[:3]):
-        quantity = 1 if idx == 0 else 2
-        cart_preview.append(
-            {
-                "nombre": card.get("nombre"),
-                "precio": card.get("precio"),
-                "moneda": card.get("moneda"),
-                "cantidad": quantity,
-                "modalidad": card.get("modalidad"),
-            }
-        )
-        if card.get("moneda") == "PTS" and isinstance(card.get("precio_puntos"), (int, float)):
-            total_points += int(card["precio_puntos"]) * quantity
-        elif card.get("precio_monetario") is not None:
-            try:
-                price = Decimal(str(card["precio_monetario"]))
-            except (InvalidOperation, TypeError, ValueError):
-                price = Decimal("0")
-            total_monetary += price * quantity
-
-    display_name = tenant.nombre or tenant.slug
-    return {
-        "tenant_name": display_name,
-        "tenant_slug": tenant.slug,
-        "tenant_tipo": (tenant.tipo or "organización").capitalize(),
-        "hero_subtitle": "Catálogo listo con fotos, secciones, buscador y carrito demo",
-        "productos": productos,
-        "canjes": canjes,
-        "catalog_sections": [
-            {"title": "Productos destacados", "items": productos[:8] or cards[:8]},
-            {"title": "Canjes con puntos", "items": canjes[:6] or cards[:6]},
-        ],
-        "cart_preview": cart_preview,
-        "cart_totals": {
-            "monetary": float(total_monetary) if total_monetary else None,
-            "points": total_points or None,
-        },
-        "features": [
-            "Fotos optimizadas con descripción corta y ficha técnica.",
-            "Buscador y filtros por categoría para catálogos grandes.",
-            "Carrito omnicanal con totales en dinero y puntos.",
-            "Secciones destacadas por empresa o municipio con branding.",
-            "Canjes, promociones y recompensas listos para demo.",
-        ],
-    }
-
-
-def _render_market_demo(slug: str):
-    context = _market_demo_context(slug)
-    return render_template("market_demo.html", **context)
-
-
-def _modalidad_value(producto: CatalogoItem) -> str:
-    modalidad = getattr(producto, "modalidad", None)
-    try:
-        from enum import Enum
-
-        if isinstance(modalidad, Enum):
-            return modalidad.value
-    except Exception:
-        pass
-
-    if modalidad:
-        return str(modalidad)
-
-    return "venta"
-
-
 def _resolve_admin_tenant(current_user: User, payload: Optional[dict] = None) -> TenantProfile:
     payload = payload or {}
     tenant = None
@@ -321,45 +166,21 @@ def _resolve_admin_tenant(current_user: User, payload: Optional[dict] = None) ->
             ).first()
 
     if tenant is None:
-        abort(404, description="Tenant no encontrado")
+        abort(make_response(jsonify({"error": "Tenant no encontrado"}), 404))
 
     if not _user_can_manage_tenant(current_user, tenant):
-        abort(403, description="No autorizado para este tenant")
+        abort(make_response(jsonify({"error": "No autorizado para este tenant"}), 403))
 
     return tenant
 
 
-def _public_market_base(tenant: TenantProfile) -> tuple[str, str, str]:
-    """Return (full_url, base_url, path) for the tenant's public market."""
-
-    return _build_public_cart_url(tenant)
-
-
-def _whatsapp_share_link(text: str) -> str:
-    return f"https://wa.me/?text={quote(text)}"
-
-
-def _serialize_catalog_item(
-    item: CatalogoItem, tenant: Optional[TenantProfile] = None
-) -> Dict[str, object]:
+def _serialize_catalog_item(item: CatalogoItem) -> Dict[str, object]:
     price_value = None
     try:
         if item.precio_monetario is not None:
             price_value = float(item.precio_monetario)
     except (TypeError, ValueError):
         price_value = None
-
-    public_url = None
-    whatsapp_share = None
-    if tenant:
-        full_url, _, path = _public_market_base(tenant)
-        product_path = f"/catalog/{item.id}" if path != "override" else ""
-        public_url = f"{full_url}{product_path}" if full_url else None
-        if public_url:
-            share_text = (
-                f"Mirá {item.nombre} en el marketplace de {tenant.nombre or tenant.slug}: {public_url}"
-            )
-            whatsapp_share = _whatsapp_share_link(share_text)
 
     return {
         "id": item.id,
@@ -372,17 +193,7 @@ def _serialize_catalog_item(
         "imagen_url": item.imagen_url,
         "pdf_url": getattr(item, "pdf_url", None),
         "categoria": item.categoria,
-        "unidad": item.unidad,
-        "cantidad": item.cantidad,
-        "sku": item.sku,
-        "marca": item.marca,
-        "modalidad": _modalidad_value(item),
-        "puntos": item.precio_puntos,
-        "disponible": bool(getattr(item, "disponible", True)),
-        "descripcion_corta": getattr(item, "descripcion_corta", None),
-        "promocion_info": getattr(item, "promocion_info", None),
-        "public_url": public_url,
-        "whatsapp_share_url": whatsapp_share,
+        "disponible": getattr(item, "disponible", True),
     }
 
 def _get_or_create_cart_for_user(
@@ -396,20 +207,7 @@ def _get_or_create_cart_for_user(
     """
 
     if not user or not getattr(user, "is_authenticated", False):
-        abort(401, description="Autenticación requerida")
-
-    # Check for anonymous cart to merge/claim
-    session_id = _ensure_session_id()
-    anon_cart = (
-        MarketCart.query.filter(
-            MarketCart.tenant_id == tenant.id,
-            MarketCart.status == "open",
-            MarketCart.session_id == session_id,
-            MarketCart.user_id.is_(None),
-        )
-        .order_by(MarketCart.updated_at.desc())
-        .first()
-    )
+        abort(make_response(jsonify({"error": "Autenticación requerida"}), 401))
 
     user_cart = (
         MarketCart.query.filter(
@@ -421,30 +219,11 @@ def _get_or_create_cart_for_user(
         .first()
     )
 
-    if anon_cart:
-        if user_cart:
-            # Merge items from anon_cart to user_cart
-            for anon_item in anon_cart.items:
-                existing_item = user_cart.items.filter_by(product_id=anon_item.product_id).first()
-                if existing_item:
-                    existing_item.quantity += anon_item.quantity
-                else:
-                    anon_item.cart_id = user_cart.id
-            db.session.delete(anon_cart)
-            cart = user_cart
-        else:
-            # Claim anon_cart
-            anon_cart.user_id = user.id
-            cart = anon_cart
-        db.session.commit()
-    else:
-        cart = user_cart
-
     if cart is None and create_if_missing:
         cart = MarketCart(
             tenant_id=tenant.id,
             user_id=user.id,
-            session_id=session_id,
+            session_id=_ensure_session_id(),
             contact_phone=getattr(user, "telefono", None),
             contact_name=getattr(user, "name", None),
         )
@@ -461,10 +240,9 @@ def _get_or_create_cart_for_user(
 
 
 def _product_query_for_tenant(owner: User, tenant: TenantProfile, *, include_unavailable: bool = False):
-    filters = [
-        or_(CatalogoItem.tenant_id == tenant.id, CatalogoItem.tenant_id.is_(None)),
-        CatalogoItem.user_id == owner.id,
-    ]
+    """Return productos estrictamente asociados al tenant."""
+
+    filters = [CatalogoItem.tenant_id == tenant.id, CatalogoItem.user_id == owner.id]
 
     if not include_unavailable:
         # Compatibilidad: algunos registros antiguos pueden tener ``disponible``
@@ -685,7 +463,7 @@ def public_product_detail(slug: str, product_id: int):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
     if owner is None:
-        abort(404, description="Tenant sin propietario")
+        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
 
     ensure_seed_catalog(owner, tenant)
     producto = (
@@ -824,7 +602,7 @@ def public_cart_clear(current_user, slug: str):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
     if owner is None:
-        abort(404, description="Tenant sin propietario")
+        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
 
     cart = _get_or_create_cart_for_user(tenant, current_user, create_if_missing=False)
     if cart is None:
@@ -846,7 +624,7 @@ def public_cart_checkout(current_user, slug: str):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
     if owner is None:
-        abort(404, description="Tenant sin propietario")
+        abort(make_response(jsonify({"error": "Tenant sin propietario"}), 404))
 
     cart = _get_or_create_cart_for_user(tenant, current_user, create_if_missing=False)
     if cart is None:
@@ -958,192 +736,7 @@ def public_cart_url(slug: str):
     if path == "override":
         path = f"market/{tenant.slug}/cart"
 
-    whatsapp_share = None
-    if full_url:
-        share_text = f"Entrá al carrito de {tenant.nombre or tenant.slug}: {full_url}"
-        whatsapp_share = _whatsapp_share_link(share_text)
-
-    return jsonify(
-        {
-            "cart_url": full_url,
-            "base_url": base_url,
-            "tenant_slug": tenant.slug,
-            "path": path,
-            "whatsapp_share_url": whatsapp_share,
-        }
-    )
-
-
-@market_public_bp.route("/<slug>/catalog", methods=["GET", "OPTIONS"])
-def public_catalog_alias(slug: str):
-    if request.method == "OPTIONS":
-        return "", 204
-    return public_catalog(slug)
-
-
-@market_public_bp.route("/<slug>/catalog/<int:product_id>", methods=["GET", "OPTIONS"])
-def public_product_detail_alias(slug: str, product_id: int):
-    if request.method == "OPTIONS":
-        return "", 204
-    return public_product_detail(slug, product_id)
-
-
-@market_public_bp.route("/<slug>/cart", methods=["GET", "OPTIONS"])
-def public_cart_summary_alias(slug: str):
-    if request.method == "OPTIONS":
-        return "", 204
-    if _want_market_demo_html():
-        return _render_market_demo(slug)
-    return public_cart_summary(slug)
-
-
-@market_public_bp.route("/<slug>/cart/add", methods=["POST", "OPTIONS"])
-def public_cart_add_alias(slug: str):
-    if request.method == "OPTIONS":
-        return "", 204
-    return public_cart_add(slug)
-
-
-@market_public_bp.route("/<slug>/cart/remove", methods=["POST", "OPTIONS"])
-def public_cart_remove_alias(slug: str):
-    if request.method == "OPTIONS":
-        return "", 204
-    return public_cart_remove(slug)
-
-
-@market_public_bp.route("/<slug>/cart/clear", methods=["POST", "OPTIONS"])
-def public_cart_clear_alias(slug: str):
-    if request.method == "OPTIONS":
-        return "", 204
-    return public_cart_clear(slug)
-
-
-@market_public_bp.route("/<slug>/cart/checkout", methods=["POST", "OPTIONS"])
-def public_cart_checkout_alias(slug: str):
-    if request.method == "OPTIONS":
-        return "", 204
-    return public_cart_checkout(slug)
-
-
-@market_public_bp.route("/<slug>/checkout/start", methods=["POST", "OPTIONS"])
-def start_checkout_alias(slug: str):
-    if request.method == "OPTIONS":
-        return "", 204
-    return start_checkout(slug)
-
-
-@market_public_bp.route("/<slug>/cart/url", methods=["GET", "OPTIONS"])
-def public_cart_url_alias(slug: str):
-    if request.method == "OPTIONS":
-        return "", 204
-    return public_cart_url(slug)
-
-
-@market_public_alias_bp.route("/<slug>/catalog", methods=["GET", "OPTIONS"])
-def public_catalog_root(slug: str):
-    if request.method == "OPTIONS":
-        return "", 204
-    return public_catalog(slug)
-
-
-@market_public_alias_bp.route("/<slug>/catalog/<int:product_id>", methods=["GET", "OPTIONS"])
-def public_product_detail_root(slug: str, product_id: int):
-    if request.method == "OPTIONS":
-        return "", 204
-    return public_product_detail(slug, product_id)
-
-
-@market_public_alias_bp.route("/<slug>/cart", methods=["GET", "OPTIONS"])
-def public_cart_summary_root(slug: str):
-    if request.method == "OPTIONS":
-        return "", 204
-    if _want_market_demo_html():
-        return _render_market_demo(slug)
-    return public_cart_summary(slug)
-
-
-@market_public_alias_bp.route("/<slug>/cart/add", methods=["POST", "OPTIONS"])
-def public_cart_add_root(slug: str):
-    if request.method == "OPTIONS":
-        return "", 204
-    return public_cart_add(slug)
-
-
-@market_public_alias_bp.route("/<slug>/cart/remove", methods=["POST", "OPTIONS"])
-def public_cart_remove_root(slug: str):
-    if request.method == "OPTIONS":
-        return "", 204
-    return public_cart_remove(slug)
-
-
-@market_public_alias_bp.route("/<slug>/cart/clear", methods=["POST", "OPTIONS"])
-def public_cart_clear_root(slug: str):
-    if request.method == "OPTIONS":
-        return "", 204
-    return public_cart_clear(slug)
-
-
-@market_public_alias_bp.route("/<slug>/cart/checkout", methods=["POST", "OPTIONS"])
-def public_cart_checkout_root(slug: str):
-    if request.method == "OPTIONS":
-        return "", 204
-    return public_cart_checkout(slug)
-
-
-@market_public_alias_bp.route("/<slug>/checkout/start", methods=["POST", "OPTIONS"])
-def start_checkout_root(slug: str):
-    if request.method == "OPTIONS":
-        return "", 204
-    return start_checkout(slug)
-
-
-@market_public_alias_bp.route("/<slug>/cart/url", methods=["GET", "OPTIONS"])
-def public_cart_url_root(slug: str):
-    if request.method == "OPTIONS":
-        return "", 204
-    return public_cart_url(slug)
-
-
-@market_bp.route("/pwa/public/<tenant_slug>/productos", methods=["GET", "OPTIONS"])
-def market_pwa_public_productos(tenant_slug: str):
-    """Alias legacy para exponer productos del catálogo por tenant."""
-
-    if request.method == "OPTIONS":
-        return "", 204
-
-    tenant = _resolve_tenant_soft(tenant_slug)
-    if tenant is None:
-        return jsonify({"error": "tenant_not_found"}), 404
-
-    owner = tenant.municipio or tenant.pyme
-    if owner:
-        ensure_seed_catalog(owner, tenant)
-
-    query = CatalogoItem.query.options(*CatalogoItem.legacy_safe_options()).filter(
-        CatalogoItem.tenant_id == tenant.id
-    )
-
-    items: list[dict] = []
-    for producto in query.all():
-        precio_raw = getattr(producto, "precio", None) or getattr(
-            producto, "precio_monetario", None
-        )
-        _, precio_float, _ = parse_precio_flexible(precio_raw)
-        items.append(
-            {
-                "id": producto.id,
-                "nombre": producto.nombre,
-                "descripcion": producto.descripcion,
-                "precio": float(precio_float) if precio_float is not None else None,
-                "precio_str": getattr(producto, "precio", None),
-                "modalidad": _modalidad_value(producto),
-                "puntos": getattr(producto, "puntos", 0) or 0,
-                "imagen_url": getattr(producto, "imagen_url", None),
-                "categoria": getattr(producto, "categoria", None),
-            }
-        )
-
-    return jsonify(items)
+    return jsonify({"cart_url": full_url, "base_url": base_url, "tenant_slug": tenant.slug, "path": path})
 
 
 @market_admin_bp.post("/catalog")
@@ -1162,17 +755,11 @@ def admin_create_product(current_user):
 
     precio_decimal = None
     precio_texto = payload.get("precio") or payload.get("price")
-    precio_puntos = payload.get("puntos") or payload.get("price_points")
     if precio_texto is not None:
         try:
             precio_decimal = Decimal(str(precio_texto))
         except (InvalidOperation, ValueError):
             return jsonify({"error": "precio inválido"}), 400
-    if precio_puntos is not None:
-        try:
-            precio_puntos = int(precio_puntos)
-        except (TypeError, ValueError):
-            return jsonify({"error": "puntos inválidos"}), 400
 
     producto = CatalogoItem(
         user_id=owner.id,
@@ -1181,23 +768,15 @@ def admin_create_product(current_user):
         descripcion=payload.get("descripcion") or payload.get("description"),
         precio=str(precio_texto) if precio_texto is not None else None,
         precio_monetario=precio_decimal,
-        precio_puntos=precio_puntos,
         moneda=(payload.get("moneda") or payload.get("currency") or "ARS").upper(),
         categoria=payload.get("categoria"),
         imagen_url=payload.get("imagen_url") or payload.get("image_url"),
         pdf_url=payload.get("pdf_url"),
-        modalidad=payload.get("modalidad") or payload.get("mode") or "venta",
-        unidad=payload.get("unidad"),
-        cantidad=payload.get("cantidad"),
-        sku=payload.get("sku"),
-        marca=payload.get("marca"),
-        descripcion_corta=payload.get("descripcion_corta") or payload.get("short_description"),
-        promocion_info=payload.get("promocion_info") or payload.get("promo"),
         disponible=bool(payload.get("disponible", True)),
     )
     db.session.add(producto)
     db.session.commit()
-    return jsonify(_serialize_catalog_item(producto, tenant)), 201
+    return jsonify(_serialize_catalog_item(producto)), 201
 
 
 @market_admin_bp.put("/catalog/<int:product_id>")
@@ -1225,20 +804,6 @@ def admin_update_product(current_user, product_id: int):
         producto.moneda = (payload.get("moneda") or payload.get("currency") or producto.moneda or "ARS").upper()
     if "disponible" in payload:
         producto.disponible = bool(payload.get("disponible"))
-    if "modalidad" in payload or "mode" in payload:
-        producto.modalidad = payload.get("modalidad") or payload.get("mode") or producto.modalidad
-    if "unidad" in payload:
-        producto.unidad = payload.get("unidad")
-    if "cantidad" in payload:
-        producto.cantidad = payload.get("cantidad")
-    if "sku" in payload:
-        producto.sku = payload.get("sku")
-    if "marca" in payload:
-        producto.marca = payload.get("marca")
-    if "descripcion_corta" in payload or "short_description" in payload:
-        producto.descripcion_corta = payload.get("descripcion_corta") or payload.get("short_description")
-    if "promocion_info" in payload or "promo" in payload:
-        producto.promocion_info = payload.get("promocion_info") or payload.get("promo")
 
     if "precio" in payload or "price" in payload:
         precio_texto = payload.get("precio") or payload.get("price")
@@ -1251,18 +816,9 @@ def admin_update_product(current_user, product_id: int):
             except (InvalidOperation, ValueError):
                 return jsonify({"error": "precio inválido"}), 400
             producto.precio = str(precio_texto)
-    if "puntos" in payload or "price_points" in payload:
-        puntos_val = payload.get("puntos") or payload.get("price_points")
-        if puntos_val is None:
-            producto.precio_puntos = None
-        else:
-            try:
-                producto.precio_puntos = int(puntos_val)
-            except (TypeError, ValueError):
-                return jsonify({"error": "puntos inválidos"}), 400
 
     db.session.commit()
-    return jsonify(_serialize_catalog_item(producto, tenant))
+    return jsonify(_serialize_catalog_item(producto))
 
 
 @market_admin_bp.delete("/catalog/<int:product_id>")

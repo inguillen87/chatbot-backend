@@ -425,13 +425,8 @@ def create_app(config_class=Config):
         encuestas_admin_bp,
         encuestas_public_bp,
     )
-    from routes.pwa_public import pwa_public_bp, pwa_tenant_info_bp
-    from routes.market import (
-        market_admin_bp,
-        market_bp,
-        market_public_alias_bp,
-        market_public_bp,
-    )
+    from routes.pwa_public import pwa_public_bp
+    from routes.market import market_admin_bp, market_bp
     from routes.public_resolver import public_resolver_bp, public_municipios_bp
     from routes.subastas import subastas_bp
     from routes.pedidos_from_file import pedidos_from_file_bp
@@ -531,8 +526,6 @@ def create_app(config_class=Config):
     app.register_blueprint(pwa_tenant_info_bp)
     app.register_blueprint(pwa_public_bp)
     app.register_blueprint(market_bp)
-    app.register_blueprint(market_public_bp)
-    app.register_blueprint(market_public_alias_bp)
     app.register_blueprint(market_admin_bp)
     app.register_blueprint(pwa_misc_bp)
     app.register_blueprint(pwa_app_bp)
