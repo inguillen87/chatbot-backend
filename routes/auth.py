@@ -1,6 +1,6 @@
 # Contenido COMPLETO para: routes/auth.py
 
-from flask import Blueprint, current_app, g, jsonify, make_response, request
+from flask import Blueprint, current_app, g, jsonify, make_response, request, url_for
 from flask_cors import cross_origin
 from services.logic import es_rubro_publico, normalizar_rubro
 import os
@@ -22,6 +22,7 @@ import uuid
 import json
 from datetime import datetime, timedelta, timezone
 import jwt
+import base64
 from services.google_auth import login_o_crear_usuario
 from services.pymes import get_or_create_pyme_user_by_token
 from typing import Any, Callable, Dict, Optional
@@ -476,6 +477,109 @@ def _add_cors(
             "X-Entity-Token, X-Widget-Token, X-Anon-Id, Anon-Id",
         )
     return resp
+
+
+def _widget_features_for_tenant(tenant: TenantProfile) -> dict[str, object]:
+    """Return feature flags for widget/marketplace consumption."""
+
+    features: dict[str, object] = {}
+    cfg = tenant.configuracion or {}
+
+    widget_features = cfg.get("widget_features")
+    if isinstance(widget_features, dict):
+        features.update(widget_features)
+
+    catalog_enabled = cfg.get("widget_catalog_enabled")
+    if isinstance(catalog_enabled, bool):
+        features.setdefault("catalog_enabled", catalog_enabled)
+    else:
+        features.setdefault("catalog_enabled", (tenant.tipo or "").lower() == "pyme")
+
+    loyalty_enabled = cfg.get("widget_loyalty_enabled")
+    if isinstance(loyalty_enabled, bool):
+        features.setdefault("loyalty_enabled", loyalty_enabled)
+
+    return features
+
+
+def _widget_jwks_payload() -> dict[str, list[dict[str, str]]]:
+    """Expose a minimal JWKS for widget token verification."""
+
+    secret = str(current_app.config.get("WIDGET_JWT_SECRET") or current_app.config.get("SECRET_KEY", ""))
+    kid = current_app.config.get("WIDGET_JWT_KID", "widget-hs256")
+    encoded_secret = base64.urlsafe_b64encode(secret.encode("utf-8")).rstrip(b"=").decode("utf-8")
+
+    return {
+        "keys": [
+            {
+                "kty": "oct",
+                "use": "sig",
+                "alg": "HS256",
+                "kid": kid,
+                "k": encoded_secret,
+            }
+        ]
+    }
+
+
+@auth_bp.route("/widget/jwks.json", methods=["GET"], strict_slashes=False)
+def widget_jwks():
+    payload = _widget_jwks_payload()
+    resp = jsonify(payload)
+    resp.headers.setdefault("Cache-Control", "public, max-age=3600")
+    return resp
+
+
+@auth_bp.route("/widget/bootstrap", methods=["GET", "OPTIONS"], strict_slashes=False)
+def widget_bootstrap():
+    if request.method == "OPTIONS":
+        return _add_cors(
+            make_response("", 200),
+            allow_credentials=True,
+            allow_methods=("GET", "OPTIONS"),
+        )
+
+    tenant = getattr(g, "tenant_profile", None) or getattr(g, "current_tenant", None)
+    if not tenant:
+        resp = _add_cors(
+            jsonify({"error": "tenant requerido"}),
+            allow_credentials=True,
+            allow_methods=("GET", "OPTIONS"),
+        )
+        return resp, 400
+
+    from routes.pwa_public import _build_public_cart_url
+
+    full_url, base_url, path = _build_public_cart_url(tenant)
+    market_payload = _tenant_market_payload(tenant)
+    market_payload.setdefault("public_base_url", base_url)
+    market_payload.setdefault("public_path", path)
+    market_payload.setdefault("public_market_url", full_url)
+
+    jwks_url = current_app.config.get("WIDGET_JWKS_URL")
+    if not jwks_url:
+        try:
+            jwks_url = url_for("auth.widget_jwks", _external=True)
+        except Exception:
+            jwks_url = None
+
+    response_payload = {
+        "tenant": tenant.to_public_dict(),
+        "marketplace": market_payload,
+        "features": _widget_features_for_tenant(tenant),
+        "jwks": {"url": jwks_url},
+        "widget": {
+            "token_cookie_name": current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token"),
+            "access_minutes": _conf("WIDGET_ACCESS_MINUTES", 45),
+            "renew_days": _conf("WIDGET_RENEW_DAYS", 7),
+        },
+    }
+
+    return _add_cors(
+        jsonify(response_payload),
+        allow_credentials=True,
+        allow_methods=("GET", "OPTIONS"),
+    )
 
 
 @auth_bp.route("/widget-token", methods=["POST", "OPTIONS"], strict_slashes=False)
