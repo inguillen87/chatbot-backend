@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import wraps
 from typing import Optional
 
-from flask import g, jsonify, request
+from flask import current_app, g, jsonify, request
 from sqlalchemy import func
 
 from models import TenantProfile
@@ -76,6 +76,20 @@ def get_current_tenant() -> Optional[TenantProfile]:
         )
     except TenantResolutionError:
         tenant = None
+
+    if not tenant:
+        fallback_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
+        if fallback_slug:
+            tenant = (
+                TenantProfile.query.filter(
+                    func.lower(TenantProfile.slug) == fallback_slug.lower()
+                )
+                .order_by(TenantProfile.id.asc())
+                .first()
+            )
+
+    if not tenant:
+        tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
 
     return tenant
 
