@@ -22,7 +22,7 @@ dburl = os.environ.get("MIGRATIONS_DATABASE_URL") or AppConfig.SQLALCHEMY_DATABA
 
 if not dburl:
     raise RuntimeError(
-        "Definí MIGRATIONS_DATABASE_URL o DATABASE_URL antes de correr migraciones."
+        "Definí MIGRATIONS_DATABASE_URL o SQLALCHEMY_DATABASE_URI antes de correr migraciones."
     )
 
 # Alinear explícitamente la URL de Alembic con la misma que usa SQLAlchemy
