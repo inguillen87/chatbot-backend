@@ -428,6 +428,7 @@ def create_app(config_class=Config):
     from routes.pwa_public import pwa_public_bp, pwa_tenant_info_bp
     from routes.market import market_admin_bp, market_bp
     from routes.public_resolver import public_resolver_bp, public_municipios_bp
+    from routes.widget_settings import widget_settings_bp
     from routes.subastas import subastas_bp
     from routes.pedidos_from_file import pedidos_from_file_bp
     from routes.kits import kits_bp
@@ -518,6 +519,7 @@ def create_app(config_class=Config):
     app.register_blueprint(document_intelligence_bp)
     app.register_blueprint(document_intelligence_public_bp)
     app.register_blueprint(catalog_vector_sync_bp)
+    app.register_blueprint(widget_settings_bp)
     app.register_blueprint(whatsapp_webhook_bp)
     app.register_blueprint(whatsapp_promocionar_bp)
     app.register_blueprint(omnichannel_bp)
