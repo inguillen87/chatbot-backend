@@ -325,6 +325,15 @@ def estadisticas_heatmap_alias():
 
 
 @api_aliases_bp.route(
+    "/estadisticas/mapa_calor/datos",
+    methods=["OPTIONS"],
+    strict_slashes=False,
+)
+def estadisticas_heatmap_options_alias():
+    return _options_ok()
+
+
+@api_aliases_bp.route(
     "/estadisticas/tickets", methods=["GET"], strict_slashes=False
 )
 def estadisticas_tickets_alias():
