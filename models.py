@@ -274,7 +274,11 @@ class User(db.Model, UserMixin):
     empresa = db.relationship('User', remote_side=[id], backref='clientes')
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
     rubro = db.relationship("Rubro", backref="usuarios")
-    tenant = db.relationship("TenantProfile", backref=db.backref("usuarios", lazy=True))
+    tenant = db.relationship(
+        "TenantProfile",
+        backref=db.backref("usuarios", lazy=True),
+        foreign_keys=[tenant_id],
+    )
     prefers_audio = db.Column(db.Boolean, default=False)
     accesibilidad = db.Column(JSONType, nullable=True)
     catalogo_items = db.relationship('CatalogoItem', backref='user', lazy=True)
