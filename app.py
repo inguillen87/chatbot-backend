@@ -478,6 +478,7 @@ def create_app(config_class=Config):
     # Más blueprints
     app.register_blueprint(legacy_auth_bp)
     app.register_blueprint(chat_bp)
+    # Core APIs
     app.register_blueprint(ticket_bp)
     app.register_blueprint(crm_bp)
     app.register_blueprint(analytics_bp)
@@ -528,6 +529,15 @@ def create_app(config_class=Config):
     app.register_blueprint(public_aliases_bp)
     app.register_blueprint(pwa_tenant_info_bp)
     app.register_blueprint(pwa_public_bp)
+
+    # API aliases with "/api" prefix for frontends that hardcode that base path.
+    # Flask allows registering the same blueprint multiple times as long as the
+    # registration name is unique. This mirrors the existing routes under a
+    # prefixed namespace without duplicating the view logic.
+    app.register_blueprint(ticket_bp, url_prefix="/api", name="ticket_bp_api")
+    app.register_blueprint(
+        municipal_bp, url_prefix="/api", name="municipal_bp_api"
+    )
     app.register_blueprint(market_bp)
     app.register_blueprint(market_admin_bp)
     app.register_blueprint(pwa_misc_bp)
