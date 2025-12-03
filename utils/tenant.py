@@ -92,12 +92,21 @@ def get_current_tenant() -> Optional[str]:
             g.tenant = slug
             return slug
 
-    # 5) Fallback ultra defensivo para rutas legacy /municipio/
-    if "/municipio/" in request.path:
-        g.current_tenant = "municipio"
-        g.tenant_slug = "municipio"
-        g.tenant = "municipio"
-        return "municipio"
+    # 5) Fallback defensivo para rutas que incluyen el slug en el path
+    path_parts = [parte for parte in request.path.split("/") if parte]
+    for idx, parte in enumerate(path_parts):
+        if parte in {"municipio", "municipal"}:
+            siguiente = path_parts[idx + 1] if idx + 1 < len(path_parts) else None
+            slug_hint = siguiente or "municipio"
+            g.current_tenant = slug_hint
+            g.tenant_slug = slug_hint
+            g.tenant = slug_hint
+            return slug_hint
+        if parte in {"whatsapp", "pwa"}:
+            g.current_tenant = parte
+            g.tenant_slug = parte
+            g.tenant = parte
+            return parte
 
     # 5) Si realmente no se puede resolver
     current_app.logger.warning(

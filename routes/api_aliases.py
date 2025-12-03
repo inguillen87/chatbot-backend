@@ -37,6 +37,12 @@ from routes.ticket import (
     get_ticket_details,
     get_tickets_del_usuario,
 )
+from routes.municipio_api import (
+    listar_categorias_municipio,
+    listar_categorias_pedidos,
+    listar_categorias_ticket,
+    listar_empleados_multitenant,
+)
 from routes.productos import obtener_productos
 from routes.pedidos import (
     listar_pedidos_pyme,
@@ -330,6 +336,41 @@ def estadisticas_tickets_alias():
 )
 def estadisticas_tickets_options_alias():
     return tickets_options()
+
+
+# --- Alias de compatibilidad para prefijo /api/municipio/municipio ---
+
+
+@api_aliases_bp.route(
+    "/municipio/municipio/categorias", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def municipio_alias_categorias():
+    return listar_categorias_municipio(tenant_slug="municipio")
+
+
+@api_aliases_bp.route(
+    "/municipio/municipio/tickets/categorias",
+    methods=["GET", "OPTIONS"],
+    strict_slashes=False,
+)
+def municipio_alias_tickets_categorias():
+    return listar_categorias_ticket(tenant_slug="municipio")
+
+
+@api_aliases_bp.route(
+    "/municipio/municipio/pedidos/categorias",
+    methods=["GET", "OPTIONS"],
+    strict_slashes=False,
+)
+def municipio_alias_pedidos_categorias():
+    return listar_categorias_pedidos(tenant_slug="municipio")
+
+
+@api_aliases_bp.route(
+    "/municipio/municipio/empleados", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def municipio_alias_empleados():
+    return listar_empleados_multitenant(tenant_slug="municipio")
 
 
 @api_aliases_bp.route("/app/me/tenants", methods=["GET", "OPTIONS"], strict_slashes=False)
