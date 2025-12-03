@@ -25,3 +25,13 @@ def get_version_info():
         'frontend': current_app.config['FRONTEND_VERSION'],
         'backend': current_app.config['BACKEND_VERSION'],
     })
+
+
+@config_bp.route('/api/config/maps', methods=['GET'])
+def get_maps_config():
+    """Expose map provider configuration for the frontend widget."""
+
+    return jsonify({
+        "google_maps_api_key": current_app.config.get("MAPS_API_KEY", ""),
+        "default_provider": current_app.config.get("MAPS_DEFAULT_PROVIDER", "google"),
+    })
