@@ -10,7 +10,11 @@ from werkzeug.exceptions import HTTPException
 from sqlalchemy import func
 
 from models import TenantProfile
-from utils.tenant import get_current_tenant, get_current_tenant_slug, require_tenant as _decorator_require_tenant
+from utils.tenant import (
+    get_current_tenant_profile,
+    get_current_tenant_slug,
+    require_tenant as _decorator_require_tenant,
+)
 
 
 def _normalize_slug(value: Optional[str]) -> Optional[str]:
@@ -304,7 +308,7 @@ def require_tenant(func=None) -> TenantProfile:
     if tenant:
         return tenant
 
-    tenant = get_current_tenant()
+    tenant = get_current_tenant_profile()
     if tenant:
         g.tenant_profile = tenant
         g.tenant_profile_slug = tenant.slug

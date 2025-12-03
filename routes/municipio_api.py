@@ -18,7 +18,7 @@ from models import (
 )
 from routes.auth import token_requerido
 from routes.ticket import TICKET_ALLOWED_STATES
-from utils.tenant import get_current_tenant
+from utils.tenant import get_current_tenant, get_current_tenant_profile
 
 municipio_api_bp = Blueprint(
     "municipio_api",
@@ -40,8 +40,12 @@ widget_public_bp = Blueprint(
 
 
 def _resolve_tenant_or_404(tenant_slug: str) -> TenantProfile:
-    tenant = get_current_tenant()
-    if tenant and tenant.slug.lower() == tenant_slug.lower():
+    if tenant_slug:
+        g.current_tenant = tenant_slug
+        g.tenant_slug = tenant_slug
+
+    tenant = get_current_tenant_profile(tenant_slug)
+    if tenant:
         g.tenant = tenant
         return tenant
     tenant = (
@@ -510,7 +514,8 @@ def serialize_catalogo_item(item: CatalogoItem) -> dict:
 
 @public_market_bp.route("/productos", methods=["GET"])
 def productos_publicos(tenant_slug: str):
-    tenant = _resolve_tenant_or_404(tenant_slug)
+    resolved_slug = get_current_tenant()
+    tenant = _resolve_tenant_or_404(resolved_slug or tenant_slug)
     productos = (
         CatalogoItem.query.filter(
             CatalogoItem.tenant_id == tenant.id, CatalogoItem.disponible.is_(True)
@@ -523,7 +528,8 @@ def productos_publicos(tenant_slug: str):
 
 @public_market_bp.route("/productos/<int:producto_id>", methods=["GET"])
 def producto_publico(tenant_slug: str, producto_id: int):
-    tenant = _resolve_tenant_or_404(tenant_slug)
+    resolved_slug = get_current_tenant()
+    tenant = _resolve_tenant_or_404(resolved_slug or tenant_slug)
     item = (
         CatalogoItem.query.filter_by(id=producto_id, tenant_id=tenant.id, disponible=True)
         .order_by(CatalogoItem.id.asc())
@@ -536,14 +542,16 @@ def producto_publico(tenant_slug: str, producto_id: int):
 
 @public_market_bp.route("/carrito", methods=["GET"])
 def obtener_carrito_publico(tenant_slug: str):
-    tenant = _resolve_tenant_or_404(tenant_slug)
+    resolved_slug = get_current_tenant()
+    tenant = _resolve_tenant_or_404(resolved_slug or tenant_slug)
     cart = session.get(_cart_key(tenant), {"items": []})
     return jsonify(cart)
 
 
 @public_market_bp.route("/carrito/items", methods=["POST"])
 def agregar_item_carrito(tenant_slug: str):
-    tenant = _resolve_tenant_or_404(tenant_slug)
+    resolved_slug = get_current_tenant()
+    tenant = _resolve_tenant_or_404(resolved_slug or tenant_slug)
     data = request.get_json(silent=True) or {}
     producto_id = data.get("producto_id")
     cantidad = int(data.get("cantidad") or 1)
@@ -557,7 +565,8 @@ def agregar_item_carrito(tenant_slug: str):
 
 @public_market_bp.route("/checkout", methods=["POST"])
 def checkout_publico(tenant_slug: str):
-    tenant = _resolve_tenant_or_404(tenant_slug)
+    resolved_slug = get_current_tenant()
+    tenant = _resolve_tenant_or_404(resolved_slug or tenant_slug)
     cart = session.get(_cart_key(tenant), {"items": []})
     session[_cart_key(tenant)] = {"items": []}
     session.modified = True
