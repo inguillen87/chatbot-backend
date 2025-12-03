@@ -1,7 +1,7 @@
 """Add es_empleado flag to user
 
 Revision ID: 20270221_add_es_empleado_to_user
-Revises: 20261012_add_marketplace_cart_order
+Revises: 20251130_add_puntos_recompensa_to_enc_encuesta
 Create Date: 2027-02-21 00:00:00.000000
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "20270221_add_es_empleado_to_user"
-down_revision = "20261012_add_marketplace_cart_order"
+down_revision = "20251130_add_puntos_recompensa_to_enc_encuesta"
 branch_labels = None
 depends_on = None
 
