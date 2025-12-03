@@ -382,6 +382,49 @@ def municipio_alias_empleados():
     return listar_empleados_multitenant(tenant_slug="municipio")
 
 
+# Public aliases for callers that omit the /api prefix (e.g., service workers)
+# These respond to the same underlying endpoints but avoid 404s on preflight
+# requests when the origin issues OPTIONS without the /api/ prefix.
+@public_aliases_bp.route(
+    "/municipio/municipio/categorias", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def root_municipio_alias_categorias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return listar_categorias_municipio(tenant_slug="municipio")
+
+
+@public_aliases_bp.route(
+    "/municipio/municipio/tickets/categorias",
+    methods=["GET", "OPTIONS"],
+    strict_slashes=False,
+)
+def root_municipio_alias_tickets_categorias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return listar_categorias_ticket(tenant_slug="municipio")
+
+
+@public_aliases_bp.route(
+    "/municipio/municipio/pedidos/categorias",
+    methods=["GET", "OPTIONS"],
+    strict_slashes=False,
+)
+def root_municipio_alias_pedidos_categorias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return listar_categorias_pedidos(tenant_slug="municipio")
+
+
+@public_aliases_bp.route(
+    "/municipio/municipio/empleados", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def root_municipio_alias_empleados():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return listar_empleados_multitenant(tenant_slug="municipio")
+
+
 @api_aliases_bp.route("/app/me/tenants", methods=["GET", "OPTIONS"], strict_slashes=False)
 def tenants_alias_list():
     return list_followed_tenants()
