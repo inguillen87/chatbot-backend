@@ -35,6 +35,14 @@ def _looks_like_jwt(token: Optional[str]) -> bool:
 
     return bool(token and isinstance(token, str) and token.count(".") == 2)
 
+
+def _looks_like_uuid(value: Optional[str]) -> bool:
+    try:
+        uuid.UUID(str(value))
+        return True
+    except (ValueError, TypeError):
+        return False
+
 auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 
 from utils.auth_helpers import (
@@ -447,7 +455,7 @@ def _refresh(tok, minutes):
 
 
 _DEFAULT_CORS_HEADERS = (
-    "Content-Type, Authorization, X-Anon-Id, Anon-Id, "
+    "Content-Type, Authorization, Origin, X-Anon-Id, Anon-Id, "
     "X-Widget-Token, X-Tenant, x-tenant, X-Tenant-Id, x-tenant-id"
 )
 
@@ -1717,6 +1725,33 @@ def me_perfil(user):
     Obtiene (GET) o actualiza (PUT) el perfil del usuario.
     """
     if request.method == 'GET':
+        tenant_arg = request.args.get("tenant_slug") or request.args.get("tenant")
+        entity_token_hint = request.args.get("entityToken") or request.headers.get(
+            "X-Entity-Token"
+        )
+
+        if tenant_arg and not entity_token_hint and _looks_like_uuid(tenant_arg):
+            tenant_exists = (
+                TenantProfile.query.filter(
+                    func.lower(TenantProfile.slug) == str(tenant_arg).lower()
+                )
+                .order_by(TenantProfile.id.asc())
+                .first()
+            )
+            if tenant_exists is None:
+                return (
+                    jsonify(
+                        {
+                            "error": "invalid_tenant",
+                            "detail": (
+                                "El parámetro 'tenant_slug' parece un entityToken. "
+                                "Enviá entityToken en su propio parámetro en lugar de tenant_slug."
+                            ),
+                        }
+                    ),
+                    400,
+                )
+
         profile_data = build_profile_payload(user)
         return jsonify({k: v for k, v in profile_data.items() if v is not None})
 

@@ -25,7 +25,11 @@ from routes.estadisticas import (
     mapa_calor_datos,
     tickets_options,
 )
-from routes.municipal_legacy import list_municipal_posts, municipal_categorias
+from routes.municipal_legacy import (
+    list_municipal_posts,
+    municipal_categorias,
+    municipal_estados,
+)
 from routes.notifications import get_notifications, notifications_options
 from routes.ticket import (
     get_chat_mensajes,
@@ -257,6 +261,13 @@ def pedidos_estado_alias(pedido_id: int):
 )
 def municipal_categorias_alias():
     return municipal_categorias()
+
+
+@api_aliases_bp.route(
+    "/municipal/estados", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def municipal_estados_alias():
+    return municipal_estados()
 
 
 @api_aliases_bp.route(

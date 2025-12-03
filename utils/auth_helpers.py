@@ -39,6 +39,8 @@ _WIDGET_ALLOWED_GET_PATHS: Set[str] = {
     "/public/tenant",
     "/api/public/tenant",
     "/api/public/tenant-profile",
+    "/notifications",
+    "/api/notifications",
 }
 
 _WIDGET_ALLOWED_ANY_METHOD_PATHS: Set[str] = {
@@ -861,6 +863,10 @@ def token_requerido(f):
             status_code = 200 if request.blueprint == "legacy_auth" else 204
             return _finalize_response('', status_code)
 
+        def _auth_error(message: str, status_code: int = 401, code: str = "token_expired"):
+            payload = {"error": code, "message": message}
+            return _finalize_response(jsonify(payload), status_code)
+
         # Siempre intentar recuperar el token para exponerlo a las vistas que lo necesiten.
         raw_token = obtener_token()
         g.token_payload = _decode_token_payload(raw_token) if raw_token else {}
@@ -878,7 +884,7 @@ def token_requerido(f):
             return f(current_user, *args, **kwargs)
 
         if not raw_token:
-            return _finalize_response(jsonify({"error": "Token faltante o malformado"}), 401)
+            return _auth_error("Token faltante o malformado", 401, "token_missing")
 
         token = raw_token
         token_payload: Dict[str, Any] = {}
@@ -890,7 +896,11 @@ def token_requerido(f):
             owner_user = _lookup_owner_for_static_token(raw_token)
             if owner_user:
                 if not _widget_session_allowed(request.path, request.method):
-                    return _finalize_response(jsonify({"error": "Token inválido o sesión expirada"}), 403)
+                    return _auth_error(
+                        "Token inválido o sesión expirada",
+                        403,
+                        "token_expired",
+                    )
 
                 token, token_payload = _generate_widget_session_token(owner_user)
                 g.widget_session = True
@@ -902,10 +912,10 @@ def token_requerido(f):
                     request.path,
                 )
             else:
-                return _finalize_response(jsonify({"error": "Token inválido o sesión expirada"}), 401)
+                return _auth_error("Token inválido o sesión expirada", 401)
 
         if token_payload.get("session_kind") == "widget" and not _widget_session_allowed(request.path, request.method):
-            return _finalize_response(jsonify({"error": "Token inválido o sesión expirada"}), 403)
+            return _auth_error("Token inválido o sesión expirada", 403)
 
         g.token_payload = dict(token_payload) if token_payload else {}
         g.auth_token = token
