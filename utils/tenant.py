@@ -5,41 +5,83 @@ from __future__ import annotations
 from functools import wraps
 from typing import Optional
 
-from flask import current_app, g, jsonify, request
+from flask import current_app, g, request
 from sqlalchemy import func
 
 from models import TenantProfile
+from utils.errors import ApiError
 
 TENANT_HEADER = "X-Tenant"
 TENANT_SLUG_HEADER = "X-Tenant-Slug"
+TENANT_QUERY_KEYS = ("tenant", "tenant_slug", "municipio_slug", "slug")
+TENANT_HEADER_KEYS = ("X-Chatboc-Tenant", "X-Tenant", "X-CHATBOC-TENANT", "X-TENANT")
+
+
+def get_current_tenant() -> Optional[str]:
+    """
+    Devuelve el tenant actual SIN romper si falta user.tenant_id.
+
+    Prioridades:
+    1) g.current_tenant / g.tenant_slug (si ya fue seteado antes)
+    2) Querystring (?tenant= / ?tenant_slug= / ?municipio_slug= / ?slug=)
+    3) Headers (X-Chatboc-Tenant / X-Tenant)
+    4) Fallback: si la ruta contiene /municipio/ asumimos 'municipio'
+    5) Si nada funciona: recién ahí tiramos ApiError("tenant requerido", 400)
+    """
+
+    # 1) Contexto ya resuelto
+    for attr in ("current_tenant", "tenant_slug", "tenant"):
+        val = getattr(g, attr, None)
+        if val:
+            return val
+
+    # 2) Querystring (lo que llega desde /market/municipio/cart)
+    for key in TENANT_QUERY_KEYS:
+        val = request.args.get(key)
+        if val:
+            g.current_tenant = val
+            g.tenant_slug = val
+            g.tenant = val
+            return val
+
+    # 3) Headers (para widget embebido / integraciones)
+    for key in TENANT_HEADER_KEYS:
+        val = request.headers.get(key)
+        if val:
+            g.current_tenant = val
+            g.tenant_slug = val
+            g.tenant = val
+            return val
+
+    # 4) Fallback ultra defensivo para rutas legacy /municipio/
+    if "/municipio/" in request.path:
+        g.current_tenant = "municipio"
+        g.tenant_slug = "municipio"
+        g.tenant = "municipio"
+        return "municipio"
+
+    # 5) Si realmente no se puede resolver
+    current_app.logger.warning(
+        "[tenant-debug] tenant faltante | path=%s | qs=%s | headers=%s | cookies=%s",
+        request.path,
+        dict(request.args),
+        {k: request.headers.get(k) for k in request.headers.keys() if "tenant" in k.lower()},
+        dict(request.cookies),
+    )
+    raise ApiError("tenant requerido", 400)
 
 
 def get_current_tenant_slug() -> Optional[str]:
-    """Resolve the current tenant slug from headers, query params or context."""
-
-    slug = (
-        request.headers.get(TENANT_SLUG_HEADER)
-        or request.headers.get(TENANT_HEADER)
-        or request.args.get("tenant_slug")
-        or request.args.get("tenant")
-        or getattr(g, "tenant_slug", None)
-        or getattr(g, "tenant_profile_slug", None)
-    )
-
-    if not slug and getattr(request, "view_args", None):
-        slug = request.view_args.get("tenant_slug") or request.view_args.get("tenant")
-
-    if slug:
-        slug = str(slug).strip().lower()
-        return slug or None
-
-    return None
+    try:
+        return get_current_tenant()
+    except ApiError:
+        return None
 
 
-def get_current_tenant() -> Optional[TenantProfile]:
+def get_current_tenant_profile(slug: Optional[str] = None) -> Optional[TenantProfile]:
     """Return the tenant associated with the current request if any."""
 
-    slug = get_current_tenant_slug()
+    slug = slug or get_current_tenant_slug()
     if not slug:
         slug = None
 
@@ -60,6 +102,7 @@ def get_current_tenant() -> Optional[TenantProfile]:
         )
 
     if tenant:
+        _store_tenant_in_context(tenant)
         return tenant
 
     # Fallback: rely on the shared resolver so widget tokens, host hints and
@@ -100,55 +143,46 @@ def get_current_tenant() -> Optional[TenantProfile]:
     if not tenant:
         tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
 
+    if tenant:
+        _store_tenant_in_context(tenant)
+
     return tenant
 
 
 def _store_tenant_in_context(tenant: TenantProfile) -> None:
     g.tenant_profile = tenant
     g.tenant_profile_slug = getattr(tenant, "slug", None)
-    g.current_tenant = tenant
+    g.current_tenant = getattr(tenant, "slug", None) or tenant
     g.current_tenant_slug = getattr(tenant, "slug", None)
-
-
-def _tenant_error_response():
-    return jsonify({"error": "tenant requerido"}), 400
 
 
 def require_tenant(func=None):
     """Decorator (and direct helper) ensuring a tenant exists in the request context."""
 
     def _ensure_tenant():
-        tenant = getattr(g, "tenant_profile", None) or getattr(g, "current_tenant", None)
-        if not tenant:
-            tenant = get_current_tenant()
+        tenant = getattr(g, "tenant_profile", None)
+        if tenant:
+            return tenant
 
+        tenant_slug = get_current_tenant()
+        tenant = get_current_tenant_profile(tenant_slug)
         if tenant:
             _store_tenant_in_context(tenant)
             return tenant
 
-        return None
+        raise ApiError("tenant requerido", 400)
 
     if func is None:
         tenant = _ensure_tenant()
         if tenant:
             return tenant
-        response, status = _tenant_error_response()
-        response.status_code = status
-        from werkzeug.exceptions import HTTPException
-
-        error = HTTPException(description="tenant requerido")
-        error.code = status
-        error.response = response
-        raise error
 
     @wraps(func)
     def wrapper(*args, **kwargs):
         if request.method == "OPTIONS":
             return func(*args, **kwargs)
 
-        tenant = _ensure_tenant()
-        if not tenant:
-            return _tenant_error_response()
+        _ensure_tenant()
 
         return func(*args, **kwargs)
 

@@ -23,7 +23,7 @@ from services.cart import add_item, clear_cart, get_summary, remove_item, update
 from services.common_utils import parse_precio_flexible
 from services.rewards_demo import reward_profile_for_tenant
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
-from utils.tenant import get_current_tenant
+from utils.tenant import get_current_tenant_profile
 
 _CORS_ALLOWED_HEADERS = [
     "Content-Type",
@@ -147,7 +147,7 @@ def _resolve_owner_and_seed() -> Tuple[Optional[TenantProfile], Optional[User]]:
     tenant = _tenant_for_user(user)
 
     if not tenant:
-        tenant = getattr(g, "tenant_profile", None) or get_current_tenant()
+        tenant = getattr(g, "tenant_profile", None) or get_current_tenant_profile()
 
     owner = None
     if tenant:

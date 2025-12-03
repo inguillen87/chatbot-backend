@@ -6,7 +6,7 @@ from flask_cors import cross_origin
 from models import TenantProfile, WidgetSettings, db
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 from routes.auth import solo_admin_requerido, token_requerido
-from utils.tenant import get_current_tenant, get_current_tenant_slug
+from utils.tenant import get_current_tenant_profile, get_current_tenant_slug
 
 
 widget_settings_bp = Blueprint(
@@ -32,7 +32,7 @@ def _tenant_for_user(user) -> TenantProfile | None:
         getattr(user, "tenant_profile", None)
         or getattr(user, "tenant_profile_municipio", None)
         or getattr(user, "tenant_profile_pyme", None)
-        or get_current_tenant()
+        or get_current_tenant_profile()
     )
 
 
@@ -93,7 +93,7 @@ def _resolve_tenant_from_request() -> TenantProfile:
         raise TenantResolutionError(str(exc))
 
     if not tenant and not slug_hint:
-        tenant = get_current_tenant()
+        tenant = get_current_tenant_profile()
 
     if not tenant:
         raise TenantResolutionError("Tenant desconocido")
