@@ -53,7 +53,46 @@ def get_current_tenant() -> Optional[str]:
             g.tenant = val
             return val
 
-    # 4) Fallback ultra defensivo para rutas legacy /municipio/
+    # 4) Usuario autenticado (g.current_user / g.user / g.viewer)
+    for attr in ("current_user", "user", "viewer"):
+        user = getattr(g, attr, None)
+        if not user:
+            continue
+
+        tenant_slug = getattr(user, "tenant_slug", None)
+        profile_slug = getattr(getattr(user, "tenant_profile", None), "slug", None)
+        municipio_slug = getattr(getattr(user, "tenant_profile_municipio", None), "slug", None)
+        pyme_slug = getattr(getattr(user, "tenant_profile_pyme", None), "slug", None)
+        municipio_id = getattr(user, "municipio_id", None)
+        pyme_id = getattr(user, "pyme_id", None)
+        tipo_chat = getattr(user, "tipo_chat", None)
+
+        slug = tenant_slug or profile_slug or municipio_slug or pyme_slug
+        if not slug and municipio_id:
+            tenant = TenantProfile.query.filter_by(municipio_id=municipio_id).first()
+            slug = getattr(tenant, "slug", None)
+            if not slug and tipo_chat == "municipio":
+                slug = "municipio"
+
+        if not slug and pyme_id:
+            tenant = TenantProfile.query.filter_by(pyme_id=pyme_id).first()
+            slug = getattr(tenant, "slug", None)
+            if not slug and tipo_chat == "pyme":
+                slug = "pyme"
+
+        if not slug and tipo_chat == "municipio":
+            slug = "municipio"
+
+        if not slug and tipo_chat == "pyme":
+            slug = "pyme"
+
+        if slug:
+            g.current_tenant = slug
+            g.tenant_slug = slug
+            g.tenant = slug
+            return slug
+
+    # 5) Fallback ultra defensivo para rutas legacy /municipio/
     if "/municipio/" in request.path:
         g.current_tenant = "municipio"
         g.tenant_slug = "municipio"

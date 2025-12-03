@@ -5,6 +5,9 @@ from __future__ import annotations
 from typing import Optional
 from urllib.parse import urlparse
 
+from typing import Optional
+from urllib.parse import urlparse
+
 from flask import current_app, g, jsonify, make_response, request
 from werkzeug.exceptions import HTTPException
 from sqlalchemy import func
@@ -295,94 +298,9 @@ def tenant_middleware(app) -> None:
 
 
 def require_tenant(func=None) -> TenantProfile:
-    """Ensure a tenant is resolved in the current context or abort with JSON.
-
-    The callable can be used as a direct helper (returning the tenant or
-    raising an HTTPException) or as a decorator for view functions.
-    """
+    """Use the shared tenant resolver decorator without duplicating logic."""
 
     if func is not None and callable(func):
         return _decorator_require_tenant(func)
 
-    tenant = getattr(g, "tenant_profile", None) or getattr(g, "current_tenant", None)
-    if tenant:
-        return tenant
-
-    tenant = get_current_tenant_profile()
-    if tenant:
-        g.tenant_profile = tenant
-        g.tenant_profile_slug = tenant.slug
-        g.current_tenant = tenant
-        g.current_tenant_slug = tenant.slug
-        return tenant
-
-    # Attempt to resolve using explicit hints (slug/widget token) before
-    # falling back to host-based resolution so marketplace/catalog requests
-    # that only send query params still get a tenant.
-    from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
-
-    host_hint = request.headers.get("X-Forwarded-Host") or request.host
-    slug_hint = _normalize_slug(
-        request.args.get("tenant_slug")
-        or request.args.get("tenant")
-        or getattr(getattr(request, "view_args", None) or {}, "get", lambda k: None)(
-            "tenant_slug"
-        )
-        or getattr(getattr(request, "view_args", None) or {}, "get", lambda k: None)(
-            "tenant"
-        )
-        or _tenant_slug_from_body()
-        or _tenant_slug_from_path(getattr(request, "path", ""))
-    )
-
-    widget_token = (
-        request.headers.get("X-Widget-Token")
-        or request.args.get("widget_token")
-        or request.headers.get("X-Entity-Token")
-        or request.args.get("entityToken")
-    )
-
-    try:
-        tenant = resolve_tenant_only(
-            tenant_slug=slug_hint,
-            widget_token=widget_token,
-            host=host_hint,
-            require_explicit_slug=False,
-        )
-    except TenantResolutionError:
-        tenant = None
-
-    if tenant:
-        g.tenant_profile = tenant
-        g.tenant_profile_slug = tenant.slug
-        g.current_tenant = tenant
-        g.current_tenant_slug = tenant.slug
-        return tenant
-
-    # As a last resort, try resolving using the host hint so custom domains or
-    # fallback tenants avoid returning a hard 400 for public endpoints.
-    try:
-        tenant = resolve_tenant_only(host=host_hint, require_explicit_slug=False)
-    except TenantResolutionError:
-        tenant = None
-
-    if tenant:
-        g.tenant_profile = tenant
-        g.tenant_profile_slug = tenant.slug
-        g.current_tenant = tenant
-        g.current_tenant_slug = tenant.slug
-        return tenant
-
-    tenant = _fallback_default_tenant()
-    if tenant:
-        g.tenant_profile = tenant
-        g.tenant_profile_slug = tenant.slug
-        g.current_tenant = tenant
-        g.current_tenant_slug = tenant.slug
-        return tenant
-
-    response = make_response(jsonify({"error": "tenant requerido"}), 400)
-    error = HTTPException(description="tenant requerido")
-    error.code = 400
-    error.response = response
-    raise error
+    return _decorator_require_tenant()
