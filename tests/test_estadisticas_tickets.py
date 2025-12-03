@@ -93,6 +93,8 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
         self.assertIn("metadata", payload)
         self.assertIn("map", payload["metadata"])
         self.assertIn("heatmap", payload["metadata"]["map"])
+        self.assertIn("style", payload["metadata"]["map"]["heatmap"])
+        self.assertIn("filters", payload["metadata"])
         self.assertEqual(payload["stats"], mock_stats.return_value)
         self.assertEqual(payload["summary"], mock_stats.return_value["resumen"])
         self.assertEqual(

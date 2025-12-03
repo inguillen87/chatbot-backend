@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from models import Categoria, db
 from routes.auth import token_requerido
 from utils.permissions import require_role
@@ -12,6 +12,44 @@ from utils.permissions import require_role
 from services.categorias_municipio import CATEGORIAS_RECLAMO
 
 categorias_bp = Blueprint('categorias', __name__, url_prefix='/categorias')
+
+
+def _serialize_categoria(cat: Categoria) -> dict:
+    return {"id": cat.id, "nombre": cat.nombre}
+
+
+def _bootstrap_municipio_categories(municipio_id: int) -> list[Categoria]:
+    """Ensure the tenant has baseline categories persisted and return them."""
+
+    existentes = Categoria.query.filter_by(municipio_id=municipio_id).all()
+    if existentes:
+        return existentes
+
+    creadas: list[Categoria] = []
+    nombres_vistos = set()
+    for nombre in CATEGORIAS_RECLAMO:
+        limpio = (nombre or "").strip()
+        if not limpio:
+            continue
+        llave = limpio.lower()
+        if llave in nombres_vistos:
+            continue
+        nombres_vistos.add(llave)
+        nueva_categoria = Categoria(nombre=limpio, municipio_id=municipio_id)
+        db.session.add(nueva_categoria)
+        creadas.append(nueva_categoria)
+
+    if not creadas:
+        return []
+
+    try:
+        db.session.commit()
+    except Exception:  # pragma: no cover - log and return empty to avoid 500
+        current_app.logger.exception("No se pudieron crear las categorías base")
+        db.session.rollback()
+        return []
+
+    return creadas
 
 @categorias_bp.route('', methods=['POST'])
 @token_requerido
@@ -40,17 +78,20 @@ def obtener_categorias(current_user):
     if not current_user.municipio_id:
         return jsonify({"error": "El usuario no está asociado a un municipio."}), 400
 
+    _bootstrap_municipio_categories(current_user.municipio_id)
+
     query = Categoria.query.filter_by(municipio_id=current_user.municipio_id)
 
     search_term = (request.args.get("q") or "").strip().lower()
     if search_term:
         query = query.filter(Categoria.nombre.ilike(f"%{search_term}%"))
 
-    categorias = [c.nombre for c in query.all()]
+    categorias = query.order_by(Categoria.nombre.asc()).all()
+    serializadas = [_serialize_categoria(cat) for cat in categorias]
 
     return jsonify({
-        "categorias": categorias,
-        "categories": categorias,
+        "categorias": serializadas,
+        "categories": serializadas,
     })
 
 @categorias_bp.route('/<int:categoria_id>', methods=['DELETE'])
