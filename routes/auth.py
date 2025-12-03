@@ -43,6 +43,7 @@ from utils.auth_helpers import (
     generar_token,
     user_from_token,
     get_or_create_entity_token,
+    _safe_user_query,
 )
 from flask_login import current_user
 from utils.plan_limits import limite_para_usuario
@@ -64,6 +65,12 @@ from utils.map_config import get_map_config
 
 
 _OWNER_TOKEN_RESOLVER: Optional[Callable[[User], Optional[str]]] = None
+
+
+def _user_query():
+    """Return a ``User`` query that tolerates optional columns."""
+
+    return _safe_user_query()
 
 
 def _resolve_owner_token(user: User) -> Optional[str]:
@@ -99,7 +106,7 @@ def _resolve_owner_token(user: User) -> Optional[str]:
     empresa_id = getattr(owner_user, "empresa_id", None)
     if empresa_id:
         try:
-            looked_up = User.query.get(empresa_id)
+            looked_up = _user_query().get(empresa_id)
         except Exception:
             looked_up = None
         else:
@@ -592,12 +599,12 @@ def widget_token():
         jwt_user = user_from_token(token)
         if jwt_user:
             owner_user = (
-                User.query.get(jwt_user.empresa_id)
+                _user_query().get(jwt_user.empresa_id)
                 if jwt_user.empresa_id
                 else jwt_user
             )
         else:
-            owner_user = User.query.filter_by(token=token).first()
+            owner_user = _user_query().filter_by(token=token).first()
     if not owner_user:
         resp = _add_cors(jsonify({"error": "invalid_owner"}))
         return resp, 401
@@ -689,7 +696,7 @@ def login():
         resp.headers.setdefault('Anon-Id', anon_id)
         return resp, 400
 
-    user = User.query.filter_by(email=data.get("email").strip().lower()).first()
+    user = _user_query().filter_by(email=data.get("email").strip().lower()).first()
 
     if not user or not user.check_password(data.get("password")):
         current_app.logger.warning(f"Intento de login fallido para el email: {data.get('email')}")
@@ -771,7 +778,7 @@ def regenerar_token_integracion(user):
     owner_user = getattr(g, "owner_user", None) or user
     empresa_id = getattr(owner_user, "empresa_id", None)
     if empresa_id:
-        parent = User.query.get(empresa_id)
+        parent = _user_query().get(empresa_id)
         if parent:
             owner_user = parent
 
@@ -963,7 +970,7 @@ def register():
             "botones": [{"texto": "Volver al chat"}],
         }), 400
 
-    if User.query.filter_by(email=required_campos["email"].strip().lower()).first():
+    if _user_query().filter_by(email=required_campos["email"].strip().lower()).first():
         return jsonify({
             "error": "Ya existe un usuario con ese correo electrónico.",
             "botones": [{"texto": "Volver al chat"}],
@@ -1097,7 +1104,7 @@ def verify_email():
     if not token:
         return jsonify({"error": "Token requerido"}), 400
 
-    user = User.query.filter_by(email_verification_token=token).first()
+    user = _user_query().filter_by(email_verification_token=token).first()
     if not user:
         return jsonify({"error": "Token inválido"}), 400
 
@@ -1142,7 +1149,7 @@ def register_from_widget(user):
             404,
         )
 
-    if User.query.filter_by(email=email.strip().lower()).first():
+    if _user_query().filter_by(email=email.strip().lower()).first():
         return jsonify({
             "error": "Email ya registrado.",
             "botones": [{"texto": "Volver al chat"}],
@@ -1254,7 +1261,7 @@ def login_from_widget(owner_user):
     if not owner_tenant:
         return jsonify({"error": "Tenant no especificado o no encontrado para el widget"}), 404
 
-    user = User.query.filter_by(
+    user = _user_query().filter_by(
         email=email.strip().lower(), empresa_id=owner_user.id
     ).first()
     if not user or not user.check_password(password):
@@ -1373,7 +1380,7 @@ def chatuser_register_panel():
         )
 
     # Check if user with this email already exists
-    existing_user = User.query.filter(func.lower(User.email) == func.lower(email.strip())).first()
+    existing_user = _user_query().filter(func.lower(User.email) == func.lower(email.strip())).first()
 
     if existing_user:
         current_app.logger.info(f"[chatuser_register_panel] Email '{email}' ya existe. User ID: {existing_user.id}, Empresa ID: {existing_user.empresa_id}. Owner User ID: {owner_user.id}")
@@ -1546,7 +1553,7 @@ def chatuser_login_panel():
     if not empresa_token:
         return jsonify({"error": "Falta empresa_token"}), 400
 
-    owner_user = User.query.filter_by(token=empresa_token.strip()).first()
+    owner_user = _user_query().filter_by(token=empresa_token.strip()).first()
     if not owner_user:
         return jsonify({"error": "Token de empresa inválido"}), 404
 
@@ -1563,7 +1570,7 @@ def chatuser_login_panel():
     if not email or not password:
         return jsonify({"error": "Email y contraseña requeridos."}), 400
 
-    user = User.query.filter_by(email=email.strip().lower(), empresa_id=owner_user.id).first()
+    user = _user_query().filter_by(email=email.strip().lower(), empresa_id=owner_user.id).first()
     if not user or not user.check_password(password):
         return jsonify({"error": "Credenciales inválidas."}), 401
 
@@ -1764,7 +1771,7 @@ def request_password_reset():
         return jsonify({"error": "El email es requerido."}), 400
 
     try:
-        user = User.query.filter(func.lower(User.email) == email).first()
+        user = _user_query().filter(func.lower(User.email) == email).first()
     except Exception:
         current_app.logger.exception("[auth] Error buscando usuario para reset de contraseña")
         return jsonify({"error": "No se pudo iniciar el reseteo de contraseña."}), 500
