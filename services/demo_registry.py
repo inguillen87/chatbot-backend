@@ -10,6 +10,7 @@ from flask import current_app
 from sqlalchemy import func
 
 from models import QA, Rubro, User
+from utils.user_query import _safe_user_query
 from services.logic import es_rubro_publico
 
 
@@ -169,6 +170,7 @@ def load_demo_rubros() -> List[DemoRubro]:
     demo_entries = current_app.config.get("DEMO_RUBROS") or []
     opciones: List[DemoRubro] = []
     seen_keys: set[str] = set()
+    user_query = _safe_user_query()
 
     for entry in demo_entries:
         if not isinstance(entry, dict):
@@ -191,29 +193,29 @@ def load_demo_rubros() -> List[DemoRubro]:
         rubro_obj = None
 
         if user_id_conf:
-            owner_user = User.query.get(user_id_conf)
+            owner_user = user_query.get(user_id_conf)
 
         if not owner_user and token_conf:
-            owner_user = User.query.filter_by(token=token_conf).first()
+            owner_user = user_query.filter_by(token=token_conf).first()
 
         if not owner_user and rubro_id_conf:
             rubro_obj = Rubro.query.get(rubro_id_conf)
             if rubro_obj:
                 owner_user = (
-                    User.query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
-                    or User.query.filter_by(rubro_id=rubro_obj.id, rol="admin").first()
+                    user_query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
+                    or user_query.filter_by(rubro_id=rubro_obj.id, rol="admin").first()
                 )
 
         if not owner_user and rubro_clave_conf:
             rubro_obj = Rubro.query.filter(func.lower(Rubro.clave) == func.lower(str(rubro_clave_conf))).first()
             if rubro_obj:
                 owner_user = (
-                    User.query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
-                    or User.query.filter_by(rubro_id=rubro_obj.id, rol="admin").first()
+                    user_query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
+                    or user_query.filter_by(rubro_id=rubro_obj.id, rol="admin").first()
                 )
 
         if not owner_user and entry.get("tipo_chat", "").strip().lower() == "municipio":
-            owner_user = User.query.filter_by(tipo_chat="municipio", rol="admin").first()
+            owner_user = user_query.filter_by(tipo_chat="municipio", rol="admin").first()
             if owner_user and not rubro_obj:
                 rubro_obj = owner_user.rubro
 
@@ -222,13 +224,13 @@ def load_demo_rubros() -> List[DemoRubro]:
 
         if rubro_obj and not owner_user:
             owner_user = (
-                User.query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
-                or User.query.filter_by(rubro_id=rubro_obj.id, rol="admin").first()
+                user_query.filter_by(rubro_id=rubro_obj.id, empresa_id=None).first()
+                or user_query.filter_by(rubro_id=rubro_obj.id, rol="admin").first()
             )
 
         if rubro_obj and not owner_user:
             fallback_owner = (
-                User.query.filter_by(rubro_id=rubro_obj.id)
+                user_query.filter_by(rubro_id=rubro_obj.id)
                 .order_by(User.id.asc())
                 .first()
             )
@@ -241,7 +243,7 @@ def load_demo_rubros() -> List[DemoRubro]:
                 owner_user = fallback_owner
 
         if not owner_user and rubro_obj and es_rubro_publico(rubro_obj):
-            owner_user = User.query.filter_by(tipo_chat="municipio", rol="admin").first()
+            owner_user = user_query.filter_by(tipo_chat="municipio", rol="admin").first()
 
         if not owner_user:
             if key not in _MISCONFIGURED_DEMOS_LOGGED:
