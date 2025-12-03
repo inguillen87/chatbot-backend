@@ -5,6 +5,7 @@ from flask_cors import cross_origin
 from services.logic import es_rubro_publico, normalizar_rubro
 import os
 from sqlalchemy import func, or_
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm.attributes import flag_modified
 from models import (
     ChatSessionContext,
@@ -696,7 +697,15 @@ def login():
         resp.headers.setdefault('Anon-Id', anon_id)
         return resp, 400
 
-    user = _user_query().filter_by(email=data.get("email").strip().lower()).first()
+    try:
+        user = _user_query().filter_by(email=data.get("email").strip().lower()).first()
+    except ProgrammingError:
+        db.session.rollback()
+        current_app.logger.error("[auth] DB error during login", exc_info=True)
+        resp = jsonify({"error": "internal_error"})
+        resp.headers.setdefault("X-Anon-Id", anon_id)
+        resp.headers.setdefault("Anon-Id", anon_id)
+        return resp, 500
 
     if not user or not user.check_password(data.get("password")):
         current_app.logger.warning(f"Intento de login fallido para el email: {data.get('email')}")
