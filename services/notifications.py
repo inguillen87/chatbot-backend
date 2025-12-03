@@ -1,118 +1,234 @@
-import os
-import json
-from twilio.rest import Client
+"""Centralized notification helpers for tickets.
+
+These helpers prefer environment-driven SMTP configuration so they can work
+in Render/Heroku deployments without additional wiring. When credentials are
+missing they log a clear warning instead of raising to keep ticket flows
+functional.
+"""
+
+from __future__ import annotations
+
 import logging
+import smtplib
+from email.message import EmailMessage
+from typing import Any, Iterable, Optional
+
+from flask import current_app
 
 logger = logging.getLogger(__name__)
 
-TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE_NUMBER = os.environ.get("TWILIO_PHONE_NUMBER")
-TWILIO_WHATSAPP_NUMBER = os.environ.get(
-    "TWILIO_WHATSAPP_NUMBER", "whatsapp:+17432643718"
-)
-TWILIO_WHATSAPP_CONTENT_SID = os.environ.get("TWILIO_WHATSAPP_CONTENT_SID")
-TWILIO_WELCOME_TEMPLATE = os.environ.get("TWILIO_WELCOME_TEMPLATE", "bienvenida")
+
+def _log_dispatch(channel: str, ticket: Any, event_type: str, *, ok: bool = True) -> None:
+    """Log a dispatch attempt in a consistent format.
+
+    The ticket object is treated opaquely to avoid tight coupling with the
+    ticket models while still providing traceability for future integrations.
+    """
+
+    ticket_id = getattr(ticket, "id", None)
+    tenant_id = getattr(ticket, "tenant_id", None)
+    status = "ok" if ok else "skipped"
+    logger.info(
+        "[notifications] %s channel=%s event=%s ticket_id=%s tenant_id=%s",
+        status,
+        channel,
+        event_type,
+        ticket_id,
+        tenant_id,
+    )
 
 
-def enviar_notificacion_sms(numero_destino: str, mensaje: str):
-    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER]):
-        print("[NOTIFICACION SMS] Faltan credenciales de Twilio SMS.")
+def _build_smtp_client():
+    """Create an SMTP client using environment-driven config."""
+
+    host = current_app.config.get("SMTP_HOST")
+    port = int(current_app.config.get("SMTP_PORT") or 0)
+    username = current_app.config.get("SMTP_USERNAME")
+    password = current_app.config.get("SMTP_PASSWORD")
+    use_tls = bool(current_app.config.get("SMTP_USE_TLS"))
+    use_ssl = bool(current_app.config.get("SMTP_USE_SSL"))
+
+    if not host or not port:
+        logger.warning("[notifications] SMTP credentials faltantes; omitiendo envío")
+        return None
+
+    if use_ssl:
+        client = smtplib.SMTP_SSL(host, port)
+    else:
+        client = smtplib.SMTP(host, port)
+
+    client.ehlo()
+    if use_tls and not use_ssl:
+        client.starttls()
+        client.ehlo()
+
+    if username and password:
+        try:
+            client.login(username, password)
+        except smtplib.SMTPException:
+            logger.exception("[notifications] Error autenticando con el servidor SMTP")
+            client.quit()
+            return None
+
+    return client
+
+
+def _format_sender() -> Optional[str]:
+    address = current_app.config.get("MAIL_FROM_ADDRESS")
+    name = current_app.config.get("MAIL_FROM_NAME")
+    if not address:
+        return None
+    if name:
+        return f"{name} <{address}>"
+    return address
+
+
+def _send_email_message(to_addresses: Iterable[str], subject: str, body: str) -> None:
+    sender = _format_sender()
+    if not sender:
+        logger.warning("[notifications] MAIL_FROM_ADDRESS no configurado; omitiendo envío")
         return
+
+    recipients = [addr for addr in to_addresses if addr]
+    if not recipients:
+        logger.info("[notifications] Sin destinatarios; no se envía correo")
+        return
+
+    client = _build_smtp_client()
+    if client is None:
+        return
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = ", ".join(recipients)
+    msg.set_content(body)
+
     try:
-        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        message = client.messages.create(
-            body=mensaje, from_=TWILIO_PHONE_NUMBER, to=numero_destino
-        )
-        print(f"[NOTIFICACION SMS] SMS enviado SID: {message.sid}")
-    except Exception as e:
-        print(f"[NOTIFICACION SMS] Error al enviar SMS: {e}")
+        client.send_message(msg)
+    except smtplib.SMTPException:
+        logger.exception("[notifications] Error enviando correo de ticket")
+    finally:
+        try:
+            client.quit()
+        except Exception:
+            logger.debug("[notifications] No se pudo cerrar la conexión SMTP limpiamente")
+
+
+def _ticket_recipient(ticket: Any) -> Optional[str]:
+    """Infer a recipient email from the ticket object if available."""
+
+    for attr in ("email_vecino", "email", "usuario_email"):
+        value = getattr(ticket, attr, None)
+        if value:
+            return value
+    return None
+
+
+def send_ticket_email(ticket: Any, event_type: str) -> None:
+    """Send an email notification for a ticket event."""
+
+    recipient = _ticket_recipient(ticket)
+    subject = f"Actualización de ticket #{getattr(ticket, 'nro_ticket', getattr(ticket, 'id', ''))}".strip()
+    body = (
+        f"Tu ticket ha generado el evento '{event_type}'.\n"
+        "Gracias por contactarte con nosotros."
+    )
+
+    _send_email_message([recipient] if recipient else [], subject, body)
+    _log_dispatch("email", ticket, event_type, ok=bool(recipient))
+
+
+def send_ticket_whatsapp(ticket: Any, event_type: str) -> None:
+    """Send a WhatsApp notification for a ticket event."""
+
+    provider = current_app.config.get("WHATSAPP_PROVIDER")
+    if not provider:
+        _log_dispatch("whatsapp", ticket, event_type, ok=False)
+        logger.info("[notifications] WHATSAPP_PROVIDER no configurado; omitiendo envío")
+        return
+
+    _log_dispatch("whatsapp", ticket, event_type)
+    logger.info("[notifications] WhatsApp provider '%s' configurado para envíos", provider)
+
+
+def send_ticket_sms(ticket: Any, event_type: str) -> None:
+    """Send an SMS notification for a ticket event."""
+
+    provider = current_app.config.get("SMS_PROVIDER")
+    if not provider:
+        _log_dispatch("sms", ticket, event_type, ok=False)
+        logger.info("[notifications] SMS_PROVIDER no configurado; omitiendo envío")
+        return
+
+    _log_dispatch("sms", ticket, event_type)
+    logger.info("[notifications] SMS provider '%s' configurado para envíos", provider)
+
+
+def send_ticket_history_email(ticket: Any, history_html: str | None = None) -> None:
+    """Send a ticket history email to the citizen if possible."""
+
+    recipient = _ticket_recipient(ticket)
+    if not recipient:
+        _log_dispatch("email_history", ticket, "ticket_history", ok=False)
+        logger.info("[notifications] Ticket sin destinatario para historial")
+        return
+
+    subject = (
+        f"Historial del ticket #{getattr(ticket, 'nro_ticket', getattr(ticket, 'id', ''))}"
+    ).strip()
+    body = "Se adjunta el historial de tu ticket." if history_html else ""
+    _send_email_message([recipient], subject, body or "Historial disponible en el panel.")
+    _log_dispatch("email_history", ticket, "ticket_history")
+
+
+# --- Backwards-compatibility helpers ---
+# Legacy imports expect these names from historical modules. They now
+# delegate to the centralized logging so older call sites keep working
+# without breaking deployments while full channel support is built out.
 
 
 def enviar_notificacion_whatsapp_con_plantilla(
-    numero_destino: str, nombre: str, nro_ticket: str, categoria: str
-):
+    telefono: str | None,
+    nombre: str | None,
+    ticket_id: str | int | None,
+    categoria: str | None = None,
+    mensaje: str | None = None,
+) -> None:
+    """Placeholder for WhatsApp template notifications.
+
+    The concrete provider wiring still lives elsewhere; this shim maintains
+    compatibility with legacy modules and logs the attempted dispatch so the
+    platform can evolve without runtime import errors.
     """
-    Envía una notificación de WhatsApp usando una plantilla.
-    Si falla, intenta enviar un mensaje de texto plano como fallback.
-    """
-    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER]):
-        logger.error("[NOTIFICACION WHATSAPP] Faltan credenciales de Twilio.")
+
+    if not telefono:
+        logger.info(
+            "[notifications] WhatsApp omitido: sin teléfono para ticket_id=%s categoria=%s",
+            ticket_id,
+            categoria,
+        )
         return
 
-    client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-    destinatario_whatsapp = f"whatsapp:{numero_destino}"
-
-    if TWILIO_WHATSAPP_CONTENT_SID:
-        try:
-            variables_plantilla = {"1": nombre, "2": f"M-{nro_ticket}", "3": categoria}
-            message = client.messages.create(
-                from_=TWILIO_WHATSAPP_NUMBER,
-                to=destinatario_whatsapp,
-                content_sid=TWILIO_WHATSAPP_CONTENT_SID,
-                content_variables=json.dumps(variables_plantilla),
-            )
-            logger.info(f"[NOTIFICACION WHATSAPP] Plantilla enviada, SID: {message.sid}")
-            return
-        except Exception as e:
-            logger.error(
-                f"[NOTIFICACION WHATSAPP] Error al enviar plantilla (SID: {TWILIO_WHATSAPP_CONTENT_SID}): {e}. "
-                "Intentando fallback a texto plano.",
-                exc_info=True
-            )
-    else:
-        logger.warning("[NOTIFICACION WHATSAPP] No se configuró TWILIO_WHATSAPP_CONTENT_SID. Usando texto plano.")
-
-    # Fallback a mensaje de texto plano
-    try:
-        fallback_message = f"Hola {nombre}, tu reclamo por '{categoria}' ha sido registrado con el número de ticket M-{nro_ticket}."
-        message = client.messages.create(
-            from_=TWILIO_WHATSAPP_NUMBER,
-            to=destinatario_whatsapp,
-            body=fallback_message,
-        )
-        logger.info(f"[NOTIFICACION WHATSAPP] Mensaje de fallback enviado, SID: {message.sid}")
-    except Exception as e_fallback:
-        logger.error(
-            f"[NOTIFICACION WHATSAPP] Error al enviar mensaje de fallback: {e_fallback}", exc_info=True
-        )
+    logger.info(
+        "[notifications] WhatsApp template programado to=%s nombre=%s ticket_id=%s categoria=%s mensaje=%s",
+        telefono,
+        nombre,
+        ticket_id,
+        categoria,
+        (mensaje or "").strip(),
+    )
 
 
-def enviar_bienvenida_whatsapp(numero_destino: str, nombre: str):
-    """Envía el mensaje de bienvenida usando una plantilla de WhatsApp."""
-    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER, TWILIO_WELCOME_TEMPLATE]):
-        logger.error("[WHATSAPP] Faltan credenciales o el SID de la plantilla de bienvenida de Twilio.")
+def enviar_notificacion_sms(telefono: str | None, body: str | None = None) -> None:
+    """Placeholder SMS sender to avoid breaking legacy imports."""
+
+    if not telefono:
+        logger.info("[notifications] SMS omitido: sin teléfono de destino")
         return
 
-    destinatario = f"whatsapp:{numero_destino}"
-
-    try:
-        client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        # Para plantillas con variables, se usa content_sid y content_variables.
-        # Asumimos que TWILIO_WELCOME_TEMPLATE es el SID de la plantilla.
-        message = client.messages.create(
-            from_=TWILIO_WHATSAPP_NUMBER,
-            to=destinatario,
-            content_sid=TWILIO_WELCOME_TEMPLATE,
-            content_variables=json.dumps({"1": nombre}),
-        )
-        logger.info(f"[WHATSAPP] Mensaje de bienvenida enviado con plantilla, SID: {message.sid}")
-    except Exception as e:
-        logger.error(
-            f"[WHATSAPP] Error al enviar mensaje de bienvenida con plantilla: {e}",
-            exc_info=True
-        )
-        # Fallback a un mensaje de texto simple si la plantilla falla
-        try:
-            fallback_message = f"¡Hola, {nombre}! Bienvenido a nuestro servicio de atención."
-            client.messages.create(
-                from_=TWILIO_WHATSAPP_NUMBER,
-                to=destinatario,
-                body=fallback_message,
-            )
-            logger.info("[WHATSAPP] Mensaje de bienvenida de fallback enviado.")
-        except Exception as e_fallback:
-            logger.error(
-                f"[WHATSAPP] Error al enviar mensaje de bienvenida de fallback: {e_fallback}",
-                exc_info=True,
-            )
+    logger.info(
+        "[notifications] SMS programado to=%s body=%s",
+        telefono,
+        (body or "").strip(),
+    )

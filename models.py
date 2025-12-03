@@ -166,6 +166,34 @@ user_categorias = db.Table('user_categorias',
     db.Column('categoria_id', db.Integer, db.ForeignKey('categoria.id'), primary_key=True)
 )
 
+# --- Nuevas entidades multi-tenant ---
+empleado_categoria = db.Table(
+    "empleado_categoria",
+    db.Column("empleado_id", db.Integer, db.ForeignKey("user.id"), primary_key=True),
+    db.Column(
+        "categoria_id",
+        db.Integer,
+        db.ForeignKey("categorias_ticket.id"),
+        primary_key=True,
+    ),
+)
+
+
+class CategoriaTicket(db.Model):
+    __tablename__ = "categorias_ticket"
+
+    id = db.Column(db.Integer, primary_key=True)
+    nombre = db.Column(db.String(120), nullable=False)
+    tipo = db.Column(db.String(50), default="ticket")
+    tenant_id = db.Column(
+        db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True
+    )
+
+    tenant = db.relationship("TenantProfile", backref=db.backref("categorias", lazy=True))
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "nombre": self.nombre, "tipo": self.tipo}
+
 class QA(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, nullable=True)
@@ -196,6 +224,8 @@ class User(db.Model, UserMixin):
     anon_id = db.Column(db.String(80), nullable=True, index=True)
     saldo_puntos = db.Column(db.Integer, nullable=False, default=0)
     rol = db.Column(db.String(30), default="usuario")
+    es_empleado = db.Column(db.Boolean, default=False)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True)
     tipo_chat = db.Column(db.String(20), nullable=True)
     password_reset_selector = db.Column(db.String(64), unique=True, index=True, nullable=True)
     password_reset_verifier_hash = db.Column(db.String(255), nullable=True)
@@ -244,6 +274,11 @@ class User(db.Model, UserMixin):
     empresa = db.relationship('User', remote_side=[id], backref='clientes')
     rubro_id = db.Column(db.Integer, db.ForeignKey('rubro.id'), nullable=True)
     rubro = db.relationship("Rubro", backref="usuarios")
+    tenant = db.relationship(
+        "TenantProfile",
+        backref=db.backref("usuarios", lazy=True),
+        foreign_keys=[tenant_id],
+    )
     prefers_audio = db.Column(db.Boolean, default=False)
     accesibilidad = db.Column(JSONType, nullable=True)
     catalogo_items = db.relationship('CatalogoItem', backref='user', lazy=True)
@@ -255,6 +290,12 @@ class User(db.Model, UserMixin):
         foreign_keys='MunicipioTicket.municipio_id',
     )
     categorias = db.relationship('Categoria', secondary='user_categorias', back_populates='users')
+    categorias_ticket = db.relationship(
+        "CategoriaTicket",
+        secondary=empleado_categoria,
+        lazy="joined",
+        backref="empleados",
+    )
     fecha_creacion = db.Column(db.DateTime(timezone=True), default=get_local_now) # Nuevo campo
 
     def set_password(self, password):
@@ -368,8 +409,10 @@ class MunicipioTicket(db.Model):
     pregunta = db.Column(db.Text, nullable=False, default='')
     asunto = db.Column(db.String(200), nullable=True)
     categoria = db.Column(db.String(100), nullable=True)
+    categoria_id = db.Column(db.Integer, db.ForeignKey("categorias_ticket.id"), nullable=True)
     user_id = db.Column(db.Integer, nullable=True)
     municipio_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True, index=True)
     estado = db.Column(db.String(30), default="nuevo")
     asignado_a_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
     asignado_en = db.Column(db.DateTime(timezone=True), nullable=True)
@@ -514,6 +557,12 @@ class TenantProfile(db.Model, TimestampMixin):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    widget_config = db.relationship(
+        "WidgetConfig",
+        back_populates="tenant",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
     __table_args__ = (
         db.CheckConstraint(
@@ -590,6 +639,34 @@ class TenantTicket(db.Model, TimestampMixin):
         return f"<TenantTicket id={self.id} tenant={self.tenant_id} estado={self.estado}>"
 
 
+class WidgetConfig(db.Model):
+    __tablename__ = "widget_config"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), unique=True)
+    primary_color = db.Column(db.String(20), default="#0066ff")
+    accent_color = db.Column(db.String(20), default="#00cc88")
+    position = db.Column(db.String(10), default="bottom-right")
+    logo_url = db.Column(db.String(255))
+    welcome_message = db.Column(db.String(255))
+    bubble_shape = db.Column(db.String(20), default="round")
+    extra_css = db.Column(db.Text)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    tenant = db.relationship("TenantProfile", back_populates="widget_config")
+
+    def to_dict(self) -> dict:
+        return {
+            "primary_color": self.primary_color or "#0066ff",
+            "accent_color": self.accent_color or "#00cc88",
+            "position": self.position or "bottom-right",
+            "logo_url": self.logo_url,
+            "welcome_message": self.welcome_message,
+            "bubble_shape": self.bubble_shape or "round",
+            "extra_css": self.extra_css,
+        }
+
+
 class WebAuthnCredential(db.Model, TimestampMixin):
     __tablename__ = "webauthn_credential"
 
@@ -625,6 +702,7 @@ class PymeTicket(db.Model):
     pregunta = db.Column(db.Text, nullable=False)
     asunto = db.Column(db.String(200), nullable=True)
     categoria = db.Column(db.String(100), nullable=True)
+    categoria_id = db.Column(db.Integer, db.ForeignKey("categorias_ticket.id"), nullable=True)
     user_id = db.Column(db.Integer, nullable=True)
     estado = db.Column(db.String(30), default="nuevo")
     asignado_a_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
