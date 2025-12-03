@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import datetime
 from typing import List
 
-from flask import Blueprint, abort, jsonify, g, request, session
+from flask import Blueprint, abort, current_app, jsonify, g, request, session
 from flask_cors import cross_origin
 from sqlalchemy import func, or_
 
@@ -21,6 +21,7 @@ from config import ALLOWED_ORIGINS
 from routes.auth import token_requerido
 from routes.ticket import TICKET_ALLOWED_STATES
 from utils.tenant import get_current_tenant, get_current_tenant_profile
+from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 
 municipio_api_bp = Blueprint(
     "municipio_api",
@@ -78,15 +79,32 @@ def _resolve_tenant_or_404(tenant_slug: str) -> TenantProfile:
         g.current_tenant = tenant_slug
         g.tenant_slug = tenant_slug
 
-    tenant = get_current_tenant_profile(tenant_slug)
-    if tenant:
-        g.tenant = tenant
-        return tenant
-    tenant = (
-        TenantProfile.query.filter(func.lower(TenantProfile.slug) == tenant_slug.lower())
-        .order_by(TenantProfile.id.asc())
-        .first()
-    )
+    normalized_slug = (tenant_slug or "").strip().lower() or None
+    alias_map = dict(current_app.config.get("TENANT_ALIAS_MAP", {}) or {})
+    alias_target = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
+    if alias_target:
+        alias_map.setdefault("whatsapp", alias_target)
+        alias_map.setdefault("pwa", alias_target)
+        alias_map.setdefault("estadisticas", alias_target)
+        alias_map.setdefault("municipio", alias_target)
+
+    mapped_slug = alias_map.get(normalized_slug, normalized_slug)
+
+    tenant = get_current_tenant_profile(mapped_slug)
+    if not tenant:
+        try:
+            tenant = resolve_tenant_only(
+                tenant_slug=mapped_slug, require_explicit_slug=False
+            )
+        except TenantResolutionError:
+            tenant = None
+
+    if not tenant and mapped_slug and mapped_slug != tenant_slug:
+        tenant = get_current_tenant_profile(mapped_slug)
+
+    if not tenant and alias_target:
+        tenant = get_current_tenant_profile(alias_target)
+
     if not tenant:
         abort(404, "Tenant no encontrado")
     g.tenant = tenant
