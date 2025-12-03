@@ -18,7 +18,14 @@ class CategoriasRouteTests(unittest.TestCase):
         self.app_context.push()
         db.create_all()
         self.client = self.app.test_client()
-        user = User(id=1, name='test', email='test@test.com', password_hash='test', rol='admin')
+        user = User(
+            id=1,
+            name='test',
+            email='test@test.com',
+            password_hash='test',
+            rol='admin',
+            municipio_id=1,
+        )
         user.set_password('test')
         db.session.add(user)
         db.session.commit()
@@ -40,8 +47,9 @@ class CategoriasRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
         categorias = data.get('categorias', [])
-        self.assertTrue(any('Obras Privadas' in c for c in categorias))
-        self.assertTrue(all('obra' in c.lower() for c in categorias))
+        self.assertTrue(all('id' in c and 'nombre' in c for c in categorias))
+        self.assertGreater(len(categorias), 0)
+        self.assertTrue(all('obra' in c['nombre'].lower() for c in categorias))
 
     def test_listar_categorias_sin_busqueda(self):
         token = self._get_token()
@@ -49,7 +57,9 @@ class CategoriasRouteTests(unittest.TestCase):
         response = self.client.get('/categorias', headers=headers)
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
-        self.assertGreater(len(data.get('categorias', [])), 0)
+        categorias = data.get('categorias', [])
+        self.assertGreater(len(categorias), 0)
+        self.assertTrue(all('id' in c and 'nombre' in c for c in categorias))
 
 
 if __name__ == '__main__':
