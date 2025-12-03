@@ -1,5 +1,5 @@
 import uuid
-from functools import wraps
+from functools import lru_cache, wraps
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import re
@@ -8,11 +8,13 @@ from datetime import datetime, timedelta, timezone
 
 from flask import current_app, g, jsonify, make_response, request
 from flask_login import current_user
-from models import TenantProfile, User
 import jwt
+from sqlalchemy import inspect
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import defer
 
 from extensions import db
-from models import Rubro
+from models import Rubro, TenantProfile, User
 import secrets
 from services.demo_registry import demo_rubro_for_token
 
@@ -50,6 +52,34 @@ _WIDGET_ALLOWED_ANY_METHOD_PATHS: Set[str] = {
 }
 
 _DEMO_TOKEN_WARNED: Set[str] = set()
+
+
+@lru_cache(maxsize=1)
+def _user_table_has_es_empleado_column() -> bool:
+    """Return True if the ``user.es_empleado`` column exists in the database."""
+
+    try:
+        inspector = inspect(db.engine)
+        return inspector.has_table("user") and inspector.has_column("user", "es_empleado")
+    except SQLAlchemyError as exc:  # pragma: no cover - defensive
+        current_app.logger.warning(
+            "[auth] Could not inspect user.es_empleado column; assuming present.",
+            exc_info=exc,
+        )
+    except Exception:
+        # In case the engine is not yet available, keep default behavior.
+        pass
+
+    return True
+
+
+def _safe_user_query():
+    """Return a ``User`` query that avoids missing optional columns when needed."""
+
+    query = User.query
+    if not _user_table_has_es_empleado_column():
+        query = query.options(defer(User.es_empleado))
+    return query
 
 
 def _normalize_path(path: Optional[str]) -> str:
@@ -211,10 +241,10 @@ def _demo_token_fallback_owner(token: str) -> Optional[User]:
                 continue
             if slug_variants.intersection(aliases):
                 owner = (
-                    User.query.filter_by(rubro_id=rubro.id, rol="admin")
+                    user_query.filter_by(rubro_id=rubro.id, rol="admin")
                     .order_by(User.id.asc())
                     .first()
-                    or User.query.filter_by(rubro_id=rubro.id)
+                    or user_query.filter_by(rubro_id=rubro.id)
                     .order_by(User.id.asc())
                     .first()
                 )
@@ -228,9 +258,9 @@ def _demo_token_fallback_owner(token: str) -> Optional[User]:
                     return owner
 
     generic_owner = (
-        User.query.filter_by(tipo_chat="municipio", rol="admin").order_by(User.id.asc()).first()
-        or User.query.filter_by(tipo_chat="municipio").order_by(User.id.asc()).first()
-        or User.query.filter_by(rol="admin").order_by(User.id.asc()).first()
+        user_query.filter_by(tipo_chat="municipio", rol="admin").order_by(User.id.asc()).first()
+        or user_query.filter_by(tipo_chat="municipio").order_by(User.id.asc()).first()
+        or user_query.filter_by(rol="admin").order_by(User.id.asc()).first()
     )
 
     if generic_owner and token not in _DEMO_TOKEN_WARNED:
@@ -250,7 +280,18 @@ def _lookup_owner_for_static_token(token: Optional[str]) -> Optional[User]:
     if not token:
         return None
 
-    owner = User.query.filter_by(token=token).first()
+    user_query = _safe_user_query()
+
+    try:
+        owner = user_query.filter_by(token=token).first()
+    except SQLAlchemyError as exc:
+        # Handle potential schema drift gracefully to avoid 500s in production.
+        current_app.logger.error(
+            "[auth] Failed to resolve user by token due to database schema mismatch.",
+            exc_info=exc,
+        )
+        return None
+
     if owner:
         return owner
 
@@ -277,7 +318,7 @@ def _lookup_owner_for_static_token(token: Optional[str]) -> Optional[User]:
 
     if demo_entry:
         if demo_entry.owner_user_id:
-            owner = User.query.get(demo_entry.owner_user_id)
+            owner = user_query.get(demo_entry.owner_user_id)
             if owner:
                 return owner
 
@@ -285,7 +326,7 @@ def _lookup_owner_for_static_token(token: Optional[str]) -> Optional[User]:
 
         if demo_entry.rubro_id:
             owner_candidate = (
-                User.query.filter_by(rubro_id=demo_entry.rubro_id, rol="admin")
+                user_query.filter_by(rubro_id=demo_entry.rubro_id, rol="admin")
                 .order_by(User.id.asc())
                 .first()
             )
@@ -294,7 +335,7 @@ def _lookup_owner_for_static_token(token: Optional[str]) -> Optional[User]:
             rubro = Rubro.query.filter_by(clave=demo_entry.rubro_clave).first()
             if rubro:
                 owner_candidate = (
-                    User.query.filter_by(rubro_id=rubro.id, rol="admin")
+                    user_query.filter_by(rubro_id=rubro.id, rol="admin")
                     .order_by(User.id.asc())
                     .first()
                 )
@@ -302,13 +343,13 @@ def _lookup_owner_for_static_token(token: Optional[str]) -> Optional[User]:
         tipo_chat = (demo_entry.tipo_chat or "").strip().lower()
         if not owner_candidate and tipo_chat:
             owner_candidate = (
-                User.query.filter_by(tipo_chat=tipo_chat, rol="admin")
+                user_query.filter_by(tipo_chat=tipo_chat, rol="admin")
                 .order_by(User.id.asc())
                 .first()
             )
             if not owner_candidate:
                 owner_candidate = (
-                    User.query.filter_by(tipo_chat=tipo_chat)
+                    user_query.filter_by(tipo_chat=tipo_chat)
                     .order_by(User.id.asc())
                     .first()
                 )
