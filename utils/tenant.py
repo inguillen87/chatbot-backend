@@ -11,15 +11,17 @@ from sqlalchemy import func
 from models import TenantProfile
 
 TENANT_HEADER = "X-Tenant"
+TENANT_SLUG_HEADER = "X-Tenant-Slug"
 
 
 def get_current_tenant_slug() -> Optional[str]:
     """Resolve the current tenant slug from headers, query params or context."""
 
     slug = (
-        request.headers.get(TENANT_HEADER)
-        or request.args.get("tenant")
+        request.headers.get(TENANT_SLUG_HEADER)
+        or request.headers.get(TENANT_HEADER)
         or request.args.get("tenant_slug")
+        or request.args.get("tenant")
         or getattr(g, "tenant_slug", None)
         or getattr(g, "tenant_profile_slug", None)
     )
