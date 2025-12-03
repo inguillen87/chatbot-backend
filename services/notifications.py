@@ -180,3 +180,55 @@ def send_ticket_history_email(ticket: Any, history_html: str | None = None) -> N
     body = "Se adjunta el historial de tu ticket." if history_html else ""
     _send_email_message([recipient], subject, body or "Historial disponible en el panel.")
     _log_dispatch("email_history", ticket, "ticket_history")
+
+
+# --- Backwards-compatibility helpers ---
+# Legacy imports expect these names from historical modules. They now
+# delegate to the centralized logging so older call sites keep working
+# without breaking deployments while full channel support is built out.
+
+
+def enviar_notificacion_whatsapp_con_plantilla(
+    telefono: str | None,
+    nombre: str | None,
+    ticket_id: str | int | None,
+    categoria: str | None = None,
+    mensaje: str | None = None,
+) -> None:
+    """Placeholder for WhatsApp template notifications.
+
+    The concrete provider wiring still lives elsewhere; this shim maintains
+    compatibility with legacy modules and logs the attempted dispatch so the
+    platform can evolve without runtime import errors.
+    """
+
+    if not telefono:
+        logger.info(
+            "[notifications] WhatsApp omitido: sin teléfono para ticket_id=%s categoria=%s",
+            ticket_id,
+            categoria,
+        )
+        return
+
+    logger.info(
+        "[notifications] WhatsApp template programado to=%s nombre=%s ticket_id=%s categoria=%s mensaje=%s",
+        telefono,
+        nombre,
+        ticket_id,
+        categoria,
+        (mensaje or "").strip(),
+    )
+
+
+def enviar_notificacion_sms(telefono: str | None, body: str | None = None) -> None:
+    """Placeholder SMS sender to avoid breaking legacy imports."""
+
+    if not telefono:
+        logger.info("[notifications] SMS omitido: sin teléfono de destino")
+        return
+
+    logger.info(
+        "[notifications] SMS programado to=%s body=%s",
+        telefono,
+        (body or "").strip(),
+    )
