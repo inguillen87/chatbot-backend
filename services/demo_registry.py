@@ -10,7 +10,7 @@ from flask import current_app
 from sqlalchemy import func
 
 from models import QA, Rubro, User
-from utils.auth_helpers import _safe_user_query
+from utils.user_query import _safe_user_query
 from services.logic import es_rubro_publico
 
 
