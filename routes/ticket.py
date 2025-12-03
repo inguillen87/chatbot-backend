@@ -57,6 +57,25 @@ def _validar_asignacion_empleado(ticket_obj, current_user: User):
     return None
 
 
+def _categorias_permitidas_para_empleado(user: User) -> list[str]:
+    """Obtiene las categorías habilitadas para un empleado normalizadas en minúsculas."""
+
+    nombres: list[str] = []
+    categorias_rel = getattr(user, "categorias", None) or []
+    for cat in categorias_rel:
+        nombre = getattr(cat, "nombre", None)
+        if nombre:
+            nombres.append(nombre.strip().lower())
+
+    if not nombres and getattr(user, "ticket_categorias", None):
+        nombres.extend(
+            [c.strip().lower() for c in user.ticket_categorias.split(",") if c.strip()]
+        )
+
+    # Remover duplicados preservando orden
+    return list(dict.fromkeys(nombres))
+
+
 @ticket_bp.route('/tickets/estados', methods=['GET'])
 @token_requerido
 @admin_o_empleado_requerido
@@ -318,7 +337,13 @@ def get_tickets_del_usuario_logic(current_user: User):
                 query_base = query_base.filter(TicketModel.categoria == requested_categoria_filter)
 
         if current_user.rol == 'empleado':
-            query_base = query_base.filter(TicketModel.asignado_a_id == current_user.id)
+            categorias_empleado = _categorias_permitidas_para_empleado(current_user)
+            if categorias_empleado:
+                query_base = query_base.filter(
+                    func.lower(TicketModel.categoria).in_(categorias_empleado)
+                )
+            else:
+                query_base = query_base.filter(False)
 
         # Obtener todos los tickets que cumplen con los filtros base (municipio/rubro y categoría
         # de empleado/request) para el resumen utilizando una consulta agregada en lugar de traer
@@ -1671,10 +1696,13 @@ def get_panel_por_categoria(current_user: User):
 
         tickets_to_process = all_tickets_for_user_municipio
         if current_user.rol == 'empleado':
+            categorias_empleado = set(
+                _categorias_permitidas_para_empleado(current_user)
+            )
             tickets_to_process = [
                 t
                 for t in all_tickets_for_user_municipio
-                if t.asignado_a_id == current_user.id
+                if (t.categoria or "").strip().lower() in categorias_empleado
             ]
 
         # Agrupar tickets por categoría

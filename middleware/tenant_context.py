@@ -116,9 +116,12 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
 
     # Direct API prefix where the slug comes right after `/api/<slug>/...`.
     if lower_segments[:1] == ["api"] and len(segments) >= 2:
-        # Skip reserved prefixes that already have dedicated handling below
-        if lower_segments[1] not in {"public", "pwa"}:
-            return _normalize_slug(segments[1])
+        # Skip reserved prefixes that map to top-level blueprints rather than
+        # tenant slugs (e.g. /api/municipal/usuarios).
+        if lower_segments[1] in {"public", "pwa", "municipal", "municipio"}:
+            return None
+
+        return _normalize_slug(segments[1])
 
     # Direct tenant slugs prefixed at the root (e.g. /m/<slug>/...)
     if len(segments) >= 2 and lower_segments[0] in {

@@ -98,6 +98,11 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         self.assertIsInstance(heatmap_meta, dict)
         self.assertIn("point_count", heatmap_meta)
         self.assertIn("cell_count", heatmap_meta)
+        self.assertIn("provider_hint", heatmap_meta)
+        self.assertIn("style", heatmap_meta)
+        filters_meta = payload["metadata"].get("filters", {})
+        self.assertIn("rangos_tiempo", filters_meta)
+        self.assertTrue(filters_meta.get("rangos_tiempo"))
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='municipio',
             municipio_id=None,

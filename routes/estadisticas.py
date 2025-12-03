@@ -162,6 +162,31 @@ def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap"
         property_keys=("categoria", "estado", "barrio", "fuente", "canal", "total"),
     )
 
+    def _style_hint(items: list[dict[str, object]]) -> dict[str, object]:
+        intensities = [float(p.get("intensity", 0.0) or 0.0) for p in items]
+        max_intensity = max(intensities) if intensities else 0.0
+        if max_intensity < 0:
+            max_intensity = 0.0
+        if max_intensity >= 0.75:
+            recommended_radius = 28
+        elif max_intensity >= 0.4:
+            recommended_radius = 22
+        else:
+            recommended_radius = 16
+
+        gradient = [
+            {"stop": 0.0, "color": "rgba(0, 126, 255, 0)"},
+            {"stop": 0.3, "color": "rgba(0, 126, 255, 0.6)"},
+            {"stop": 0.6, "color": "rgba(255, 200, 0, 0.85)"},
+            {"stop": 1.0, "color": "rgba(255, 60, 0, 1)"},
+        ]
+
+        return {
+            "max_intensity": round(max_intensity, 4),
+            "recommended_radius": recommended_radius,
+            "gradient": gradient,
+        }
+
     feature_collection = build_feature_collection(points)
     supported_formats: list[str] = ["points"]
     preferred_format = "points"
@@ -224,7 +249,38 @@ def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap"
                 "resolution": cells_metadata.get("resolution"),
                 "bounds": cells_metadata.get("bounds"),
                 "centroid": cells_metadata.get("centroid"),
+                "provider_hint": provider_hint,
+                "style": _style_hint(points),
             }
+
+    if isinstance(metadata, dict):
+        filters_meta = metadata.setdefault("filters", {})
+        if isinstance(filters_meta, dict):
+            categorias = sorted({p.get("categoria") for p in points if p.get("categoria")})
+            estados = sorted({p.get("estado") for p in points if p.get("estado")})
+            distritos = sorted({
+                p.get("barrio")
+                or p.get("distrito")
+                or (p.get("location") or {}).get("barrio")
+                for p in points
+                if p.get("barrio")
+                or p.get("distrito")
+                or (isinstance(p.get("location"), dict) and (p.get("location") or {}).get("barrio"))
+            })
+            if categorias:
+                filters_meta.setdefault("categorias", categorias)
+            if estados:
+                filters_meta.setdefault("estados", estados)
+            if distritos:
+                filters_meta.setdefault("distritos", distritos)
+            filters_meta.setdefault(
+                "rangos_tiempo",
+                [
+                    {"label": "Últimos 7 días", "days": 7},
+                    {"label": "Últimos 30 días", "days": 30},
+                    {"label": "Últimos 90 días", "days": 90},
+                ],
+            )
 
 
 def _parse_iso_datetime(value: str | None, *, is_end: bool = False) -> datetime | None:

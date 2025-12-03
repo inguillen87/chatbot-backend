@@ -6,13 +6,14 @@ import json
 from collections import Counter, defaultdict
 from dataclasses import replace
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from flask import current_app
 from sqlalchemy import func, literal
 
 from extensions import db
 from models import MunicipioTicket, PymePedido, PymeTicket, TicketComentario
+from utils.map_config import get_map_config
 
 from .cache import analytics_cache
 from .config import get_config
@@ -182,6 +183,53 @@ def _build_meta(
     if warnings:
         meta["warnings"] = warnings
     return meta
+
+
+def _style_hint_from_records(records: Sequence[Mapping[str, Any]], *, weight_key: str) -> Dict[str, Any]:
+    if not records:
+        return {
+            "max_intensity": 0.0,
+            "recommended_radius": 16,
+            "gradient": [
+                {"stop": 0.0, "color": "rgba(0, 126, 255, 0)"},
+                {"stop": 0.3, "color": "rgba(0, 126, 255, 0.6)"},
+                {"stop": 0.6, "color": "rgba(255, 200, 0, 0.85)"},
+                {"stop": 1.0, "color": "rgba(255, 60, 0, 1)"},
+            ],
+        }
+
+    weights = [float(item.get(weight_key) or 0.0) for item in records]
+    max_weight = max(weights) if weights else 0.0
+    if max_weight >= 75:
+        radius = 30
+    elif max_weight >= 25:
+        radius = 24
+    else:
+        radius = 18
+
+    return {
+        "max_intensity": max_weight,
+        "recommended_radius": radius,
+        "gradient": [
+            {"stop": 0.0, "color": "rgba(0, 126, 255, 0)"},
+            {"stop": 0.3, "color": "rgba(0, 126, 255, 0.6)"},
+            {"stop": 0.6, "color": "rgba(255, 200, 0, 0.85)"},
+            {"stop": 1.0, "color": "rgba(255, 60, 0, 1)"},
+        ],
+    }
+
+
+def _map_meta(style: Dict[str, Any]) -> Dict[str, Any]:
+    config = get_map_config()
+    provider = config.get("provider") or "none"
+    provider_hint = provider if provider != "none" else "maplibre"
+    return {
+        "provider_hint": provider_hint,
+        "fallback_provider": "maplibre",
+        "google_maps": bool(config.get("google_maps_key")),
+        "maptiler": bool(config.get("maptiler_key") or config.get("style_url")),
+        "style": style,
+    }
 
 
 def _default_summary_payload() -> Dict[str, Any]:
@@ -1000,9 +1048,12 @@ def _geo_heatmap_no_cache(filters: AnalyticsFilters) -> Dict[str, Any]:
                 "Sin datos georreferenciados para los filtros solicitados; se muestran puntos de ejemplo."
             ],
         )
+        meta["map"] = _map_meta(_style_hint_from_records(demo_cells, weight_key="count"))
         return {"cells": _attach_intensity(demo_cells), "meta": meta}
     meta["empty"] = False
-    return {"cells": _attach_intensity(payload), "meta": meta}
+    cells_with_intensity = _attach_intensity(payload)
+    meta["map"] = _map_meta(_style_hint_from_records(cells_with_intensity, weight_key="count"))
+    return {"cells": cells_with_intensity, "meta": meta}
 
 
 def get_geo_points(filters: AnalyticsFilters, limit: int = 500) -> Dict[str, Any]:
@@ -1049,8 +1100,13 @@ def _geo_points_no_cache(filters: AnalyticsFilters, limit: int) -> Dict[str, Any
                 "No hay puntos georreferenciados; se generaron puntos de ejemplo para mantener el mapa operativo."
             ],
         )
-        return {"points": generate_demo_points(scope=filters.scope, count=demo_count), "meta": meta}
+        demo_points = generate_demo_points(scope=filters.scope, count=demo_count)
+        meta["map"] = _map_meta(_style_hint_from_records(demo_points, weight_key="count"))
+        return {"points": demo_points, "meta": meta}
     meta["empty"] = False
+    meta["map"] = _map_meta(
+        _style_hint_from_records(points, weight_key="weight" if filters.scope == "municipio" else "total")
+    )
     return {"points": points, "meta": meta}
 
 

@@ -1,7 +1,7 @@
 from flask import Blueprint, jsonify, request, g, current_app
 from flask_cors import cross_origin
 
-from models import TenantProfile
+from models import TenantProfile, WidgetSettings
 from services.tenant_resolver import (
     RESERVED_TENANT_SLUGS,
     TenantResolutionError,
@@ -85,7 +85,7 @@ def _canonical_widget_token(tenant: TenantProfile, provided: str | None) -> str 
     widget token.
     """
 
-    cfg = tenant.configuracion or {}
+    cfg = _normalize_widget_config(tenant.configuracion, tenant.widget_settings)
     tokens_cfg = cfg.get("widget_tokens")
     tokens: list[str] = []
 
@@ -139,9 +139,12 @@ def _marketplace_meta(tenant: TenantProfile) -> dict:
     whatsapp_share_url = None
     if full_url:
         share_text = f"Entrá al marketplace de {tenant.nombre or tenant.slug}: {full_url}"
-        from routes.market import _whatsapp_share_link
+        try:
+            from routes.market import _whatsapp_share_link
 
-        whatsapp_share_url = _whatsapp_share_link(share_text)
+            whatsapp_share_url = _whatsapp_share_link(share_text)
+        except ImportError:
+            whatsapp_share_url = None
 
     return {
         "enabled": enabled,
@@ -191,7 +194,11 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     theme = _theme_from_tenant(tenant)
     marketplace = _marketplace_meta(tenant)
 
-    cfg = tenant.configuracion or {}
+    settings = getattr(tenant, "widget_settings", None) or WidgetSettings.query.filter_by(
+        tenant_id=tenant.id
+    ).first()
+
+    cfg = _normalize_widget_config(tenant.configuracion, settings)
 
     welcome_title = cfg.get("widget_welcome_title") or cfg.get("welcome_title") or tenant.nombre
     welcome_subtitle = cfg.get("widget_welcome_subtitle") or cfg.get("welcome_subtitle") or "Asistente Virtual"
@@ -214,10 +221,13 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-z-index": cfg.get("widget_z_index", "100000"),
         "data-endpoint": cfg.get("widget_endpoint") or tenant.tipo or "municipio",
         "data-theme": cfg.get("widget_theme") or cfg.get("tema") or "light",
-        "data-primary-color": theme.get("primary"),
-        "data-accent-color": theme.get("accent"),
-        "data-logo-url": theme.get("logo"),
-        "data-logo-animation": theme.get("animation"),
+        "data-primary-color": cfg.get("primary_color") or theme.get("primary"),
+        "data-accent-color": cfg.get("secondary_color") or theme.get("accent"),
+        "data-logo-url": cfg.get("avatar_url") or theme.get("logo"),
+        "data-logo-animation": cfg.get("widget_logo_animation") or theme.get("animation"),
+        "data-font-family": cfg.get("font_family") or "inherit",
+        "data-bubble-shape": cfg.get("bubble_shape") or "round",
+        "data-singleton": "true",
         "data-welcome-title": welcome_title,
         "data-welcome-subtitle": welcome_subtitle,
         "data-allow-attachments": str(cfg.get("widget_allow_attachments", True)).lower(),
@@ -244,17 +254,19 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     }
 
 
-def _normalize_widget_config(config: dict | None) -> dict:
+def _normalize_widget_config(config: dict | None, widget_settings=None) -> dict:
     """Return a widget-friendly config with consistent shapes.
 
     The frontend expects certain objects (menu, copy) to always be dictionaries
     with the keys it deserializes. When tenants store strings or lists by
     mistake, React components can end up invoking methods on non-callable
     values (e.g., `_t is not a function`). This helper coerces the structure to
-    predictable defaults so the widget renders safely.
+    predictable defaults so the widget renders safely. When explicit
+    ``WidgetSettings`` exist, we merge their values to drive the SaaS embed
+    preview.
     """
 
-    cfg = config if isinstance(config, dict) else {}
+    cfg = config.copy() if isinstance(config, dict) else {}
 
     menu_config = cfg.get("menu") if isinstance(cfg.get("menu"), dict) else None
     if menu_config is None or "children" not in menu_config:
@@ -263,6 +275,9 @@ def _normalize_widget_config(config: dict | None) -> dict:
     copy_config = cfg.get("copy") if isinstance(cfg.get("copy"), dict) else None
     if copy_config is None:
         cfg.setdefault("copy", {})
+
+    if isinstance(widget_settings, WidgetSettings):
+        cfg.update(widget_settings.to_config_dict())
 
     return cfg
 
@@ -285,14 +300,16 @@ def resolve_tenant_endpoint():
         return jsonify({"error": str(exc)}), 404
 
     tenant_info = tenant.to_public_dict()
-    tenant_info.setdefault("config", _normalize_widget_config(tenant.configuracion))
+    tenant_info.setdefault(
+        "config", _normalize_widget_config(tenant.configuracion, tenant.widget_settings)
+    )
     tenant_info["marketplace"] = _marketplace_meta(tenant)
 
     # Garantizar que el frontend reciba una estructura de menú consistente
     # aunque el tenant no tenga configuración explícita. El widget espera un
     # objeto con la clave ``children`` para renderizar las secciones sin
     # explotar en una desestructuración.
-    config = _normalize_widget_config(tenant_info.get("config"))
+    config = _normalize_widget_config(tenant_info.get("config"), tenant.widget_settings)
     tenant_info["config"] = config
 
     response = jsonify(
@@ -409,14 +426,16 @@ def tenant_profile():
         )
 
     tenant_info = tenant.to_public_dict()
-    tenant_info.setdefault("config", _normalize_widget_config(tenant.configuracion))
+    tenant_info.setdefault(
+        "config", _normalize_widget_config(tenant.configuracion, tenant.widget_settings)
+    )
     tenant_info["marketplace"] = _marketplace_meta(tenant)
 
     # Garantizar que el frontend reciba una estructura de menú consistente
     # aunque el tenant no tenga configuración explícita. El widget espera un
     # objeto con la clave ``children`` para renderizar las secciones sin
     # explotar en una desestructuración.
-    config = _normalize_widget_config(tenant_info.get("config"))
+    config = _normalize_widget_config(tenant_info.get("config"), tenant.widget_settings)
     tenant_info["config"] = config
 
     canonical_widget_token = _canonical_widget_token(tenant, widget_token)

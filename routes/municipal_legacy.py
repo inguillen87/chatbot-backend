@@ -12,9 +12,10 @@ from utils.time_utils import get_local_now
 from utils.permissions import require_role
 from routes.crm import _obtener_clientes
 from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
+from routes.categorias import _bootstrap_municipio_categories, _serialize_categoria
 from routes.tramites import listar_tramites, obtener_tramite
 from sqlalchemy import func, or_
-from models import Conversacion, MunicipioTicket, MunicipioPost, User, db
+from models import Categoria, Conversacion, MunicipioTicket, MunicipioPost, User, db
 from utils.municipio_utils import get_numeric_municipio_id
 from routes.ticket import TICKET_ALLOWED_STATES
 from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS
@@ -859,11 +860,18 @@ def municipal_categorias(current_user):
     if request.method == 'OPTIONS':
         return "", 204
 
-    categorias = list(TODAS_LAS_CATEGORIAS_UNICAS)
-    payload = {
-        "categorias": categorias,
-        "categories": categorias,
-    }
+    municipio_id = _resolve_current_municipio_id(current_user)
+    if municipio_id is None:
+        return jsonify({"error": "Usuario no asociado a un municipio"}), 400
+
+    _bootstrap_municipio_categories(municipio_id)
+    categorias = (
+        Categoria.query.filter_by(municipio_id=municipio_id)
+        .order_by(Categoria.nombre.asc())
+        .all()
+    )
+    serializadas = [_serialize_categoria(cat) for cat in categorias]
+    payload = {"categorias": serializadas, "categories": serializadas}
     return jsonify(payload)
 
 
@@ -876,11 +884,18 @@ def municipal_tickets_categorias(current_user):
     if request.method == "OPTIONS":
         return "", 204
 
-    categorias = list(TODAS_LAS_CATEGORIAS_UNICAS)
-    return jsonify({
-        "categorias": categorias,
-        "categories": categorias,
-    })
+    municipio_id = _resolve_current_municipio_id(current_user)
+    if municipio_id is None:
+        return jsonify({"error": "Usuario no asociado a un municipio"}), 400
+
+    _bootstrap_municipio_categories(municipio_id)
+    categorias = (
+        Categoria.query.filter_by(municipio_id=municipio_id)
+        .order_by(Categoria.nombre.asc())
+        .all()
+    )
+    serializadas = [_serialize_categoria(cat) for cat in categorias]
+    return jsonify({"categorias": serializadas, "categories": serializadas})
 
 @municipal_bp.route('/estados', methods=['GET', 'OPTIONS'])
 def municipal_estados():
