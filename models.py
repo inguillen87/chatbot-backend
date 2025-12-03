@@ -508,6 +508,12 @@ class TenantProfile(db.Model, TimestampMixin):
         cascade="all, delete-orphan",
         lazy="dynamic",
     )
+    widget_settings = db.relationship(
+        "WidgetSettings",
+        back_populates="tenant",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
     __table_args__ = (
         db.CheckConstraint(
@@ -713,6 +719,46 @@ class PymePedido(db.Model):
 
     def __repr__(self):
         return f"<PymePedido {self.nro_pedido} - {self.asunto}>"
+
+
+class WidgetSettings(db.Model, TimestampMixin):
+    __tablename__ = "widget_settings"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, unique=True
+    )
+    primary_color = db.Column(db.String(20), nullable=True)
+    secondary_color = db.Column(db.String(20), nullable=True)
+    avatar_url = db.Column(db.String(512), nullable=True)
+    welcome_title = db.Column(db.String(255), nullable=True)
+    welcome_subtitle = db.Column(db.String(255), nullable=True)
+    position = db.Column(db.String(20), nullable=True, default="right")
+    bottom = db.Column(db.String(20), nullable=True, default="20px")
+    side_offset = db.Column(db.String(20), nullable=True, default="20px")
+    font_family = db.Column(db.String(120), nullable=True)
+    bubble_shape = db.Column(db.String(50), nullable=True)
+    default_open = db.Column(db.Boolean, default=False)
+
+    tenant = db.relationship(
+        "TenantProfile", back_populates="widget_settings", uselist=False
+    )
+
+    def to_config_dict(self) -> dict:
+        return {
+            "primary_color": self.primary_color or "#1b325f",
+            "secondary_color": self.secondary_color or "#ffffff",
+            "avatar_url": self.avatar_url or None,
+            "welcome_title": self.welcome_title,
+            "welcome_subtitle": self.welcome_subtitle,
+            "position": (self.position or "right").lower(),
+            "bottom": self.bottom or "20px",
+            "side_offset": self.side_offset or "20px",
+            "font_family": self.font_family or "inherit",
+            "bubble_shape": self.bubble_shape or "round",
+            "default_open": bool(self.default_open),
+            "widget_default_open": bool(self.default_open),
+        }
 
 class ArchivoAdjunto(db.Model):
     __tablename__ = "archivo_adjunto"
