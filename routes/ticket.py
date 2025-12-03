@@ -2,7 +2,7 @@ import os
 import uuid
 import logging
 from werkzeug.utils import secure_filename
-from flask import Blueprint, request, jsonify, current_app, send_from_directory, render_template
+from flask import Blueprint, g, request, jsonify, current_app, send_from_directory, render_template
 from socket_service import emit_ticket_update, emit_ticket_comment, emit_new_ticket
 from models import (
     MunicipioTicket,
@@ -26,6 +26,8 @@ from collections import defaultdict
 from sqlalchemy import or_, func
 from utils.ticket_utils import normalize_category
 from utils.time_utils import datetime_to_iso_utc, get_local_now
+from utils.tenant import get_current_tenant
+from utils.errors import ApiError
 logger = logging.getLogger("app")
 
 from utils.recaptcha import verify_recaptcha
@@ -295,9 +297,21 @@ def get_tickets_del_usuario_logic(current_user: User):
     if not current_user:
         return jsonify({"error": "Usuario no asociado, no se pueden mostrar tickets."}), 404
 
+    g.current_user = current_user
+
     try:
+        tenant_slug = get_current_tenant()
+        if tenant_slug:
+            g.current_tenant = tenant_slug
+
         requested_estado_filter = request.args.get("estado")
         requested_categoria_filter = request.args.get("categoria")
+        requested_categoria_id = request.args.get("categoria_id")
+
+        try:
+            requested_categoria_id_int = int(requested_categoria_id) if requested_categoria_id else None
+        except (TypeError, ValueError):
+            requested_categoria_id_int = None
 
         TicketModel = None
         tipo_ticket_str = '' # Para usar en la serialización
@@ -337,7 +351,9 @@ def get_tickets_del_usuario_logic(current_user: User):
             return jsonify({"error": "Usuario no tiene configuración de tickets asociada."}), 400
 
         # Aplicar filtro de categoría si se proveyó (afecta tanto al summary como a la lista)
-        if requested_categoria_filter:
+        if requested_categoria_id_int is not None:
+            query_base = query_base.filter(TicketModel.categoria_id == requested_categoria_id_int)
+        elif requested_categoria_filter:
             if requested_categoria_filter.lower() == "luminarias":
                 query_base = query_base.filter(TicketModel.categoria.ilike("%lumin%"))
             else:
@@ -390,7 +406,10 @@ def get_tickets_del_usuario_logic(current_user: User):
         summary_by_status["resuelto"] += summary_by_status.get("cerrado", 0)
 
         # Ahora, obtener la lista de tickets para la página actual, aplicando el filtro de estado si existe
-        current_app.logger.info(f"Filtros aplicados: estado={requested_estado_filter}, categoria={requested_categoria_filter}")
+        current_app.logger.info(
+            f"Filtros aplicados: estado={requested_estado_filter}, "
+            f"categoria={requested_categoria_filter}, categoria_id={requested_categoria_id_int}"
+        )
         final_tickets_query = query_base  # query_base ya tiene los filtros de categoria y rol
 
         search_query = request.args.get("q")
@@ -480,6 +499,10 @@ def get_tickets_del_usuario_logic(current_user: User):
             "pagination": pagination_info,
         })
 
+    except ApiError as e:
+        response = jsonify({"error": e.message})
+        response.status_code = getattr(e, "status_code", 400) or 400
+        return response
     except Exception as e:
         current_app.logger.error(f"Error en get_tickets_del_usuario para user {getattr(current_user,'id','?')}: {e}", exc_info=True)
         return jsonify({"error": "Error interno al obtener los tickets."}), 500
