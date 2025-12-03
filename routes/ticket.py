@@ -1036,21 +1036,42 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     # El objeto 'ticket_obj' ya está cargado.
     # 'archivos_adjuntados_db' es la lista de objetos ArchivoAdjunto recién creados y guardados.
     try:
-        from services.email_service import (
-            enviar_email_ticket_novedad,
-            enviar_sms_ticket_novedad,
-            enviar_whatsapp_ticket_novedad,
+        from services.notification_dispatcher import dispatch_ticket_update
+
+        resultados_notif = dispatch_ticket_update(
+            ticket_obj,
+            tipo,
+            mensaje_notificacion_base,
+            comentario_reciente=comentarios_creados[0] if comentarios_creados else None,
+            enable_whatsapp=(tipo == "municipio"),
         )
-        # Email siempre se envía si hay email
-        enviar_email_ticket_novedad(ticket_obj, mensaje_notificacion_base) # TODO: Email con adjuntos? Por ahora solo texto.
 
-        # SMS siempre se envía si hay teléfono (solo texto)
-        enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion_base)
+        # Envío de adjuntos por WhatsApp si aplica
+        if tipo == "municipio" and archivos_adjuntados_db and resultados_notif.get("whatsapp"):
+            try:
+                from services.email_service import enviar_whatsapp_ticket_novedad
 
-        # WhatsApp con adjuntos (si los hay)
-        if tipo == "municipio": # Asumiendo que WhatsApp es principalmente para municipio por ahora
-            enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion_base, archivos_adjuntos=archivos_adjuntados_db)
-        current_app.logger.info(f"Notificaciones para respuesta de ticket {ticket_id} (tipo {tipo}) procesadas.")
+                enviar_whatsapp_ticket_novedad(
+                    ticket_obj,
+                    mensaje_notificacion_base,
+                    archivos_adjuntos=archivos_adjuntados_db,
+                )
+            except Exception as exc:  # pragma: no cover - logging defensivo
+                current_app.logger.error(
+                    "Error enviando adjuntos por WhatsApp para ticket %s: %s",
+                    ticket_id,
+                    exc,
+                    exc_info=True,
+                )
+
+        current_app.logger.info(
+            "Notificaciones para respuesta de ticket %s (tipo %s) -> email=%s sms=%s whatsapp=%s",
+            ticket_id,
+            tipo,
+            resultados_notif.get("email"),
+            resultados_notif.get("sms"),
+            resultados_notif.get("whatsapp"),
+        )
 
         # Notificación por Websocket/Pusher
         # Serializar el ticket completo para enviar todos los datos actualizados
@@ -1197,21 +1218,23 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     db.session.add(comentario_estado)
     db.session.commit()
     try:
-        from services.email_service import (
-            enviar_email_ticket_novedad,
-            enviar_sms_ticket_novedad,
-            enviar_whatsapp_ticket_novedad, # <--- IMPORTAR NUEVA FUNCIÓN
-        )
-        mensaje_notificacion = f"El estado de tu ticket #{ticket_obj.nro_ticket} ha sido actualizado a: '{nuevo_estado}'."
+        from services.notification_dispatcher import dispatch_ticket_state_change
 
-        enviar_email_ticket_novedad(
+        resultados_notif = dispatch_ticket_state_change(
             ticket_obj,
-            mensaje_notificacion,
-            comentario_reciente=comentario_estado,
+            tipo,
+            nuevo_estado,
+            comentario_estado=comentario_estado,
         )
-        enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion)
-        if tipo == "municipio": # Por ahora, WhatsApp solo para municipio
-            enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion)
+        current_app.logger.info(
+            "[NOTIFY] Estado ticket %s tipo=%s -> %s | email=%s sms=%s whatsapp=%s",
+            ticket_id,
+            tipo,
+            nuevo_estado,
+            resultados_notif.get("email"),
+            resultados_notif.get("sms"),
+            resultados_notif.get("whatsapp"),
+        )
 
     except Exception as e:  # pragma: no cover - ignore notif errors in tests
         current_app.logger.error(f"Error notificando cambio de estado para ticket {ticket_id} (tipo {tipo}): {e}", exc_info=True)
