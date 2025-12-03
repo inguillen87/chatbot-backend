@@ -8,8 +8,12 @@ from services.tts_orchestrator import generar_audio
 from utils.response_utils import ensure_buttons_compatibility
 from typing import Any, Optional, Set
 
+SOCKET_CORS_ORIGINS = list(
+    dict.fromkeys(list(ALLOWED_ORIGINS) + ["https://chatboc.ar", "https://www.chatboc.ar"])
+)
+
 socketio = SocketIO(
-    cors_allowed_origins=ALLOWED_ORIGINS,
+    cors_allowed_origins=SOCKET_CORS_ORIGINS,
     cookie=True,
     async_mode="eventlet"
 )

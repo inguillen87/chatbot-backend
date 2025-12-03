@@ -59,7 +59,7 @@ class TenantUtilsFallbackTest(unittest.TestCase):
             side_effect=TenantResolutionError("sin tenant"),
         ) as mock_resolver:
             with self.app.test_request_context("/productos"):
-                tenant = tenant_utils.get_current_tenant()
+                tenant = tenant_utils.get_current_tenant_profile()
 
         mock_resolver.assert_called_once()
         self.assertIsNotNone(tenant)
