@@ -1,17 +1,29 @@
 # scripts/apply_migrations.py
+
 import os
+import sys
+
+# --- Asegurar que el root del proyecto está en sys.path ---
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 
 from alembic import command
 from alembic.config import Config
 from alembic.util import CommandError
 from sqlalchemy import create_engine
 
+# Importar la Config de la app (ahora sí la encuentra)
 from config import Config as AppConfig
 
+# Usar una URL explícita para migraciones si existe,
+# si no, la misma que usa la app en runtime.
 dburl = os.environ.get("MIGRATIONS_DATABASE_URL") or AppConfig.SQLALCHEMY_DATABASE_URI
 
 if not dburl:
-    raise RuntimeError("Definí MIGRATIONS_DATABASE_URL o DATABASE_URL antes de correr migraciones.")
+    raise RuntimeError(
+        "Definí MIGRATIONS_DATABASE_URL o DATABASE_URL antes de correr migraciones."
+    )
 
 # Alinear explícitamente la URL de Alembic con la misma que usa SQLAlchemy
 os.environ["ALEMBIC_DB_URL"] = dburl
