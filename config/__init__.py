@@ -395,6 +395,10 @@ class Config:
     FRONTEND_VERSION = DEFAULT_FRONTEND_VERSION
     BACKEND_VERSION = DEFAULT_BACKEND_VERSION
 
+    # Maps provider configuration
+    MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+    MAPS_DEFAULT_PROVIDER = os.getenv("MAPS_DEFAULT_PROVIDER", "google")
+
     # 1. LLAVE SECRETA
     SECRET_KEY = os.getenv("SECRET_KEY", "una-llave-secreta-muy-segura-para-desarrollo-local")
 
