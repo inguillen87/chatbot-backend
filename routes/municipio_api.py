@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import List
 
 from flask import Blueprint, abort, jsonify, g, request, session
+from flask_cors import cross_origin
 from sqlalchemy import func, or_
 
 from models import (
@@ -16,6 +17,7 @@ from models import (
     WidgetConfig,
     db,
 )
+from config import ALLOWED_ORIGINS
 from routes.auth import token_requerido
 from routes.ticket import TICKET_ALLOWED_STATES
 from utils.tenant import get_current_tenant, get_current_tenant_profile
@@ -31,6 +33,38 @@ public_market_bp = Blueprint(
     __name__,
     url_prefix="/api/public/market/<tenant_slug>",
 )
+
+_PUBLIC_CORS_ALLOWED_HEADERS = [
+    "Content-Type",
+    "Authorization",
+    "Origin",
+    "X-Chatboc-Token",
+    "X-Entity-Token",
+    "X-Chat-Session-Id",
+    "X-Anon-Id",
+    "Anon-Id",
+    "x-anon-id",
+    "anon-id",
+    "Cache-Control",
+    "token",
+    "X-Tenant",
+    "X-Tenant-Slug",
+    "X-Tenant-Id",
+    "X-Widget-Token",
+    "X-Whatsapp-Dst",
+]
+
+_PUBLIC_CORS_EXPOSE_HEADERS = ["Content-Type", "Authorization", "X-Anon-Id", "Anon-Id"]
+
+
+def _public_cors_kwargs(methods: list[str]) -> dict:
+    return {
+        "origins": ALLOWED_ORIGINS,
+        "supports_credentials": True,
+        "allow_headers": _PUBLIC_CORS_ALLOWED_HEADERS,
+        "expose_headers": _PUBLIC_CORS_EXPOSE_HEADERS,
+        "methods": methods,
+    }
 
 widget_public_bp = Blueprint(
     "widget_public_config",
@@ -512,8 +546,12 @@ def serialize_catalogo_item(item: CatalogoItem) -> dict:
     }
 
 
-@public_market_bp.route("/productos", methods=["GET"])
+@public_market_bp.route("/productos", methods=["GET", "OPTIONS"])
+@cross_origin(**_public_cors_kwargs(["GET", "OPTIONS"]))
 def productos_publicos(tenant_slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+
     resolved_slug = get_current_tenant()
     tenant = _resolve_tenant_or_404(resolved_slug or tenant_slug)
     productos = (
@@ -526,8 +564,12 @@ def productos_publicos(tenant_slug: str):
     return jsonify({"productos": [serialize_catalogo_item(p) for p in productos]})
 
 
-@public_market_bp.route("/productos/<int:producto_id>", methods=["GET"])
+@public_market_bp.route("/productos/<int:producto_id>", methods=["GET", "OPTIONS"])
+@cross_origin(**_public_cors_kwargs(["GET", "OPTIONS"]))
 def producto_publico(tenant_slug: str, producto_id: int):
+    if request.method == "OPTIONS":
+        return "", 204
+
     resolved_slug = get_current_tenant()
     tenant = _resolve_tenant_or_404(resolved_slug or tenant_slug)
     item = (
@@ -540,16 +582,24 @@ def producto_publico(tenant_slug: str, producto_id: int):
     return jsonify(serialize_catalogo_item(item))
 
 
-@public_market_bp.route("/carrito", methods=["GET"])
+@public_market_bp.route("/carrito", methods=["GET", "OPTIONS"])
+@cross_origin(**_public_cors_kwargs(["GET", "OPTIONS"]))
 def obtener_carrito_publico(tenant_slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+
     resolved_slug = get_current_tenant()
     tenant = _resolve_tenant_or_404(resolved_slug or tenant_slug)
     cart = session.get(_cart_key(tenant), {"items": []})
     return jsonify(cart)
 
 
-@public_market_bp.route("/carrito/items", methods=["POST"])
+@public_market_bp.route("/carrito/items", methods=["POST", "OPTIONS"])
+@cross_origin(**_public_cors_kwargs(["POST", "OPTIONS"]))
 def agregar_item_carrito(tenant_slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+
     resolved_slug = get_current_tenant()
     tenant = _resolve_tenant_or_404(resolved_slug or tenant_slug)
     data = request.get_json(silent=True) or {}
@@ -563,8 +613,12 @@ def agregar_item_carrito(tenant_slug: str):
     return jsonify(cart), 201
 
 
-@public_market_bp.route("/checkout", methods=["POST"])
+@public_market_bp.route("/checkout", methods=["POST", "OPTIONS"])
+@cross_origin(**_public_cors_kwargs(["POST", "OPTIONS"]))
 def checkout_publico(tenant_slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+
     resolved_slug = get_current_tenant()
     tenant = _resolve_tenant_or_404(resolved_slug or tenant_slug)
     cart = session.get(_cart_key(tenant), {"items": []})
