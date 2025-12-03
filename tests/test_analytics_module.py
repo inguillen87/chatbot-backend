@@ -159,6 +159,8 @@ def test_geo_heatmap(client):
     assert response.status_code == 200
     data = response.get_json()
     assert data['cells']
+    assert 'meta' in data
+    assert 'map' in data['meta']
 
 
 def test_pyme_endpoints(client):
