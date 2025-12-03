@@ -57,15 +57,22 @@ def _validar_asignacion_empleado(ticket_obj, current_user: User):
     return None
 
 
-def _categorias_permitidas_para_empleado(user: User) -> list[str]:
-    """Obtiene las categorías habilitadas para un empleado normalizadas en minúsculas."""
+def _categorias_permitidas_para_empleado(user: User) -> tuple[list[str], list[int]]:
+    """Obtiene las categorías habilitadas para un empleado normalizadas en minúsculas.
+
+    Devuelve una tupla con nombres y IDs (para ``CategoriaTicket``) para soportar
+    el nuevo enrutamiento multi-tenant basado en categorías persistentes.
+    """
 
     nombres: list[str] = []
-    categorias_rel = getattr(user, "categorias", None) or []
+    ids: list[int] = []
+    categorias_rel = getattr(user, "categorias_ticket", None) or getattr(user, "categorias", None) or []
     for cat in categorias_rel:
         nombre = getattr(cat, "nombre", None)
         if nombre:
             nombres.append(nombre.strip().lower())
+        if getattr(cat, "id", None):
+            ids.append(cat.id)
 
     if not nombres and getattr(user, "ticket_categorias", None):
         nombres.extend(
@@ -73,7 +80,7 @@ def _categorias_permitidas_para_empleado(user: User) -> list[str]:
         )
 
     # Remover duplicados preservando orden
-    return list(dict.fromkeys(nombres))
+    return list(dict.fromkeys(nombres)), list(dict.fromkeys(ids))
 
 
 @ticket_bp.route('/tickets/estados', methods=['GET'])
@@ -336,9 +343,11 @@ def get_tickets_del_usuario_logic(current_user: User):
             else:
                 query_base = query_base.filter(TicketModel.categoria == requested_categoria_filter)
 
-        if current_user.rol == 'empleado':
-            categorias_empleado = _categorias_permitidas_para_empleado(current_user)
-            if categorias_empleado:
+        if current_user.rol == 'empleado' or getattr(current_user, "es_empleado", False):
+            categorias_empleado, categorias_ids = _categorias_permitidas_para_empleado(current_user)
+            if categorias_ids:
+                query_base = query_base.filter(TicketModel.categoria_id.in_(categorias_ids))
+            elif categorias_empleado:
                 query_base = query_base.filter(
                     func.lower(TicketModel.categoria).in_(categorias_empleado)
                 )
@@ -1718,14 +1727,17 @@ def get_panel_por_categoria(current_user: User):
         # Por ahora, las métricas serán por categoría, y el empleado solo verá las categorías asignadas.
 
         tickets_to_process = all_tickets_for_user_municipio
-        if current_user.rol == 'empleado':
-            categorias_empleado = set(
-                _categorias_permitidas_para_empleado(current_user)
-            )
+        if current_user.rol == 'empleado' or getattr(current_user, "es_empleado", False):
+            cat_nombres, cat_ids = _categorias_permitidas_para_empleado(current_user)
+            nombres_set = set(cat_nombres)
+            ids_set = set(cat_ids)
             tickets_to_process = [
                 t
                 for t in all_tickets_for_user_municipio
-                if (t.categoria or "").strip().lower() in categorias_empleado
+                if (
+                    (t.categoria_id in ids_set if getattr(t, "categoria_id", None) is not None else False)
+                    or (t.categoria or "").strip().lower() in nombres_set
+                )
             ]
 
         # Agrupar tickets por categoría
@@ -1816,11 +1828,18 @@ def get_panel_pyme(current_user: User):
         all_tickets_for_user_pyme = query.order_by(PymeTicket.fecha.desc()).all()
 
         tickets_to_process = all_tickets_for_user_pyme
-        if current_user.rol == 'empleado':
+        if current_user.rol == 'empleado' or getattr(current_user, "es_empleado", False):
+            cat_nombres, cat_ids = _categorias_permitidas_para_empleado(current_user)
+            nombres_set = set(cat_nombres)
+            ids_set = set(cat_ids)
             tickets_to_process = [
                 t
                 for t in all_tickets_for_user_pyme
-                if t.asignado_a_id == current_user.id
+                if (
+                    t.asignado_a_id == current_user.id
+                    or (getattr(t, "categoria_id", None) in ids_set)
+                    or (t.categoria or "").strip().lower() in nombres_set
+                )
             ]
 
         tickets_grouped_by_cat = defaultdict(list)
