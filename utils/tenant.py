@@ -46,6 +46,13 @@ def get_current_tenant() -> Optional[TenantProfile]:
     tenant: Optional[TenantProfile] = None
 
     if slug:
+        try:
+            from services.tenant_resolver import apply_tenant_alias
+
+            slug = apply_tenant_alias(slug)
+        except Exception:
+            pass
+
         tenant = (
             TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug.lower())
             .order_by(TenantProfile.id.asc())

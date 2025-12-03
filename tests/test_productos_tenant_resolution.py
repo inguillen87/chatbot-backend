@@ -46,6 +46,10 @@ class ProductosTenantResolutionTest(unittest.TestCase):
         db.session.add(self.tenant)
         db.session.commit()
 
+        # Configure the default tenant so alias mapping (e.g., "municipio")
+        # can point to this profile during marketplace calls.
+        self.app.config["PUBLIC_CATALOG_DEFAULT_TENANT"] = self.tenant.slug
+
         self.auth_token = generar_token(
             self.owner.id,
             self.owner.rol,
@@ -73,6 +77,20 @@ class ProductosTenantResolutionTest(unittest.TestCase):
         self.assertIsNotNone(tenant)
         self.assertIsNotNone(owner)
         self.assertEqual(tenant.id, self.tenant.id)
+        self.assertEqual(owner.id, self.owner.id)
+
+    def test_resolve_public_owner_from_municipio_alias(self):
+        """Debe mapear alias "municipio" al tenant por defecto configurado."""
+
+        with self.app.test_request_context(
+            "/api/municipio/productos",
+            query_string={"tenant_slug": "municipio", "tenant": "municipio"},
+        ):
+            tenant, owner = productos._resolve_public_owner(require_explicit=True)
+
+        self.assertIsNotNone(tenant)
+        self.assertIsNotNone(owner)
+        self.assertEqual(tenant.slug, self.tenant.slug)
         self.assertEqual(owner.id, self.owner.id)
 
     def test_resolve_public_owner_requires_hint_when_anonymous(self):
