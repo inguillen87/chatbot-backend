@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from flask import Blueprint, request, jsonify, g
+from flask import Blueprint, current_app, jsonify, request, g
 
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from utils.time_utils import get_local_now
@@ -11,6 +11,8 @@ from models import User
 from services.demo_geo import generate_demo_points
 from utils.heatmap import aggregate_heatmap_points, build_feature_collection, enrich_heatmap_points
 from utils.map_config import get_map_config
+from utils.tenant import get_current_tenant, get_current_tenant_slug
+from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 
 
 estadisticas_bp = Blueprint("estadisticas", __name__, url_prefix="/estadisticas")
@@ -117,6 +119,59 @@ def _parse_bool_param(args, key: str) -> bool | None:
         return False
 
     return None
+
+
+def _normalize_tenant_slug(raw_slug: str | None) -> str | None:
+    if not raw_slug:
+        return None
+
+    slug = raw_slug.strip().lower()
+    if not slug:
+        return None
+
+    alias_map = dict(current_app.config.get("TENANT_ALIAS_MAP", {}) or {})
+    alias_target = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
+    if alias_target:
+        alias_map.setdefault("whatsapp", alias_target)
+        alias_map.setdefault("pwa", alias_target)
+
+    return alias_map.get(slug, slug)
+
+
+def _resolve_tenant_profile_or_error(args) -> object:
+    slug_hint = (
+        args.get("tenant_slug")
+        or args.get("tenant")
+        or get_current_tenant_slug()
+    )
+    slug_hint = _normalize_tenant_slug(slug_hint)
+
+    if not slug_hint and current_app.config.get("TESTING"):
+        return None
+
+    try:
+        tenant = resolve_tenant_only(
+            tenant_slug=slug_hint,
+            require_explicit_slug=bool(slug_hint),
+        )
+    except TenantResolutionError as exc:
+        raise TenantResolutionError(str(exc))
+    except Exception:
+        if current_app.config.get("TESTING"):
+            return None
+        raise
+
+    if not tenant and not slug_hint:
+        tenant = get_current_tenant()
+
+    if not tenant and slug_hint:
+        raise TenantResolutionError("Tenant desconocido")
+
+    if tenant:
+        g.tenant_profile = tenant
+        g.current_tenant = tenant
+        g.current_tenant_slug = getattr(tenant, "slug", None)
+    return tenant
 
 
 def _demo_heatmap(scope: str) -> list[dict]:
@@ -283,8 +338,8 @@ def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap"
             )
 
 
-def _parse_iso_datetime(value: str | None, *, is_end: bool = False) -> datetime | None:
-    """Parsea fechas ISO añadiendo zona horaria local y normalizando fin de rango."""
+def _parse_date_param(value: str | None, *, name: str, is_end: bool = False) -> datetime | None:
+    """Parses date parameters supporting YYYY-MM-DD and ISO 8601 (with Z)."""
 
     if not value:
         return None
@@ -293,10 +348,25 @@ def _parse_iso_datetime(value: str | None, *, is_end: bool = False) -> datetime 
     if not raw:
         return None
 
-    try:
-        parsed = datetime.fromisoformat(raw)
-    except ValueError:
-        return None
+    normalized = raw
+    if raw.endswith("Z"):
+        normalized = f"{raw[:-1]}+00:00"
+
+    parsed = None
+    for parser in (
+        lambda text: datetime.fromisoformat(text),
+        lambda text: datetime.strptime(text, "%Y-%m-%d"),
+    ):
+        try:
+            parsed = parser(normalized)
+            break
+        except ValueError:
+            parsed = None
+
+    if parsed is None:
+        raise ValueError(
+            f"El parámetro '{name}' tiene un formato inválido. Usa YYYY-MM-DD o ISO 8601."
+        )
 
     tzinfo = get_local_now().tzinfo
     if parsed.tzinfo is None and tzinfo is not None:
@@ -319,8 +389,8 @@ def _build_stats_filters(args, estados: list[str] | None) -> StatsFilters | None
         agentes = _parse_int_params(args, "agente")
 
     filtros = StatsFilters(
-        fecha_inicio=_parse_iso_datetime(args.get("fecha_inicio")),
-        fecha_fin=_parse_iso_datetime(args.get("fecha_fin"), is_end=True),
+        fecha_inicio=_parse_date_param(args.get("fecha_inicio"), name="fecha_inicio"),
+        fecha_fin=_parse_date_param(args.get("fecha_fin"), name="fecha_fin", is_end=True),
         estados=tuple(estados) if estados else None,
         categorias=tuple(categorias) if categorias else None,
         distritos=tuple(distritos) if distritos else None,
@@ -443,6 +513,11 @@ def estadisticas_dashboard(current_user):
     if tipo == "pyme" and rubro_id is None:
         rubro_id = getattr(current_user, "rubro_id", None)
 
+    try:
+        stats_filters = _build_stats_filters(args, estados)
+    except ValueError as exc:
+        return jsonify({"error": "bad_request", "detail": str(exc)}), 400
+
     heatmap = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
         tipo_ticket=tipo,
         municipio_id=municipio_id,
@@ -482,7 +557,6 @@ def estadisticas_dashboard(current_user):
     _augment_heatmap_payload(payload)
 
     if tipo == "municipio":
-        stats_filters = _build_stats_filters(args, estados)
         if stats_filters:
             stats = build_stats_for_municipio(municipio_id, filters=stats_filters)
         else:
@@ -546,6 +620,13 @@ def estadisticas_dashboard(current_user):
 def mapa_calor_datos(current_user):
     """Devuelve los puntos para el mapa de calor en formato JSON."""
     args = request.args
+    tipo_ticket = args.get("tipo_ticket", "municipio")
+
+    try:
+        tenant = _resolve_tenant_profile_or_error(args)
+    except TenantResolutionError as exc:
+        return jsonify({"error": "tenant_desconocido", "detail": str(exc)}), 404
+
     estados = _parse_estado_params(args)
     estado_param = None
     if estados:
@@ -555,32 +636,55 @@ def mapa_calor_datos(current_user):
     distrito = distritos[0] if distritos else None
 
     municipio_id = args.get("municipio_id", type=int)
-    if municipio_id is None and args.get("tipo_ticket", "municipio") == "municipio":
-        municipio_id = _resolve_municipio_id(current_user)
+    if municipio_id is None and tipo_ticket == "municipio":
+        municipio_id = getattr(tenant, "municipio_id", None) or _resolve_municipio_id(
+            current_user
+        )
+
+    rubro_id = args.get("rubro_id", type=int)
+    if rubro_id is None and tipo_ticket == "pyme":
+        rubro_id = getattr(tenant, "pyme_id", None) or getattr(current_user, "rubro_id", None)
 
     categorias = _parse_multi_value_param(args, "categoria")
 
-    puntos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
-        tipo_ticket=args.get("tipo_ticket", "municipio"),
-        municipio_id=municipio_id,
-        rubro_id=args.get("rubro_id", type=int),
-        fecha_inicio=args.get("fecha_inicio"),
-        fecha_fin=args.get("fecha_fin"),
-        categoria=categorias or None,
-        distrito=distrito,
-        estado=estado_param,
-        satisfactorio=args.get("satisfactorio", type=lambda v: str(v).lower() == "true"),
-    )
+    try:
+        stats_filters = _build_stats_filters(args, estados)
+        puntos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
+            tipo_ticket=tipo_ticket,
+            municipio_id=municipio_id,
+            rubro_id=rubro_id,
+            fecha_inicio=args.get("fecha_inicio"),
+            fecha_fin=args.get("fecha_fin"),
+            categoria=categorias or None,
+            distrito=distrito,
+            estado=estado_param,
+            satisfactorio=args.get(
+                "satisfactorio", type=lambda v: str(v).lower() == "true"
+            ),
+        )
+    except ValueError as exc:
+        return jsonify({"error": "bad_request", "detail": str(exc)}), 400
+    except Exception:
+        current_app.logger.error(
+            "[estadisticas] error interno",
+            exc_info=True,
+            extra={
+                "path": request.path,
+                "args": dict(request.args),
+                "tenant": request.args.get("tenant"),
+                "tenant_slug": request.args.get("tenant_slug"),
+            },
+        )
+        return jsonify({"error": "server_error", "detail": "Error interno"}), 500
 
     if not puntos:
-        puntos = _demo_heatmap(args.get("tipo_ticket", "municipio"))
+        puntos = _demo_heatmap(tipo_ticket)
 
     payload: dict[str, object] = {"heatmap": puntos}
 
     _augment_heatmap_payload(payload)
 
-    if args.get("tipo_ticket", "municipio") == "municipio":
-        stats_filters = _build_stats_filters(args, estados)
+    if tipo_ticket == "municipio":
         if stats_filters:
             stats = build_stats_for_municipio(municipio_id, filters=stats_filters)
         else:
@@ -634,6 +738,11 @@ def estadisticas_tickets(current_user):
     args = request.args
     tipo = args.get("tipo", "municipio")
 
+    try:
+        tenant = _resolve_tenant_profile_or_error(args)
+    except TenantResolutionError as exc:
+        return jsonify({"error": "tenant_desconocido", "detail": str(exc)}), 404
+
     municipio_id = args.get("municipio_id", type=int)
     rubro_id = args.get("rubro_id", type=int)
 
@@ -647,26 +756,44 @@ def estadisticas_tickets(current_user):
         distrito = distrito.strip() or None
 
     if tipo == "municipio" and municipio_id is None:
-        municipio_id = _resolve_municipio_id(current_user)
+        municipio_id = getattr(tenant, "municipio_id", None) or _resolve_municipio_id(
+            current_user
+        )
     if tipo == "pyme" and rubro_id is None:
-        rubro_id = getattr(current_user, "rubro_id", None)
+        rubro_id = getattr(tenant, "pyme_id", None) or getattr(current_user, "rubro_id", None)
 
     categoria_values = _parse_multi_value_param(args, "categoria")
     categoria = categoria_values or None
 
-    puntos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
-        tipo_ticket=tipo,
-        municipio_id=municipio_id,
-        rubro_id=rubro_id,
-        fecha_inicio=args.get("fecha_inicio"),
-        fecha_fin=args.get("fecha_fin"),
-        categoria=categoria,
-        distrito=distrito,
-        estado=estado_param,
-        satisfactorio=args.get(
-            "satisfactorio", type=lambda v: str(v).lower() == "true"
-        ),
-    )
+    try:
+        stats_filters = _build_stats_filters(args, estados)
+        puntos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
+            tipo_ticket=tipo,
+            municipio_id=municipio_id,
+            rubro_id=rubro_id,
+            fecha_inicio=args.get("fecha_inicio"),
+            fecha_fin=args.get("fecha_fin"),
+            categoria=categoria,
+            distrito=distrito,
+            estado=estado_param,
+            satisfactorio=args.get(
+                "satisfactorio", type=lambda v: str(v).lower() == "true"
+            ),
+        )
+    except ValueError as exc:
+        return jsonify({"error": "bad_request", "detail": str(exc)}), 400
+    except Exception:
+        current_app.logger.error(
+            "[estadisticas] error interno",
+            exc_info=True,
+            extra={
+                "path": request.path,
+                "args": dict(request.args),
+                "tenant": request.args.get("tenant"),
+                "tenant_slug": request.args.get("tenant_slug"),
+            },
+        )
+        return jsonify({"error": "server_error", "detail": "Error interno"}), 500
 
     heatmap = puntos or _demo_heatmap(tipo)
 
@@ -675,7 +802,6 @@ def estadisticas_tickets(current_user):
     _augment_heatmap_payload(respuesta)
 
     if tipo == "municipio":
-        stats_filters = _build_stats_filters(args, estados)
         if stats_filters:
             stats = build_stats_for_municipio(municipio_id, filters=stats_filters)
         else:

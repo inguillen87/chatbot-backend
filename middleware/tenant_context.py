@@ -172,6 +172,13 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         or request.headers.get("X-Tenant")
     )
     if slug:
+        try:
+            from services.tenant_resolver import apply_tenant_alias
+
+            slug = apply_tenant_alias(slug)
+        except Exception:
+            pass
+    if slug:
         tenant = _find_tenant_by_slug(slug)
         if tenant:
             return tenant
@@ -205,6 +212,13 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         or view_args.get("slug")
         or _tenant_slug_from_url(request.headers.get("Referer") or getattr(request, "referrer", None))
     )
+    if slug_hint:
+        try:
+            from services.tenant_resolver import apply_tenant_alias
+
+            slug_hint = apply_tenant_alias(slug_hint)
+        except Exception:
+            pass
     if slug_hint:
         # First attempt direct DB lookup (fast path)
         tenant = _find_tenant_by_slug(slug_hint)

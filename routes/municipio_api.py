@@ -17,6 +17,7 @@ from models import (
     db,
 )
 from routes.auth import token_requerido
+from routes.ticket import TICKET_ALLOWED_STATES
 from utils.tenant import get_current_tenant
 
 municipio_api_bp = Blueprint(
@@ -61,6 +62,16 @@ def _require_tenant_admin(current_user: User, tenant: TenantProfile) -> None:
         abort(403, "No pertenece al tenant")
 
 
+def _serialize_empleado(empleado: User) -> dict:
+    return {
+        "id": empleado.id,
+        "nombre": empleado.name,
+        "email": empleado.email,
+        "rol": empleado.rol,
+        "categorias": [c.to_dict() for c in getattr(empleado, "categorias_ticket", [])],
+    }
+
+
 @municipio_api_bp.url_value_preprocessor
 def pull_tenant(endpoint, values):
     if not values:
@@ -70,16 +81,45 @@ def pull_tenant(endpoint, values):
         _resolve_tenant_or_404(slug)
 
 
-@municipio_api_bp.route("/tickets/categorias", methods=["GET"])
-@token_requerido
-def listar_categorias_ticket(current_user: User, tenant_slug: str):
-    tenant = _resolve_tenant_or_404(tenant_slug)
+def _categorias_para_tenant(tenant: TenantProfile) -> list[dict]:
     categorias = (
         CategoriaTicket.query.filter_by(tenant_id=tenant.id)
         .order_by(CategoriaTicket.nombre.asc())
         .all()
     )
-    return jsonify({"categorias": [c.to_dict() for c in categorias]})
+    return [c.to_dict() for c in categorias]
+
+
+@municipio_api_bp.route("/tickets/categorias", methods=["GET", "OPTIONS"])
+@token_requerido
+def listar_categorias_ticket(current_user: User, tenant_slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+
+    tenant = _resolve_tenant_or_404(tenant_slug)
+    categorias = _categorias_para_tenant(tenant)
+    return jsonify({"categorias": categorias, "categories": categorias})
+
+
+@municipio_api_bp.route("/categorias", methods=["GET", "OPTIONS"])
+@token_requerido
+def listar_categorias_municipio(current_user: User, tenant_slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+
+    tenant = _resolve_tenant_or_404(tenant_slug)
+    categorias = _categorias_para_tenant(tenant)
+    return jsonify({"categorias": categorias, "categories": categorias})
+
+
+@municipio_api_bp.route("/estados", methods=["GET", "OPTIONS"])
+@token_requerido
+def listar_estados(current_user: User, tenant_slug: str):
+    _resolve_tenant_or_404(tenant_slug)
+    if request.method == "OPTIONS":
+        return "", 204
+
+    return jsonify({"estados": sorted(TICKET_ALLOWED_STATES)})
 
 
 @municipio_api_bp.route("/empleados", methods=["POST"])
@@ -87,6 +127,35 @@ def listar_categorias_ticket(current_user: User, tenant_slug: str):
 def crear_empleado_multitenant(current_user: User, tenant_slug: str):
     tenant = _resolve_tenant_or_404(tenant_slug)
     _require_tenant_admin(current_user, tenant)
+
+
+@municipio_api_bp.route("/empleados", methods=["GET", "OPTIONS"])
+@token_requerido
+def listar_empleados_multitenant(current_user: User, tenant_slug: str):
+    tenant = _resolve_tenant_or_404(tenant_slug)
+    if request.method == "OPTIONS":
+        return "", 204
+
+    _require_tenant_admin(current_user, tenant)
+
+    empleados = (
+        User.query.filter_by(tenant_id=tenant.id, es_empleado=True)
+        .order_by(User.id.asc())
+        .all()
+    )
+    payload = [_serialize_empleado(e) for e in empleados]
+    return jsonify({"empleados": payload, "total": len(payload)})
+
+
+@municipio_api_bp.route("/pedidos/categorias", methods=["GET", "OPTIONS"])
+@token_requerido
+def listar_categorias_pedidos(current_user: User, tenant_slug: str):
+    if request.method == "OPTIONS":
+        return "", 204
+
+    tenant = _resolve_tenant_or_404(tenant_slug)
+    categorias = _categorias_para_tenant(tenant)
+    return jsonify({"categorias": categorias, "categories": categorias})
 
     data = request.get_json(silent=True) or {}
     nombre = (data.get("nombre") or data.get("name") or "").strip()

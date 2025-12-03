@@ -101,8 +101,16 @@ if os.environ.get("FLASK_ENV") != "production" and not MIGRATIONS_ONLY:
 # Listener para SQLite (no afecta Postgres; se envuelve en try/except)
 def my_on_connect_listener(dbapi_connection, connection_record):
     try:
+        enable_fk = True
+        try:
+            from flask import current_app
+
+            enable_fk = not current_app.config.get("DISABLE_SQLITE_FOREIGN_KEYS", False)
+        except Exception:
+            enable_fk = True
+
         cur = dbapi_connection.cursor()
-        cur.execute("PRAGMA foreign_keys=ON")
+        cur.execute(f"PRAGMA foreign_keys={'ON' if enable_fk else 'OFF'}")
         cur.execute("PRAGMA journal_mode=WAL")
         cur.execute("PRAGMA busy_timeout=5000")
         cur.close()
@@ -125,6 +133,15 @@ def create_app(config_class=Config):
         f"{_describe_database_uri(app.config.get('SQLALCHEMY_DATABASE_URI'))}"
     )
     print(f"DB object: {db}")
+
+    if str(app.config.get("SQLALCHEMY_DATABASE_URI", "")).startswith("sqlite"):
+        engine_opts = app.config.setdefault("SQLALCHEMY_ENGINE_OPTIONS", {})
+        engine_opts.setdefault("execution_options", {}).setdefault(
+            "sqlite_foreign_keys", False
+        )
+
+    if app.config.get("TESTING"):
+        app.config.setdefault("DISABLE_SQLITE_FOREIGN_KEYS", True)
 
     # --- Diagnóstico de sesión (solo en runtime normal) ---
     if not MIGRATIONS_ONLY:
@@ -293,6 +310,13 @@ def create_app(config_class=Config):
             r"/admin/*": {
                 "origins": ["https://www.chatboc.ar", "https://chatboc.ar"],
             },
+            r"/integracion/*": {
+                "origins": [
+                    "https://www.chatboc.ar",
+                    "https://chatboc-demo-widget-oigs.vercel.app",
+                ],
+                "supports_credentials": True,
+            },
             r"/api/*": {"origins": ALLOWED_ORIGINS},
             r"/*": {"origins": ALLOWED_ORIGINS},
         }
@@ -300,6 +324,7 @@ def create_app(config_class=Config):
         allow_headers = [
             "Content-Type",
             "Authorization",
+            "Origin",
             "X-Chatboc-Token",
             "X-Entity-Token",
             "X-Chat-Session-Id",
@@ -430,7 +455,7 @@ def create_app(config_class=Config):
     from routes.pwa_public import pwa_public_bp, pwa_tenant_info_bp
     from routes.market import market_admin_bp, market_bp
     from routes.public_resolver import public_resolver_bp, public_municipios_bp
-    from routes.widget_settings import widget_settings_bp
+    from routes.widget_settings import integracion_widget_bp, widget_settings_bp
     from routes.subastas import subastas_bp
     from routes.pedidos_from_file import pedidos_from_file_bp
     from routes.kits import kits_bp
@@ -524,6 +549,7 @@ def create_app(config_class=Config):
     app.register_blueprint(document_intelligence_bp)
     app.register_blueprint(document_intelligence_public_bp)
     app.register_blueprint(catalog_vector_sync_bp)
+    app.register_blueprint(integracion_widget_bp)
     app.register_blueprint(widget_settings_bp)
     app.register_blueprint(whatsapp_webhook_bp)
     app.register_blueprint(whatsapp_promocionar_bp)

@@ -4,8 +4,9 @@ from flask import Blueprint, current_app, jsonify, request
 from flask_cors import cross_origin
 
 from models import TenantProfile, WidgetSettings, db
+from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 from routes.auth import solo_admin_requerido, token_requerido
-from utils.tenant import get_current_tenant
+from utils.tenant import get_current_tenant, get_current_tenant_slug
 
 
 widget_settings_bp = Blueprint(
@@ -13,6 +14,17 @@ widget_settings_bp = Blueprint(
     __name__,
     url_prefix="/widget-settings",
 )
+integracion_widget_bp = Blueprint(
+    "integracion_widget_settings",
+    __name__,
+    url_prefix="/integracion",
+)
+
+
+_WIDGET_CORS_ORIGINS = [
+    "https://www.chatboc.ar",
+    "https://chatboc-demo-widget-oigs.vercel.app",
+]
 
 
 def _tenant_for_user(user) -> TenantProfile | None:
@@ -53,6 +65,40 @@ def _serialize_settings(settings: WidgetSettings, tenant: TenantProfile) -> dict
         **cfg,
         "embed_code": embed_code,
     }
+
+
+def _resolve_tenant_from_request() -> TenantProfile:
+    slug_hint = (
+        request.args.get("tenant")
+        or request.args.get("tenant_slug")
+        or get_current_tenant_slug()
+    )
+    slug_hint = (slug_hint or "").strip().lower() or None
+
+    alias_map = dict(current_app.config.get("TENANT_ALIAS_MAP", {}) or {})
+    alias_target = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
+    if alias_target:
+        alias_map.setdefault("whatsapp", alias_target)
+        alias_map.setdefault("pwa", alias_target)
+
+    if slug_hint in alias_map:
+        slug_hint = alias_map[slug_hint]
+
+    try:
+        tenant = resolve_tenant_only(
+            tenant_slug=slug_hint,
+            require_explicit_slug=bool(slug_hint),
+        )
+    except TenantResolutionError as exc:
+        raise TenantResolutionError(str(exc))
+
+    if not tenant and not slug_hint:
+        tenant = get_current_tenant()
+
+    if not tenant:
+        raise TenantResolutionError("Tenant desconocido")
+
+    return tenant
 
 
 @widget_settings_bp.route("", methods=["GET", "PUT", "OPTIONS"])
@@ -97,4 +143,24 @@ def manage_settings(current_user):
             db.session.add(settings)
             db.session.flush()
 
+    return jsonify(_serialize_settings(settings, tenant))
+
+
+@integracion_widget_bp.route(
+    "/widget-settings", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+@cross_origin(origins=_WIDGET_CORS_ORIGINS, supports_credentials=True)
+def public_widget_settings():
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+
+    try:
+        tenant = _resolve_tenant_from_request()
+    except TenantResolutionError as exc:
+        return jsonify({"error": "tenant_desconocido", "detail": str(exc)}), 404
+
+    settings = tenant.widget_settings or WidgetSettings(tenant=tenant)
+
+    # No crear filas nuevas si el tenant aún no guardó su configuración;
+    # basta con devolver los defaults del modelo.
     return jsonify(_serialize_settings(settings, tenant))

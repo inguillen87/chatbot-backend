@@ -13,6 +13,36 @@ logger = logging.getLogger(__name__)
 RESERVED_TENANT_SLUGS = {"iframe", "embed", "widget"}
 
 
+def _alias_map() -> dict[str, str]:
+    """Return alias -> slug mapping including config defaults.
+
+    This lets callers treat generic hints like "municipio", "pwa" or
+    "whatsapp" as the canonical tenant slug configured for the deployment,
+    preventing 400 responses in public endpoints when the caller only knows an
+    alias.
+    """
+
+    from flask import current_app
+
+    alias_map = dict(current_app.config.get("TENANT_ALIASES", {}) or {})
+    alias_target = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
+    if alias_target:
+        for alias in ["whatsapp", "pwa", "municipio", "municipal", "market", "marketplace"]:
+            alias_map.setdefault(alias, alias_target)
+    return alias_map
+
+
+def apply_tenant_alias(slug: Optional[str]) -> Optional[str]:
+    """Translate a slug hint using configured aliases if available."""
+
+    cleaned = _clean_slug(slug)
+    if not cleaned:
+        return None
+
+    alias_target = _alias_map().get(cleaned.lower())
+    return alias_target or cleaned
+
+
 def _clean_slug(slug: Optional[str]) -> Optional[str]:
     """Return a normalized slug or ``None`` when empty/reserved."""
 
@@ -191,7 +221,7 @@ def resolve_tenant_and_user(
         except (TypeError, ValueError):
             explicit_tenant = None
 
-    tenant_slug = _clean_slug(tenant_slug)
+    tenant_slug = apply_tenant_alias(tenant_slug)
 
     tenant = (
         explicit_tenant
@@ -210,7 +240,7 @@ def resolve_tenant_and_user(
                 (TenantProfile.municipio_id == owner_id) | (TenantProfile.pyme_id == owner_id)
             ).first()
 
-    preferred_slug = _clean_slug(tenant_slug)
+    preferred_slug = apply_tenant_alias(tenant_slug)
     if tenant and preferred_slug and tenant.slug.lower() != preferred_slug.lower():
         slug_match = _tenant_by_slug(preferred_slug)
         if slug_match:
