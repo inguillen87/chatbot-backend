@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify
 from models import (
     CatalogoItem,
+    Categoria,
     MunicipioTicket,
     PymeTicket,
     TicketComentario,
@@ -51,6 +52,74 @@ def _normalize_categorias_input(categorias_raw):
 
     # Remover duplicados preservando orden
     return list(dict.fromkeys(normalizadas))
+
+
+def _serialize_empleado_categorias(user: User) -> tuple[list[dict], list[str]]:
+    """Devuelve las categorías del empleado como objetos y la lista de nombres."""
+
+    categorias_rel = getattr(user, "categorias", None) or []
+    if categorias_rel:
+        serializadas = [
+            {"id": cat.id, "nombre": cat.nombre}
+            for cat in categorias_rel
+            if cat is not None
+        ]
+        nombres = [cat["nombre"] for cat in serializadas if cat.get("nombre")]
+        return serializadas, nombres
+
+    categorias_lista = user.ticket_categorias.split(",") if user.ticket_categorias else []
+    categorias_limpias = [c for c in categorias_lista if c]
+    serializadas = [
+        {"id": None, "nombre": nombre}
+        for nombre in categorias_limpias
+    ]
+    return serializadas, categorias_limpias
+
+
+def _resolver_categorias_municipio(
+    municipio_id: int, categoria_ids: list[int] | None, categorias_raw
+):
+    """Obtiene o crea categorías para un municipio según los datos del payload."""
+
+    if categoria_ids:
+        categorias_db = (
+            Categoria.query.filter(
+                Categoria.municipio_id == municipio_id,
+                Categoria.id.in_(categoria_ids),
+            ).all()
+        )
+        if len(categorias_db) != len(set(categoria_ids)):
+            return None, None, jsonify({"error": "Categorías inválidas para el municipio"}), 400
+        nombres_norm = [
+            (cat.nombre or "").strip().lower() for cat in categorias_db if cat.nombre
+        ]
+        return categorias_db, nombres_norm, None
+
+    categorias_normalizadas = _normalize_categorias_input(categorias_raw)
+    if not categorias_normalizadas:
+        return None, None, jsonify({"error": "Debe asignar al menos una categoría válida"}), 400
+
+    existing = (
+        Categoria.query.filter(
+            Categoria.municipio_id == municipio_id,
+            func.lower(Categoria.nombre).in_([c.lower() for c in categorias_normalizadas]),
+        ).all()
+    )
+    existing_map = {cat.nombre.lower(): cat for cat in existing if cat.nombre}
+    categorias_db: list[Categoria] = []
+    for nombre in categorias_normalizadas:
+        llave = nombre.lower()
+        cat = existing_map.get(llave)
+        if not cat:
+            cat = Categoria(nombre=nombre, municipio_id=municipio_id)
+            db.session.add(cat)
+        categorias_db.append(cat)
+
+    db.session.flush()
+    nombres_norm = [
+        (cat.nombre or "").strip().lower() for cat in categorias_db if cat.nombre
+    ]
+    return categorias_db, nombres_norm, None
 
 
 def _build_ticket_query_for_owner(current_user: User):
@@ -105,8 +174,10 @@ def listar_empleados(current_user: User):
             TicketComentario.fecha >= fecha_inicio_mes
         ).scalar() or 0
 
-        categorias = e.ticket_categorias.split(",") if e.ticket_categorias else []
-        normalized_categories = [c.strip().lower() for c in categorias if c.strip()]
+        categorias_serializadas, categorias_nombres = _serialize_empleado_categorias(e)
+        normalized_categories = [
+            c.strip().lower() for c in categorias_nombres if c.strip()
+        ]
         open_tickets = 0
         if ticket_query_base is not None and normalized_categories:
             open_tickets = (
@@ -123,7 +194,8 @@ def listar_empleados(current_user: User):
             "email": e.email or "",
             "rol": e.rol,
             # Evitamos valores None en la lista de categorías
-            "categorias": [c for c in categorias if c],
+            "categorias": categorias_serializadas,
+            "categoria_ids": [c["id"] for c in categorias_serializadas if c.get("id")],
             "tickets_respondidos_mes": tickets_respondidos_mes,
             "tickets_abiertos_categoria": open_tickets,
         })
@@ -208,11 +280,22 @@ def crear_empleado(current_user: User):
     name = data.get('name')
     email = data.get('email')
     password = data.get('password')
-    categorias = data.get('categorias')
+    categorias_raw = data.get('categorias')
+    categoria_ids = data.get("categoria_ids") or []
 
-    categorias_normalizadas = _normalize_categorias_input(categorias)
-    if categorias_normalizadas is None or not categorias_normalizadas:
-        return jsonify({"error": "Debe asignar al menos una categoría válida"}), 400
+    categorias_normalizadas = None
+    categorias_db = []
+
+    if current_user.municipio_id:
+        categorias_db, categorias_normalizadas, error_resp = _resolver_categorias_municipio(
+            current_user.municipio_id, categoria_ids, categorias_raw
+        )
+        if error_resp:
+            return error_resp
+    else:
+        categorias_normalizadas = _normalize_categorias_input(categorias_raw)
+        if categorias_normalizadas is None or not categorias_normalizadas:
+            return jsonify({"error": "Debe asignar al menos una categoría válida"}), 400
     if not all([name, email, password]):
         return jsonify({"error": "Datos inválidos"}), 400
     if User.query.filter_by(email=email.strip().lower()).first():
@@ -227,8 +310,10 @@ def crear_empleado(current_user: User):
         or (
             "municipio" if es_rubro_publico(current_user.rubro) else "pyme"
         ),
-        ticket_categorias=",".join(categorias_normalizadas),
+        ticket_categorias=",".join(categorias_normalizadas or []),
     )
+    if categorias_db:
+        nuevo.categorias = categorias_db
     nuevo.set_password(password)
     db.session.add(nuevo)
     try:
@@ -236,12 +321,15 @@ def crear_empleado(current_user: User):
     except Exception:
         db.session.rollback()
         return jsonify({"error": "Error al crear"}), 500
+
+    categorias_serializadas, _ = _serialize_empleado_categorias(nuevo)
     return jsonify({
         "id": nuevo.id,
         "name": nuevo.name,
         "email": nuevo.email,
         "rol": nuevo.rol,
-        "categorias": categorias_normalizadas,
+        "categorias": categorias_serializadas,
+        "categoria_ids": [c["id"] for c in categorias_serializadas if c.get("id")],
     }), 201
 
 @empleados_bp.route('/<int:emp_id>/historial', methods=['GET'])
@@ -300,8 +388,10 @@ def obtener_empleado(current_user: User, emp_id: int):
         TicketComentario.fecha >= fecha_inicio_mes
     ).scalar() or 0
     ticket_query_base, TicketModel = _build_ticket_query_for_owner(current_user)
-    categorias = empleado.ticket_categorias.split(",") if empleado.ticket_categorias else []
-    normalized_categories = [c.strip().lower() for c in categorias if c.strip()]
+    categorias_serializadas, categorias_nombres = _serialize_empleado_categorias(empleado)
+    normalized_categories = [
+        c.strip().lower() for c in categorias_nombres if c.strip()
+    ]
     open_statuses = [estado for estado in TICKET_ALLOWED_STATES if estado != "cerrado"]
     open_tickets = 0
     if ticket_query_base is not None and normalized_categories:
@@ -317,7 +407,8 @@ def obtener_empleado(current_user: User, emp_id: int):
         "name": empleado.name,
         "email": empleado.email,
         "rol": empleado.rol,
-        "categorias": categorias,
+        "categorias": categorias_serializadas,
+        "categoria_ids": [c["id"] for c in categorias_serializadas if c.get("id")],
         "tickets_respondidos_mes": tickets_respondidos_mes,
         "tickets_abiertos_categoria": open_tickets,
     })
@@ -340,11 +431,25 @@ def actualizar_empleado(current_user: User, emp_id: int):
             return jsonify({"error": "El email no puede modificarse una vez creado"}), 400
     if 'password' in data and data['password']:
         empleado.set_password(data['password'])
-    if 'categorias' in data:
-        cats = _normalize_categorias_input(data['categorias'])
-        if cats is None or not cats:
-            return jsonify({"error": "Debe asignar al menos una categoría válida"}), 400
-        empleado.ticket_categorias = ",".join(cats)
+    if 'categorias' in data or 'categoria_ids' in data:
+        categorias_db = []
+        categorias_norm = None
+        if current_user.municipio_id:
+            categorias_db, categorias_norm, error_resp = _resolver_categorias_municipio(
+                current_user.municipio_id,
+                data.get("categoria_ids") or [],
+                data.get("categorias"),
+            )
+            if error_resp:
+                return error_resp
+        else:
+            categorias_norm = _normalize_categorias_input(data.get("categorias"))
+            if categorias_norm is None or not categorias_norm:
+                return jsonify({"error": "Debe asignar al menos una categoría válida"}), 400
+
+        empleado.ticket_categorias = ",".join(categorias_norm or [])
+        if categorias_db:
+            empleado.categorias = categorias_db
     try:
         db.session.commit()
     except Exception:
@@ -353,8 +458,10 @@ def actualizar_empleado(current_user: User, emp_id: int):
 
     # Recalculate open tickets after update
     ticket_query_base, TicketModel = _build_ticket_query_for_owner(current_user)
-    categorias = empleado.ticket_categorias.split(",") if empleado.ticket_categorias else []
-    normalized_categories = [c.strip().lower() for c in categorias if c.strip()]
+    categorias_serializadas, categorias_nombres = _serialize_empleado_categorias(empleado)
+    normalized_categories = [
+        c.strip().lower() for c in categorias_nombres if c.strip()
+    ]
     open_statuses = [estado for estado in TICKET_ALLOWED_STATES if estado != "cerrado"]
     open_tickets = 0
     if ticket_query_base is not None and normalized_categories:
@@ -370,7 +477,8 @@ def actualizar_empleado(current_user: User, emp_id: int):
         "name": empleado.name,
         "email": empleado.email,
         "rol": empleado.rol,
-        "categorias": categorias,
+        "categorias": categorias_serializadas,
+        "categoria_ids": [c["id"] for c in categorias_serializadas if c.get("id")],
         "tickets_abiertos_categoria": open_tickets,
     })
 
