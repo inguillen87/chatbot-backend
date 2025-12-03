@@ -15,7 +15,8 @@ SOCKET_CORS_ORIGINS = list(
 socketio = SocketIO(
     cors_allowed_origins=SOCKET_CORS_ORIGINS,
     cookie=True,
-    async_mode="eventlet"
+    async_mode="eventlet",
+    path="/api/socket.io",
 )
 
 
