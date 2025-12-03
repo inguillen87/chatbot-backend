@@ -310,6 +310,7 @@ def create_app(config_class=Config):
             "Cache-Control",
             "token",
             "X-Tenant",
+            "X-Tenant-Slug",
             "X-Tenant-Id",
             "X-Widget-Token",
             "X-Whatsapp-Dst",
