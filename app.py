@@ -42,6 +42,7 @@ from config import Config, ALLOWED_ORIGINS
 from config.feature_flags import FEATURE_ENCUESTAS
 from extensions import db, migrate, login_manager  # livianos
 from middleware import tenant_middleware
+from utils.errors import ApiError
 
 
 def _mask_token(value: str | None) -> str | None:
@@ -142,6 +143,14 @@ def create_app(config_class=Config):
 
     if app.config.get("TESTING"):
         app.config.setdefault("DISABLE_SQLITE_FOREIGN_KEYS", True)
+
+    @app.errorhandler(ApiError)
+    def handle_api_error(error: ApiError):
+        status = getattr(error, "status_code", 400) or 400
+        payload = {"error": error.message, "message": error.message}
+        response = jsonify(payload)
+        response.status_code = status
+        return response
 
     # --- Diagnóstico de sesión (solo en runtime normal) ---
     if not MIGRATIONS_ONLY:

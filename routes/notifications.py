@@ -1,7 +1,9 @@
-from flask import Blueprint, jsonify, make_response, request
+from flask import Blueprint, jsonify, make_response
+
 from models import User
 from routes.auth import _add_cors, token_requerido
 from utils.auth_helpers import _set_anon_cookie, get_or_create_anon_id
+from utils.tenant import get_current_tenant
 
 notifications_bp = Blueprint('notifications', __name__)
 
@@ -30,6 +32,8 @@ def notifications_options():
 @token_requerido
 def get_notifications(current_user: User):
     """Devuelve notificaciones pendientes del usuario actual (placeholder)."""
+    get_current_tenant()
+
     # TODO: hook into real notification logic once available
     return jsonify([])
                                                     

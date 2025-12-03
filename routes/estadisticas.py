@@ -11,7 +11,7 @@ from models import User
 from services.demo_geo import generate_demo_points
 from utils.heatmap import aggregate_heatmap_points, build_feature_collection, enrich_heatmap_points
 from utils.map_config import get_map_config
-from utils.tenant import get_current_tenant, get_current_tenant_slug
+from utils.tenant import get_current_tenant, get_current_tenant_profile, get_current_tenant_slug
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 
 
@@ -162,7 +162,7 @@ def _resolve_tenant_profile_or_error(args) -> object:
         raise
 
     if not tenant and not slug_hint:
-        tenant = get_current_tenant()
+        tenant = get_current_tenant_profile()
 
     if not tenant and slug_hint:
         raise TenantResolutionError("Tenant desconocido")
