@@ -40,3 +40,21 @@ Returns user details and loyalty points. Requires authentication.
     - News/Events: `MunicipioPost` table.
     - Catalog: `CatalogoItem` table.
     - Loyalty: Calculated from `EncEncuesta` rewards or `recompensas_service`.
+
+## 7. Real-time Updates (Socket.IO)
+To ensure the User Portal updates instantly when an Admin posts content, the backend emits Socket.IO events to the tenant's room.
+
+**Room Name:** `tenant_slug` (e.g., "municipio", "ferreteria")
+
+**Events Emitted:**
+*   `tenant_content_update`: Generic signal that something changed. Payload: `{ "type": "news_update" }`
+*   `news_update`: Signal that news items have changed. Payload: New/Updated Post object.
+*   `events_update`: Signal that events have changed. Payload: New/Updated Post object.
+*   `catalog_update`: Signal that catalog items have changed. Payload: `{}` or Item object.
+
+**Triggers:**
+*   `POST /municipal/posts` (Create/Update News/Events).
+*   `POST /api/admin/market/catalog` (Create Product).
+*   `PUT /api/admin/market/catalog/:id` (Update Product).
+*   `DELETE /api/admin/market/catalog/:id` (Delete Product).
+*   `POST /catalogo/upload` (Bulk Upload).
