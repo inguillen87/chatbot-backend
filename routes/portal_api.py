@@ -1,9 +1,9 @@
 from __future__ import annotations
 from flask import Blueprint, jsonify, request, g, abort
-from sqlalchemy import func, or_
+from sqlalchemy import or_
 from datetime import datetime, timezone
 
-from models import TenantProfile, MunicipioPost, CatalogoItem, User, TenantTicket, EncEncuesta
+from models import MunicipioPost, CatalogoItem, TenantTicket
 from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
 from services.rewards import recompensas_service
 from utils.auth_decorators import require_auth_optional, require_auth
@@ -104,6 +104,7 @@ def get_content(tenant_slug):
     })
 
 @portal_api_bp.route('/news', methods=['GET'])
+@require_auth_optional
 def get_news(tenant_slug):
     tenant = _resolve_context(tenant_slug)
     owner_id = _get_owner_id(tenant)
@@ -142,6 +143,7 @@ def get_news(tenant_slug):
     })
 
 @portal_api_bp.route('/events', methods=['GET'])
+@require_auth_optional
 def get_events(tenant_slug):
     tenant = _resolve_context(tenant_slug)
     owner_id = _get_owner_id(tenant)
@@ -184,9 +186,9 @@ def get_events(tenant_slug):
     })
 
 @portal_api_bp.route('/catalog', methods=['GET'])
+@require_auth_optional
 def get_catalog(tenant_slug):
     tenant = _resolve_context(tenant_slug)
-    owner_id = _get_owner_id(tenant)
 
     items = CatalogoItem.query.filter(
         CatalogoItem.tenant_id == tenant.id,
@@ -195,9 +197,6 @@ def get_catalog(tenant_slug):
 
     data = []
     for item in items:
-        # Reuse existing formatter logic if possible, or build custom
-        # Spec: id, title, description, category, imageUrl, priceLabel, status, formSchema
-
         prod = _formatear_producto({
             "nombre": item.nombre,
             "categoria": item.categoria,
