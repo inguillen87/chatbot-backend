@@ -423,7 +423,7 @@ def create_app(config_class=Config):
     from routes.archivos import archivos_bp
     from routes.rubros import rubros_bp
     from routes.metricas import metricas_bp
-    from routes.municipio_api import municipio_api_bp, public_market_bp, widget_public_bp
+    from routes.municipio_api import municipio_api_bp, public_market_bp, widget_public_bp, legacy_public_bp
     from routes.catalogo import catalogo_bp
     from routes.productos import productos_bp
     from routes.pedidos import pedidos_bp
@@ -463,6 +463,7 @@ def create_app(config_class=Config):
     )
     from routes.pwa_public import pwa_public_bp, pwa_tenant_info_bp
     from routes.market import market_admin_bp, market_bp
+    from routes.portal_api import portal_api_bp
     from routes.public_resolver import public_resolver_bp, public_municipios_bp
     from routes.widget_settings import integracion_widget_bp, widget_settings_bp
     from routes.subastas import subastas_bp
@@ -544,6 +545,7 @@ def create_app(config_class=Config):
     app.register_blueprint(categorias_bp)
     app.register_blueprint(municipio_api_bp)
     app.register_blueprint(public_market_bp)
+    app.register_blueprint(legacy_public_bp)
     app.register_blueprint(widget_public_bp)
     app.register_blueprint(recordatorios_bp)
     app.register_blueprint(historial_bp)
@@ -582,6 +584,10 @@ def create_app(config_class=Config):
     )
     app.register_blueprint(market_bp)
     app.register_blueprint(market_admin_bp)
+    # Register portal API with v1 prefix (primary)
+    app.register_blueprint(portal_api_bp, url_prefix='/api/v1/portal/<tenant_slug>')
+    # Register portal API with legacy/compat prefix (for existing frontend snippets)
+    app.register_blueprint(portal_api_bp, name='portal_api_legacy', url_prefix='/api/portal/<tenant_slug>')
     app.register_blueprint(pwa_misc_bp)
     app.register_blueprint(pwa_app_bp)
     app.register_blueprint(pwa_app_legacy_bp)

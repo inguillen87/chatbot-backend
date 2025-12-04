@@ -134,6 +134,16 @@ def emit_ticket_comment(data: Any) -> None:
     """Broadcast a new comment without altering the legacy ticket_update payloads."""
     _emit_to_ticket_room('new_comment', data)
 
+
+def emit_tenant_update(tenant_slug: str, event_name: str, data: Any) -> None:
+    """Emit an event to the tenant's specific room for real-time portal updates."""
+    if tenant_slug:
+        # Emit generic content update signal
+        socketio.emit('tenant_content_update', {'type': event_name}, room=tenant_slug)
+        # Emit specific event
+        socketio.emit(event_name, data, room=tenant_slug)
+
+
 def send_welcome_message(sid, auth):
     """Sends a welcome message to a newly connected anonymous client."""
     from services.municipio_responder import responder_municipio
