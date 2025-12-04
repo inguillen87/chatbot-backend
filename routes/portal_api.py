@@ -1,7 +1,7 @@
 from __future__ import annotations
 from flask import Blueprint, jsonify, request, g, abort
 from sqlalchemy import or_
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from models import MunicipioPost, CatalogoItem, TenantTicket
 from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
@@ -9,7 +9,7 @@ from services.rewards import recompensas_service
 from utils.auth_decorators import require_auth_optional, require_auth
 from routes.catalogo import _formatear_producto
 
-portal_api_bp = Blueprint('portal_api', __name__, url_prefix='/api/v1/portal/<tenant_slug>')
+portal_api_bp = Blueprint('portal_api', __name__)
 
 def _resolve_context(tenant_slug):
     try:
@@ -23,6 +23,54 @@ def _resolve_context(tenant_slug):
 def _get_owner_id(tenant):
     owner = tenant.municipio or tenant.pyme
     return owner.id if owner else None
+
+def _generate_notifications(user, tenant, limit=10):
+    notifications = []
+
+    # 1. Ticket Updates (Last 7 days)
+    if user:
+        recent_tickets = TenantTicket.query.filter(
+            TenantTicket.user_id == user.id,
+            TenantTicket.tenant_id == tenant.id,
+            TenantTicket.updated_at >= datetime.now(timezone.utc) - timedelta(days=7)
+        ).order_by(TenantTicket.updated_at.desc()).limit(limit).all()
+
+        for t in recent_tickets:
+            notifications.append({
+                "id": f"ticket_update_{t.id}_{int(t.updated_at.timestamp())}",
+                "title": "Actualización de Reclamo",
+                "message": f"Tu reclamo #{t.id} está en estado: {t.estado}",
+                "severity": "info",
+                "date": t.updated_at.isoformat(),
+                "read": False, # Mock until read state is tracked
+                "actionLabel": "Ver Reclamo",
+                "actionHref": f"/{tenant.slug}/pedidos/{t.id}"
+            })
+
+    # 2. New Content (News/Events - Last 3 days)
+    owner_id = _get_owner_id(tenant)
+    recent_posts = MunicipioPost.query.filter(
+        MunicipioPost.municipio_id == owner_id,
+        MunicipioPost.fecha_publicacion >= datetime.now(timezone.utc) - timedelta(days=3)
+    ).order_by(MunicipioPost.fecha_publicacion.desc()).limit(limit).all()
+
+    for p in recent_posts:
+        type_label = "Evento" if p.tipo_post == 'evento' else "Noticia"
+        route_segment = 'eventos' if p.tipo_post == 'evento' else 'noticias'
+        notifications.append({
+            "id": f"post_new_{p.id}",
+            "title": f"Nuevo {type_label}: {p.titulo}",
+            "message": p.subtitulo or (p.descripcion[:50] + "..." if p.descripcion else ""),
+            "severity": "success",
+            "date": p.fecha_publicacion.isoformat(),
+            "read": False,
+            "actionLabel": "Ver",
+            "actionHref": f"/{tenant.slug}/{route_segment}/{p.id}"
+        })
+
+    # Sort combined
+    notifications.sort(key=lambda x: x['date'], reverse=True)
+    return notifications[:limit]
 
 @portal_api_bp.route('/content', methods=['GET'])
 @require_auth_optional
@@ -46,21 +94,19 @@ def get_content(tenant_slug):
     ).order_by(MunicipioPost.fecha_evento_inicio.asc()).limit(5)
     events_items = events_query.all()
 
-    # 3. Notifications (Mock/Placeholder or Ticket Updates)
-    notifications = []
-    # If we had a notification model, we'd query it here for 'user'
+    # 3. Notifications (Dynamic)
+    notifications = _generate_notifications(user, tenant, limit=5)
 
     # 4. Loyalty Summary
-    loyalty = {
+    loyalty_summary = {
         "points": 0,
         "surveysCompleted": 0,
         "suggestionsShared": 0,
         "claimsFiled": 0
     }
     if user:
-        loyalty["points"] = recompensas_service().obtener_saldo(user)
-        # Count other metrics if models allow
-        loyalty["claimsFiled"] = TenantTicket.query.filter_by(user_id=user.id, tenant_id=tenant.id).count()
+        loyalty_summary["points"] = recompensas_service().obtener_saldo(user)
+        loyalty_summary["claimsFiled"] = TenantTicket.query.filter_by(user_id=user.id, tenant_id=tenant.id).count()
 
     # 5. Activities (Recent tickets)
     activities = []
@@ -72,11 +118,11 @@ def get_content(tenant_slug):
         for t in recent_tickets:
             activities.append({
                 "id": str(t.id),
-                "type": "RECLAMO", # or TICKET
-                "description": t.descripcion or t.categoria,
+                "type": "RECLAMO",
+                "description": t.descripcion or t.categoria or "Sin descripción",
                 "date": t.updated_at.isoformat() if t.updated_at else None,
                 "status": t.estado,
-                "statusType": "info" # map status to severity
+                "statusType": "info"
             })
 
     return jsonify({
@@ -84,22 +130,23 @@ def get_content(tenant_slug):
         "news": [{
             "id": str(n.id),
             "title": n.titulo,
-            "summary": n.subtitulo or n.descripcion[:100],
+            "summary": n.subtitulo or (n.descripcion[:100] if n.descripcion else ""),
             "coverUrl": n.imagen_url,
             "date": n.fecha_publicacion.isoformat(),
-            "category": "General", # or from tags
+            "category": "General",
             "featured": False,
-            "link": f"/portal/noticias/{n.id}"
+            "link": f"/{tenant.slug}/noticias/{n.id}"
         } for n in news_items],
         "events": [{
             "id": str(e.id),
             "title": e.titulo,
             "date": e.fecha_evento_inicio.isoformat() if e.fecha_evento_inicio else None,
             "location": e.ubicacion,
-            "status": "inscripcion", # logic needed
-            "coverUrl": e.imagen_url
+            "status": "inscripcion",
+            "coverUrl": e.imagen_url,
+            "link": f"/{tenant.slug}/eventos/{e.id}"
         } for e in events_items],
-        "loyaltySummary": loyalty,
+        "loyaltySummary": loyalty_summary,
         "activities": activities
     })
 
@@ -124,13 +171,14 @@ def get_news(tenant_slug):
         data.append({
             "id": str(n.id),
             "title": n.titulo,
-            "summary": n.subtitulo or n.descripcion[:150],
-            "content": n.descripcion, # Assuming content is in description
+            "summary": n.subtitulo or (n.descripcion[:150] if n.descripcion else ""),
+            "content": n.descripcion,
             "coverUrl": n.imagen_url,
             "date": n.fecha_publicacion.isoformat(),
             "category": "General",
-            "author": "Admin", # Placeholder
-            "featured": False
+            "author": "Admin",
+            "featured": False,
+            "link": f"/{tenant.slug}/noticias/{n.id}"
         })
 
     return jsonify({
@@ -175,10 +223,11 @@ def get_events(tenant_slug):
             "coverUrl": e.imagen_url,
             "date": e.fecha_evento_inicio.isoformat() if e.fecha_evento_inicio else None,
             "location": e.ubicacion,
-            "spots": 0, # Not in model
-            "registered": 0, # Not in model
+            "spots": 0,
+            "registered": 0,
             "status": "inscripcion",
-            "user_registered": False
+            "user_registered": False,
+            "link": f"/{tenant.slug}/eventos/{e.id}"
         })
 
     return jsonify({
@@ -222,7 +271,8 @@ def get_catalog(tenant_slug):
             "imageUrl": prod.get('imagen_url'),
             "priceLabel": price_label,
             "status": "available",
-            "formSchema": {}
+            "formSchema": {},
+            "link": f"/{tenant.slug}/productos/{item.id}"
         })
 
     return jsonify({"data": data})
@@ -230,15 +280,16 @@ def get_catalog(tenant_slug):
 @portal_api_bp.route('/notifications', methods=['GET'])
 @require_auth
 def get_notifications(tenant_slug):
-    _resolve_context(tenant_slug)
-    # Placeholder
-    return jsonify([])
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+    notifications = _generate_notifications(user, tenant, limit=20)
+    return jsonify(notifications)
 
 @portal_api_bp.route('/notifications/<string:notif_id>/read', methods=['POST'])
 @require_auth
 def mark_notification_read(tenant_slug, notif_id):
     _resolve_context(tenant_slug)
-    # Placeholder logic
+    # Placeholder logic - in future implement read state storage
     return jsonify({"success": True})
 
 @portal_api_bp.route('/profile', methods=['GET'])
@@ -254,7 +305,7 @@ def get_profile(tenant_slug):
         "name": user.name,
         "email": user.email,
         "points": points,
-        "level": "Standard", # Logic needed
+        "level": "Standard",
         "preferences": {
             "notifications_email": True,
             "notifications_push": False
