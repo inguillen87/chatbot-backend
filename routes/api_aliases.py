@@ -38,10 +38,15 @@ from routes.ticket import (
     get_tickets_del_usuario,
 )
 from routes.municipio_api import (
+    agregar_item_carrito,
+    checkout_publico,
     listar_categorias_municipio,
     listar_categorias_pedidos,
     listar_categorias_ticket,
     listar_empleados_multitenant,
+    obtener_carrito_publico,
+    producto_publico,
+    productos_publicos,
 )
 from routes.productos import obtener_productos
 from routes.pedidos import (
@@ -423,6 +428,87 @@ def root_municipio_alias_empleados():
     if request.method == "OPTIONS":
         return _options_ok()
     return listar_empleados_multitenant(tenant_slug="municipio")
+
+
+# --- Alias sin prefijo /api para endpoints de estadísticas ---
+
+
+@public_aliases_bp.route(
+    "/estadisticas/tickets", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def root_estadisticas_tickets_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return estadisticas_tickets()
+
+
+@public_aliases_bp.route(
+    "/estadisticas/mapa_calor/datos",
+    methods=["GET", "OPTIONS"],
+    strict_slashes=False,
+)
+def root_estadisticas_heatmap_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return mapa_calor_datos()
+
+
+# --- Alias sin prefijo /api para el marketplace público ---
+
+
+@public_aliases_bp.route(
+    "/public/market/<tenant_slug>/productos",
+    methods=["GET", "OPTIONS"],
+    strict_slashes=False,
+)
+def root_public_market_productos_alias(tenant_slug: str):
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return productos_publicos(tenant_slug=tenant_slug)
+
+
+@public_aliases_bp.route(
+    "/public/market/<tenant_slug>/productos/<int:producto_id>",
+    methods=["GET", "OPTIONS"],
+    strict_slashes=False,
+)
+def root_public_market_producto_alias(tenant_slug: str, producto_id: int):
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return producto_publico(tenant_slug=tenant_slug, producto_id=producto_id)
+
+
+@public_aliases_bp.route(
+    "/public/market/<tenant_slug>/carrito",
+    methods=["GET", "OPTIONS"],
+    strict_slashes=False,
+)
+def root_public_market_carrito_alias(tenant_slug: str):
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return obtener_carrito_publico(tenant_slug=tenant_slug)
+
+
+@public_aliases_bp.route(
+    "/public/market/<tenant_slug>/carrito/items",
+    methods=["POST", "OPTIONS"],
+    strict_slashes=False,
+)
+def root_public_market_carrito_items_alias(tenant_slug: str):
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return agregar_item_carrito(tenant_slug=tenant_slug)
+
+
+@public_aliases_bp.route(
+    "/public/market/<tenant_slug>/checkout",
+    methods=["POST", "OPTIONS"],
+    strict_slashes=False,
+)
+def root_public_market_checkout_alias(tenant_slug: str):
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return checkout_publico(tenant_slug=tenant_slug)
 
 
 @api_aliases_bp.route("/app/me/tenants", methods=["GET", "OPTIONS"], strict_slashes=False)
