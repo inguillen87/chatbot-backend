@@ -44,7 +44,7 @@ Returns user details and loyalty points. Requires authentication.
 ## 7. Real-time Updates (Socket.IO)
 To ensure the User Portal updates instantly when an Admin posts content, the backend emits Socket.IO events to the tenant's room.
 
-**Room Name:** `tenant_slug` (e.g., "Municipio", "Ferreteria")
+**Room Name:** `tenant_slug` (e.g., "municipio", "ferreteria")
 
 **Events Emitted:**
 *   `tenant_content_update`: Generic signal that something changed. Payload: `{ "type": "news_update" }`

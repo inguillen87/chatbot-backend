@@ -423,7 +423,7 @@ def create_app(config_class=Config):
     from routes.archivos import archivos_bp
     from routes.rubros import rubros_bp
     from routes.metricas import metricas_bp
-    from routes.municipio_api import municipio_api_bp, public_market_bp, widget_public_bp
+    from routes.municipio_api import municipio_api_bp, public_market_bp, widget_public_bp, legacy_public_bp
     from routes.catalogo import catalogo_bp
     from routes.productos import productos_bp
     from routes.pedidos import pedidos_bp
@@ -545,6 +545,7 @@ def create_app(config_class=Config):
     app.register_blueprint(categorias_bp)
     app.register_blueprint(municipio_api_bp)
     app.register_blueprint(public_market_bp)
+    app.register_blueprint(legacy_public_bp)
     app.register_blueprint(widget_public_bp)
     app.register_blueprint(recordatorios_bp)
     app.register_blueprint(historial_bp)
