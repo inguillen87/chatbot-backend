@@ -29,29 +29,39 @@ def get_current_tenant() -> Optional[str]:
     5) Si nada funciona: recién ahí tiramos ApiError("tenant requerido", 400)
     """
 
+    def _store_and_return(slug: Optional[str]) -> Optional[str]:
+        if not slug:
+            return None
+
+        try:
+            from services.tenant_resolver import apply_tenant_alias
+
+            slug = apply_tenant_alias(slug) or slug
+        except Exception:
+            pass
+
+        g.current_tenant = slug
+        g.tenant_slug = slug
+        g.tenant = slug
+        return slug
+
     # 1) Contexto ya resuelto
     for attr in ("current_tenant", "tenant_slug", "tenant"):
         val = getattr(g, attr, None)
         if val:
-            return val
+            return _store_and_return(val)
 
     # 2) Querystring (lo que llega desde /market/municipio/cart)
     for key in TENANT_QUERY_KEYS:
         val = request.args.get(key)
         if val:
-            g.current_tenant = val
-            g.tenant_slug = val
-            g.tenant = val
-            return val
+            return _store_and_return(val)
 
     # 3) Headers (para widget embebido / integraciones)
     for key in TENANT_HEADER_KEYS:
         val = request.headers.get(key)
         if val:
-            g.current_tenant = val
-            g.tenant_slug = val
-            g.tenant = val
-            return val
+            return _store_and_return(val)
 
     # 4) Usuario autenticado (g.current_user / g.user / g.viewer)
     for attr in ("current_user", "user", "viewer"):
@@ -85,28 +95,22 @@ def get_current_tenant() -> Optional[str]:
 
         if not slug and tipo_chat == "pyme":
             slug = "pyme"
-
         if slug:
-            g.current_tenant = slug
-            g.tenant_slug = slug
-            g.tenant = slug
-            return slug
+            return _store_and_return(slug)
 
     # 5) Fallback defensivo para rutas que incluyen el slug en el path
-    path_parts = [parte for parte in request.path.split("/") if parte]
+    path_parts = [parte for parte in request.path.split('/') if parte]
     for idx, parte in enumerate(path_parts):
         if parte in {"municipio", "municipal"}:
             siguiente = path_parts[idx + 1] if idx + 1 < len(path_parts) else None
             slug_hint = siguiente or "municipio"
-            g.current_tenant = slug_hint
-            g.tenant_slug = slug_hint
-            g.tenant = slug_hint
-            return slug_hint
+            return _store_and_return(slug_hint)
         if parte in {"whatsapp", "pwa"}:
-            g.current_tenant = parte
-            g.tenant_slug = parte
-            g.tenant = parte
-            return parte
+            return _store_and_return(parte)
+
+    default_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
+    if default_slug:
+        return _store_and_return(default_slug)
 
     # 5) Si realmente no se puede resolver
     current_app.logger.warning(
@@ -117,7 +121,6 @@ def get_current_tenant() -> Optional[str]:
         dict(request.cookies),
     )
     raise ApiError("tenant requerido", 400)
-
 
 def get_current_tenant_slug() -> Optional[str]:
     try:

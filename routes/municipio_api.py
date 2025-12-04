@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import datetime
 from typing import List
 
-from flask import Blueprint, abort, jsonify, g, request, session
+from flask import Blueprint, abort, current_app, jsonify, g, request, session
 from flask_cors import cross_origin
 from sqlalchemy import func, or_
 
@@ -21,6 +21,11 @@ from config import ALLOWED_ORIGINS
 from routes.auth import token_requerido
 from routes.ticket import TICKET_ALLOWED_STATES
 from utils.tenant import get_current_tenant, get_current_tenant_profile
+from services.tenant_resolver import (
+    TenantResolutionError,
+    apply_tenant_alias,
+    resolve_tenant_only,
+)
 
 municipio_api_bp = Blueprint(
     "municipio_api",
@@ -78,17 +83,35 @@ def _resolve_tenant_or_404(tenant_slug: str) -> TenantProfile:
         g.current_tenant = tenant_slug
         g.tenant_slug = tenant_slug
 
-    tenant = get_current_tenant_profile(tenant_slug)
-    if tenant:
-        g.tenant = tenant
-        return tenant
-    tenant = (
-        TenantProfile.query.filter(func.lower(TenantProfile.slug) == tenant_slug.lower())
-        .order_by(TenantProfile.id.asc())
-        .first()
-    )
+    normalized_slug = (tenant_slug or "").strip() or None
+    mapped_slug = apply_tenant_alias(normalized_slug) or normalized_slug
+    fallback_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
+
+    tenant: TenantProfile | None = None
+    for candidate in dict.fromkeys(
+        [mapped_slug, normalized_slug, fallback_slug, get_current_tenant()]
+    ):
+        if not candidate:
+            continue
+        tenant = get_current_tenant_profile(candidate)
+        if tenant:
+            break
+        try:
+            tenant = resolve_tenant_only(
+                tenant_slug=candidate,
+                require_explicit_slug=False,
+            )
+        except TenantResolutionError:
+            tenant = None
+        if tenant:
+            break
+
+    if not tenant and fallback_slug:
+        tenant = get_current_tenant_profile(fallback_slug)
+
     if not tenant:
         abort(404, "Tenant no encontrado")
+
     g.tenant = tenant
     return tenant
 

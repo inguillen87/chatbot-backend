@@ -135,6 +135,17 @@ def _normalize_tenant_slug(raw_slug: str | None) -> str | None:
         alias_map.setdefault("whatsapp", alias_target)
         alias_map.setdefault("pwa", alias_target)
 
+        # Los dashboards de estadísticas suelen invocarse con
+        # ``tenant_slug=estadisticas`` desde el frontend. Si ese alias no
+        # existe como tenant real, degradamos al tenant por defecto (ej. el
+        # municipal) en lugar de responder 404.
+        alias_map.setdefault("estadisticas", alias_target)
+
+    # Fallback razonable cuando no hay alias configurado: tratar
+    # ``estadisticas`` como sinónimo de municipio para mantener compatibilidad
+    # con widgets viejos.
+    alias_map.setdefault("estadisticas", "municipio")
+
     return alias_map.get(slug, slug)
 
 
