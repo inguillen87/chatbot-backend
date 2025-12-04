@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Portal {{ tenant_name }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-fg: #ffffff;
+      --accent: #f59e0b;
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --text: #0f172a;
+      --text-muted: #64748b;
+      --border: #e2e8f0;
+      --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      --radius: 12px;
+    }
+
+    [data-theme="dark"] {
+      --primary: #3b82f6;
+      --primary-fg: #ffffff;
+      --accent: #fbbf24;
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --border: #334155;
+      --shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+    }
+
+    * { box-sizing: border-box; transition: background-color 0.3s, border-color 0.3s, color 0.3s; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding-bottom: 80px; /* Space for bottom nav on mobile or just breathing room */
+    }
+
+    /* Animations */
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    .animate-fade-in { animation: fadeIn 0.5s ease-out forwards; }
+
+    @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
+    .animate-pulse { animation: pulse 2s infinite; }
+
+    /* Layout */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 1.5rem;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      backdrop-filter: blur(8px);
+    }
+
+    .brand { font-weight: 800; font-size: 1.25rem; display: flex; align-items: center; gap: 0.5rem; }
+    .brand span { color: var(--primary); }
+
+    .actions { display: flex; gap: 1rem; align-items: center; }
+
+    .btn-icon {
+      background: transparent;
+      border: none;
+      color: var(--text);
+      cursor: pointer;
+      padding: 0.5rem;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .btn-icon:hover { background: var(--bg); }
+
+    .hero {
+      background: linear-gradient(135deg, var(--primary) 0%, #1d4ed8 100%);
+      color: var(--primary-fg);
+      padding: 3rem 1.5rem;
+      text-align: center;
+      border-radius: 0 0 2rem 2rem;
+      margin-bottom: 2rem;
+      box-shadow: var(--shadow);
+    }
+    .hero h1 { margin: 0 0 0.5rem; font-size: 2rem; letter-spacing: -0.025em; }
+    .hero p { opacity: 0.9; max-width: 600px; margin: 0 auto; }
+
+    /* Tabs */
+    .tabs {
+      display: flex;
+      gap: 1rem;
+      padding: 0 1.5rem;
+      overflow-x: auto;
+      margin-bottom: 1.5rem;
+      scrollbar-width: none;
+    }
+    .tab {
+      padding: 0.75rem 1.5rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .tab.active {
+      background: var(--primary);
+      color: var(--primary-fg);
+      border-color: var(--primary);
+    }
+
+    /* Grid */
+    .container { max-width: 1200px; margin: 0 auto; padding: 0 1.5rem; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1.5rem;
+    }
+
+    /* Cards */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+    .card:hover { transform: translateY(-4px); box-shadow: var(--shadow); }
+
+    .card-img {
+      width: 100%;
+      height: 180px;
+      object-fit: cover;
+      background: var(--bg);
+    }
+
+    .card-body { padding: 1.25rem; flex: 1; display: flex; flex-direction: column; gap: 0.5rem; }
+    .card-tag {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--primary);
+      font-weight: 700;
+    }
+    .card-title { font-weight: 700; font-size: 1.1rem; margin: 0; }
+    .card-desc { color: var(--text-muted); font-size: 0.9rem; line-height: 1.5; flex: 1; }
+
+    .card-footer {
+      padding: 1rem 1.25rem;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(0,0,0,0.02);
+    }
+
+    .price { font-weight: 800; font-size: 1.25rem; color: var(--text); }
+    .pts { color: var(--accent); }
+
+    .btn {
+      background: var(--primary);
+      color: var(--primary-fg);
+      border: none;
+      padding: 0.6rem 1.2rem;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .btn:hover { opacity: 0.9; }
+    .btn-secondary { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--border); }
+
+    /* Sections logic */
+    section { display: none; }
+    section.active { display: block; animation: fadeIn 0.4s ease-out; }
+
+    /* Notification Panel */
+    .notif-panel {
+      position: fixed;
+      top: 70px;
+      right: 20px;
+      width: 320px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      z-index: 100;
+      transform: translateX(120%);
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      max-height: 80vh;
+      overflow-y: auto;
+    }
+    .notif-panel.open { transform: translateX(0); }
+    .notif-item { padding: 1rem; border-bottom: 1px solid var(--border); }
+    .notif-item:last-child { border-bottom: none; }
+    .notif-title { font-weight: 600; font-size: 0.95rem; }
+    .notif-time { font-size: 0.75rem; color: var(--text-muted); }
+
+    /* Date badge for events */
+    .date-badge {
+      position: absolute;
+      top: 1rem;
+      right: 1rem;
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 0.5rem;
+      text-align: center;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      line-height: 1;
+      min-width: 50px;
+    }
+    .date-day { font-size: 1.25rem; font-weight: 800; color: var(--primary); }
+    .date-month { font-size: 0.75rem; text-transform: uppercase; font-weight: 700; color: var(--text-muted); }
+
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+      {{ tenant_name }}
+    </div>
+    <div class="actions">
+      <button class="btn-icon" id="theme-toggle" aria-label="Cambiar tema">
+        <svg class="sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"></circle><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"></path></svg>
+      </button>
+      <button class="btn-icon" id="notif-toggle" aria-label="Notificaciones">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+      </button>
+      <button class="btn" onclick="window.location.href='/market/{{ tenant_slug }}/cart'">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"></path></svg>
+        Carrito
+      </button>
+    </div>
+  </header>
+
+  <div class="notif-panel" id="notif-panel">
+    <div style="padding:1rem; border-bottom:1px solid var(--border); font-weight:700;">Notificaciones</div>
+    <div class="notif-item">
+      <div class="notif-title">Bienvenido a {{ tenant_name }}</div>
+      <div style="font-size:0.85rem; margin:4px 0;">Explorá nuestros servicios y productos digitales.</div>
+      <div class="notif-time">Ahora</div>
+    </div>
+    {% for n in news[:2] %}
+    <div class="notif-item">
+      <div class="notif-title">{{ n.titulo }}</div>
+      <div class="notif-time">Novedad reciente</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="hero animate-fade-in">
+    <h1>{{ tenant_name }}</h1>
+    <p>{{ hero_subtitle }}</p>
+  </div>
+
+  <div class="container">
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('tab-catalogo')">Catálogo</div>
+      <div class="tab" onclick="switchTab('tab-novedades')">Novedades</div>
+      <div class="tab" onclick="switchTab('tab-eventos')">Eventos</div>
+      <div class="tab" onclick="switchTab('tab-encuestas')">Participación</div>
+    </div>
+
+    <!-- CATALOGO -->
+    <section id="tab-catalogo" class="active">
+      {% if not catalog_sections and not canjes %}
+        <div style="text-align:center; padding:3rem; color:var(--text-muted);">
+          <h3>No hay items disponibles por el momento</h3>
+          <p>Volvé pronto para ver las novedades.</p>
+        </div>
+      {% endif %}
+
+      {% for section in catalog_sections %}
+      <h2 style="margin: 2rem 0 1rem;">{{ section.title }}</h2>
+      <div class="grid">
+        {% for item in section.items %}
+          <article class="card">
+            <img src="{{ item.imagen_url or 'https://via.placeholder.com/400x300?text=Sin+Imagen' }}" class="card-img" alt="{{ item.nombre }}">
+            <div class="card-body">
+              <div class="card-tag">{{ item.categoria }}</div>
+              <h3 class="card-title">{{ item.nombre }}</h3>
+              <div class="card-desc">{{ item.descripcion_corta or item.descripcion or 'Sin descripción disponible' }}</div>
+            </div>
+            <div class="card-footer">
+              <div class="price">{{ item.precio_texto or item.precio_unitario }} {{ item.moneda }}</div>
+              <button class="btn btn-secondary btn-icon" title="Agregar" onclick="addToCart({{ item.id }})">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              </button>
+            </div>
+          </article>
+        {% endfor %}
+      </div>
+      {% endfor %}
+
+      {% if canjes %}
+      <h2 style="margin: 2rem 0 1rem;">🎁 Recompensas y Canjes</h2>
+      <div class="grid">
+        {% for item in canjes %}
+          <article class="card" style="border-color: var(--accent);">
+            <div style="position:absolute; top:10px; left:10px; background:var(--accent); color:#fff; padding:4px 8px; border-radius:4px; font-size:12px; font-weight:700;">CANJE</div>
+            <img src="{{ item.imagen_url }}" class="card-img" alt="{{ item.nombre }}">
+            <div class="card-body">
+              <h3 class="card-title">{{ item.nombre }}</h3>
+              <div class="card-desc">{{ item.descripcion }}</div>
+            </div>
+            <div class="card-footer">
+              <div class="price pts">{{ item.precio_puntos }} PTS</div>
+              <button class="btn" onclick="addToCart({{ item.id }})">Canjear</button>
+            </div>
+          </article>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </section>
+
+    <!-- NOVEDADES -->
+    <section id="tab-novedades">
+      <div class="grid">
+        {% for post in news %}
+          <article class="card">
+            {% if post.imagen_url %}
+            <img src="{{ post.imagen_url }}" class="card-img" alt="{{ post.titulo }}">
+            {% endif %}
+            <div class="card-body">
+              <div class="card-tag">Noticia</div>
+              <h3 class="card-title">{{ post.titulo }}</h3>
+              <div style="font-size:0.85rem; color:var(--text-muted);">{{ post.fecha_publicacion.strftime('%d/%m/%Y') }}</div>
+              <div class="card-desc" style="margin-top:0.5rem;">{{ post.descripcion }}</div>
+              {% if post.enlace %}
+                <a href="{{ post.enlace }}" target="_blank" class="btn btn-secondary" style="align-self:start; margin-top:1rem;">Leer más</a>
+              {% endif %}
+            </div>
+          </article>
+        {% else %}
+          <div style="grid-column: 1/-1; text-align:center; color:var(--text-muted); padding:2rem;">
+            No hay noticias recientes.
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <!-- EVENTOS -->
+    <section id="tab-eventos">
+      <div class="grid">
+        {% for evt in events %}
+          <article class="card">
+             {% if evt.imagen_url %}
+            <img src="{{ evt.imagen_url }}" class="card-img" alt="{{ evt.titulo }}">
+            {% endif %}
+            <div class="date-badge">
+              <div class="date-day">{{ evt.fecha_evento_inicio.strftime('%d') }}</div>
+              <div class="date-month">{{ evt.fecha_evento_inicio.strftime('%b') }}</div>
+            </div>
+            <div class="card-body">
+              <div class="card-tag">Evento</div>
+              <h3 class="card-title">{{ evt.titulo }}</h3>
+              <div style="font-size:0.85rem; color:var(--text-muted);">
+                🕒 {{ evt.fecha_evento_inicio.strftime('%H:%M') }} hs
+                {% if evt.ubicacion %}
+                · 📍 {{ evt.ubicacion }}
+                {% endif %}
+              </div>
+              <div class="card-desc">{{ evt.descripcion }}</div>
+            </div>
+            <div class="card-footer">
+              <button class="btn">Me interesa</button>
+            </div>
+          </article>
+        {% else %}
+          <div style="grid-column: 1/-1; text-align:center; color:var(--text-muted); padding:2rem;">
+            No hay eventos próximos.
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <!-- ENCUESTAS -->
+    <section id="tab-encuestas">
+      <div class="grid">
+        {% for survey in surveys %}
+          <article class="card">
+            <div class="card-body">
+              <div class="card-tag">Participación</div>
+              <h3 class="card-title">{{ survey.titulo }}</h3>
+              <div class="card-desc">{{ survey.descripcion }}</div>
+              {% if survey.puntos_recompensa %}
+                <div style="margin-top:0.5rem; color:var(--accent); font-weight:700;">+{{ survey.puntos_recompensa }} PTS por responder</div>
+              {% endif %}
+            </div>
+            <div class="card-footer">
+              <a href="/surveys/{{ survey.slug }}" class="btn">Participar</a>
+            </div>
+          </article>
+        {% else %}
+          <div style="grid-column: 1/-1; text-align:center; color:var(--text-muted); padding:2rem;">
+            No hay encuestas activas.
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+
+  </div>
+
+  <footer style="margin-top:4rem; padding:2rem; background:var(--surface); border-top:1px solid var(--border); text-align:center; color:var(--text-muted);">
+    <p><strong>{{ tenant_name }}</strong> · Portal Digital</p>
+    <div style="display:flex; gap:1rem; justify-content:center; margin-top:1rem;">
+      {% for feature in features %}
+        <span style="font-size:0.8rem; background:var(--bg); padding:4px 8px; border-radius:4px;">{{ feature }}</span>
+      {% endfor %}
+    </div>
+  </footer>
+
+  <script>
+    // Theme Logic
+    const toggleBtn = document.getElementById('theme-toggle');
+    const html = document.documentElement;
+
+    // Check saved
+    const savedTheme = localStorage.getItem('theme') || 'light';
+    html.setAttribute('data-theme', savedTheme);
+
+    toggleBtn.addEventListener('click', () => {
+      const current = html.getAttribute('data-theme');
+      const next = current === 'light' ? 'dark' : 'light';
+      html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+    });
+
+    // Tab Logic
+    function switchTab(tabId) {
+      // Buttons
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      event.target.classList.add('active');
+
+      // Sections
+      document.querySelectorAll('section').forEach(s => s.classList.remove('active'));
+      document.getElementById(tabId).classList.add('active');
+    }
+
+    // Notifications
+    const notifBtn = document.getElementById('notif-toggle');
+    const notifPanel = document.getElementById('notif-panel');
+    notifBtn.addEventListener('click', () => {
+      notifPanel.classList.toggle('open');
+    });
+
+    // Cart Logic (Minimal implementation)
+    function addToCart(itemId) {
+      // Animation feedback
+      const btn = event.currentTarget;
+      const original = btn.innerHTML;
+      btn.innerHTML = '✅';
+      setTimeout(() => btn.innerHTML = original, 1000);
+
+      // API Call
+      fetch(`/api/market/{{ tenant_slug }}/cart/add`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ catalogo_item_id: itemId, cantidad: 1 })
+      }).then(res => res.json())
+        .then(data => {
+          console.log('Cart updated', data);
+          // Update cart badge if we had one
+        })
+        .catch(err => console.error(err));
+    }
+  </script>
+</body>
+</html>
