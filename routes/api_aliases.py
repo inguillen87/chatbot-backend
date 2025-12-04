@@ -288,6 +288,52 @@ def municipal_posts_alias():
     return list_municipal_posts()
 
 
+def _alias_tenant_slug() -> str | None:
+    """Extract tenant slug hints from the current query string.
+
+    These aliases need to respect the caller's tenant selection instead of
+    forcing "municipio" so that multitenant deployments continue to work.
+    """
+
+    return request.args.get("tenant_slug") or request.args.get("tenant")
+
+
+@api_aliases_bp.route(
+    "/municipal/categorias", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def municipal_categorias_alias_v2():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return listar_categorias_municipio(tenant_slug=_alias_tenant_slug())
+
+
+@api_aliases_bp.route(
+    "/municipal/tickets/categorias", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def municipal_tickets_categorias_alias_v2():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return listar_categorias_ticket(tenant_slug=_alias_tenant_slug())
+
+
+@api_aliases_bp.route(
+    "/municipal/pedidos/categorias", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def municipal_pedidos_categorias_alias_v2():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return listar_categorias_pedidos(tenant_slug=_alias_tenant_slug())
+
+
+@api_aliases_bp.route(
+    "/municipal/empleados", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def municipal_empleados_alias_v2():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return listar_empleados_multitenant(tenant_slug=_alias_tenant_slug())
+
+
 @public_aliases_bp.route(
     "/chatuserregisterpanel", methods=["POST", "OPTIONS"], strict_slashes=False
 )
@@ -511,6 +557,41 @@ def root_municipal_alias_empleados():
     if request.method == "OPTIONS":
         return _options_ok()
     return listar_empleados_multitenant(tenant_slug="municipio")
+
+@public_aliases_bp.route(
+    "/municipal/categorias", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def root_municipal_categorias_alias_v2():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return listar_categorias_municipio(tenant_slug=_alias_tenant_slug())
+
+
+@public_aliases_bp.route(
+    "/municipal/tickets/categorias", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def root_municipal_tickets_categorias_alias_v2():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return listar_categorias_ticket(tenant_slug=_alias_tenant_slug())
+
+
+@public_aliases_bp.route(
+    "/municipal/pedidos/categorias", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def root_municipal_pedidos_categorias_alias_v2():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return listar_categorias_pedidos(tenant_slug=_alias_tenant_slug())
+
+
+@public_aliases_bp.route(
+    "/municipal/empleados", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def root_municipal_empleados_alias_v2():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return listar_empleados_multitenant(tenant_slug=_alias_tenant_slug())
 
 
 # --- Alias sin prefijo /api para endpoints de estadísticas ---
