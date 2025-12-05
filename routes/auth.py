@@ -958,11 +958,11 @@ def register():
     # Check if this is an end-user registration for a specific tenant
     tenant_slug = data.get("tenant_slug")
     if tenant_slug:
-        print(f"DEBUG: Processing tenant_slug={tenant_slug}")
+        current_app.logger.debug(f"Processing tenant_slug={tenant_slug}")
         try:
             try:
                 tenant = resolve_tenant_only(tenant_slug=tenant_slug)
-                print(f"DEBUG: Tenant resolved: {tenant}")
+                current_app.logger.debug(f"Tenant resolved: {tenant}")
             except Exception:
                 tenant = None
 
@@ -996,11 +996,11 @@ def register():
             nuevo.set_password(password)
 
             # Link to tenant
-            print("DEBUG: Attaching tenant")
+            current_app.logger.debug("Attaching tenant")
             _attach_user_to_tenant(nuevo, tenant)
 
             # Set rubro/tipo_chat from tenant owner context if needed, or leave generic
-            print("DEBUG: Finding owner")
+            current_app.logger.debug("Finding owner")
             owner = _tenant_owner(tenant)
             if owner:
                 nuevo.rubro_id = owner.rubro_id
@@ -2009,3 +2009,95 @@ def change_email(current_user: User):
         return jsonify({"error": message}), status
 
     return jsonify({"mensaje": message, "email": current_user.email})
+
+@auth_bp.route('/refresh', methods=['POST'])
+@cross_origin(supports_credentials=True)
+def refresh_token_endpoint():
+    """Renueva el token actual si es válido."""
+    token = obtener_token()
+    if not token:
+        return jsonify({"error": "Token requerido"}), 401
+
+    try:
+        payload = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
+        user_id = payload.get('user_id')
+        user = _user_query().get(user_id)
+        if not user:
+            return jsonify({"error": "Usuario no encontrado"}), 401
+
+        # Re-issue logic (duplicated for now, refactor later)
+        tenant_slug = getattr(user, "tenant_slug", None)
+        if not tenant_slug:
+            tenant = _tenant_for_user(user)
+            if tenant:
+                tenant_slug = tenant.slug
+
+        jwt_payload = {
+            'user_id': user.id,
+            'rol': user.rol,
+            'tipo_chat': user.tipo_chat,
+            'empresa_id': user.empresa_id,
+            'municipio_id': user.municipio_id,
+            'tenant_slug': tenant_slug,
+            'exp': datetime.now(timezone.utc) + timedelta(days=7)
+        }
+        new_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+
+        resp = jsonify({"token": new_token, "expires_in": 7 * 86400})
+        return resp
+    except jwt.ExpiredSignatureError:
+        return jsonify({"error": "Token expirado, por favor inicia sesión nuevamente"}), 401
+    except Exception as e:
+        return jsonify({"error": "Token inválido"}), 401
+
+@auth_bp.route('/admin/login', methods=['POST', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
+def admin_login():
+    """Login exclusivo para administradores y empleados."""
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'})
+
+    data = request.get_json(silent=True) or {}
+    email = data.get('email')
+    password = data.get('password')
+
+    if not email or not password:
+        return jsonify({"error": "Credenciales requeridas"}), 400
+
+    user = _user_query().filter_by(email=email.strip().lower()).first()
+
+    if not user or not user.check_password(password):
+        return jsonify({"error": "Credenciales inválidas"}), 401
+
+    # Check Role
+    if user.rol not in ['admin', 'empleado', 'superadmin']:
+        return jsonify({"error": "Acceso denegado: No tienes permisos administrativos."}), 403
+
+    # Generate Token
+    tenant_slug = getattr(user, "tenant_slug", None)
+    if not tenant_slug:
+        tenant = _tenant_for_user(user)
+        if tenant:
+            tenant_slug = tenant.slug
+
+    jwt_payload = {
+        'user_id': user.id,
+        'rol': user.rol,
+        'tipo_chat': user.tipo_chat,
+        'empresa_id': user.empresa_id,
+        'municipio_id': user.municipio_id,
+        'tenant_slug': tenant_slug,
+        'exp': datetime.now(timezone.utc) + timedelta(days=7)
+    }
+    token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+
+    return jsonify({
+        "token": token,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "name": user.name,
+            "rol": user.rol,
+            "tenant_slug": tenant_slug
+        }
+    })

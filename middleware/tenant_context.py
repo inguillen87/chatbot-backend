@@ -5,9 +5,6 @@ from __future__ import annotations
 from typing import Optional
 from urllib.parse import urlparse
 
-from typing import Optional
-from urllib.parse import urlparse
-
 from flask import current_app, g, jsonify, make_response, request
 from werkzeug.exceptions import HTTPException
 from sqlalchemy import func
@@ -283,6 +280,13 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
     # exists in the database. This mirrors the lenient behavior of
     # ``resolve_tenant_only(require_explicit_slug=False)`` used by public
     # endpoints and avoids 400/401 responses during domain discovery.
+
+    # SECURITY FIX: Do NOT fallback for API routes. Strict tenant isolation required.
+    # Paths starting with /api must have explicit tenant context.
+    path = request.path or ""
+    if path.startswith("/api"):
+        return None
+
     return _fallback_default_tenant()
 
 
