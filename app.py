@@ -545,6 +545,8 @@ def create_app(config_class=Config):
     app.register_blueprint(estadisticas_bp)
     app.register_blueprint(empleados_bp)
     app.register_blueprint(categorias_bp)
+    # Register legacy blueprint first to ensure /api/municipio/carrito isn't shadowed by /api/municipio/<slug>
+    app.register_blueprint(legacy_public_bp)
     app.register_blueprint(municipio_api_bp)
     app.register_blueprint(public_market_bp)
     app.register_blueprint(legacy_public_bp)
@@ -598,6 +600,9 @@ def create_app(config_class=Config):
     app.register_blueprint(admin_tenant_bp)
     app.register_blueprint(public_tenant_bp)
     app.register_blueprint(encuestas_admin_bp)
+
+    from routes.super_admin import super_admin_bp
+    app.register_blueprint(super_admin_bp)
     app.register_blueprint(encuestas_public_bp)
     if FEATURE_ENCUESTAS:
         app.register_blueprint(encuestas_admin_api_bp)

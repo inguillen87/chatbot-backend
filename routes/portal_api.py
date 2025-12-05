@@ -102,6 +102,7 @@ def get_content(tenant_slug):
     # 4. Loyalty Summary
     loyalty_summary = {
         "points": 0,
+        "level": "Estándar",
         "surveysCompleted": 0,
         "suggestionsShared": 0,
         "claimsFiled": 0
@@ -152,13 +153,18 @@ def get_content(tenant_slug):
             else:
                 price_label = f"${prod.get('precio_unitario')}"
 
+        try:
+            numeric_price = float(prod.get('precio_unitario') or 0)
+        except (ValueError, TypeError):
+            numeric_price = 0
+
         catalog_data.append({
             "id": str(item.id),
             "title": item.nombre,
             "description": item.descripcion,
             "category": item.categoria,
             "priceLabel": price_label,
-            "price": prod.get('precio_unitario') or 0,
+            "price": numeric_price,
             "status": "available",
             "imageUrl": prod.get('imagen_url')
         })

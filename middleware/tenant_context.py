@@ -293,7 +293,7 @@ def tenant_middleware(app) -> None:
         g.tenant_profile = tenant
         g.tenant_profile_slug = tenant.slug if tenant else None
         if tenant:
-            g.current_tenant = tenant
+            g.current_tenant = tenant.slug
             g.current_tenant_slug = tenant.slug
 
 

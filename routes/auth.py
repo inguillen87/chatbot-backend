@@ -173,6 +173,18 @@ def _tenant_for_owner(owner: Optional[User]) -> Optional[TenantProfile]:
     )
 
 
+def _tenant_owner(tenant: Optional[TenantProfile]) -> Optional[User]:
+    """Resolve the User owner of a tenant profile."""
+    if not tenant:
+        return None
+
+    if tenant.municipio_id:
+        return _user_query().get(tenant.municipio_id)
+    if tenant.pyme_id:
+        return _user_query().get(tenant.pyme_id)
+
+    return None
+
 def _attach_user_to_tenant(user: User, tenant: Optional[TenantProfile]) -> None:
     """Persist the tenant_id on the user if it's missing or outdated."""
 
@@ -997,6 +1009,15 @@ def register():
 
             db.session.add(nuevo)
             db.session.commit()
+
+            # Migrate anon data if present
+            anon_id = data.get("anon_id") or request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id")
+            if anon_id:
+                try:
+                    from services.ticket_service import servicio_tickets
+                    servicio_tickets.migrar_tickets_de_anonimo(anon_id, nuevo.id)
+                except Exception as e:
+                    current_app.logger.warning(f"Failed to migrate anon data: {e}")
 
             # Auto-login token
             jwt_payload = {
