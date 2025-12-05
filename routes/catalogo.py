@@ -1,7 +1,8 @@
 import os
 from flask import Blueprint, request, jsonify, send_from_directory, render_template, g, url_for
-from models import CatalogoItem, QA, ArchivoAdjunto, User, CatalogoModalidad
+from models import CatalogoItem, QA, ArchivoAdjunto, User, CatalogoModalidad, TenantProfile
 from routes.auth import token_requerido
+from socket_service import emit_tenant_update
 from services.qdrant_search import (
     buscar_catalogo_qdrant,
     DEFAULT_SEARCH_LIMIT,
@@ -74,6 +75,18 @@ def upload_catalog(user):
                 success = processor.process_file(filepath, original_filename)
 
                 if success:
+                    # Emit socket update
+                    tenant = None
+                    if user.tipo_chat == 'municipio' and user.municipio_id:
+                        tenant = TenantProfile.query.filter_by(municipio_id=user.municipio_id).first()
+                    elif getattr(user, 'rubro_id', None): # Pyme
+                        tenant = TenantProfile.query.filter_by(pyme_id=user.id).first()
+                        if not tenant and user.empresa_id:
+                             tenant = TenantProfile.query.filter_by(pyme_id=user.empresa_id).first()
+
+                    if tenant:
+                        emit_tenant_update(tenant.slug, 'catalog_update', {'source': 'upload'})
+
                     return jsonify({"mensaje": "Catálogo subido y procesado exitosamente."}), 202
                 else:
                     return jsonify({"error": "No se pudo procesar el catálogo. Revise los logs para más detalles."}), 500
