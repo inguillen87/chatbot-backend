@@ -10,13 +10,6 @@ def load_template(template_key, config_type):
     Loads a JSON template file.
     config_type: 'menu', 'contacts', 'links', 'widget'
     """
-    # Assuming data/templates relative to app root
-    # If running from root, it is data/templates
-    # In Flask app context, current_app.root_path usually points to 'app' or root.
-    # My file structure shows 'data/' at root.
-    # current_app.root_path might be '/app'.
-
-    # Try different paths
     paths_to_try = [
         os.path.join(os.getcwd(), 'data', 'templates'),
         os.path.join(os.getcwd(), '..', 'data', 'templates'), # If in subfolder
@@ -103,6 +96,7 @@ def create_tenant_from_template(
 
     if tipo == 'municipio':
         tenant.municipio_id = owner.id
+        # Legacy: User.municipio_id points to the User ID that represents the municipality (self)
         owner.municipio_id = owner.id
     else:
         tenant.pyme_id = owner.id
@@ -114,19 +108,10 @@ def create_tenant_from_template(
     owner.tenant_id = tenant.id
 
     # 3. Create Configs from Template
-    # We load standard configs. Channel can be 'widget' or 'whatsapp'.
-    # For now we load them as default (channel=None) or maybe 'widget' as default.
-    # The spec has GET ...?channel=widget.
-
     configs_to_load = ['menu', 'contacts', 'links', 'widget']
     for cfg_key in configs_to_load:
         data = load_template(template_key, cfg_key)
         if data:
-            # Save as default (no channel specified)
-            # Or should we specify 'widget' for menu?
-            # User example: menu.json has structure.
-            # Let's save as channel=None to serve as fallback
-
             tenant_config = TenantConfig(
                 tenant_id=tenant.id,
                 key=cfg_key,
@@ -134,9 +119,6 @@ def create_tenant_from_template(
                 json_value=data
             )
             db.session.add(tenant_config)
-
-            # Also create specific channel entries if needed?
-            # For now, simplistic approach.
 
     # 4. Assign WhatsApp Number
     if auto_assign_whatsapp_number:

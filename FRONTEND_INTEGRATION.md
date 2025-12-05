@@ -37,7 +37,7 @@ Crea un nuevo tenant utilizando una plantilla predefinida.
 ### 1.2 Obtener Configuración Completa
 **GET** `/api/admin/tenants/<slug>/config`
 
-Devuelve la configuración completa del tenant para edición en el panel.
+Devuelve la configuración completa del tenant para edición en el panel. Las configuraciones están anidadas por canal (`default`, `widget`, `whatsapp`) para soportar multi-canalidad.
 
 **Respuesta:**
 ```json
@@ -50,23 +50,33 @@ Devuelve la configuración completa del tenant para edición en el panel.
     "logo_url": "...",
     "whatsapp_sender_id": "..."
   },
-  "menu": { ...JSON menú... },
-  "contacts": { ...JSON contactos... },
-  "links": { ...JSON links... },
-  "widget": { ...JSON widget... }
+  "configs": {
+    "menu": {
+      "default": { ...JSON menú... },
+      "widget": { ...JSON menú widget... }
+    },
+    "contacts": { "default": { ... } },
+    "links": { "default": { ... } },
+    "widget": { "default": { ... } }
+  }
 }
 ```
 
 ### 1.3 Actualizar Configuración
 **PUT** `/api/admin/tenants/<slug>/config`
 
-Permite actualizar la configuración. Se pueden enviar solo los campos a modificar.
+Permite actualizar la configuración. Se pueden enviar solo los campos a modificar, respetando la estructura de canales.
 
 **Body:**
 ```json
 {
   "tenant": { "nombre": "Muni Mendoza" },
-  "menu": { ...nuevo menú... }
+  "configs": {
+    "menu": {
+      "default": { ...nuevo menú default... },
+      "whatsapp": { ...menú específico whatsapp... }
+    }
+  }
 }
 ```
 

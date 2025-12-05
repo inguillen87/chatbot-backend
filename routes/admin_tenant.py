@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify, g
 from utils.auth_helpers import token_requerido
+from middleware.tenant_context import require_tenant
 from models import db, TenantProfile, User, TenantConfig, Role, UserRole, CategoriaTicket
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
 
@@ -9,7 +10,7 @@ admin_tenant_bp = Blueprint('admin_tenant_bp', __name__)
 
 @admin_tenant_bp.route('/api/admin/tenants', methods=['POST'])
 def create_tenant():
-    """Crea un nuevo tenant desde una plantilla."""
+    """Crea un nuevo tenant desde una plantilla. Actúa como registro público."""
     data = request.json or {}
     try:
         tenant = create_tenant_from_template(
@@ -40,22 +41,25 @@ def create_tenant():
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/config', methods=['GET'])
 @token_requerido
+@require_tenant
 def get_tenant_config_bundle(current_user, slug):
     tenant = TenantProfile.query.filter_by(slug=slug).first()
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
-    # Security Check
+    # IDOR Check
     if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
          return jsonify({'error': 'Unauthorized'}), 403
 
     configs = TenantConfig.query.filter_by(tenant_id=tenant.id).all()
+    # Nested structure: key -> channel -> value
     config_dict = {}
     for cfg in configs:
         k = cfg.key
-        if cfg.channel:
-            k = f"{k}:{cfg.channel}"
-        config_dict[k] = cfg.json_value
+        c = cfg.channel or 'default'
+        if k not in config_dict:
+            config_dict[k] = {}
+        config_dict[k][c] = cfg.json_value
 
     response = {
         "tenant": {
@@ -66,18 +70,19 @@ def get_tenant_config_bundle(current_user, slug):
             "logo_url": tenant.logo_url,
             "whatsapp_sender_id": tenant.whatsapp_sender_id
         },
-        **config_dict
+        "configs": config_dict
     }
     return jsonify(response)
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/config', methods=['PUT'])
 @token_requerido
+@require_tenant
 def update_tenant_config_bundle(current_user, slug):
     tenant = TenantProfile.query.filter_by(slug=slug).first()
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
-    # Security Check
+    # IDOR Check
     if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
          return jsonify({'error': 'Unauthorized'}), 403
 
@@ -89,22 +94,35 @@ def update_tenant_config_bundle(current_user, slug):
     if 'logo_url' in tenant_data: tenant.logo_url = tenant_data['logo_url']
 
     # Update Configs
+    # Expecting: "configs": { "menu": { "default": {...}, "widget": {...} } }
+    # Or simplified: "menu": { ... } (updates default)
+    # Let's support both for backward compat with my prev implementation if used.
+
     valid_keys = ['menu', 'contacts', 'links', 'widget']
 
-    for full_key, value in data.items():
-        if full_key == 'tenant': continue
+    configs_in = data.get('configs', {})
+    # Also merge top level keys if they match valid_keys (legacy support)
+    for k in valid_keys:
+        if k in data:
+            if k not in configs_in:
+                configs_in[k] = {}
+            configs_in[k]['default'] = data[k] # Assume default channel if top level
 
-        if ':' in full_key:
-            key, channel = full_key.split(':', 1)
-        else:
-            key, channel = full_key, None
+    for key, channels_map in configs_in.items():
+        if key not in valid_keys: continue
 
-        if key in valid_keys:
-            cfg = TenantConfig.query.filter_by(tenant_id=tenant.id, key=key, channel=channel).first()
+        if not isinstance(channels_map, dict):
+             # Maybe raw json? Treat as default
+             channels_map = {'default': channels_map}
+
+        for channel, value in channels_map.items():
+            chan_val = None if channel == 'default' else channel
+
+            cfg = TenantConfig.query.filter_by(tenant_id=tenant.id, key=key, channel=chan_val).first()
             if cfg:
                 cfg.json_value = value
             else:
-                cfg = TenantConfig(tenant_id=tenant.id, key=key, channel=channel, json_value=value)
+                cfg = TenantConfig(tenant_id=tenant.id, key=key, channel=chan_val, json_value=value)
                 db.session.add(cfg)
 
     db.session.commit()
@@ -112,12 +130,13 @@ def update_tenant_config_bundle(current_user, slug):
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/assign-whatsapp-number', methods=['POST'])
 @token_requerido
+@require_tenant
 def assign_whatsapp_number(current_user, slug):
     tenant = TenantProfile.query.filter_by(slug=slug).first()
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
-    # Security Check
+    # IDOR Check
     if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
          return jsonify({'error': 'Unauthorized'}), 403
 
@@ -136,6 +155,7 @@ def assign_whatsapp_number(current_user, slug):
 
 @admin_tenant_bp.route('/api/admin/employees', methods=['POST'])
 @token_requerido
+@require_tenant
 def create_employee(current_user):
     """
     Crea un nuevo empleado en el tenant actual.
@@ -145,7 +165,7 @@ def create_employee(current_user):
     if not tenant:
         return jsonify({'error': 'No tenant context'}), 400
 
-    # Security Check
+    # IDOR Check
     if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
         return jsonify({'error': 'Unauthorized'}), 403
 
@@ -200,12 +220,13 @@ def create_employee(current_user):
 
 @admin_tenant_bp.route('/api/admin/employees/<int:user_id>/roles', methods=['POST'])
 @token_requerido
+@require_tenant
 def assign_role(current_user, user_id):
     tenant = g.tenant_profile
     if not tenant:
          return jsonify({'error': 'No tenant context'}), 400
 
-    # Security Check
+    # IDOR Check
     if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
         return jsonify({'error': 'Unauthorized'}), 403
 
@@ -234,12 +255,13 @@ def assign_role(current_user, user_id):
 
 @admin_tenant_bp.route('/api/admin/employees/<int:user_id>/categories', methods=['POST'])
 @token_requerido
+@require_tenant
 def assign_categories(current_user, user_id):
     tenant = g.tenant_profile
     if not tenant:
          return jsonify({'error': 'No tenant context'}), 400
 
-    # Security Check
+    # IDOR Check
     if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
         return jsonify({'error': 'Unauthorized'}), 403
 
