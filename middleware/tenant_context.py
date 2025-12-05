@@ -143,6 +143,9 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
         return _normalize_slug(segments[1])
 
     # Nested API prefixes where the slug is later in the path
+    if lower_segments[:3] == ["api", "public", "tenants"] and len(segments) >= 4:
+        return _normalize_slug(segments[3])
+
     if lower_segments[:2] == ["api", "public"] and len(segments) >= 3:
         return _normalize_slug(segments[2])
 

@@ -10,7 +10,9 @@ from extensions import db
 from models import User
 
 _ES_EMPLEADO_COLUMN_EXISTS: Optional[bool] = None
-_TENANT_ID_COLUMN_EXISTS: Optional[bool] = None
+# We know tenant_id exists in the model and migrations.
+# Forcing True avoids runtime inspection errors in some environments.
+_TENANT_ID_COLUMN_EXISTS: bool = True
 
 
 def _user_table_has_es_empleado_column() -> bool:
@@ -47,33 +49,9 @@ def _user_table_has_es_empleado_column() -> bool:
 
 def _user_table_has_tenant_id_column() -> bool:
     """Return True if the ``user.tenant_id`` column exists in the database."""
-    global _TENANT_ID_COLUMN_EXISTS
-
-    if _TENANT_ID_COLUMN_EXISTS is not None:
-        return _TENANT_ID_COLUMN_EXISTS
-
-    try:
-        inspector = inspect(db.engine)
-        if not inspector.has_table("user"):
-            return False
-
-        columns = {c["name"] for c in inspector.get_columns("user")}
-        result = "tenant_id" in columns
-        _TENANT_ID_COLUMN_EXISTS = result
-        return result
-    except SQLAlchemyError as exc:  # pragma: no cover - defensive
-        current_app.logger.warning(
-            "[auth] Could not inspect user.tenant_id column; assuming MISSING.",
-            exc_info=exc,
-        )
-    except Exception as e:
-        # In case the engine is not yet available, assume the column is absent.
-        current_app.logger.warning(
-            f"[auth] Generic error inspecting user.tenant_id: {e}; assuming MISSING.",
-            exc_info=True
-        )
-
-    return False
+    # Always return True as the column is part of the core model definition
+    # and we want to avoid fragile runtime inspection that fails in some envs.
+    return True
 
 
 def _safe_user_query():
@@ -82,15 +60,8 @@ def _safe_user_query():
     query = User.query
     if not _user_table_has_es_empleado_column():
         query = query.options(defer(User.es_empleado))
-    if not _user_table_has_tenant_id_column():
-        # Only log once per request/context if possible, but for now we rely on the cached check
-        # to avoid spamming the logs if the function above caches it.
-        # However, the warning below is explicit for the query construction.
-        # We can downgrade it to debug if it's too noisy, but it's important.
-        current_app.logger.debug(
-            "[auth] user.tenant_id column missing in DB; deferring tenant_id to avoid schema mismatch.",
-        )
-        query = query.options(defer(User.tenant_id))
+
+    # tenant_id is assumed present now, so we don't defer it.
     return query
 
 
