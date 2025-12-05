@@ -72,6 +72,7 @@ from services.user_service import (
     update_user_profile,
 )
 from utils.map_config import get_map_config
+from utils.user_query import user_table_has_tenant_id_column
 
 
 _OWNER_TOKEN_RESOLVER: Optional[Callable[[User], Optional[str]]] = None
@@ -191,7 +192,9 @@ def _attach_user_to_tenant(user: User, tenant: Optional[TenantProfile]) -> None:
     if not tenant or not user:
         return
 
-    if hasattr(user, "tenant_id"):
+    # Validar si la columna existe antes de intentar asignarla para evitar errores 500
+    # si la migración no se ha aplicado.
+    if hasattr(user, "tenant_id") and user_table_has_tenant_id_column():
         if user.tenant_id != tenant.id:
             user.tenant_id = tenant.id
             db.session.add(user)
@@ -956,7 +959,7 @@ def register():
         }), 400
 
     # Check if this is an end-user registration for a specific tenant
-    tenant_slug = data.get("tenant_slug")
+    tenant_slug = data.get("tenant_slug") or data.get("tenantSlug") or request.args.get("tenant_slug") or request.args.get("tenantSlug")
     if tenant_slug:
         current_app.logger.debug(f"Processing tenant_slug={tenant_slug}")
         try:
