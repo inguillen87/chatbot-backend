@@ -461,7 +461,7 @@ def create_app(config_class=Config):
         encuestas_admin_bp,
         encuestas_public_bp,
     )
-    from routes.pwa_public import pwa_public_bp, pwa_tenant_info_bp
+    from routes.pwa_public import pwa_public_bp, pwa_tenant_info_bp, public_api_bp
     from routes.market import market_admin_bp, market_bp
     from routes.portal_api import portal_api_bp
     from routes.public_resolver import public_resolver_bp, public_municipios_bp
@@ -573,6 +573,7 @@ def create_app(config_class=Config):
     app.register_blueprint(public_aliases_bp)
     app.register_blueprint(pwa_tenant_info_bp)
     app.register_blueprint(pwa_public_bp)
+    app.register_blueprint(public_api_bp)
 
     # API aliases with "/api" prefix for frontends that hardcode that base path.
     # Flask allows registering the same blueprint multiple times as long as the

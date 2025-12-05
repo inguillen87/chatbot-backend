@@ -3,7 +3,8 @@ from flask import Blueprint, jsonify, request, g, abort
 from sqlalchemy import or_
 from datetime import datetime, timezone, timedelta
 
-from models import MunicipioPost, CatalogoItem, TenantTicket
+from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem
+from extensions import db
 from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
 from services.rewards import recompensas_service
 from utils.auth_decorators import require_auth_optional, require_auth
@@ -131,20 +132,31 @@ def get_content(tenant_slug):
             "id": str(n.id),
             "title": n.titulo,
             "summary": n.subtitulo or (n.descripcion[:100] if n.descripcion else ""),
-            "coverUrl": n.imagen_url,
-            "date": n.fecha_publicacion.isoformat(),
+            "body": n.descripcion,
+            "cover_url": n.imagen_url,
+            "publicado_at": n.fecha_publicacion.isoformat(),
+            "tags": n.tags or [],
             "category": "General",
             "featured": False,
-            "link": f"/{tenant.slug}/noticias/{n.id}"
+            "link": f"/{tenant.slug}/noticias/{n.id}",
+            # Compat keys
+            "coverUrl": n.imagen_url,
+            "date": n.fecha_publicacion.isoformat(),
         } for n in news_items],
         "events": [{
             "id": str(e.id),
             "title": e.titulo,
+            "descripcion": e.descripcion,
+            "starts_at": e.fecha_evento_inicio.isoformat() if e.fecha_evento_inicio else None,
+            "ends_at": e.fecha_evento_fin.isoformat() if e.fecha_evento_fin else None,
+            "cover_url": e.imagen_url,
+            "lugar": e.ubicacion,
+            "status": "inscripcion",
+            "link": f"/{tenant.slug}/eventos/{e.id}",
+            # Compat keys
             "date": e.fecha_evento_inicio.isoformat() if e.fecha_evento_inicio else None,
             "location": e.ubicacion,
-            "status": "inscripcion",
             "coverUrl": e.imagen_url,
-            "link": f"/{tenant.slug}/eventos/{e.id}"
         } for e in events_items],
         "loyaltySummary": loyalty_summary,
         "activities": activities
@@ -172,13 +184,18 @@ def get_news(tenant_slug):
             "id": str(n.id),
             "title": n.titulo,
             "summary": n.subtitulo or (n.descripcion[:150] if n.descripcion else ""),
-            "content": n.descripcion,
-            "coverUrl": n.imagen_url,
-            "date": n.fecha_publicacion.isoformat(),
+            "body": n.descripcion,
+            "cover_url": n.imagen_url,
+            "publicado_at": n.fecha_publicacion.isoformat(),
+            "tags": n.tags or [],
             "category": "General",
             "author": "Admin",
             "featured": False,
-            "link": f"/{tenant.slug}/noticias/{n.id}"
+            "link": f"/{tenant.slug}/noticias/{n.id}",
+            # Compat
+            "coverUrl": n.imagen_url,
+            "date": n.fecha_publicacion.isoformat(),
+            "content": n.descripcion,
         })
 
     return jsonify({
@@ -219,15 +236,20 @@ def get_events(tenant_slug):
         data.append({
             "id": str(e.id),
             "title": e.titulo,
-            "description": e.descripcion,
-            "coverUrl": e.imagen_url,
-            "date": e.fecha_evento_inicio.isoformat() if e.fecha_evento_inicio else None,
-            "location": e.ubicacion,
+            "descripcion": e.descripcion,
+            "starts_at": e.fecha_evento_inicio.isoformat() if e.fecha_evento_inicio else None,
+            "ends_at": e.fecha_evento_fin.isoformat() if e.fecha_evento_fin else None,
+            "cover_url": e.imagen_url,
+            "lugar": e.ubicacion,
             "spots": 0,
             "registered": 0,
             "status": "inscripcion",
             "user_registered": False,
-            "link": f"/{tenant.slug}/eventos/{e.id}"
+            "link": f"/{tenant.slug}/eventos/{e.id}",
+            # Compat
+            "date": e.fecha_evento_inicio.isoformat() if e.fecha_evento_inicio else None,
+            "location": e.ubicacion,
+            "coverUrl": e.imagen_url,
         })
 
     return jsonify({
@@ -311,3 +333,57 @@ def get_profile(tenant_slug):
             "notifications_push": False
         }
     })
+
+@portal_api_bp.route('/orders', methods=['GET'])
+@require_auth
+def get_orders(tenant_slug):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+
+    orders = MarketOrder.query.filter_by(
+        tenant_id=tenant.id,
+        user_id=user.id
+    ).order_by(MarketOrder.created_at.desc()).all()
+
+    return jsonify([{
+        "id": o.id,
+        "status": o.status,
+        "total": float(o.total_monetary or 0),
+        "date": o.created_at.isoformat(),
+        "items_count": len(o.items)
+    } for o in orders])
+
+@portal_api_bp.route('/orders', methods=['POST'])
+@require_auth
+def create_order(tenant_slug):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+    data = request.get_json(silent=True) or {}
+
+    # Retrieve items, totals from payload
+    # Example payload: { "items": [{"product_id": 1, "quantity": 2}], "total": 100 }
+
+    items_data = data.get("items") or []
+    if not items_data:
+        return jsonify({"error": "No items provided"}), 400
+
+    order = MarketOrder(
+        tenant_id=tenant.id,
+        user_id=user.id,
+        status="pending",
+        total_monetary=data.get("total"),
+        contact_name=user.name,
+        contact_phone=user.telefono
+    )
+    db.session.add(order)
+
+    for item in items_data:
+        db.session.add(MarketOrderItem(
+            order=order,
+            product_id=item.get("product_id"),
+            quantity=item.get("quantity", 1),
+            price_monetary=item.get("price")
+        ))
+
+    db.session.commit()
+    return jsonify({"id": order.id, "status": order.status}), 201
