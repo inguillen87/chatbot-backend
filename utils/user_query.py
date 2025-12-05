@@ -22,7 +22,11 @@ def _user_table_has_es_empleado_column() -> bool:
 
     try:
         inspector = inspect(db.engine)
-        result = inspector.has_table("user") and inspector.has_column("user", "es_empleado")
+        if not inspector.has_table("user"):
+            return False
+
+        columns = {c["name"] for c in inspector.get_columns("user")}
+        result = "es_empleado" in columns
         _ES_EMPLEADO_COLUMN_EXISTS = result
         return result
     except SQLAlchemyError as exc:  # pragma: no cover - defensive
@@ -50,7 +54,11 @@ def _user_table_has_tenant_id_column() -> bool:
 
     try:
         inspector = inspect(db.engine)
-        result = inspector.has_table("user") and inspector.has_column("user", "tenant_id")
+        if not inspector.has_table("user"):
+            return False
+
+        columns = {c["name"] for c in inspector.get_columns("user")}
+        result = "tenant_id" in columns
         _TENANT_ID_COLUMN_EXISTS = result
         return result
     except SQLAlchemyError as exc:  # pragma: no cover - defensive
