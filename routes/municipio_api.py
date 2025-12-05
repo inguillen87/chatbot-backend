@@ -26,6 +26,7 @@ from services.tenant_resolver import (
     apply_tenant_alias,
     resolve_tenant_only,
 )
+from socket_service import emit_tenant_update
 
 municipio_api_bp = Blueprint(
     "municipio_api",
@@ -37,6 +38,12 @@ public_market_bp = Blueprint(
     "public_market",
     __name__,
     url_prefix="/api/public/market/<tenant_slug>",
+)
+
+legacy_public_v2_bp = Blueprint(
+    "legacy_public_api_v2",
+    __name__,
+    url_prefix="/api/municipio",
 )
 
 _PUBLIC_CORS_ALLOWED_HEADERS = [
@@ -648,6 +655,44 @@ def checkout_publico(tenant_slug: str):
     session[_cart_key(tenant)] = {"items": []}
     session.modified = True
     return jsonify({"status": "ok", "tenant": tenant.slug, "carrito": cart})
+
+
+@legacy_public_v2_bp.route("/carrito", methods=["GET", "OPTIONS"])
+@cross_origin(**_public_cors_kwargs(["GET", "OPTIONS"]))
+def legacy_carrito_publico():
+    """Legacy endpoint for cart retrieval requiring tenant_slug querystring."""
+    if request.method == "OPTIONS":
+        return "", 204
+
+    tenant_slug = request.args.get("tenant_slug")
+    if not tenant_slug:
+        abort(400, "tenant_slug query param required")
+
+    tenant = _resolve_tenant_or_404(tenant_slug)
+    cart = session.get(_cart_key(tenant), {"items": []})
+    return jsonify(cart)
+
+
+@legacy_public_v2_bp.route("/productos", methods=["GET", "OPTIONS"])
+@cross_origin(**_public_cors_kwargs(["GET", "OPTIONS"]))
+def legacy_productos_publicos():
+    """Legacy endpoint for products retrieval requiring tenant_slug querystring."""
+    if request.method == "OPTIONS":
+        return "", 204
+
+    tenant_slug = request.args.get("tenant_slug")
+    if not tenant_slug:
+        abort(400, "tenant_slug query param required")
+
+    tenant = _resolve_tenant_or_404(tenant_slug)
+    productos = (
+        CatalogoItem.query.filter(
+            CatalogoItem.tenant_id == tenant.id, CatalogoItem.disponible.is_(True)
+        )
+        .order_by(CatalogoItem.nombre.asc())
+        .all()
+    )
+    return jsonify({"productos": [serialize_catalogo_item(p) for p in productos]})
 
 
 def _cart_key(tenant: TenantProfile) -> str:

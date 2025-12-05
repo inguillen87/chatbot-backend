@@ -26,6 +26,7 @@ from services.rewards_demo import reward_profile_for_tenant
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
+from socket_service import emit_tenant_update
 
 
 market_bp = Blueprint("market", __name__, url_prefix="/api/market")
@@ -799,6 +800,7 @@ def admin_create_product(current_user):
     )
     db.session.add(producto)
     db.session.commit()
+    emit_tenant_update(tenant.slug, 'catalog_update', {})
     return jsonify(_serialize_catalog_item(producto)), 201
 
 
@@ -841,6 +843,7 @@ def admin_update_product(current_user, product_id: int):
             producto.precio = str(precio_texto)
 
     db.session.commit()
+    emit_tenant_update(tenant.slug, 'catalog_update', {})
     return jsonify(_serialize_catalog_item(producto))
 
 
@@ -857,4 +860,5 @@ def admin_delete_product(current_user, product_id: int):
 
     db.session.delete(producto)
     db.session.commit()
+    emit_tenant_update(tenant.slug, 'catalog_update', {})
     return jsonify({"deleted": product_id, "tenant_id": tenant.id})

@@ -15,11 +15,12 @@ from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
 from routes.categorias import _bootstrap_municipio_categories, _serialize_categoria
 from routes.tramites import listar_tramites, obtener_tramite
 from sqlalchemy import func, or_
-from models import Categoria, Conversacion, MunicipioTicket, MunicipioPost, User, db
+from models import Categoria, Conversacion, MunicipioTicket, MunicipioPost, User, db, TenantProfile
 from utils.municipio_utils import get_numeric_municipio_id
 from routes.ticket import TICKET_ALLOWED_STATES
 from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS
 from services.municipal_stats import build_stats_for_municipio, StatsFilters
+from socket_service import emit_tenant_update
 
 municipal_bp = Blueprint('municipal_legacy', __name__, url_prefix='/municipal')
 
@@ -1557,6 +1558,12 @@ def create_municipal_post(current_user):
             return jsonify({
                 "message": "El post se creó pero se archivó automáticamente por superar el límite de publicaciones recientes."
             }), 201
+
+        tenant = TenantProfile.query.filter_by(municipio_id=db_municipio_id).first()
+        if tenant:
+            event_type = 'news_update' if normalized_tipo == 'noticia' else 'events_update'
+            emit_tenant_update(tenant.slug, event_type, persisted.to_dict())
+
         return jsonify(persisted.to_dict()), 201
     except Exception as e:
         current_app.logger.error("Error al guardar el post municipal", exc_info=True)
@@ -1711,6 +1718,11 @@ def create_municipal_posts_bulk(current_user):
         )
         persisted_map = {post.id: post for post in persisted_posts}
         payload = [persisted_map[pid].to_dict() for pid in created_ids if pid in persisted_map]
+
+        tenant = TenantProfile.query.filter_by(municipio_id=db_municipio_id).first()
+        if tenant:
+            event_type = 'news_update' if normalized_tipo_default == 'noticia' else 'events_update'
+            emit_tenant_update(tenant.slug, event_type, payload)
 
         return jsonify({"created": payload}), 201
 

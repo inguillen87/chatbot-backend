@@ -203,7 +203,8 @@ def get_current_tenant_profile(slug: Optional[str] = None) -> Optional[TenantPro
 def _store_tenant_in_context(tenant: TenantProfile) -> None:
     g.tenant_profile = tenant
     g.tenant_profile_slug = getattr(tenant, "slug", None)
-    g.current_tenant = getattr(tenant, "slug", None) or tenant
+    # Ensure current_tenant is a string slug, not the object, to avoid attribute errors later
+    g.current_tenant = getattr(tenant, "slug", None)
     g.current_tenant_slug = getattr(tenant, "slug", None)
 
 
