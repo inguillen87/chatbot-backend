@@ -24,6 +24,7 @@ from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 
 
 pwa_public_bp = Blueprint("pwa_public", __name__, url_prefix="/api/pwa/public")
+public_api_bp = Blueprint("public_api", __name__, url_prefix="/api/public")
 pwa_tenant_info_bp = Blueprint("pwa_tenant_info", __name__)
 
 
@@ -59,7 +60,11 @@ def _require_tenant() -> TenantProfile:
             or request.args.get("entityToken")
             or request.headers.get("X-Entity-Token")
         )
-        tenant_slug = request.args.get("tenant") or request.args.get("slug")
+        tenant_slug = (
+            request.args.get("tenant")
+            or request.args.get("slug")
+            or request.args.get("tenant_slug")
+        )
         host_hint = request.headers.get("X-Forwarded-Host") or request.host
 
         try:
@@ -599,6 +604,64 @@ def list_news():
         .all()
     )
     return jsonify([item.to_dict() for item in items])
+
+
+@public_api_bp.get("/tenant")
+def public_tenant_info():
+    tenant = _require_tenant()
+    return jsonify({
+        "slug": tenant.slug,
+        "nombre": tenant.nombre,
+        "logo_url": tenant.logo_url,
+        "tipo": tenant.tipo,
+        "tema": tenant.tema or {}
+    })
+
+
+@public_api_bp.get("/news")
+def public_news():
+    tenant = _require_tenant()
+    query = _posts_query_for_tenant(tenant).filter(MunicipioPost.tipo_post != "evento")
+    items = (
+        query.order_by(MunicipioPost.fecha_publicacion.desc())
+        .limit(50)
+        .all()
+    )
+    return jsonify([{
+        "id": str(item.id),
+        "title": item.titulo,
+        "summary": item.subtitulo or (item.descripcion[:100] + "..."),
+        "body": item.descripcion,
+        "cover_url": item.imagen_url,
+        "publicado_at": item.fecha_publicacion.isoformat() if item.fecha_publicacion else None,
+        "tags": item.tags
+    } for item in items])
+
+
+@public_api_bp.get("/events")
+def public_events():
+    tenant = _require_tenant()
+    query = _posts_query_for_tenant(tenant).filter(MunicipioPost.tipo_post == "evento")
+    items = (
+        query.order_by(MunicipioPost.fecha_evento_inicio.asc().nullslast())
+        .limit(50)
+        .all()
+    )
+    return jsonify([{
+        "id": str(item.id),
+        "title": item.titulo,
+        "descripcion": item.descripcion,
+        "cover_url": item.imagen_url,
+        "starts_at": item.fecha_evento_inicio.isoformat() if item.fecha_evento_inicio else None,
+        "ends_at": item.fecha_evento_fin.isoformat() if item.fecha_evento_fin else None,
+        "lugar": item.ubicacion
+    } for item in items])
+
+
+@public_api_bp.get("/encuestas")
+def public_surveys():
+    # Reuse existing logic which is standardized
+    return list_surveys()
 
 
 @pwa_public_bp.get("/events")
