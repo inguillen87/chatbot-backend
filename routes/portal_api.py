@@ -1,9 +1,9 @@
 from __future__ import annotations
-from flask import Blueprint, jsonify, request, g, abort
+from flask import Blueprint, jsonify, request, g, abort, current_app, url_for
 from sqlalchemy import or_
 from datetime import datetime, timezone, timedelta
 
-from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem
+from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem, User, TenantProfile, WidgetConfig
 from extensions import db
 from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
 from services.rewards import recompensas_service
@@ -29,7 +29,7 @@ def _get_owner_id(tenant):
 def _generate_notifications(user, tenant, limit=10):
     notifications = []
 
-    # 1. Ticket Updates (Last 7 days)
+    # 1. Ticket Updates (Last 7 days) - Only if user is logged in
     if user:
         recent_tickets = TenantTicket.query.filter(
             TenantTicket.user_id == user.id,
@@ -50,29 +50,46 @@ def _generate_notifications(user, tenant, limit=10):
             })
 
     # 2. New Content (News/Events - Last 3 days)
+    # This is relevant for all users, but personalized if we had subscriptions
     owner_id = _get_owner_id(tenant)
-    recent_posts = MunicipioPost.query.filter(
-        MunicipioPost.municipio_id == owner_id,
-        MunicipioPost.fecha_publicacion >= datetime.now(timezone.utc) - timedelta(days=3)
-    ).order_by(MunicipioPost.fecha_publicacion.desc()).limit(limit).all()
+    if owner_id:
+        recent_posts = MunicipioPost.query.filter(
+            MunicipioPost.municipio_id == owner_id,
+            MunicipioPost.fecha_publicacion >= datetime.now(timezone.utc) - timedelta(days=3)
+        ).order_by(MunicipioPost.fecha_publicacion.desc()).limit(limit).all()
 
-    for p in recent_posts:
-        type_label = "Evento" if p.tipo_post == 'evento' else "Noticia"
-        route_segment = 'eventos' if p.tipo_post == 'evento' else 'noticias'
-        notifications.append({
-            "id": f"post_new_{p.id}",
-            "title": f"Nuevo {type_label}: {p.titulo}",
-            "message": p.subtitulo or (p.descripcion[:50] + "..." if p.descripcion else ""),
-            "severity": "success",
-            "date": p.fecha_publicacion.isoformat(),
-            "read": False,
-            "actionLabel": "Ver",
-            "actionHref": f"/{tenant.slug}/{route_segment}/{p.id}"
-        })
+        for p in recent_posts:
+            type_label = "Evento" if p.tipo_post == 'evento' else "Noticia"
+            route_segment = 'eventos' if p.tipo_post == 'evento' else 'noticias'
+            notifications.append({
+                "id": f"post_new_{p.id}",
+                "title": f"Nuevo {type_label}: {p.titulo}",
+                "message": p.subtitulo or (p.descripcion[:50] + "..." if p.descripcion else ""),
+                "severity": "success",
+                "date": p.fecha_publicacion.isoformat(),
+                "read": False,
+                "actionLabel": "Ver",
+                "actionHref": f"/{tenant.slug}/{route_segment}/{p.id}"
+            })
 
     # Sort combined
     notifications.sort(key=lambda x: x['date'], reverse=True)
     return notifications[:limit]
+
+def _get_theme_config(tenant):
+    """Resolve theme configuration merging TenantProfile and WidgetConfig."""
+    theme = tenant.tema or {}
+    if not isinstance(theme, dict):
+        theme = {}
+
+    # Merge with widget config if available (often has the primary colors set by admin)
+    if tenant.widget_config:
+        if tenant.widget_config.primary_color:
+            theme["primaryColor"] = tenant.widget_config.primary_color
+        if tenant.widget_config.accent_color:
+            theme["secondaryColor"] = tenant.widget_config.accent_color
+
+    return theme
 
 @portal_api_bp.route('/content', methods=['GET'])
 @require_auth_optional
@@ -82,19 +99,23 @@ def get_content(tenant_slug):
     user = getattr(g, "viewer", None)
 
     # 1. News (limit 5)
-    news_query = MunicipioPost.query.filter(
-        MunicipioPost.municipio_id == owner_id,
-        MunicipioPost.tipo_post != 'evento'
-    ).order_by(MunicipioPost.fecha_publicacion.desc()).limit(5)
-    news_items = news_query.all()
+    news_items = []
+    if owner_id:
+        news_query = MunicipioPost.query.filter(
+            MunicipioPost.municipio_id == owner_id,
+            MunicipioPost.tipo_post != 'evento'
+        ).order_by(MunicipioPost.fecha_publicacion.desc()).limit(5)
+        news_items = news_query.all()
 
     # 2. Events (limit 5 upcoming)
-    events_query = MunicipioPost.query.filter(
-        MunicipioPost.municipio_id == owner_id,
-        MunicipioPost.tipo_post == 'evento',
-        MunicipioPost.fecha_evento_inicio >= datetime.now(timezone.utc)
-    ).order_by(MunicipioPost.fecha_evento_inicio.asc()).limit(5)
-    events_items = events_query.all()
+    events_items = []
+    if owner_id:
+        events_query = MunicipioPost.query.filter(
+            MunicipioPost.municipio_id == owner_id,
+            MunicipioPost.tipo_post == 'evento',
+            MunicipioPost.fecha_evento_inicio >= datetime.now(timezone.utc)
+        ).order_by(MunicipioPost.fecha_evento_inicio.asc()).limit(5)
+        events_items = events_query.all()
 
     # 3. Notifications (Dynamic)
     notifications = _generate_notifications(user, tenant, limit=5)
@@ -105,7 +126,8 @@ def get_content(tenant_slug):
         "level": "Estándar",
         "surveysCompleted": 0,
         "suggestionsShared": 0,
-        "claimsFiled": 0
+        "claimsFiled": 0,
+        "enabled": True # Feature flag
     }
     if user:
         loyalty_summary["points"] = recompensas_service().obtener_saldo(user)
@@ -180,6 +202,12 @@ def get_content(tenant_slug):
                 "link": f"/portal/encuestas/{slug}"
             })
 
+    # 8. Theme and Settings
+    theme_config = _get_theme_config(tenant)
+    user_settings = {}
+    if user and user.accesibilidad:
+        user_settings = user.accesibilidad if isinstance(user.accesibilidad, dict) else {}
+
     return jsonify({
         "notifications": notifications,
         "news": [{
@@ -217,7 +245,62 @@ def get_content(tenant_slug):
         "catalog": catalog_data,
         "surveys": surveys_data,
         "loyaltySummary": loyalty_summary,
-        "activities": activities
+        "activities": activities,
+        "config": {
+            "theme": theme_config,
+            "userPreferences": user_settings,
+            "features": {
+                "animations": True,
+                "dark_mode": True
+            }
+        }
+    })
+
+@portal_api_bp.route('/settings', methods=['GET', 'PUT'])
+@require_auth
+def portal_settings(tenant_slug):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+
+    if request.method == 'PUT':
+        data = request.get_json(silent=True) or {}
+
+        # Update user preferences (stored in 'accesibilidad' column for now)
+        prefs = user.accesibilidad or {}
+        if not isinstance(prefs, dict):
+            prefs = {}
+
+        # Allow updating specific keys
+        if 'theme_mode' in data: # 'dark', 'light', 'system'
+            prefs['theme_mode'] = data['theme_mode']
+        if 'notifications' in data:
+            prefs['notifications'] = data['notifications']
+        if 'animations_enabled' in data:
+            prefs['animations_enabled'] = bool(data['animations_enabled'])
+
+        user.accesibilidad = prefs
+        db.session.add(user)
+        db.session.commit()
+
+        return jsonify({
+            "success": True,
+            "preferences": prefs
+        })
+
+    # GET
+    prefs = user.accesibilidad or {}
+    if not isinstance(prefs, dict):
+        prefs = {}
+
+    # Defaults
+    if 'theme_mode' not in prefs:
+        prefs['theme_mode'] = 'system'
+    if 'animations_enabled' not in prefs:
+        prefs['animations_enabled'] = True
+
+    return jsonify({
+        "preferences": prefs,
+        "tenantTheme": _get_theme_config(tenant)
     })
 
 @portal_api_bp.route('/news', methods=['GET'])
@@ -228,6 +311,9 @@ def get_news(tenant_slug):
 
     page = request.args.get('page', 1, type=int)
     limit = request.args.get('limit', 10, type=int)
+
+    if not owner_id:
+        return jsonify({"data": [], "meta": {"total": 0, "page": page, "limit": limit}})
 
     query = MunicipioPost.query.filter(
         MunicipioPost.municipio_id == owner_id,
@@ -271,6 +357,9 @@ def get_events(tenant_slug):
     tenant = _resolve_context(tenant_slug)
     owner_id = _get_owner_id(tenant)
 
+    if not owner_id:
+        return jsonify({"data": []})
+
     page = request.args.get('page', 1, type=int)
     limit = request.args.get('limit', 10, type=int)
     status = request.args.get('status', 'upcoming')
@@ -311,7 +400,12 @@ def get_events(tenant_slug):
         })
 
     return jsonify({
-        "data": data
+        "data": data,
+        "meta": {
+            "total": pagination.total,
+            "page": page,
+            "limit": limit
+        }
     })
 
 @portal_api_bp.route('/catalog', methods=['GET'])
@@ -369,7 +463,7 @@ def get_notifications(tenant_slug):
 @require_auth
 def mark_notification_read(tenant_slug, notif_id):
     _resolve_context(tenant_slug)
-    # Placeholder logic - in future implement read state storage
+    # Placeholder logic - in future implement read state storage in DB
     return jsonify({"success": True})
 
 @portal_api_bp.route('/profile', methods=['GET'])
@@ -380,16 +474,17 @@ def get_profile(tenant_slug):
 
     points = recompensas_service().obtener_saldo(user)
 
+    # Retrieve user preferences
+    prefs = user.accesibilidad or {}
+
     return jsonify({
         "id": str(user.id),
         "name": user.name,
         "email": user.email,
+        "telefono": user.telefono,
         "points": points,
         "level": "Standard",
-        "preferences": {
-            "notifications_email": True,
-            "notifications_push": False
-        }
+        "preferences": prefs
     })
 
 @portal_api_bp.route('/orders', methods=['GET'])
@@ -418,9 +513,6 @@ def create_order(tenant_slug):
     user = g.viewer
     data = request.get_json(silent=True) or {}
 
-    # Retrieve items, totals from payload
-    # Example payload: { "items": [{"product_id": 1, "quantity": 2}], "total": 100 }
-
     items_data = data.get("items") or []
     if not items_data:
         return jsonify({"error": "No items provided"}), 400
@@ -445,3 +537,27 @@ def create_order(tenant_slug):
 
     db.session.commit()
     return jsonify({"id": order.id, "status": order.status}), 201
+
+@portal_api_bp.route('/integration', methods=['GET'])
+def get_integration_info(tenant_slug):
+    """
+    Returns integration details for the tenant: widget script, catalog URL, etc.
+    This helps the 'Integration' page in the frontend populate its data.
+    """
+    tenant = _resolve_context(tenant_slug)
+    owner = _get_owner_id(tenant)
+
+    # Base URL for catalog/portal
+    # Logic similar to pwa_public but simpler
+    portal_url = f"https://chatboc.ar/{tenant.slug}"
+    widget_script = '<script src="https://chatboc.ar/widget.js" data-tenant="{}"></script>'.format(tenant.slug)
+
+    return jsonify({
+        "slug": tenant.slug,
+        "name": tenant.nombre,
+        "portalUrl": portal_url,
+        "widgetScript": widget_script,
+        "catalogUrl": f"{portal_url}/market",
+        "qrCodeUrl": f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={portal_url}",
+        "whatsappLink": f"https://wa.me/{owner.telefono if owner and owner.telefono else ''}"
+    })

@@ -35,7 +35,7 @@ def test_full_flow(client):
         "tenant_slug": "demo-flow"
     }
     print("Step 4 Start")
-    resp = client.post("/api/auth/register", json=reg_payload)
+    resp = client.post("/auth/register", json=reg_payload)
     print(f"Step 4 Resp: {resp.status_code} {resp.data}")
     assert resp.status_code == 201
     token = resp.json['token']
