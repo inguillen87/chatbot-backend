@@ -549,7 +549,6 @@ def create_app(config_class=Config):
     app.register_blueprint(legacy_public_bp)
     app.register_blueprint(municipio_api_bp)
     app.register_blueprint(public_market_bp)
-    app.register_blueprint(legacy_public_bp)
     app.register_blueprint(widget_public_bp)
     app.register_blueprint(recordatorios_bp)
     app.register_blueprint(historial_bp)
