@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple
 from flask import Blueprint, abort, g, jsonify, make_response, request, session
 from sqlalchemy import func
 
-from models import CatalogoItem, CatalogoModalidad, MunicipioPost, TenantProfile, User
+from models import CatalogoItem, CatalogoModalidad, MunicipioPost, TenantProfile, User, WidgetConfig
 from middleware import require_tenant
 from services.encuestas_service import (
     EncuestaError,
@@ -604,6 +604,63 @@ def list_news():
         .all()
     )
     return jsonify([item.to_dict() for item in items])
+
+
+@public_api_bp.get("/tenants/<tenant_slug>/widget-config")
+def public_tenant_widget_config(tenant_slug: str):
+    from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
+
+    try:
+        tenant = resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=False)
+    except TenantResolutionError:
+        abort(404, "Tenant no encontrado")
+
+    owner = _tenant_owner(tenant)
+    cfg = tenant.configuracion or {}
+
+    # Merge theme: WidgetConfig > Tenant.tema > Defaults
+    theme = tenant.tema or {}
+    if not isinstance(theme, dict):
+        theme = {}
+
+    widget_cfg = tenant.widget_config
+    if widget_cfg:
+        if widget_cfg.primary_color:
+            theme["primaryColor"] = widget_cfg.primary_color
+        if widget_cfg.accent_color:
+             theme["secondaryColor"] = widget_cfg.accent_color
+
+    # Features logic replicated from auth helper to avoid circular imports
+    features = {}
+    widget_features = cfg.get("widget_features")
+    if isinstance(widget_features, dict):
+        features.update(widget_features)
+
+    catalog_enabled = cfg.get("widget_catalog_enabled")
+    if isinstance(catalog_enabled, bool):
+        features.setdefault("catalog_enabled", catalog_enabled)
+    else:
+        features.setdefault("catalog_enabled", (tenant.tipo or "").lower() == "pyme")
+
+    loyalty_enabled = cfg.get("widget_loyalty_enabled")
+    if isinstance(loyalty_enabled, bool):
+        features.setdefault("loyalty_enabled", loyalty_enabled)
+
+    contact = {}
+    if owner:
+        if owner.telefono:
+            contact["whatsapp"] = owner.telefono
+        if owner.email:
+            contact["email"] = owner.email
+
+    return jsonify({
+        "slug": tenant.slug,
+        "name": tenant.nombre,
+        "logo_url": tenant.logo_url or (widget_cfg.logo_url if widget_cfg else None),
+        "theme": theme,
+        "features": features,
+        "contact": contact
+    })
 
 
 @public_api_bp.get("/tenant")
