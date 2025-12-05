@@ -472,6 +472,8 @@ def create_app(config_class=Config):
     from routes.pwa_app import pwa_app_bp, pwa_app_legacy_bp
     from routes.pwa_misc import pwa_misc_bp
     from routes.webauthn import webauthn_bp
+    from routes.admin_tenant import admin_tenant_bp
+    from routes.public_tenant import public_tenant_bp
     from cli_commands import register_commands
 
     if FEATURE_ENCUESTAS:
@@ -547,6 +549,7 @@ def create_app(config_class=Config):
     app.register_blueprint(legacy_public_bp)
     app.register_blueprint(municipio_api_bp)
     app.register_blueprint(public_market_bp)
+    app.register_blueprint(legacy_public_bp)
     app.register_blueprint(widget_public_bp)
     app.register_blueprint(recordatorios_bp)
     app.register_blueprint(historial_bp)
@@ -594,6 +597,8 @@ def create_app(config_class=Config):
     app.register_blueprint(pwa_app_bp)
     app.register_blueprint(pwa_app_legacy_bp)
     app.register_blueprint(webauthn_bp)
+    app.register_blueprint(admin_tenant_bp)
+    app.register_blueprint(public_tenant_bp)
     app.register_blueprint(encuestas_admin_bp)
 
     from routes.super_admin import super_admin_bp
