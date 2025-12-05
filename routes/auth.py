@@ -26,6 +26,7 @@ import jwt
 import base64
 from services.google_auth import login_o_crear_usuario
 from services.pymes import get_or_create_pyme_user_by_token
+from services.tenant_resolver import resolve_tenant_only
 from typing import Any, Callable, Dict, Optional
 import secrets
 
@@ -171,6 +172,18 @@ def _tenant_for_owner(owner: Optional[User]) -> Optional[TenantProfile]:
         .first()
     )
 
+
+def _tenant_owner(tenant: Optional[TenantProfile]) -> Optional[User]:
+    """Resolve the User owner of a tenant profile."""
+    if not tenant:
+        return None
+
+    if tenant.municipio_id:
+        return _user_query().get(tenant.municipio_id)
+    if tenant.pyme_id:
+        return _user_query().get(tenant.pyme_id)
+
+    return None
 
 def _attach_user_to_tenant(user: User, tenant: Optional[TenantProfile]) -> None:
     """Persist the tenant_id on the user if it's missing or outdated."""
@@ -941,6 +954,96 @@ def register():
             "error": "Solicitud JSON inválida.",
             "botones": [{"texto": "Volver al chat"}],
         }), 400
+
+    # Check if this is an end-user registration for a specific tenant
+    tenant_slug = data.get("tenant_slug")
+    if tenant_slug:
+        current_app.logger.debug(f"Processing tenant_slug={tenant_slug}")
+        try:
+            try:
+                tenant = resolve_tenant_only(tenant_slug=tenant_slug)
+                current_app.logger.debug(f"Tenant resolved: {tenant}")
+            except Exception:
+                tenant = None
+
+            if not tenant:
+                return jsonify({"error": "Tenant no encontrado"}), 404
+
+            # Registration for end-user (usuario)
+            name = data.get("name") or data.get("nombre")
+            email = data.get("email")
+            password = data.get("password")
+            telefono = data.get("telefono")
+
+            if not name or not email or not password:
+                return jsonify({"error": "Faltan datos obligatorios (nombre, email, password)."}), 400
+
+            if _user_query().filter_by(email=email.strip().lower()).first():
+                return jsonify({"error": "Email ya registrado."}), 409
+
+            nuevo = User(
+                name=name.strip(),
+                email=email.strip().lower(),
+                token=generate_token(),
+                rol="usuario",
+                telefono=telefono,
+                acepta_marketing=True, # Default for portal users? Or passed from UI
+                fecha_aceptacion_marketing=datetime.utcnow(),
+                email_verified=False,
+                email_verification_token=_generate_email_verification_token(),
+                email_verification_sent_at=datetime.now(timezone.utc),
+            )
+            nuevo.set_password(password)
+
+            # Link to tenant
+            current_app.logger.debug("Attaching tenant")
+            _attach_user_to_tenant(nuevo, tenant)
+
+            # Set rubro/tipo_chat from tenant owner context if needed, or leave generic
+            current_app.logger.debug("Finding owner")
+            owner = _tenant_owner(tenant)
+            if owner:
+                nuevo.rubro_id = owner.rubro_id
+                nuevo.tipo_chat = owner.tipo_chat
+                nuevo.empresa_id = owner.id # Link as client of the owner
+
+            db.session.add(nuevo)
+            db.session.commit()
+
+            # Migrate anon data if present
+            anon_id = data.get("anon_id") or request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id")
+            if anon_id:
+                try:
+                    from services.ticket_service import servicio_tickets
+                    servicio_tickets.migrar_tickets_de_anonimo(anon_id, nuevo.id)
+                except Exception as e:
+                    current_app.logger.warning(f"Failed to migrate anon data: {e}")
+
+            # Auto-login token
+            jwt_payload = {
+                'user_id': nuevo.id,
+                'rol': nuevo.rol,
+                'tipo_chat': nuevo.tipo_chat,
+                'empresa_id': nuevo.empresa_id,
+                'municipio_id': nuevo.municipio_id,
+                'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
+            }
+            jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+
+            return jsonify({
+                "token": jwt_token,
+                "user": {
+                    "id": nuevo.id,
+                    "name": nuevo.name,
+                    "email": nuevo.email,
+                    "rol": nuevo.rol
+                }
+            }), 201
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            current_app.logger.error(f"Error in end-user register: {e}")
+            return jsonify({"error": str(e)}), 500
 
     empresa_token = data.get("empresa_token") or obtener_token()
 
@@ -1906,3 +2009,95 @@ def change_email(current_user: User):
         return jsonify({"error": message}), status
 
     return jsonify({"mensaje": message, "email": current_user.email})
+
+@auth_bp.route('/refresh', methods=['POST'])
+@cross_origin(supports_credentials=True)
+def refresh_token_endpoint():
+    """Renueva el token actual si es válido."""
+    token = obtener_token()
+    if not token:
+        return jsonify({"error": "Token requerido"}), 401
+
+    try:
+        payload = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
+        user_id = payload.get('user_id')
+        user = _user_query().get(user_id)
+        if not user:
+            return jsonify({"error": "Usuario no encontrado"}), 401
+
+        # Re-issue logic (duplicated for now, refactor later)
+        tenant_slug = getattr(user, "tenant_slug", None)
+        if not tenant_slug:
+            tenant = _tenant_for_user(user)
+            if tenant:
+                tenant_slug = tenant.slug
+
+        jwt_payload = {
+            'user_id': user.id,
+            'rol': user.rol,
+            'tipo_chat': user.tipo_chat,
+            'empresa_id': user.empresa_id,
+            'municipio_id': user.municipio_id,
+            'tenant_slug': tenant_slug,
+            'exp': datetime.now(timezone.utc) + timedelta(days=7)
+        }
+        new_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+
+        resp = jsonify({"token": new_token, "expires_in": 7 * 86400})
+        return resp
+    except jwt.ExpiredSignatureError:
+        return jsonify({"error": "Token expirado, por favor inicia sesión nuevamente"}), 401
+    except Exception as e:
+        return jsonify({"error": "Token inválido"}), 401
+
+@auth_bp.route('/admin/login', methods=['POST', 'OPTIONS'])
+@cross_origin(supports_credentials=True)
+def admin_login():
+    """Login exclusivo para administradores y empleados."""
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'})
+
+    data = request.get_json(silent=True) or {}
+    email = data.get('email')
+    password = data.get('password')
+
+    if not email or not password:
+        return jsonify({"error": "Credenciales requeridas"}), 400
+
+    user = _user_query().filter_by(email=email.strip().lower()).first()
+
+    if not user or not user.check_password(password):
+        return jsonify({"error": "Credenciales inválidas"}), 401
+
+    # Check Role
+    if user.rol not in ['admin', 'empleado', 'superadmin']:
+        return jsonify({"error": "Acceso denegado: No tienes permisos administrativos."}), 403
+
+    # Generate Token
+    tenant_slug = getattr(user, "tenant_slug", None)
+    if not tenant_slug:
+        tenant = _tenant_for_user(user)
+        if tenant:
+            tenant_slug = tenant.slug
+
+    jwt_payload = {
+        'user_id': user.id,
+        'rol': user.rol,
+        'tipo_chat': user.tipo_chat,
+        'empresa_id': user.empresa_id,
+        'municipio_id': user.municipio_id,
+        'tenant_slug': tenant_slug,
+        'exp': datetime.now(timezone.utc) + timedelta(days=7)
+    }
+    token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+
+    return jsonify({
+        "token": token,
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "name": user.name,
+            "rol": user.rol,
+            "tenant_slug": tenant_slug
+        }
+    })

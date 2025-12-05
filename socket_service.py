@@ -124,6 +124,16 @@ def emit_ticket_update(data: Any) -> None:
     _emit_to_ticket_room('ticket_update', data)
 
 
+def emit_tenant_update(tenant_slug: str, event_name: str, data: Any = None) -> None:
+    """Emit an event to the tenant's specific room for real-time portal updates."""
+    if tenant_slug:
+        # Emit generic content update signal
+        socketio.emit('tenant_content_update', {'type': event_name}, room=tenant_slug)
+        # Emit specific event
+        if data:
+            socketio.emit(event_name, data, room=tenant_slug)
+
+
 def emit_new_ticket(data: Any) -> None:
     """Broadcast a newly created ticket and mirror a generic update for legacy clients."""
     _emit_to_ticket_room('new_ticket', data)
@@ -133,6 +143,9 @@ def emit_new_ticket(data: Any) -> None:
 def emit_ticket_comment(data: Any) -> None:
     """Broadcast a new comment without altering the legacy ticket_update payloads."""
     _emit_to_ticket_room('new_comment', data)
+
+
+
 
 def send_welcome_message(sid, auth):
     """Sends a welcome message to a newly connected anonymous client."""
