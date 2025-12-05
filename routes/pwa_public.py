@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple
 from flask import Blueprint, abort, g, jsonify, make_response, request, session
 from sqlalchemy import func
 
-from models import CatalogoItem, CatalogoModalidad, MunicipioPost, TenantProfile, User
+from models import CatalogoItem, CatalogoModalidad, MunicipioPost, TenantProfile, User, WidgetConfig
 from middleware import require_tenant
 from services.encuestas_service import (
     EncuestaError,
@@ -24,6 +24,7 @@ from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 
 
 pwa_public_bp = Blueprint("pwa_public", __name__, url_prefix="/api/pwa/public")
+public_api_bp = Blueprint("public_api", __name__, url_prefix="/api/public")
 pwa_tenant_info_bp = Blueprint("pwa_tenant_info", __name__)
 
 
@@ -59,7 +60,11 @@ def _require_tenant() -> TenantProfile:
             or request.args.get("entityToken")
             or request.headers.get("X-Entity-Token")
         )
-        tenant_slug = request.args.get("tenant") or request.args.get("slug")
+        tenant_slug = (
+            request.args.get("tenant")
+            or request.args.get("slug")
+            or request.args.get("tenant_slug")
+        )
         host_hint = request.headers.get("X-Forwarded-Host") or request.host
 
         try:
@@ -599,6 +604,121 @@ def list_news():
         .all()
     )
     return jsonify([item.to_dict() for item in items])
+
+
+@public_api_bp.get("/tenants/<tenant_slug>/widget-config")
+def public_tenant_widget_config(tenant_slug: str):
+    from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
+
+    try:
+        tenant = resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=False)
+    except TenantResolutionError:
+        abort(404, "Tenant no encontrado")
+
+    owner = _tenant_owner(tenant)
+    cfg = tenant.configuracion or {}
+
+    # Merge theme: WidgetConfig > Tenant.tema > Defaults
+    theme = tenant.tema or {}
+    if not isinstance(theme, dict):
+        theme = {}
+
+    widget_cfg = tenant.widget_config
+    if widget_cfg:
+        if widget_cfg.primary_color:
+            theme["primaryColor"] = widget_cfg.primary_color
+        if widget_cfg.accent_color:
+             theme["secondaryColor"] = widget_cfg.accent_color
+
+    # Features logic replicated from auth helper to avoid circular imports
+    features = {}
+    widget_features = cfg.get("widget_features")
+    if isinstance(widget_features, dict):
+        features.update(widget_features)
+
+    catalog_enabled = cfg.get("widget_catalog_enabled")
+    if isinstance(catalog_enabled, bool):
+        features.setdefault("catalog_enabled", catalog_enabled)
+    else:
+        features.setdefault("catalog_enabled", (tenant.tipo or "").lower() == "pyme")
+
+    loyalty_enabled = cfg.get("widget_loyalty_enabled")
+    if isinstance(loyalty_enabled, bool):
+        features.setdefault("loyalty_enabled", loyalty_enabled)
+
+    contact = {}
+    if owner:
+        if owner.telefono:
+            contact["whatsapp"] = owner.telefono
+        if owner.email:
+            contact["email"] = owner.email
+
+    return jsonify({
+        "slug": tenant.slug,
+        "name": tenant.nombre,
+        "logo_url": tenant.logo_url or (widget_cfg.logo_url if widget_cfg else None),
+        "theme": theme,
+        "features": features,
+        "contact": contact
+    })
+
+
+@public_api_bp.get("/tenant")
+def public_tenant_info():
+    tenant = _require_tenant()
+    return jsonify({
+        "slug": tenant.slug,
+        "nombre": tenant.nombre,
+        "logo_url": tenant.logo_url,
+        "tipo": tenant.tipo,
+        "tema": tenant.tema or {}
+    })
+
+
+@public_api_bp.get("/news")
+def public_news():
+    tenant = _require_tenant()
+    query = _posts_query_for_tenant(tenant).filter(MunicipioPost.tipo_post != "evento")
+    items = (
+        query.order_by(MunicipioPost.fecha_publicacion.desc())
+        .limit(50)
+        .all()
+    )
+    return jsonify([{
+        "id": str(item.id),
+        "title": item.titulo,
+        "summary": item.subtitulo or (item.descripcion[:100] + "..."),
+        "body": item.descripcion,
+        "cover_url": item.imagen_url,
+        "publicado_at": item.fecha_publicacion.isoformat() if item.fecha_publicacion else None,
+        "tags": item.tags
+    } for item in items])
+
+
+@public_api_bp.get("/events")
+def public_events():
+    tenant = _require_tenant()
+    query = _posts_query_for_tenant(tenant).filter(MunicipioPost.tipo_post == "evento")
+    items = (
+        query.order_by(MunicipioPost.fecha_evento_inicio.asc().nullslast())
+        .limit(50)
+        .all()
+    )
+    return jsonify([{
+        "id": str(item.id),
+        "title": item.titulo,
+        "descripcion": item.descripcion,
+        "cover_url": item.imagen_url,
+        "starts_at": item.fecha_evento_inicio.isoformat() if item.fecha_evento_inicio else None,
+        "ends_at": item.fecha_evento_fin.isoformat() if item.fecha_evento_fin else None,
+        "lugar": item.ubicacion
+    } for item in items])
+
+
+@public_api_bp.get("/encuestas")
+def public_surveys():
+    # Reuse existing logic which is standardized
+    return list_surveys()
 
 
 @pwa_public_bp.get("/events")

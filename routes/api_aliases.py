@@ -706,11 +706,11 @@ def pwa_tenant_info_alias():
     return tenant_profile()
 
 
-@api_aliases_bp.route("/public/tenant", methods=["GET", "OPTIONS"], strict_slashes=False)
-def public_tenant_alias():
-    """Expose public tenant info under /api/public/tenant for legacy callers."""
-
-    return tenant_profile()
+# @api_aliases_bp.route("/public/tenant", methods=["GET", "OPTIONS"], strict_slashes=False)
+# def public_tenant_alias():
+#     """Expose public tenant info under /api/public/tenant for legacy callers."""
+#
+#     return tenant_profile()
 
 
 @public_aliases_bp.route("/public/tenant", methods=["GET", "OPTIONS"], strict_slashes=False)
