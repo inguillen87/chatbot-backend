@@ -40,8 +40,8 @@ public_market_bp = Blueprint(
     url_prefix="/api/public/market/<tenant_slug>",
 )
 
-legacy_public_bp = Blueprint(
-    "legacy_public_api",
+legacy_public_v2_bp = Blueprint(
+    "legacy_public_api_v2",
     __name__,
     url_prefix="/api/municipio",
 )
@@ -657,7 +657,7 @@ def checkout_publico(tenant_slug: str):
     return jsonify({"status": "ok", "tenant": tenant.slug, "carrito": cart})
 
 
-@legacy_public_bp.route("/carrito", methods=["GET", "OPTIONS"])
+@legacy_public_v2_bp.route("/carrito", methods=["GET", "OPTIONS"])
 @cross_origin(**_public_cors_kwargs(["GET", "OPTIONS"]))
 def legacy_carrito_publico():
     """Legacy endpoint for cart retrieval requiring tenant_slug querystring."""
@@ -673,7 +673,7 @@ def legacy_carrito_publico():
     return jsonify(cart)
 
 
-@legacy_public_bp.route("/productos", methods=["GET", "OPTIONS"])
+@legacy_public_v2_bp.route("/productos", methods=["GET", "OPTIONS"])
 @cross_origin(**_public_cors_kwargs(["GET", "OPTIONS"]))
 def legacy_productos_publicos():
     """Legacy endpoint for products retrieval requiring tenant_slug querystring."""
