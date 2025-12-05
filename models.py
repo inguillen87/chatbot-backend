@@ -527,6 +527,8 @@ class TenantProfile(db.Model, TimestampMixin):
     logo_url = db.Column(db.String(512), nullable=True)
     tema = db.Column(JSONType, nullable=True)
     configuracion = db.Column(JSONType, nullable=True)
+    plan = db.Column(db.String(50), default="free")
+    whatsapp_sender_id = db.Column(db.String(255), nullable=True)
 
     municipio = db.relationship(
         "User",
@@ -1862,3 +1864,53 @@ class FeatureToggle(db.Model, TimestampMixin):
         if normalized in {"0", "false", "no", "off", "disable", "disabled"}:
             return False
         return None
+
+
+class Role(db.Model):
+    __tablename__ = 'role'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), unique=True, nullable=False)
+    description = db.Column(db.String(255))
+
+    def __repr__(self):
+        return f"<Role {self.name}>"
+
+
+class UserRole(db.Model):
+    __tablename__ = 'user_role'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    role_id = db.Column(db.Integer, db.ForeignKey('role.id'), nullable=False)
+    tenant_id = db.Column(db.Integer, db.ForeignKey('tenant_profile.id'), nullable=True)
+
+    user = db.relationship('User', backref=db.backref('user_roles', lazy='dynamic'))
+    role = db.relationship('Role', backref=db.backref('role_users', lazy='dynamic'))
+    tenant = db.relationship('TenantProfile')
+
+
+class TenantConfig(db.Model):
+    __tablename__ = "tenant_config"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False)
+    key = db.Column(db.String(50), nullable=False)      # "menu" | "contacts" | "links" | "widget" | "whatsapp"
+    channel = db.Column(db.String(50), nullable=True)   # "whatsapp" | "widget" | None
+    json_value = db.Column(JSONType, nullable=False)
+
+    tenant = db.relationship('TenantProfile', backref=db.backref('configs', lazy='dynamic'))
+
+    __table_args__ = (
+        db.UniqueConstraint("tenant_id", "key", "channel", name="uq_tenant_config"),
+    )
+
+
+class TwilioNumber(db.Model):
+    __tablename__ = "twilio_number"
+
+    id = db.Column(db.Integer, primary_key=True)
+    phone_number = db.Column(db.String(50), unique=True, nullable=False)
+    sender_id = db.Column(db.String(255), unique=True, nullable=False)  # identificador Twilio/WhatsApp
+    status = db.Column(db.String(20), default="available")              # "available" | "assigned" | "disabled"
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True)
+
+    tenant = db.relationship('TenantProfile', backref=db.backref('twilio_number', uselist=False))
