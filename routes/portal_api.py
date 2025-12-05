@@ -9,6 +9,7 @@ from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
 from services.rewards import recompensas_service
 from utils.auth_decorators import require_auth_optional, require_auth
 from routes.catalogo import _formatear_producto
+from services.encuestas_service import list_public_encuestas_for_tenant, serialize_public_encuesta
 
 portal_api_bp = Blueprint('portal_api', __name__)
 
@@ -123,7 +124,54 @@ def get_content(tenant_slug):
                 "description": t.descripcion or t.categoria or "Sin descripción",
                 "date": t.updated_at.isoformat() if t.updated_at else None,
                 "status": t.estado,
-                "statusType": "info"
+                "statusType": "info",
+                "link": f"/portal/pedidos/{t.id}"
+            })
+
+    # 6. Catalog (Top items)
+    catalog_items = CatalogoItem.query.filter(
+        CatalogoItem.tenant_id == tenant.id,
+        or_(CatalogoItem.disponible.is_(True), CatalogoItem.disponible.is_(None))
+    ).limit(6).all()
+
+    catalog_data = []
+    for item in catalog_items:
+        prod = _formatear_producto({
+            "nombre": item.nombre,
+            "categoria": item.categoria,
+            "descripcion": item.descripcion,
+            "precio_str": item.precio,
+            "moneda": item.moneda,
+            "modalidad": item.modalidad,
+            "imagen_url": item.imagen_url
+        })
+        price_label = prod.get('precio_texto')
+        if not price_label:
+            if prod.get('moneda') == 'PTS':
+                price_label = f"{prod.get('precio_puntos')} PTS"
+            else:
+                price_label = f"${prod.get('precio_unitario')}"
+
+        catalog_data.append({
+            "id": str(item.id),
+            "title": item.nombre,
+            "description": item.descripcion,
+            "category": item.categoria,
+            "priceLabel": price_label,
+            "price": prod.get('precio_unitario') or 0,
+            "status": "available",
+            "imageUrl": prod.get('imagen_url')
+        })
+
+    # 7. Surveys
+    surveys_data = []
+    if tenant.encuestas_tenant_id:
+        encuestas = list_public_encuestas_for_tenant(tenant.encuestas_tenant_id, limit=3)
+        for enc, slug in encuestas:
+            surveys_data.append({
+                "id": str(enc.id),
+                "title": enc.titulo,
+                "link": f"/portal/encuestas/{slug}"
             })
 
     return jsonify({
@@ -157,7 +205,11 @@ def get_content(tenant_slug):
             "date": e.fecha_evento_inicio.isoformat() if e.fecha_evento_inicio else None,
             "location": e.ubicacion,
             "coverUrl": e.imagen_url,
+            "spots": 0,
+            "registered": 0
         } for e in events_items],
+        "catalog": catalog_data,
+        "surveys": surveys_data,
         "loyaltySummary": loyalty_summary,
         "activities": activities
     })

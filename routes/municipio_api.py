@@ -26,6 +26,7 @@ from services.tenant_resolver import (
     apply_tenant_alias,
     resolve_tenant_only,
 )
+from socket_service import emit_tenant_update
 
 municipio_api_bp = Blueprint(
     "municipio_api",
