@@ -281,3 +281,67 @@ def assign_categories(current_user, user_id):
     db.session.commit()
 
     return jsonify({'message': 'Categories updated', 'count': len(valid_cats)}), 200
+@admin_tenant_bp.route('/api/admin/employees', methods=['GET'])
+@token_requerido
+@require_tenant
+def list_current_tenant_employees(current_user):
+    """
+    List employees for the current tenant context.
+    """
+    tenant = g.tenant_profile
+    if not tenant:
+        return jsonify({'error': 'No tenant context'}), 400
+
+    # IDOR Check
+    if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
+
+    results = []
+    for emp in employees:
+        # Load roles using the dynamic relationship or query
+        user_roles = UserRole.query.filter_by(user_id=emp.id, tenant_id=tenant.id).all()
+        role_names = [ur.role.name for ur in user_roles if ur.role]
+
+        results.append({
+            "id": emp.id,
+            "name": emp.name,
+            "email": emp.email,
+            "roles": role_names,
+            "created_at": emp.fecha_creacion.isoformat() if emp.fecha_creacion else None
+        })
+
+    return jsonify(results)
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/employees', methods=['GET'])
+@token_requerido
+@require_tenant
+def list_employees_by_slug(current_user, slug):
+    """
+    List employees for a specific tenant slug (supports admin dashboard deep linking).
+    """
+    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    # IDOR Check
+    if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
+         return jsonify({'error': 'Unauthorized'}), 403
+
+    employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
+
+    results = []
+    for emp in employees:
+        user_roles = UserRole.query.filter_by(user_id=emp.id, tenant_id=tenant.id).all()
+        role_names = [ur.role.name for ur in user_roles if ur.role]
+
+        results.append({
+            "id": emp.id,
+            "name": emp.name,
+            "email": emp.email,
+            "roles": role_names,
+            "created_at": emp.fecha_creacion.isoformat() if emp.fecha_creacion else None
+        })
+
+    return jsonify(results)

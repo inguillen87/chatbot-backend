@@ -12,6 +12,7 @@ from models import User
 _ES_EMPLEADO_COLUMN_EXISTS: Optional[bool] = None
 # We know tenant_id exists in the model and migrations.
 # Forcing True avoids runtime inspection errors in some environments.
+# Critical fix: avoid 500 error on registration if inspector fails.
 _TENANT_ID_COLUMN_EXISTS: bool = True
 
 
