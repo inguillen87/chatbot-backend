@@ -1658,6 +1658,9 @@ class EncEncuesta(db.Model, TimestampMixin):
     requiere_identidad = db.Column(db.Boolean, default=False, nullable=False)
     politica_unicidad = db.Column(db.String(30), nullable=False, default="libre")
     anonimo_permitido = db.Column(db.Boolean, default=True, nullable=False)
+    es_votacion_envivo = db.Column(db.Boolean, default=False, nullable=False)
+    mostrar_resultados_envivo = db.Column(db.Boolean, default=False, nullable=False)
+    permitir_comentarios = db.Column(db.Boolean, default=False, nullable=False)
     created_by = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
 
     preguntas = db.relationship(
@@ -1789,6 +1792,20 @@ class EncRespuestaDetalle(db.Model, TimestampMixin):
     respuesta = db.relationship("EncRespuesta", back_populates="detalles")
     pregunta = db.relationship("EncPregunta")
     opcion = db.relationship("EncOpcion")
+
+
+class EncComentario(db.Model, TimestampMixin):
+    __tablename__ = "enc_comentario"
+    id = db.Column(db.Integer, primary_key=True)
+    encuesta_id = db.Column(db.Integer, db.ForeignKey("enc_encuesta.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    anon_id = db.Column(db.String(80), nullable=True)
+    nombre_autor = db.Column(db.String(100), nullable=True)
+    texto = db.Column(db.Text, nullable=False)
+    estado = db.Column(db.String(20), default="publicado")  # publicado, oculto
+
+    encuesta = db.relationship("EncEncuesta", backref=db.backref("comentarios_debate", lazy="dynamic"))
+    user = db.relationship("User")
 
 
 class EncSegmento(db.Model, TimestampMixin):

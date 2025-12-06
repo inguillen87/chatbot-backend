@@ -35,6 +35,8 @@ from services.encuestas_service import (
     list_public_encuestas_for_tenant,
     save_respuesta,
     serialize_public_encuesta,
+    create_comentario,
+    list_comentarios,
 )
 from utils.auth_helpers import obtener_token, user_from_token
 
@@ -640,6 +642,43 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         if request.method == "OPTIONS":
             return "", 204
         return _handle_responder(slug)
+
+    @bp.route("/<slug>/comentarios", methods=["GET", "POST", "OPTIONS"])
+    def comentarios(slug: str):
+        if request.method == "OPTIONS":
+            return "", 204
+
+        preview_user = _resolve_preview_user()
+        try:
+            encuesta = get_public_encuesta(slug, allow_inactive_for_user=preview_user)
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+
+        if request.method == "POST":
+            # For comments, we might want to know who the user is
+            token = obtener_token()
+            user = user_from_token(token) if token else None
+
+            payload = _extract_request_payload()
+            try:
+                comentario = create_comentario(encuesta.id, payload, user)
+                return jsonify({
+                    "ok": True,
+                    "comentario": {
+                        "id": comentario.id,
+                        "texto": comentario.texto,
+                        "nombre_autor": comentario.nombre_autor,
+                        "fecha": comentario.created_at.isoformat()
+                    }
+                }), 201
+            except EncuestaError as err:
+                return jsonify(err.to_dict()), err.status_code
+
+        # GET
+        limit = request.args.get("limit", default=50, type=int)
+        offset = request.args.get("offset", default=0, type=int)
+        items = list_comentarios(encuesta.id, limit=limit, offset=offset)
+        return jsonify(items)
 
     @bp.route("/<slug>/qr")
     def qr(slug: str):

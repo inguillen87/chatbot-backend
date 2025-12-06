@@ -30,8 +30,18 @@ from models import (
     EncRespuestaDetalle,
     EncLink,
     EncSegmento,
+    EncComentario,
+    TenantProfile,
     User,
 )
+from services.rewards import recompensas_service
+try:
+    from socket_service import emit_survey_update, emit_survey_comment
+except ImportError:
+    # Fallback to avoid circular import if running in restricted context,
+    # though typical usage is safe.
+    emit_survey_update = None
+    emit_survey_comment = None
 
 
 _BOOTSTRAP_TENANT_ID: Optional[int] = None
@@ -794,6 +804,8 @@ def _normalize_pregunta_tipo(raw_tipo: Any) -> str:
         "open": "abierta",
         "open_text": "abierta",
         "open-text": "abierta",
+        "rating_emoji": "rating_emoji",
+        "emoji": "rating_emoji",
     }
 
     return mapping.get(text, text)
@@ -938,6 +950,12 @@ def _apply_common_updates(encuesta: EncEncuesta, data: Dict[str, Any]) -> None:
         encuesta.politica_unicidad = data["politica_unicidad"]
     if "anonimo_permitido" in data:
         encuesta.anonimo_permitido = bool(data["anonimo_permitido"])
+    if "es_votacion_envivo" in data:
+        encuesta.es_votacion_envivo = bool(data["es_votacion_envivo"])
+    if "mostrar_resultados_envivo" in data:
+        encuesta.mostrar_resultados_envivo = bool(data["mostrar_resultados_envivo"])
+    if "permitir_comentarios" in data:
+        encuesta.permitir_comentarios = bool(data["permitir_comentarios"])
     if "tags" in data:
         _sync_encuesta_tags(encuesta, data.get("tags"))
 
@@ -1212,6 +1230,9 @@ def create_encuesta(data: Dict[str, Any], user: Any) -> EncEncuesta:
         requiere_identidad=bool(payload.get("requiere_identidad", False)),
         politica_unicidad=payload.get("politica_unicidad", "libre"),
         anonimo_permitido=bool(payload.get("anonimo_permitido", True)),
+        es_votacion_envivo=bool(payload.get("es_votacion_envivo", False)),
+        mostrar_resultados_envivo=bool(payload.get("mostrar_resultados_envivo", False)),
+        permitir_comentarios=bool(payload.get("permitir_comentarios", False)),
         created_by=getattr(user, "id", None),
         puntos_recompensa=_coerce_int_or_none(payload.get("puntos_recompensa")),
     )
@@ -2460,6 +2481,33 @@ def save_respuesta(slug_publico: str, payload: Dict[str, Any], request_ctx: Dict
         encuesta.id,
         ip,
     )
+
+    # Otorgar puntos si corresponde
+    if encuesta.puntos_recompensa and encuesta.puntos_recompensa > 0:
+        target_user = None
+        if respuesta.user_id:
+            target_user = db.session.get(User, respuesta.user_id)
+
+        if target_user:
+            try:
+                tenant = db.session.get(TenantProfile, tenant_id)
+                recompensas_service().acreditar_puntos_manual(
+                    target_user,
+                    tenant,
+                    "encuesta",
+                    encuesta.puntos_recompensa
+                )
+            except Exception:
+                current_app.logger.exception("[encuestas] Error al otorgar puntos por encuesta")
+
+    # Emitir actualizaciones en tiempo real si corresponde
+    if encuesta.mostrar_resultados_envivo and emit_survey_update:
+        try:
+            live_stats = _compute_live_results(encuesta)
+            emit_survey_update(slug_publico, live_stats)
+        except Exception:
+            current_app.logger.exception("[encuestas] Error al emitir update socket")
+
     return respuesta
 
 
@@ -3140,6 +3188,9 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
         "requiere_identidad": encuesta.requiere_identidad,
         "politica_unicidad": encuesta.politica_unicidad,
         "anonimo_permitido": encuesta.anonimo_permitido,
+        "es_votacion_envivo": encuesta.es_votacion_envivo,
+        "mostrar_resultados_envivo": encuesta.mostrar_resultados_envivo,
+        "permitir_comentarios": encuesta.permitir_comentarios,
         "tags": _collect_encuesta_tags(encuesta),
         "preguntas": [_serialize_question(pregunta) for pregunta in encuesta.preguntas],
     }
@@ -3150,5 +3201,107 @@ def serialize_public_encuesta(encuesta: EncEncuesta, slug_publico: Optional[str]
     data["slug"] = slug_publico or encuesta.slug
     # Public payload hides estado and flags not needed
     data.pop("estado", None)
-    data.pop("requiere_identidad", None)
+
+    if encuesta.mostrar_resultados_envivo:
+        data["resultados_envivo"] = _compute_live_results(encuesta)
+
+    if encuesta.permitir_comentarios:
+        # Include recent comments or link to comments endpoint
+        pass
+
     return data
+
+
+def _compute_live_results(encuesta: EncEncuesta) -> Dict[str, Any]:
+    """Aggregate results for live display."""
+    results = {
+        "total_respuestas": EncRespuesta.query.filter_by(encuesta_id=encuesta.id).count(),
+        "preguntas": {}
+    }
+
+    # Simple aggregation for closed questions
+    for pregunta in encuesta.preguntas:
+        if pregunta.tipo in ("opcion_unica", "opcion_multiple", "rating_emoji"):
+            # Count details per option
+            counts = (
+                db.session.query(EncRespuestaDetalle.opcion_id, func.count(EncRespuestaDetalle.id))
+                .filter(EncRespuestaDetalle.pregunta_id == pregunta.id)
+                .group_by(EncRespuestaDetalle.opcion_id)
+                .all()
+            )
+            opcion_counts = {oid: count for oid, count in counts if oid}
+
+            opciones_data = []
+            for opcion in pregunta.opciones:
+                opciones_data.append({
+                    "id": opcion.id,
+                    "texto": opcion.texto,
+                    "votos": opcion_counts.get(opcion.id, 0)
+                })
+
+            results["preguntas"][pregunta.id] = {
+                "tipo": pregunta.tipo,
+                "opciones": opciones_data
+            }
+
+    return results
+
+
+def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[User]) -> EncComentario:
+    encuesta = db.session.get(EncEncuesta, encuesta_id)
+    if not encuesta or not encuesta.permitir_comentarios:
+        raise EncuestaError("Comentarios no habilitados para esta encuesta", status_code=403)
+
+    texto = (payload.get("texto") or "").strip()
+    if not texto:
+        raise EncuestaError("El comentario no puede estar vacío")
+
+    comentario = EncComentario(
+        encuesta_id=encuesta.id,
+        user_id=getattr(user, "id", None) if user else None,
+        anon_id=payload.get("anon_id"),
+        nombre_autor=(payload.get("nombre") or payload.get("nombre_autor") or "").strip() or None,
+        texto=texto,
+        estado="publicado"
+    )
+
+    db.session.add(comentario)
+    db.session.commit()
+
+    # Emit live event
+    if emit_survey_comment:
+        try:
+            slug_publico = _resolve_public_slug(encuesta) or encuesta.slug
+            data = {
+                "id": comentario.id,
+                "texto": comentario.texto,
+                "nombre_autor": comentario.nombre_autor or (user.name if user else "Anónimo"),
+                "fecha": comentario.created_at.isoformat(),
+                "user_id": comentario.user_id
+            }
+            emit_survey_comment(slug_publico, data)
+        except Exception:
+            current_app.logger.exception("[encuestas] Error al emitir comentario socket")
+
+    return comentario
+
+
+def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    query = (
+        EncComentario.query.filter_by(encuesta_id=encuesta_id, estado="publicado")
+        .order_by(EncComentario.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+
+    results = []
+    for c in query:
+        results.append({
+            "id": c.id,
+            "texto": c.texto,
+            "nombre_autor": c.nombre_autor or (c.user.name if c.user else "Anónimo"),
+            "fecha": c.created_at.isoformat(),
+            "user_id": c.user_id,
+            "anon_id": c.anon_id
+        })
+    return results
