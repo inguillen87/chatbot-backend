@@ -39,19 +39,22 @@ class RecompensasService:
     def acreditar_puntos(self, user: User, tenant: Optional[TenantProfile], tipo_evento: str) -> int:
         reglas = self._resolve_rules(tenant)
         delta = int(reglas.get(tipo_evento, 0))
-        if delta == 0:
-            return user.saldo_puntos
+        return self.acreditar_puntos_manual(user, tenant, tipo_evento, delta)
+
+    def acreditar_puntos_manual(self, user: User, tenant: Optional[TenantProfile], tipo: str, cantidad: int) -> int:
+        if cantidad == 0:
+            return user.saldo_puntos or 0
 
         with db.session.begin_nested():
             locked_user = self._lock_user(user)
             if locked_user is None:
                 raise ValueError("Usuario no encontrado para acreditar puntos")
-            locked_user.saldo_puntos = (locked_user.saldo_puntos or 0) + delta
+            locked_user.saldo_puntos = (locked_user.saldo_puntos or 0) + cantidad
             tx = PointsTransaction(
                 user_id=locked_user.id,
                 tenant_id=getattr(tenant, "id", None),
-                tipo=tipo_evento,
-                delta=delta,
+                tipo=tipo,
+                delta=cantidad,
                 saldo_final=locked_user.saldo_puntos,
             )
             db.session.add(tx)
