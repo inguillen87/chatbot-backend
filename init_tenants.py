@@ -2,7 +2,6 @@
 import json
 import os
 import uuid
-from app import app
 from database import db
 from models import User, TenantProfile, Rubro
 from werkzeug.security import generate_password_hash
@@ -135,5 +134,6 @@ def init_tenants():
     print("\n✅ Initialization complete.")
 
 if __name__ == "__main__":
+    from app import app
     with app.app_context():
         init_tenants()
