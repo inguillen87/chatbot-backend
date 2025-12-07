@@ -148,3 +148,25 @@ Para permitir que municipios o pymes inserten la votación en sus sitios web:
             width="100%" height="600" frameborder="0"></iframe>
     ```
 *   El frontend debe detectar el parámetro `mode=embed` para ocultar headers/footers y mostrar solo la tarjeta de votación.
+
+---
+
+## 5. Moderación y Reportes
+
+Para mantener un entorno seguro en encuestas públicas, se habilita la opción de reportar comentarios.
+
+### Reportar Comentario
+`POST /api/public/encuestas/<slug>/comentarios/<id>/reportar`
+
+*   No requiere payload.
+*   Si un comentario recibe múltiples reportes (umbral configurado en backend, por defecto 5), su estado cambia a `revision` y deja de ser visible públicamente hasta que un administrador lo apruebe.
+
+### Panel de Administración (Frontend Admin)
+
+El panel de administración de la encuesta debe incluir una pestaña "Comentarios" que consuma:
+`GET /api/admin/encuestas/<id>/comentarios`
+
+Esta vista muestra todos los comentarios (incluidos los ocultos o en revisión). El administrador puede moderarlos:
+
+`PATCH /api/admin/encuestas/comentarios/<id>`
+Body: `{ "accion": "aprobar" | "ocultar" | "eliminar" }`

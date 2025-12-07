@@ -20,6 +20,8 @@ from services.encuestas_service import (
     list_template_catalog,
     build_template_draft_from_slug,
     seed_encuesta_respuestas_demo,
+    list_all_comentarios_admin,
+    administrar_comentario,
 )
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
@@ -260,6 +262,38 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
             "respuestas": [serialize_respuesta(resp) for resp in respuestas],
         }
         return jsonify(payload), 200
+
+    @bp.route("/<int:encuesta_id>/comentarios", methods=["GET"])
+    @token_requerido
+    @require_role("admin", "super_admin")
+    def ver_comentarios(current_user, encuesta_id: int):
+        limit = request.args.get("limit", default=100, type=int)
+        offset = request.args.get("offset", default=0, type=int)
+
+        try:
+            comentarios = list_all_comentarios_admin(
+                encuesta_id, current_user, limit=limit, offset=offset
+            )
+            return jsonify(comentarios), 200
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+
+    @bp.route("/comentarios/<int:comentario_id>", methods=["PATCH"])
+    @token_requerido
+    @require_role("admin", "super_admin")
+    def moderar_comentario_endpoint(current_user, comentario_id: int):
+        data = request.get_json(silent=True) or {}
+        accion = data.get("accion") # aprobar, ocultar, eliminar
+
+        try:
+            comentario = administrar_comentario(comentario_id, accion, current_user)
+            return jsonify({
+                "id": comentario.id,
+                "estado": comentario.estado,
+                "report_count": comentario.report_count
+            }), 200
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
 
     return bp
 

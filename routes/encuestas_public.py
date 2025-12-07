@@ -37,6 +37,7 @@ from services.encuestas_service import (
     serialize_public_encuesta,
     create_comentario,
     list_comentarios,
+    reportar_comentario,
 )
 from utils.auth_helpers import obtener_token, user_from_token
 
@@ -679,6 +680,19 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         offset = request.args.get("offset", default=0, type=int)
         items = list_comentarios(encuesta.id, limit=limit, offset=offset)
         return jsonify(items)
+
+    @bp.route("/<slug>/comentarios/<int:comentario_id>/reportar", methods=["POST", "OPTIONS"])
+    def reportar_comment(slug: str, comentario_id: int):
+        if request.method == "OPTIONS":
+            return "", 204
+
+        try:
+            # We fetch encuesta just to ensure the slug is valid, though report doesn't strictly depend on it in service
+            get_public_encuesta(slug)
+            reportar_comentario(comentario_id)
+            return jsonify({"ok": True}), 200
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
 
     @bp.route("/<slug>/qr")
     def qr(slug: str):
