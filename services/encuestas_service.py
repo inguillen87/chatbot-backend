@@ -3305,3 +3305,63 @@ def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List
             "anon_id": c.anon_id
         })
     return results
+
+
+def reportar_comentario(comentario_id: int) -> EncComentario:
+    comentario = db.session.get(EncComentario, comentario_id)
+    if not comentario:
+        raise EncuestaError("Comentario no encontrado", status_code=404)
+
+    comentario.report_count += 1
+    # Auto-ocultar si recibe muchos reportes (ej: 5)
+    if comentario.report_count >= 5 and comentario.estado == "publicado":
+        comentario.estado = "revision"
+
+    db.session.commit()
+    return comentario
+
+
+def administrar_comentario(comentario_id: int, accion: str, user: Any) -> EncComentario:
+    comentario = db.session.get(EncComentario, comentario_id)
+    if not comentario:
+        raise EncuestaError("Comentario no encontrado", status_code=404)
+
+    encuesta = db.session.get(EncEncuesta, comentario.encuesta_id)
+    _ensure_tenant_access(encuesta, user)
+
+    if accion == "aprobar":
+        comentario.estado = "publicado"
+        comentario.report_count = 0 # Reset reports on approval
+    elif accion == "ocultar":
+        comentario.estado = "oculto"
+    elif accion == "eliminar":
+        comentario.estado = "eliminado" # Soft delete logic or actual delete
+    else:
+        raise EncuestaError("Acción inválida", status_code=400)
+
+    db.session.commit()
+    return comentario
+
+
+def list_all_comentarios_admin(encuesta_id: int, user: Any, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+    encuesta = get_encuesta(encuesta_id, user=user)
+
+    query = (
+        EncComentario.query.filter_by(encuesta_id=encuesta.id)
+        .order_by(EncComentario.report_count.desc(), EncComentario.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+
+    results = []
+    for c in query:
+        results.append({
+            "id": c.id,
+            "texto": c.texto,
+            "nombre_autor": c.nombre_autor,
+            "fecha": c.created_at.isoformat(),
+            "estado": c.estado,
+            "report_count": c.report_count,
+            "user_id": c.user_id,
+        })
+    return results

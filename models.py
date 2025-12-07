@@ -1802,7 +1802,8 @@ class EncComentario(db.Model, TimestampMixin):
     anon_id = db.Column(db.String(80), nullable=True)
     nombre_autor = db.Column(db.String(100), nullable=True)
     texto = db.Column(db.Text, nullable=False)
-    estado = db.Column(db.String(20), default="publicado")  # publicado, oculto
+    estado = db.Column(db.String(20), default="publicado")  # publicado, oculto, revision
+    report_count = db.Column(db.Integer, default=0, nullable=False)
 
     encuesta = db.relationship("EncEncuesta", backref=db.backref("comentarios_debate", lazy="dynamic"))
     user = db.relationship("User")
