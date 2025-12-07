@@ -58,6 +58,8 @@ from routes.pedidos import (
 from routes.pwa_app import follow_tenant, list_followed_tenants, unfollow_tenant
 from routes.pwa_misc import provide_anon_id
 from routes.public_resolver import tenant_profile
+from routes.public_tenant import get_contacts, get_links, get_menu, get_widget_config
+from routes.pwa_public import public_events, public_news
 
 
 api_aliases_bp = Blueprint("api_aliases", __name__, url_prefix="/api")
@@ -673,6 +675,66 @@ def root_public_market_checkout_alias(tenant_slug: str):
     if request.method == "OPTIONS":
         return _options_ok()
     return checkout_publico(tenant_slug=tenant_slug)
+
+
+# --- Alias sin prefijo /api para configuraciones de tenant público ---
+
+
+@public_aliases_bp.route(
+    "/public/tenants/<slug>/menu", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def root_public_tenant_menu(slug: str):
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return get_menu(slug)
+
+
+@public_aliases_bp.route(
+    "/public/tenants/<slug>/contacts", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def root_public_tenant_contacts(slug: str):
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return get_contacts(slug)
+
+
+@public_aliases_bp.route(
+    "/public/tenants/<slug>/links", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def root_public_tenant_links(slug: str):
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return get_links(slug)
+
+
+@public_aliases_bp.route(
+    "/public/tenants/<slug>/widget-config", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def root_public_tenant_widget_config(slug: str):
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return get_widget_config(slug)
+
+
+# --- Alias sin prefijo /api para news/events públicos ---
+
+
+@public_aliases_bp.route(
+    "/public/news", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def root_public_news_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return public_news()
+
+
+@public_aliases_bp.route(
+    "/public/events", methods=["GET", "OPTIONS"], strict_slashes=False
+)
+def root_public_events_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    return public_events()
 
 
 @api_aliases_bp.route("/app/me/tenants", methods=["GET", "OPTIONS"], strict_slashes=False)

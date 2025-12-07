@@ -107,6 +107,11 @@ def get_current_tenant() -> Optional[str]:
             return _store_and_return(slug_hint)
         if parte in {"whatsapp", "pwa"}:
             return _store_and_return(parte)
+        # Admin routes: /api/admin/tenants/<slug>/...
+        if parte == "tenants" and idx > 0 and path_parts[idx - 1] == "admin":
+            siguiente = path_parts[idx + 1] if idx + 1 < len(path_parts) else None
+            if siguiente:
+                return _store_and_return(siguiente)
 
     default_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
     if default_slug:
