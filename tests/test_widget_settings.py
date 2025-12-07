@@ -92,6 +92,14 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertEqual(attrs["data-bubble-shape"], payload["bubble_shape"])
         self.assertEqual(attrs["data-default-open"], "true")
 
+    def test_public_widget_config_allows_querystring_tenant_fallback(self):
+        resp = self.client.get(
+            "/api/public/tenants/perfil/widget-config",
+            query_string={"tenant": self.tenant.slug, "tenant_slug": self.tenant.slug},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsInstance(resp.get_json(), dict)
+
 
 if __name__ == "__main__":
     unittest.main()
