@@ -630,6 +630,11 @@ def create_app(config_class=Config):
                 # This will create tables if they don't exist.
                 # It does NOT handle migrations (schema updates), but it fixes "UndefinedTable" for new deployments.
                 db.create_all()
+
+                # Auto-initialize tenants if missing (ensure demo tenants exist)
+                from init_tenants import init_tenants
+                init_tenants()
+
                 db.session.remove()
                 app.logger.info("Startup: db.create_all() executed successfully (tables ensured).")
             except Exception as e:

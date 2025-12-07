@@ -227,6 +227,9 @@ def require_tenant(func=None):
             _store_tenant_in_context(tenant)
             return tenant
 
+        if tenant_slug:
+             raise ApiError(f"Tenant '{tenant_slug}' no encontrado", 404)
+
         raise ApiError("tenant requerido", 400)
 
     if func is None:
