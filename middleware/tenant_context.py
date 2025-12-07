@@ -127,6 +127,13 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
 
         return _normalize_slug(segments[1])
 
+    # Admin endpoints with explicit tenant path segment, e.g.
+    # /api/admin/tenants/<slug>/employees. Allow extracting the slug so
+    # the tenant context can be resolved even if no query/header hint was
+    # provided by the caller.
+    if lower_segments[:3] == ["api", "admin", "tenants"] and len(segments) >= 4:
+        return _normalize_slug(segments[3])
+
     # Direct tenant slugs prefixed at the root (e.g. /m/<slug>/...)
     if len(segments) >= 2 and lower_segments[0] in {
         "municipio",

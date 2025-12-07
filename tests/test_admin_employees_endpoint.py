@@ -89,6 +89,20 @@ class AdminEmployeesTests(unittest.TestCase):
         self.assertEqual(data[0]["email"], "emp@example.com")
         self.assertIn("soporte", data[0]["roles"])
 
+    def test_list_employees_by_slug_without_tenant_header(self):
+        """The path slug should be enough to resolve the tenant context."""
+
+        headers = {"Authorization": self.owner.token}
+        resp = self.client.get(
+            f"/api/admin/tenants/{self.tenant.slug}/employees",
+            headers=headers
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(isinstance(data, list))
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["email"], "emp@example.com")
+
     def test_list_current_tenant_employees(self):
         # Test GET /api/admin/employees (relying on context)
         headers = {"Authorization": self.owner.token, "X-Tenant": self.tenant.slug}

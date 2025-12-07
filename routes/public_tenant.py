@@ -23,8 +23,11 @@ def _get_tenant_from_request(slug: str):
 
     return tenant
 
-@public_tenant_bp.route('/api/public/tenants/<slug>/menu', methods=['GET'])
+@public_tenant_bp.route('/api/public/tenants/<slug>/menu', methods=['GET', 'OPTIONS'])
 def get_menu(slug):
+    if request.method == 'OPTIONS':
+        return jsonify({"ok": True})
+
     channel = request.args.get('channel')
 
     tenant = _get_tenant_from_request(slug)
@@ -40,24 +43,33 @@ def get_menu(slug):
 
     return jsonify(cfg.json_value if cfg else {})
 
-@public_tenant_bp.route('/api/public/tenants/<slug>/contacts', methods=['GET'])
+@public_tenant_bp.route('/api/public/tenants/<slug>/contacts', methods=['GET', 'OPTIONS'])
 def get_contacts(slug):
+    if request.method == 'OPTIONS':
+        return jsonify({"ok": True})
+
     tenant = _get_tenant_from_request(slug)
     if not tenant: return jsonify({"error": "Tenant not found"}), 404
 
     cfg = TenantConfig.query.filter_by(tenant_id=tenant.id, key='contacts', channel=None).first()
     return jsonify(cfg.json_value if cfg else {})
 
-@public_tenant_bp.route('/api/public/tenants/<slug>/links', methods=['GET'])
+@public_tenant_bp.route('/api/public/tenants/<slug>/links', methods=['GET', 'OPTIONS'])
 def get_links(slug):
+    if request.method == 'OPTIONS':
+        return jsonify({"ok": True})
+
     tenant = _get_tenant_from_request(slug)
     if not tenant: return jsonify({"error": "Tenant not found"}), 404
 
     cfg = TenantConfig.query.filter_by(tenant_id=tenant.id, key='links', channel=None).first()
     return jsonify(cfg.json_value if cfg else {})
 
-@public_tenant_bp.route('/api/public/tenants/<slug>/widget-config', methods=['GET'])
+@public_tenant_bp.route('/api/public/tenants/<slug>/widget-config', methods=['GET', 'OPTIONS'])
 def get_widget_config(slug):
+    if request.method == 'OPTIONS':
+        return jsonify({"ok": True})
+
     tenant = _get_tenant_from_request(slug)
     if not tenant: return jsonify({"error": "Tenant not found"}), 404
 
