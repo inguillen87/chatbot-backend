@@ -6,6 +6,38 @@ from services.tenant_factory import create_tenant_from_template, assign_number_t
 
 admin_tenant_bp = Blueprint('admin_tenant_bp', __name__)
 
+def _has_tenant_access(user, tenant):
+    """
+    Check if the user has administrative access to the tenant.
+    Access is granted if:
+    1. User is a platform superadmin.
+    2. User is a member of the tenant (tenant_id matches) with implicit admin role (checked elsewhere or implied by context).
+    3. User is the Owner Entity of the tenant (User.id == Tenant.municipio_id/pyme_id).
+    4. User belongs to the Owner Entity organization (User.municipio_id == Tenant.municipio_id).
+    """
+    if user.rol == 'platform_admin':
+        return True
+
+    # Standard tenant member check
+    if user.tenant_id == tenant.id:
+        return True
+
+    # Owner check: The user IS the entity that owns the tenant
+    # tenant.municipio_id is a FK to User.id
+    if tenant.municipio_id is not None and user.id == tenant.municipio_id:
+        return True
+    if tenant.pyme_id is not None and user.id == tenant.pyme_id:
+        return True
+
+    # Organization member check: The user belongs to the entity that owns the tenant
+    # user.municipio_id is expected to point to the Municipality User ID
+    if tenant.municipio_id is not None and user.municipio_id == tenant.municipio_id:
+        return True
+    if tenant.pyme_id is not None and user.pyme_id == tenant.pyme_id:
+        return True
+
+    return False
+
 # --- Tenant Management ---
 
 @admin_tenant_bp.route('/api/admin/tenants', methods=['POST'])
@@ -48,7 +80,7 @@ def get_tenant_config_bundle(current_user, slug):
         return jsonify({"error": "Tenant not found"}), 404
 
     # IDOR Check
-    if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
+    if not _has_tenant_access(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
 
     configs = TenantConfig.query.filter_by(tenant_id=tenant.id).all()
@@ -83,7 +115,7 @@ def update_tenant_config_bundle(current_user, slug):
         return jsonify({"error": "Tenant not found"}), 404
 
     # IDOR Check
-    if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
+    if not _has_tenant_access(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
 
     data = request.json or {}
@@ -137,7 +169,7 @@ def assign_whatsapp_number(current_user, slug):
         return jsonify({"error": "Tenant not found"}), 404
 
     # IDOR Check
-    if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
+    if not _has_tenant_access(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
 
     number = assign_number_to_tenant(tenant)
@@ -166,7 +198,7 @@ def create_employee(current_user):
         return jsonify({'error': 'No tenant context'}), 400
 
     # IDOR Check
-    if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
+    if not _has_tenant_access(current_user, tenant):
         return jsonify({'error': 'Unauthorized'}), 403
 
     data = request.json or {}
@@ -227,7 +259,7 @@ def assign_role(current_user, user_id):
          return jsonify({'error': 'No tenant context'}), 400
 
     # IDOR Check
-    if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
+    if not _has_tenant_access(current_user, tenant):
         return jsonify({'error': 'Unauthorized'}), 403
 
     data = request.json or {}
@@ -262,7 +294,7 @@ def assign_categories(current_user, user_id):
          return jsonify({'error': 'No tenant context'}), 400
 
     # IDOR Check
-    if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
+    if not _has_tenant_access(current_user, tenant):
         return jsonify({'error': 'Unauthorized'}), 403
 
     data = request.json or {}
@@ -293,7 +325,7 @@ def list_current_tenant_employees(current_user):
         return jsonify({'error': 'No tenant context'}), 400
 
     # IDOR Check
-    if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
+    if not _has_tenant_access(current_user, tenant):
         return jsonify({'error': 'Unauthorized'}), 403
 
     employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
@@ -326,7 +358,7 @@ def list_employees_by_slug(current_user, slug):
         return jsonify({"error": "Tenant not found"}), 404
 
     # IDOR Check
-    if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
+    if not _has_tenant_access(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
 
     employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
