@@ -686,9 +686,8 @@ def legacy_productos_publicos():
 
     tenant = _resolve_tenant_or_404(tenant_slug)
     productos = (
-        CatalogoItem.query.filter(
-            CatalogoItem.tenant_id == tenant.id, CatalogoItem.disponible.is_(True)
-        )
+        CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())
+        .filter(CatalogoItem.tenant_id == tenant.id, CatalogoItem.disponible.is_(True))
         .order_by(CatalogoItem.nombre.asc())
         .all()
     )
