@@ -24,6 +24,7 @@ from services.encuestas_service import (
     administrar_comentario,
 )
 from utils.auth_helpers import token_requerido
+from routes.admin_tenant import _is_authorized_for_tenant
 from utils.permissions import require_role
 
 
@@ -116,35 +117,31 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
     @require_role("admin", "super_admin")
     def listar_encuestas_endpoint(current_user):
         estado = request.args.get("estado")
+
         try:
-            tenant_id = None
             tenant_profile = getattr(g, "tenant_profile", None)
+            tenant_id = None
 
             if tenant_profile:
-                if current_user.rol == "super_admin":
-                    tenant_id = tenant_profile.id
-                else:
-                    user_tenant_id = (
-                        getattr(current_user, "municipio_id", None)
-                        or getattr(current_user, "empresa_id", None)
-                        or current_user.id
-                    )
-                    if user_tenant_id == tenant_profile.id:
-                        tenant_id = user_tenant_id
-                    else:
-                        return jsonify({"error": "No autorizado para este tenant"}), 403
+                if not _is_authorized_for_tenant(current_user, tenant_profile):
+                    return jsonify({"error": "No autorizado para este tenant"}), 403
+                tenant_id = tenant_profile.id
 
             if not tenant_id:
                 tenant_id = (
-                    getattr(current_user, "municipio_id", None)
+                    getattr(current_user, "tenant_id", None)
+                    or getattr(current_user, "municipio_id", None)
                     or getattr(current_user, "empresa_id", None)
                     or current_user.id
                 )
+
             encuestas = list_encuestas(tenant_id, estado)
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
+
         if (request.args.get("legacy") or "").lower() in {"1", "true", "yes"}:
             return jsonify([serialize_encuesta(e) for e in encuestas]), 200
+
         payload = build_admin_list_payload(encuestas)
         return jsonify(payload), 200
 
