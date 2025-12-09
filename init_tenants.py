@@ -4,7 +4,7 @@ import os
 import uuid
 from sqlalchemy import text
 from database import db
-from models import User, TenantProfile, Rubro
+from models import User, TenantProfile, Rubro, WidgetSettings, WidgetConfig
 from werkzeug.security import generate_password_hash
 
 def fix_catalog_schema():
@@ -150,6 +150,24 @@ def init_tenants():
                 cfg["widget_tokens"] = tokens
                 tenant.configuracion = cfg
                 db.session.add(tenant)
+
+            # Ensure WidgetSettings are configured for engagement (default open + tooltips)
+            print(f"  Configuring WidgetSettings for '{slug}'...")
+            ws = WidgetSettings.query.filter_by(tenant_id=tenant.id).first()
+            if not ws:
+                ws = WidgetSettings(tenant_id=tenant.id)
+
+            ws.default_open = True
+            ws.welcome_title = "👋 ¡Hola! Soy tu asistente virtual"
+            ws.welcome_subtitle = "¿En qué puedo ayudarte hoy?"
+            db.session.add(ws)
+
+            # Ensure WidgetConfig (legacy) matches
+            wc = WidgetConfig.query.filter_by(tenant_id=tenant.id).first()
+            if not wc:
+                wc = WidgetConfig(tenant_id=tenant.id)
+            wc.welcome_message = "👋 ¡Hola! Soy tu asistente virtual. ¿En qué puedo ayudarte hoy?"
+            db.session.add(wc)
 
         db.session.commit()
 
