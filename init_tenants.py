@@ -2,12 +2,34 @@
 import json
 import os
 import uuid
+from sqlalchemy import text
 from database import db
 from models import User, TenantProfile, Rubro
 from werkzeug.security import generate_password_hash
 
+def fix_catalog_schema():
+    """Ensure the catalogo_item table has the 'disponible' column."""
+    try:
+        with db.engine.connect() as conn:
+            # Check if column exists
+            check_sql = text("SELECT column_name FROM information_schema.columns WHERE table_name='catalogo_item' AND column_name='disponible'")
+            result = conn.execute(check_sql).fetchone()
+
+            if not result:
+                print("⚠️ Column 'disponible' missing in 'catalogo_item'. Adding it...")
+                conn.execute(text("ALTER TABLE catalogo_item ADD COLUMN disponible BOOLEAN DEFAULT true"))
+                conn.commit()
+                print("✅ Column 'disponible' added successfully.")
+            else:
+                print("✅ Column 'disponible' already exists.")
+    except Exception as e:
+        print(f"❌ Error checking/fixing schema: {e}")
+
 def init_tenants():
     print("🚀 Initializing Tenants from demo_rubros.json...")
+
+    # Run schema fix first
+    fix_catalog_schema()
 
     json_path = os.path.join("data", "demo_rubros.json")
     try:

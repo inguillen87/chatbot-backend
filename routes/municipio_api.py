@@ -702,6 +702,8 @@ def legacy_productos_publicos():
         if not isinstance(exc, ProgrammingError):
             raise
 
+        db.session.rollback()
+
         productos = (
             CatalogoItem.query.options(*CatalogoItem.legacy_safe_options(include_availability=False))
             .filter(CatalogoItem.tenant_id == tenant.id)
