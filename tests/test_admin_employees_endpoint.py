@@ -60,6 +60,51 @@ def _create_tenant_with_users():
     db.session.commit()
     return owner, tenant, employee
 
+
+def _create_owner_without_tenant_id():
+    """Create tenant where owner is linked via municipio but tenant_id is null."""
+
+    owner = User(
+        name="Legacy Admin",
+        email="legacy_admin@example.com",
+        password_hash="hash",
+        rol="admin",
+    )
+    db.session.add(owner)
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug="demo-legacy",
+        nombre="Demo Legacy Municipio",
+        tipo="municipio",
+        municipio=owner,
+    )
+    db.session.add(tenant)
+    db.session.flush()
+
+    owner.token = generar_token(owner.id, owner.rol, "municipio", owner.id, None)
+
+    employee = User(
+        name="Legacy Employee",
+        email="legacy_emp@example.com",
+        password_hash="hash",
+        rol="empleado",
+        es_empleado=True,
+        tenant_id=tenant.id,
+    )
+    db.session.add(employee)
+    db.session.flush()
+
+    role = Role(name="legacy_soporte", description="Soporte")
+    db.session.add(role)
+    db.session.flush()
+
+    user_role = UserRole(user_id=employee.id, role_id=role.id, tenant_id=tenant.id)
+    db.session.add(user_role)
+    db.session.commit()
+
+    return owner, tenant, employee
+
 @unittest.skipIf(create_app is None, "Flask not available")
 class AdminEmployeesTests(unittest.TestCase):
     def setUp(self):
@@ -114,6 +159,36 @@ class AdminEmployeesTests(unittest.TestCase):
         data = resp.get_json()
         self.assertEqual(len(data), 1)
         self.assertEqual(data[0]["email"], "emp@example.com")
+
+    def test_owner_without_tenant_id_is_authorized(self):
+        owner, tenant, employee = _create_owner_without_tenant_id()
+
+        headers = {"Authorization": owner.token, "X-Tenant": tenant.slug}
+        resp = self.client.get(
+            "/api/admin/employees",
+            headers=headers,
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["email"], employee.email)
+
+    def test_owner_with_tenant_slug_can_list_by_slug_endpoint(self):
+        owner, tenant, employee = _create_owner_without_tenant_id()
+        owner.tenant_slug = tenant.slug
+        db.session.commit()
+
+        headers = {"Authorization": owner.token}
+        resp = self.client.get(
+            f"/api/admin/tenants/{tenant.slug}/employees",
+            headers=headers,
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["email"], employee.email)
 
 if __name__ == "__main__":
     unittest.main()

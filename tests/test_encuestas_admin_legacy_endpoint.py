@@ -1,7 +1,8 @@
 import pytest
 
 from app import db
-from models import User
+from models import TenantProfile, User
+from utils.auth_helpers import generar_token
 from services.encuestas_service import (
     EncEncuesta,
     EncRespuesta,
@@ -118,6 +119,39 @@ def test_admin_encuestas_alias_exposes_rest_endpoints(client, monkeypatch, admin
     legacy_payload = legacy_resp.get_json()
     assert isinstance(legacy_payload, list)
     assert len(legacy_payload) == refreshed["resumen"]["total"]
+
+
+def test_admin_encuestas_allows_owner_with_tenant_context(monkeypatch, client):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+
+    owner = User(
+        email="owner-without-tenant@example.com",
+        name="Legacy Owner",
+        rol="admin",
+        tipo_chat="municipio",
+    )
+    owner.set_password("demo1234")
+    db.session.add(owner)
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug="municipio-demo",
+        nombre="Municipio Demo",
+        tipo="municipio",
+        municipio=owner,
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    token = generar_token(owner.id, owner.rol, owner.tipo_chat, owner.id, None)
+    headers = {"Authorization": f"Bearer {token}", "X-Tenant": tenant.slug}
+
+    resp = client.get("/api/admin/encuestas", headers=headers)
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert isinstance(payload, dict)
+    assert payload.get("resumen") is not None
 
     public_resp = client.get("/public/encuestas")
     assert public_resp.status_code == 200

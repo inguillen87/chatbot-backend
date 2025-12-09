@@ -685,13 +685,30 @@ def legacy_productos_publicos():
         abort(400, "tenant_slug query param required")
 
     tenant = _resolve_tenant_or_404(tenant_slug)
-    productos = (
-        CatalogoItem.query.filter(
-            CatalogoItem.tenant_id == tenant.id, CatalogoItem.disponible.is_(True)
+    try:
+        productos = (
+            CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())
+            .filter(CatalogoItem.tenant_id == tenant.id, CatalogoItem.disponible.is_(True))
+            .order_by(CatalogoItem.nombre.asc())
+            .all()
         )
-        .order_by(CatalogoItem.nombre.asc())
-        .all()
-    )
+    except Exception as exc:  # pragma: no cover - fallback path exercised via tests
+        # Legacy databases may miss newer catalog columns (e.g. ``disponible``).
+        # If the main query fails with a DB-level error, retry with a minimal
+        # column set and without filtering by the missing fields to keep the
+        # storefront usable.
+        from sqlalchemy.exc import ProgrammingError
+
+        if not isinstance(exc, ProgrammingError):
+            raise
+
+        productos = (
+            CatalogoItem.query.options(*CatalogoItem.legacy_safe_options(include_availability=False))
+            .filter(CatalogoItem.tenant_id == tenant.id)
+            .order_by(CatalogoItem.nombre.asc())
+            .all()
+        )
+
     return jsonify({"productos": [serialize_catalogo_item(p) for p in productos]})
 
 
