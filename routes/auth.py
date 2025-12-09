@@ -748,6 +748,22 @@ def login():
     login_user(user) # Establecer la sesión para el usuario
     current_app.logger.info(f"Usuario {user.email} logueado y sesión Flask-Login establecida.")
 
+    # Ensure user is linked to their tenant if missing, to prevent permission errors
+    tenant_obj = _tenant_for_user(user)
+    if not tenant_obj:
+        if user.municipio_id:
+            tenant_obj = TenantProfile.query.filter_by(municipio_id=user.municipio_id).first()
+        elif user.pyme_id:
+            tenant_obj = TenantProfile.query.filter_by(pyme_id=user.pyme_id).first()
+
+    if tenant_obj:
+        _attach_user_to_tenant(user, tenant_obj)
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            current_app.logger.warning("Failed to attach user to tenant during login")
+
     owner_token = _resolve_owner_token(user)
 
     # Generar el token JWT
