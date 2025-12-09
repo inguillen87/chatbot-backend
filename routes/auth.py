@@ -1790,8 +1790,8 @@ def dashboard_info(user: User):
     # Paneles base para todos los usuarios autenticados
     panels = ["perfil"]
 
-    # Paneles para roles admin y empleado
-    if user.rol in ["admin", "empleado"]:
+    # Paneles para roles admin, empleado y super_admin
+    if user.rol in ["admin", "empleado", "super_admin"]:
         panels.extend([
             "tickets",
             "usuarios_crm",
@@ -1804,9 +1804,13 @@ def dashboard_info(user: User):
         elif tipo_chat == "municipio":
             panels.append("sugerencias_ciudadano")
 
-    # Paneles exclusivos para admin
-    if user.rol == "admin":
+    # Paneles exclusivos para admin y super_admin
+    if user.rol in ["admin", "super_admin"]:
         panels.append("empleados")
+
+    # Paneles exclusivos para super_admin
+    if user.rol == "super_admin":
+        panels.append("tenants")  # Panel de gestión de tenants
 
     # Eliminar duplicados por si acaso y ordenar alfabéticamente para consistencia
     final_panels = sorted(list(set(panels)))
@@ -2089,7 +2093,7 @@ def admin_login():
         return jsonify({"error": "Credenciales inválidas"}), 401
 
     # Check Role
-    if user.rol not in ['admin', 'empleado', 'superadmin']:
+    if user.rol not in ['admin', 'empleado', 'super_admin', 'superadmin']:
         return jsonify({"error": "Acceso denegado: No tienes permisos administrativos."}), 403
 
     # Generate Token
