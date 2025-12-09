@@ -755,6 +755,14 @@ def login():
             tenant_obj = TenantProfile.query.filter_by(municipio_id=user.municipio_id).first()
         elif user.pyme_id:
             tenant_obj = TenantProfile.query.filter_by(pyme_id=user.pyme_id).first()
+        else:
+            # Check for tenant_slug in request to link user (e.g. demo flow)
+            req_tenant_slug = data.get("tenant_slug") or data.get("tenantSlug") or request.args.get("tenant_slug")
+            if req_tenant_slug:
+                try:
+                    tenant_obj = resolve_tenant_only(tenant_slug=req_tenant_slug)
+                except Exception:
+                    pass
 
     if tenant_obj:
         _attach_user_to_tenant(user, tenant_obj)
@@ -763,6 +771,22 @@ def login():
         except Exception:
             db.session.rollback()
             current_app.logger.warning("Failed to attach user to tenant during login")
+
+    # Migrate anonymous data if anon_id is present
+    req_anon_id = request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id") or data.get("anon_id")
+    if req_anon_id:
+        try:
+            from services.ticket_service import servicio_tickets
+            servicio_tickets.migrar_tickets_de_anonimo(req_anon_id, user.id)
+
+            # Also migrate cart if using MarketCart logic (it handles it if session_id matches anon_id)
+            from routes.market import _get_or_create_cart_for_user
+            target_tenant = tenant_obj or _tenant_for_user(user)
+            if target_tenant:
+                # This triggers the adoption logic inside _get_or_create_cart_for_user
+                _get_or_create_cart_for_user(target_tenant, user, create_if_missing=False)
+        except Exception as e:
+            current_app.logger.warning(f"Failed to migrate anon data during login: {e}")
 
     owner_token = _resolve_owner_token(user)
 
