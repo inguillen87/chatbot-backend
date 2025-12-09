@@ -34,6 +34,13 @@ def _is_authorized_for_tenant(current_user: User, tenant: TenantProfile) -> bool
     if tenant.pyme_id and current_user.id == tenant.pyme_id:
         return True
 
+    # Allow admins/employees belonging to the tenant owner
+    if tenant.municipio_id and current_user.municipio_id == tenant.municipio_id:
+        return True
+
+    if tenant.pyme_id and current_user.pyme_id == tenant.pyme_id:
+        return True
+
     return False
 
 # --- Tenant Management ---
