@@ -712,5 +712,49 @@ def legacy_productos_publicos():
     return jsonify({"productos": [serialize_catalogo_item(p) for p in productos]})
 
 
+@legacy_public_v2_bp.route("/carrito/items", methods=["POST", "OPTIONS"])
+@cross_origin(**_public_cors_kwargs(["POST", "OPTIONS"]))
+def legacy_agregar_item_carrito():
+    if request.method == "OPTIONS":
+        return "", 204
+
+    tenant_slug = request.args.get("tenant_slug")
+    if not tenant_slug:
+        abort(400, "tenant_slug query param required")
+
+    tenant = _resolve_tenant_or_404(tenant_slug)
+    data = request.get_json(silent=True) or {}
+    producto_id = data.get("producto_id")
+    cantidad = int(data.get("cantidad") or 1)
+
+    cart = session.get(_cart_key(tenant), {"items": []})
+    cart.setdefault("items", [])
+    cart["items"].append({"producto_id": producto_id, "cantidad": cantidad})
+    session[_cart_key(tenant)] = cart
+    session.modified = True
+    return jsonify(cart), 201
+
+
+@legacy_public_v2_bp.route("/checkout", methods=["POST", "OPTIONS"])
+@cross_origin(**_public_cors_kwargs(["POST", "OPTIONS"]))
+def legacy_checkout_publico():
+    if request.method == "OPTIONS":
+        return "", 204
+
+    tenant_slug = request.args.get("tenant_slug")
+    if not tenant_slug:
+        abort(400, "tenant_slug query param required")
+
+    tenant = _resolve_tenant_or_404(tenant_slug)
+    cart = session.get(_cart_key(tenant), {"items": []})
+    # Here we would normally process the order, but for now we just clear the cart
+    # to match the public_market behavior or maybe we should return the cart content
+    # if this is just a 'view checkout' action?
+    # The public_market checkout clears the cart. We'll do the same.
+    session[_cart_key(tenant)] = {"items": []}
+    session.modified = True
+    return jsonify({"status": "ok", "tenant": tenant.slug, "carrito": cart})
+
+
 def _cart_key(tenant: TenantProfile) -> str:
     return f"cart_{tenant.slug}"

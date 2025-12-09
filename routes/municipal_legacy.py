@@ -18,6 +18,7 @@ from sqlalchemy import func, or_
 from models import Categoria, Conversacion, MunicipioTicket, MunicipioPost, User, db, TenantProfile
 from utils.municipio_utils import get_numeric_municipio_id
 from routes.ticket import TICKET_ALLOWED_STATES
+from services.encuestas_service import list_public_encuestas_for_tenant, serialize_public_encuesta
 from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS
 from services.municipal_stats import build_stats_for_municipio, StatsFilters
 from socket_service import emit_tenant_update
@@ -906,6 +907,40 @@ def municipal_estados():
         return "", 204
 
     return jsonify({"estados": TICKET_ALLOWED_STATES})
+
+
+@municipal_bp.route('/encuestas', methods=['GET', 'OPTIONS'])
+@token_requerido
+@admin_o_empleado_requerido
+def municipal_encuestas_list(current_user):
+    """
+    Listar encuestas del municipio (legacy endpoint compatibility).
+    """
+    if request.method == 'OPTIONS':
+        return "", 204
+
+    municipio_id = _resolve_current_municipio_id(current_user)
+    if municipio_id is None:
+        return jsonify([])
+
+    tenant = TenantProfile.query.filter_by(municipio_id=municipio_id).first()
+    if not tenant:
+        return jsonify([])
+
+    try:
+        encuestas = list_public_encuestas_for_tenant(tenant.id, limit=50)
+    except Exception:
+        return jsonify([])
+
+    payload = []
+    base_url = current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL") or request.host_url.rstrip("/")
+
+    for encuesta, slug in encuestas:
+        data = serialize_public_encuesta(encuesta, slug_publico=slug)
+        data["url_publica"] = f"{base_url}/e/{slug}"
+        payload.append(data)
+
+    return jsonify(payload)
 
 @municipal_bp.route('/stats', methods=['GET', 'OPTIONS'])
 @token_requerido

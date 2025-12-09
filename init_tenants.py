@@ -156,6 +156,17 @@ def init_tenants():
             db.session.add(admin_user)
             db.session.commit()
 
+    # 6. Fix Mauricio (Legacy Backfill)
+    print("\nProcessing Legacy Fixes...")
+    mauricio = User.query.filter_by(email="mauricio@junin.com").first()
+    municipio_tenant = TenantProfile.query.filter_by(slug="municipio").first()
+    if mauricio and municipio_tenant:
+        if mauricio.tenant_id != municipio_tenant.id:
+            print(f"  Fixing tenant_id for {mauricio.email}...")
+            mauricio.tenant_id = municipio_tenant.id
+            db.session.add(mauricio)
+            db.session.commit()
+
     print("\n✅ Initialization complete.")
 
 if __name__ == "__main__":
