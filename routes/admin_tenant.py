@@ -19,27 +19,44 @@ def _is_authorized_for_tenant(current_user: User, tenant: TenantProfile) -> bool
     if not current_user or not tenant:
         return False
 
-    if current_user.rol == "platform_admin":
+    if current_user.rol in ("platform_admin", "super_admin"):
         return True
 
     if current_user.tenant_id == tenant.id:
         return True
 
-    if getattr(current_user, "tenant_slug", None) and current_user.tenant_slug.lower() == tenant.slug.lower():
+    if getattr(current_user, "tenant_slug", None) and tenant.slug and current_user.tenant_slug.lower() == tenant.slug.lower():
         return True
 
+    # Unconditional Owner Check (Strongest)
     if tenant.municipio_id and current_user.id == tenant.municipio_id:
         return True
-
     if tenant.pyme_id and current_user.id == tenant.pyme_id:
         return True
 
-    # Allow admins/employees belonging to the tenant owner
-    if tenant.municipio_id and current_user.municipio_id == tenant.municipio_id:
-        return True
+    # 3) fallback LEGACY municipio
+    if getattr(current_user, "tipo_chat", None) == "municipio":
+        # a) usuario tiene municipio_id apuntando al tenant (ID)
+        if getattr(current_user, "municipio_id", None) and current_user.municipio_id == tenant.id:
+            return True
+        # c) usuario es empleado del dueño (mismo municipio_id)
+        if getattr(tenant, "municipio_id", None) and getattr(current_user, "municipio_id", None) == tenant.municipio_id:
+            return True
 
-    if tenant.pyme_id and current_user.pyme_id == tenant.pyme_id:
-        return True
+    # 4) fallback LEGACY pyme/empresa
+    tipo_chat = getattr(current_user, "tipo_chat", "")
+    if tipo_chat in ("pyme", "empresa"):
+        if getattr(current_user, "empresa_id", None) and current_user.empresa_id == tenant.id:
+            return True
+        if getattr(current_user, "pyme_id", None) and current_user.pyme_id == tenant.id:
+             return True
+        # Check affiliation (employee/admin of same owner)
+        if getattr(tenant, "pyme_id", None):
+            owner_id = tenant.pyme_id
+            if getattr(current_user, "empresa_id", None) == owner_id:
+                return True
+            if getattr(current_user, "pyme_id", None) == owner_id:
+                return True
 
     return False
 
