@@ -1038,7 +1038,7 @@ class CatalogoItem(db.Model):
         return self.modalidad_enum is CatalogoModalidad.CANJE
 
     @classmethod
-    def legacy_safe_options(cls):
+    def legacy_safe_options(cls, include_availability: bool = True):
         """Loader options that skip optional monetary columns on legacy DBs.
 
         Some deployments still have databases created before columns like
@@ -1047,13 +1047,18 @@ class CatalogoItem(db.Model):
         ``UndefinedColumn`` errors when the schema is outdated.
         """
 
-        return (
+        options = [
             defer(cls.moneda),
             defer(cls.precio_por_caja),
             defer(cls.unidad_por_caja),
             defer(cls.precio_monetario),
             defer(cls.pdf_url),
-        )
+        ]
+
+        if not include_availability:
+            options.append(defer(cls.disponible))
+
+        return tuple(options)
 
 class CatalogoEmbedding(db.Model):
     __tablename__ = "catalogo_embedding"

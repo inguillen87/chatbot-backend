@@ -25,6 +25,9 @@ def _is_authorized_for_tenant(current_user: User, tenant: TenantProfile) -> bool
     if current_user.tenant_id == tenant.id:
         return True
 
+    if getattr(current_user, "tenant_slug", None) and current_user.tenant_slug.lower() == tenant.slug.lower():
+        return True
+
     if tenant.municipio_id and current_user.id == tenant.municipio_id:
         return True
 

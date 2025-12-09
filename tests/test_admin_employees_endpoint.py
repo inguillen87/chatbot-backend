@@ -174,5 +174,21 @@ class AdminEmployeesTests(unittest.TestCase):
         self.assertEqual(len(data), 1)
         self.assertEqual(data[0]["email"], employee.email)
 
+    def test_owner_with_tenant_slug_can_list_by_slug_endpoint(self):
+        owner, tenant, employee = _create_owner_without_tenant_id()
+        owner.tenant_slug = tenant.slug
+        db.session.commit()
+
+        headers = {"Authorization": owner.token}
+        resp = self.client.get(
+            f"/api/admin/tenants/{tenant.slug}/employees",
+            headers=headers,
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["email"], employee.email)
+
 if __name__ == "__main__":
     unittest.main()
