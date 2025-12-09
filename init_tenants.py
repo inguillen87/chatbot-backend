@@ -131,6 +131,31 @@ def init_tenants():
 
         db.session.commit()
 
+    # 5. Super Admin (Marcelo)
+    print("\nProcessing Super Admin...")
+    admin_email = "marcelo@chatboc.ar"
+    admin_user = User.query.filter_by(email=admin_email).first()
+    if not admin_user:
+        print(f"  Creating Super Admin '{admin_email}'...")
+        admin_user = User(
+            name="Marcelo SuperAdmin",
+            email=admin_email,
+            rol="super_admin",
+            tipo_chat="pyme",  # Placeholder
+            plan="enterprise",
+            nombre_empresa="Chatboc Platform",
+            token=str(uuid.uuid4())
+        )
+        admin_user.set_password("Marcelog123")
+        db.session.add(admin_user)
+        db.session.commit()
+    else:
+        print(f"  Super Admin '{admin_email}' exists.")
+        if admin_user.rol != "super_admin":
+            admin_user.rol = "super_admin"
+            db.session.add(admin_user)
+            db.session.commit()
+
     print("\n✅ Initialization complete.")
 
 if __name__ == "__main__":
