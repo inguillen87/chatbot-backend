@@ -11,12 +11,14 @@ from sqlalchemy import func, or_
 from models import (
     CatalogoItem,
     CategoriaTicket,
+    MarketCartItem,
     MunicipioTicket,
     TenantProfile,
     User,
     WidgetConfig,
     db,
 )
+from routes.market import _get_or_create_cart_for_user
 from config import ALLOWED_ORIGINS
 from routes.auth import token_requerido
 from routes.ticket import TICKET_ALLOWED_STATES
@@ -669,8 +671,14 @@ def legacy_carrito_publico():
         abort(400, "tenant_slug query param required")
 
     tenant = _resolve_tenant_or_404(tenant_slug)
-    cart = session.get(_cart_key(tenant), {"items": []})
-    return jsonify(cart)
+    # Use persistent cart via market logic (handles anon_id)
+    cart = _get_or_create_cart_for_user(tenant, g.viewer if hasattr(g, "viewer") else None, create_if_missing=False)
+
+    items = []
+    if cart:
+        items = [{"producto_id": i.product_id, "cantidad": i.quantity} for i in cart.items]
+
+    return jsonify({"items": items})
 
 
 @legacy_public_v2_bp.route("/productos", methods=["GET", "OPTIONS"])
@@ -729,12 +737,21 @@ def legacy_agregar_item_carrito():
     producto_id = data.get("producto_id")
     cantidad = int(data.get("cantidad") or 1)
 
-    cart = session.get(_cart_key(tenant), {"items": []})
-    cart.setdefault("items", [])
-    cart["items"].append({"producto_id": producto_id, "cantidad": cantidad})
-    session[_cart_key(tenant)] = cart
-    session.modified = True
-    return jsonify(cart), 201
+    cart = _get_or_create_cart_for_user(tenant, g.viewer if hasattr(g, "viewer") else None, create_if_missing=True)
+
+    item = cart.items.filter(MarketCartItem.product_id == producto_id).first()
+    if item:
+        item.quantity += cantidad
+    else:
+        product = CatalogoItem.query.get(producto_id)
+        name_snapshot = product.nombre if product else "Item"
+        item = MarketCartItem(cart_id=cart.id, product_id=producto_id, quantity=cantidad, name_snapshot=name_snapshot)
+        db.session.add(item)
+
+    db.session.commit()
+
+    items = [{"producto_id": i.product_id, "cantidad": i.quantity} for i in cart.items]
+    return jsonify({"items": items}), 201
 
 
 @legacy_public_v2_bp.route("/checkout", methods=["POST", "OPTIONS"])
@@ -748,14 +765,15 @@ def legacy_checkout_publico():
         abort(400, "tenant_slug query param required")
 
     tenant = _resolve_tenant_or_404(tenant_slug)
-    cart = session.get(_cart_key(tenant), {"items": []})
-    # Here we would normally process the order, but for now we just clear the cart
-    # to match the public_market behavior or maybe we should return the cart content
-    # if this is just a 'view checkout' action?
-    # The public_market checkout clears the cart. We'll do the same.
-    session[_cart_key(tenant)] = {"items": []}
-    session.modified = True
-    return jsonify({"status": "ok", "tenant": tenant.slug, "carrito": cart})
+
+    cart = _get_or_create_cart_for_user(tenant, g.viewer if hasattr(g, "viewer") else None, create_if_missing=False)
+    if cart:
+        # Clear items to simulate checkout/reset
+        for item in cart.items:
+            db.session.delete(item)
+        db.session.commit()
+
+    return jsonify({"status": "ok", "tenant": tenant.slug, "carrito": {"items": []}})
 
 
 def _cart_key(tenant: TenantProfile) -> str:
