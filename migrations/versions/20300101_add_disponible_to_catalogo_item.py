@@ -1,7 +1,7 @@
-"""Add catalogo_item availability and pricing
+"""Add catalogo_item availability and pricing and merge heads
 
 Revision ID: 20300101_add_disponible_to_catalogo_item
-Revises: 20280416_merge_live_voting_and_whatsapp_heads
+Revises: 20280416_merge_live_voting_and_whatsapp_heads, 20291215_add_user_tenant_id_column, e7d8c6b42f8a_merge_municipio_analytics_heads
 Create Date: 2030-01-01 00:00:00.000000
 
 """
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = '20300101_add_disponible_to_catalogo_item'
-down_revision = '20280416_merge_live_voting_and_whatsapp_heads'
+down_revision = ('20280416_merge_live_voting_and_whatsapp_heads', '20291215_add_user_tenant_id_column', 'e7d8c6b42f8a_merge_municipio_analytics_heads')
 branch_labels = None
 depends_on = None
 
