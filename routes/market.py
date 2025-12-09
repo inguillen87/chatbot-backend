@@ -64,7 +64,30 @@ def _tenant_owner(tenant: TenantProfile) -> Optional[User]:
     return tenant.municipio or tenant.pyme
 
 
-def _ensure_session_id() -> str:
+def _resolve_session_identifier() -> str:
+    """Resolve a stable identifier for the cart owner.
+
+    Prioritizes the explicit `X-Anon-Id` header (or cookie) sent by the
+    frontend, which persists across browser sessions better than the Flask
+    session cookie (often blocked or cleared). Falls back to the Flask session
+    if no anonymous ID is provided.
+    """
+    # 1. Try Anon-Id from headers (most reliable for PWA/Widgets)
+    anon_id = (
+        request.headers.get("X-Anon-Id")
+        or request.headers.get("Anon-Id")
+        or request.headers.get("x-anon-id")
+        or request.headers.get("anon-id")
+    )
+    if anon_id:
+        return anon_id
+
+    # 2. Try cookie (if standard web client)
+    anon_id_cookie = request.cookies.get("anon_id") or request.cookies.get("chatboc_anon_id")
+    if anon_id_cookie:
+        return anon_id_cookie
+
+    # 3. Fallback to flask session (volatile if cookies blocked)
     session_id = session.get("market_session_id")
     if not session_id:
         import secrets
@@ -89,7 +112,7 @@ def _get_or_create_cart_for_user(
     creating a new record.
     """
 
-    session_id = _ensure_session_id()
+    session_id = _resolve_session_identifier()
     user_id = getattr(user, "id", None)
 
     base_query = MarketCart.query.filter(
@@ -762,6 +785,32 @@ def public_cart_url(slug: str):
 
     return jsonify({"cart_url": full_url, "base_url": base_url, "tenant_slug": tenant.slug, "path": path})
 
+
+def _resolve_admin_tenant(user, payload):
+    # Fallback implementation inferred from context
+    if user.tenant_id:
+        return TenantProfile.query.get(user.tenant_id)
+    # If superadmin, maybe payload has tenant_id
+    tid = payload.get('tenant_id')
+    if tid:
+        return TenantProfile.query.get(tid)
+    abort(400, "Tenant required")
+
+def _serialize_catalog_item(item):
+    # Standard serialization
+    return {
+        "id": item.id,
+        "nombre": item.nombre,
+        "descripcion": item.descripcion,
+        "precio": item.precio,
+        "precio_monetario": float(item.precio_monetario) if item.precio_monetario else None,
+        "moneda": item.moneda,
+        "stock": item.cantidad,
+        "imagen_url": item.imagen_url,
+        "categoria": item.categoria,
+        "sku": item.sku,
+        "disponible": item.disponible
+    }
 
 @market_admin_bp.post("/catalog")
 @token_requerido
