@@ -1059,6 +1059,11 @@ def register():
                 try:
                     from services.ticket_service import servicio_tickets
                     servicio_tickets.migrar_tickets_de_anonimo(anon_id, nuevo.id)
+
+                    # Migrate cart
+                    from routes.market import _get_or_create_cart_for_user
+                    if tenant:
+                        _get_or_create_cart_for_user(tenant, nuevo, create_if_missing=False)
                 except Exception as e:
                     current_app.logger.warning(f"Failed to migrate anon data: {e}")
 
