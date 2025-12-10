@@ -1,8 +1,8 @@
 {
-  "nombre": "Operador Energético Andino",
+  "nombre": "Energía Demo",
   "descripcion": "Operador petrolero con monitoreo upstream, gestión de contratos y programas de transición energética.",
-  "prompt_context": "Operador Energético Andino gestiona campos en Vaca Muerta y refinería regional. Integra monitoreo en tiempo real, planes de perforación, contratos de suministro y reportes HSEQ. Implementa proyectos de hidrógeno, biocombustibles y compensación de emisiones.",
-  "welcome_message": "⚡ Hola, soy el hub digital de Operador Energético Andino. Elegí upstream, operaciones, comercial o sostenibilidad y te comparto dashboards y planes.",
+  "prompt_context": "Energía Demo gestiona campos en Vaca Muerta y refinería regional. Integra monitoreo en tiempo real, planes de perforación, contratos de suministro y reportes HSEQ. Implementa proyectos de hidrógeno, biocombustibles y compensación de emisiones.",
+  "welcome_message": "⚡ Hola, soy el hub digital de Energía Demo. Elegí upstream, operaciones, comercial o sostenibilidad y te comparto dashboards y planes.",
   "resources": [
     {
       "title": "Plan upstream 2025",

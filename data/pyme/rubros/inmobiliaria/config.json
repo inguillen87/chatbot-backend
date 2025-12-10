@@ -1,8 +1,8 @@
 {
-  "nombre": "Portfolio Prime Realty",
+  "nombre": "Inmobiliaria Demo",
   "descripcion": "Broker inmobiliario premium con inventario dinámico, análisis de mercado y operaciones digitales end-to-end.",
-  "prompt_context": "Portfolio Prime Realty gestiona desarrollos premium, unidades de renta y landbanking. Integra CRM inmobiliario, tours virtuales, calificadores crediticios y legal tech para reservas y firmas digitales.",
-  "welcome_message": "🏙️ Hola, soy el advisor digital de Portfolio Prime Realty. Elegí proyectos, inversiones, operaciones digitales o posventa y avanzo con vos.",
+  "prompt_context": "Inmobiliaria Demo gestiona desarrollos premium, unidades de renta y landbanking. Integra CRM inmobiliario, tours virtuales, calificadores crediticios y legal tech para reservas y firmas digitales.",
+  "welcome_message": "🏙️ Hola, soy el advisor digital de Inmobiliaria Demo. Elegí proyectos, inversiones, operaciones digitales o posventa y avanzo con vos.",
   "resources": [
     {
       "title": "Portfolio proyectos prime",

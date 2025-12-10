@@ -11,7 +11,7 @@
         "menu"
       ],
       "match_always": false,
-      "response": "💳 Bienvenido a Aurora Fintech Hub. Elegí onboarding digital, cobranzas, riesgo o APIs y te comparto dashboards y próximos pasos.",
+      "response": "💳 Bienvenido a Fintech Demo. Elegí onboarding digital, cobranzas, riesgo o APIs y te comparto dashboards y próximos pasos.",
       "buttons": [
         {
           "label": "🚀 Onboarding & producto",

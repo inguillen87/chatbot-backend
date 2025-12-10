@@ -583,6 +583,7 @@ def create_app(config_class=Config):
     # registration name is unique. This mirrors the existing routes under a
     # prefixed namespace without duplicating the view logic.
     app.register_blueprint(ticket_bp, url_prefix="/api", name="ticket_bp_api")
+    app.register_blueprint(rubros_bp, url_prefix="/api", name="rubros_bp_api")
     app.register_blueprint(
         municipal_bp, url_prefix="/api", name="municipal_bp_api"
     )

@@ -2,7 +2,7 @@
   {
     "env_prefix": "DEMO_ALMACEN",
     "key": "almacen",
-    "nombre": "ByM Almacén Inteligente",
+    "nombre": "Almacén Demo",
     "descripcion": "Reposiciones programadas para bares, combos familiares listos y logística express con control de stock en vivo.",
     "token": "demo-token-almacen",
     "tipo_chat": "pyme",
@@ -169,7 +169,7 @@
   {
     "env_prefix": "DEMO_BODEGA",
     "key": "bodega",
-    "nombre": "Bodega Cuatro Fincas",
+    "nombre": "Bodega Demo",
     "descripcion": "Sommelier digital que concentra portfolio ícono, programas trade y logística boutique con foco en exportación.",
     "token": "demo-token-bodega",
     "tipo_chat": "pyme",
@@ -336,7 +336,7 @@
   {
     "env_prefix": "DEMO_FERRETERIA",
     "key": "ferreteria",
-    "nombre": "ProObra Ferretería Técnica",
+    "nombre": "Ferretería Demo",
     "descripcion": "Centro logístico que integra catálogo de obra gruesa, planes de entrega y financiamiento a medida para constructoras.",
     "token": "demo-token-ferreteria",
     "tipo_chat": "pyme",
@@ -502,7 +502,7 @@
   {
     "env_prefix": "DEMO_RETAIL",
     "key": "local_comercial_general",
-    "nombre": "Showroom Moda Urbana",
+    "nombre": "Tienda de Ropa Demo",
     "descripcion": "Retail inteligente con lookbooks digitales, programas de fidelización y analítica omnicanal.",
     "token": "demo-token-retail",
     "tipo_chat": "pyme",
@@ -667,7 +667,7 @@
   {
     "env_prefix": "DEMO_MEDICO",
     "key": "medico_general",
-    "nombre": "Clínica Horizonte",
+    "nombre": "Clínica Demo",
     "descripcion": "Clínica polivalente con turnos inteligentes, teleconsulta, seguimiento remoto y convenios corporativos.",
     "token": "demo-token-medico",
     "tipo_chat": "pyme",
@@ -677,8 +677,8 @@
       "clinica-horizonte",
       "horizonte-salud"
     ],
-    "prompt_context": "Clínica Horizonte ofrece turnos médicos inteligentes, teleconsulta con receta digital, gestión de estudios y seguimiento remoto de pacientes crónicos. Integra cobertura con obras sociales, reporting para empresas y analítica de ocupación.",
-    "welcome_message": "🏥 Bienvenido a Clínica Horizonte. Elegí turnos, estudios, telemedicina o convenios corporativos y te ayudo al instante.",
+    "prompt_context": "Clínica Demo ofrece turnos médicos inteligentes, teleconsulta con receta digital, gestión de estudios y seguimiento remoto de pacientes crónicos. Integra cobertura con obras sociales, reporting para empresas y analítica de ocupación.",
+    "welcome_message": "🏥 Bienvenido a Clínica Demo. Elegí turnos, estudios, telemedicina o convenios corporativos y te ayudo al instante.",
     "resources": [
       {
         "title": "Agenda de turnos prioritarios",
@@ -997,7 +997,7 @@
   {
     "env_prefix": "DEMO_ENERGIA",
     "key": "energia",
-    "nombre": "Operador Energético Andino",
+    "nombre": "Energía Demo",
     "descripcion": "Operador petrolero con monitoreo upstream, gestión de contratos y programas de transición energética.",
     "token": "demo-token-energia",
     "tipo_chat": "pyme",
@@ -1007,8 +1007,8 @@
       "operador-andino",
       "energia-andes"
     ],
-    "prompt_context": "Operador Energético Andino gestiona campos en Vaca Muerta y refinería regional. Integra monitoreo en tiempo real, planes de perforación, contratos de suministro y reportes HSEQ. Implementa proyectos de hidrógeno, biocombustibles y compensación de emisiones.",
-    "welcome_message": "⚡ Hola, soy el hub digital de Operador Energético Andino. Elegí upstream, operaciones, comercial o sostenibilidad y te comparto dashboards y planes.",
+    "prompt_context": "Energía Demo gestiona campos en Vaca Muerta y refinería regional. Integra monitoreo en tiempo real, planes de perforación, contratos de suministro y reportes HSEQ. Implementa proyectos de hidrógeno, biocombustibles y compensación de emisiones.",
+    "welcome_message": "⚡ Hola, soy el hub digital de Energía Demo. Elegí upstream, operaciones, comercial o sostenibilidad y te comparto dashboards y planes.",
     "resources": [
       {
         "title": "Plan upstream 2025",
@@ -1161,7 +1161,7 @@
   {
     "env_prefix": "DEMO_INMOBILIARIA",
     "key": "inmobiliaria",
-    "nombre": "Portfolio Prime Realty",
+    "nombre": "Inmobiliaria Demo",
     "descripcion": "Broker inmobiliario premium con inventario dinámico, análisis de mercado y operaciones digitales end-to-end.",
     "token": "demo-token-inmobiliaria",
     "tipo_chat": "pyme",
@@ -1171,8 +1171,8 @@
       "prime-realty",
       "inmobiliaria-prime"
     ],
-    "prompt_context": "Portfolio Prime Realty gestiona desarrollos premium, unidades de renta y landbanking. Integra CRM inmobiliario, tours virtuales, calificadores crediticios y legal tech para reservas y firmas digitales.",
-    "welcome_message": "🏙️ Hola, soy el advisor digital de Portfolio Prime Realty. Elegí proyectos, inversiones, operaciones digitales o posventa y avanzo con vos.",
+    "prompt_context": "Inmobiliaria Demo gestiona desarrollos premium, unidades de renta y landbanking. Integra CRM inmobiliario, tours virtuales, calificadores crediticios y legal tech para reservas y firmas digitales.",
+    "welcome_message": "🏙️ Hola, soy el advisor digital de Inmobiliaria Demo. Elegí proyectos, inversiones, operaciones digitales o posventa y avanzo con vos.",
     "resources": [
       {
         "title": "Portfolio proyectos prime",
@@ -1325,7 +1325,7 @@
   {
     "env_prefix": "DEMO_FINTECH",
     "key": "fintech",
-    "nombre": "Aurora Fintech Hub",
+    "nombre": "Fintech Demo",
     "descripcion": "Plataforma modular para banca digital, cobranzas omnicanal y analítica de riesgo en tiempo real.",
     "token": "demo-token-fintech",
     "tipo_chat": "pyme",
@@ -1335,8 +1335,8 @@
       "aurora-fintech",
       "fintech-hub"
     ],
-    "prompt_context": "Aurora Fintech Hub orquesta onboarding digital, core de pagos, scoring de crédito y open banking con integraciones plug-and-play para bancos, retailers y fintechs regionales.",
-    "welcome_message": "💳 Bienvenido a Aurora Fintech Hub. Elegí onboarding digital, cobranzas, riesgo o APIs y te comparto dashboards y próximos pasos.",
+    "prompt_context": "Fintech Demo orquesta onboarding digital, core de pagos, scoring de crédito y open banking con integraciones plug-and-play para bancos, retailers y fintechs regionales.",
+    "welcome_message": "💳 Bienvenido a Fintech Demo. Elegí onboarding digital, cobranzas, riesgo o APIs y te comparto dashboards y próximos pasos.",
     "resources": [
       {
         "title": "Playbook onboarding digital",
@@ -1492,7 +1492,7 @@
   {
     "env_prefix": "DEMO_SEGUROS",
     "key": "seguros",
-    "nombre": "ShieldOne Seguros Corporativos",
+    "nombre": "Seguros Demo",
     "descripcion": "Gestión integral de programas corporativos, autogestión de siniestros y analítica de riesgos.",
     "token": "demo-token-seguros",
     "tipo_chat": "pyme",
@@ -1658,7 +1658,7 @@
   {
     "env_prefix": "DEMO_LOGISTICA",
     "key": "logistica",
-    "nombre": "Axis Logistics 3PL",
+    "nombre": "Logística Demo",
     "descripcion": "Operador logístico 3PL con fulfillment omnicanal, última milla orquestada y control torre de comando.",
     "token": "demo-token-logistica",
     "tipo_chat": "pyme",
@@ -1668,8 +1668,8 @@
       "axis-logistics",
       "3pl-axis"
     ],
-    "prompt_context": "Axis Logistics 3PL gestiona fulfillment B2C/B2B, control torre con visibilidad end-to-end, hubs regionales y capacidad crossborder con partners aéreos y terrestres.",
-    "welcome_message": "🚚 Bienvenido a Axis Logistics 3PL. Elegí operaciones, fulfillment, crossborder o analítica y te muestro capacidades y SLA.",
+    "prompt_context": "Logística Demo gestiona fulfillment B2C/B2B, control torre con visibilidad end-to-end, hubs regionales y capacidad crossborder con partners aéreos y terrestres.",
+    "welcome_message": "🚚 Bienvenido a Logística Demo. Elegí operaciones, fulfillment, crossborder o analítica y te muestro capacidades y SLA.",
     "resources": [
       {
         "title": "Blueprint operaciones omnicanal",

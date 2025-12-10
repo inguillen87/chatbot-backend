@@ -1,35 +1,12 @@
 {
-  "nombre_pyme": "Asistente Comercial Inteligente",
+  "nombre": "Chatboc Demo",
   "descripcion": "Equipo de ventas omnicanal que responde consultas, toma pedidos y coordina envíos para pymes de distintos rubros.",
-  "contacto": {
-    "admin": {
-      "nombre": "Equipo Comercial",
-      "email": "ventas@pyme-demo.com",
-      "telefono": "+541130000000"
-    },
-    "soporte": {
-      "email": "soporte@pyme-demo.com",
-      "horario_respuesta": "Lunes a viernes de 9 a 18 h"
-    }
-  },
-  "ubicaciones": [
+  "welcome_message": "¡Hola! 👋 Soy tu asistente virtual. Estoy aquí para ayudarte a mostrar cómo funciona nuestra plataforma. Elige una opción:",
+  "quick_actions": [
     {
-      "nombre": "Centro logístico",
-      "direccion": "Av. Siempre Viva 742, Ciudad Autónoma de Buenos Aires",
-      "coordenadas": {
-        "lat": -34.6037,
-        "lon": -58.3816
-      },
-      "telefono": "+541147000000"
+      "texto": "Ver demos disponibles",
+      "action": "demo_menu",
+      "description": "Explora ejemplos por industria"
     }
-  ],
-  "horarios": {
-    "atencion_whatsapp": "Lunes a sábado 08:00 - 20:00",
-    "retira_en_tienda": "Lunes a viernes 09:00 - 17:00"
-  },
-  "whatsapp": {
-    "numero": "+5491112345678",
-    "descripcion": "Canal oficial automatizado para consultas de stock, pedidos y soporte"
-  },
-  "welcome": {}
+  ]
 }

@@ -3,25 +3,29 @@
   "responses": [
     {
       "id": "welcome",
-      "keywords": [
-        "__INIT__",
-        "hola",
-        "inicio",
-        "empezar",
-        "menu"
-      ],
+      "keywords": ["__INIT__", "hola", "inicio", "empezar", "menu"],
       "match_always": false,
-      "response": "Hola, ¿en qué te puedo ayudar?",
-      "buttons": []
+      "response": "¡Hola! 👋 Soy tu asistente virtual. Estoy aquí para ayudarte a mostrar cómo funciona nuestra plataforma. Elige una opción:",
+      "buttons": [
+        {"label": "🏢 Ver demos disponibles", "target": "demo_menu"}
+      ]
+    },
+    {
+      "id": "demo_menu",
+      "keywords": ["demos", "ver demos"],
+      "response": "Tenemos demos preparadas para diferentes industrias. Selecciona una para ver cómo funciona:",
+      "buttons": [
+        {"label": "🍷 Bodega", "action": "switch_demo_bodega"},
+        {"label": "🛒 Almacén", "action": "switch_demo_almacen"},
+        {"label": "🏗️ Ferretería", "action": "switch_demo_ferreteria"},
+        {"label": "👗 Tienda Ropa", "action": "switch_demo_ropa"}
+      ]
     }
   ],
   "fallback": {
-    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "response": "No entendí tu consulta. ¿Te gustaría ver las demos disponibles?",
     "buttons": [
-      {
-        "label": "Ver menú principal",
-        "target": "welcome"
-      }
+      {"label": "Ver demos", "target": "demo_menu"}
     ]
   }
 }

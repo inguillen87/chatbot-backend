@@ -11,7 +11,7 @@
         "menu"
       ],
       "match_always": false,
-      "response": "🏙️ Hola, soy el advisor digital de Portfolio Prime Realty. Elegí proyectos, inversiones, operaciones digitales o posventa y avanzo con vos.",
+      "response": "🏙️ Hola, soy el advisor digital de Inmobiliaria Demo. Elegí proyectos, inversiones, operaciones digitales o posventa y avanzo con vos.",
       "buttons": [
         {
           "label": "🏗️ Proyectos en preventa",
