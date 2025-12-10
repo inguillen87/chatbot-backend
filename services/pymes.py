@@ -1766,6 +1766,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                         return _finalize_early_response(audio_flow, intent=intent_from_audio)
         elif mime_type:
             contextual_notes.append(f"El usuario adjuntó un archivo del tipo {mime_type}.")
+        else:
+            contextual_notes.append("El usuario adjuntó un archivo.")
 
         if uploaded_info.get("caption") and not pregunta_str.strip():
             pregunta_str = uploaded_info["caption"]
