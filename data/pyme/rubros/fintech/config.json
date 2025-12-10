@@ -1,8 +1,8 @@
 {
-  "nombre": "Aurora Fintech Hub",
+  "nombre": "Fintech Demo",
   "descripcion": "Plataforma modular para banca digital, cobranzas omnicanal y analítica de riesgo en tiempo real.",
-  "prompt_context": "Aurora Fintech Hub orquesta onboarding digital, core de pagos, scoring de crédito y open banking con integraciones plug-and-play para bancos, retailers y fintechs regionales.",
-  "welcome_message": "💳 Bienvenido a Aurora Fintech Hub. Elegí onboarding digital, cobranzas, riesgo o APIs y te comparto dashboards y próximos pasos.",
+  "prompt_context": "Fintech Demo orquesta onboarding digital, core de pagos, scoring de crédito y open banking con integraciones plug-and-play para bancos, retailers y fintechs regionales.",
+  "welcome_message": "💳 Bienvenido a Fintech Demo. Elegí onboarding digital, cobranzas, riesgo o APIs y te comparto dashboards y próximos pasos.",
   "resources": [
     {
       "title": "Playbook onboarding digital",

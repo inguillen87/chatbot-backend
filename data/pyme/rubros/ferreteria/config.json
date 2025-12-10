@@ -1,5 +1,5 @@
 {
-  "nombre": "ProObra Ferretería Técnica",
+  "nombre": "Ferretería Demo",
   "descripcion": "Centro logístico que integra catálogo de obra gruesa, planes de entrega y financiamiento a medida para constructoras.",
   "prompt_context": "ProObra abastece desarrollos residenciales e industriales con catálogo técnico de acero, madera laminada, herramientas y seguridad industrial. Ofrece planes logísticos por etapa, control de inventario y financiamiento con acuerdos bancarios.",
   "welcome_message": "🏗️ Hola, soy ProObra. Elegí materiales estructurales, logística de obra, servicios técnicos o financiamiento y armamos la propuesta.",

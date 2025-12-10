@@ -11,7 +11,7 @@
         "menu"
       ],
       "match_always": false,
-      "response": "🚚 Bienvenido a Axis Logistics 3PL. Elegí operaciones, fulfillment, crossborder o analítica y te muestro capacidades y SLA.",
+      "response": "🚚 Bienvenido a Logística Demo. Elegí operaciones, fulfillment, crossborder o analítica y te muestro capacidades y SLA.",
       "buttons": [
         {
           "label": "🏭 Operaciones 3PL",

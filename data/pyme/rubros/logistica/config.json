@@ -1,8 +1,8 @@
 {
-  "nombre": "Axis Logistics 3PL",
+  "nombre": "Logística Demo",
   "descripcion": "Operador logístico 3PL con fulfillment omnicanal, última milla orquestada y control torre de comando.",
-  "prompt_context": "Axis Logistics 3PL gestiona fulfillment B2C/B2B, control torre con visibilidad end-to-end, hubs regionales y capacidad crossborder con partners aéreos y terrestres.",
-  "welcome_message": "🚚 Bienvenido a Axis Logistics 3PL. Elegí operaciones, fulfillment, crossborder o analítica y te muestro capacidades y SLA.",
+  "prompt_context": "Logística Demo gestiona fulfillment B2C/B2B, control torre con visibilidad end-to-end, hubs regionales y capacidad crossborder con partners aéreos y terrestres.",
+  "welcome_message": "🚚 Bienvenido a Logística Demo. Elegí operaciones, fulfillment, crossborder o analítica y te muestro capacidades y SLA.",
   "resources": [
     {
       "title": "Blueprint operaciones omnicanal",

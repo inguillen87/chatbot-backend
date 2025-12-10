@@ -11,7 +11,7 @@
         "menu"
       ],
       "match_always": false,
-      "response": "🏥 Bienvenido a Clínica Horizonte. Elegí turnos, estudios, telemedicina o convenios corporativos y te ayudo al instante.",
+      "response": "🏥 Bienvenido a Clínica Demo. Elegí turnos, estudios, telemedicina o convenios corporativos y te ayudo al instante.",
       "buttons": [
         {
           "label": "📅 Turnos y especialidades",
