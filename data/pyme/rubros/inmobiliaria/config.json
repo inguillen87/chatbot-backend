@@ -1,0 +1,154 @@
+{
+  "nombre": "Portfolio Prime Realty",
+  "descripcion": "Broker inmobiliario premium con inventario dinámico, análisis de mercado y operaciones digitales end-to-end.",
+  "prompt_context": "Portfolio Prime Realty gestiona desarrollos premium, unidades de renta y landbanking. Integra CRM inmobiliario, tours virtuales, calificadores crediticios y legal tech para reservas y firmas digitales.",
+  "welcome_message": "🏙️ Hola, soy el advisor digital de Portfolio Prime Realty. Elegí proyectos, inversiones, operaciones digitales o posventa y avanzo con vos.",
+  "resources": [
+    {
+      "title": "Portfolio proyectos prime",
+      "description": "Torres en pozo, oficinas AAA y barrios cerrados con métricas clave.",
+      "type": "pdf",
+      "url": "/static/demo/inmobiliaria/portfolio-proyectos-prime.pdf",
+      "cta_text": "Ver portfolio prime",
+      "highlight": "Actualización trimestral",
+      "availability": "Buenos Aires · Córdoba · Rosario"
+    },
+    {
+      "title": "Market insights Q4",
+      "description": "Indicadores de absorción, rentas y proyecciones de capital gain.",
+      "type": "pdf",
+      "url": "/static/demo/inmobiliaria/market-insights-q4.pdf",
+      "cta_text": "Descargar market insights",
+      "highlight": "Fuente: Observatorio Prime",
+      "availability": "Q4 2024"
+    },
+    {
+      "title": "Playbook legal & onboarding",
+      "description": "Reservas, contratos digitales y compliance para inversores extranjeros.",
+      "type": "pdf",
+      "url": "/static/demo/inmobiliaria/playbook-legal-onboarding.pdf",
+      "cta_text": "Ver playbook legal",
+      "highlight": "Documentos bilingües",
+      "availability": "Firma digital incluida"
+    }
+  ],
+  "quick_actions": [
+    {
+      "emoji": "🏗️",
+      "texto": "Proyectos en preventa",
+      "description": "Torres residenciales, oficinas AAA y barrios cerrados",
+      "category": "🏗️ Desarrollos",
+      "submenu": [
+        {
+          "emoji": "🏢",
+          "texto": "Torres premium",
+          "prompt": "Mostrame las torres en preventa con valores, amenities y plan de pagos.",
+          "description": "Departamentos de 2 a 4 ambientes"
+        },
+        {
+          "emoji": "🌳",
+          "texto": "Barrios cerrados",
+          "prompt": "Quiero opciones de barrios cerrados con lotes disponibles y financiación.",
+          "description": "Lotes 800-1200 m² + clubhouse"
+        },
+        {
+          "emoji": "🏬",
+          "texto": "Oficinas AAA",
+          "prompt": "Necesito oficinas AAA en CABA con flexibilidad y cowork integrado.",
+          "description": "Oficinas 500-2000 m²"
+        }
+      ]
+    },
+    {
+      "emoji": "💼",
+      "texto": "Inversiones & renta",
+      "description": "Unidades de renta, landbanking y fondos inmobiliarios",
+      "category": "💼 Inversiones",
+      "submenu": [
+        {
+          "emoji": "💵",
+          "texto": "Renta temporaria",
+          "prompt": "Mostrame unidades llave en mano con renta temporaria proyectada.",
+          "description": "ROI esperado 7,5% anual"
+        },
+        {
+          "emoji": "🌐",
+          "texto": "Inversor extranjero",
+          "prompt": "¿Cómo acompañan a inversores extranjeros con apertura de cuentas y legal?",
+          "description": "Onboarding integral + compliance"
+        },
+        {
+          "emoji": "📈",
+          "texto": "Fondos inmobiliarios",
+          "prompt": "Necesito la ficha de fondos inmobiliarios disponibles y capital mínimo.",
+          "description": "Fondos renta y desarrollo"
+        }
+      ]
+    },
+    {
+      "emoji": "🖥️",
+      "texto": "Operaciones digitales",
+      "description": "Reservas online, firma digital y seguimiento documental",
+      "category": "🖥️ Operaciones",
+      "submenu": [
+        {
+          "emoji": "📝",
+          "texto": "Reserva digital",
+          "prompt": "¿Cómo gestiono una reserva digital con pago en criptomonedas o transferencia?",
+          "description": "Workflow 100% online"
+        },
+        {
+          "emoji": "🔍",
+          "texto": "Due diligence",
+          "prompt": "Quiero saber qué incluye el due diligence legal y tiempos promedio.",
+          "description": "Cheklist legal + certificaciones"
+        },
+        {
+          "emoji": "🔐",
+          "texto": "Firma y escrituración",
+          "prompt": "Mostrame el proceso de firma digital, escribanía y entrega de documentación.",
+          "description": "Integración con escribanía digital"
+        }
+      ]
+    },
+    {
+      "emoji": "🤝",
+      "texto": "Postventa & fidelización",
+      "description": "Conserjería, amenities y gestión de alquileres",
+      "category": "🤝 Postventa",
+      "submenu": [
+        {
+          "emoji": "🏊",
+          "texto": "Amenities y consorcios",
+          "prompt": "¿Qué servicios de administración y amenities ofrecen post entrega?",
+          "description": "Amenities premium + app consorcio"
+        },
+        {
+          "emoji": "🛠️",
+          "texto": "Mantenimiento",
+          "prompt": "Necesito conocer los servicios de mantenimiento y garantía postventa.",
+          "description": "Mantenimiento programado + emergencias"
+        },
+        {
+          "emoji": "📞",
+          "texto": "Gestión de alquiler",
+          "prompt": "¿Ofrecen gestión integral de alquiler y seguimiento de cobranzas?",
+          "description": "Administración + reporting mensual"
+        }
+      ]
+    }
+  ],
+  "capabilities": [
+    "📊 Entrego comparativas de mercado y proyecciones de capital gain.",
+    "🗺️ Creo tours virtuales y recorridos interactivos con agenda de visitas.",
+    "🧾 Genero reservas digitales, contratos bilingües y certificaciones online.",
+    "🤝 Coordino onboarding integral de inversores con mesas legales y fiscales."
+  ],
+  "keywords": [
+    "proyectos en preventa",
+    "renta temporaria",
+    "reserva digital",
+    "fondos inmobiliarios",
+    "postventa premium"
+  ]
+}

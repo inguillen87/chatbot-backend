@@ -1,0 +1,154 @@
+{
+  "nombre": "Operador Energético Andino",
+  "descripcion": "Operador petrolero con monitoreo upstream, gestión de contratos y programas de transición energética.",
+  "prompt_context": "Operador Energético Andino gestiona campos en Vaca Muerta y refinería regional. Integra monitoreo en tiempo real, planes de perforación, contratos de suministro y reportes HSEQ. Implementa proyectos de hidrógeno, biocombustibles y compensación de emisiones.",
+  "welcome_message": "⚡ Hola, soy el hub digital de Operador Energético Andino. Elegí upstream, operaciones, comercial o sostenibilidad y te comparto dashboards y planes.",
+  "resources": [
+    {
+      "title": "Plan upstream 2025",
+      "description": "Perforación, workovers y presupuesto por bloque con indicadores claves.",
+      "type": "pdf",
+      "url": "/static/demo/energia/plan-upstream-2025.pdf",
+      "cta_text": "Descargar plan upstream",
+      "highlight": "Actualizado Q1 2025",
+      "availability": "Bloques Vaca Muerta"
+    },
+    {
+      "title": "Tablero operativo refinación",
+      "description": "Utilización de planta, blend crudo y cumplimiento de especificaciones.",
+      "type": "pdf",
+      "url": "/static/demo/energia/tablero-operativo-downstream.pdf",
+      "cta_text": "Ver tablero downstream",
+      "highlight": "Integrado a SCADA",
+      "availability": "Refinería Neuquén"
+    },
+    {
+      "title": "Matriz HSEQ & licencias",
+      "description": "Checklist normativo, auditorías ISO y permisos ambientales por proyecto.",
+      "type": "pdf",
+      "url": "/static/demo/energia/matriz-hseq-licencias.pdf",
+      "cta_text": "Descargar matriz HSEQ",
+      "highlight": "Auditoría 2024",
+      "availability": "Operaciones upstream y downstream"
+    }
+  ],
+  "quick_actions": [
+    {
+      "emoji": "🛢️",
+      "texto": "Upstream & drilling",
+      "description": "Planes de perforación, workovers y monitoreo de pozos",
+      "category": "🛢️ Upstream",
+      "submenu": [
+        {
+          "emoji": "📍",
+          "texto": "Plan de perforación",
+          "prompt": "Mostrame el plan de perforación 2025 con inversiones y producción esperada.",
+          "description": "18 pozos horizontales · 9 workovers"
+        },
+        {
+          "emoji": "📈",
+          "texto": "KPIs de pozos",
+          "prompt": "Necesito el dashboard con KPIs de producción y eficiencia por pozo.",
+          "description": "Producción, GOR y uptime"
+        },
+        {
+          "emoji": "🛠️",
+          "texto": "Planes de workover",
+          "prompt": "¿Qué intervenciones están programadas para workover en Q3?",
+          "description": "Workovers priorizados por declinación"
+        }
+      ]
+    },
+    {
+      "emoji": "⚙️",
+      "texto": "Operaciones & mantenimiento",
+      "description": "Refinería, pipelines y confiabilidad",
+      "category": "⚙️ Operaciones",
+      "submenu": [
+        {
+          "emoji": "🏭",
+          "texto": "Utilización planta",
+          "prompt": "Mostrame el reporte de utilización de refinería y cumplimiento de especificaciones.",
+          "description": "Utilización 92% · blend crudo"
+        },
+        {
+          "emoji": "🧰",
+          "texto": "Mantenimiento predictivo",
+          "prompt": "¿Cómo gestionan mantenimiento predictivo en bombas y compresores?",
+          "description": "Modelos predictivos + alertas"
+        },
+        {
+          "emoji": "🛤️",
+          "texto": "Oleoductos",
+          "prompt": "Necesito el estado de integridad de oleoductos y próximas inspecciones.",
+          "description": "Pigging y monitoreo de corrosión"
+        }
+      ]
+    },
+    {
+      "emoji": "💼",
+      "texto": "Comercial & trading",
+      "description": "Contratos, precios y supply chain",
+      "category": "💼 Comercial",
+      "submenu": [
+        {
+          "emoji": "📑",
+          "texto": "Contratos de suministro",
+          "prompt": "Quiero revisar los contratos de suministro vigentes y condiciones de pricing.",
+          "description": "Clientes industriales y estaciones"
+        },
+        {
+          "emoji": "⛽",
+          "texto": "Logística combustibles",
+          "prompt": "Mostrame la planificación logística de combustibles y despacho semanal.",
+          "description": "Distribución multi-terminal"
+        },
+        {
+          "emoji": "📊",
+          "texto": "Análisis de precios",
+          "prompt": "¿Qué estrategia de pricing dinámico aplican para estaciones propias?",
+          "description": "Modelos indexados a Brent"
+        }
+      ]
+    },
+    {
+      "emoji": "🌱",
+      "texto": "Sostenibilidad & licencias",
+      "description": "HSEQ, transición energética y compensaciones",
+      "category": "🌱 Sostenibilidad",
+      "submenu": [
+        {
+          "emoji": "🧾",
+          "texto": "Licencias ambientales",
+          "prompt": "Necesito el estado de licencias ambientales y auditorías en curso.",
+          "description": "Permisos 2024 actualizados"
+        },
+        {
+          "emoji": "🔋",
+          "texto": "Proyectos de transición",
+          "prompt": "¿Qué proyectos de hidrógeno verde y biocombustibles están en desarrollo?",
+          "description": "Pilotos 5 MW H2 + B100"
+        },
+        {
+          "emoji": "📉",
+          "texto": "Compensaciones de CO₂",
+          "prompt": "Mostrame el plan de compensaciones y créditos de carbono adquiridos.",
+          "description": "Roadmap Net Zero 2040"
+        }
+      ]
+    }
+  ],
+  "capabilities": [
+    "🛰️ Integro SCADA, historian y modelos predictivos para alertas tempranas.",
+    "📑 Genero reportes regulatorios HSEQ y licencias listos para auditoría.",
+    "📦 Coordino supply chain de combustibles con seguimiento en ruta.",
+    "📈 Simulo escenarios de pricing y sensibilidad a Brent/WTI."
+  ],
+  "keywords": [
+    "upstream",
+    "refinería",
+    "contratos de suministro",
+    "transición energética",
+    "licencias ambientales"
+  ]
+}

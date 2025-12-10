@@ -1,0 +1,155 @@
+{
+  "nombre": "Showroom Moda Urbana",
+  "descripcion": "Retail inteligente con lookbooks digitales, programas de fidelización y analítica omnicanal.",
+  "prompt_context": "Moda Urbana opera tiendas físicas y e-commerce integrado, con lookbooks digitales, CRM de fidelización, eventos VIP y reportes de métricas omnicanal. Implementa probadores inteligentes, campañas personalizadas y logística ship-from-store.",
+  "welcome_message": "👗 Hola, soy tu planner de Moda Urbana. Elegí lookbooks, fidelización, eventos B2B o integraciones y te muestro cómo funciona.",
+  "resources": [
+    {
+      "title": "Lookbook colección AW24",
+      "description": "Outfits por segmento, talles extendidos y storytelling de campaña.",
+      "type": "pdf",
+      "url": "/static/demo/local_comercial/lookbook-urbano.pdf",
+      "cta_text": "Ver lookbook digital",
+      "highlight": "Colección AW24",
+      "availability": "Stock en tiendas & online"
+    },
+    {
+      "title": "Programa de fidelización 360",
+      "description": "Niveles VIP, cashback y automatización de campañas omnicanal.",
+      "type": "pdf",
+      "url": "/static/demo/local_comercial/programa-fidelizacion.pdf",
+      "cta_text": "Descargar programa loyalty",
+      "highlight": "Segmentación avanzada",
+      "availability": "Integrable a CRM"
+    },
+    {
+      "title": "Propuestas corporativas",
+      "description": "Bundles para equipos, uniformes y regalos empresariales personalizados.",
+      "type": "image",
+      "url": "/static/demo/local_comercial/combos-corporativos.svg",
+      "thumbnail": "/static/demo/local_comercial/combos-corporativos.svg",
+      "cta_text": "Ver catálogo B2B",
+      "highlight": "Producción bajo demanda",
+      "availability": "Entrega nacional"
+    }
+  ],
+  "quick_actions": [
+    {
+      "emoji": "🧥",
+      "texto": "Visual & colecciones",
+      "description": "Lookbooks digitales, guías de estilo y drops exclusivos",
+      "category": "🧥 Colecciones",
+      "submenu": [
+        {
+          "emoji": "📸",
+          "texto": "Lookbook interactivo",
+          "prompt": "Mostrame el lookbook digital con mix & match y recomendaciones por ocasión.",
+          "description": "Outfits cápsula + talles extendidos"
+        },
+        {
+          "emoji": "🎯",
+          "texto": "Drops hipersegmentados",
+          "prompt": "Quiero crear un drop exclusivo para clientes premium con notificación push.",
+          "description": "Reservas anticipadas y prueba en tienda"
+        },
+        {
+          "emoji": "🪞",
+          "texto": "Probadores inteligentes",
+          "prompt": "¿Cómo funcionan los probadores inteligentes y qué métricas entregan?",
+          "description": "RFID + recomendaciones automáticas"
+        }
+      ]
+    },
+    {
+      "emoji": "🎁",
+      "texto": "Fidelización & CRM",
+      "description": "Niveles VIP, cashback y campañas automatizadas",
+      "category": "🎁 Loyalty",
+      "submenu": [
+        {
+          "emoji": "⭐",
+          "texto": "Programa loyalty",
+          "prompt": "Necesito la estructura del programa de fidelización y beneficios por nivel.",
+          "description": "Cashback, early access y styling"
+        },
+        {
+          "emoji": "📧",
+          "texto": "Campañas omnicanal",
+          "prompt": "Mostrame ejemplos de journeys automatizados por temporada y comportamiento.",
+          "description": "Email, SMS y push coordinados"
+        },
+        {
+          "emoji": "📊",
+          "texto": "Dashboard de clientes",
+          "prompt": "Quiero ver el dashboard con RFM, ticket promedio y frecuencia.",
+          "description": "KPIs retail en tiempo real"
+        }
+      ]
+    },
+    {
+      "emoji": "🤝",
+      "texto": "Eventos & B2B",
+      "description": "Styling corporativo, giftcards y alianzas",
+      "category": "🤝 Eventos",
+      "submenu": [
+        {
+          "emoji": "🥂",
+          "texto": "Eventos VIP",
+          "prompt": "Armá un calendario de eventos VIP en tienda con experiencias personalizadas.",
+          "description": "After office + styling en vivo"
+        },
+        {
+          "emoji": "🎟️",
+          "texto": "Giftcards corporativas",
+          "prompt": "¿Qué opciones de giftcards digitales ofrecen para empresas?",
+          "description": "Integración con beneficios corporativos"
+        },
+        {
+          "emoji": "🧵",
+          "texto": "Uniformes y cápsulas",
+          "prompt": "Necesito una propuesta de uniformes personalizados para un equipo comercial.",
+          "description": "Diseño + producción bajo demanda"
+        }
+      ]
+    },
+    {
+      "emoji": "🔗",
+      "texto": "Integración omnicanal",
+      "description": "ERP, ecommerce y ship-from-store",
+      "category": "🔗 Integraciones",
+      "submenu": [
+        {
+          "emoji": "🛒",
+          "texto": "Ecommerce + tienda",
+          "prompt": "¿Cómo sincronizan stock online con tienda y envíos ship-from-store?",
+          "description": "OMS integrado + SLA por tienda"
+        },
+        {
+          "emoji": "💡",
+          "texto": "Customer data platform",
+          "prompt": "Quiero saber cómo centralizan datos y eventos para personalizar campañas.",
+          "description": "CDP con tracking en tiempo real"
+        },
+        {
+          "emoji": "📦",
+          "texto": "Logística inversa",
+          "prompt": "Mostrame el flujo de logística inversa y cambios en tienda vs online.",
+          "description": "Gestión integrada de devoluciones"
+        }
+      ]
+    }
+  ],
+  "capabilities": [
+    "🛍️ Creo lookbooks personalizados con precios, talles y disponibilidad por tienda.",
+    "📲 Lanzo campañas automatizadas segmentadas según comportamiento y preferencias.",
+    "🚚 Coordino ship-from-store y pick up in store con inventario sincronizado.",
+    "📈 Entrego reportes omnicanal con métricas de conversión, tráfico y ROI."
+  ],
+  "keywords": [
+    "lookbook digital",
+    "programa loyalty",
+    "ship from store",
+    "eventos VIP",
+    "customer data platform"
+  ]
+}

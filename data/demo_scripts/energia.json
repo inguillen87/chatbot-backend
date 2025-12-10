@@ -1,0 +1,224 @@
+{
+  "key": "energia",
+  "responses": [
+    {
+      "id": "welcome",
+      "keywords": [
+        "__INIT__",
+        "hola",
+        "inicio",
+        "empezar",
+        "menu"
+      ],
+      "match_always": false,
+      "response": "⚡ Hola, soy el hub digital de Operador Energético Andino. Elegí upstream, operaciones, comercial o sostenibilidad y te comparto dashboards y planes.",
+      "buttons": [
+        {
+          "label": "🛢️ Upstream & drilling",
+          "target": "upstream_&_drilling"
+        },
+        {
+          "label": "⚙️ Operaciones & mantenimiento",
+          "target": "operaciones_&_manten"
+        },
+        {
+          "label": "💼 Comercial & trading",
+          "target": "comercial_&_trading"
+        },
+        {
+          "label": "🌱 Sostenibilidad & licencias",
+          "target": "sostenibilidad_&_lic"
+        }
+      ]
+    },
+    {
+      "id": "plan_de_perforación",
+      "keywords": [
+        "plan de perforación"
+      ],
+      "response": "18 pozos horizontales · 9 workovers\n\n_Mostrame el plan de perforación 2025 con inversiones y producción esperada._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "kpis_de_pozos",
+      "keywords": [
+        "kpis de pozos"
+      ],
+      "response": "Producción, GOR y uptime\n\n_Necesito el dashboard con KPIs de producción y eficiencia por pozo._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "planes_de_workover",
+      "keywords": [
+        "planes de workover"
+      ],
+      "response": "Workovers priorizados por declinación\n\n_¿Qué intervenciones están programadas para workover en Q3?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "upstream_&_drilling",
+      "keywords": [
+        "upstream & drilling"
+      ],
+      "response": "Planes de perforación, workovers y monitoreo de pozos",
+      "buttons": [
+        {
+          "label": "📍 Plan de perforación",
+          "target": "plan_de_perforación"
+        },
+        {
+          "label": "📈 KPIs de pozos",
+          "target": "kpis_de_pozos"
+        },
+        {
+          "label": "🛠️ Planes de workover",
+          "target": "planes_de_workover"
+        }
+      ]
+    },
+    {
+      "id": "utilización_planta",
+      "keywords": [
+        "utilización planta"
+      ],
+      "response": "Utilización 92% · blend crudo\n\n_Mostrame el reporte de utilización de refinería y cumplimiento de especificaciones._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "mantenimiento_predic",
+      "keywords": [
+        "mantenimiento predictivo"
+      ],
+      "response": "Modelos predictivos + alertas\n\n_¿Cómo gestionan mantenimiento predictivo en bombas y compresores?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "oleoductos",
+      "keywords": [
+        "oleoductos"
+      ],
+      "response": "Pigging y monitoreo de corrosión\n\n_Necesito el estado de integridad de oleoductos y próximas inspecciones._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "operaciones_&_manten",
+      "keywords": [
+        "operaciones & mantenimiento"
+      ],
+      "response": "Refinería, pipelines y confiabilidad",
+      "buttons": [
+        {
+          "label": "🏭 Utilización planta",
+          "target": "utilización_planta"
+        },
+        {
+          "label": "🧰 Mantenimiento predictivo",
+          "target": "mantenimiento_predic"
+        },
+        {
+          "label": "🛤️ Oleoductos",
+          "target": "oleoductos"
+        }
+      ]
+    },
+    {
+      "id": "contratos_de_suminis",
+      "keywords": [
+        "contratos de suministro"
+      ],
+      "response": "Clientes industriales y estaciones\n\n_Quiero revisar los contratos de suministro vigentes y condiciones de pricing._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "logística_combustibl",
+      "keywords": [
+        "logística combustibles"
+      ],
+      "response": "Distribución multi-terminal\n\n_Mostrame la planificación logística de combustibles y despacho semanal._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "análisis_de_precios",
+      "keywords": [
+        "análisis de precios"
+      ],
+      "response": "Modelos indexados a Brent\n\n_¿Qué estrategia de pricing dinámico aplican para estaciones propias?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "comercial_&_trading",
+      "keywords": [
+        "comercial & trading"
+      ],
+      "response": "Contratos, precios y supply chain",
+      "buttons": [
+        {
+          "label": "📑 Contratos de suministro",
+          "target": "contratos_de_suminis"
+        },
+        {
+          "label": "⛽ Logística combustibles",
+          "target": "logística_combustibl"
+        },
+        {
+          "label": "📊 Análisis de precios",
+          "target": "análisis_de_precios"
+        }
+      ]
+    },
+    {
+      "id": "licencias_ambientale",
+      "keywords": [
+        "licencias ambientales"
+      ],
+      "response": "Permisos 2024 actualizados\n\n_Necesito el estado de licencias ambientales y auditorías en curso._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "proyectos_de_transic",
+      "keywords": [
+        "proyectos de transición"
+      ],
+      "response": "Pilotos 5 MW H2 + B100\n\n_¿Qué proyectos de hidrógeno verde y biocombustibles están en desarrollo?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "compensaciones_de_co",
+      "keywords": [
+        "compensaciones de co₂"
+      ],
+      "response": "Roadmap Net Zero 2040\n\n_Mostrame el plan de compensaciones y créditos de carbono adquiridos._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "sostenibilidad_&_lic",
+      "keywords": [
+        "sostenibilidad & licencias"
+      ],
+      "response": "HSEQ, transición energética y compensaciones",
+      "buttons": [
+        {
+          "label": "🧾 Licencias ambientales",
+          "target": "licencias_ambientale"
+        },
+        {
+          "label": "🔋 Proyectos de transición",
+          "target": "proyectos_de_transic"
+        },
+        {
+          "label": "📉 Compensaciones de CO₂",
+          "target": "compensaciones_de_co"
+        }
+      ]
+    }
+  ],
+  "fallback": {
+    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "buttons": [
+      {
+        "label": "Ver menú principal",
+        "target": "welcome"
+      }
+    ]
+  }
+}

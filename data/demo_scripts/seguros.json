@@ -1,0 +1,224 @@
+{
+  "key": "seguros",
+  "responses": [
+    {
+      "id": "welcome",
+      "keywords": [
+        "__INIT__",
+        "hola",
+        "inicio",
+        "empezar",
+        "menu"
+      ],
+      "match_always": false,
+      "response": "🛡️ Bienvenido a ShieldOne. Elegí programas corporativos, siniestros, analítica o partners y te preparo propuestas inmediatas.",
+      "buttons": [
+        {
+          "label": "🏢 Programas corporativos",
+          "target": "programas_corporativ"
+        },
+        {
+          "label": "🚑 Siniestros & asistencia",
+          "target": "siniestros_&_asisten"
+        },
+        {
+          "label": "📊 Analítica & compliance",
+          "target": "analítica_&_complian"
+        },
+        {
+          "label": "🤝 Brokers & partnerships",
+          "target": "brokers_&_partnershi"
+        }
+      ]
+    },
+    {
+      "id": "flotas_inteligentes",
+      "keywords": [
+        "flotas inteligentes"
+      ],
+      "response": "Políticas adaptadas por perfil\n\n_Quiero conocer coberturas para flotas con telemetría y gestión de choferes._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "property_&_bi",
+      "keywords": [
+        "property & bi"
+      ],
+      "response": "Cobertura global con auditoría\n\n_Mostrame planes property + business interruption con sumas aseguradas y deducibles._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "beneficios_ejecutivo",
+      "keywords": [
+        "beneficios ejecutivos"
+      ],
+      "response": "Plan premium con asistencia worldwide\n\n_Necesito propuestas para beneficios ejecutivos y coberturas internacionales._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "programas_corporativ",
+      "keywords": [
+        "programas corporativos"
+      ],
+      "response": "Planes combinados, beneficios ejecutivos y compliance",
+      "buttons": [
+        {
+          "label": "🚗 Flotas inteligentes",
+          "target": "flotas_inteligentes"
+        },
+        {
+          "label": "🏢 Property & BI",
+          "target": "property_&_bi"
+        },
+        {
+          "label": "🧑‍💼 Beneficios ejecutivos",
+          "target": "beneficios_ejecutivo"
+        }
+      ]
+    },
+    {
+      "id": "denuncia_mobile",
+      "keywords": [
+        "denuncia mobile"
+      ],
+      "response": "App branded + bots asistidos\n\n_¿Cómo funciona la denuncia mobile con carga de fotos y geolocalización?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "red_de_talleres",
+      "keywords": [
+        "red de talleres"
+      ],
+      "response": "SLA 48 h con seguimiento\n\n_Mostrame tiempos promedio y SLA de talleres certificados en AMBA._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "mesa_ejecutiva",
+      "keywords": [
+        "mesa ejecutiva"
+      ],
+      "response": "Escalamiento 24/7\n\n_Necesito contacto de mesa ejecutiva para siniestros críticos._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "siniestros_&_asisten",
+      "keywords": [
+        "siniestros & asistencia"
+      ],
+      "response": "Onboarding digital, triage y seguimiento en vivo",
+      "buttons": [
+        {
+          "label": "📲 Denuncia mobile",
+          "target": "denuncia_mobile"
+        },
+        {
+          "label": "🛠️ Red de talleres",
+          "target": "red_de_talleres"
+        },
+        {
+          "label": "📞 Mesa ejecutiva",
+          "target": "mesa_ejecutiva"
+        }
+      ]
+    },
+    {
+      "id": "kpis_ejecutivos",
+      "keywords": [
+        "kpis ejecutivos"
+      ],
+      "response": "Dashboards en tiempo real\n\n_Quiero los KPIs ejecutivos de siniestralidad, severidad y forecast._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "compliance_regulator",
+      "keywords": [
+        "compliance regulatorio"
+      ],
+      "response": "SOX · GDPR · IFRS 17\n\n_¿Qué entregables generan para auditorías y compliance internacional?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "pricing_actuarial",
+      "keywords": [
+        "pricing actuarial"
+      ],
+      "response": "Modelos propios + benchmark\n\n_Mostrame modelos actuariales y supuestos para renovar pólizas._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "analítica_&_complian",
+      "keywords": [
+        "analítica & compliance"
+      ],
+      "response": "Tableros, reportes SOX y auditorías",
+      "buttons": [
+        {
+          "label": "📈 KPIs ejecutivos",
+          "target": "kpis_ejecutivos"
+        },
+        {
+          "label": "🧾 Compliance regulatorio",
+          "target": "compliance_regulator"
+        },
+        {
+          "label": "🧮 Pricing actuarial",
+          "target": "pricing_actuarial"
+        }
+      ]
+    },
+    {
+      "id": "brokers_aliados",
+      "keywords": [
+        "brokers aliados"
+      ],
+      "response": "Programas regionales certificados\n\n_Necesito listado de brokers aliados y condiciones de revenue share._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "apis_de_pólizas",
+      "keywords": [
+        "apis de pólizas"
+      ],
+      "response": "REST + Webhooks + SSO\n\n_¿Cómo integro emisión de pólizas y certificados vía API?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "academia_risk",
+      "keywords": [
+        "academia risk"
+      ],
+      "response": "Capacitaciones presenciales y virtuales\n\n_Mostrame workshops y entrenamientos para áreas de risk management._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "brokers_&_partnershi",
+      "keywords": [
+        "brokers & partnerships"
+      ],
+      "response": "Marketplace de partners, revenue share y APIs",
+      "buttons": [
+        {
+          "label": "🌐 Brokers aliados",
+          "target": "brokers_aliados"
+        },
+        {
+          "label": "🔗 APIs de pólizas",
+          "target": "apis_de_pólizas"
+        },
+        {
+          "label": "🎓 Academia risk",
+          "target": "academia_risk"
+        }
+      ]
+    }
+  ],
+  "fallback": {
+    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "buttons": [
+      {
+        "label": "Ver menú principal",
+        "target": "welcome"
+      }
+    ]
+  }
+}

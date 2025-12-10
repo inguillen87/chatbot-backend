@@ -1,0 +1,156 @@
+{
+  "nombre": "ProObra Ferretería Técnica",
+  "descripcion": "Centro logístico que integra catálogo de obra gruesa, planes de entrega y financiamiento a medida para constructoras.",
+  "prompt_context": "ProObra abastece desarrollos residenciales e industriales con catálogo técnico de acero, madera laminada, herramientas y seguridad industrial. Ofrece planes logísticos por etapa, control de inventario y financiamiento con acuerdos bancarios.",
+  "welcome_message": "🏗️ Hola, soy ProObra. Elegí materiales estructurales, logística de obra, servicios técnicos o financiamiento y armamos la propuesta.",
+  "resources": [
+    {
+      "title": "Catálogo estructural 2024",
+      "description": "Acero, madera laminada, panelería térmica y herramientas pesadas.",
+      "type": "pdf",
+      "url": "/static/demo/ferreteria/catalogo-materiales-obra.pdf",
+      "cta_text": "Ver catálogo técnico",
+      "price": "Precios indexados por etapa",
+      "highlight": "Stock asegurado",
+      "availability": "Cobertura nacional"
+    },
+    {
+      "title": "Plan logístico por etapa",
+      "description": "Cronograma de entregas, seguimiento GPS y coordinación con subcontratos.",
+      "type": "pdf",
+      "url": "/static/demo/ferreteria/plan-logistica-obra.pdf",
+      "cta_text": "Descargar plan logístico",
+      "highlight": "Just in time",
+      "availability": "Plantas Mendoza · Córdoba"
+    },
+    {
+      "title": "Flota y grúas certificadas",
+      "description": "Equipos telescópicos, camiones grúa y operadores habilitados.",
+      "type": "image",
+      "url": "/static/demo/ferreteria/camion-grua.svg",
+      "thumbnail": "/static/demo/ferreteria/camion-grua.svg",
+      "cta_text": "Ver flota operativa",
+      "highlight": "Cobertura 24/7",
+      "availability": "Zona Cuyo + NOA"
+    }
+  ],
+  "quick_actions": [
+    {
+      "emoji": "🧱",
+      "texto": "Materiales estructurales",
+      "description": "Acero, hormigón premoldeado y panelería aislante",
+      "category": "🧱 Catálogo técnico",
+      "submenu": [
+        {
+          "emoji": "🏗️",
+          "texto": "Acero y perfiles",
+          "prompt": "Necesito la tabla de acero laminado y perfiles UPN con entrega semanal.",
+          "description": "Perfiles UPN · IPN · galvanizado"
+        },
+        {
+          "emoji": "🧊",
+          "texto": "Paneles térmicos",
+          "prompt": "Mostrame panelería térmica con ficha técnica y R-value para cámara frigorífica.",
+          "description": "Panel PUR/PIR de 40/60 mm"
+        },
+        {
+          "emoji": "🪚",
+          "texto": "Madera laminada",
+          "prompt": "¿Qué soluciones de madera laminada estructural ofrecen y en qué dimensiones?",
+          "description": "Tramos de 6 a 12 m certificados"
+        }
+      ]
+    },
+    {
+      "emoji": "🚛",
+      "texto": "Logística de obra",
+      "description": "Planificación de entregas y montaje en sitio",
+      "category": "🚛 Logística & montaje",
+      "submenu": [
+        {
+          "emoji": "📅",
+          "texto": "Cronograma por etapa",
+          "prompt": "Armá un plan de entregas por etapas para un edificio de 12 pisos.",
+          "description": "Just in time + controles de recepción"
+        },
+        {
+          "emoji": "🪜",
+          "texto": "Montaje con grúa",
+          "prompt": "¿Cómo coordinan grúas y operadores certificados para montaje de paneles?",
+          "description": "Camiones grúa + operadores habilitados"
+        },
+        {
+          "emoji": "🔒",
+          "texto": "Seguridad industrial",
+          "prompt": "Necesito el checklist de EPP obligatorio y capacitaciones en obra.",
+          "description": "Cursos SST y auditorías in situ"
+        }
+      ]
+    },
+    {
+      "emoji": "🧮",
+      "texto": "Servicios técnicos",
+      "description": "Ingeniería de valor y soporte BIM",
+      "category": "🧮 Ingeniería",
+      "submenu": [
+        {
+          "emoji": "📐",
+          "texto": "Cálculo de estructuras",
+          "prompt": "Quiero un cálculo preliminar para estructura metálica de 1.200 m².",
+          "description": "Ingeniería básica + memoria descriptiva"
+        },
+        {
+          "emoji": "🖥️",
+          "texto": "Integración BIM",
+          "prompt": "¿Cómo integran el catálogo a nuestro modelo BIM y control de avance?",
+          "description": "Familias REVIT + seguimiento"
+        },
+        {
+          "emoji": "🧯",
+          "texto": "Plan HSEQ",
+          "prompt": "Necesito la matriz HSEQ para presentar ante el comitente.",
+          "description": "Procedimientos, permisos y auditorías"
+        }
+      ]
+    },
+    {
+      "emoji": "💳",
+      "texto": "Financiación & integraciones",
+      "description": "Líneas bancarias, acuerdos fintech y APIs",
+      "category": "💳 Financiación",
+      "submenu": [
+        {
+          "emoji": "🏦",
+          "texto": "Líneas bancarias",
+          "prompt": "¿Qué líneas bancarias y plazos ofrecen para constructoras?",
+          "description": "Hasta 120 días con avales"
+        },
+        {
+          "emoji": "💻",
+          "texto": "API de pedidos",
+          "prompt": "Necesito integrar pedidos y stock al ERP de la constructora.",
+          "description": "APIs REST + webhooks"
+        },
+        {
+          "emoji": "📊",
+          "texto": "Dashboard de consumos",
+          "prompt": "Mostrame el dashboard con consumo por obra y desvíos.",
+          "description": "Alertas de sobreconsumo y reposición"
+        }
+      ]
+    }
+  ],
+  "capabilities": [
+    "📦 Gestiono inventarios por obra con alertas de reposición automáticas.",
+    "📝 Emite órdenes de compra y contratos marco listos para firma digital.",
+    "🧾 Presento certificaciones de calidad y trazabilidad por lote.",
+    "🚨 Coordino protocolos HSEQ con auditorías y capacitaciones obligatorias."
+  ],
+  "keywords": [
+    "materiales estructurales",
+    "logística de obra",
+    "montaje con grúa",
+    "integración BIM",
+    "financiación constructora"
+  ]
+}

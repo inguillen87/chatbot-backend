@@ -1,0 +1,62 @@
+[
+  {
+    "question": "Clínica médica",
+    "answer": "Consultorios mañana y tarde",
+    "extended_answer": "Quiero turnos de clínica médica esta semana y saber si aceptan OSDE 410."
+  },
+  {
+    "question": "Pediatría",
+    "answer": "Guardia pediátrica 24/7",
+    "extended_answer": "Necesito un turno pediátrico con prioridad para control de 2 años."
+  },
+  {
+    "question": "Turnos derivados",
+    "answer": "Gestión automática con autorizaciones",
+    "extended_answer": "¿Cómo gestiono turnos derivados por mi obra social y autorizaciones?"
+  },
+  {
+    "question": "Laboratorio general",
+    "answer": "Resultados en 24/48 h",
+    "extended_answer": "¿Qué preparación necesito para análisis de laboratorio completo y cuándo entregan resultados?"
+  },
+  {
+    "question": "Diagnóstico por imágenes",
+    "answer": "Resonancia 1.5T · sedes Centro y Norte",
+    "extended_answer": "Necesito saber disponibilidad para resonancia y requisitos de autorización."
+  },
+  {
+    "question": "Entrega digital",
+    "answer": "Portal seguro + firma electrónica",
+    "extended_answer": "¿Cómo accedo a resultados digitalizados y los comparto con mi médico?"
+  },
+  {
+    "question": "Teleconsulta",
+    "answer": "Video HD + receta electrónica",
+    "extended_answer": "Quiero entender cómo funciona la teleconsulta y cómo recibir la receta digital."
+  },
+  {
+    "question": "Seguimiento crónicos",
+    "answer": "Dispositivos conectados + alertas",
+    "extended_answer": "¿Qué herramientas tienen para monitoreo remoto de pacientes crónicos?"
+  },
+  {
+    "question": "Acompañamiento post alta",
+    "answer": "Contact center médico + reportes",
+    "extended_answer": "Necesito saber cómo es el acompañamiento post alta y coordinación con mi prepaga."
+  },
+  {
+    "question": "Planes preventivos",
+    "answer": "Programas anualizados y on site",
+    "extended_answer": "Enviame propuestas de chequeos preventivos corporativos por segmento."
+  },
+  {
+    "question": "Reporting ejecutivo",
+    "answer": "Dashboards mensuales personalizados",
+    "extended_answer": "Necesito un ejemplo de reporte ejecutivo con métricas de utilización y NPS."
+  },
+  {
+    "question": "Beneficios empresas",
+    "answer": "Charlas de wellness y salud mental",
+    "extended_answer": "¿Qué beneficios adicionales ofrecen para empresas (guardería, wellness, charlas)?"
+  }
+]

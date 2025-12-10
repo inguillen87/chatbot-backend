@@ -1,0 +1,157 @@
+{
+  "nombre": "ByM Almacén Inteligente",
+  "descripcion": "Reposiciones programadas para bares, combos familiares listos y logística express con control de stock en vivo.",
+  "prompt_context": "ByM Almacén opera dark stores de proximidad con catálogo digital integrado a ERP, logística propia en 90 minutos y acuerdos mayoristas para bares y oficinas. Gestiona combos ready-to-go, reposiciones proyectadas y conciliación de medios de pago.",
+  "welcome_message": "🛒 Hola, soy el asesor digital de ByM Almacén. Elegí pedidos express, reposiciones mayoristas, logística o integraciones y te comparto la información en segundos.",
+  "resources": [
+    {
+      "title": "Catálogo express 2024/2025",
+      "description": "Combos familiares, coffee break y bandejas ready-to-go con stock actualizado.",
+      "type": "pdf",
+      "url": "/static/demo/almacen/catalogo-combos-2024.pdf",
+      "cta_text": "Ver catálogo express",
+      "price": "Packs desde $17.900",
+      "highlight": "Actualización semanal",
+      "availability": "Entrega en 90 minutos Gran Mendoza"
+    },
+    {
+      "title": "Lista mayorista segmentada",
+      "description": "Escalas por categoría, mínimos sugeridos y acuerdos de financiación 15/30 días.",
+      "type": "pdf",
+      "url": "/static/demo/almacen/lista-precios-mayoristas.pdf",
+      "cta_text": "Descargar tarifa mayorista",
+      "price": "Volumen desde 6 unidades",
+      "highlight": "Bonificaciones 12% · 18%",
+      "availability": "Retiro en depósito o envío coordinado"
+    },
+    {
+      "title": "Mapa de cobertura y SLA",
+      "description": "Rutas express, ventanas programadas y monitoreo GPS con control de frío.",
+      "type": "image",
+      "url": "/static/demo/almacen/rutas-delivery.svg",
+      "thumbnail": "/static/demo/almacen/rutas-delivery.svg",
+      "cta_text": "Ver zonas de entrega",
+      "highlight": "Seguimiento en tiempo real",
+      "availability": "Radio propio + mensajería aliada"
+    }
+  ],
+  "quick_actions": [
+    {
+      "emoji": "🛍️",
+      "texto": "Pedidos express & combos",
+      "description": "Combos familiares, coffee breaks y bandejas ready-to-go",
+      "category": "🛍️ Catálogo y promos",
+      "submenu": [
+        {
+          "emoji": "🍱",
+          "texto": "Combos familiares",
+          "prompt": "Mostrame el catálogo completo de combos familiares con precios y stock actualizado.",
+          "description": "Packs para 4/6 personas con frescos y bebidas"
+        },
+        {
+          "emoji": "☕",
+          "texto": "Coffee break corporativo",
+          "prompt": "Necesito opciones de coffee break corporativo para 20 personas con entrega hoy.",
+          "description": "Set dulce y salado con termos y descartables"
+        },
+        {
+          "emoji": "🍹",
+          "texto": "After office y bares",
+          "prompt": "Mostrame los combos express para bares y after office con márgenes sugeridos.",
+          "description": "Bandejas finger food + cócteles ready"
+        }
+      ]
+    },
+    {
+      "emoji": "📦",
+      "texto": "Reposiciones mayoristas",
+      "description": "Escalas por categoría, proyección y acuerdos de financiación",
+      "category": "📦 Operación mayorista",
+      "submenu": [
+        {
+          "emoji": "💰",
+          "texto": "Tarifario mayorista",
+          "prompt": "Enviame la lista mayorista con escalas, mínimos de compra y bonificaciones.",
+          "description": "Bonos 12% / 18% según volumen"
+        },
+        {
+          "emoji": "📊",
+          "texto": "Forecast de reposición",
+          "prompt": "Quiero simular reposiciones semanales para un bar con consumo medio.",
+          "description": "Proyección de rotación por categoría"
+        },
+        {
+          "emoji": "🤝",
+          "texto": "Integración con ERP",
+          "prompt": "¿Cómo conecto el catálogo del almacén con mi ERP y los medios de pago?",
+          "description": "APIs, stock en vivo y conciliación"
+        }
+      ]
+    },
+    {
+      "emoji": "🛵",
+      "texto": "Logística y cobertura",
+      "description": "Zonas, ventanas express y control de frío",
+      "category": "🛵 Logística inteligente",
+      "submenu": [
+        {
+          "emoji": "🗺️",
+          "texto": "Mapa de cobertura",
+          "prompt": "Mostrame el mapa de cobertura y tiempos de entrega para Gran Mendoza.",
+          "description": "Entrega express 90' y rutas programadas"
+        },
+        {
+          "emoji": "🚚",
+          "texto": "Pedidos mixtos",
+          "prompt": "Armá un pedido mixto con retiro en depósito y envío a dos direcciones.",
+          "description": "Flujo combinado retiro + delivery"
+        },
+        {
+          "emoji": "🥶",
+          "texto": "Control de frescos",
+          "prompt": "¿Qué protocolos de frío tienen para lácteos y frescos en las rutas express?",
+          "description": "Checklists y monitoreo en vivo"
+        }
+      ]
+    },
+    {
+      "emoji": "🛠️",
+      "texto": "Integraciones & soporte",
+      "description": "Medios de pago, analítica y onboarding",
+      "category": "🛠️ Integraciones y soporte",
+      "submenu": [
+        {
+          "emoji": "💳",
+          "texto": "Medios de pago & QR",
+          "prompt": "Quiero conocer los medios de pago disponibles y cómo emitir QR propios.",
+          "description": "Links recurrentes, QR dinámicos y conciliación"
+        },
+        {
+          "emoji": "📈",
+          "texto": "Panel de analítica",
+          "prompt": "Mostrame el dashboard con KPIs de venta, frecuencia y stock crítico.",
+          "description": "Actualización en tiempo real"
+        },
+        {
+          "emoji": "👨‍🏫",
+          "texto": "Onboarding y training",
+          "prompt": "¿Cómo es el onboarding del equipo y qué soporte brindan en temporada alta?",
+          "description": "Sprints de capacitación y soporte 24/7"
+        }
+      ]
+    }
+  ],
+  "capabilities": [
+    "🧾 Genero presupuestos y listas en PDF personalizados con tu logo y condiciones comerciales.",
+    "📍 Geolocalizo envíos y asigno cuadrillas según ventanas express o programadas.",
+    "🔁 Configuro pedidos mixtos combinando retiro en depósito y delivery en una sola orden.",
+    "🧠 Analizo tus ventas históricas para sugerir reposiciones y alertas de stock crítico."
+  ],
+  "keywords": [
+    "combos express",
+    "lista mayorista",
+    "logística 90 minutos",
+    "integración ERP",
+    "medios de pago"
+  ]
+}

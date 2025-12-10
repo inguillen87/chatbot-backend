@@ -1,0 +1,224 @@
+{
+  "key": "logistica",
+  "responses": [
+    {
+      "id": "welcome",
+      "keywords": [
+        "__INIT__",
+        "hola",
+        "inicio",
+        "empezar",
+        "menu"
+      ],
+      "match_always": false,
+      "response": "🚚 Bienvenido a Axis Logistics 3PL. Elegí operaciones, fulfillment, crossborder o analítica y te muestro capacidades y SLA.",
+      "buttons": [
+        {
+          "label": "🏭 Operaciones 3PL",
+          "target": "operaciones_3pl"
+        },
+        {
+          "label": "📦 Fulfillment & inventario",
+          "target": "fulfillment_&_invent"
+        },
+        {
+          "label": "🌐 Crossborder & última milla",
+          "target": "crossborder_&_última"
+        },
+        {
+          "label": "📈 Innovación & BI",
+          "target": "innovación_&_bi"
+        }
+      ]
+    },
+    {
+      "id": "slots_y_turnos",
+      "keywords": [
+        "slots y turnos"
+      ],
+      "response": "Torre con visibilidad 360°\n\n_¿Cómo gestionan turnos de carga, control de pallets y monitoreo en tiempo real?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "control_documental",
+      "keywords": [
+        "control documental"
+      ],
+      "response": "Escaneo OCR + RPA\n\n_Necesito ver cómo automatizan checklists de ingreso y documentación._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "mantenimiento_flota",
+      "keywords": [
+        "mantenimiento flota"
+      ],
+      "response": "KPIs MTTR y fuel savings\n\n_Mostrame planes de mantenimiento y telemetría para flota propia._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "operaciones_3pl",
+      "keywords": [
+        "operaciones 3pl"
+      ],
+      "response": "Inbound, inventario y cross-docking con torre de control",
+      "buttons": [
+        {
+          "label": "🚛 Slots y turnos",
+          "target": "slots_y_turnos"
+        },
+        {
+          "label": "🧾 Control documental",
+          "target": "control_documental"
+        },
+        {
+          "label": "🛠️ Mantenimiento flota",
+          "target": "mantenimiento_flota"
+        }
+      ]
+    },
+    {
+      "id": "picking_inteligente",
+      "keywords": [
+        "picking inteligente"
+      ],
+      "response": "Batch picking + AMR híbrido\n\n_Mostrame layout de picking por olas y robots AMR disponibles._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "kitting_y_personaliz",
+      "keywords": [
+        "kitting y personalización"
+      ],
+      "response": "Kitting 24/7 con QA\n\n_¿Qué capacidades de kitting y packaging personalizado manejan?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "packaging_verde",
+      "keywords": [
+        "packaging verde"
+      ],
+      "response": "Materiales reciclados + offset\n\n_Necesito opciones de packaging sustentable y medición de huella._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "fulfillment_&_invent",
+      "keywords": [
+        "fulfillment & inventario"
+      ],
+      "response": "WMS, picking inteligente y embalajes sustentables",
+      "buttons": [
+        {
+          "label": "🤖 Picking inteligente",
+          "target": "picking_inteligente"
+        },
+        {
+          "label": "📦 Kitting y personalización",
+          "target": "kitting_y_personaliz"
+        },
+        {
+          "label": "♻️ Packaging verde",
+          "target": "packaging_verde"
+        }
+      ]
+    },
+    {
+      "id": "export_flash",
+      "keywords": [
+        "export flash"
+      ],
+      "response": "Partners aéreos + aduana simplificada\n\n_¿Cómo gestionan exportaciones express a Chile y Uruguay?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "lockers_y_pick_up",
+      "keywords": [
+        "lockers y pick up"
+      ],
+      "response": "+420 puntos omnicanal\n\n_Mostrame red de lockers y puntos pick-up integrados._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "ventanas_same-day",
+      "keywords": [
+        "ventanas same-day"
+      ],
+      "response": "Same-day AMBA · next-day interior\n\n_Necesito SLA para entregas same-day y cobertura por barrios._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "crossborder_&_última",
+      "keywords": [
+        "crossborder & última milla"
+      ],
+      "response": "Operación internacional, couriers y lockers inteligentes",
+      "buttons": [
+        {
+          "label": "✈️ Export flash",
+          "target": "export_flash"
+        },
+        {
+          "label": "📍 Lockers y pick up",
+          "target": "lockers_y_pick_up"
+        },
+        {
+          "label": "⚡ Ventanas same-day",
+          "target": "ventanas_same-day"
+        }
+      ]
+    },
+    {
+      "id": "gemelo_digital",
+      "keywords": [
+        "gemelo digital"
+      ],
+      "response": "Simulación de slots y rutas\n\n_Quiero ver el gemelo digital del centro de distribución y simulaciones._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "kpis_en_vivo",
+      "keywords": [
+        "kpis en vivo"
+      ],
+      "response": "Dashboard torre comando\n\n_Mostrame KPIs en vivo de fill rate, OTIF y desvíos._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "huella_de_carbono",
+      "keywords": [
+        "huella de carbono"
+      ],
+      "response": "Calculadora CO₂ + programas offset\n\n_¿Cómo calculan y compensan la huella de carbono de la operación?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "innovación_&_bi",
+      "keywords": [
+        "innovación & bi"
+      ],
+      "response": "Gemelos digitales, analítica predictiva y CO2 dashboard",
+      "buttons": [
+        {
+          "label": "🛰️ Gemelo digital",
+          "target": "gemelo_digital"
+        },
+        {
+          "label": "📊 KPIs en vivo",
+          "target": "kpis_en_vivo"
+        },
+        {
+          "label": "🌱 Huella de carbono",
+          "target": "huella_de_carbono"
+        }
+      ]
+    }
+  ],
+  "fallback": {
+    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "buttons": [
+      {
+        "label": "Ver menú principal",
+        "target": "welcome"
+      }
+    ]
+  }
+}

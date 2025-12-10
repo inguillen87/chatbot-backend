@@ -13,42 +13,55 @@ def fix_schema_issues():
         with db.engine.connect() as conn:
             print("🔧 Checking schema consistency...")
 
+            is_sqlite = 'sqlite' in str(db.engine.url)
+
+            def column_exists(table, column):
+                if is_sqlite:
+                    res = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+                    for row in res:
+                        if row[1] == column: return True
+                    return False
+                else:
+                    check_sql = text(f"SELECT column_name FROM information_schema.columns WHERE table_name='{table}' AND column_name='{column}'")
+                    return bool(conn.execute(check_sql).fetchone())
+
             # 1. catalogo_item.disponible
-            check_sql = text("SELECT column_name FROM information_schema.columns WHERE table_name='catalogo_item' AND column_name='disponible'")
-            if not conn.execute(check_sql).fetchone():
+            if not column_exists('catalogo_item', 'disponible'):
                 print("  ⚠️ Adding 'disponible' to 'catalogo_item'...")
                 conn.execute(text("ALTER TABLE catalogo_item ADD COLUMN disponible BOOLEAN DEFAULT true"))
                 conn.commit()
 
             # 2. widget_config.position (Fix length)
-            # We assume postgres. If sqlite, this might fail or be ignored, but prod is Postgres.
-            try:
-                conn.execute(text("ALTER TABLE widget_config ALTER COLUMN position TYPE VARCHAR(50)"))
-                conn.commit()
-                print("  ✅ Fixed 'widget_config.position' length.")
-            except Exception as e:
-                print(f"  ⚠️ Could not alter widget_config.position (might be sqlite?): {e}")
+            if not is_sqlite:
+                try:
+                    conn.execute(text("ALTER TABLE widget_config ALTER COLUMN position TYPE VARCHAR(50)"))
+                    conn.commit()
+                    print("  ✅ Fixed 'widget_config.position' length.")
+                except Exception as e:
+                    print(f"  ⚠️ Could not alter widget_config.position: {e}")
 
             # 3. widget_settings.cta_messages
-            check_sql = text("SELECT column_name FROM information_schema.columns WHERE table_name='widget_settings' AND column_name='cta_messages'")
-            if not conn.execute(check_sql).fetchone():
+            if not column_exists('widget_settings', 'cta_messages'):
                 print("  ⚠️ Adding 'cta_messages' to 'widget_settings'...")
-                # Use JSON/JSONB depending on dialect, but usually 'JSON' works as alias in SQLAlchemy,
-                # here we are writing raw SQL. 'JSONB' is postgres specific.
-                try:
-                    conn.execute(text("ALTER TABLE widget_settings ADD COLUMN cta_messages JSONB DEFAULT '[]'"))
-                except:
+                if is_sqlite:
                     conn.execute(text("ALTER TABLE widget_settings ADD COLUMN cta_messages JSON DEFAULT '[]'"))
+                else:
+                    try:
+                        conn.execute(text("ALTER TABLE widget_settings ADD COLUMN cta_messages JSONB DEFAULT '[]'"))
+                    except:
+                        conn.execute(text("ALTER TABLE widget_settings ADD COLUMN cta_messages JSON DEFAULT '[]'"))
                 conn.commit()
 
             # 4. widget_settings.theme_config
-            check_sql = text("SELECT column_name FROM information_schema.columns WHERE table_name='widget_settings' AND column_name='theme_config'")
-            if not conn.execute(check_sql).fetchone():
+            if not column_exists('widget_settings', 'theme_config'):
                 print("  ⚠️ Adding 'theme_config' to 'widget_settings'...")
-                try:
-                    conn.execute(text("ALTER TABLE widget_settings ADD COLUMN theme_config JSONB DEFAULT '{}'"))
-                except:
+                if is_sqlite:
                     conn.execute(text("ALTER TABLE widget_settings ADD COLUMN theme_config JSON DEFAULT '{}'"))
+                else:
+                    try:
+                        conn.execute(text("ALTER TABLE widget_settings ADD COLUMN theme_config JSONB DEFAULT '{}'"))
+                    except:
+                        conn.execute(text("ALTER TABLE widget_settings ADD COLUMN theme_config JSON DEFAULT '{}'"))
                 conn.commit()
 
             print("✅ Schema fixes applied.")
@@ -75,14 +88,21 @@ def ensure_rubro_hierarchy():
 
     db.session.flush()
 
-    # Sub-rubros for Comerciales
+    # Sub-rubros for Comerciales (Dynamically discovered from filesystem would be ideal, but hardcoded for structure)
+    # We map keys used in demos to readable names
     subs = [
-        ("almacen_bebidas", "Almacenes y Bebidas"),
-        ("kioscos", "Kioscos"),
-        ("indumentaria", "Indumentaria"),
-        ("farmacia", "Farmacias"),
-        ("ferreteria_const", "Ferretería y Construcción"),
-        ("gastronomia", "Gastronomía")
+        ("almacen", "Almacenes y Bebidas"),
+        ("bodega", "Bodegas y Vinos"),
+        ("ferreteria", "Ferretería y Construcción"),
+        ("local_comercial_general", "Indumentaria y Retail"),
+        ("farmacia", "Farmacias"), # Reserved
+        ("gastronomia", "Gastronomía"), # Reserved
+        ("medico_general", "Salud y Medicina"),
+        ("energia", "Energía e Industria"),
+        ("inmobiliaria", "Inmobiliaria y Real Estate"),
+        ("fintech", "Fintech y Banca"),
+        ("seguros", "Seguros y Riesgos"),
+        ("logistica", "Logística y Transporte")
     ]
 
     for key, name in subs:
@@ -104,13 +124,40 @@ def init_tenants():
     fix_schema_issues()
     municipios_root, comerciales_root = ensure_rubro_hierarchy()
 
+    # Discovery of Pyme Demos from Filesystem
+    base_pyme_dir = os.path.join("data", "pyme", "rubros")
+    if not os.path.exists(base_pyme_dir):
+        print(f"❌ Base pyme dir not found: {base_pyme_dir}")
+        return
+
+    demos_found = []
+    for entry in os.listdir(base_pyme_dir):
+        full_path = os.path.join(base_pyme_dir, entry)
+        if os.path.isdir(full_path) and entry != "default":
+            config_path = os.path.join(full_path, "config.json")
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        cfg = json.load(f)
+                        cfg["key"] = entry # Ensure key matches directory name
+                        # Defaults if missing
+                        if "rubro_clave" not in cfg: cfg["rubro_clave"] = entry
+                        if "tipo_chat" not in cfg: cfg["tipo_chat"] = "pyme"
+                        demos_found.append(cfg)
+                except Exception as e:
+                    print(f"⚠️ Error loading config for {entry}: {e}")
+
+    # Also include Municipio from demo_rubros.json if needed, or handle separately.
+    # For legacy compatibility, let's peek at demo_rubros.json just for 'municipio'
     json_path = os.path.join("data", "demo_rubros.json")
     try:
         with open(json_path, "r", encoding="utf-8") as f:
-            demos = json.load(f)
+            legacy_demos = json.load(f)
+            for d in legacy_demos:
+                if d.get("key") == "municipio":
+                    demos_found.append(d)
     except FileNotFoundError:
-        print(f"❌ Could not find {json_path}")
-        return
+        pass
 
     email_map = {
         "almacen": "demo+almacen@chatboc.ar",
@@ -119,39 +166,32 @@ def init_tenants():
         "local_comercial_general": "demo+local@chatboc.ar",
         "medico_general": "demo+medico@chatboc.ar",
         "municipio": "municipio@chatboc.ar",
+        "energia": "demo+energia@chatboc.ar",
+        "inmobiliaria": "demo+inmobiliaria@chatboc.ar",
+        "fintech": "demo+fintech@chatboc.ar",
+        "seguros": "demo+seguros@chatboc.ar",
+        "logistica": "demo+logistica@chatboc.ar",
     }
 
-    # Map demo keys to specific sub-rubros
-    rubro_mapping = {
-        "almacen": "almacen_bebidas",
-        "bodega": "almacen_bebidas",
-        "ferreteria": "ferreteria_const",
-        "local_comercial_general": "indumentaria",
-        "medico_general": "comerciales_root", # Fallback
-        "municipio": "municipios_root"
-    }
-
-    for demo in demos:
+    for demo in demos_found:
         key = demo.get("key")
         nombre = demo.get("nombre")
-        rubro_clave = demo.get("rubro_clave")
+        rubro_clave = demo.get("rubro_clave") or key
         tipo_chat = demo.get("tipo_chat", "pyme")
         token = demo.get("token")
 
         print(f"\nProcessing '{key}' ({nombre})...")
 
         # Resolve correct parent rubro
-        mapped_rubro_key = rubro_mapping.get(key, rubro_clave)
-        target_rubro = Rubro.query.filter_by(clave=mapped_rubro_key).first()
+        target_rubro = Rubro.query.filter_by(clave=rubro_clave).first()
 
         # If not found (e.g. medico), create it or fallback
         if not target_rubro:
-             target_rubro = Rubro.query.filter_by(clave=rubro_clave).first()
-             if not target_rubro:
-                parent_id = municipios_root.id if tipo_chat == 'municipio' else comerciales_root.id
-                target_rubro = Rubro(clave=rubro_clave, nombre=nombre, es_publico=True, padre_id=parent_id)
-                db.session.add(target_rubro)
-                db.session.flush()
+             # Fallback to creating it under appropriate root
+             parent_id = municipios_root.id if tipo_chat == 'municipio' else comerciales_root.id
+             target_rubro = Rubro(clave=rubro_clave, nombre=nombre, es_publico=True, padre_id=parent_id)
+             db.session.add(target_rubro)
+             db.session.flush()
 
         # User
         email = email_map.get(key, f"demo+{key}@chatboc.ar")
@@ -203,11 +243,11 @@ def init_tenants():
             ws = WidgetSettings(tenant_id=tenant.id)
 
         ws.default_open = True
-        ws.welcome_title = f"Hola, bienvenido a {nombre}"
-        ws.welcome_subtitle = "Tu asistente virtual 24/7"
+        ws.welcome_title = demo.get("welcome_title", f"Hola, bienvenido a {nombre}")
+        ws.welcome_subtitle = demo.get("welcome_subtitle", "Tu asistente virtual 24/7")
 
-        # Theme Config (Dark/Light)
-        ws.theme_config = {
+        # Theme Config (Dark/Light) - Use demo config if available
+        ws.theme_config = demo.get("theme_config", {
             "mode": "system",
             "light": {
                 "primary": "#0066ff",
@@ -221,11 +261,13 @@ def init_tenants():
                 "background": "#1a1a1a",
                 "text": "#ffffff"
             }
-        }
+        })
 
         # CTAs (Call to Actions)
-        # Different CTAs for Municipio vs Pyme
-        if tipo_chat == "municipio":
+        # Load from config or fallback
+        if demo.get("widget_ctas"):
+             ws.cta_messages = demo.get("widget_ctas")
+        elif tipo_chat == "municipio":
             ws.cta_messages = [
                 {"text": "📅 Ver agenda cultural", "action": "trigger_intent", "payload": "agenda_cultural"},
                 {"text": "💡 Iniciar reclamo", "action": "trigger_intent", "payload": "nuevo_reclamo"},
@@ -243,7 +285,7 @@ def init_tenants():
         # Legacy WidgetConfig fix
         wc = WidgetConfig.query.filter_by(tenant_id=tenant.id).first()
         if not wc: wc = WidgetConfig(tenant_id=tenant.id)
-        wc.welcome_message = f"Hola, bienvenido a {nombre}"
+        wc.welcome_message = demo.get("welcome_message", f"Hola, bienvenido a {nombre}")
         db.session.add(wc)
 
         # Special logic for 'municipio' tenant (Widget Token)

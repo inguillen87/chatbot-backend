@@ -1,88 +1,224 @@
 {
+  "key": "almacen",
   "responses": [
     {
       "id": "welcome",
-      "keywords_any": ["__init__", "hola", "buen dia", "buenas", "que tal", "saludo"],
-      "response": "🛒 ¡Bienvenido! {demo_name} prepara pedidos minoristas y mayoristas con combos semanales listos para delivery. ¿Querés ver precios, promos o coordinar envíos?",
+      "keywords": [
+        "__INIT__",
+        "hola",
+        "inicio",
+        "empezar",
+        "menu"
+      ],
+      "match_always": false,
+      "response": "🛒 Hola, soy el asesor digital de ByM Almacén. Elegí pedidos express, reposiciones mayoristas, logística o integraciones y te comparto la información en segundos.",
       "buttons": [
-        {"label": "Combos familiares", "target": "combos"},
-        {"label": "Lista de precios", "target": "precios"},
-        {"label": "Consultar delivery", "target": "delivery"}
+        {
+          "label": "🛍️ Pedidos express & combos",
+          "target": "pedidos_express_&_co"
+        },
+        {
+          "label": "📦 Reposiciones mayoristas",
+          "target": "reposiciones_mayoris"
+        },
+        {
+          "label": "🛵 Logística y cobertura",
+          "target": "logística_y_cobertur"
+        },
+        {
+          "label": "🛠️ Integraciones & soporte",
+          "target": "integraciones_&_sopo"
+        }
       ]
     },
     {
-      "id": "combos",
-      "keywords_any": ["combo", "combos", "promocion", "promo", "pack"],
-      "response": "Tenemos combos familiares de lácteos, bebidas y snacks listos para envío en el día. Podés combinarlos con frescos, rotisería o productos para bares.",
-      "resource_tags": ["title:Catálogo de combos"],
+      "id": "combos_familiares",
+      "keywords": [
+        "combos familiares"
+      ],
+      "response": "Packs para 4/6 personas con frescos y bebidas\n\n_Mostrame el catálogo completo de combos familiares con precios y stock actualizado._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "coffee_break_corpora",
+      "keywords": [
+        "coffee break corporativo"
+      ],
+      "response": "Set dulce y salado con termos y descartables\n\n_Necesito opciones de coffee break corporativo para 20 personas con entrega hoy._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "after_office_y_bares",
+      "keywords": [
+        "after office y bares"
+      ],
+      "response": "Bandejas finger food + cócteles ready\n\n_Mostrame los combos express para bares y after office con márgenes sugeridos._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "pedidos_express_&_co",
+      "keywords": [
+        "pedidos express & combos"
+      ],
+      "response": "Combos familiares, coffee breaks y bandejas ready-to-go",
       "buttons": [
-        {"label": "Lista mayorista", "target": "precios"},
-        {"label": "Coordinar entrega", "target": "delivery"}
+        {
+          "label": "🍱 Combos familiares",
+          "target": "combos_familiares"
+        },
+        {
+          "label": "☕ Coffee break corporativo",
+          "target": "coffee_break_corpora"
+        },
+        {
+          "label": "🍹 After office y bares",
+          "target": "after_office_y_bares"
+        }
       ]
     },
     {
-      "id": "presupuesto",
-      "keywords_any": ["presupuesto", "cotizacion", "cotiza", "armar pedido", "armar presupuesto", "lista personalizada"],
-      "response": "Podemos armar presupuestos mixtos para bares, rotiserías o franquicias con precios mayoristas, mínimos por rubro y combos sugeridos.",
-      "resource_tags": ["title:Lista de precios"],
+      "id": "tarifario_mayorista",
+      "keywords": [
+        "tarifario mayorista"
+      ],
+      "response": "Bonos 12% / 18% según volumen\n\n_Enviame la lista mayorista con escalas, mínimos de compra y bonificaciones._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "forecast_de_reposici",
+      "keywords": [
+        "forecast de reposición"
+      ],
+      "response": "Proyección de rotación por categoría\n\n_Quiero simular reposiciones semanales para un bar con consumo medio._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "integración_con_erp",
+      "keywords": [
+        "integración con erp"
+      ],
+      "response": "APIs, stock en vivo y conciliación\n\n_¿Cómo conecto el catálogo del almacén con mi ERP y los medios de pago?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "reposiciones_mayoris",
+      "keywords": [
+        "reposiciones mayoristas"
+      ],
+      "response": "Escalas por categoría, proyección y acuerdos de financiación",
       "buttons": [
-        {"label": "Combos listos", "target": "combos"},
-        {"label": "Coordinar entrega", "target": "delivery"}
+        {
+          "label": "💰 Tarifario mayorista",
+          "target": "tarifario_mayorista"
+        },
+        {
+          "label": "📊 Forecast de reposición",
+          "target": "forecast_de_reposici"
+        },
+        {
+          "label": "🤝 Integración con ERP",
+          "target": "integración_con_erp"
+        }
       ]
     },
     {
-      "id": "precios",
-      "keywords_any": ["precio", "precios", "lista", "mayorista", "tarifas", "catalogo", "pdf", "descargar"],
-      "response": "La lista se actualiza a diario con precios minoristas y mayoristas desde 6 unidades. Podemos exportar PDF o integrarlo a tu ERP.",
-      "resource_tags": ["title:Lista de precios"],
+      "id": "mapa_de_cobertura",
+      "keywords": [
+        "mapa de cobertura"
+      ],
+      "response": "Entrega express 90' y rutas programadas\n\n_Mostrame el mapa de cobertura y tiempos de entrega para Gran Mendoza._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "pedidos_mixtos",
+      "keywords": [
+        "pedidos mixtos"
+      ],
+      "response": "Flujo combinado retiro + delivery\n\n_Armá un pedido mixto con retiro en depósito y envío a dos direcciones._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "control_de_frescos",
+      "keywords": [
+        "control de frescos"
+      ],
+      "response": "Checklists y monitoreo en vivo\n\n_¿Qué protocolos de frío tienen para lácteos y frescos en las rutas express?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "logística_y_cobertur",
+      "keywords": [
+        "logística y cobertura"
+      ],
+      "response": "Zonas, ventanas express y control de frío",
       "buttons": [
-        {"label": "Combos destacados", "target": "combos"},
-        {"label": "Medios de pago", "target": "pagos"}
+        {
+          "label": "🗺️ Mapa de cobertura",
+          "target": "mapa_de_cobertura"
+        },
+        {
+          "label": "🚚 Pedidos mixtos",
+          "target": "pedidos_mixtos"
+        },
+        {
+          "label": "🥶 Control de frescos",
+          "target": "control_de_frescos"
+        }
       ]
     },
     {
-      "id": "delivery",
-      "keywords_any": ["delivery", "envio", "envios", "envia", "domicilio", "reparto"],
-      "response": "El delivery propio cubre radio cercano en menos de 90 minutos. Para volumen mayor coordinamos logística con camión o moto tercerizada.",
-      "resource_tags": ["title:Mapa de logística"],
-      "buttons": [
-        {"label": "Reposiciones programadas", "target": "stock"},
-        {"label": "Medios de pago", "target": "pagos"}
-      ]
+      "id": "medios_de_pago_&_qr",
+      "keywords": [
+        "medios de pago & qr"
+      ],
+      "response": "Links recurrentes, QR dinámicos y conciliación\n\n_Quiero conocer los medios de pago disponibles y cómo emitir QR propios._",
+      "include_faq_preview": 1
     },
     {
-      "id": "stock",
-      "keywords_any": ["stock", "inventario", "reposicion", "control"],
-      "response": "El panel muestra stock en tiempo real y alerta bajas automáticas para reposiciones. Podés integrarlo con scanners o planillas existentes.",
-      "buttons": [
-        {"label": "Lista de precios", "target": "precios"},
-        {"label": "Solicitar asesor", "target": "contacto"}
-      ]
+      "id": "panel_de_analítica",
+      "keywords": [
+        "panel de analítica"
+      ],
+      "response": "Actualización en tiempo real\n\n_Mostrame el dashboard con KPIs de venta, frecuencia y stock crítico._",
+      "include_faq_preview": 1
     },
     {
-      "id": "pagos",
-      "keywords_any": ["pago", "pagos", "mercado pago", "modo", "transferencia", "cobro"],
-      "response": "Aceptamos Mercado Pago, MODO, transferencias y billeteras corporativas. Podemos configurar links de pago recurrentes o suscripciones.",
-      "buttons": [
-        {"label": "Ver combos", "target": "combos"},
-        {"label": "Hablar con asesor", "target": "contacto"}
-      ]
+      "id": "onboarding_y_trainin",
+      "keywords": [
+        "onboarding y training"
+      ],
+      "response": "Sprints de capacitación y soporte 24/7\n\n_¿Cómo es el onboarding del equipo y qué soporte brindan en temporada alta?_",
+      "include_faq_preview": 1
     },
     {
-      "id": "contacto",
-      "keywords_any": ["contacto", "asesor", "llamar", "hablar"],
-      "response": "Dejanos nombre, teléfono y rubro y coordinamos onboarding en minutos. El equipo puede duplicar esta demo en tu cuenta gratuita.",
+      "id": "integraciones_&_sopo",
+      "keywords": [
+        "integraciones & soporte"
+      ],
+      "response": "Medios de pago, analítica y onboarding",
       "buttons": [
-        {"label": "Lista de precios", "target": "precios"},
-        {"label": "Consultar delivery", "target": "delivery"}
+        {
+          "label": "💳 Medios de pago & QR",
+          "target": "medios_de_pago_&_qr"
+        },
+        {
+          "label": "📈 Panel de analítica",
+          "target": "panel_de_analítica"
+        },
+        {
+          "label": "👨‍🏫 Onboarding y training",
+          "target": "onboarding_y_trainin"
+        }
       ]
     }
   ],
   "fallback": {
-    "response": "Esta demo usa guiones prearmados sin llamar a IA generativa. Probá los botones para conocer combos, logística y métodos de pago. Si querés seguir, agendamos una demo personalizada.",
+    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
     "buttons": [
-      {"label": "Combos familiares", "target": "combos"},
-      {"label": "Lista de precios", "target": "precios"}
+      {
+        "label": "Ver menú principal",
+        "target": "welcome"
+      }
     ]
   }
 }

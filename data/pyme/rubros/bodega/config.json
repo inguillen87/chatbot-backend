@@ -1,53 +1,156 @@
 {
-  "nombre_pyme": "Bodega Cuatro Fincas",
-  "descripcion": "Bodega familiar mendocina que combina venta directa, hospitality y distribución mayorista de vinos premiados.",
-  "contacto": {
-    "admin": {
-      "nombre": "Mariana López",
-      "cargo": "Directora Comercial",
-      "email": "mariana@cuatrofincas.com",
-      "telefono": "+5492615551234"
-    },
-    "enoturismo": {
-      "email": "visitas@cuatrofincas.com",
-      "telefono": "+5492614567890"
-    }
-  },
-  "ubicaciones": [
+  "nombre": "Bodega Cuatro Fincas",
+  "descripcion": "Sommelier digital que concentra portfolio ícono, programas trade y logística boutique con foco en exportación.",
+  "prompt_context": "Cuatro Fincas Winery produce microvinificaciones en Altamira, Agrelo, Vistalba y Gualtallary. Portfolio 2024/2025: Gran Malbec Reserva, Cabernet Franc Single Vineyard, Chardonnay Finca Don Matías, Bonarda Orgánica y Extra Brut Método Tradicional. Programas HoReCa, duty free y export LATAM con logística boutique, training de sommeliers y experiencias corporativas premium.",
+  "welcome_message": "🍷 Bienvenido al concierge digital de Cuatro Fincas. Elegí portfolio ícono, programas trade, experiencias o logística boutique y te comparto la información al instante.",
+  "resources": [
     {
-      "nombre": "Casa central y bodega",
-      "direccion": "Ruta Provincial 60 km 12, Luján de Cuyo, Mendoza",
-      "coordenadas": {
-        "lat": -33.0418,
-        "lon": -68.8794
-      },
-      "telefono": "+542614455678"
+      "title": "Catálogo íconos 2024/2025",
+      "description": "Gran Malbec Reserva, Cabernet Franc Single Vineyard y ediciones limitadas HoReCa.",
+      "type": "pdf",
+      "url": "/static/demo/bodega/catalogo-premium-2024.pdf",
+      "cta_text": "Abrir portfolio premium",
+      "price": "Gran Malbec Reserva desde $18.900",
+      "highlight": "Asignación limitada",
+      "availability": "Stock 2024/2025"
     },
     {
-      "nombre": "Depósito mayorista Buenos Aires",
-      "direccion": "Av. del Libertador 3500, CABA",
-      "coordenadas": {
-        "lat": -34.5742,
-        "lon": -58.4066
-      },
-      "telefono": "+541144556677"
+      "title": "Tarifario mayorista & duty free",
+      "description": "Escalas combinadas, mínimos por línea y programas de incentivos para trade.",
+      "type": "pdf",
+      "url": "/static/demo/bodega/lista-precios-mayoristas.pdf",
+      "cta_text": "Descargar tarifa trade",
+      "price": "Bonarda Orgánica $13.200",
+      "highlight": "Bonos 10% · 15%",
+      "availability": "HoReCa + duty free"
+    },
+    {
+      "title": "Experiencias corporativas",
+      "description": "Discovery Pack, Barrel Room Experience y Vendimia Corporativa para equipos.",
+      "type": "pdf",
+      "url": "/static/demo/bodega/combos-degustacion-corporativas.pdf",
+      "cta_text": "Ver experiencias",
+      "highlight": "Reservas 2024 abiertas",
+      "availability": "Eventos in winery & on-site"
     }
   ],
-  "horarios": {
-    "degustaciones": "Todos los días 10:00 - 18:00",
-    "logistica": "Lunes a viernes 08:00 - 17:00",
-    "atencion_whatsapp": "Lunes a domingo 09:00 - 22:00"
-  },
-  "whatsapp": {
-    "numero": "+5492613168608",
-    "descripcion": "Canal oficial para pedidos, reservas de visitas y soporte a distribuidores"
-  },
-  "welcome": {
-    "template_sid": "HX33b306d980ee328f7893db484ba349c4",
-    "template_variables": {
-      "1": "{{pyme_whatsapp}}"
+  "quick_actions": [
+    {
+      "emoji": "🍇",
+      "texto": "Portfolio ícono & reservas",
+      "description": "Grandes vinos de guarda, vinos de finca y ediciones limitadas",
+      "category": "🍇 Portfolio & storytelling",
+      "submenu": [
+        {
+          "emoji": "🥇",
+          "texto": "Gran Malbec Reserva",
+          "prompt": "Quiero conocer notas de cata, puntuaciones y asignación del Gran Malbec Reserva 2021.",
+          "description": "14 meses roble francés · 96 pts"
+        },
+        {
+          "emoji": "🌿",
+          "texto": "Bonarda Orgánica",
+          "prompt": "Mostrame la ficha técnica de la Bonarda Orgánica Don Salvador y stock disponible.",
+          "description": "Certificación orgánica + vegan friendly"
+        },
+        {
+          "emoji": "✨",
+          "texto": "Línea Vincent HoReCa",
+          "prompt": "Necesito precios y condiciones de la línea Vincent para restaurantes.",
+          "description": "Malbec/Chardonnay exclusivos HoReCa"
+        }
+      ]
     },
-    "sticker_url": "https://chatboc.ar/static/welcome/saludo_media_cuatrofincas.webp",
-    "sticker_cooldown_seconds": 300
-  }
+    {
+      "emoji": "🤝",
+      "texto": "Programas trade & incentivos",
+      "description": "Escalas, bonificaciones y soporte a cuentas clave",
+      "category": "🤝 Trade & partners",
+      "submenu": [
+        {
+          "emoji": "📦",
+          "texto": "Escalas mayoristas",
+          "prompt": "Enviame las escalas de compra para distribuidores con bonificaciones y mínimos.",
+          "description": "Bonos 10% · 15% + copas Riedel"
+        },
+        {
+          "emoji": "🎓",
+          "texto": "Training de sommeliers",
+          "prompt": "¿Qué incluye el training y soporte al staff para lanzamientos HoReCa?",
+          "description": "Capacitaciones presenciales y virtuales"
+        },
+        {
+          "emoji": "🎁",
+          "texto": "Kits corporativos",
+          "prompt": "Busco propuestas de kits corporativos personalizados con envío en AMBA.",
+          "description": "Discovery Pack + nota dedicada"
+        }
+      ]
+    },
+    {
+      "emoji": "🚚",
+      "texto": "Logística & export boutique",
+      "description": "Cobertura nacional, cadena de frío y partners LATAM",
+      "category": "🚚 Logística premium",
+      "submenu": [
+        {
+          "emoji": "🧊",
+          "texto": "Cadena de frío",
+          "prompt": "¿Cómo mantienen la cadena de frío y seguimiento para envíos premium?",
+          "description": "Sensórica y monitoreo en tránsito"
+        },
+        {
+          "emoji": "✈️",
+          "texto": "Export LATAM",
+          "prompt": "Quiero saber condiciones de exportación a LATAM y partners disponibles.",
+          "description": "Operamos Brasil, Paraguay y Perú"
+        },
+        {
+          "emoji": "📆",
+          "texto": "Calendario de despachos",
+          "prompt": "Mostrame el calendario de despachos semanales para AMBA y interior.",
+          "description": "Salidas lunes, miércoles y viernes"
+        }
+      ]
+    },
+    {
+      "emoji": "🥂",
+      "texto": "Experiencias & hospitality",
+      "description": "Degustaciones, eventos privados y turismo corporativo",
+      "category": "🥂 Experiencias",
+      "submenu": [
+        {
+          "emoji": "🪵",
+          "texto": "Barrel Room Experience",
+          "prompt": "Quiero detalles de la Barrel Room Experience para 15 personas.",
+          "description": "Maridaje 5 pasos + tour privado"
+        },
+        {
+          "emoji": "🌅",
+          "texto": "Vendimia corporativa",
+          "prompt": "¿Cómo funciona la vendimia corporativa y qué incluye el servicio?",
+          "description": "Team building + blend personalizado"
+        },
+        {
+          "emoji": "🏨",
+          "texto": "Hospitality en bodega",
+          "prompt": "Necesito propuestas de hospitality en bodega para clientes top.",
+          "description": "Menús maridaje y salas exclusivas"
+        }
+      ]
+    }
+  ],
+  "capabilities": [
+    "🍷 Armo listas de precios personalizadas según canal (HoReCa, retail, duty free).",
+    "🧾 Genero propuestas con storytelling, fichas técnicas y pairing sugerido.",
+    "📦 Coordino logística boutique con sensores de temperatura y seguro door-to-door.",
+    "👩‍🏫 Agendo trainings y catas guiadas con el equipo de sommelier."
+  ],
+  "keywords": [
+    "catálogo premium",
+    "lista mayorista",
+    "degustaciones corporativas",
+    "export LATAM",
+    "bonificaciones trade"
+  ]
 }
