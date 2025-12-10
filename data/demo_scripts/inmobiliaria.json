@@ -1,0 +1,224 @@
+{
+  "key": "inmobiliaria",
+  "responses": [
+    {
+      "id": "welcome",
+      "keywords": [
+        "__INIT__",
+        "hola",
+        "inicio",
+        "empezar",
+        "menu"
+      ],
+      "match_always": false,
+      "response": "🏙️ Hola, soy el advisor digital de Portfolio Prime Realty. Elegí proyectos, inversiones, operaciones digitales o posventa y avanzo con vos.",
+      "buttons": [
+        {
+          "label": "🏗️ Proyectos en preventa",
+          "target": "proyectos_en_prevent"
+        },
+        {
+          "label": "💼 Inversiones & renta",
+          "target": "inversiones_&_renta"
+        },
+        {
+          "label": "🖥️ Operaciones digitales",
+          "target": "operaciones_digitale"
+        },
+        {
+          "label": "🤝 Postventa & fidelización",
+          "target": "postventa_&_fideliza"
+        }
+      ]
+    },
+    {
+      "id": "torres_premium",
+      "keywords": [
+        "torres premium"
+      ],
+      "response": "Departamentos de 2 a 4 ambientes\n\n_Mostrame las torres en preventa con valores, amenities y plan de pagos._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "barrios_cerrados",
+      "keywords": [
+        "barrios cerrados"
+      ],
+      "response": "Lotes 800-1200 m² + clubhouse\n\n_Quiero opciones de barrios cerrados con lotes disponibles y financiación._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "oficinas_aaa",
+      "keywords": [
+        "oficinas aaa"
+      ],
+      "response": "Oficinas 500-2000 m²\n\n_Necesito oficinas AAA en CABA con flexibilidad y cowork integrado._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "proyectos_en_prevent",
+      "keywords": [
+        "proyectos en preventa"
+      ],
+      "response": "Torres residenciales, oficinas AAA y barrios cerrados",
+      "buttons": [
+        {
+          "label": "🏢 Torres premium",
+          "target": "torres_premium"
+        },
+        {
+          "label": "🌳 Barrios cerrados",
+          "target": "barrios_cerrados"
+        },
+        {
+          "label": "🏬 Oficinas AAA",
+          "target": "oficinas_aaa"
+        }
+      ]
+    },
+    {
+      "id": "renta_temporaria",
+      "keywords": [
+        "renta temporaria"
+      ],
+      "response": "ROI esperado 7,5% anual\n\n_Mostrame unidades llave en mano con renta temporaria proyectada._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "inversor_extranjero",
+      "keywords": [
+        "inversor extranjero"
+      ],
+      "response": "Onboarding integral + compliance\n\n_¿Cómo acompañan a inversores extranjeros con apertura de cuentas y legal?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "fondos_inmobiliarios",
+      "keywords": [
+        "fondos inmobiliarios"
+      ],
+      "response": "Fondos renta y desarrollo\n\n_Necesito la ficha de fondos inmobiliarios disponibles y capital mínimo._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "inversiones_&_renta",
+      "keywords": [
+        "inversiones & renta"
+      ],
+      "response": "Unidades de renta, landbanking y fondos inmobiliarios",
+      "buttons": [
+        {
+          "label": "💵 Renta temporaria",
+          "target": "renta_temporaria"
+        },
+        {
+          "label": "🌐 Inversor extranjero",
+          "target": "inversor_extranjero"
+        },
+        {
+          "label": "📈 Fondos inmobiliarios",
+          "target": "fondos_inmobiliarios"
+        }
+      ]
+    },
+    {
+      "id": "reserva_digital",
+      "keywords": [
+        "reserva digital"
+      ],
+      "response": "Workflow 100% online\n\n_¿Cómo gestiono una reserva digital con pago en criptomonedas o transferencia?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "due_diligence",
+      "keywords": [
+        "due diligence"
+      ],
+      "response": "Cheklist legal + certificaciones\n\n_Quiero saber qué incluye el due diligence legal y tiempos promedio._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "firma_y_escrituració",
+      "keywords": [
+        "firma y escrituración"
+      ],
+      "response": "Integración con escribanía digital\n\n_Mostrame el proceso de firma digital, escribanía y entrega de documentación._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "operaciones_digitale",
+      "keywords": [
+        "operaciones digitales"
+      ],
+      "response": "Reservas online, firma digital y seguimiento documental",
+      "buttons": [
+        {
+          "label": "📝 Reserva digital",
+          "target": "reserva_digital"
+        },
+        {
+          "label": "🔍 Due diligence",
+          "target": "due_diligence"
+        },
+        {
+          "label": "🔐 Firma y escrituración",
+          "target": "firma_y_escrituració"
+        }
+      ]
+    },
+    {
+      "id": "amenities_y_consorci",
+      "keywords": [
+        "amenities y consorcios"
+      ],
+      "response": "Amenities premium + app consorcio\n\n_¿Qué servicios de administración y amenities ofrecen post entrega?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "mantenimiento",
+      "keywords": [
+        "mantenimiento"
+      ],
+      "response": "Mantenimiento programado + emergencias\n\n_Necesito conocer los servicios de mantenimiento y garantía postventa._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "gestión_de_alquiler",
+      "keywords": [
+        "gestión de alquiler"
+      ],
+      "response": "Administración + reporting mensual\n\n_¿Ofrecen gestión integral de alquiler y seguimiento de cobranzas?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "postventa_&_fideliza",
+      "keywords": [
+        "postventa & fidelización"
+      ],
+      "response": "Conserjería, amenities y gestión de alquileres",
+      "buttons": [
+        {
+          "label": "🏊 Amenities y consorcios",
+          "target": "amenities_y_consorci"
+        },
+        {
+          "label": "🛠️ Mantenimiento",
+          "target": "mantenimiento"
+        },
+        {
+          "label": "📞 Gestión de alquiler",
+          "target": "gestión_de_alquiler"
+        }
+      ]
+    }
+  ],
+  "fallback": {
+    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "buttons": [
+      {
+        "label": "Ver menú principal",
+        "target": "welcome"
+      }
+    ]
+  }
+}

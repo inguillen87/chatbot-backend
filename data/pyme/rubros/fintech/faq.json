@@ -1,0 +1,62 @@
+[
+  {
+    "question": "Onboarding express",
+    "answer": "Workflow 100% paperless",
+    "extended_answer": "Mostrame el journey de onboarding digital con KYC biométrico y aprobación en minutos."
+  },
+  {
+    "question": "Upsell tarjetas",
+    "answer": "Ofertas en tiempo real",
+    "extended_answer": "¿Qué campañas de upsell aplican para tarjeta premium y créditos preaprobados?"
+  },
+  {
+    "question": "App modular",
+    "answer": "Componentes UX listos",
+    "extended_answer": "Necesito ver módulos white-label para app y banca web."
+  },
+  {
+    "question": "Links dinámicos",
+    "answer": "Expiración y recordatorios automáticos",
+    "extended_answer": "Mostrame cómo se generan links de pago dinámicos con vencimiento y recordatorios."
+  },
+  {
+    "question": "Arqueo y conciliación",
+    "answer": "Motor de conciliación inteligente",
+    "extended_answer": "¿Cómo concilian cobros de POS, QR y transferencias en un dashboard único?"
+  },
+  {
+    "question": "Recupero inteligente",
+    "answer": "Automatización con IA conversacional",
+    "extended_answer": "Necesito flujos de cobranzas preventivas con campañas multicanal."
+  },
+  {
+    "question": "Panel de riesgo",
+    "answer": "Alertas configurables por umbral",
+    "extended_answer": "Mostrame el dashboard de riesgo con alertas tempranas y controles AML."
+  },
+  {
+    "question": "Scoring crediticio",
+    "answer": "Modelos híbridos + open data",
+    "extended_answer": "¿Qué variables usan para el scoring crediticio y cómo se integran al core bancario?"
+  },
+  {
+    "question": "Reporting regulatorio",
+    "answer": "Salida en XBRL y PDF",
+    "extended_answer": "Necesito los reportes regulatorios automáticos para BCRA y CNV."
+  },
+  {
+    "question": "API marketplace",
+    "answer": "Portal developers con analytics",
+    "extended_answer": "Quiero conocer el marketplace de APIs y cómo habilitar sandbox para partners."
+  },
+  {
+    "question": "Cross border",
+    "answer": "Liquidación USD/EUR instantánea",
+    "extended_answer": "¿Cómo operan pagos cross border y liquidez multimoneda?"
+  },
+  {
+    "question": "Programas aliados",
+    "answer": "Planes silver · gold · platinum",
+    "extended_answer": "Mostrame los programas de revenue share para retailers y telcos."
+  }
+]

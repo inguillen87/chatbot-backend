@@ -1,0 +1,224 @@
+{
+  "key": "fintech",
+  "responses": [
+    {
+      "id": "welcome",
+      "keywords": [
+        "__INIT__",
+        "hola",
+        "inicio",
+        "empezar",
+        "menu"
+      ],
+      "match_always": false,
+      "response": "💳 Bienvenido a Aurora Fintech Hub. Elegí onboarding digital, cobranzas, riesgo o APIs y te comparto dashboards y próximos pasos.",
+      "buttons": [
+        {
+          "label": "🚀 Onboarding & producto",
+          "target": "onboarding_&_product"
+        },
+        {
+          "label": "💰 Cobranzas & pagos",
+          "target": "cobranzas_&_pagos"
+        },
+        {
+          "label": "🛡️ Riesgo & compliance",
+          "target": "riesgo_&_compliance"
+        },
+        {
+          "label": "🤝 Partners & open banking",
+          "target": "partners_&_open_bank"
+        }
+      ]
+    },
+    {
+      "id": "onboarding_express",
+      "keywords": [
+        "onboarding express"
+      ],
+      "response": "Workflow 100% paperless\n\n_Mostrame el journey de onboarding digital con KYC biométrico y aprobación en minutos._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "upsell_tarjetas",
+      "keywords": [
+        "upsell tarjetas"
+      ],
+      "response": "Ofertas en tiempo real\n\n_¿Qué campañas de upsell aplican para tarjeta premium y créditos preaprobados?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "app_modular",
+      "keywords": [
+        "app modular"
+      ],
+      "response": "Componentes UX listos\n\n_Necesito ver módulos white-label para app y banca web._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "onboarding_&_product",
+      "keywords": [
+        "onboarding & producto"
+      ],
+      "response": "Journeys digitales, upgrades y bundles premium",
+      "buttons": [
+        {
+          "label": "🆔 Onboarding express",
+          "target": "onboarding_express"
+        },
+        {
+          "label": "💳 Upsell tarjetas",
+          "target": "upsell_tarjetas"
+        },
+        {
+          "label": "📱 App modular",
+          "target": "app_modular"
+        }
+      ]
+    },
+    {
+      "id": "links_dinámicos",
+      "keywords": [
+        "links dinámicos"
+      ],
+      "response": "Expiración y recordatorios automáticos\n\n_Mostrame cómo se generan links de pago dinámicos con vencimiento y recordatorios._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "arqueo_y_conciliació",
+      "keywords": [
+        "arqueo y conciliación"
+      ],
+      "response": "Motor de conciliación inteligente\n\n_¿Cómo concilian cobros de POS, QR y transferencias en un dashboard único?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "recupero_inteligente",
+      "keywords": [
+        "recupero inteligente"
+      ],
+      "response": "Automatización con IA conversacional\n\n_Necesito flujos de cobranzas preventivas con campañas multicanal._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "cobranzas_&_pagos",
+      "keywords": [
+        "cobranzas & pagos"
+      ],
+      "response": "Armonización de medios, links y recaudos empresariales",
+      "buttons": [
+        {
+          "label": "🔗 Links dinámicos",
+          "target": "links_dinámicos"
+        },
+        {
+          "label": "🏦 Arqueo y conciliación",
+          "target": "arqueo_y_conciliació"
+        },
+        {
+          "label": "📉 Recupero inteligente",
+          "target": "recupero_inteligente"
+        }
+      ]
+    },
+    {
+      "id": "panel_de_riesgo",
+      "keywords": [
+        "panel de riesgo"
+      ],
+      "response": "Alertas configurables por umbral\n\n_Mostrame el dashboard de riesgo con alertas tempranas y controles AML._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "scoring_crediticio",
+      "keywords": [
+        "scoring crediticio"
+      ],
+      "response": "Modelos híbridos + open data\n\n_¿Qué variables usan para el scoring crediticio y cómo se integran al core bancario?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "reporting_regulatori",
+      "keywords": [
+        "reporting regulatorio"
+      ],
+      "response": "Salida en XBRL y PDF\n\n_Necesito los reportes regulatorios automáticos para BCRA y CNV._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "riesgo_&_compliance",
+      "keywords": [
+        "riesgo & compliance"
+      ],
+      "response": "Scoring, antifraude y monitoreo regulatorio",
+      "buttons": [
+        {
+          "label": "📊 Panel de riesgo",
+          "target": "panel_de_riesgo"
+        },
+        {
+          "label": "🧮 Scoring crediticio",
+          "target": "scoring_crediticio"
+        },
+        {
+          "label": "🧾 Reporting regulatorio",
+          "target": "reporting_regulatori"
+        }
+      ]
+    },
+    {
+      "id": "api_marketplace",
+      "keywords": [
+        "api marketplace"
+      ],
+      "response": "Portal developers con analytics\n\n_Quiero conocer el marketplace de APIs y cómo habilitar sandbox para partners._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "cross_border",
+      "keywords": [
+        "cross border"
+      ],
+      "response": "Liquidación USD/EUR instantánea\n\n_¿Cómo operan pagos cross border y liquidez multimoneda?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "programas_aliados",
+      "keywords": [
+        "programas aliados"
+      ],
+      "response": "Planes silver · gold · platinum\n\n_Mostrame los programas de revenue share para retailers y telcos._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "partners_&_open_bank",
+      "keywords": [
+        "partners & open banking"
+      ],
+      "response": "Ecosistema de aliados, marketplace y revenue share",
+      "buttons": [
+        {
+          "label": "🔌 API marketplace",
+          "target": "api_marketplace"
+        },
+        {
+          "label": "🌍 Cross border",
+          "target": "cross_border"
+        },
+        {
+          "label": "🎯 Programas aliados",
+          "target": "programas_aliados"
+        }
+      ]
+    }
+  ],
+  "fallback": {
+    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "buttons": [
+      {
+        "label": "Ver menú principal",
+        "target": "welcome"
+      }
+    ]
+  }
+}

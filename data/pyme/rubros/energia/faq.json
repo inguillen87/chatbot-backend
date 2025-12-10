@@ -1,0 +1,62 @@
+[
+  {
+    "question": "Plan de perforación",
+    "answer": "18 pozos horizontales · 9 workovers",
+    "extended_answer": "Mostrame el plan de perforación 2025 con inversiones y producción esperada."
+  },
+  {
+    "question": "KPIs de pozos",
+    "answer": "Producción, GOR y uptime",
+    "extended_answer": "Necesito el dashboard con KPIs de producción y eficiencia por pozo."
+  },
+  {
+    "question": "Planes de workover",
+    "answer": "Workovers priorizados por declinación",
+    "extended_answer": "¿Qué intervenciones están programadas para workover en Q3?"
+  },
+  {
+    "question": "Utilización planta",
+    "answer": "Utilización 92% · blend crudo",
+    "extended_answer": "Mostrame el reporte de utilización de refinería y cumplimiento de especificaciones."
+  },
+  {
+    "question": "Mantenimiento predictivo",
+    "answer": "Modelos predictivos + alertas",
+    "extended_answer": "¿Cómo gestionan mantenimiento predictivo en bombas y compresores?"
+  },
+  {
+    "question": "Oleoductos",
+    "answer": "Pigging y monitoreo de corrosión",
+    "extended_answer": "Necesito el estado de integridad de oleoductos y próximas inspecciones."
+  },
+  {
+    "question": "Contratos de suministro",
+    "answer": "Clientes industriales y estaciones",
+    "extended_answer": "Quiero revisar los contratos de suministro vigentes y condiciones de pricing."
+  },
+  {
+    "question": "Logística combustibles",
+    "answer": "Distribución multi-terminal",
+    "extended_answer": "Mostrame la planificación logística de combustibles y despacho semanal."
+  },
+  {
+    "question": "Análisis de precios",
+    "answer": "Modelos indexados a Brent",
+    "extended_answer": "¿Qué estrategia de pricing dinámico aplican para estaciones propias?"
+  },
+  {
+    "question": "Licencias ambientales",
+    "answer": "Permisos 2024 actualizados",
+    "extended_answer": "Necesito el estado de licencias ambientales y auditorías en curso."
+  },
+  {
+    "question": "Proyectos de transición",
+    "answer": "Pilotos 5 MW H2 + B100",
+    "extended_answer": "¿Qué proyectos de hidrógeno verde y biocombustibles están en desarrollo?"
+  },
+  {
+    "question": "Compensaciones de CO₂",
+    "answer": "Roadmap Net Zero 2040",
+    "extended_answer": "Mostrame el plan de compensaciones y créditos de carbono adquiridos."
+  }
+]

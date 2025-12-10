@@ -1,0 +1,27 @@
+{
+  "key": "default",
+  "responses": [
+    {
+      "id": "welcome",
+      "keywords": [
+        "__INIT__",
+        "hola",
+        "inicio",
+        "empezar",
+        "menu"
+      ],
+      "match_always": false,
+      "response": "Hola, ¿en qué te puedo ayudar?",
+      "buttons": []
+    }
+  ],
+  "fallback": {
+    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "buttons": [
+      {
+        "label": "Ver menú principal",
+        "target": "welcome"
+      }
+    ]
+  }
+}

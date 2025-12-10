@@ -1,115 +1,224 @@
 {
+  "key": "bodega",
   "responses": [
     {
       "id": "welcome",
-      "keywords_any": ["__init__", "hola", "buen dia", "buenos dias", "buenas", "que tal", "saludo"],
-      "response": "🍷 ¡Hola! Soy el asistente virtual de {demo_name}. Podemos repasar etiquetas premium, combos de degustación y envíos a todo el país. Contame qué te gustaría revisar primero.",
-      "buttons": [
-        {"label": "Pedir presupuesto", "target": "presupuesto"},
-        {"label": "Ver catálogo premium", "target": "catalogo"},
-        {"label": "Consultar envíos", "target": "envios"},
-        {"label": "Reservar degustación", "target": "degustacion"}
-      ]
-    },
-    {
-      "id": "catalogo",
-      "keywords_any": ["catalogo", "lista de precios", "precios", "lista", "catalogue"],
-      "response": "Te comparto la selección destacada 2024 con notas de cata, precios por botella y combos especiales de 6 unidades.",
-      "resource_tags": ["type:pdf"],
-      "include_faq_preview": 2,
-      "buttons": [
-        {"label": "¿Y los envíos?", "target": "envios"},
-        {"label": "Pedir presupuesto", "target": "presupuesto"},
-        {"label": "Promo Gran Malbec", "target": "malbec"}
-      ]
-    },
-    {
-      "id": "presupuesto",
-      "keywords_any": [
-        "presupuesto",
-        "cotizacion",
-        "cotiza",
-        "precio mayorista",
-        "pdf",
-        "armar pedido",
-        "lista personalizada"
+      "keywords": [
+        "__INIT__",
+        "hola",
+        "inicio",
+        "empezar",
+        "menu"
       ],
-      "response": "Generamos presupuestos en PDF con selección de etiquetas, escalas por volumen y combos corporativos listos para regalar.",
-      "resource_tags": [
-        "title:Lista de precios",
-        "title:Combos"
+      "match_always": false,
+      "response": "🍷 Bienvenido al concierge digital de Cuatro Fincas. Elegí portfolio ícono, programas trade, experiencias o logística boutique y te comparto la información al instante.",
+      "buttons": [
+        {
+          "label": "🍇 Portfolio ícono & reservas",
+          "target": "portfolio_ícono_&_re"
+        },
+        {
+          "label": "🤝 Programas trade & incentivos",
+          "target": "programas_trade_&_in"
+        },
+        {
+          "label": "🚚 Logística & export boutique",
+          "target": "logística_&_export_b"
+        },
+        {
+          "label": "🥂 Experiencias & hospitality",
+          "target": "experiencias_&_hospi"
+        }
+      ]
+    },
+    {
+      "id": "gran_malbec_reserva",
+      "keywords": [
+        "gran malbec reserva"
       ],
+      "response": "14 meses roble francés · 96 pts\n\n_Quiero conocer notas de cata, puntuaciones y asignación del Gran Malbec Reserva 2021._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "bonarda_orgánica",
+      "keywords": [
+        "bonarda orgánica"
+      ],
+      "response": "Certificación orgánica + vegan friendly\n\n_Mostrame la ficha técnica de la Bonarda Orgánica Don Salvador y stock disponible._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "línea_vincent_horeca",
+      "keywords": [
+        "línea vincent horeca"
+      ],
+      "response": "Malbec/Chardonnay exclusivos HoReCa\n\n_Necesito precios y condiciones de la línea Vincent para restaurantes._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "portfolio_ícono_&_re",
+      "keywords": [
+        "portfolio ícono & reservas"
+      ],
+      "response": "Grandes vinos de guarda, vinos de finca y ediciones limitadas",
       "buttons": [
-        {"label": "Ver catálogo premium", "target": "catalogo"},
-        {"label": "Opciones corporativas", "target": "corporativo"}
+        {
+          "label": "🥇 Gran Malbec Reserva",
+          "target": "gran_malbec_reserva"
+        },
+        {
+          "label": "🌿 Bonarda Orgánica",
+          "target": "bonarda_orgánica"
+        },
+        {
+          "label": "✨ Línea Vincent HoReCa",
+          "target": "línea_vincent_horeca"
+        }
       ]
     },
     {
-      "id": "malbec",
-      "keywords_any": ["gran malbec", "malbec reserva", "malbec"],
-      "response": "Gran Malbec Reserva 2021 combina notas a ciruela, chocolate y un final especiado. Está con 10% off en caja de 6 botellas y envío bonificado en Gran Mendoza.",
-      "resource_tags": ["title:Malbec"],
+      "id": "escalas_mayoristas",
+      "keywords": [
+        "escalas mayoristas"
+      ],
+      "response": "Bonos 10% · 15% + copas Riedel\n\n_Enviame las escalas de compra para distribuidores con bonificaciones y mínimos._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "training_de_sommelie",
+      "keywords": [
+        "training de sommeliers"
+      ],
+      "response": "Capacitaciones presenciales y virtuales\n\n_¿Qué incluye el training y soporte al staff para lanzamientos HoReCa?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "kits_corporativos",
+      "keywords": [
+        "kits corporativos"
+      ],
+      "response": "Discovery Pack + nota dedicada\n\n_Busco propuestas de kits corporativos personalizados con envío en AMBA._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "programas_trade_&_in",
+      "keywords": [
+        "programas trade & incentivos"
+      ],
+      "response": "Escalas, bonificaciones y soporte a cuentas clave",
       "buttons": [
-        {"label": "Ver lista completa", "target": "catalogo"},
-        {"label": "Opciones corporativas", "target": "corporativo"}
+        {
+          "label": "📦 Escalas mayoristas",
+          "target": "escalas_mayoristas"
+        },
+        {
+          "label": "🎓 Training de sommeliers",
+          "target": "training_de_sommelie"
+        },
+        {
+          "label": "🎁 Kits corporativos",
+          "target": "kits_corporativos"
+        }
       ]
     },
     {
-      "id": "envios",
-      "keywords_any": ["envio", "envios", "envia", "enviar", "delivery", "envio gratis"],
-      "response": "Hacemos envíos gratuitos en Gran Mendoza desde $45.000 y logística nacional con seguros especializados. El mapa boutique marca tiempos estimados y transportes refrigerados.",
-      "resource_tags": ["title:Mapa de envíos"],
+      "id": "cadena_de_frío",
+      "keywords": [
+        "cadena de frío"
+      ],
+      "response": "Sensórica y monitoreo en tránsito\n\n_¿Cómo mantienen la cadena de frío y seguimiento para envíos premium?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "export_latam",
+      "keywords": [
+        "export latam"
+      ],
+      "response": "Operamos Brasil, Paraguay y Perú\n\n_Quiero saber condiciones de exportación a LATAM y partners disponibles._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "calendario_de_despac",
+      "keywords": [
+        "calendario de despachos"
+      ],
+      "response": "Salidas lunes, miércoles y viernes\n\n_Mostrame el calendario de despachos semanales para AMBA y interior._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "logística_&_export_b",
+      "keywords": [
+        "logística & export boutique"
+      ],
+      "response": "Cobertura nacional, cadena de frío y partners LATAM",
       "buttons": [
-        {"label": "Ver combos mayoristas", "target": "corporativo"},
-        {"label": "Reservar degustación", "target": "degustacion"}
+        {
+          "label": "🧊 Cadena de frío",
+          "target": "cadena_de_frío"
+        },
+        {
+          "label": "✈️ Export LATAM",
+          "target": "export_latam"
+        },
+        {
+          "label": "📆 Calendario de despachos",
+          "target": "calendario_de_despac"
+        }
       ]
     },
     {
-      "id": "degustacion",
-      "keywords_any": ["degustacion", "degustaciones", "visita", "tour", "sala"],
-      "response": "La sala de degustación abre de lunes a sábado de 10 a 20 h. Los viernes y sábados tenemos guiada con el enólogo 18 h (cupos limitados). Podés revisar combos corporativos para cerrar el evento.",
-      "resource_tags": ["title:Combos"],
-      "buttons": [
-        {"label": "Quiero reservar cupo", "target": "degustacion_contacto"},
-        {"label": "Catálogo de vinos", "target": "catalogo"}
-      ]
+      "id": "barrel_room_experien",
+      "keywords": [
+        "barrel room experience"
+      ],
+      "response": "Maridaje 5 pasos + tour privado\n\n_Quiero detalles de la Barrel Room Experience para 15 personas._",
+      "include_faq_preview": 1
     },
     {
-      "id": "degustacion_contacto",
-      "keywords_any": ["reservar degustacion", "reservar cupo", "dejo mis datos"],
-      "response": "¡Genial! Para reservar necesitás nombre, teléfono y cantidad de personas. En la demo podés dejarlos en el formulario de contacto y coordinamos por mail en minutos.",
-      "buttons": [
-        {"label": "Ver formulario de contacto", "target": "contacto"},
-        {"label": "Promos corporativas", "target": "corporativo"}
-      ]
+      "id": "vendimia_corporativa",
+      "keywords": [
+        "vendimia corporativa"
+      ],
+      "response": "Team building + blend personalizado\n\n_¿Cómo funciona la vendimia corporativa y qué incluye el servicio?_",
+      "include_faq_preview": 1
     },
     {
-      "id": "corporativo",
-      "keywords_any": ["corporativo", "empresas", "eventos", "regalos"],
-      "response": "Armamos regalos corporativos, combos personalizados y degustaciones privadas. Descuentos del 15% desde $120.000 y logística a múltiples destinos.",
-      "resource_tags": ["title:Combos"],
-      "buttons": [
-        {"label": "Catálogo premium", "target": "catalogo"},
-        {"label": "Consultar envíos", "target": "envios"}
-      ]
+      "id": "hospitality_en_bodeg",
+      "keywords": [
+        "hospitality en bodega"
+      ],
+      "response": "Menús maridaje y salas exclusivas\n\n_Necesito propuestas de hospitality en bodega para clientes top._",
+      "include_faq_preview": 1
     },
     {
-      "id": "contacto",
-      "keywords_any": ["contacto", "asesor", "hablar", "llamar"],
-      "response": "En la versión completa podés derivar a un asesor humano con un clic. Mientras tanto, dejá tus datos y coordinamos degustaciones, eventos o presupuestos en menos de 24 h.",
+      "id": "experiencias_&_hospi",
+      "keywords": [
+        "experiencias & hospitality"
+      ],
+      "response": "Degustaciones, eventos privados y turismo corporativo",
       "buttons": [
-        {"label": "Ver combos mayoristas", "target": "corporativo"},
-        {"label": "Reservar degustación", "target": "degustacion"}
+        {
+          "label": "🪵 Barrel Room Experience",
+          "target": "barrel_room_experien"
+        },
+        {
+          "label": "🌅 Vendimia corporativa",
+          "target": "vendimia_corporativa"
+        },
+        {
+          "label": "🏨 Hospitality en bodega",
+          "target": "hospitality_en_bodeg"
+        }
       ]
     }
   ],
   "fallback": {
-    "response": "Este es un guion de demo offline de {demo_name}. Podés explorar catálogo, envíos y propuestas corporativas desde los botones. Si querés una experiencia a medida avisame y coordinamos una reunión con el equipo.",
+    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
     "buttons": [
-      {"label": "Pedir presupuesto", "target": "presupuesto"},
-      {"label": "Ver catálogo", "target": "catalogo"},
-      {"label": "Consultar envíos", "target": "envios"}
-    ],
-    "resource_tags": ["type:pdf"]
+      {
+        "label": "Ver menú principal",
+        "target": "welcome"
+      }
+    ]
   }
 }

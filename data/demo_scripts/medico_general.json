@@ -1,78 +1,224 @@
 {
+  "key": "medico_general",
   "responses": [
     {
       "id": "welcome",
-      "keywords_any": ["__init__", "hola", "buen dia", "buenas", "saludo", "turno"],
-      "response": "🩺 Hola, soy el asistente de {demo_name}. Puedo ayudarte con turnos, coberturas y preparación de estudios. ¿Qué te gustaría resolver?",
+      "keywords": [
+        "__INIT__",
+        "hola",
+        "inicio",
+        "empezar",
+        "menu"
+      ],
+      "match_always": false,
+      "response": "🏥 Bienvenido a Clínica Horizonte. Elegí turnos, estudios, telemedicina o convenios corporativos y te ayudo al instante.",
       "buttons": [
-        {"label": "Reservar turno", "target": "turno"},
-        {"label": "Coberturas y obras sociales", "target": "cobertura"},
-        {"label": "Guardias y urgencias", "target": "guardia"}
+        {
+          "label": "📅 Turnos y especialidades",
+          "target": "turnos_y_especialida"
+        },
+        {
+          "label": "🧪 Estudios y laboratorio",
+          "target": "estudios_y_laborator"
+        },
+        {
+          "label": "💬 Telemedicina & seguimiento",
+          "target": "telemedicina_&_segui"
+        },
+        {
+          "label": "🏢 Convenios corporativos",
+          "target": "convenios_corporativ"
+        }
       ]
     },
     {
-      "id": "turno",
-      "keywords_any": ["turno", "reservar", "sacar", "agenda", "prioritario", "pdf", "descargar"],
-      "response": "Podés reservar turnos online para clínica médica, pediatría, ginecología, laboratorio y nutrición. Confirmamos por WhatsApp y enviamos recordatorio automático.",
-      "resource_tags": ["title:Agenda de turnos"],
+      "id": "clínica_médica",
+      "keywords": [
+        "clínica médica"
+      ],
+      "response": "Consultorios mañana y tarde\n\n_Quiero turnos de clínica médica esta semana y saber si aceptan OSDE 410._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "pediatría",
+      "keywords": [
+        "pediatría"
+      ],
+      "response": "Guardia pediátrica 24/7\n\n_Necesito un turno pediátrico con prioridad para control de 2 años._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "turnos_derivados",
+      "keywords": [
+        "turnos derivados"
+      ],
+      "response": "Gestión automática con autorizaciones\n\n_¿Cómo gestiono turnos derivados por mi obra social y autorizaciones?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "turnos_y_especialida",
+      "keywords": [
+        "turnos y especialidades"
+      ],
+      "response": "Disponibilidad por sede, coberturas y derivaciones",
       "buttons": [
-        {"label": "Ver coberturas", "target": "cobertura"},
-        {"label": "Teleconsulta", "target": "teleconsulta"}
+        {
+          "label": "🩺 Clínica médica",
+          "target": "clínica_médica"
+        },
+        {
+          "label": "👶 Pediatría",
+          "target": "pediatría"
+        },
+        {
+          "label": "🧾 Turnos derivados",
+          "target": "turnos_derivados"
+        }
       ]
     },
     {
-      "id": "cobertura",
-      "keywords_any": ["cobertura", "obra social", "prepaga", "plan"],
-      "response": "Trabajamos con OSDE, Swiss Medical, Galeno, OSEP y planes provinciales. El bot valida números de afiliado y envía autorizaciones por correo seguro.",
-      "buttons": [
-        {"label": "Reservar turno", "target": "turno"},
-        {"label": "Requisitos de estudios", "target": "estudios"}
-      ]
+      "id": "laboratorio_general",
+      "keywords": [
+        "laboratorio general"
+      ],
+      "response": "Resultados en 24/48 h\n\n_¿Qué preparación necesito para análisis de laboratorio completo y cuándo entregan resultados?_",
+      "include_faq_preview": 1
     },
     {
-      "id": "guardia",
-      "keywords_any": ["guardia", "urgencia", "emergencia"],
-      "response": "Coordinamos guardias programadas y teletriage. Si es una emergencia real, siempre recomendamos llamar al servicio médico correspondiente o acudir al centro más cercano.",
-      "buttons": [
-        {"label": "Teleconsulta", "target": "teleconsulta"},
-        {"label": "Reservar turno", "target": "turno"}
-      ]
+      "id": "diagnóstico_por_imág",
+      "keywords": [
+        "diagnóstico por imágenes"
+      ],
+      "response": "Resonancia 1.5T · sedes Centro y Norte\n\n_Necesito saber disponibilidad para resonancia y requisitos de autorización._",
+      "include_faq_preview": 1
     },
     {
-      "id": "estudios",
-      "keywords_any": ["estudio", "laboratorio", "analisis", "preparacion", "pdf", "instrucciones"],
-      "response": "Compartimos preparación para laboratorio, turnos para ecografías y coordinación de resultados. Podés adjuntar órdenes para que el equipo las valide.",
-      "resource_tags": ["title:Guía de preparación"],
+      "id": "entrega_digital",
+      "keywords": [
+        "entrega digital"
+      ],
+      "response": "Portal seguro + firma electrónica\n\n_¿Cómo accedo a resultados digitalizados y los comparto con mi médico?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "estudios_y_laborator",
+      "keywords": [
+        "estudios y laboratorio"
+      ],
+      "response": "Preparación, tiempos y resultados online",
       "buttons": [
-        {"label": "Coberturas", "target": "cobertura"},
-        {"label": "Teleconsulta", "target": "teleconsulta"}
+        {
+          "label": "🩸 Laboratorio general",
+          "target": "laboratorio_general"
+        },
+        {
+          "label": "🧬 Diagnóstico por imágenes",
+          "target": "diagnóstico_por_imág"
+        },
+        {
+          "label": "📤 Entrega digital",
+          "target": "entrega_digital"
+        }
       ]
     },
     {
       "id": "teleconsulta",
-      "keywords_any": ["teleconsulta", "virtual", "videollamada", "online"],
-      "response": "La clínica ofrece teleconsultas seguras con firma digital. Enviamos link por WhatsApp, receta electrónica y recordatorio minutos antes.",
-      "resource_tags": ["title:Flujo de teleconsulta"],
+      "keywords": [
+        "teleconsulta"
+      ],
+      "response": "Video HD + receta electrónica\n\n_Quiero entender cómo funciona la teleconsulta y cómo recibir la receta digital._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "seguimiento_crónicos",
+      "keywords": [
+        "seguimiento crónicos"
+      ],
+      "response": "Dispositivos conectados + alertas\n\n_¿Qué herramientas tienen para monitoreo remoto de pacientes crónicos?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "acompañamiento_post_",
+      "keywords": [
+        "acompañamiento post alta"
+      ],
+      "response": "Contact center médico + reportes\n\n_Necesito saber cómo es el acompañamiento post alta y coordinación con mi prepaga._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "telemedicina_&_segui",
+      "keywords": [
+        "telemedicina & seguimiento"
+      ],
+      "response": "Videoconsultas, receta digital y monitoreo remoto",
       "buttons": [
-        {"label": "Reservar turno", "target": "turno"},
-        {"label": "Ver estudios", "target": "estudios"}
+        {
+          "label": "🖥️ Teleconsulta",
+          "target": "teleconsulta"
+        },
+        {
+          "label": "📈 Seguimiento crónicos",
+          "target": "seguimiento_crónicos"
+        },
+        {
+          "label": "📞 Acompañamiento post alta",
+          "target": "acompañamiento_post_"
+        }
       ]
     },
     {
-      "id": "contacto",
-      "keywords_any": ["contacto", "asesor", "hablar", "llamar"],
-      "response": "Para derivar a un humano, dejá tus datos y derivamos a la central de turnos o al coordinador de pacientes crónicos en minutos.",
+      "id": "planes_preventivos",
+      "keywords": [
+        "planes preventivos"
+      ],
+      "response": "Programas anualizados y on site\n\n_Enviame propuestas de chequeos preventivos corporativos por segmento._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "reporting_ejecutivo",
+      "keywords": [
+        "reporting ejecutivo"
+      ],
+      "response": "Dashboards mensuales personalizados\n\n_Necesito un ejemplo de reporte ejecutivo con métricas de utilización y NPS._",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "beneficios_empresas",
+      "keywords": [
+        "beneficios empresas"
+      ],
+      "response": "Charlas de wellness y salud mental\n\n_¿Qué beneficios adicionales ofrecen para empresas (guardería, wellness, charlas)?_",
+      "include_faq_preview": 1
+    },
+    {
+      "id": "convenios_corporativ",
+      "keywords": [
+        "convenios corporativos"
+      ],
+      "response": "Planes preventivos, informes y gestión de beneficios",
       "buttons": [
-        {"label": "Reservar turno", "target": "turno"},
-        {"label": "Coberturas", "target": "cobertura"}
+        {
+          "label": "🧾 Planes preventivos",
+          "target": "planes_preventivos"
+        },
+        {
+          "label": "📊 Reporting ejecutivo",
+          "target": "reporting_ejecutivo"
+        },
+        {
+          "label": "🤝 Beneficios empresas",
+          "target": "beneficios_empresas"
+        }
       ]
     }
   ],
   "fallback": {
-    "response": "Esta demo usa respuestas predefinidas para mostrar turnos, coberturas y guardias. Tocá un botón para seguir sin gastar tokens de IA.",
+    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
     "buttons": [
-      {"label": "Reservar turno", "target": "turno"},
-      {"label": "Coberturas", "target": "cobertura"}
+      {
+        "label": "Ver menú principal",
+        "target": "welcome"
+      }
     ]
   }
 }
