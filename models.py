@@ -648,7 +648,7 @@ class WidgetConfig(db.Model):
     tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), unique=True)
     primary_color = db.Column(db.String(20), default="#0066ff")
     accent_color = db.Column(db.String(20), default="#00cc88")
-    position = db.Column(db.String(10), default="bottom-right")
+    position = db.Column(db.String(20), default="bottom-right")
     logo_url = db.Column(db.String(255))
     welcome_message = db.Column(db.String(255))
     bubble_shape = db.Column(db.String(20), default="round")
@@ -819,6 +819,8 @@ class WidgetSettings(db.Model, TimestampMixin):
     font_family = db.Column(db.String(120), nullable=True)
     bubble_shape = db.Column(db.String(50), nullable=True)
     default_open = db.Column(db.Boolean, default=False)
+    cta_messages = db.Column(JSONType, nullable=True)
+    theme_config = db.Column(JSONType, nullable=True)
 
     tenant = db.relationship(
         "TenantProfile", back_populates="widget_settings", uselist=False
@@ -838,6 +840,8 @@ class WidgetSettings(db.Model, TimestampMixin):
             "bubble_shape": self.bubble_shape or "round",
             "default_open": bool(self.default_open),
             "widget_default_open": bool(self.default_open),
+            "cta_messages": self.cta_messages or [],
+            "theme_config": self.theme_config or {},
         }
 
 class ArchivoAdjunto(db.Model):
