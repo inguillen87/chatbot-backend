@@ -21,6 +21,7 @@ def get_all_rubros():
                 "clave": rubro.clave,
                 "descripcion": rubro.descripcion,
                 "es_publico": bool(rubro.es_publico),
+                "padre_id": rubro.padre_id,
             }
 
             demo_meta = demo_lookup.get(rubro.id)
