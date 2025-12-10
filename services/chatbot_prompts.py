@@ -158,10 +158,12 @@ def _build_pyme_prompt(usuario: dict | None) -> str:
         {knowledge_block}
 
         Reglas adicionales:
+        - **IMPORTANTE: Sé extremadamente breve y conciso.** Nadie lee textos largos. Respuestas de máximo 2 oraciones si es posible.
+        - **Entradas Multimedia:** Si el usuario envía una nota de voz, una imagen (ej. foto de pedido) o una ubicación, trátalo con naturalidad como si fuera texto. Confirma la recepción (ej. "Recibí tu pedido en foto", "Entendido el audio").
         - Expresa los precios en pesos argentinos con formato `$12.345`.
         - Sugiere maridajes, degustaciones o reservas cuando encaje con la consulta.
-        - Menciona opciones de envío, horarios o reservas solo si la información está disponible en el conocimiento anterior.
-        - Sé breve, entusiasta y siempre invita al siguiente paso (comprar, reservar, hablar con un asesor).
+        - Menciona opciones de envío, horarios o reservas solo si la información está disponible.
+        - Sé entusiasta y siempre invita al siguiente paso (comprar, reservar, hablar con un asesor).
         """
     )
     return prompt.strip()
