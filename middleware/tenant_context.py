@@ -298,6 +298,27 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
     # Paths starting with /api must have explicit tenant context.
     path = request.path or ""
     if path.startswith("/api"):
+        # Fallback: Try to resolve from authenticated user (g.viewer)
+        # This handles cases where admin/dashboard requests don't send explicit tenant context
+        viewer = getattr(g, "viewer", None)
+        if viewer:
+            # 1. Try explicit tenant_id
+            t_id = getattr(viewer, "tenant_id", None)
+            if t_id:
+                try:
+                    t = TenantProfile.query.get(int(t_id))
+                    if t:
+                        return t
+                except Exception:
+                    pass
+
+            # 2. Try tenant_slug
+            t_slug = getattr(viewer, "tenant_slug", None)
+            if t_slug:
+                t = _find_tenant_by_slug(t_slug)
+                if t:
+                    return t
+
         return None
 
     return _fallback_default_tenant()
