@@ -583,7 +583,12 @@ def respond_survey(slug: str):
     payload = request.get_json(silent=True) or {}
     request_ctx = {
         "ip": request.headers.get("X-Forwarded-For") or request.remote_addr,
-        "anon_id": request.cookies.get("Anon-Id") or request.cookies.get("anon_id"),
+        "anon_id": (
+            request.headers.get("X-Anon-Id")
+            or request.headers.get("Anon-Id")
+            or request.cookies.get("Anon-Id")
+            or request.cookies.get("anon_id")
+        ),
         "canal": "pwa",
     }
     try:
