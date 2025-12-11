@@ -22,65 +22,77 @@ def fix_schema_issues():
             conn.rollback()
 
     try:
+        # Use simple try-except blocks for robustness instead of complex introspection
         with db.engine.connect() as conn:
-            def column_exists(table, column):
-                try:
-                    if is_sqlite:
-                        res = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
-                        for row in res:
-                            if row[1] == column: return True
-                        return False
-                    else:
-                        check_sql = text(f"SELECT column_name FROM information_schema.columns WHERE table_name='{table}' AND column_name='{column}'")
-                        result = conn.execute(check_sql).fetchone()
-                        return bool(result)
-                except Exception as e:
-                    print(f"  ⚠️ Error checking existence of {table}.{column}: {e}")
-                    conn.rollback()
-                    return False
-
             # 1. catalogo_item.disponible
-            if not column_exists('catalogo_item', 'disponible'):
-                print("  ⚠️ Adding 'disponible' to 'catalogo_item'...")
-                safe_execute(conn, "ALTER TABLE catalogo_item ADD COLUMN disponible BOOLEAN DEFAULT true", "Add disponible column")
+            print("  🔍 Checking catalogo_item.disponible...")
+            try:
+                if is_sqlite:
+                    # SQLite doesn't support IF NOT EXISTS in ADD COLUMN in all versions, check first
+                    res = conn.execute(text("PRAGMA table_info(catalogo_item)")).fetchall()
+                    exists = any(row[1] == 'disponible' for row in res)
+                    if not exists:
+                        conn.execute(text("ALTER TABLE catalogo_item ADD COLUMN disponible BOOLEAN DEFAULT 1"))
+                        conn.commit()
+                        print("  ✅ Added 'disponible' (SQLite).")
+                else:
+                    # Postgres: Use IF NOT EXISTS for atomicity
+                    conn.execute(text("ALTER TABLE catalogo_item ADD COLUMN IF NOT EXISTS disponible BOOLEAN DEFAULT true"))
+                    conn.commit()
+                    print("  ✅ Ensured 'disponible' (Postgres).")
+            except Exception as e:
+                print(f"  ⚠️ Error ensuring catalogo_item.disponible: {e}")
+                conn.rollback()
 
             # 2. widget_config.position (Fix length)
             if not is_sqlite:
-                print("  ⚠️ Checking 'widget_config.position' length...")
-                safe_execute(conn, "ALTER TABLE widget_config ALTER COLUMN position TYPE VARCHAR(50)", "Fix widget_config.position length")
+                try:
+                    conn.execute(text("ALTER TABLE widget_config ALTER COLUMN position TYPE VARCHAR(50)"))
+                    conn.commit()
+                    print("  ✅ Fixed widget_config.position length.")
+                except Exception as e:
+                    print(f"  ⚠️ Error fixing widget_config.position: {e}")
+                    conn.rollback()
 
             # 3. widget_settings.cta_messages
-            if not column_exists('widget_settings', 'cta_messages'):
-                print("  ⚠️ Adding 'cta_messages' to 'widget_settings'...")
+            print("  🔍 Checking widget_settings.cta_messages...")
+            try:
                 if is_sqlite:
-                    safe_execute(conn, "ALTER TABLE widget_settings ADD COLUMN cta_messages JSON DEFAULT '[]'", "Add cta_messages (sqlite)")
-                else:
-                    # Try JSONB, fallback to JSON
-                    try:
-                        conn.execute(text("ALTER TABLE widget_settings ADD COLUMN cta_messages JSONB DEFAULT '[]'"))
+                    res = conn.execute(text("PRAGMA table_info(widget_settings)")).fetchall()
+                    exists = any(row[1] == 'cta_messages' for row in res)
+                    if not exists:
+                        conn.execute(text("ALTER TABLE widget_settings ADD COLUMN cta_messages JSON DEFAULT '[]'"))
                         conn.commit()
-                        print("  ✅ Add cta_messages (JSONB) applied.")
-                    except Exception:
-                        conn.rollback()
-                        safe_execute(conn, "ALTER TABLE widget_settings ADD COLUMN cta_messages JSON DEFAULT '[]'", "Add cta_messages (JSON)")
+                        print("  ✅ Added 'cta_messages' (SQLite).")
+                else:
+                    conn.execute(text("ALTER TABLE widget_settings ADD COLUMN IF NOT EXISTS cta_messages JSONB DEFAULT '[]'"))
+                    conn.commit()
+                    print("  ✅ Ensured 'cta_messages' (Postgres).")
+            except Exception as e:
+                print(f"  ⚠️ Error ensuring widget_settings.cta_messages: {e}")
+                conn.rollback()
 
             # 4. widget_settings.theme_config
-            if not column_exists('widget_settings', 'theme_config'):
-                print("  ⚠️ Adding 'theme_config' to 'widget_settings'...")
+            print("  🔍 Checking widget_settings.theme_config...")
+            try:
                 if is_sqlite:
-                    safe_execute(conn, "ALTER TABLE widget_settings ADD COLUMN theme_config JSON DEFAULT '{}'", "Add theme_config (sqlite)")
-                else:
-                    try:
-                        conn.execute(text("ALTER TABLE widget_settings ADD COLUMN theme_config JSONB DEFAULT '{}'"))
+                    res = conn.execute(text("PRAGMA table_info(widget_settings)")).fetchall()
+                    exists = any(row[1] == 'theme_config' for row in res)
+                    if not exists:
+                        conn.execute(text("ALTER TABLE widget_settings ADD COLUMN theme_config JSON DEFAULT '{}'"))
                         conn.commit()
-                        print("  ✅ Add theme_config (JSONB) applied.")
-                    except Exception:
-                        conn.rollback()
-                        safe_execute(conn, "ALTER TABLE widget_settings ADD COLUMN theme_config JSON DEFAULT '{}'", "Add theme_config (JSON)")
+                        print("  ✅ Added 'theme_config' (SQLite).")
+                else:
+                    conn.execute(text("ALTER TABLE widget_settings ADD COLUMN IF NOT EXISTS theme_config JSONB DEFAULT '{}'"))
+                    conn.commit()
+                    print("  ✅ Ensured 'theme_config' (Postgres).")
+            except Exception as e:
+                print(f"  ⚠️ Error ensuring widget_settings.theme_config: {e}")
+                conn.rollback()
 
             print("✅ Schema consistency check finished.")
     except Exception as e:
-        print(f"❌ Critical error in schema check: {e}")
+        print(f"❌ Critical error in schema check wrapper: {e}")
 
 def ensure_rubro_hierarchy():
     """Ensures the categories structure exists: Municipios, Locales Comerciales, etc."""

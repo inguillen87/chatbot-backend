@@ -319,6 +319,20 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
                 if t:
                     return t
 
+            # 3. Try ownership (municipio_id/pyme_id matching User ID)
+            # If the user is the owner, they should implicitly be in their own tenant context for admin APIs
+            # This covers the case where tenant_id FK is missing on User but the User OWNS the tenant.
+            if getattr(viewer, "id", None):
+                try:
+                    # Avoid circular imports if possible, but TenantProfile is already imported
+                    t = TenantProfile.query.filter(
+                        (TenantProfile.municipio_id == viewer.id) | (TenantProfile.pyme_id == viewer.id)
+                    ).order_by(TenantProfile.id.desc()).first()
+                    if t:
+                        return t
+                except Exception:
+                    pass
+
         return None
 
     return _fallback_default_tenant()
