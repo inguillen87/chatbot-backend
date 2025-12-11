@@ -21,10 +21,13 @@ class TestChatIntegration(unittest.TestCase):
         db.create_all()
         self.client = self.app.test_client()
 
-        rubro = Rubro(nombre="municipio", clave="municipio")
-        rubro.es_publico = True
-        db.session.add(rubro)
-        db.session.commit()
+        # Check if rubro exists before creating it (since init_tenants might run)
+        rubro = Rubro.query.filter_by(clave="municipio").first()
+        if not rubro:
+            rubro = Rubro(nombre="municipio", clave="municipio")
+            rubro.es_publico = True
+            db.session.add(rubro)
+            db.session.commit()
 
         self.test_user = User(
             name="Test User",
