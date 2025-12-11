@@ -1,8 +1,8 @@
 {
   "nombre": "Clínica Demo",
-  "descripcion": "Clínica polivalente con turnos inteligentes, teleconsulta, seguimiento remoto y convenios corporativos.",
+  "descripcion": "Clínica polivalente: turnos inteligentes y telemedicina.",
   "prompt_context": "Clínica Demo ofrece turnos médicos inteligentes, teleconsulta con receta digital, gestión de estudios y seguimiento remoto de pacientes crónicos. Integra cobertura con obras sociales, reporting para empresas y analítica de ocupación.",
-  "welcome_message": "🏥 Bienvenido a Clínica Demo. Elegí turnos, estudios, telemedicina o convenios corporativos y te ayudo al instante.",
+  "welcome_message": "🏥 Bienvenido a Clínica Demo.\n\nElegí una opción para gestionar turnos, estudios, telemedicina o convenios.",
   "resources": [
     {
       "title": "Agenda de turnos prioritarios",
@@ -36,8 +36,8 @@
   "quick_actions": [
     {
       "emoji": "📅",
-      "texto": "Turnos y especialidades",
-      "description": "Disponibilidad por sede, coberturas y derivaciones",
+      "texto": "Turnos",
+      "description": "Consultorios, pediatría y derivaciones",
       "category": "📅 Turnos",
       "submenu": [
         {
@@ -62,8 +62,8 @@
     },
     {
       "emoji": "🧪",
-      "texto": "Estudios y laboratorio",
-      "description": "Preparación, tiempos y resultados online",
+      "texto": "Estudios",
+      "description": "Laboratorio, imágenes y resultados",
       "category": "🧪 Estudios",
       "submenu": [
         {
@@ -88,8 +88,8 @@
     },
     {
       "emoji": "💬",
-      "texto": "Telemedicina & seguimiento",
-      "description": "Videoconsultas, receta digital y monitoreo remoto",
+      "texto": "Telemedicina",
+      "description": "Videoconsultas y seguimiento remoto",
       "category": "💬 Telemedicina",
       "submenu": [
         {
@@ -114,8 +114,8 @@
     },
     {
       "emoji": "🏢",
-      "texto": "Convenios corporativos",
-      "description": "Planes preventivos, informes y gestión de beneficios",
+      "texto": "Corporativo",
+      "description": "Planes preventivos y beneficios",
       "category": "🏢 Corporate",
       "submenu": [
         {

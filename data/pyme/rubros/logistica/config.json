@@ -1,8 +1,8 @@
 {
   "nombre": "Logística Demo",
-  "descripcion": "Operador logístico 3PL con fulfillment omnicanal, última milla orquestada y control torre de comando.",
+  "descripcion": "Operador logístico 3PL con fulfillment omnicanal.",
   "prompt_context": "Logística Demo gestiona fulfillment B2C/B2B, control torre con visibilidad end-to-end, hubs regionales y capacidad crossborder con partners aéreos y terrestres.",
-  "welcome_message": "🚚 Bienvenido a Logística Demo. Elegí operaciones, fulfillment, crossborder o analítica y te muestro capacidades y SLA.",
+  "welcome_message": "🚚 Bienvenido a Logística Demo.\n\nElegí una opción del menú para conocer nuestras capacidades de fulfillment, operaciones y envíos internacionales.",
   "resources": [
     {
       "title": "Blueprint operaciones omnicanal",
@@ -37,7 +37,7 @@
     {
       "emoji": "🏭",
       "texto": "Operaciones 3PL",
-      "description": "Inbound, inventario y cross-docking con torre de control",
+      "description": "Inbound y cross-docking",
       "category": "🏭 Operaciones",
       "submenu": [
         {
@@ -62,8 +62,8 @@
     },
     {
       "emoji": "📦",
-      "texto": "Fulfillment & inventario",
-      "description": "WMS, picking inteligente y embalajes sustentables",
+      "texto": "Fulfillment",
+      "description": "WMS y picking inteligente",
       "category": "📦 Fulfillment",
       "submenu": [
         {
@@ -88,8 +88,8 @@
     },
     {
       "emoji": "🌐",
-      "texto": "Crossborder & última milla",
-      "description": "Operación internacional, couriers y lockers inteligentes",
+      "texto": "Crossborder",
+      "description": "Operación internacional",
       "category": "🌐 Crossborder",
       "submenu": [
         {
@@ -115,7 +115,7 @@
     {
       "emoji": "📈",
       "texto": "Innovación & BI",
-      "description": "Gemelos digitales, analítica predictiva y CO2 dashboard",
+      "description": "Gemelos digitales y analítica",
       "category": "📈 Innovación",
       "submenu": [
         {
@@ -140,15 +140,14 @@
     }
   ],
   "capabilities": [
-    "🚚 Orquesto inbound, almacenaje y última milla con torre de control y alertas proactivas.",
-    "📦 Integro WMS/TMS con marketplaces, ERPs y OMS para inventario en tiempo real.",
-    "🌐 Gestiono crossborder con documentación digital, tracking y partners certificados.",
-    "📊 Entrego tableros predictivos de demanda, SLA y sustentabilidad."
+    "🚚 Orquesto inbound, almacenaje y última milla.",
+    "📦 Integro WMS/TMS con marketplaces.",
+    "🌐 Gestiono crossborder con documentación digital.",
+    "📊 Entrego tableros predictivos."
   ],
   "keywords": [
-    "fulfillment 3pl",
-    "logística omnicanal",
-    "última milla",
+    "fulfillment",
+    "logística",
     "crossborder",
     "torre de control"
   ]

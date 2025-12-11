@@ -86,57 +86,74 @@ def ensure_rubro_hierarchy():
     """Ensures the categories structure exists: Municipios, Locales Comerciales, etc."""
     print("📂 Verifying Category Hierarchy...")
 
-    # Root: Municipios
-    municipios = Rubro.query.filter_by(clave="municipios_root").first()
-    if not municipios:
-        municipios = Rubro(clave="municipios_root", nombre="Municipios", es_publico=True)
-        db.session.add(municipios)
-        print("  + Created Root: Municipios")
+    # Root: Municipios / Gobierno
+    municipios_root = Rubro.query.filter_by(clave="municipios_root").first()
+    if not municipios_root:
+        municipios_root = Rubro(clave="municipios_root", nombre="Municipios y Gobierno", es_publico=True)
+        db.session.add(municipios_root)
+        print("  + Created Root: Municipios y Gobierno")
 
     # Root: Pymes (Locales Comerciales)
-    comerciales = Rubro.query.filter_by(clave="comerciales_root").first()
-    if not comerciales:
-        comerciales = Rubro(clave="comerciales_root", nombre="Locales Comerciales", es_publico=True)
-        db.session.add(comerciales)
+    comerciales_root = Rubro.query.filter_by(clave="comerciales_root").first()
+    if not comerciales_root:
+        comerciales_root = Rubro(clave="comerciales_root", nombre="Locales Comerciales", es_publico=True)
+        db.session.add(comerciales_root)
         print("  + Created Root: Locales Comerciales")
 
     db.session.flush()
 
-    # Sub-rubros for Comerciales (Dynamically discovered from filesystem would be ideal, but hardcoded for structure)
-    # We map keys used in demos to readable names
-    subs = [
-        ("almacen", "Almacenes y Bebidas"),
-        ("bodega", "Bodegas y Vinos"),
-        ("ferreteria", "Ferretería y Construcción"),
-        ("local_comercial_general", "Indumentaria y Retail"),
-        ("farmacia", "Farmacias"), # Reserved
-        ("gastronomia", "Gastronomía"), # Reserved
-        ("medico_general", "Salud y Medicina"),
-        ("energia", "Energía e Industria"),
-        ("inmobiliaria", "Inmobiliaria y Real Estate"),
-        ("fintech", "Fintech y Banca"),
-        ("seguros", "Seguros y Riesgos"),
-        ("logistica", "Logística y Transporte")
+    # Define Level 1 Categories under "Locales Comerciales"
+    # Structure: (Key, Name, ParentID)
+    l1_categories = [
+        ("cat_alimentacion", "Alimentación y Bebidas", comerciales_root.id),
+        ("cat_retail", "Retail y Comercios", comerciales_root.id),
+        ("cat_servicios", "Servicios Profesionales", comerciales_root.id),
+        ("cat_salud", "Salud y Bienestar", comerciales_root.id),
+        ("cat_produccion", "Producción e Industria", comerciales_root.id),
     ]
 
-    for key, name in subs:
-        sub = Rubro.query.filter_by(clave=key).first()
-        if not sub:
-            sub = Rubro(clave=key, nombre=name, es_publico=True, padre_id=comerciales.id)
-            db.session.add(sub)
-            print(f"    + Created Sub: {name}")
-        elif sub.padre_id != comerciales.id:
-            sub.padre_id = comerciales.id
-            db.session.add(sub)
+    l1_map = {} # Key -> Rubro Object
 
-    db.session.commit()
-    return municipios, comerciales
+    for key, name, pid in l1_categories:
+        cat = Rubro.query.filter_by(clave=key).first()
+        if not cat:
+            cat = Rubro(clave=key, nombre=name, es_publico=True, padre_id=pid)
+            db.session.add(cat)
+            print(f"    + Created Category L1: {name}")
+        elif cat.padre_id != pid:
+            cat.padre_id = pid
+            db.session.add(cat)
+        l1_map[key] = cat
+
+    db.session.flush()
+
+    # Define Level 2 (Specific Demos) -> mapped to L1 keys
+    # Map demo keys to their L1 parent key
+    # If a demo key isn't here, we'll try to guess or put it in root (fallback)
+    demo_mapping = {
+        "almacen": ("cat_alimentacion", "Almacenes"),
+        "bodega": ("cat_alimentacion", "Bodegas y Vinos"), # Moved to alimentacion/bebidas per user request context
+        "kiosco": ("cat_alimentacion", "Kioscos"),
+        "ferreteria": ("cat_retail", "Ferretería y Construcción"),
+        "local_comercial_general": ("cat_retail", "Indumentaria y Moda"),
+        "logistica": ("cat_servicios", "Logística y Transporte"),
+        "seguros": ("cat_servicios", "Seguros y Riesgos"),
+        "fintech": ("cat_servicios", "Fintech y Banca"),
+        "inmobiliaria": ("cat_servicios", "Inmobiliaria y Real Estate"),
+        "energia": ("cat_servicios", "Energía e Industria"),
+        "medico_general": ("cat_salud", "Salud y Medicina"),
+        "farmacia": ("cat_salud", "Farmacias"),
+        "gastronomia": ("cat_alimentacion", "Gastronomía"),
+    }
+
+    # We return the roots and the mapping so init_tenants can use it
+    return municipios_root, comerciales_root, l1_map, demo_mapping
 
 def init_tenants():
     print("🚀 Initializing Tenants & Demos...")
 
     fix_schema_issues()
-    municipios_root, comerciales_root = ensure_rubro_hierarchy()
+    municipios_root, comerciales_root, l1_map, demo_mapping = ensure_rubro_hierarchy()
 
     # Discovery of Pyme Demos from Filesystem
     base_pyme_dir = os.path.join("data", "pyme", "rubros")
@@ -162,7 +179,6 @@ def init_tenants():
                     print(f"⚠️ Error loading config for {entry}: {e}")
 
     # Also include Municipio from demo_rubros.json if needed, or handle separately.
-    # For legacy compatibility, let's peek at demo_rubros.json just for 'municipio'
     json_path = os.path.join("data", "demo_rubros.json")
     try:
         with open(json_path, "r", encoding="utf-8") as f:
@@ -199,13 +215,33 @@ def init_tenants():
         # Resolve correct parent rubro
         target_rubro = Rubro.query.filter_by(clave=rubro_clave).first()
 
-        # If not found (e.g. medico), create it or fallback
+        # Determine desired parent ID based on mapping
+        desired_parent_id = None
+        if tipo_chat == 'municipio':
+            desired_parent_id = municipios_root.id
+        else:
+            # Check mapping
+            if rubro_clave in demo_mapping:
+                parent_key, readable_name = demo_mapping[rubro_clave]
+                # Update name if we want to enforce consistency
+                # nombre = readable_name
+                if parent_key in l1_map:
+                    desired_parent_id = l1_map[parent_key].id
+
+            if not desired_parent_id:
+                # Fallback to general root
+                desired_parent_id = comerciales_root.id
+
+        # If not found, create it
         if not target_rubro:
-             # Fallback to creating it under appropriate root
-             parent_id = municipios_root.id if tipo_chat == 'municipio' else comerciales_root.id
-             target_rubro = Rubro(clave=rubro_clave, nombre=nombre, es_publico=True, padre_id=parent_id)
+             target_rubro = Rubro(clave=rubro_clave, nombre=nombre, es_publico=True, padre_id=desired_parent_id)
              db.session.add(target_rubro)
              db.session.flush()
+        else:
+             # Update parent if needed (re-organization)
+             if target_rubro.padre_id != desired_parent_id:
+                 target_rubro.padre_id = desired_parent_id
+                 db.session.add(target_rubro)
 
         # User
         email = email_map.get(key, f"demo+{key}@chatboc.ar")

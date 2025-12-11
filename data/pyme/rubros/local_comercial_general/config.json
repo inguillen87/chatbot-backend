@@ -1,8 +1,8 @@
 {
   "nombre": "Tienda de Ropa Demo",
-  "descripcion": "Retail inteligente con lookbooks digitales, programas de fidelización y analítica omnicanal.",
+  "descripcion": "Retail inteligente: lookbooks, fidelización y omnicanalidad.",
   "prompt_context": "Moda Urbana opera tiendas físicas y e-commerce integrado, con lookbooks digitales, CRM de fidelización, eventos VIP y reportes de métricas omnicanal. Implementa probadores inteligentes, campañas personalizadas y logística ship-from-store.",
-  "welcome_message": "👗 Hola, soy tu planner de Moda Urbana. Elegí lookbooks, fidelización, eventos B2B o integraciones y te muestro cómo funciona.",
+  "welcome_message": "👗 Hola, soy tu planner de Moda Urbana.\n\nElegí una opción para ver lookbooks, fidelización, eventos o integraciones.",
   "resources": [
     {
       "title": "Lookbook colección AW24",
@@ -36,8 +36,8 @@
   "quick_actions": [
     {
       "emoji": "🧥",
-      "texto": "Visual & colecciones",
-      "description": "Lookbooks digitales, guías de estilo y drops exclusivos",
+      "texto": "Colecciones",
+      "description": "Lookbooks y drops exclusivos",
       "category": "🧥 Colecciones",
       "submenu": [
         {
@@ -62,8 +62,8 @@
     },
     {
       "emoji": "🎁",
-      "texto": "Fidelización & CRM",
-      "description": "Niveles VIP, cashback y campañas automatizadas",
+      "texto": "Loyalty",
+      "description": "Fidelización y campañas",
       "category": "🎁 Loyalty",
       "submenu": [
         {
@@ -88,8 +88,8 @@
     },
     {
       "emoji": "🤝",
-      "texto": "Eventos & B2B",
-      "description": "Styling corporativo, giftcards y alianzas",
+      "texto": "Eventos",
+      "description": "Styling, giftcards y uniformes",
       "category": "🤝 Eventos",
       "submenu": [
         {
@@ -114,8 +114,8 @@
     },
     {
       "emoji": "🔗",
-      "texto": "Integración omnicanal",
-      "description": "ERP, ecommerce y ship-from-store",
+      "texto": "Integraciones",
+      "description": "Ecommerce y logística",
       "category": "🔗 Integraciones",
       "submenu": [
         {

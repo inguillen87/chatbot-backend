@@ -1,8 +1,8 @@
 {
   "nombre": "Ferretería Demo",
-  "descripcion": "Centro logístico que integra catálogo de obra gruesa, planes de entrega y financiamiento a medida para constructoras.",
+  "descripcion": "Centro logístico: materiales de obra, planes de entrega y financiamiento.",
   "prompt_context": "ProObra abastece desarrollos residenciales e industriales con catálogo técnico de acero, madera laminada, herramientas y seguridad industrial. Ofrece planes logísticos por etapa, control de inventario y financiamiento con acuerdos bancarios.",
-  "welcome_message": "🏗️ Hola, soy ProObra. Elegí materiales estructurales, logística de obra, servicios técnicos o financiamiento y armamos la propuesta.",
+  "welcome_message": "🏗️ Hola, soy ProObra.\n\nElegí una opción del menú para consultar materiales, coordinar logística o ver planes de financiación.",
   "resources": [
     {
       "title": "Catálogo estructural 2024",
@@ -37,8 +37,8 @@
   "quick_actions": [
     {
       "emoji": "🧱",
-      "texto": "Materiales estructurales",
-      "description": "Acero, hormigón premoldeado y panelería aislante",
+      "texto": "Materiales",
+      "description": "Acero, hormigón y panelería",
       "category": "🧱 Catálogo técnico",
       "submenu": [
         {
@@ -64,7 +64,7 @@
     {
       "emoji": "🚛",
       "texto": "Logística de obra",
-      "description": "Planificación de entregas y montaje en sitio",
+      "description": "Entregas y montaje en sitio",
       "category": "🚛 Logística & montaje",
       "submenu": [
         {
@@ -89,8 +89,8 @@
     },
     {
       "emoji": "🧮",
-      "texto": "Servicios técnicos",
-      "description": "Ingeniería de valor y soporte BIM",
+      "texto": "Ingeniería",
+      "description": "Soporte técnico y BIM",
       "category": "🧮 Ingeniería",
       "submenu": [
         {
@@ -115,8 +115,8 @@
     },
     {
       "emoji": "💳",
-      "texto": "Financiación & integraciones",
-      "description": "Líneas bancarias, acuerdos fintech y APIs",
+      "texto": "Financiación",
+      "description": "Líneas bancarias y APIs",
       "category": "💳 Financiación",
       "submenu": [
         {

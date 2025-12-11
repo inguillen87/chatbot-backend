@@ -2137,20 +2137,20 @@ def _procesar_chat(
                 if description_text and description_text not in segments:
                     segments.append(description_text)
 
-            _append_section("📋 Menú principal", menu_text)
-            _append_section("💬 Probá decir", prompt_examples_text)
-            _append_section("🔑 Palabras clave sugeridas", keywords_text)
-            _append_section("🧪 Herramientas disponibles", capabilities_text)
-            _append_section("❓ Preguntas frecuentes destacadas", faq_preview_text)
-            if resources_text:
-                _append_section(f"📎 Material destacado de {display_name}", resources_text)
+            # Removed the huge text dump. We now rely on interactive elements (buttons, lists).
+            # The 'menu_text' was causing the "chorizo inentendible".
+
+            # _append_section("📋 Menú principal", menu_text)  <-- DISABLED
+
+            # We keep the welcome message and description, but avoid appending the full menu as text.
+            # Interactive sections are added to 'menu_sections' below.
 
             if original_message:
                 original_text = _clean_text(original_message)
                 if original_text and original_text not in segments:
                     segments.append(original_text)
 
-            closing_line = "🟢 Elegí una opción del menú o contame qué necesitás y te muestro la demo en acción."
+            closing_line = "👇 Seleccioná una opción del menú interactivo para comenzar:"
             if closing_line not in segments:
                 segments.append(closing_line)
 
