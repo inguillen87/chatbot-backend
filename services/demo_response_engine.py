@@ -341,18 +341,36 @@ def _compose_response(
 
     message_text = _format_text(entry.get("response", ""), context).strip()
 
+    # --- Resources ---
     resource_selectors = entry.get("resource_tags") or entry.get("resources") or []
     max_resources = entry.get("max_resources")
     resources = _filter_resources(demo_metadata.get("resources") or [], resource_selectors, max_resources)
     resource_text, resource_buttons, attachments = _render_resources(resources)
-    if resource_text:
-        message_text = f"{message_text}\n\n{resource_text}" if message_text else resource_text
 
+    # [CHANGE] We no longer append resource text to the message body to avoid "text walls".
+    # Instead, we pass it as structured data in 'menu_sections'.
+    # However, if 'resource_text' is very short or needed for context, we could keep it.
+    # The user requested avoiding "chorizos", so we'll rely on structured sections.
+    # if resource_text:
+    #     message_text = f"{message_text}\n\n{resource_text}" if message_text else resource_text
+
+    # --- FAQ ---
     include_faq = entry.get("include_faq_preview")
+    faq_items_struct = []
     if include_faq:
-        faq_text = _render_faq_preview(demo_metadata.get("faq_preview") or [], include_faq if isinstance(include_faq, int) else None)
-        if faq_text:
-            message_text = f"{message_text}\n\n{faq_text}" if message_text else faq_text
+        # Instead of rendering text, we'll build a structured list.
+        # faq_text = _render_faq_preview(demo_metadata.get("faq_preview") or [], include_faq if isinstance(include_faq, int) else None)
+        # if faq_text:
+        #    message_text = f"{message_text}\n\n{faq_text}" if message_text else faq_text
+
+        limit_faq = include_faq if isinstance(include_faq, int) and include_faq > 0 else 3
+        raw_faqs = demo_metadata.get("faq_preview") or []
+        for i, f in enumerate(raw_faqs):
+            if i >= limit_faq: break
+            faq_items_struct.append({
+                "question": str(f.get("pregunta") or f.get("question") or ""),
+                "answer": str(f.get("respuesta") or f.get("answer") or "")
+            })
 
     manual_buttons = entry.get("buttons") if isinstance(entry.get("buttons"), list) else []
     option_buttons = _build_buttons(manual_buttons, script_key) + resource_buttons
@@ -378,6 +396,39 @@ def _compose_response(
         response["adjuntos"] = attachments
     if entry.get("id"):
         response["demo_response_id"] = entry.get("id")
+
+    # --- Structured Menu Sections ---
+    menu_sections = []
+
+    # 1. Resources Section
+    if resources:
+        res_items = []
+        for r in resources:
+            res_items.append({
+                "id": r.get("url") or r.get("href") or r.get("title"),
+                "title": r.get("title") or r.get("label") or r.get("nombre"),
+                "description": r.get("description"),
+                "url": r.get("url"),
+                "type": r.get("type") or "document",
+                "thumbnail": r.get("thumbnail")
+            })
+        menu_sections.append({
+            "title": "Recursos sugeridos",
+            "type": "resources",
+            "items": res_items
+        })
+
+    # 2. FAQ Section
+    if faq_items_struct:
+        menu_sections.append({
+            "title": "Preguntas frecuentes",
+            "type": "faqs",
+            "items": faq_items_struct
+        })
+
+    if menu_sections:
+        response["menu_sections"] = menu_sections
+
     return response
 
 
