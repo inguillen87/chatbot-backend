@@ -22,26 +22,28 @@ def _is_authorized_for_tenant(current_user: User, tenant: TenantProfile) -> bool
     if current_user.rol in ("platform_admin", "super_admin"):
         return True
 
-    if current_user.tenant_id == tenant.id:
+    if current_user.tenant_id and current_user.tenant_id == tenant.id:
         return True
 
     if getattr(current_user, "tenant_slug", None) and tenant.slug and current_user.tenant_slug.lower() == tenant.slug.lower():
         return True
 
     # Unconditional Owner Check (Strongest)
-    if tenant.municipio_id and current_user.id == tenant.municipio_id:
+    # Handle int vs str comparison just in case
+    if tenant.municipio_id and str(current_user.id) == str(tenant.municipio_id):
         return True
-    if tenant.pyme_id and current_user.id == tenant.pyme_id:
+    if tenant.pyme_id and str(current_user.id) == str(tenant.pyme_id):
         return True
 
     # 3) fallback LEGACY municipio
     if getattr(current_user, "tipo_chat", None) == "municipio":
         # a) usuario tiene municipio_id apuntando al tenant (ID)
-        if getattr(current_user, "municipio_id", None) and current_user.municipio_id == tenant.id:
+        if getattr(current_user, "municipio_id", None) and str(current_user.municipio_id) == str(tenant.id):
             return True
         # c) usuario es empleado del dueño (mismo municipio_id)
-        if getattr(tenant, "municipio_id", None) and getattr(current_user, "municipio_id", None) == tenant.municipio_id:
-            return True
+        if getattr(tenant, "municipio_id", None) and getattr(current_user, "municipio_id", None):
+            if str(current_user.municipio_id) == str(tenant.municipio_id):
+                return True
 
     # 4) fallback LEGACY pyme/empresa
     tipo_chat = getattr(current_user, "tipo_chat", "")

@@ -9,64 +9,78 @@ from werkzeug.security import generate_password_hash
 
 def fix_schema_issues():
     """Applies direct schema fixes for missing columns or constraints."""
+    print("🔧 Checking schema consistency...")
+    is_sqlite = 'sqlite' in str(db.engine.url)
+
+    def safe_execute(conn, sql, description):
+        try:
+            conn.execute(text(sql))
+            conn.commit()
+            print(f"  ✅ {description} applied.")
+        except Exception as e:
+            print(f"  ❌ Error applying {description}: {e}")
+            conn.rollback()
+
     try:
         with db.engine.connect() as conn:
-            print("🔧 Checking schema consistency...")
-
-            is_sqlite = 'sqlite' in str(db.engine.url)
-
             def column_exists(table, column):
-                if is_sqlite:
-                    res = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
-                    for row in res:
-                        if row[1] == column: return True
+                try:
+                    if is_sqlite:
+                        res = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+                        for row in res:
+                            if row[1] == column: return True
+                        return False
+                    else:
+                        check_sql = text(f"SELECT column_name FROM information_schema.columns WHERE table_name='{table}' AND column_name='{column}'")
+                        result = conn.execute(check_sql).fetchone()
+                        return bool(result)
+                except Exception as e:
+                    print(f"  ⚠️ Error checking existence of {table}.{column}: {e}")
+                    conn.rollback()
                     return False
-                else:
-                    check_sql = text(f"SELECT column_name FROM information_schema.columns WHERE table_name='{table}' AND column_name='{column}'")
-                    return bool(conn.execute(check_sql).fetchone())
 
             # 1. catalogo_item.disponible
             if not column_exists('catalogo_item', 'disponible'):
                 print("  ⚠️ Adding 'disponible' to 'catalogo_item'...")
-                conn.execute(text("ALTER TABLE catalogo_item ADD COLUMN disponible BOOLEAN DEFAULT true"))
-                conn.commit()
+                safe_execute(conn, "ALTER TABLE catalogo_item ADD COLUMN disponible BOOLEAN DEFAULT true", "Add disponible column")
 
             # 2. widget_config.position (Fix length)
             if not is_sqlite:
-                try:
-                    conn.execute(text("ALTER TABLE widget_config ALTER COLUMN position TYPE VARCHAR(50)"))
-                    conn.commit()
-                    print("  ✅ Fixed 'widget_config.position' length.")
-                except Exception as e:
-                    print(f"  ⚠️ Could not alter widget_config.position: {e}")
+                print("  ⚠️ Checking 'widget_config.position' length...")
+                safe_execute(conn, "ALTER TABLE widget_config ALTER COLUMN position TYPE VARCHAR(50)", "Fix widget_config.position length")
 
             # 3. widget_settings.cta_messages
             if not column_exists('widget_settings', 'cta_messages'):
                 print("  ⚠️ Adding 'cta_messages' to 'widget_settings'...")
                 if is_sqlite:
-                    conn.execute(text("ALTER TABLE widget_settings ADD COLUMN cta_messages JSON DEFAULT '[]'"))
+                    safe_execute(conn, "ALTER TABLE widget_settings ADD COLUMN cta_messages JSON DEFAULT '[]'", "Add cta_messages (sqlite)")
                 else:
+                    # Try JSONB, fallback to JSON
                     try:
                         conn.execute(text("ALTER TABLE widget_settings ADD COLUMN cta_messages JSONB DEFAULT '[]'"))
-                    except:
-                        conn.execute(text("ALTER TABLE widget_settings ADD COLUMN cta_messages JSON DEFAULT '[]'"))
-                conn.commit()
+                        conn.commit()
+                        print("  ✅ Add cta_messages (JSONB) applied.")
+                    except Exception:
+                        conn.rollback()
+                        safe_execute(conn, "ALTER TABLE widget_settings ADD COLUMN cta_messages JSON DEFAULT '[]'", "Add cta_messages (JSON)")
 
             # 4. widget_settings.theme_config
             if not column_exists('widget_settings', 'theme_config'):
                 print("  ⚠️ Adding 'theme_config' to 'widget_settings'...")
                 if is_sqlite:
-                    conn.execute(text("ALTER TABLE widget_settings ADD COLUMN theme_config JSON DEFAULT '{}'"))
+                    safe_execute(conn, "ALTER TABLE widget_settings ADD COLUMN theme_config JSON DEFAULT '{}'", "Add theme_config (sqlite)")
                 else:
                     try:
                         conn.execute(text("ALTER TABLE widget_settings ADD COLUMN theme_config JSONB DEFAULT '{}'"))
-                    except:
-                        conn.execute(text("ALTER TABLE widget_settings ADD COLUMN theme_config JSON DEFAULT '{}'"))
-                conn.commit()
+                        conn.commit()
+                        print("  ✅ Add theme_config (JSONB) applied.")
+                    except Exception:
+                        conn.rollback()
+                        safe_execute(conn, "ALTER TABLE widget_settings ADD COLUMN theme_config JSON DEFAULT '{}'", "Add theme_config (JSON)")
 
-            print("✅ Schema fixes applied.")
+            print("✅ Schema consistency check finished.")
     except Exception as e:
-        print(f"❌ Error fixing schema: {e}")
+        print(f"❌ Critical error in schema check: {e}")
 
 def ensure_rubro_hierarchy():
     """Ensures the categories structure exists: Municipios, Locales Comerciales, etc."""
@@ -322,10 +336,14 @@ def init_tenants():
     mauricio = User.query.filter_by(email="mauricio@junin.com").first()
     municipio_tenant = TenantProfile.query.filter_by(slug="municipio").first()
     if mauricio and municipio_tenant:
+        print(f"  🔍 Checking user mauricio@junin.com (ID: {mauricio.id}) against tenant 'municipio' (ID: {municipio_tenant.id})...")
         if mauricio.tenant_id != municipio_tenant.id:
+            print(f"  🔧 Backfilling tenant_id for mauricio@junin.com: {municipio_tenant.id}")
             mauricio.tenant_id = municipio_tenant.id
             db.session.add(mauricio)
             db.session.commit()
+    else:
+        print("  ⚠️ User mauricio@junin.com or tenant 'municipio' not found.")
 
     print("\n✅ Initialization complete.")
 

@@ -62,7 +62,8 @@ The backend now serves configured engagement settings via `/api/widget/config` (
 
 *   **User:** `mauricio@junin.com` (and similar legacy admins).
 *   **Fix:** The backend now correctly links legacy users to their tenants.
-*   **Action:** Verify that accessing `/perfil` and `/api/admin/employees` now returns `200 OK` instead of `403 Forbidden`. No code change is needed on the frontend, but error handling logic can be relaxed if it was aggressive.
+*   **Action:** Verify that accessing `/perfil` and `/api/admin/employees` now returns `200 OK` instead of `403 Forbidden`.
+*   **New Fallback:** Administrative requests to `/api/*` will now automatically resolve the tenant context from the logged-in user if explicit headers (`X-Tenant`) are missing. This improves resilience for dashboard pages.
 
 ## 4. Demo Data Structure
 

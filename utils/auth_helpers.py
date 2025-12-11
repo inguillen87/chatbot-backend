@@ -143,6 +143,7 @@ def _rubro_aliases(rubro: Rubro) -> Set[str]:
 def _demo_token_fallback_owner(token: str) -> Optional[User]:
     """Attempt to resolve demo tokens even if the registry is misconfigured."""
 
+    user_query = _safe_user_query()
     normalized_token = _normalize_alias_value(token)
     if not normalized_token or not normalized_token.startswith("demo"):
         return None
