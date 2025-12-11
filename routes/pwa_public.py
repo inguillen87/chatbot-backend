@@ -626,6 +626,13 @@ def public_tenant_widget_config(tenant_slug: str):
     widget_cfg = tenant.widget_config
     widget_settings = tenant.widget_settings
 
+    # Defaults
+    theme_config = {
+        "mode": "light",
+        "light": {},
+        "dark": {}
+    }
+
     if widget_settings:
         # Prefer new settings if available
         if widget_settings.primary_color:
@@ -635,6 +642,7 @@ def public_tenant_widget_config(tenant_slug: str):
         if widget_settings.theme_config:
             # Full theme config for dark/light mode
             theme["config"] = widget_settings.theme_config
+            theme_config = widget_settings.theme_config
     elif widget_cfg:
         # Fallback to legacy config
         if widget_cfg.primary_color:
@@ -667,15 +675,20 @@ def public_tenant_widget_config(tenant_slug: str):
 
     # Prepare interaction config (CTAs)
     interaction = {}
+    cta_messages = []
+    default_open = False
+
     if widget_settings:
         if widget_settings.cta_messages:
             interaction["cta_messages"] = widget_settings.cta_messages
+            cta_messages = widget_settings.cta_messages
         if widget_settings.welcome_title:
             interaction["welcome_title"] = widget_settings.welcome_title
         if widget_settings.welcome_subtitle:
             interaction["welcome_subtitle"] = widget_settings.welcome_subtitle
         if widget_settings.default_open is not None:
             interaction["default_open"] = widget_settings.default_open
+            default_open = widget_settings.default_open
 
     # Legacy fallback for welcome message
     if not interaction.get("welcome_title") and widget_cfg and widget_cfg.welcome_message:
@@ -686,9 +699,12 @@ def public_tenant_widget_config(tenant_slug: str):
         "name": tenant.nombre,
         "logo_url": tenant.logo_url or (widget_cfg.logo_url if widget_cfg else None),
         "theme": theme,
+        "theme_config": theme_config,
         "features": features,
         "contact": contact,
-        "interaction": interaction
+        "interaction": interaction,
+        "cta_messages": cta_messages,
+        "default_open": default_open
     })
 
 
