@@ -363,6 +363,33 @@ def init_tenants():
             db.session.add(mauricio)
             db.session.commit()
 
+    # --- Cleanup Legacy/Orphan Rubros ---
+    print("\n🧹 Cleaning up legacy rubros...")
+    valid_ids = {municipios_root.id, comerciales_root.id}
+    # Add L1 IDs
+    for r in l1_map.values():
+        valid_ids.add(r.id)
+    # Add Demo IDs (we need to fetch them again or track them)
+    # Let's fetch all rubros and check
+    all_rubros = Rubro.query.all()
+
+    # Re-fetch valid L2s based on our known keys
+    valid_keys = set(demo_mapping.keys())
+    valid_keys.add("municipio")
+    valid_keys.add("municipios_root")
+    valid_keys.add("comerciales_root")
+    valid_keys.update(l1_map.keys())
+
+    for r in all_rubros:
+        if r.es_publico:
+            # If it's not in our known list of keys AND not a child of a valid parent, hide it.
+            # However, simpler logic: if it's not one of the keys we just processed/created, hide it.
+            if r.clave not in valid_keys:
+                print(f"  - Hiding legacy rubro: {r.nombre} ({r.clave})")
+                r.es_publico = False
+                db.session.add(r)
+
+    db.session.commit()
     print("\n✅ Initialization complete.")
 
 if __name__ == "__main__":
