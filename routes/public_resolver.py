@@ -436,6 +436,16 @@ def tenant_profile():
     # objeto con la clave ``children`` para renderizar las secciones sin
     # explotar en una desestructuración.
     config = _normalize_widget_config(tenant_info.get("config"), tenant.widget_settings)
+
+    # Backport updated flat fields to support new frontend requirements in legacy endpoint
+    if tenant.widget_settings:
+        if tenant.widget_settings.theme_config:
+            config["theme_config"] = tenant.widget_settings.theme_config
+        if tenant.widget_settings.cta_messages:
+            config["cta_messages"] = tenant.widget_settings.cta_messages
+        if tenant.widget_settings.default_open is not None:
+            config["default_open"] = tenant.widget_settings.default_open
+
     tenant_info["config"] = config
 
     canonical_widget_token = _canonical_widget_token(tenant, widget_token)
