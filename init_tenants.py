@@ -83,60 +83,85 @@ def fix_schema_issues():
         print(f"❌ Critical error in schema check: {e}")
 
 def ensure_rubro_hierarchy():
-    """Ensures the categories structure exists: Municipios, Locales Comerciales, etc."""
+    """Ensures the categories structure exists: Gobierno, Comercio, Servicios."""
     print("📂 Verifying Category Hierarchy...")
 
-    # Root: Municipios
-    municipios = Rubro.query.filter_by(clave="municipios_root").first()
-    if not municipios:
-        municipios = Rubro(clave="municipios_root", nombre="Municipios", es_publico=True)
-        db.session.add(municipios)
-        print("  + Created Root: Municipios")
+    roots = {
+        "gobierno_root": "Gobierno y Municipios",
+        "comercio_root": "Comercio y Retail",
+        "servicios_root": "Servicios y Profesionales"
+    }
 
-    # Root: Pymes (Locales Comerciales)
-    comerciales = Rubro.query.filter_by(clave="comerciales_root").first()
-    if not comerciales:
-        comerciales = Rubro(clave="comerciales_root", nombre="Locales Comerciales", es_publico=True)
-        db.session.add(comerciales)
-        print("  + Created Root: Locales Comerciales")
+    root_objs = {}
+    for key, name in roots.items():
+        rubro = Rubro.query.filter_by(clave=key).first()
+        if not rubro:
+            rubro = Rubro(clave=key, nombre=name, es_publico=True)
+            db.session.add(rubro)
+            print(f"  + Created Root: {name}")
+        root_objs[key] = rubro
 
     db.session.flush()
 
-    # Sub-rubros for Comerciales (Dynamically discovered from filesystem would be ideal, but hardcoded for structure)
-    # We map keys used in demos to readable names
+    # Define sub-categories and their parents
+    # Key: (Readable Name, Parent Key)
     subs = [
-        ("almacen", "Almacenes y Bebidas"),
-        ("bodega", "Bodegas y Vinos"),
-        ("ferreteria", "Ferretería y Construcción"),
-        ("local_comercial_general", "Indumentaria y Retail"),
-        ("farmacia", "Farmacias"), # Reserved
-        ("gastronomia", "Gastronomía"), # Reserved
-        ("medico_general", "Salud y Medicina"),
-        ("energia", "Energía e Industria"),
-        ("inmobiliaria", "Inmobiliaria y Real Estate"),
-        ("fintech", "Fintech y Banca"),
-        ("seguros", "Seguros y Riesgos"),
-        ("logistica", "Logística y Transporte")
+        # Gobierno
+        ("municipio", "Municipios", "gobierno_root"),
+
+        # Comercio
+        ("almacen", "Almacenes y Bebidas", "comercio_root"),
+        ("bodega", "Bodegas y Vinos", "comercio_root"),
+        ("ferreteria", "Ferretería y Construcción", "comercio_root"),
+        ("local_comercial_general", "Indumentaria y Moda", "comercio_root"),
+        ("farmacia", "Farmacias", "comercio_root"),
+        ("gastronomia", "Gastronomía", "comercio_root"),
+        ("kiosco", "Kioscos", "comercio_root"), # Explicitly added
+
+        # Servicios
+        ("medico_general", "Salud y Clínicas", "servicios_root"),
+        ("energia", "Energía e Industria", "servicios_root"),
+        ("inmobiliaria", "Inmobiliaria y Propiedades", "servicios_root"),
+        ("fintech", "Fintech y Banca", "servicios_root"),
+        ("seguros", "Seguros y Riesgos", "servicios_root"),
+        ("logistica", "Logística y Transporte", "servicios_root"),
+        ("educacion", "Educación", "servicios_root"),
     ]
 
-    for key, name in subs:
+    for key, name, parent_key in subs:
+        parent_id = root_objs[parent_key].id
         sub = Rubro.query.filter_by(clave=key).first()
+
+        # Handle duplicates/renames if necessary (e.g., 'municipios_root' legacy cleanup could go here)
+
         if not sub:
-            sub = Rubro(clave=key, nombre=name, es_publico=True, padre_id=comerciales.id)
+            sub = Rubro(clave=key, nombre=name, es_publico=True, padre_id=parent_id)
             db.session.add(sub)
-            print(f"    + Created Sub: {name}")
-        elif sub.padre_id != comerciales.id:
-            sub.padre_id = comerciales.id
-            db.session.add(sub)
+            print(f"    + Created Sub: {name} (under {roots[parent_key]})")
+        else:
+            # Enforce hierarchy update if it moved
+            if sub.padre_id != parent_id:
+                sub.padre_id = parent_id
+                db.session.add(sub)
+                print(f"    ~ Moved Sub: {name} -> {roots[parent_key]}")
+            # Update name if changed
+            if sub.nombre != name:
+                sub.nombre = name
+                db.session.add(sub)
 
     db.session.commit()
-    return municipios, comerciales
+    return root_objs
 
 def init_tenants():
     print("🚀 Initializing Tenants & Demos...")
 
     fix_schema_issues()
-    municipios_root, comerciales_root = ensure_rubro_hierarchy()
+    root_objs = ensure_rubro_hierarchy()
+
+    # Helper to find parent for fallback
+    def get_fallback_parent(tipo_chat):
+        if tipo_chat == 'municipio': return root_objs['gobierno_root'].id
+        return root_objs['comercio_root'].id # Default to comercio
 
     # Discovery of Pyme Demos from Filesystem
     base_pyme_dir = os.path.join("data", "pyme", "rubros")
@@ -161,15 +186,15 @@ def init_tenants():
                 except Exception as e:
                     print(f"⚠️ Error loading config for {entry}: {e}")
 
-    # Also include Municipio from demo_rubros.json if needed, or handle separately.
-    # For legacy compatibility, let's peek at demo_rubros.json just for 'municipio'
+    # Legacy json support for compatibility
     json_path = os.path.join("data", "demo_rubros.json")
     try:
         with open(json_path, "r", encoding="utf-8") as f:
             legacy_demos = json.load(f)
             for d in legacy_demos:
-                if d.get("key") == "municipio":
-                    demos_found.append(d)
+                # Avoid duplicates if already found on fs
+                if not any(x['key'] == d.get('key') for x in demos_found):
+                     demos_found.append(d)
     except FileNotFoundError:
         pass
 
@@ -199,10 +224,9 @@ def init_tenants():
         # Resolve correct parent rubro
         target_rubro = Rubro.query.filter_by(clave=rubro_clave).first()
 
-        # If not found (e.g. medico), create it or fallback
+        # If not found, create it under appropriate root
         if not target_rubro:
-             # Fallback to creating it under appropriate root
-             parent_id = municipios_root.id if tipo_chat == 'municipio' else comerciales_root.id
+             parent_id = get_fallback_parent(tipo_chat)
              target_rubro = Rubro(clave=rubro_clave, nombre=nombre, es_publico=True, padre_id=parent_id)
              db.session.add(target_rubro)
              db.session.flush()

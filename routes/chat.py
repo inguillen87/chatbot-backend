@@ -746,8 +746,9 @@ def _build_menu_navigation_payload(
         segments.append(title_line)
     if description_line:
         segments.append(description_line)
-    if menu_text:
-        segments.append(f"━━━━━━━━━━━━\nOpciones disponibles\n{menu_text}")
+    # Removing text wall menu dump as per UX requirements
+    # if menu_text:
+    #    segments.append(f"━━━━━━━━━━━━\nOpciones disponibles\n{menu_text}")
     if prompt_text:
         segments.append(f"💬 Probá decir\n{prompt_text}")
     segments.append("Elegí una opción o usá los botones para navegar.")
@@ -2137,7 +2138,8 @@ def _procesar_chat(
                 if description_text and description_text not in segments:
                     segments.append(description_text)
 
-            _append_section("📋 Menú principal", menu_text)
+            # Removing text wall menu dump as per UX requirements
+            # _append_section("📋 Menú principal", menu_text)
             _append_section("💬 Probá decir", prompt_examples_text)
             _append_section("🔑 Palabras clave sugeridas", keywords_text)
             _append_section("🧪 Herramientas disponibles", capabilities_text)
@@ -2154,7 +2156,12 @@ def _procesar_chat(
             if closing_line not in segments:
                 segments.append(closing_line)
 
-            message_text = "\n\n".join([seg for seg in segments if seg])
+            # Additional cleanup: ensure we don't send duplicate or excessive text
+            filtered_segments = [seg for seg in segments if seg and "━━━━━━━━━━━━" not in seg] # Remove separator lines if we are cleaning up
+            if not filtered_segments:
+                 filtered_segments = [base_text or closing_line]
+
+            message_text = "\n\n".join([seg for seg in filtered_segments if seg])
             if message_text:
                 resultado["message_body"] = message_text
                 resultado["respuesta"] = message_text
