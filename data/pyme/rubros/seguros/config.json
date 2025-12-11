@@ -1,8 +1,8 @@
 {
   "nombre": "Seguros Demo",
-  "descripcion": "Gestión integral de programas corporativos, autogestión de siniestros y analítica de riesgos.",
+  "descripcion": "Gestión integral: programas corporativos, siniestros y analítica.",
   "prompt_context": "ShieldOne Seguros administra pólizas colectivas, beneficios para colaboradores y asistencia regional con monitoreo de siniestros en tiempo real, compliance SOX y reporting a aseguradoras globales.",
-  "welcome_message": "🛡️ Bienvenido a ShieldOne. Elegí programas corporativos, siniestros, analítica o partners y te preparo propuestas inmediatas.",
+  "welcome_message": "🛡️ Bienvenido a ShieldOne.\n\nElegí una opción para ver programas corporativos, gestionar siniestros o consultar analítica.",
   "resources": [
     {
       "title": "Catálogo coberturas enterprise",
@@ -37,8 +37,8 @@
   "quick_actions": [
     {
       "emoji": "🏢",
-      "texto": "Programas corporativos",
-      "description": "Planes combinados, beneficios ejecutivos y compliance",
+      "texto": "Corporativo",
+      "description": "Flotas, property y beneficios",
       "category": "🏢 Portafolio corporate",
       "submenu": [
         {
@@ -63,8 +63,8 @@
     },
     {
       "emoji": "🚑",
-      "texto": "Siniestros & asistencia",
-      "description": "Onboarding digital, triage y seguimiento en vivo",
+      "texto": "Siniestros",
+      "description": "Denuncias, talleres y asistencia",
       "category": "🚑 Gestión de siniestros",
       "submenu": [
         {
@@ -89,8 +89,8 @@
     },
     {
       "emoji": "📊",
-      "texto": "Analítica & compliance",
-      "description": "Tableros, reportes SOX y auditorías",
+      "texto": "Analítica",
+      "description": "KPIs, compliance y pricing",
       "category": "📊 Data & compliance",
       "submenu": [
         {
@@ -115,8 +115,8 @@
     },
     {
       "emoji": "🤝",
-      "texto": "Brokers & partnerships",
-      "description": "Marketplace de partners, revenue share y APIs",
+      "texto": "Partners",
+      "description": "Brokers, APIs y academia",
       "category": "🤝 Ecosistema",
       "submenu": [
         {

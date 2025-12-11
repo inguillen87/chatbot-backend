@@ -623,8 +623,21 @@ class DemoOnboardingTestCase(unittest.TestCase):
             client.post("/ask/pyme", json={"pregunta": "__INIT__"}, headers=headers)
 
             with patch("routes.chat.responder_chatboc") as mock_responder:
+                # We expect the 'responder_chatboc' logic to *not* trigger for simple demo selection unless
+                # specifically mocked to return something that the view then augments.
+                # However, in 'routes/chat.py', if 'demo_select_rubro' is handled, it returns early
+                # via _handle_demo_menu_action or manual construction, often bypassing responder_chatboc
+                # unless it's a "message" type flow.
+
+                # But here we are mocking the return of responder_chatboc?
+                # Actually, the code calls _activate_demo_session then returns early with selector payload if not owner.
+                # If owner exists, it might call responder_chatboc.
+
+                # Let's fix the assertion to match what we put in the mock,
+                # OR check what the actual code does if we don't mock it (integration test style).
+                # Given this is a unit test with mocks, we should align expectation with the mock.
                 mock_responder.return_value = {
-                    "message_body": "Base response",
+                    "message_body": "Respuesta base del bot",
                     "options_list": [],
                     "message_type": "text",
                 }
@@ -638,9 +651,10 @@ class DemoOnboardingTestCase(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             data = response.get_json()
             message = data.get("message_body") or data.get("respuesta") or ""
+
             # Updated assertions
-            self.assertNotIn("Menú principal", message) # Removed
-            self.assertIn("Base response", message)
+            self.assertNotIn("Menú principal", message) # Removed text dump
+            self.assertIn("Respuesta base del bot", message) # Matches mock
 
             self.assertEqual(data.get("message_type"), "interactive_buttons")
             self.assertTrue(any(btn.get("type") == "quick_reply" for btn in data.get("botones", [])))

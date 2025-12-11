@@ -1,8 +1,8 @@
 {
   "nombre": "Energía Demo",
-  "descripcion": "Operador petrolero con monitoreo upstream, gestión de contratos y programas de transición energética.",
+  "descripcion": "Operador petrolero: upstream, contratos y transición energética.",
   "prompt_context": "Energía Demo gestiona campos en Vaca Muerta y refinería regional. Integra monitoreo en tiempo real, planes de perforación, contratos de suministro y reportes HSEQ. Implementa proyectos de hidrógeno, biocombustibles y compensación de emisiones.",
-  "welcome_message": "⚡ Hola, soy el hub digital de Energía Demo. Elegí upstream, operaciones, comercial o sostenibilidad y te comparto dashboards y planes.",
+  "welcome_message": "⚡ Hola, soy el hub digital de Energía Demo.\n\nSeleccioná una opción para acceder a dashboards de upstream, operaciones y sostenibilidad.",
   "resources": [
     {
       "title": "Plan upstream 2025",
@@ -35,8 +35,8 @@
   "quick_actions": [
     {
       "emoji": "🛢️",
-      "texto": "Upstream & drilling",
-      "description": "Planes de perforación, workovers y monitoreo de pozos",
+      "texto": "Upstream",
+      "description": "Perforación y monitoreo de pozos",
       "category": "🛢️ Upstream",
       "submenu": [
         {
@@ -61,8 +61,8 @@
     },
     {
       "emoji": "⚙️",
-      "texto": "Operaciones & mantenimiento",
-      "description": "Refinería, pipelines y confiabilidad",
+      "texto": "Operaciones",
+      "description": "Refinería y mantenimiento",
       "category": "⚙️ Operaciones",
       "submenu": [
         {
@@ -87,8 +87,8 @@
     },
     {
       "emoji": "💼",
-      "texto": "Comercial & trading",
-      "description": "Contratos, precios y supply chain",
+      "texto": "Comercial",
+      "description": "Contratos y supply chain",
       "category": "💼 Comercial",
       "submenu": [
         {
@@ -113,8 +113,8 @@
     },
     {
       "emoji": "🌱",
-      "texto": "Sostenibilidad & licencias",
-      "description": "HSEQ, transición energética y compensaciones",
+      "texto": "Sostenibilidad",
+      "description": "HSEQ y transición energética",
       "category": "🌱 Sostenibilidad",
       "submenu": [
         {

@@ -1,8 +1,8 @@
 {
   "nombre": "Fintech Demo",
-  "descripcion": "Plataforma modular para banca digital, cobranzas omnicanal y analítica de riesgo en tiempo real.",
+  "descripcion": "Banca digital, cobranzas y analítica de riesgo.",
   "prompt_context": "Fintech Demo orquesta onboarding digital, core de pagos, scoring de crédito y open banking con integraciones plug-and-play para bancos, retailers y fintechs regionales.",
-  "welcome_message": "💳 Bienvenido a Fintech Demo. Elegí onboarding digital, cobranzas, riesgo o APIs y te comparto dashboards y próximos pasos.",
+  "welcome_message": "💳 Bienvenido a Fintech Demo.\n\nElegí una opción del menú para explorar onboarding, cobranzas, riesgo o nuestras APIs.",
   "resources": [
     {
       "title": "Playbook onboarding digital",
@@ -38,8 +38,8 @@
   "quick_actions": [
     {
       "emoji": "🚀",
-      "texto": "Onboarding & producto",
-      "description": "Journeys digitales, upgrades y bundles premium",
+      "texto": "Onboarding",
+      "description": "Journeys digitales y upgrades",
       "category": "🚀 Crecimiento & producto",
       "submenu": [
         {
@@ -64,8 +64,8 @@
     },
     {
       "emoji": "💰",
-      "texto": "Cobranzas & pagos",
-      "description": "Armonización de medios, links y recaudos empresariales",
+      "texto": "Cobranzas",
+      "description": "Pagos, links y recaudos",
       "category": "💰 Cobranzas omnicanal",
       "submenu": [
         {
@@ -91,7 +91,7 @@
     {
       "emoji": "🛡️",
       "texto": "Riesgo & compliance",
-      "description": "Scoring, antifraude y monitoreo regulatorio",
+      "description": "Scoring, antifraude y monitoreo",
       "category": "🛡️ Gestión de riesgo",
       "submenu": [
         {
@@ -116,8 +116,8 @@
     },
     {
       "emoji": "🤝",
-      "texto": "Partners & open banking",
-      "description": "Ecosistema de aliados, marketplace y revenue share",
+      "texto": "Partners",
+      "description": "Marketplace, revenue share y APIs",
       "category": "🤝 Partners & APIs",
       "submenu": [
         {

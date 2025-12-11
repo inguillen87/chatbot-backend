@@ -1,8 +1,8 @@
 {
   "nombre": "Almacén Demo",
-  "descripcion": "Reposiciones programadas para bares, combos familiares listos y logística express con control de stock en vivo.",
+  "descripcion": "Reposiciones programadas para bares, combos familiares y logística express.",
   "prompt_context": "ByM Almacén opera dark stores de proximidad con catálogo digital integrado a ERP, logística propia en 90 minutos y acuerdos mayoristas para bares y oficinas. Gestiona combos ready-to-go, reposiciones proyectadas y conciliación de medios de pago.",
-  "welcome_message": "🛒 Hola, soy el asesor digital de ByM Almacén. Elegí pedidos express, reposiciones mayoristas, logística o integraciones y te comparto la información en segundos.",
+  "welcome_message": "🛒 Hola, soy el asesor digital de ByM Almacén.\n\nSeleccioná una opción para gestionar pedidos express, reposiciones o integraciones.",
   "resources": [
     {
       "title": "Catálogo express 2024/2025",
@@ -38,8 +38,8 @@
   "quick_actions": [
     {
       "emoji": "🛍️",
-      "texto": "Pedidos express & combos",
-      "description": "Combos familiares, coffee breaks y bandejas ready-to-go",
+      "texto": "Pedidos express",
+      "description": "Combos familiares y ready-to-go",
       "category": "🛍️ Catálogo y promos",
       "submenu": [
         {
@@ -64,8 +64,8 @@
     },
     {
       "emoji": "📦",
-      "texto": "Reposiciones mayoristas",
-      "description": "Escalas por categoría, proyección y acuerdos de financiación",
+      "texto": "Mayorista",
+      "description": "Escalas, proyección y financiación",
       "category": "📦 Operación mayorista",
       "submenu": [
         {
@@ -90,7 +90,7 @@
     },
     {
       "emoji": "🛵",
-      "texto": "Logística y cobertura",
+      "texto": "Logística",
       "description": "Zonas, ventanas express y control de frío",
       "category": "🛵 Logística inteligente",
       "submenu": [
@@ -116,7 +116,7 @@
     },
     {
       "emoji": "🛠️",
-      "texto": "Integraciones & soporte",
+      "texto": "Soporte",
       "description": "Medios de pago, analítica y onboarding",
       "category": "🛠️ Integraciones y soporte",
       "submenu": [

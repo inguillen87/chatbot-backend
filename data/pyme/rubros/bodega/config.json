@@ -1,8 +1,8 @@
 {
   "nombre": "Bodega Demo",
-  "descripcion": "Sommelier digital que concentra portfolio ícono, programas trade y logística boutique con foco en exportación.",
+  "descripcion": "Sommelier digital: portfolio ícono, programas trade y logística boutique.",
   "prompt_context": "Cuatro Fincas Winery produce microvinificaciones en Altamira, Agrelo, Vistalba y Gualtallary. Portfolio 2024/2025: Gran Malbec Reserva, Cabernet Franc Single Vineyard, Chardonnay Finca Don Matías, Bonarda Orgánica y Extra Brut Método Tradicional. Programas HoReCa, duty free y export LATAM con logística boutique, training de sommeliers y experiencias corporativas premium.",
-  "welcome_message": "🍷 Bienvenido al concierge digital de Cuatro Fincas. Elegí portfolio ícono, programas trade, experiencias o logística boutique y te comparto la información al instante.",
+  "welcome_message": "🍷 Bienvenido al concierge digital de Cuatro Fincas.\n\nElegí una opción del menú para explorar nuestro portfolio, programas para el trade y experiencias.",
   "resources": [
     {
       "title": "Catálogo íconos 2024/2025",
@@ -37,8 +37,8 @@
   "quick_actions": [
     {
       "emoji": "🍇",
-      "texto": "Portfolio ícono & reservas",
-      "description": "Grandes vinos de guarda, vinos de finca y ediciones limitadas",
+      "texto": "Portfolio ícono",
+      "description": "Vinos de guarda y ediciones limitadas",
       "category": "🍇 Portfolio & storytelling",
       "submenu": [
         {
@@ -63,8 +63,8 @@
     },
     {
       "emoji": "🤝",
-      "texto": "Programas trade & incentivos",
-      "description": "Escalas, bonificaciones y soporte a cuentas clave",
+      "texto": "Programas trade",
+      "description": "Escalas, bonificaciones y soporte",
       "category": "🤝 Trade & partners",
       "submenu": [
         {
@@ -89,8 +89,8 @@
     },
     {
       "emoji": "🚚",
-      "texto": "Logística & export boutique",
-      "description": "Cobertura nacional, cadena de frío y partners LATAM",
+      "texto": "Logística & export",
+      "description": "Cadena de frío y partners LATAM",
       "category": "🚚 Logística premium",
       "submenu": [
         {
@@ -115,8 +115,8 @@
     },
     {
       "emoji": "🥂",
-      "texto": "Experiencias & hospitality",
-      "description": "Degustaciones, eventos privados y turismo corporativo",
+      "texto": "Experiencias",
+      "description": "Degustaciones y eventos privados",
       "category": "🥂 Experiencias",
       "submenu": [
         {

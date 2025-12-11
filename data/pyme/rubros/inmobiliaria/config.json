@@ -1,8 +1,8 @@
 {
   "nombre": "Inmobiliaria Demo",
-  "descripcion": "Broker inmobiliario premium con inventario dinámico, análisis de mercado y operaciones digitales end-to-end.",
+  "descripcion": "Broker inmobiliario: proyectos, inversiones y operaciones digitales.",
   "prompt_context": "Inmobiliaria Demo gestiona desarrollos premium, unidades de renta y landbanking. Integra CRM inmobiliario, tours virtuales, calificadores crediticios y legal tech para reservas y firmas digitales.",
-  "welcome_message": "🏙️ Hola, soy el advisor digital de Inmobiliaria Demo. Elegí proyectos, inversiones, operaciones digitales o posventa y avanzo con vos.",
+  "welcome_message": "🏙️ Hola, soy el advisor digital de Inmobiliaria Demo.\n\nSeleccioná una opción para ver proyectos, inversiones o gestionar operaciones.",
   "resources": [
     {
       "title": "Portfolio proyectos prime",
@@ -35,8 +35,8 @@
   "quick_actions": [
     {
       "emoji": "🏗️",
-      "texto": "Proyectos en preventa",
-      "description": "Torres residenciales, oficinas AAA y barrios cerrados",
+      "texto": "Proyectos",
+      "description": "Torres, oficinas y barrios cerrados",
       "category": "🏗️ Desarrollos",
       "submenu": [
         {
@@ -61,8 +61,8 @@
     },
     {
       "emoji": "💼",
-      "texto": "Inversiones & renta",
-      "description": "Unidades de renta, landbanking y fondos inmobiliarios",
+      "texto": "Inversiones",
+      "description": "Renta, landbanking y fondos",
       "category": "💼 Inversiones",
       "submenu": [
         {
@@ -87,8 +87,8 @@
     },
     {
       "emoji": "🖥️",
-      "texto": "Operaciones digitales",
-      "description": "Reservas online, firma digital y seguimiento documental",
+      "texto": "Operaciones",
+      "description": "Reservas, firma digital y legal",
       "category": "🖥️ Operaciones",
       "submenu": [
         {
@@ -113,8 +113,8 @@
     },
     {
       "emoji": "🤝",
-      "texto": "Postventa & fidelización",
-      "description": "Conserjería, amenities y gestión de alquileres",
+      "texto": "Postventa",
+      "description": "Conserjería y gestión de alquileres",
       "category": "🤝 Postventa",
       "submenu": [
         {
