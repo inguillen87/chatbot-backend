@@ -21,7 +21,8 @@ from services.common_utils import parse_precio_flexible
 from routes.catalogo import _formatear_producto
 from services.rewards_demo import reward_profile_for_tenant
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
-from routes.auth import _resolve_owner_token
+# Import inside function to avoid circular dependency
+# from routes.auth import _resolve_owner_token
 
 
 pwa_public_bp = Blueprint("pwa_public", __name__, url_prefix="/api/pwa/public")
@@ -759,6 +760,7 @@ def public_tenant_widget_config(tenant_slug: str):
     # Resolve entity token (widgetToken)
     entity_token = None
     if owner:
+        from routes.auth import _resolve_owner_token
         entity_token = _resolve_owner_token(owner)
 
     # Fallback for tenants without an owner (e.g. Vercel previews or headless demos)

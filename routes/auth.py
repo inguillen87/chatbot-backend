@@ -211,10 +211,22 @@ def _tenant_market_payload(tenant: Optional[TenantProfile]) -> Dict[str, object]
     if not tenant:
         return {"enabled": False}
 
-    from routes.pwa_public import _build_public_cart_url
+    # Import inside function to avoid circular dependency
+    # However, since pwa_public imports auth at top level, we must be careful.
+    # To break the cycle safely, we can duplicate the simple logic or ensure
+    # pwa_public is fully loaded before auth.
+    # Given the crash, we'll implement a safe local helper or verify import order.
+
+    try:
+        from routes.pwa_public import _build_public_cart_url
+        full_url, _, _ = _build_public_cart_url(tenant)
+    except ImportError:
+        # Fallback if pwa_public cannot be imported due to circularity
+        base = (request.url_root or "").rstrip("/")
+        slug = tenant.slug
+        full_url = f"{base}/m/{slug}"
 
     enabled = (tenant.tipo or "").lower() == "pyme"
-    full_url, _, _ = _build_public_cart_url(tenant)
 
     payload: Dict[str, object] = {
         "enabled": enabled,
@@ -580,9 +592,13 @@ def widget_bootstrap():
         )
         return resp, 400
 
-    from routes.pwa_public import _build_public_cart_url
-
-    full_url, base_url, path = _build_public_cart_url(tenant)
+    try:
+        from routes.pwa_public import _build_public_cart_url
+        full_url, base_url, path = _build_public_cart_url(tenant)
+    except ImportError:
+        base_url = (request.url_root or "").rstrip("/")
+        path = f"m/{tenant.slug}"
+        full_url = f"{base_url}/{path}"
     market_payload = _tenant_market_payload(tenant)
     market_payload.setdefault("public_base_url", base_url)
     market_payload.setdefault("public_path", path)
