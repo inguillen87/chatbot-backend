@@ -21,8 +21,15 @@ from services.common_utils import parse_precio_flexible
 from routes.catalogo import _formatear_producto
 from services.rewards_demo import reward_profile_for_tenant
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
-# Import inside function to avoid circular dependency
-# from routes.auth import _resolve_owner_token
+# Import common cart logic to support Persistent X-Anon-Id and unified cart behavior
+from routes.carrito import (
+    _get_or_create_db_cart,
+    _db_cart_summary,
+    _product_query_for_tenant,
+    _pricing_snapshot,
+)
+from models import MarketCartItem
+from database import db
 
 
 pwa_public_bp = Blueprint("pwa_public", __name__, url_prefix="/api/pwa/public")
@@ -178,39 +185,16 @@ def _require_owner(tenant: TenantProfile) -> User:
     return owner
 
 
-def _public_cart_storage() -> Dict[str, List[Dict[str, int]]]:
-    data = session.get("tenant_public_carts")
-    if not isinstance(data, dict):
-        data = {}
-        session["tenant_public_carts"] = data
-    return data
-
-
-def _persist_public_cart_storage(data: Dict[str, List[Dict[str, int]]]) -> None:
-    session["tenant_public_carts"] = data
-    session.modified = True
-
-
-def _tenant_cart(data: Dict[str, List[Dict[str, int]]], tenant_id: int) -> List[Dict[str, int]]:
-    key = str(tenant_id)
-    cart = data.get(key)
-    if not isinstance(cart, list):
-        cart = []
-        data[key] = cart
-    return cart
-
-
-def _lookup_catalog_item(owner: User, payload: Dict[str, object]) -> CatalogoItem | None:
+def _lookup_catalog_item(owner: User, tenant: TenantProfile, payload: Dict[str, object]) -> CatalogoItem | None:
     identifier = payload.get("catalogo_item_id") or payload.get("item_id")
     sku = payload.get("sku")
     nombre = payload.get("nombre")
 
-    query = CatalogoItem.query.options(*CatalogoItem.legacy_safe_options()).filter(
-        CatalogoItem.user_id == owner.id
-    )
+    query = _product_query_for_tenant(owner, tenant)
+
     if identifier is not None:
         try:
-            identifier = int(identifier)  # type: ignore[assignment]
+            identifier = int(identifier)
         except (TypeError, ValueError):
             identifier = None
         else:
@@ -248,122 +232,6 @@ def _coerce_item_id(value: object) -> int | None:
         return None
 
 
-def _enrich_cart_summary(tenant: TenantProfile, owner: User) -> Dict[str, object]:
-    data = _public_cart_storage()
-    cart = list(_tenant_cart(data, tenant.id))
-    if not cart:
-        return {
-            "tenant_id": tenant.id,
-            "items": [],
-            "items_count": 0,
-            "total_estimado": 0.0,
-            "moneda": "ARS",
-            "badge_count": 0,
-            "total_puntos_estimado": 0.0,
-            "recompensas_demo": reward_profile_for_tenant(tenant.id, 0.0),
-        }
-
-    item_ids = [entry.get("catalogo_item_id") for entry in cart if entry.get("catalogo_item_id")]
-    catalog_items: Dict[int, CatalogoItem] = {}
-    if item_ids:
-        rows = (
-            CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())
-            .filter(
-                CatalogoItem.user_id == owner.id,
-                CatalogoItem.id.in_(item_ids),
-            )
-            .all()
-        )
-        catalog_items = {row.id: row for row in rows}
-
-    enriched = []
-    total = 0.0
-    total_count = 0
-    totals_by_currency: Dict[str, float] = {}
-    total_points = 0.0
-    for entry in cart:
-        item_id = entry.get("catalogo_item_id")
-        cantidad = _normalize_quantity(entry.get("cantidad", 1))
-        total_count += cantidad
-        catalog_item = catalog_items.get(item_id)
-        if not catalog_item:
-            continue
-
-        formatted = _formatear_producto(
-            {
-                "nombre": catalog_item.nombre,
-                "categoria": catalog_item.categoria,
-                "descripcion": catalog_item.descripcion,
-                "sku": catalog_item.sku,
-                "unidad": catalog_item.unidad,
-                "precio_str": catalog_item.precio,
-                "cantidad": catalog_item.cantidad,
-                "marca": catalog_item.marca,
-                "imagen_url": catalog_item.imagen_url,
-                "descripcion_corta": catalog_item.descripcion_corta,
-                "promocion_info": catalog_item.promocion_info,
-            }
-        )
-        precio_unitario = formatted.get("precio_unitario")
-        precio_float = None
-        if isinstance(precio_unitario, (int, float)):
-            precio_float = float(precio_unitario)
-        else:
-            _, precio_float, _ = parse_precio_flexible(str(precio_unitario))
-
-        moneda = formatted.get("moneda") or "ARS"
-        modalidad = CatalogoModalidad.from_legacy(formatted.get("modalidad"))
-        subtotal = precio_float * cantidad if precio_float is not None else None
-        subtotal_puntos = subtotal if moneda == "PTS" else None
-        if modalidad is CatalogoModalidad.DONACION:
-            subtotal = None
-            subtotal_puntos = None
-        if subtotal is not None:
-            if moneda == "PTS" and modalidad is CatalogoModalidad.CANJE:
-                total_points += subtotal
-            elif moneda != "PTS":
-                totals_by_currency[moneda] = totals_by_currency.get(moneda, 0.0) + subtotal
-                total += subtotal
-
-        enriched.append(
-            {
-                "catalogo_item_id": item_id,
-                "nombre": formatted.get("nombre"),
-                "descripcion": formatted.get("descripcion"),
-                "cantidad": cantidad,
-                "precio_unitario": precio_float,
-                "precio_unitario_texto": catalog_item.precio,
-                "subtotal": subtotal if moneda != "PTS" else None,
-                "subtotal_puntos": subtotal_puntos,
-                "imagen_url": formatted.get("imagen_url"),
-                "categoria": formatted.get("categoria"),
-                "moneda": moneda,
-                "modalidad": modalidad.value,
-            }
-        )
-
-    return {
-        "tenant_id": tenant.id,
-        "items": enriched,
-        "items_count": total_count,
-        "total_estimado": round(total, 2),
-        "totales_monedas": {k: round(v, 2) for k, v in totals_by_currency.items()},
-        "total_puntos_estimado": round(total_points, 2),
-        "moneda": "ARS",
-        "badge_count": total_count,
-        "recompensas_demo": reward_profile_for_tenant(tenant.id, total_points),
-        "checkout_options": {
-            "mercadopago_ready": True,
-            "gateway_hint": "Mercado Pago preference/token flow listo para demo",
-            "points_enabled": total_points > 0,
-        },
-        "ui_signals": {
-            "animation": "cart-burst",
-            "toast": "Agregado al carrito",
-        },
-    }
-
-
 @pwa_public_bp.get("/catalog")
 def public_catalog():
     tenant = _require_tenant()
@@ -373,9 +241,9 @@ def public_catalog():
     categoria = request.args.get("categoria")
     search_text = request.args.get("q")
 
-    query = CatalogoItem.query.options(*CatalogoItem.legacy_safe_options()).filter(
-        CatalogoItem.user_id == owner.id
-    )
+    # Use the shared query helper to ensure tenant filtering matches cart logic
+    query = _product_query_for_tenant(owner, tenant)
+
     if categoria:
         categoria_norm = categoria.strip().lower()
         if categoria_norm:
@@ -450,7 +318,19 @@ def public_cart_summary():
     tenant = _require_tenant()
     owner = _require_owner(tenant)
     ensure_seed_catalog(owner, tenant)
-    return jsonify(_enrich_cart_summary(tenant, owner))
+
+    cart = _get_or_create_db_cart(tenant, getattr(g, 'user', None), create_if_missing=False)
+    if not cart:
+         return jsonify({
+            "tenant_id": tenant.id,
+            "items": [],
+            "items_count": 0,
+            "total_estimado": 0.0,
+            "badge_count": 0,
+            "recompensas_demo": reward_profile_for_tenant(tenant.id, 0.0),
+        })
+
+    return jsonify(_db_cart_summary(cart, owner))
 
 
 @pwa_public_bp.post("/cart/add")
@@ -460,22 +340,38 @@ def public_cart_add():
     ensure_seed_catalog(owner, tenant)
 
     payload = request.get_json(silent=True) or {}
-    item = _lookup_catalog_item(owner, payload)
+    item = _lookup_catalog_item(owner, tenant, payload)
     if not item:
         return jsonify({"error": "Producto no encontrado"}), 404
 
     cantidad = _normalize_quantity(payload.get("cantidad", 1))
-    data = _public_cart_storage()
-    cart = _tenant_cart(data, tenant.id)
-    for entry in cart:
-        if entry.get("catalogo_item_id") == item.id:
-            entry["cantidad"] = entry.get("cantidad", 0) + cantidad
-            break
-    else:
-        cart.append({"catalogo_item_id": item.id, "cantidad": cantidad})
 
-    _persist_public_cart_storage(data)
-    return jsonify(_enrich_cart_summary(tenant, owner))
+    # Use persistent cart logic (X-Anon-Id or User)
+    cart = _get_or_create_db_cart(tenant, getattr(g, 'user', None), create_if_missing=True)
+    if cart.status != "open":
+        return jsonify({"error": "El carrito ya está cerrado"}), 400
+
+    cart_item = cart.items.filter(MarketCartItem.product_id == item.id).first()
+    pricing = _pricing_snapshot(item)
+
+    if cart_item:
+        cart_item.quantity += cantidad
+    else:
+        cart_item = MarketCartItem(
+            cart_id=cart.id,
+            product_id=item.id,
+            quantity=cantidad,
+            price_text=pricing.get("price_text"),
+            price_monetary=pricing.get("price_monetary"),
+            price_points=pricing.get("price_points"),
+            currency=pricing.get("currency"),
+            modalidad=pricing.get("modalidad"),
+            name_snapshot=item.nombre,
+        )
+        db.session.add(cart_item)
+
+    db.session.commit()
+    return jsonify(_db_cart_summary(cart, owner, event="add"))
 
 
 @pwa_public_bp.post("/cart/update")
@@ -488,18 +384,22 @@ def public_cart_update():
         return jsonify({"error": "catalogo_item_id requerido"}), 400
 
     cantidad = _normalize_quantity(payload.get("cantidad", 0), default=0, min_value=0)
-    data = _public_cart_storage()
-    cart = _tenant_cart(data, tenant.id)
-    for entry in list(cart):
-        if entry.get("catalogo_item_id") == item_id:
-            if cantidad <= 0:
-                cart.remove(entry)
-            else:
-                entry["cantidad"] = cantidad
-            _persist_public_cart_storage(data)
-            return jsonify(_enrich_cart_summary(tenant, owner))
 
-    return jsonify({"error": "Item no encontrado en el carrito"}), 404
+    cart = _get_or_create_db_cart(tenant, getattr(g, 'user', None), create_if_missing=False)
+    if not cart:
+        return jsonify({"error": "Carrito no encontrado"}), 404
+
+    cart_item = cart.items.filter(MarketCartItem.product_id == item_id).first()
+    if not cart_item:
+        return jsonify({'error': 'Item no encontrado en el carrito'}), 404
+
+    if cantidad <= 0:
+        db.session.delete(cart_item)
+    else:
+        cart_item.quantity = cantidad
+
+    db.session.commit()
+    return jsonify(_db_cart_summary(cart, owner, event="update"))
 
 
 @pwa_public_bp.post("/cart/remove")
@@ -511,16 +411,16 @@ def public_cart_remove():
     if item_id is None:
         return jsonify({"error": "catalogo_item_id requerido"}), 400
 
-    data = _public_cart_storage()
-    cart = _tenant_cart(data, tenant.id)
-    removed = False
-    for entry in list(cart):
-        if entry.get("catalogo_item_id") == item_id:
-            cart.remove(entry)
-            removed = True
-    if removed:
-        _persist_public_cart_storage(data)
-        return jsonify(_enrich_cart_summary(tenant, owner))
+    cart = _get_or_create_db_cart(tenant, getattr(g, 'user', None), create_if_missing=False)
+    if not cart:
+        return jsonify({"error": "Carrito no encontrado"}), 404
+
+    cart_item = cart.items.filter(MarketCartItem.product_id == item_id).first()
+    if cart_item:
+        db.session.delete(cart_item)
+        db.session.commit()
+        return jsonify(_db_cart_summary(cart, owner, event="remove"))
+
     return jsonify({"error": "Item no encontrado en el carrito"}), 404
 
 
@@ -528,10 +428,16 @@ def public_cart_remove():
 def public_cart_clear():
     tenant = _require_tenant()
     owner = _require_owner(tenant)
-    data = _public_cart_storage()
-    data[str(tenant.id)] = []
-    _persist_public_cart_storage(data)
-    return jsonify(_enrich_cart_summary(tenant, owner))
+
+    cart = _get_or_create_db_cart(tenant, getattr(g, 'user', None), create_if_missing=False)
+    if cart:
+        cart.items.delete()
+        db.session.commit()
+
+    return jsonify(_db_cart_summary(cart, owner, event="clear") if cart else {
+        "tenant_id": tenant.id, "items": [], "items_count": 0, "total_estimado": 0.0,
+        "ui_signals": {"event": "clear", "animation": "cart-burst", "badge": 0},
+    })
 
 
 @pwa_public_bp.get("/tenant")
@@ -623,9 +529,15 @@ def public_tenant_widget_config(tenant_slug: str):
         abort(404, "Tenant no encontrado")
 
     owner = _tenant_owner(tenant)
+    cfg = tenant.configuracion or {}
 
+    # Merge theme: WidgetConfig > Tenant.tema > Defaults
+    theme = tenant.tema or {}
+    if not isinstance(theme, dict):
+        theme = {}
+
+    widget_cfg = tenant.widget_config
     widget_settings = tenant.widget_settings
-    config = _normalize_widget_config(tenant.configuracion, widget_settings)
 
     # Robust Defaults for Theme Config to prevent Frontend Crashes
     DEFAULT_THEME_CONFIG = {
@@ -702,17 +614,17 @@ def public_tenant_widget_config(tenant_slug: str):
 
     # Features logic replicated from auth helper to avoid circular imports
     features = {}
-    widget_features = config.get("widget_features")
+    widget_features = cfg.get("widget_features")
     if isinstance(widget_features, dict):
         features.update(widget_features)
 
-    catalog_enabled = config.get("widget_catalog_enabled")
+    catalog_enabled = cfg.get("widget_catalog_enabled")
     if isinstance(catalog_enabled, bool):
         features.setdefault("catalog_enabled", catalog_enabled)
     else:
         features.setdefault("catalog_enabled", (tenant.tipo or "").lower() == "pyme")
 
-    loyalty_enabled = config.get("widget_loyalty_enabled")
+    loyalty_enabled = cfg.get("widget_loyalty_enabled")
     if isinstance(loyalty_enabled, bool):
         features.setdefault("loyalty_enabled", loyalty_enabled)
 
@@ -748,16 +660,8 @@ def public_tenant_widget_config(tenant_slug: str):
             default_open = widget_settings.default_open
 
     # Legacy fallback for welcome message
-    widget_cfg = getattr(tenant, "widget_config", None)
-    if not interaction.get("welcome_title"):
-        legacy_welcome = None
-        if widget_cfg and widget_cfg.welcome_message:
-            legacy_welcome = widget_cfg.welcome_message
-        elif isinstance(config.get("welcome_message"), str):
-            legacy_welcome = config["welcome_message"]
-
-        if legacy_welcome:
-            interaction["welcome_title"] = legacy_welcome
+    if not interaction.get("welcome_title") and widget_cfg and widget_cfg.welcome_message:
+        interaction["welcome_title"] = widget_cfg.welcome_message
 
     # Resolve entity token (widgetToken)
     entity_token = None
@@ -779,8 +683,10 @@ def public_tenant_widget_config(tenant_slug: str):
         "features": features,
         "contact": contact,
         "interaction": interaction,
-        "cta_messages": cta_messages or config.get("cta_messages") or [],
-        "default_open": default_open if default_open is not None else config.get("default_open", False),
+        "cta_messages": cta_messages,
+        "default_open": default_open,
+        "entityToken": entity_token, # Added for frontend socket initialization
+        "widgetToken": entity_token  # Alias for compatibility
     })
 
 
