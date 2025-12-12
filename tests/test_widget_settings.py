@@ -118,6 +118,23 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIsInstance(resp.get_json(), dict)
 
+    def test_public_tenant_widget_config_exposes_theme_and_ctas(self):
+        settings = WidgetSettings(
+            tenant_id=self.tenant.id,
+            cta_messages=["hola"],
+        )
+        db.session.add(settings)
+        db.session.commit()
+
+        resp = self.client.get(
+            f"/api/public/tenants/{self.tenant.slug}/widget-config",
+        )
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertIn("theme_config", payload)
+        self.assertIsInstance(payload.get("cta_messages"), list)
+        self.assertIn("hola", payload.get("cta_messages"))
+
 
 if __name__ == "__main__":
     unittest.main()

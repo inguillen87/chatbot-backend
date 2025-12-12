@@ -64,6 +64,33 @@ class TestRubrosEndpoint(unittest.TestCase):
         self.assertIsNotNone(demo_entry)
         self.assertIn("demo", demo_entry)
 
+    def test_hidden_rubro_with_demo_metadata_is_exposed(self):
+        rubro = Rubro(nombre="Oculto", clave="oculto", descripcion="", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+        demo = DemoRubro(
+            key="oculto-demo",
+            label="Oculto Demo",
+            descripcion="",
+            tipo_chat="pyme",
+            owner_user_id=None,
+            rubro_id=rubro.id,
+            rubro_clave=rubro.clave,
+        )
+
+        with patch("routes.rubros.load_demo_rubros", return_value=[demo]), patch(
+            "services.demo_registry.load_demo_rubros", return_value=[demo]
+        ):
+            resp = self.client.get("/rubros")
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        claves = [item.get("clave") for item in data]
+        self.assertIn("oculto", claves)
+        entry = next(item for item in data if item.get("clave") == "oculto")
+        self.assertTrue(entry.get("demo"))
+
 
 if __name__ == '__main__':
     unittest.main()

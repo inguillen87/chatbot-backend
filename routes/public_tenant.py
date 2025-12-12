@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify
 from models import TenantProfile, TenantConfig
+from utils.widget_config import _default_theme_config, _normalize_widget_config, _theme_from_tenant
 
 public_tenant_bp = Blueprint('public_tenant_bp', __name__)
 
@@ -73,5 +74,14 @@ def get_widget_config(slug):
     tenant = _get_tenant_from_request(slug)
     if not tenant: return jsonify({"error": "Tenant not found"}), 404
 
-    cfg = TenantConfig.query.filter_by(tenant_id=tenant.id, key='widget', channel=None).first()
-    return jsonify(cfg.json_value if cfg else {})
+    cfg_row = TenantConfig.query.filter_by(tenant_id=tenant.id, key='widget', channel=None).first()
+    raw_cfg = cfg_row.json_value if cfg_row else {}
+
+    config = _normalize_widget_config(raw_cfg, tenant.widget_settings)
+    if not config.get("theme_config"):
+        config["theme_config"] = _default_theme_config(_theme_from_tenant(tenant))
+
+    if tenant.widget_settings and tenant.widget_settings.cta_messages:
+        config["cta_messages"] = tenant.widget_settings.cta_messages
+
+    return jsonify(config)

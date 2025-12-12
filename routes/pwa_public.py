@@ -21,7 +21,7 @@ from services.common_utils import parse_precio_flexible
 from routes.catalogo import _formatear_producto
 from services.rewards_demo import reward_profile_for_tenant
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
-from routes.auth import _resolve_owner_token
+from utils.widget_config import _default_theme_config, _normalize_widget_config, _theme_from_tenant
 
 
 pwa_public_bp = Blueprint("pwa_public", __name__, url_prefix="/api/pwa/public")
@@ -622,76 +622,26 @@ def public_tenant_widget_config(tenant_slug: str):
         abort(404, "Tenant no encontrado")
 
     owner = _tenant_owner(tenant)
-    cfg = tenant.configuracion or {}
 
-    # Merge theme: WidgetConfig > Tenant.tema > Defaults
-    theme = tenant.tema or {}
-    if not isinstance(theme, dict):
-        theme = {}
-
-    widget_cfg = tenant.widget_config
     widget_settings = tenant.widget_settings
+    config = _normalize_widget_config(tenant.configuracion, widget_settings)
 
-    # Robust Defaults for Theme Config to prevent Frontend Crashes
-    DEFAULT_THEME_CONFIG = {
-        "mode": "light",
-        "light": {
-            "primary": "#3B82F6",
-            "secondary": "#ffffff",
-            "background": "#ffffff",
-            "text": "#000000"
-        },
-        "dark": {
-            "primary": "#2563EB",
-            "secondary": "#1f2937",
-            "background": "#111827",
-            "text": "#ffffff"
-        }
-    }
-
-    # Use deepcopy to avoid mutating the global DEFAULT_THEME_CONFIG across requests
-    import copy
-    theme_config = copy.deepcopy(DEFAULT_THEME_CONFIG)
-
-    if widget_settings and widget_settings.theme_config:
-        # Deep merge or overwrite? For now, we overwrite if present, but we should probably merge.
-        # However, typically widget_settings.theme_config is a complete object from the DB.
-        # To be safe, we check keys.
-        ws_config = widget_settings.theme_config
-        if isinstance(ws_config, dict):
-            theme_config["mode"] = ws_config.get("mode", theme_config["mode"])
-            if isinstance(ws_config.get("light"), dict):
-                theme_config["light"].update(ws_config["light"])
-            if isinstance(ws_config.get("dark"), dict):
-                theme_config["dark"].update(ws_config["dark"])
-
-        if widget_settings.primary_color:
-            theme["primaryColor"] = widget_settings.primary_color
-        if widget_settings.secondary_color:
-            theme["secondaryColor"] = widget_settings.secondary_color
-
-        theme["config"] = theme_config
-
-    elif widget_cfg:
-        # Fallback to legacy config
-        if widget_cfg.primary_color:
-            theme["primaryColor"] = widget_cfg.primary_color
-        if widget_cfg.accent_color:
-             theme["secondaryColor"] = widget_cfg.accent_color
+    theme = _theme_from_tenant(tenant)
+    theme_config = config.get("theme_config") or _default_theme_config(theme)
 
     # Features logic replicated from auth helper to avoid circular imports
     features = {}
-    widget_features = cfg.get("widget_features")
+    widget_features = config.get("widget_features")
     if isinstance(widget_features, dict):
         features.update(widget_features)
 
-    catalog_enabled = cfg.get("widget_catalog_enabled")
+    catalog_enabled = config.get("widget_catalog_enabled")
     if isinstance(catalog_enabled, bool):
         features.setdefault("catalog_enabled", catalog_enabled)
     else:
         features.setdefault("catalog_enabled", (tenant.tipo or "").lower() == "pyme")
 
-    loyalty_enabled = cfg.get("widget_loyalty_enabled")
+    loyalty_enabled = config.get("widget_loyalty_enabled")
     if isinstance(loyalty_enabled, bool):
         features.setdefault("loyalty_enabled", loyalty_enabled)
 
@@ -720,8 +670,16 @@ def public_tenant_widget_config(tenant_slug: str):
             default_open = widget_settings.default_open
 
     # Legacy fallback for welcome message
-    if not interaction.get("welcome_title") and widget_cfg and widget_cfg.welcome_message:
-        interaction["welcome_title"] = widget_cfg.welcome_message
+    widget_cfg = getattr(tenant, "widget_config", None)
+    if not interaction.get("welcome_title"):
+        legacy_welcome = None
+        if widget_cfg and widget_cfg.welcome_message:
+            legacy_welcome = widget_cfg.welcome_message
+        elif isinstance(config.get("welcome_message"), str):
+            legacy_welcome = config["welcome_message"]
+
+        if legacy_welcome:
+            interaction["welcome_title"] = legacy_welcome
 
     # Resolve entity token (widgetToken)
     entity_token = None
@@ -736,16 +694,14 @@ def public_tenant_widget_config(tenant_slug: str):
     return jsonify({
         "slug": tenant.slug,
         "name": tenant.nombre,
-        "logo_url": tenant.logo_url or (widget_cfg.logo_url if widget_cfg else None),
+        "logo_url": theme.get("logo") or tenant.logo_url,
         "theme": theme,
         "theme_config": theme_config,
         "features": features,
         "contact": contact,
         "interaction": interaction,
-        "cta_messages": cta_messages,
-        "default_open": default_open,
-        "entityToken": entity_token, # Added for frontend socket initialization
-        "widgetToken": entity_token  # Alias for compatibility
+        "cta_messages": cta_messages or config.get("cta_messages") or [],
+        "default_open": default_open if default_open is not None else config.get("default_open", False),
     })
 
 

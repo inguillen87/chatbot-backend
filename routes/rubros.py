@@ -11,14 +11,16 @@ rubros_bp = Blueprint("rubros", __name__)
 def get_all_rubros():
     """Return the list of rubros."""
     try:
-        # Filter only public rubros to avoid exposing hidden legacy/test data
-        # and to reduce the payload size if many hidden items exist.
-        rubros = Rubro.query.filter_by(es_publico=True).order_by(Rubro.nombre.asc()).all()
+        # Build lookup before filtering so demos tied to hidden rubros can still
+        # surface curated content in public catalogs.
+        rubros = Rubro.query.order_by(Rubro.nombre.asc()).all()
         demo_lookup = demo_rubros_for_rubros(r.id for r in rubros)
 
         lista_rubros = []
         for rubro in rubros:
-            if not bool(rubro.es_publico):
+            # Allow hidden rubros only when they have curated demo metadata so
+            # the landing page never renders empty categories.
+            if not bool(rubro.es_publico) and rubro.id not in demo_lookup:
                 continue
             item = {
                 "id": rubro.id,
