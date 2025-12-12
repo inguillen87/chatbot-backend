@@ -229,7 +229,10 @@ def ensure_seed_catalog(owner: User, tenant: Optional[TenantProfile] = None) -> 
 
     records: List[CatalogoItem] = []
     for seed in seed_items:
-        records.append(CatalogoItem(user_id=owner.id, **seed.to_catalog_kwargs()))
+        kwargs = seed.to_catalog_kwargs()
+        if tenant and tenant.id:
+            kwargs["tenant_id"] = tenant.id
+        records.append(CatalogoItem(user_id=owner.id, **kwargs))
 
     try:
         db.session.add_all(records)
