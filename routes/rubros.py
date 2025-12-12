@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify, current_app
 from models import Rubro
-from services.demo_registry import demo_rubros_for_rubros
+from services.demo_registry import demo_rubros_for_rubros, load_demo_rubros
 
 # Define blueprint without prefix here so it can be mounted flexibly in app.py
 # (e.g. at /rubros AND /api/rubros)
@@ -18,6 +18,8 @@ def get_all_rubros():
 
         lista_rubros = []
         for rubro in rubros:
+            if not bool(rubro.es_publico):
+                continue
             item = {
                 "id": rubro.id,
                 "nombre": rubro.nombre,
@@ -32,6 +34,26 @@ def get_all_rubros():
                 item["demo"] = demo_meta.to_public_dict()
 
             lista_rubros.append(item)
+
+        # Asegurar que siempre haya demos disponibles para clientes públicos.
+        if not lista_rubros or not any(item.get("demo") for item in lista_rubros):
+            existing_keys = {item.get("clave") for item in lista_rubros}
+            for demo in load_demo_rubros():
+                key = demo.rubro_clave or demo.key
+                if key in existing_keys:
+                    continue
+                lista_rubros.append(
+                    {
+                        "id": demo.rubro_id,
+                        "nombre": demo.label,
+                        "clave": key,
+                        "descripcion": demo.descripcion,
+                        "es_publico": True,
+                        "padre_id": None,
+                        "demo": demo.to_public_dict(),
+                    }
+                )
+                existing_keys.add(key)
 
         return jsonify(lista_rubros)
     except Exception as e:  # pragma: no cover - log unexpected errors
