@@ -623,15 +623,9 @@ def public_tenant_widget_config(tenant_slug: str):
         abort(404, "Tenant no encontrado")
 
     owner = _tenant_owner(tenant)
-    cfg = tenant.configuracion or {}
 
-    # Merge theme: WidgetConfig > Tenant.tema > Defaults
-    theme = tenant.tema or {}
-    if not isinstance(theme, dict):
-        theme = {}
-
-    widget_cfg = tenant.widget_config
     widget_settings = tenant.widget_settings
+    config = _normalize_widget_config(tenant.configuracion, widget_settings)
 
     # Robust Defaults for Theme Config to prevent Frontend Crashes
     DEFAULT_THEME_CONFIG = {
@@ -708,17 +702,17 @@ def public_tenant_widget_config(tenant_slug: str):
 
     # Features logic replicated from auth helper to avoid circular imports
     features = {}
-    widget_features = cfg.get("widget_features")
+    widget_features = config.get("widget_features")
     if isinstance(widget_features, dict):
         features.update(widget_features)
 
-    catalog_enabled = cfg.get("widget_catalog_enabled")
+    catalog_enabled = config.get("widget_catalog_enabled")
     if isinstance(catalog_enabled, bool):
         features.setdefault("catalog_enabled", catalog_enabled)
     else:
         features.setdefault("catalog_enabled", (tenant.tipo or "").lower() == "pyme")
 
-    loyalty_enabled = cfg.get("widget_loyalty_enabled")
+    loyalty_enabled = config.get("widget_loyalty_enabled")
     if isinstance(loyalty_enabled, bool):
         features.setdefault("loyalty_enabled", loyalty_enabled)
 
@@ -754,8 +748,16 @@ def public_tenant_widget_config(tenant_slug: str):
             default_open = widget_settings.default_open
 
     # Legacy fallback for welcome message
-    if not interaction.get("welcome_title") and widget_cfg and widget_cfg.welcome_message:
-        interaction["welcome_title"] = widget_cfg.welcome_message
+    widget_cfg = getattr(tenant, "widget_config", None)
+    if not interaction.get("welcome_title"):
+        legacy_welcome = None
+        if widget_cfg and widget_cfg.welcome_message:
+            legacy_welcome = widget_cfg.welcome_message
+        elif isinstance(config.get("welcome_message"), str):
+            legacy_welcome = config["welcome_message"]
+
+        if legacy_welcome:
+            interaction["welcome_title"] = legacy_welcome
 
     # Resolve entity token (widgetToken)
     entity_token = None
@@ -777,10 +779,8 @@ def public_tenant_widget_config(tenant_slug: str):
         "features": features,
         "contact": contact,
         "interaction": interaction,
-        "cta_messages": cta_messages,
-        "default_open": default_open,
-        "entityToken": entity_token, # Added for frontend socket initialization
-        "widgetToken": entity_token  # Alias for compatibility
+        "cta_messages": cta_messages or config.get("cta_messages") or [],
+        "default_open": default_open if default_open is not None else config.get("default_open", False),
     })
 
 

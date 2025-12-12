@@ -91,6 +91,24 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertEqual(attrs["data-font-family"], payload["font_family"])
         self.assertEqual(attrs["data-bubble-shape"], payload["bubble_shape"])
         self.assertEqual(attrs["data-default-open"], "true")
+        self.assertIn("theme_config", widget_data["widget"])
+        self.assertIn("cta_messages", widget_data["widget"])
+        self.assertIsInstance(widget_data["widget"]["cta_messages"], list)
+
+    def test_public_widget_config_returns_theme_defaults_when_missing(self):
+        resp = self.client.get(
+            f"/api/public/widget-config?tenant={self.tenant.slug}",
+        )
+        self.assertEqual(resp.status_code, 200)
+        widget_data = resp.get_json()["widget"]
+
+        self.assertIn("theme_config", widget_data)
+        theme_config = widget_data["theme_config"]
+        self.assertEqual(theme_config.get("mode"), "light")
+        self.assertIn("light", theme_config)
+        self.assertIn("dark", theme_config)
+        self.assertTrue(theme_config["light"].get("primary"))
+        self.assertTrue(theme_config["dark"].get("primary"))
 
     def test_public_widget_config_allows_querystring_tenant_fallback(self):
         resp = self.client.get(
@@ -99,6 +117,23 @@ class WidgetSettingsTests(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertIsInstance(resp.get_json(), dict)
+
+    def test_public_tenant_widget_config_exposes_theme_and_ctas(self):
+        settings = WidgetSettings(
+            tenant_id=self.tenant.id,
+            cta_messages=["hola"],
+        )
+        db.session.add(settings)
+        db.session.commit()
+
+        resp = self.client.get(
+            f"/api/public/tenants/{self.tenant.slug}/widget-config",
+        )
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertIn("theme_config", payload)
+        self.assertIsInstance(payload.get("cta_messages"), list)
+        self.assertIn("hola", payload.get("cta_messages"))
 
 
 if __name__ == "__main__":
