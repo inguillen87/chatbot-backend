@@ -728,6 +728,11 @@ def public_tenant_widget_config(tenant_slug: str):
     if owner:
         entity_token = _resolve_owner_token(owner)
 
+    # Fallback for tenants without an owner (e.g. Vercel previews or headless demos)
+    # Ensures frontend socket initialization doesn't crash on "No entityToken"
+    if not entity_token:
+        entity_token = tenant.slug
+
     return jsonify({
         "slug": tenant.slug,
         "name": tenant.nombre,
