@@ -755,6 +755,12 @@ def anon_id_alias():
     return provide_anon_id()
 
 
+@public_aliases_bp.route("/pwa/anon-id", methods=["GET", "OPTIONS"], strict_slashes=False)
+def root_anon_id_alias():
+    """Alias without /api prefix for PWA anon-id requests."""
+    return provide_anon_id()
+
+
 @api_aliases_bp.route(
     "/pwa/tenant-info",
     methods=["GET", "OPTIONS"],
