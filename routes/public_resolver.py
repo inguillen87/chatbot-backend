@@ -187,6 +187,29 @@ def _theme_from_tenant(tenant: TenantProfile) -> dict:
     }
 
 
+def _default_theme_config(theme: dict) -> dict:
+    primary = theme.get("primary") or "#2563eb"
+    accent = theme.get("accent") or "#22c55e"
+    background = theme.get("background") or "#ffffff"
+    text = theme.get("text") or "#1f2937"
+
+    return {
+        "mode": "light",
+        "light": {
+            "primary": primary,
+            "secondary": accent,
+            "background": background,
+            "text": text,
+        },
+        "dark": {
+            "primary": primary,
+            "secondary": accent,
+            "background": "#111827",
+            "text": "#f9fafb",
+        },
+    }
+
+
 def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | None) -> dict:
     """Expose a rich embed configuration so `integracion.tsx` can render a SaaS builder."""
 
@@ -243,12 +266,14 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     attr_snippet = " ".join(f"{k}='{v}'" for k, v in attrs.items())
     embed_snippet = f"<script src='{script_url}' async {attr_snippet}></script>"
 
+    theme_config = cfg.get("theme_config", {}) or _default_theme_config(theme)
+
     return {
         "script_url": script_url,
         "attributes": attrs,
         "embed_snippet": embed_snippet,
         "theme": theme,
-        "theme_config": cfg.get("theme_config", {}),
+        "theme_config": theme_config,
         "cta_messages": cfg.get("cta_messages", []),
         "marketplace": marketplace,
         "widget_token": canonical_token,
@@ -321,6 +346,9 @@ def resolve_tenant_endpoint():
     # objeto con la clave ``children`` para renderizar las secciones sin
     # explotar en una desestructuración.
     config = _normalize_widget_config(tenant_info.get("config"), tenant.widget_settings)
+    if not config.get("theme_config"):
+        config["theme_config"] = _default_theme_config(tenant_info.get("theme", {}))
+
     tenant_info["config"] = config
     tenant_info.setdefault("theme", _theme_from_tenant(tenant))
 
