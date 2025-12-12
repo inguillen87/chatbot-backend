@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple
 from flask import Blueprint, abort, g, jsonify, make_response, request, session
 from sqlalchemy import func
 
-from models import CatalogoItem, CatalogoModalidad, MunicipioPost, TenantProfile, User, WidgetConfig
+from models import CatalogoItem, CatalogoModalidad, MunicipioPost, TenantProfile, User, WidgetConfig, WidgetSettings
 from middleware import require_tenant
 from services.encuestas_service import (
     EncuestaError,
@@ -631,23 +631,44 @@ def public_tenant_widget_config(tenant_slug: str):
     widget_cfg = tenant.widget_config
     widget_settings = tenant.widget_settings
 
-    # Defaults
-    theme_config = {
+    # Robust Defaults for Theme Config to prevent Frontend Crashes
+    DEFAULT_THEME_CONFIG = {
         "mode": "light",
-        "light": {},
-        "dark": {}
+        "light": {
+            "primary": "#3B82F6",
+            "secondary": "#ffffff",
+            "background": "#ffffff",
+            "text": "#000000"
+        },
+        "dark": {
+            "primary": "#2563EB",
+            "secondary": "#1f2937",
+            "background": "#111827",
+            "text": "#ffffff"
+        }
     }
 
-    if widget_settings:
-        # Prefer new settings if available
+    theme_config = DEFAULT_THEME_CONFIG.copy()
+
+    if widget_settings and widget_settings.theme_config:
+        # Deep merge or overwrite? For now, we overwrite if present, but we should probably merge.
+        # However, typically widget_settings.theme_config is a complete object from the DB.
+        # To be safe, we check keys.
+        ws_config = widget_settings.theme_config
+        if isinstance(ws_config, dict):
+            theme_config["mode"] = ws_config.get("mode", theme_config["mode"])
+            if isinstance(ws_config.get("light"), dict):
+                theme_config["light"].update(ws_config["light"])
+            if isinstance(ws_config.get("dark"), dict):
+                theme_config["dark"].update(ws_config["dark"])
+
         if widget_settings.primary_color:
             theme["primaryColor"] = widget_settings.primary_color
         if widget_settings.secondary_color:
             theme["secondaryColor"] = widget_settings.secondary_color
-        if widget_settings.theme_config:
-            # Full theme config for dark/light mode
-            theme["config"] = widget_settings.theme_config
-            theme_config = widget_settings.theme_config
+
+        theme["config"] = theme_config
+
     elif widget_cfg:
         # Fallback to legacy config
         if widget_cfg.primary_color:
