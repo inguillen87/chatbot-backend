@@ -1,29 +1,39 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 
-from flask import Blueprint, g, jsonify, request, session
+from flask import Blueprint, g, jsonify, request, session, abort, make_response
 from flask_cors import cross_origin
-from sqlalchemy import func
+from flask_login import current_user
+from sqlalchemy import func, or_
 
 from config import ALLOWED_ORIGINS
+from database import db
 from middleware import require_tenant
-from models import CatalogoItem, TenantProfile, User, CatalogoModalidad
+from models import (
+    CatalogoItem,
+    MarketCart,
+    MarketCartItem,
+    TenantProfile,
+    User,
+    CatalogoModalidad
+)
 from routes.catalogo import _formatear_producto
 from routes.productos import (
     _lookup_tenant_by_slug,
-    _first_tenant_with_owner,
-    _resolve_public_owner,
     _resolve_authenticated_user,
     _tenant_for_user,
     _tenant_slug_from_url,
 )
 from services.catalog_seed import ensure_seed_catalog
-from services.cart import add_item, clear_cart, get_summary, remove_item, update_item
 from services.common_utils import parse_precio_flexible
 from services.rewards_demo import reward_profile_for_tenant
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 from utils.tenant import get_current_tenant_profile
+
+carrito_bp = Blueprint('carrito_bp', __name__, url_prefix='/carrito')
 
 _CORS_ALLOWED_HEADERS = [
     "Content-Type",
@@ -33,6 +43,8 @@ _CORS_ALLOWED_HEADERS = [
     "X-Chat-Session-Id",
     "X-Anon-Id",
     "Anon-Id",
+    "x-anon-id",
+    "anon-id",
     "Cache-Control",
     "token",
     "X-Tenant",
@@ -43,6 +55,14 @@ _CORS_ALLOWED_HEADERS = [
 
 _CORS_EXPOSE_HEADERS = ["Content-Type", "Authorization", "X-Anon-Id", "Anon-Id"]
 
+def _cors_kwargs(methods: list[str]) -> dict:
+    return {
+        "origins": ALLOWED_ORIGINS,
+        "supports_credentials": True,
+        "allow_headers": _CORS_ALLOWED_HEADERS,
+        "expose_headers": _CORS_EXPOSE_HEADERS,
+        "methods": methods,
+    }
 
 def _tenant_missing_response():
     return (
@@ -59,140 +79,474 @@ def _tenant_missing_response():
         400,
     )
 
+def _resolve_session_identifier() -> str:
+    """Resolve a stable identifier for the cart owner.
 
-def _cors_kwargs(methods: list[str]) -> dict:
-    return {
-        "origins": ALLOWED_ORIGINS,
-        "supports_credentials": True,
-        "allow_headers": _CORS_ALLOWED_HEADERS,
-        "expose_headers": _CORS_EXPOSE_HEADERS,
-        "methods": methods,
-    }
+    Prioritizes the explicit `X-Anon-Id` header (or cookie) sent by the
+    frontend, which persists across browser sessions better than the Flask
+    session cookie. Falls back to the Flask session if no anonymous ID is provided.
+    """
+    # 1. Try Anon-Id from headers (most reliable for PWA/Widgets)
+    anon_id = (
+        request.headers.get("X-Anon-Id")
+        or request.headers.get("Anon-Id")
+        or request.headers.get("x-anon-id")
+        or request.headers.get("anon-id")
+    )
+    if anon_id:
+        return anon_id
 
+    # 2. Try cookie (if standard web client)
+    anon_id_cookie = request.cookies.get("anon_id") or request.cookies.get("chatboc_anon_id")
+    if anon_id_cookie:
+        return anon_id_cookie
 
-carrito_bp = Blueprint('carrito_bp', __name__, url_prefix='/carrito')
+    # 3. Fallback to flask session (volatile if cookies blocked)
+    session_id = session.get("market_session_id")
+    if not session_id:
+        import secrets
+        session_id = secrets.token_hex(16)
+        session["market_session_id"] = session_id
+        session.modified = True
+    return session_id
 
+def _get_or_create_db_cart(
+    tenant: TenantProfile,
+    user: Optional[User] = None,
+    *,
+    create_if_missing: bool = True,
+) -> Optional[MarketCart]:
+    """Return the open MarketCart for the given tenant/user combination."""
 
-def _get_session_cart_data() -> Dict[str, list]:
-    pyme_carts_data = session.get('carritos_pymes')
-    if not isinstance(pyme_carts_data, dict):
-        pyme_carts_data = {}
-        session['carritos_pymes'] = pyme_carts_data
-    return pyme_carts_data
+    session_id = _resolve_session_identifier()
+    user_id = getattr(user, "id", None) if user and user.is_authenticated else None
 
+    base_query = MarketCart.query.filter(
+        MarketCart.tenant_id == tenant.id,
+        MarketCart.status == "open",
+    )
 
-def _persist_session_cart_data(pyme_carts_data: Dict[str, list]) -> None:
-    session['carritos_pymes'] = pyme_carts_data
-    session.modified = True
+    cart = None
+    # 1. Try to find by User ID if authenticated
+    if user_id:
+        cart = (
+            base_query.filter(MarketCart.user_id == user_id)
+            .order_by(MarketCart.updated_at.desc())
+            .first()
+        )
 
+    # 2. Try to find by Session ID
+    if cart is None:
+        cart = (
+            base_query.filter(MarketCart.session_id == session_id)
+            .order_by(MarketCart.updated_at.desc())
+            .first()
+        )
 
-def _normalize_quantity(value: object, default: int = 1, min_value: int = 1) -> int:
-    try:
-        cantidad = int(value)
-    except (TypeError, ValueError):
-        cantidad = default
-    return max(cantidad, min_value)
+    # 3. Create if missing
+    if cart is None:
+        if not create_if_missing:
+            return None
 
+        cart = MarketCart(
+            tenant_id=tenant.id,
+            user_id=user_id,
+            session_id=session_id,
+            contact_phone=getattr(user, "telefono", None) if user else None,
+            contact_name=getattr(user, "name", None) if user else None,
+        )
+        db.session.add(cart)
+        db.session.commit()
+    else:
+        # Update session/user association if needed
+        modified = False
+        if cart.session_id != session_id:
+            cart.session_id = session_id
+            modified = True
+        if user_id and cart.user_id is None:
+            cart.user_id = user_id
+            modified = True
+        if modified:
+            db.session.commit()
 
-def _cart_key(tenant: Optional[TenantProfile]) -> str:
-    return str(getattr(tenant, 'id', 0))
-
-
-def _tenant_cart(data: Dict[str, list], tenant: Optional[TenantProfile]) -> List[dict]:
-    key = _cart_key(tenant)
-    cart = data.get(key)
-    if not isinstance(cart, list):
-        cart = []
-        data[key] = cart
     return cart
 
+def _product_query_for_tenant(owner: User, tenant: TenantProfile):
+    filters = [CatalogoItem.tenant_id == tenant.id, CatalogoItem.user_id == owner.id]
+    # Include unavailable items to show in cart (maybe disabled later) but primarily we filter available in catalog
+    filters.append(or_(CatalogoItem.disponible.is_(True), CatalogoItem.disponible.is_(None)))
+    return CatalogoItem.query.options(*CatalogoItem.legacy_safe_options()).filter(*filters)
 
-def _lookup_catalog_item(owner: User, payload: Dict[str, object], tenant: Optional[TenantProfile]) -> Optional[CatalogoItem]:
-    identifier = payload.get('catalogo_item_id') or payload.get('item_id')
-    sku = payload.get('sku')
-    nombre = payload.get('nombre')
+def _pricing_snapshot(product: CatalogoItem) -> Dict[str, object]:
+    formatted = _formatear_producto({
+        "nombre": product.nombre,
+        "categoria": product.categoria,
+        "descripcion": product.descripcion,
+        "sku": product.sku,
+        "unidad": product.unidad,
+        "precio_str": product.precio,
+        "cantidad": product.cantidad,
+        "marca": product.marca,
+        "imagen_url": product.imagen_url,
+        "descripcion_corta": product.descripcion_corta,
+        "promocion_info": product.promocion_info,
+    })
 
-    query = CatalogoItem.query.options(*CatalogoItem.legacy_safe_options()).filter(
-        CatalogoItem.user_id == owner.id
-    )
-    if tenant:
-        query = query.filter(func.coalesce(CatalogoItem.tenant_id, tenant.id) == tenant.id)
-    if identifier is not None:
-        try:
-            identifier = int(identifier)  # type: ignore[assignment]
-        except (TypeError, ValueError):
-            identifier = None
+    precio_unitario = formatted.get("precio_unitario")
+    moneda = formatted.get("moneda") or "ARS"
+    modalidad = formatted.get("modalidad") or product.modalidad
+    precio_monetario = None
+    precio_puntos = None
+
+    if isinstance(precio_unitario, (int, float)):
+        if moneda == "PTS":
+            precio_puntos = int(precio_unitario)
         else:
-            item = query.filter(CatalogoItem.id == identifier).first()
-            if item:
-                return item
+            precio_monetario = float(precio_unitario)
+    else:
+        _, precio_float, _ = parse_precio_flexible(str(precio_unitario))
+        if precio_float is not None:
+            if moneda == "PTS":
+                precio_puntos = int(precio_float)
+            else:
+                precio_monetario = float(precio_float)
 
-    if sku:
-        sku_text = str(sku).strip().lower()
-        if sku_text:
-            item = query.filter(func.lower(CatalogoItem.sku) == sku_text).first()
-            if item:
-                return item
+    return {
+        "price_text": product.precio,
+        "price_monetary": precio_monetario,
+        "price_points": precio_puntos,
+        "currency": moneda,
+        "modalidad": modalidad,
+        "formatted": formatted,
+    }
 
-    if nombre:
-        nombre_text = str(nombre).strip().lower()
-        if nombre_text:
-            return query.filter(func.lower(CatalogoItem.nombre) == nombre_text).first()
+def _db_cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = None) -> Dict[str, object]:
+    items = list(cart.items.all())
+    product_ids = [item.product_id for item in items if item.product_id]
+    products: Dict[int, CatalogoItem] = {}
+    if product_ids:
+        rows = (
+            _product_query_for_tenant(owner, cart.tenant)
+            .filter(CatalogoItem.id.in_(product_ids))
+            .all()
+        )
+        products = {row.id: row for row in rows}
 
-    return None
+    enriched: List[Dict[str, object]] = []
+    totals_by_currency: Dict[str, float] = {}
+    total_points = 0.0
+    total_count = 0
+    total_monetary_accum = 0.0
 
+    for entry in items:
+        product = products.get(entry.product_id)
+        formatted = _pricing_snapshot(product) if product else None
+
+        # Fallback values from entry if product deleted
+        price_text = entry.price_text
+        price_monetary = entry.price_monetary
+        price_points = entry.price_points
+        currency = entry.currency or (formatted["currency"] if formatted else "ARS")
+        modalidad = entry.modalidad or (formatted["modalidad"] if formatted else "venta")
+
+        if formatted:
+            price_text = formatted["formatted"].get("precio_texto") or formatted["formatted"].get("precio_unitario")
+            if price_monetary is None:
+                price_monetary = formatted["price_monetary"]
+            if price_points is None:
+                price_points = formatted["price_points"]
+
+        subtotal = None
+        subtotal_points = None
+
+        if currency == "PTS" or modalidad == "canje":
+            if price_points is not None:
+                subtotal_points = float(price_points) * entry.quantity
+                total_points += subtotal_points
+        elif price_monetary is not None:
+            subtotal = float(price_monetary) * entry.quantity
+            totals_by_currency[currency] = totals_by_currency.get(currency, 0.0) + subtotal
+            if currency == "ARS": # Assumption for total_estimado legacy field
+                total_monetary_accum += subtotal
+
+        total_count += entry.quantity
+
+        enriched.append({
+            "catalogo_item_id": entry.product_id,
+            "nombre": product.nombre if product else entry.name_snapshot,
+            "cantidad": entry.quantity,
+            "precio_unitario": price_monetary,
+            "precio_unitario_texto": price_text,
+            "subtotal": subtotal,
+            "subtotal_puntos": subtotal_points,
+            "moneda": currency,
+            "modalidad": modalidad,
+            "imagen_url": formatted["formatted"].get("imagen_url") if formatted else None,
+            "descripcion": formatted["formatted"].get("descripcion") if formatted else None,
+            "categoria": formatted["formatted"].get("categoria") if formatted else None,
+        })
+
+    # Legacy fields + New fields
+    resumen = {
+        "tenant_id": cart.tenant_id,
+        "cart_id": cart.id,
+        "items": enriched,
+        "items_count": total_count,
+        "totales_monedas": {k: round(v, 2) for k, v in totals_by_currency.items()},
+        "total_estimado": round(total_monetary_accum, 2),
+        "total_puntos_estimado": total_points,
+        "moneda": "ARS", # Legacy default
+        "badge_count": total_count,
+        "checkout_options": {
+            "mercadopago_ready": True,
+            "gateway_hint": "Mercado Pago preference/token flow listo para demo",
+            "points_enabled": total_points > 0,
+        },
+        "ui_signals": {
+            "event": event or "refresh",
+            "animation": "cart-burst" if event else "soft-pulse",
+            "badge": total_count, # Legacy expects direct value sometimes
+            "toast": "Carrito actualizado",
+        },
+    }
+
+    resumen["recompensas_demo"] = reward_profile_for_tenant(cart.tenant_id, total_points)
+    return resumen
 
 def _resolve_owner_and_seed() -> Tuple[Optional[TenantProfile], Optional[User]]:
+    """Resolves tenant and owner using standard middleware or headers."""
     user = _resolve_authenticated_user()
     tenant = _tenant_for_user(user)
 
     if not tenant:
         tenant = getattr(g, "tenant_profile", None) or get_current_tenant_profile()
 
+    if not tenant:
+        # Fallback to headers if not set by middleware
+        tenant_slug_hint = (
+            request.headers.get("X-Tenant")
+            or request.args.get("tenant_slug")
+            or request.args.get("tenant")
+            or _tenant_slug_from_url(request.referrer)
+        )
+        if tenant_slug_hint:
+            try:
+                tenant = resolve_tenant_only(tenant_slug=tenant_slug_hint, require_explicit_slug=True)
+            except TenantResolutionError:
+                pass
+
     owner = None
     if tenant:
         owner = tenant.municipio or tenant.pyme or user
-
-    if tenant and owner:
-        g.tenant_profile = tenant
-        g.tenant_profile_slug = getattr(tenant, "slug", None)
+        # Seed catalog if needed
         ensure_seed_catalog(owner, tenant)
-        return tenant, owner
+        g.tenant_profile = tenant # Cache for this request
 
-    widget_token = (
-        request.headers.get("X-Widget-Token")
-        or request.headers.get("X-Entity-Token")
-        or request.args.get("widget_token")
-        or request.args.get("entity_token")
-        or request.args.get("entityToken")
-    )
+    return tenant, owner
 
-    tenant_slug_hint = (
-        request.headers.get("X-Tenant")
-        or request.args.get("tenant_slug")
-        or request.args.get("tenant")
-        or _tenant_slug_from_url(request.referrer)
-    )
+@carrito_bp.route('', methods=['GET', 'POST', 'OPTIONS'])
+@carrito_bp.route('/', methods=['GET', 'POST', 'OPTIONS'])
+@cross_origin(**_cors_kwargs(["GET", "POST", "OPTIONS"]))
+@require_tenant
+def carrito_root():
+    if request.method == 'OPTIONS':
+        return "", 204
+    if request.method == 'GET':
+        return resumen()
+    return agregar()
 
+@carrito_bp.route('/agregar', methods=['POST', 'OPTIONS'])
+@cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
+@require_tenant
+def agregar():
+    if request.method == 'OPTIONS':
+        return "", 204
+
+    tenant, owner = _resolve_owner_and_seed()
+    if not tenant or not owner:
+        return _tenant_missing_response()
+
+    payload = request.get_json(silent=True) or {}
+    # Support multiple formats
+    item_id = payload.get('catalogo_item_id') or payload.get('item_id') or payload.get('product_id')
+    cantidad = 1
     try:
-        tenant = resolve_tenant_only(
-            tenant_slug=tenant_slug_hint,
-            widget_token=widget_token,
-            require_explicit_slug=True,
+        cantidad = int(payload.get('cantidad', 1))
+        if cantidad < 1: cantidad = 1
+    except:
+        pass
+
+    if not item_id:
+        return jsonify({'error': 'catalogo_item_id requerido'}), 400
+
+    product = _product_query_for_tenant(owner, tenant).filter(CatalogoItem.id == item_id).first()
+    if not product:
+        return jsonify({'error': 'Producto no encontrado'}), 404
+
+    cart = _get_or_create_db_cart(tenant, current_user, create_if_missing=True)
+    if cart.status != "open":
+        return jsonify({"error": "El carrito ya está confirmado o cancelado"}), 400
+
+    cart_item = cart.items.filter(MarketCartItem.product_id == product.id).first()
+    pricing = _pricing_snapshot(product)
+
+    if cart_item:
+        cart_item.quantity += cantidad
+    else:
+        cart_item = MarketCartItem(
+            cart_id=cart.id,
+            product_id=product.id,
+            quantity=cantidad,
+            price_text=pricing.get("price_text"),
+            price_monetary=pricing.get("price_monetary"),
+            price_points=pricing.get("price_points"),
+            currency=pricing.get("currency"),
+            modalidad=pricing.get("modalidad"),
+            name_snapshot=product.nombre,
         )
-    except TenantResolutionError:
-        tenant = None
+        db.session.add(cart_item)
 
-    if tenant:
-        owner = tenant.municipio or tenant.pyme
-        if owner:
-            g.tenant_profile = tenant
-            g.tenant_profile_slug = getattr(tenant, "slug", None)
-            ensure_seed_catalog(owner, tenant)
-            return tenant, owner
+    db.session.commit()
+    return jsonify(_db_cart_summary(cart, owner, event="add"))
 
-    return None, None
+@carrito_bp.route('/actualizar', methods=['POST', 'OPTIONS'])
+@cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
+@require_tenant
+def actualizar():
+    if request.method == 'OPTIONS':
+        return "", 204
 
+    tenant, owner = _resolve_owner_and_seed()
+    if not tenant or not owner:
+        return _tenant_missing_response()
+
+    payload = request.get_json(silent=True) or {}
+    item_id = payload.get('catalogo_item_id') or payload.get('item_id') or payload.get('product_id')
+    try:
+        cantidad = int(payload.get('cantidad', 0))
+    except:
+        return jsonify({'error': 'Cantidad inválida'}), 400
+
+    if not item_id:
+        return jsonify({'error': 'catalogo_item_id requerido'}), 400
+
+    cart = _get_or_create_db_cart(tenant, current_user, create_if_missing=False)
+    if not cart:
+        return jsonify({'error': 'Carrito no encontrado'}), 404
+
+    cart_item = cart.items.filter(MarketCartItem.product_id == item_id).first()
+    if not cart_item:
+        return jsonify({'error': 'Item no encontrado en el carrito'}), 404
+
+    if cantidad <= 0:
+        db.session.delete(cart_item)
+    else:
+        cart_item.quantity = cantidad
+
+    db.session.commit()
+    return jsonify(_db_cart_summary(cart, owner, event="update"))
+
+@carrito_bp.route('/eliminar', methods=['POST', 'OPTIONS'])
+@cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
+@require_tenant
+def eliminar():
+    if request.method == 'OPTIONS':
+        return "", 204
+
+    tenant, owner = _resolve_owner_and_seed()
+    if not tenant or not owner:
+        return _tenant_missing_response()
+
+    payload = request.get_json(silent=True) or {}
+    item_id = payload.get('catalogo_item_id') or payload.get('item_id') or payload.get('product_id')
+
+    if not item_id:
+        return jsonify({'error': 'catalogo_item_id requerido'}), 400
+
+    cart = _get_or_create_db_cart(tenant, current_user, create_if_missing=False)
+    if not cart:
+        return jsonify({'error': 'Carrito no encontrado'}), 404
+
+    cart_item = cart.items.filter(MarketCartItem.product_id == item_id).first()
+    if cart_item:
+        db.session.delete(cart_item)
+        db.session.commit()
+
+    return jsonify(_db_cart_summary(cart, owner, event="remove"))
+
+@carrito_bp.route('/vaciar', methods=['POST', 'OPTIONS'])
+@cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
+@require_tenant
+def vaciar():
+    if request.method == 'OPTIONS':
+        return "", 204
+
+    tenant, owner = _resolve_owner_and_seed()
+    if not tenant or not owner:
+        return _tenant_missing_response()
+
+    cart = _get_or_create_db_cart(tenant, current_user, create_if_missing=False)
+    if cart:
+        for item in list(cart.items.all()):
+            db.session.delete(item)
+        db.session.commit()
+        return jsonify(_db_cart_summary(cart, owner, event="clear"))
+
+    # Return empty summary even if cart didn't exist
+    return jsonify({
+        "tenant_id": tenant.id,
+        "items": [],
+        "items_count": 0,
+        "total_estimado": 0.0,
+        "badge_count": 0,
+        "recompensas_demo": reward_profile_for_tenant(tenant.id, 0.0),
+        "ui_signals": {"event": "clear", "animation": "cart-burst", "badge": 0, "toast": "Carrito vaciado"},
+        "checkout_options": {"points_enabled": False}
+    })
+
+@carrito_bp.route('/resumen', methods=['GET'])
+@cross_origin(**_cors_kwargs(["GET"]))
+@require_tenant
+def resumen():
+    tenant, owner = _resolve_owner_and_seed()
+    if not tenant or not owner:
+        return _tenant_missing_response()
+
+    cart = _get_or_create_db_cart(tenant, current_user, create_if_missing=False)
+    if not cart:
+        # Empty response
+        return jsonify({
+            "tenant_id": tenant.id,
+            "items": [],
+            "items_count": 0,
+            "total_estimado": 0.0,
+            "badge_count": 0,
+            "recompensas_demo": reward_profile_for_tenant(tenant.id, 0.0),
+            "ui_signals": {"event": "refresh", "animation": "idle", "badge": 0},
+            "checkout_options": {"points_enabled": False}
+        })
+
+    return jsonify(_db_cart_summary(cart, owner))
+
+@carrito_bp.route('/pwa/public/<tenant_slug>/carrito', methods=['GET', 'POST', 'OPTIONS'])
+@cross_origin(**_cors_kwargs(["GET", "POST", "OPTIONS"]))
+def carrito_pwa_public(tenant_slug: str):
+    """Alias legacy para exponer el carrito público por slug."""
+    if request.method == 'OPTIONS':
+        return "", 204
+
+    tenant, owner = _resolve_public_tenant_by_slug(tenant_slug)
+    if not tenant or not owner:
+        return jsonify({'error': 'tenant_not_found'}), 404
+
+    # Inject context manually since require_tenant middleware might not have run
+    g.tenant_profile = tenant
+
+    if request.method == 'GET':
+        return resumen()
+
+    # POST
+    return agregar()
 
 def _resolve_public_tenant_by_slug(
     tenant_slug: str,
@@ -214,336 +568,3 @@ def _resolve_public_tenant_by_slug(
         ensure_seed_catalog(owner, tenant)
 
     return tenant, owner
-
-
-def _enrich_cart_summary(pyme_carts_data: Dict[str, list], tenant: TenantProfile, owner: User) -> Dict[str, object]:
-    cart = list(_tenant_cart(pyme_carts_data, tenant))
-    if not cart:
-        return {
-            'tenant_id': tenant.id,
-            'items': [],
-            'items_count': 0,
-            'total_estimado': 0.0,
-            'moneda': 'ARS',
-            'badge_count': 0,
-            'total_puntos_estimado': 0.0,
-            'recompensas_demo': reward_profile_for_tenant(tenant.id, 0.0),
-        }
-
-    item_ids = [entry.get('catalogo_item_id') for entry in cart if entry.get('catalogo_item_id')]
-    catalog_items: Dict[int, CatalogoItem] = {}
-    if item_ids:
-        rows = (
-            CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())
-            .filter(
-                CatalogoItem.user_id == owner.id,
-                func.coalesce(CatalogoItem.tenant_id, tenant.id) == tenant.id,
-                CatalogoItem.id.in_(item_ids),
-            )
-            .all()
-        )
-        catalog_items = {row.id: row for row in rows}
-
-    enriched = []
-    total = 0.0
-    total_count = 0
-    totals_by_currency: Dict[str, float] = {}
-    total_points = 0.0
-    for entry in cart:
-        item_id = entry.get('catalogo_item_id')
-        cantidad = _normalize_quantity(entry.get('cantidad', 1))
-        total_count += cantidad
-        catalog_item = catalog_items.get(item_id)
-        if not catalog_item:
-            continue
-
-        formatted = _formatear_producto(
-            {
-                'nombre': catalog_item.nombre,
-                'categoria': catalog_item.categoria,
-                'descripcion': catalog_item.descripcion,
-                'sku': catalog_item.sku,
-                'unidad': catalog_item.unidad,
-                'precio_str': catalog_item.precio,
-                'cantidad': catalog_item.cantidad,
-                'marca': catalog_item.marca,
-                'imagen_url': catalog_item.imagen_url,
-                'descripcion_corta': catalog_item.descripcion_corta,
-                'promocion_info': catalog_item.promocion_info,
-            }
-        )
-        precio_unitario = formatted.get('precio_unitario')
-        precio_float = None
-        if isinstance(precio_unitario, (int, float)):
-            precio_float = float(precio_unitario)
-        else:
-            _, precio_float, _ = parse_precio_flexible(str(precio_unitario))
-
-        moneda = formatted.get('moneda') or 'ARS'
-        modalidad = CatalogoModalidad.from_legacy(formatted.get('modalidad'))
-        subtotal = precio_float * cantidad if precio_float is not None else None
-        subtotal_puntos = subtotal if moneda == 'PTS' else None
-        if modalidad is CatalogoModalidad.DONACION:
-            subtotal = None
-            subtotal_puntos = None
-        if subtotal is not None:
-            if moneda == 'PTS' and modalidad is CatalogoModalidad.CANJE:
-                total_points += subtotal
-            elif moneda != 'PTS':
-                totals_by_currency[moneda] = totals_by_currency.get(moneda, 0.0) + subtotal
-                total += subtotal
-
-        enriched.append(
-            {
-                'catalogo_item_id': item_id,
-                'nombre': formatted.get('nombre'),
-                'descripcion': formatted.get('descripcion'),
-                'cantidad': cantidad,
-                'precio_unitario': precio_float,
-                'precio_unitario_texto': catalog_item.precio,
-                'subtotal': subtotal if moneda != 'PTS' else None,
-                'subtotal_puntos': subtotal_puntos,
-                'imagen_url': formatted.get('imagen_url'),
-                'categoria': formatted.get('categoria'),
-                'moneda': moneda,
-                'modalidad': modalidad.value,
-            }
-        )
-
-    return {
-        'tenant_id': tenant.id,
-        'items': enriched,
-        'items_count': total_count,
-        'total_estimado': round(total, 2),
-        'totales_monedas': {k: round(v, 2) for k, v in totals_by_currency.items()},
-        'total_puntos_estimado': round(total_points, 2),
-        'moneda': 'ARS',
-        'badge_count': total_count,
-        'recompensas_demo': reward_profile_for_tenant(tenant.id, total_points),
-        'checkout_options': {
-            'mercadopago_ready': True,
-            'gateway_hint': 'Mercado Pago preference/token flow listo para demo',
-            'points_enabled': total_points > 0,
-        },
-        'ui_signals': {
-            'animation': 'cart-burst',
-            'toast': 'Agregado al carrito',
-        },
-    }
-
-
-def _carrito_summary_response():
-    tenant, owner = _resolve_owner_and_seed()
-    pyme_carts_data = _get_session_cart_data()
-
-    if tenant and owner:
-        return jsonify(_enrich_cart_summary(pyme_carts_data, tenant, owner))
-
-    return _tenant_missing_response()
-
-
-@carrito_bp.route('', methods=['GET', 'POST', 'OPTIONS'])
-@carrito_bp.route('/', methods=['GET', 'POST', 'OPTIONS'])
-@cross_origin(**_cors_kwargs(["GET", "POST", "OPTIONS"]))
-@require_tenant
-def carrito_root():
-    """Permite consultar el carrito (GET) o agregar items (POST) desde la raíz."""
-    if request.method == 'OPTIONS':
-        return "", 204
-
-    if request.method == 'GET':
-        return _carrito_summary_response()
-    return agregar()
-
-
-@carrito_bp.route('/pwa/public/<tenant_slug>/carrito', methods=['GET', 'POST', 'OPTIONS'])
-@cross_origin(**_cors_kwargs(["GET", "POST", "OPTIONS"]))
-def carrito_pwa_public(tenant_slug: str):
-    """Alias legacy para exponer el carrito público por slug."""
-
-    if request.method == 'OPTIONS':
-        return "", 204
-
-    tenant, owner = _resolve_public_tenant_by_slug(tenant_slug)
-    if tenant is None:
-        return jsonify({'error': 'tenant_not_found'}), 404
-    if owner is None:
-        return jsonify({'error': 'owner_not_found', 'detail': 'Tenant sin propietario configurado'}), 404
-
-    pyme_carts_data = _get_session_cart_data()
-    cart = _tenant_cart(pyme_carts_data, tenant)
-
-    if request.method == 'GET':
-        return jsonify(_enrich_cart_summary(pyme_carts_data, tenant, owner))
-
-    data = request.get_json(silent=True) or {}
-    item = _lookup_catalog_item(owner, data, tenant)
-    if not item:
-        return jsonify({'error': 'Producto no encontrado'}), 404
-
-    cantidad = _normalize_quantity(data.get('cantidad', 1))
-    for entry in cart:
-        if entry.get('catalogo_item_id') == item.id:
-            entry['cantidad'] = entry.get('cantidad', 0) + cantidad
-            break
-    else:
-        cart.append({'catalogo_item_id': item.id, 'cantidad': cantidad})
-
-    _persist_session_cart_data(pyme_carts_data)
-    return jsonify(_enrich_cart_summary(pyme_carts_data, tenant, owner))
-
-
-@carrito_bp.route('/agregar', methods=['POST', 'OPTIONS'])
-@cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
-@require_tenant
-def agregar():
-    data = request.get_json(silent=True) or {}
-    tenant, owner = _resolve_owner_and_seed()
-
-    if request.method == 'OPTIONS':
-        return "", 204
-
-    if not tenant or not owner:
-        return _tenant_missing_response()
-
-    if owner:
-        item = _lookup_catalog_item(owner, data, tenant)
-        if not item:
-            return jsonify({'error': 'Producto no encontrado'}), 404
-
-        cantidad = _normalize_quantity(data.get('cantidad', 1))
-        pyme_carts_data = _get_session_cart_data()
-        cart = _tenant_cart(pyme_carts_data, tenant)
-        for entry in cart:
-            if entry.get('catalogo_item_id') == item.id:
-                entry['cantidad'] = entry.get('cantidad', 0) + cantidad
-                break
-        else:
-            cart.append({'catalogo_item_id': item.id, 'cantidad': cantidad})
-
-        _persist_session_cart_data(pyme_carts_data)
-        return _carrito_summary_response()
-
-    # Compatibilidad con datos heredados basados en nombre
-    nombre = data.get('nombre')
-    cantidad = _normalize_quantity(data.get('cantidad', 1))
-    if not nombre:
-        return jsonify({'error': 'nombre requerido'}), 400
-    pyme_carts_data = _get_session_cart_data()
-    add_item(pyme_carts_data, nombre, cantidad)
-    _persist_session_cart_data(pyme_carts_data)
-    return _carrito_summary_response()
-
-
-@carrito_bp.route('/actualizar', methods=['POST', 'OPTIONS'])
-@cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
-@require_tenant
-def actualizar():
-    data = request.get_json(silent=True) or {}
-    tenant, owner = _resolve_owner_and_seed()
-
-    if request.method == 'OPTIONS':
-        return "", 204
-
-    if not tenant or not owner:
-        return _tenant_missing_response()
-
-    if owner:
-        try:
-            item_id = int(data.get('catalogo_item_id') or data.get('item_id'))
-        except (TypeError, ValueError):
-            item_id = None
-        if item_id is None:
-            return jsonify({'error': 'catalogo_item_id requerido'}), 400
-
-        cantidad = _normalize_quantity(data.get('cantidad', 0), default=0, min_value=0)
-        pyme_carts_data = _get_session_cart_data()
-        cart = _tenant_cart(pyme_carts_data, tenant)
-        for entry in list(cart):
-            if entry.get('catalogo_item_id') == item_id:
-                if cantidad <= 0:
-                    cart.remove(entry)
-                else:
-                    entry['cantidad'] = cantidad
-                _persist_session_cart_data(pyme_carts_data)
-                return _carrito_summary_response()
-        return jsonify({'error': 'Item no encontrado en el carrito'}), 404
-
-    nombre = data.get('nombre')
-    cantidad = _normalize_quantity(data.get('cantidad', 1), default=1, min_value=0)
-    if not nombre:
-        return jsonify({'error': 'nombre requerido'}), 400
-    pyme_carts_data = _get_session_cart_data()
-    update_item(pyme_carts_data, nombre, cantidad)
-    _persist_session_cart_data(pyme_carts_data)
-    return _carrito_summary_response()
-
-
-@carrito_bp.route('/eliminar', methods=['POST', 'OPTIONS'])
-@cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
-@require_tenant
-def eliminar():
-    data = request.get_json(silent=True) or {}
-    tenant, owner = _resolve_owner_and_seed()
-
-    if request.method == 'OPTIONS':
-        return "", 204
-
-    if not tenant or not owner:
-        return _tenant_missing_response()
-
-    if owner:
-        try:
-            item_id = int(data.get('catalogo_item_id') or data.get('item_id'))
-        except (TypeError, ValueError):
-            item_id = None
-        if item_id is None:
-            return jsonify({'error': 'catalogo_item_id requerido'}), 400
-
-        pyme_carts_data = _get_session_cart_data()
-        cart = _tenant_cart(pyme_carts_data, tenant)
-        removed = False
-        for entry in list(cart):
-            if entry.get('catalogo_item_id') == item_id:
-                cart.remove(entry)
-                removed = True
-        if removed:
-            _persist_session_cart_data(pyme_carts_data)
-            return _carrito_summary_response()
-        return jsonify({'error': 'Item no encontrado en el carrito'}), 404
-
-    nombre = data.get('nombre')
-    if not nombre:
-        return jsonify({'error': 'nombre requerido'}), 400
-    pyme_carts_data = _get_session_cart_data()
-    remove_item(pyme_carts_data, nombre)
-    _persist_session_cart_data(pyme_carts_data)
-    return _carrito_summary_response()
-
-
-@carrito_bp.route('/vaciar', methods=['POST', 'OPTIONS'])
-@cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
-@require_tenant
-def vaciar():
-    tenant, owner = _resolve_owner_and_seed()
-
-    if request.method == 'OPTIONS':
-        return "", 204
-    pyme_carts_data = _get_session_cart_data()
-
-    if not tenant or not owner:
-        return _tenant_missing_response()
-
-    cart = _tenant_cart(pyme_carts_data, tenant)
-    cart.clear()
-
-    _persist_session_cart_data(pyme_carts_data)
-    return _carrito_summary_response()
-
-
-@carrito_bp.route('/resumen', methods=['GET'])
-@cross_origin(**_cors_kwargs(["GET"]))
-@require_tenant
-def resumen():
-    return _carrito_summary_response()
-
