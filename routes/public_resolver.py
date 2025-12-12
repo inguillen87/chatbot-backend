@@ -248,6 +248,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "attributes": attrs,
         "embed_snippet": embed_snippet,
         "theme": theme,
+        "theme_config": cfg.get("theme_config", {}),
+        "cta_messages": cfg.get("cta_messages", []),
         "marketplace": marketplace,
         "widget_token": canonical_token,
         "widget_token_cookie_name": current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token"),
@@ -276,6 +278,14 @@ def _normalize_widget_config(config: dict | None, widget_settings=None) -> dict:
     if copy_config is None:
         cfg.setdefault("copy", {})
 
+    cta_messages = cfg.get("cta_messages")
+    if not isinstance(cta_messages, list):
+        cfg["cta_messages"] = []
+
+    theme_config = cfg.get("theme_config") if isinstance(cfg.get("theme_config"), dict) else None
+    if theme_config is None:
+        cfg.setdefault("theme_config", {})
+
     if isinstance(widget_settings, WidgetSettings):
         cfg.update(widget_settings.to_config_dict())
 
@@ -303,6 +313,7 @@ def resolve_tenant_endpoint():
     tenant_info.setdefault(
         "config", _normalize_widget_config(tenant.configuracion, tenant.widget_settings)
     )
+    tenant_info["theme"] = _theme_from_tenant(tenant)
     tenant_info["marketplace"] = _marketplace_meta(tenant)
 
     # Garantizar que el frontend reciba una estructura de menú consistente
@@ -311,6 +322,7 @@ def resolve_tenant_endpoint():
     # explotar en una desestructuración.
     config = _normalize_widget_config(tenant_info.get("config"), tenant.widget_settings)
     tenant_info["config"] = config
+    tenant_info.setdefault("theme", _theme_from_tenant(tenant))
 
     response = jsonify(
         {
@@ -429,6 +441,7 @@ def tenant_profile():
     tenant_info.setdefault(
         "config", _normalize_widget_config(tenant.configuracion, tenant.widget_settings)
     )
+    tenant_info["theme"] = _theme_from_tenant(tenant)
     tenant_info["marketplace"] = _marketplace_meta(tenant)
 
     # Garantizar que el frontend reciba una estructura de menú consistente
@@ -447,6 +460,7 @@ def tenant_profile():
             config["default_open"] = tenant.widget_settings.default_open
 
     tenant_info["config"] = config
+    tenant_info.setdefault("theme", _theme_from_tenant(tenant))
 
     canonical_widget_token = _canonical_widget_token(tenant, widget_token)
 

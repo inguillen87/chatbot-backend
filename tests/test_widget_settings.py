@@ -91,6 +91,9 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertEqual(attrs["data-font-family"], payload["font_family"])
         self.assertEqual(attrs["data-bubble-shape"], payload["bubble_shape"])
         self.assertEqual(attrs["data-default-open"], "true")
+        self.assertIn("theme_config", widget_data["widget"])
+        self.assertIn("cta_messages", widget_data["widget"])
+        self.assertIsInstance(widget_data["widget"]["cta_messages"], list)
 
     def test_public_widget_config_allows_querystring_tenant_fallback(self):
         resp = self.client.get(
