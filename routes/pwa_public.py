@@ -648,7 +648,9 @@ def public_tenant_widget_config(tenant_slug: str):
         }
     }
 
-    theme_config = DEFAULT_THEME_CONFIG.copy()
+    # Use deepcopy to avoid mutating the global DEFAULT_THEME_CONFIG across requests
+    import copy
+    theme_config = copy.deepcopy(DEFAULT_THEME_CONFIG)
 
     if widget_settings and widget_settings.theme_config:
         # Deep merge or overwrite? For now, we overwrite if present, but we should probably merge.
