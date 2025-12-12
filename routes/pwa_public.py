@@ -565,10 +565,11 @@ def public_tenant_widget_config(tenant_slug: str):
     legacy_secondary = None
 
     if widget_settings:
-        if widget_settings.primary_color:
-            legacy_primary = widget_settings.primary_color
-        if widget_settings.secondary_color:
-            legacy_secondary = widget_settings.secondary_color
+        try:
+            legacy_primary = getattr(widget_settings, "primary_color", None) or legacy_primary
+            legacy_secondary = getattr(widget_settings, "secondary_color", None) or legacy_secondary
+        except Exception:
+            pass
 
     if not legacy_primary and widget_cfg and widget_cfg.primary_color:
         legacy_primary = widget_cfg.primary_color
@@ -584,10 +585,17 @@ def public_tenant_widget_config(tenant_slug: str):
     # This ensures that older tenants who haven't set up the new theme config still get their brand colors
     # applied to the new variable system (light/dark modes).
 
-    has_explicit_theme_config = widget_settings and isinstance(widget_settings.theme_config, dict) and widget_settings.theme_config
+    has_explicit_theme_config = False
+    if widget_settings:
+        try:
+            raw_theme_config = getattr(widget_settings, "theme_config", None)
+            has_explicit_theme_config = isinstance(raw_theme_config, dict) and raw_theme_config
+        except Exception:
+            pass
 
     if has_explicit_theme_config:
-        ws_config = widget_settings.theme_config
+        # Re-fetch safely
+        ws_config = getattr(widget_settings, "theme_config", {})
         theme_config["mode"] = ws_config.get("mode", theme_config["mode"])
         if isinstance(ws_config.get("light"), dict):
             theme_config["light"].update(ws_config["light"])
@@ -641,23 +649,33 @@ def public_tenant_widget_config(tenant_slug: str):
     default_open = False
 
     if widget_settings:
-        if widget_settings.cta_messages:
-            # Ensure cta_messages is a list to prevent frontend map() crashes
-            msgs = widget_settings.cta_messages
-            if isinstance(msgs, list):
-                interaction["cta_messages"] = msgs
-                cta_messages = msgs
-            else:
-                 # If malformed (e.g. dict or string), wrap or ignore
-                 pass
+        try:
+            # Defensive access to support legacy schemas or pending migrations
+            cta_msgs_raw = getattr(widget_settings, "cta_messages", None)
+            if cta_msgs_raw:
+                # Ensure cta_messages is a list to prevent frontend map() crashes
+                if isinstance(cta_msgs_raw, list):
+                    interaction["cta_messages"] = cta_msgs_raw
+                    cta_messages = cta_msgs_raw
+                else:
+                    # If malformed (e.g. dict or string), wrap or ignore
+                    pass
 
-        if widget_settings.welcome_title:
-            interaction["welcome_title"] = widget_settings.welcome_title
-        if widget_settings.welcome_subtitle:
-            interaction["welcome_subtitle"] = widget_settings.welcome_subtitle
-        if widget_settings.default_open is not None:
-            interaction["default_open"] = widget_settings.default_open
-            default_open = widget_settings.default_open
+            w_title = getattr(widget_settings, "welcome_title", None)
+            if w_title:
+                interaction["welcome_title"] = w_title
+
+            w_subtitle = getattr(widget_settings, "welcome_subtitle", None)
+            if w_subtitle:
+                interaction["welcome_subtitle"] = w_subtitle
+
+            d_open = getattr(widget_settings, "default_open", None)
+            if d_open is not None:
+                interaction["default_open"] = d_open
+                default_open = d_open
+        except Exception:
+            # Fallback if widget_settings causes DB errors (e.g. missing columns)
+            pass
 
     # Legacy fallback for welcome message
     if not interaction.get("welcome_title") and widget_cfg and widget_cfg.welcome_message:
@@ -666,8 +684,12 @@ def public_tenant_widget_config(tenant_slug: str):
     # Resolve entity token (widgetToken)
     entity_token = None
     if owner:
-        from routes.auth import _resolve_owner_token
-        entity_token = _resolve_owner_token(owner)
+        try:
+            from routes.auth import _resolve_owner_token
+            entity_token = _resolve_owner_token(owner)
+        except (ImportError, Exception):
+            # If auth module fails to import or resolution fails, ignore and use fallback
+            entity_token = None
 
     # Fallback for tenants without an owner (e.g. Vercel previews or headless demos)
     # Ensures frontend socket initialization doesn't crash on "No entityToken"
