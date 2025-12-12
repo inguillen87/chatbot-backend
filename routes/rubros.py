@@ -2,15 +2,18 @@ from flask import Blueprint, jsonify, current_app
 from models import Rubro
 from services.demo_registry import demo_rubros_for_rubros
 
-# strict_slashes=False permite acceder tanto a '/rubros' como a '/rubros/'
-rubros_bp = Blueprint("rubros", __name__, url_prefix="/rubros")
+# Define blueprint without prefix here so it can be mounted flexibly in app.py
+# (e.g. at /rubros AND /api/rubros)
+rubros_bp = Blueprint("rubros", __name__)
 
 
 @rubros_bp.route("/", methods=["GET"], strict_slashes=False)
 def get_all_rubros():
     """Return the list of rubros."""
     try:
-        rubros = Rubro.query.order_by(Rubro.nombre.asc()).all()
+        # Filter only public rubros to avoid exposing hidden legacy/test data
+        # and to reduce the payload size if many hidden items exist.
+        rubros = Rubro.query.filter_by(es_publico=True).order_by(Rubro.nombre.asc()).all()
         demo_lookup = demo_rubros_for_rubros(r.id for r in rubros)
 
         lista_rubros = []

@@ -525,7 +525,13 @@ def create_app(config_class=Config):
     app.register_blueprint(gov_analytics_bp)
     app.register_blueprint(upload_bp)
     app.register_blueprint(archivos_bp)
-    app.register_blueprint(rubros_bp)
+
+    # Mount Rubros BP flexibly
+    # 1. At /rubros (legacy root)
+    app.register_blueprint(rubros_bp, url_prefix="/rubros")
+    # 2. At /api/rubros (new standard)
+    app.register_blueprint(rubros_bp, url_prefix="/api/rubros", name="rubros_bp_api")
+
     app.register_blueprint(metricas_bp)
     app.register_blueprint(catalogo_bp)
     app.register_blueprint(productos_bp)
@@ -583,7 +589,6 @@ def create_app(config_class=Config):
     # registration name is unique. This mirrors the existing routes under a
     # prefixed namespace without duplicating the view logic.
     app.register_blueprint(ticket_bp, url_prefix="/api", name="ticket_bp_api")
-    app.register_blueprint(rubros_bp, url_prefix="/api", name="rubros_bp_api")
     app.register_blueprint(
         municipal_bp, url_prefix="/api", name="municipal_bp_api"
     )
