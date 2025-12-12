@@ -653,31 +653,57 @@ def public_tenant_widget_config(tenant_slug: str):
     import copy
     theme_config = copy.deepcopy(DEFAULT_THEME_CONFIG)
 
-    if widget_settings and widget_settings.theme_config:
-        # Deep merge or overwrite? For now, we overwrite if present, but we should probably merge.
-        # However, typically widget_settings.theme_config is a complete object from the DB.
-        # To be safe, we check keys.
-        ws_config = widget_settings.theme_config
-        if isinstance(ws_config, dict):
-            theme_config["mode"] = ws_config.get("mode", theme_config["mode"])
-            if isinstance(ws_config.get("light"), dict):
-                theme_config["light"].update(ws_config["light"])
-            if isinstance(ws_config.get("dark"), dict):
-                theme_config["dark"].update(ws_config["dark"])
+    # 1. Resolve Legacy Colors (Priority: WidgetSettings > WidgetConfig > Tenant.tema > Default)
+    legacy_primary = None
+    legacy_secondary = None
 
+    if widget_settings:
         if widget_settings.primary_color:
-            theme["primaryColor"] = widget_settings.primary_color
+            legacy_primary = widget_settings.primary_color
         if widget_settings.secondary_color:
-            theme["secondaryColor"] = widget_settings.secondary_color
+            legacy_secondary = widget_settings.secondary_color
 
-        theme["config"] = theme_config
+    if not legacy_primary and widget_cfg and widget_cfg.primary_color:
+        legacy_primary = widget_cfg.primary_color
+    if not legacy_secondary and widget_cfg and widget_cfg.accent_color:
+        legacy_secondary = widget_cfg.accent_color
 
-    elif widget_cfg:
-        # Fallback to legacy config
-        if widget_cfg.primary_color:
-            theme["primaryColor"] = widget_cfg.primary_color
-        if widget_cfg.accent_color:
-             theme["secondaryColor"] = widget_cfg.accent_color
+    if not legacy_primary and isinstance(tenant.tema, dict) and tenant.tema.get("primaryColor"):
+         legacy_primary = tenant.tema.get("primaryColor")
+    if not legacy_secondary and isinstance(tenant.tema, dict) and tenant.tema.get("secondaryColor"):
+         legacy_secondary = tenant.tema.get("secondaryColor")
+
+    # 2. Populate theme_config from Legacy Colors if not explicitly provided
+    # This ensures that older tenants who haven't set up the new theme config still get their brand colors
+    # applied to the new variable system (light/dark modes).
+
+    has_explicit_theme_config = widget_settings and isinstance(widget_settings.theme_config, dict) and widget_settings.theme_config
+
+    if has_explicit_theme_config:
+        ws_config = widget_settings.theme_config
+        theme_config["mode"] = ws_config.get("mode", theme_config["mode"])
+        if isinstance(ws_config.get("light"), dict):
+            theme_config["light"].update(ws_config["light"])
+        if isinstance(ws_config.get("dark"), dict):
+            theme_config["dark"].update(ws_config["dark"])
+    else:
+        # Auto-generate theme config from legacy colors
+        if legacy_primary:
+            theme_config["light"]["primary"] = legacy_primary
+            theme_config["dark"]["primary"] = legacy_primary # Simple mapping for now
+            theme_config["light"]["text"] = "#000000" # Ensure readability
+
+        if legacy_secondary:
+            theme_config["light"]["secondary"] = legacy_secondary
+            theme_config["dark"]["secondary"] = legacy_secondary
+
+    # 3. Update the legacy 'theme' object for backward compatibility
+    if legacy_primary:
+        theme["primaryColor"] = legacy_primary
+    if legacy_secondary:
+        theme["secondaryColor"] = legacy_secondary
+
+    theme["config"] = theme_config
 
     # Features logic replicated from auth helper to avoid circular imports
     features = {}
@@ -709,8 +735,15 @@ def public_tenant_widget_config(tenant_slug: str):
 
     if widget_settings:
         if widget_settings.cta_messages:
-            interaction["cta_messages"] = widget_settings.cta_messages
-            cta_messages = widget_settings.cta_messages
+            # Ensure cta_messages is a list to prevent frontend map() crashes
+            msgs = widget_settings.cta_messages
+            if isinstance(msgs, list):
+                interaction["cta_messages"] = msgs
+                cta_messages = msgs
+            else:
+                 # If malformed (e.g. dict or string), wrap or ignore
+                 pass
+
         if widget_settings.welcome_title:
             interaction["welcome_title"] = widget_settings.welcome_title
         if widget_settings.welcome_subtitle:
@@ -736,7 +769,7 @@ def public_tenant_widget_config(tenant_slug: str):
     return jsonify({
         "slug": tenant.slug,
         "name": tenant.nombre,
-        "logo_url": tenant.logo_url or (widget_cfg.logo_url if widget_cfg else None),
+        "logo_url": tenant.logo_url or (widget_cfg.logo_url if widget_cfg else "") or "",
         "theme": theme,
         "theme_config": theme_config,
         "features": features,
