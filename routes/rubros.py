@@ -1,4 +1,4 @@
-from flask import Blueprint, jsonify, current_app
+from flask import Blueprint, jsonify, current_app, request
 from models import Rubro
 from services.demo_registry import demo_rubros_for_rubros
 
@@ -33,7 +33,27 @@ def get_all_rubros():
 
             lista_rubros.append(item)
 
+        # Optional: Return hierarchical structure
+        if request.args.get("format") == "tree":
+            return jsonify(_build_tree(lista_rubros))
+
         return jsonify(lista_rubros)
     except Exception as e:  # pragma: no cover - log unexpected errors
         current_app.logger.exception(f"Error al obtener la lista de rubros: {e}")
         return jsonify({"error": "Error interno al obtener los rubros."}), 500
+
+def _build_tree(flat_list):
+    """Builds a nested tree structure from a flat list of rubros."""
+    node_map = {item['id']: {**item, 'children': []} for item in flat_list}
+    tree = []
+
+    for item in flat_list:
+        node = node_map[item['id']]
+        if item['padre_id'] and item['padre_id'] in node_map:
+            parent = node_map[item['padre_id']]
+            parent['children'].append(node)
+        else:
+            # Root node (or orphan if parent is not in the list)
+            tree.append(node)
+
+    return tree
