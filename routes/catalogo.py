@@ -28,7 +28,6 @@ from services.common_utils import (
 
 catalogo_bp = Blueprint('catalogo', __name__, url_prefix='/catalogo')
 
-
 from werkzeug.utils import secure_filename
 from services.intelligent_catalog_processor import IntelligentCatalogProcessor
 import tempfile
@@ -302,6 +301,8 @@ def _formatear_producto(data: dict) -> dict:
         precio_value=precio_float if precio_float is not None else precio_pack,
     ).value
 
+    unidad_display = data.get("unidad") or data.get("presentacion", "") or data.get("unidad_original","") or "u"
+
     return {
         "nombre": data.get("nombre", ""),
         "marca": data.get("marca"), # Añadido aquí para consistencia en la estructura base
@@ -309,7 +310,10 @@ def _formatear_producto(data: dict) -> dict:
         "descripcion": descripcion_final, # Usa la descripción corta si está disponible
         "promocion_info": promo_info if promo_info else None, # Añadido campo de promoción
         "sku": data.get("sku") or None,
-        "presentacion": data.get("unidad") or data.get("presentacion", "") or data.get("unidad_original",""), # Añadido fallback a unidad_original
+        "presentacion": unidad_display, # Añadido fallback a unidad_original
+        "unidad": unidad_display,
+        "quantityLabel": unidad_display,
+        "quantity_label": unidad_display,
         "talles": data.get("talles"),
         "colores": data.get("colores"),
         "precio_unitario": precio_unitario,
