@@ -640,8 +640,9 @@ def create_app(config_class=Config):
                 db.create_all()
 
                 # Auto-initialize tenants if missing (ensure demo tenants exist)
-                from init_tenants import init_tenants
-                init_tenants()
+                if not app.config.get("SKIP_INIT_TENANTS"):
+                    from init_tenants import init_tenants
+                    init_tenants()
 
                 db.session.remove()
                 app.logger.info("Startup: db.create_all() executed successfully (tables ensured).")

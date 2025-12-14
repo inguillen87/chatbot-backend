@@ -28,6 +28,8 @@ class DemoRubro:
     owner_user_id: Optional[int]
     rubro_id: Optional[int]
     rubro_clave: Optional[str]
+    segment: Optional[str] = None
+    subsegment: Optional[str] = None
     token: Optional[str] = None
     prompt_context: Optional[str] = None
     welcome_message: Optional[str] = None
@@ -49,6 +51,8 @@ class DemoRubro:
             "owner_user_id": self.owner_user_id,
             "rubro_id": self.rubro_id,
             "rubro_clave": self.rubro_clave,
+            "segment": self.segment,
+            "subsegment": self.subsegment,
             "prompt_context": self.prompt_context,
             "welcome_message": self.welcome_message,
             "resources": [dict(item) for item in self.resources],
@@ -73,6 +77,8 @@ class DemoRubro:
             "tipo_chat": self.tipo_chat,
             "rubro_id": self.rubro_id,
             "rubro_clave": self.rubro_clave,
+            "segment": self.segment,
+            "subsegment": self.subsegment,
             "prompt_context": self.prompt_context,
             "welcome_message": self.welcome_message,
             "resources": [dict(item) for item in self.resources],
@@ -164,8 +170,13 @@ def _faq_preview_for_rubro(rubro: Rubro, limit: int = 3) -> List[Dict[str, str]]
     return resultados
 
 
-def load_demo_rubros() -> List[DemoRubro]:
-    """Build the curated demo catalog based on configuration and database state."""
+def load_demo_rubros(require_owner: bool = True) -> List[DemoRubro]:
+    """Build the curated demo catalog based on configuration and database state.
+
+    When ``require_owner`` is False, demo entries that lack a matching owner or
+    rubro will still be returned so they can be listed as previews (e.g. in the
+    landing page) instead of silently disappearing.
+    """
 
     demo_entries = current_app.config.get("DEMO_RUBROS") or []
     opciones: List[DemoRubro] = []
@@ -246,31 +257,37 @@ def load_demo_rubros() -> List[DemoRubro]:
             owner_user = user_query.filter_by(tipo_chat="municipio", rol="admin").first()
 
         if not owner_user:
-            if key not in _MISCONFIGURED_DEMOS_LOGGED:
-                current_app.logger.warning(
-                    "[demo] No se pudo preparar la demo '%s' porque falta owner o rubro válido.",
-                    key,
-                )
-                _MISCONFIGURED_DEMOS_LOGGED.add(key)
-            continue
+            if require_owner:
+                if key not in _MISCONFIGURED_DEMOS_LOGGED:
+                    current_app.logger.warning(
+                        "[demo] No se pudo preparar la demo '%s' porque falta owner o rubro válido.",
+                        key,
+                    )
+                    _MISCONFIGURED_DEMOS_LOGGED.add(key)
+                continue
+        if not rubro_obj:
+            rubro_obj = owner_user.rubro if owner_user else None
 
         if not rubro_obj:
-            rubro_obj = owner_user.rubro
-
-        if not rubro_obj:
-            if key not in _MISCONFIGURED_DEMOS_LOGGED:
-                current_app.logger.warning(
-                    "[demo] El owner '%s' no tiene rubro asociado para la demo '%s'.",
-                    owner_user.id,
-                    key,
-                )
-                _MISCONFIGURED_DEMOS_LOGGED.add(key)
-            continue
-
+            if require_owner:
+                if key not in _MISCONFIGURED_DEMOS_LOGGED:
+                    current_app.logger.warning(
+                        "[demo] El owner '%s' no tiene rubro asociado para la demo '%s'.",
+                        owner_user.id,
+                        key,
+                    )
+                    _MISCONFIGURED_DEMOS_LOGGED.add(key)
+                continue
         _MISCONFIGURED_DEMOS_LOGGED.discard(key)
 
         tipo_chat = _guess_tipo_chat(entry, rubro_obj, owner_user)
         descripcion_final = descripcion or getattr(rubro_obj, "descripcion", None) or getattr(rubro_obj, "nombre", None)
+        segment = entry.get("segment") or entry.get("categoria")
+        subsegment = entry.get("subsegment") or entry.get("subcategoria") or entry.get("grupo")
+        if not segment:
+            segment = "gobiernos" if tipo_chat == "municipio" else "empresas"
+        if not subsegment and segment == "empresas":
+            subsegment = "Empresas y Comercios"
 
         prompt_context = entry.get("prompt_context") or entry.get("prompt")
         welcome_message = entry.get("welcome_message")
@@ -326,14 +343,19 @@ def load_demo_rubros() -> List[DemoRubro]:
             if text:
                 keywords.append(text)
 
+        rubro_id_value = getattr(rubro_obj, "id", None)
+        rubro_clave_value = getattr(rubro_obj, "clave", None) or entry.get("rubro_clave") or key
+
         demo_rubro = DemoRubro(
             key=key,
             label=str(nombre),
-            descripcion=descripcion_final,
+            descripcion=descripcion_final or nombre,
             tipo_chat=tipo_chat,
-            owner_user_id=owner_user.id,
-            rubro_id=rubro_obj.id,
-            rubro_clave=getattr(rubro_obj, "clave", None),
+            owner_user_id=owner_user.id if owner_user else None,
+            rubro_id=rubro_id_value,
+            rubro_clave=rubro_clave_value,
+            segment=str(segment) if segment else None,
+            subsegment=str(subsegment) if subsegment else None,
             token=entry.get("token"),
             prompt_context=prompt_context,
             welcome_message=welcome_message,
