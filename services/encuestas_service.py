@@ -3365,3 +3365,12 @@ def list_all_comentarios_admin(encuesta_id: int, user: Any, limit: int = 100, of
             "user_id": c.user_id,
         })
     return results
+
+def get_public_encuesta_by_id(encuesta_id: int) -> EncEncuesta:
+    """Retrieves a public survey by ID directly, ensuring it's published."""
+    encuesta = db.session.get(EncEncuesta, encuesta_id)
+    if not encuesta:
+        raise EncuestaError("Encuesta no encontrada", status_code=404)
+    if encuesta.estado != "publicada":
+        raise EncuestaError("La encuesta no está activa", status_code=403)
+    return encuesta

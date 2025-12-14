@@ -12,6 +12,7 @@ from services.tenant_resolver import (
 from routes.pwa_public import _build_public_cart_url
 
 from utils.auth_helpers import _is_jwt_token
+from services.demo_registry import load_demo_rubros
 
 public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/public")
 public_municipios_bp = Blueprint("public_municipios_bp", __name__)
@@ -325,6 +326,70 @@ def resolve_tenant_endpoint():
     return _log_widget_public_request(response, tenant, entity_token=widget_token)
 
 
+def _try_get_demo_tenant(slug):
+    """Attempt to return mock tenant info for specific demo slugs if they don't exist."""
+    if not slug: return None
+    slug = slug.strip().lower()
+
+    demo_map = {
+        "bodega": {
+            "nombre": "Bodega Demo",
+            "tipo": "pyme",
+            "logo_url": "https://img.icons8.com/color/96/wine-bottle.png",
+            "primary": "#722F37",
+            "secondary": "#E6D7C3",
+            "welcome": "Bienvenido a Bodega Demo"
+        },
+        "ferreteria": {
+            "nombre": "Ferretería Demo",
+            "tipo": "pyme",
+            "logo_url": "https://img.icons8.com/color/96/hammer.png",
+            "primary": "#FF9900",
+            "secondary": "#333333",
+            "welcome": "Herramientas y Construcción"
+        },
+        "almacen": {
+            "nombre": "Almacén Demo",
+            "tipo": "pyme",
+            "logo_url": "https://img.icons8.com/color/96/shop.png",
+            "primary": "#4CAF50",
+            "secondary": "#FFFFFF",
+            "welcome": "Tu almacén de confianza"
+        },
+        "medico_general": {
+            "nombre": "Clínica Demo",
+            "tipo": "pyme",
+            "logo_url": "https://img.icons8.com/color/96/stethoscope.png",
+            "primary": "#0099CC",
+            "secondary": "#FFFFFF",
+            "welcome": "Salud y Bienestar"
+        }
+    }
+
+    if slug in demo_map:
+        data = demo_map[slug]
+        # Create a transient TenantProfile object
+        tenant = TenantProfile(
+            slug=slug,
+            nombre=data["nombre"],
+            tipo=data["tipo"],
+            logo_url=data["logo_url"],
+            dominio=f"{slug}.chatboc.ar",
+            configuracion={"widget_welcome_title": data["welcome"]},
+            tema={"primaryColor": data["primary"], "secondaryColor": data["secondary"]}
+        )
+        # Mock widget settings for theme consistency
+        tenant.widget_settings = WidgetSettings(
+            tenant=tenant,
+            primary_color=data["primary"],
+            secondary_color=data["secondary"],
+            welcome_title=data["welcome"]
+        )
+        # Fake ID so to_public_dict works if it checks ID
+        tenant.id = 999999
+        return tenant
+    return None
+
 @public_resolver_bp.route(
     "/tenant-profile", methods=["GET", "OPTIONS"], provide_automatic_options=False
 )
@@ -369,18 +434,23 @@ def tenant_profile():
 
         normalized_slug = tenant_slug_original.strip().lower() if tenant_slug_original else None
 
+        # Try Mock Demos first if explicit slug failed
+        tenant = _try_get_demo_tenant(normalized_slug)
+
         fallback_tenant = None
-        if normalized_slug in {"municipio", "pyme"}:
-            fallback_tenant = (
-                TenantProfile.query.filter_by(tipo=normalized_slug)
-                .order_by(TenantProfile.id.asc())
-                .first()
-            )
+        if not tenant:
+            if normalized_slug in {"municipio", "pyme"}:
+                fallback_tenant = (
+                    TenantProfile.query.filter_by(tipo=normalized_slug)
+                    .order_by(TenantProfile.id.asc())
+                    .first()
+                )
 
-        if not fallback_tenant:
-            fallback_tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
+            if not fallback_tenant:
+                fallback_tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
 
-        tenant = fallback_tenant
+            tenant = fallback_tenant
+
         if not tenant:
             placeholder = {
                 "id": None,
@@ -403,8 +473,8 @@ def tenant_profile():
 
         resolved_from_fallback = True
 
-        if fallback_tenant and normalized_slug in {"municipio", "pyme"}:
-            resolution_error = resolution_error or (
+        if not _try_get_demo_tenant(normalized_slug) and fallback_tenant and normalized_slug in {"municipio", "pyme"}:
+             resolution_error = resolution_error or (
                 f"Tenant slug '{tenant_slug_original}' not found; using first {normalized_slug} tenant"
             )
 
@@ -513,7 +583,10 @@ def widget_config():
             require_explicit_slug=bool(tenant_slug),
         )
     except TenantResolutionError as exc:
-        return jsonify({"error": str(exc)}), 404
+        # Try Mock Demos first
+        tenant = _try_get_demo_tenant(tenant_slug)
+        if not tenant:
+            return jsonify({"error": str(exc)}), 404
 
     is_integration_preview = "/integracion" in (request.headers.get("Referer", "") or "")
 
@@ -589,4 +662,3 @@ def list_municipios_root():
     """Alias sin prefijo para clientes legacy que llaman ``/municipios``."""
 
     return _municipios_response()
-

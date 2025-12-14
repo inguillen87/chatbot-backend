@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import Dict, List, Tuple
 
 from flask import Blueprint, abort, g, jsonify, make_response, request, session
+from flask_cors import cross_origin
 from sqlalchemy import func
 
-from models import CatalogoItem, CatalogoModalidad, MunicipioPost, TenantProfile, User, WidgetConfig, WidgetSettings
+from models import CatalogoItem, CatalogoModalidad, MunicipioPost, TenantProfile, User, WidgetConfig, WidgetSettings, MarketCartItem
 from middleware import require_tenant
 from services.encuestas_service import (
     EncuestaError,
@@ -27,8 +28,8 @@ from routes.carrito import (
     _db_cart_summary,
     _product_query_for_tenant,
     _pricing_snapshot,
+    _cors_kwargs
 )
-from models import MarketCartItem
 from database import db
 
 
@@ -38,6 +39,7 @@ pwa_tenant_info_bp = Blueprint("pwa_tenant_info", __name__)
 
 
 @pwa_tenant_info_bp.route("/api/pwa/tenant-info", methods=["GET", "OPTIONS"])
+@cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
 def api_pwa_tenant_info():
     """Alias JSON de /api/public/tenant-profile para el PWA del widget."""
     from routes.public_resolver import tenant_profile as tenant_profile_view
@@ -49,6 +51,7 @@ def api_pwa_tenant_info():
 
 
 @pwa_tenant_info_bp.route("/pwa/tenant-info", methods=["GET", "OPTIONS"])
+@cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
 def pwa_tenant_info_alias():
     """Alias sin prefijo /api usado por algunos embeds del widget."""
     from routes.public_resolver import tenant_profile as tenant_profile_view
@@ -233,6 +236,7 @@ def _coerce_item_id(value: object) -> int | None:
 
 
 @pwa_public_bp.get("/catalog")
+@cross_origin(**_cors_kwargs(["GET"]))
 def public_catalog():
     tenant = _require_tenant()
     owner = _require_owner(tenant)
@@ -294,12 +298,14 @@ def public_catalog():
 
 
 @pwa_public_bp.get("/rewards")
+@cross_origin(**_cors_kwargs(["GET"]))
 def public_rewards():
     tenant = _require_tenant()
     return jsonify(reward_profile_for_tenant(tenant.id, 0.0))
 
 
 @pwa_public_bp.get("/cart/url")
+@cross_origin(**_cors_kwargs(["GET"]))
 def public_cart_url():
     tenant = _require_tenant()
     full_url, base_url, path = _build_public_cart_url(tenant)
@@ -314,6 +320,7 @@ def public_cart_url():
 
 
 @pwa_public_bp.get("/cart")
+@cross_origin(**_cors_kwargs(["GET"]))
 def public_cart_summary():
     tenant = _require_tenant()
     owner = _require_owner(tenant)
@@ -334,6 +341,7 @@ def public_cart_summary():
 
 
 @pwa_public_bp.post("/cart/add")
+@cross_origin(**_cors_kwargs(["POST"]))
 def public_cart_add():
     tenant = _require_tenant()
     owner = _require_owner(tenant)
@@ -375,6 +383,7 @@ def public_cart_add():
 
 
 @pwa_public_bp.post("/cart/update")
+@cross_origin(**_cors_kwargs(["POST"]))
 def public_cart_update():
     tenant = _require_tenant()
     owner = _require_owner(tenant)
@@ -403,6 +412,7 @@ def public_cart_update():
 
 
 @pwa_public_bp.post("/cart/remove")
+@cross_origin(**_cors_kwargs(["POST"]))
 def public_cart_remove():
     tenant = _require_tenant()
     owner = _require_owner(tenant)
@@ -425,6 +435,7 @@ def public_cart_remove():
 
 
 @pwa_public_bp.post("/cart/clear")
+@cross_origin(**_cors_kwargs(["POST"]))
 def public_cart_clear():
     tenant = _require_tenant()
     owner = _require_owner(tenant)
@@ -441,12 +452,14 @@ def public_cart_clear():
 
 
 @pwa_public_bp.get("/tenant")
+@cross_origin(**_cors_kwargs(["GET"]))
 def tenant_info():
     tenant = _require_tenant()
     return jsonify(tenant.to_public_dict())
 
 
 @pwa_public_bp.get("/surveys")
+@cross_origin(**_cors_kwargs(["GET"]))
 def list_surveys():
     tenant = _require_tenant()
     tenant_id = _resolve_encuestas_tenant_id(tenant)
@@ -462,6 +475,7 @@ def list_surveys():
 
 
 @pwa_public_bp.get("/surveys/<slug>")
+@cross_origin(**_cors_kwargs(["GET"]))
 def get_survey(slug: str):
     tenant = _require_tenant()
     tenant_id = _resolve_encuestas_tenant_id(tenant)
@@ -477,6 +491,7 @@ def get_survey(slug: str):
 
 
 @pwa_public_bp.post("/surveys/<slug>/respond")
+@cross_origin(**_cors_kwargs(["POST"]))
 def respond_survey(slug: str):
     tenant = _require_tenant()
     tenant_id = _resolve_encuestas_tenant_id(tenant)
@@ -508,6 +523,7 @@ def respond_survey(slug: str):
 
 
 @pwa_public_bp.get("/news")
+@cross_origin(**_cors_kwargs(["GET"]))
 def list_news():
     tenant = _require_tenant()
     query = _posts_query_for_tenant(tenant).filter(MunicipioPost.tipo_post != "evento")
@@ -520,6 +536,7 @@ def list_news():
 
 
 @public_api_bp.get("/tenants/<tenant_slug>/widget-config")
+@cross_origin(**_cors_kwargs(["GET"]))
 def public_tenant_widget_config(tenant_slug: str):
     from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
 
@@ -720,6 +737,7 @@ def public_tenant_widget_config(tenant_slug: str):
 
 
 @public_api_bp.get("/tenant")
+@cross_origin(**_cors_kwargs(["GET"]))
 def public_tenant_info():
     tenant = _require_tenant()
     return jsonify({
@@ -732,6 +750,7 @@ def public_tenant_info():
 
 
 @public_api_bp.get("/news")
+@cross_origin(**_cors_kwargs(["GET"]))
 def public_news():
     tenant = _require_tenant()
     query = _posts_query_for_tenant(tenant).filter(MunicipioPost.tipo_post != "evento")
@@ -752,6 +771,7 @@ def public_news():
 
 
 @public_api_bp.get("/events")
+@cross_origin(**_cors_kwargs(["GET"]))
 def public_events():
     tenant = _require_tenant()
     query = _posts_query_for_tenant(tenant).filter(MunicipioPost.tipo_post == "evento")
@@ -772,12 +792,14 @@ def public_events():
 
 
 @public_api_bp.get("/encuestas")
+@cross_origin(**_cors_kwargs(["GET"]))
 def public_surveys():
     # Reuse existing logic which is standardized
     return list_surveys()
 
 
 @pwa_public_bp.get("/events")
+@cross_origin(**_cors_kwargs(["GET"]))
 def list_events():
     tenant = _require_tenant()
     query = _posts_query_for_tenant(tenant).filter(MunicipioPost.tipo_post == "evento")

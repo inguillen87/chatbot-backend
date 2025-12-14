@@ -75,6 +75,10 @@ def get_all_rubros():
                     }
                 )
 
+        # Check for format=tree
+        if request.args.get("format") == "tree":
+            return jsonify(_build_tree(lista_rubros))
+
         return jsonify(lista_rubros)
     except Exception as e:  # pragma: no cover - log unexpected errors
         current_app.logger.exception(f"Error al obtener la lista de rubros: {e}")
@@ -82,16 +86,24 @@ def get_all_rubros():
 
 def _build_tree(flat_list):
     """Builds a nested tree structure from a flat list of rubros."""
-    node_map = {item['id']: {**item, 'children': []} for item in flat_list}
+    # Filter items that have IDs to participate in the tree structure
+    node_map = {item['id']: {**item, 'children': []} for item in flat_list if item.get('id') is not None}
+
+    # Items without IDs (fallback demos) are treated as roots
+    orphans = [item for item in flat_list if item.get('id') is None]
+
     tree = []
 
-    for item in flat_list:
-        node = node_map[item['id']]
-        if item['padre_id'] and item['padre_id'] in node_map:
-            parent = node_map[item['padre_id']]
+    for item_id, node in node_map.items():
+        padre_id = node.get('padre_id')
+        if padre_id and padre_id in node_map:
+            parent = node_map[padre_id]
             parent['children'].append(node)
         else:
             # Root node (or orphan if parent is not in the list)
             tree.append(node)
+
+    # Add items that don't participate in ID-based hierarchy
+    tree.extend(orphans)
 
     return tree
