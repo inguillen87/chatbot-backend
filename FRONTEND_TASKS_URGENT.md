@@ -27,7 +27,7 @@ The backend supports persistent anonymous sessions via the `X-Anon-Id` header. T
 *   **Action Required:**
     1.  Generate a UUID on first load if one doesn't exist (e.g., `uuidv4()`).
     2.  Store it in `localStorage.setItem('chatboc_anon_id', uuid)`.
-    3.  **Crucial:** Send this UUID in the headers of **every** API request to `/api/market/...` and `/api/pwa/...`:
+    3.  **Crucial:** Send this UUID in the headers of **every** API request to `/api/market/...`, `/api/pwa/...`, and `/api/public/...`:
         ```json
         {
           "X-Anon-Id": "your-uuid-here"
@@ -46,7 +46,10 @@ The backend now enforces a strict 2-root hierarchy ("Soluciones para Sector Púb
         *   **Root Level:** Display as Main Sections (Tabs or Cards).
         *   **Level 1 (Children):** Display as Categories (e.g., "Alimentación", "Retail").
         *   **Level 2 (Children of Children):** Display as actual clickable Demo links (e.g., "Bodega", "Ferretería").
-    *   **Do not** render the flat list anymore.
+    *   **Fixing "Undefined" URLs:**
+        *   The `/api/rubros` response items now include a `demo` object.
+        *   **Use `item.demo.slug` (or `item.demo.key`)** to construct the URL: `/demo/${item.demo.slug}`.
+        *   Do *not* rely on `item.clave` if `item.demo` is present.
 
 ## 4. Professional Demos & Content
 
@@ -66,8 +69,11 @@ The backend has been seeded with rich content for the following demos. Ensure yo
     *   **Slug:** `ferreteria`
     *   **New Content:** "Taladro Percutor", "Set de Destornilladores" (Catalog).
 
-## 5. UX/UI Improvements
+## 5. UX/UI Improvements (Strict Requirements)
 
-*   **Widget Animation:** The user requested the widget to "go down" (minimize) instead of disappearing or moving up. This is a CSS transition in the frontend widget container.
+The user has explicitly requested high-end behavior for the widget:
+
+*   **Minimize Animation:** The widget must **expand downwards** when opening and **collapse downwards** when minimizing. It should NOT disappear upwards or just vanish. Use CSS transitions on `height` and `transform: translateY`.
+*   **Auto-Scroll:** The chat history must **always** scroll to the bottom automatically when a new message arrives (user or bot). The user should never have to manually scroll down to see the latest response.
 *   **WhatsApp Integration:**
     *   The `widget-config` endpoint returns `marketplace.whatsapp_share_url`. Use this for the "Share" button in the demo.
