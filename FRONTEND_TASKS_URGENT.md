@@ -55,19 +55,17 @@ The backend now enforces a strict 2-root hierarchy ("Soluciones para Sector Púb
 
 The backend has been seeded with rich content for the following demos. Ensure your routing (`/demo/<slug>`) connects to these specific slugs:
 
-*   **Municipality Demo:**
-    *   **Slug:** `municipio`
-    *   **New Content:** "Entrada Teatro", "Bono Hospital" (Products), Voting Surveys, News.
-    *   **Dashboard Preview:** Fetch `/api/v1/portal/municipio/content` to show the graphs.
+*   **Municipality Demo (`municipio`):**
+    *   **Products:** "Entrada Teatro", "Bono Hospital".
+    *   **Dashboard:** Fetch `/gov/analytics/heatmap` to display the "Mapa de Calor" requested by the user. If empty, the endpoint returns safe defaults, but seeded incidents should appear if `MunicipioTicket` records exist (seed script populates them).
+    *   **Analytics:** Use `/gov/analytics/scorecards` for top-level metrics.
 
-*   **Winery Demo (Bodega):**
-    *   **Slug:** `bodega`
-    *   **New Content:** "Malbec Reserva", "Cabernet Sauvignon", "Caja Degustación" (Catalog).
+*   **Winery Demo (`bodega`):**
+    *   **Catalog:** "Malbec Reserva", "Cabernet Sauvignon", "Caja Degustación".
     *   **Action:** Ensure the "Catalog" tab is visible by default or highlighted.
 
-*   **Hardware Store Demo (Ferretería):**
-    *   **Slug:** `ferreteria`
-    *   **New Content:** "Taladro Percutor", "Set de Destornilladores" (Catalog).
+*   **Hardware Store Demo (`ferreteria`):**
+    *   **Catalog:** "Taladro Percutor", "Set de Destornilladores".
 
 ## 5. UX/UI Improvements (Strict Requirements)
 
@@ -77,3 +75,17 @@ The user has explicitly requested high-end behavior for the widget:
 *   **Auto-Scroll:** The chat history must **always** scroll to the bottom automatically when a new message arrives (user or bot). The user should never have to manually scroll down to see the latest response.
 *   **WhatsApp Integration:**
     *   The `widget-config` endpoint returns `marketplace.whatsapp_share_url`. Use this for the "Share" button in the demo.
+
+## FAQ: Logic vs. Visuals
+
+*   **Backend Responsibility:**
+    *   Supplying the *structure* of the menu (`/api/rubros?format=tree`).
+    *   Supplying the *colors and text* for the widget (`/api/public/tenants/.../widget-config`).
+    *   Supplying the *data* for heatmaps (`/gov/analytics/heatmap`) and products (`/api/market/.../catalog`).
+    *   Persisting the cart state via `X-Anon-Id`.
+
+*   **Frontend Responsibility:**
+    *   **Rendering** the menu tree as tabs/cards.
+    *   **Implementing** the CSS animations (Shadow DOM, transitions).
+    *   **Drawing** the Heatmap using a library like Leaflet or Google Maps, consuming the JSON from the backend.
+    *   **Managing** the `localStorage` for `X-Anon-Id`.
