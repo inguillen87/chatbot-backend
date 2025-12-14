@@ -3,13 +3,13 @@ from flask import Blueprint, jsonify, request, g, abort, current_app, url_for
 from sqlalchemy import or_
 from datetime import datetime, timezone, timedelta
 
-from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem, User, TenantProfile, WidgetConfig
+from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem, User, TenantProfile, WidgetConfig, EncEncuesta
 from extensions import db
 from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
 from services.rewards import recompensas_service
 from utils.auth_decorators import require_auth_optional, require_auth
 from routes.catalogo import _formatear_producto
-from services.encuestas_service import list_public_encuestas_for_tenant, serialize_public_encuesta
+from services.encuestas_service import list_public_encuestas_for_tenant, serialize_public_encuesta, get_public_encuesta_by_id
 
 portal_api_bp = Blueprint('portal_api', __name__)
 
@@ -90,6 +90,30 @@ def _get_theme_config(tenant):
             theme["secondaryColor"] = tenant.widget_config.accent_color
 
     return theme
+
+def _get_executive_summary(tenant, user):
+    """Generate mock executive data for demo tenants to showcase analytics."""
+    if not tenant or not tenant.tipo or tenant.tipo.lower() != 'pyme':
+        return None
+
+    # Mock data varying slightly by tenant name hash to look persistent but random
+    base_seed = sum(ord(c) for c in tenant.slug)
+
+    return {
+        "stockValue": 1500000 + (base_seed * 100),
+        "totalUnits": 350 + (base_seed % 50),
+        "inventoryDays": 12 + (base_seed % 5),
+        "criticalItems": [
+            {"name": "Item A - Reponer", "stock": 2},
+            {"name": "Item B - Bajo", "stock": 5}
+        ],
+        "stockFlow": [
+            {"date": "2023-10-01", "value": 100},
+            {"date": "2023-10-02", "value": 120},
+            {"date": "2023-10-03", "value": 115},
+            {"date": "2023-10-04", "value": 140}
+        ]
+    }
 
 @portal_api_bp.route('/content', methods=['GET'])
 @require_auth_optional
@@ -208,6 +232,9 @@ def get_content(tenant_slug):
     if user and user.accesibilidad:
         user_settings = user.accesibilidad if isinstance(user.accesibilidad, dict) else {}
 
+    # 9. Executive Summary (Mock)
+    executive_summary = _get_executive_summary(tenant, user)
+
     return jsonify({
         "notifications": notifications,
         "news": [{
@@ -246,6 +273,7 @@ def get_content(tenant_slug):
         "surveys": surveys_data,
         "loyaltySummary": loyalty_summary,
         "activities": activities,
+        "executiveSummary": executive_summary,
         "config": {
             "theme": theme_config,
             "userPreferences": user_settings,
@@ -537,6 +565,37 @@ def create_order(tenant_slug):
 
     db.session.commit()
     return jsonify({"id": order.id, "status": order.status}), 201
+
+@portal_api_bp.route('/claims', methods=['GET'])
+@require_auth
+def get_claims(tenant_slug):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+
+    tickets = TenantTicket.query.filter_by(
+        user_id=user.id,
+        tenant_id=tenant.id
+    ).order_by(TenantTicket.updated_at.desc()).all()
+
+    return jsonify([{
+        "id": str(t.id),
+        "title": t.categoria or "Reclamo",
+        "description": t.descripcion,
+        "status": t.estado,
+        "date": t.created_at.isoformat(),
+        "updated_at": t.updated_at.isoformat()
+    } for t in tickets])
+
+@portal_api_bp.route('/surveys/history', methods=['GET'])
+@require_auth
+def get_surveys_history(tenant_slug):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+
+    # Not implemented: tracking user survey completions in a dedicated table.
+    # For now returning empty list.
+    return jsonify([])
+
 
 @portal_api_bp.route('/integration', methods=['GET'])
 def get_integration_info(tenant_slug):

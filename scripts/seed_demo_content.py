@@ -8,7 +8,7 @@ from flask import current_app
 sys.path.insert(0, os.path.abspath(os.getcwd()))
 
 from app import create_app, db
-from models import TenantProfile, MunicipioPost, EncEncuesta, EncPregunta, EncOpcion, User, CatalogoItem
+from models import TenantProfile, MunicipioPost, EncEncuesta, EncPregunta, EncOpcion, User, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem
 
 def get_or_create_post(tenant, title, content, type_post="noticia", days_offset=0, image_url=None):
     owner = tenant.municipio or tenant.pyme
@@ -120,6 +120,65 @@ def get_or_create_catalog_item(tenant, name, price, category, image_url=None, de
     db.session.add(item)
     print(f"  + Created Product: {name}")
 
+def create_sample_tickets(tenant):
+    """Creates sample tickets for the demo users to populate 'My Claims'."""
+    owner = tenant.municipio or tenant.pyme
+    if not owner: return
+
+    # Find a user to assign tickets to (owner or create dummy)
+    # Ideally we attach to the demo user that logs in, but here we just seed for owner
+    # so admins see something.
+
+    # We create tickets for the 'admin' user of the tenant so they see them in their portal view
+    user = owner
+
+    existing_tickets = TenantTicket.query.filter_by(tenant_id=tenant.id, user_id=user.id).count()
+    if existing_tickets > 0:
+        return
+
+    print(f"  + Creating sample tickets for {tenant.slug}...")
+
+    if tenant.slug == "municipio":
+        t1 = TenantTicket(tenant_id=tenant.id, user_id=user.id, categoria="Alumbrado", descripcion="Luminaria rota en Plaza San Martín", estado="en_proceso", created_at=datetime.now(timezone.utc)-timedelta(days=2))
+        t2 = TenantTicket(tenant_id=tenant.id, user_id=user.id, categoria="Limpieza", descripcion="Solicitud de poda en calle Rivadavia", estado="pendiente", created_at=datetime.now(timezone.utc)-timedelta(days=5))
+        db.session.add_all([t1, t2])
+    elif tenant.slug == "ferreteria":
+        t1 = TenantTicket(tenant_id=tenant.id, user_id=user.id, categoria="Devolución", descripcion="Cambio de taladro por falla", estado="resuelto", created_at=datetime.now(timezone.utc)-timedelta(days=10))
+        db.session.add(t1)
+
+    db.session.commit()
+
+def create_sample_orders(tenant):
+    """Creates sample orders for demo."""
+    owner = tenant.municipio or tenant.pyme
+    if not owner: return
+    user = owner
+
+    existing = MarketOrder.query.filter_by(tenant_id=tenant.id, user_id=user.id).count()
+    if existing > 0: return
+
+    print(f"  + Creating sample orders for {tenant.slug}...")
+
+    order = MarketOrder(
+        tenant_id=tenant.id,
+        user_id=user.id,
+        status="completed",
+        total_monetary=15000,
+        contact_name=user.name,
+        created_at=datetime.now(timezone.utc) - timedelta(days=3)
+    )
+    db.session.add(order)
+    db.session.commit() # Get ID
+
+    # Add items if products exist
+    item = CatalogoItem.query.filter_by(tenant_id=tenant.id).first()
+    if item:
+        oi = MarketOrderItem(order_id=order.id, product_id=item.id, quantity=2, price_monetary=7500)
+        db.session.add(oi)
+
+    db.session.commit()
+
+
 def _run_seed_logic():
     print("\n🚀 Seeding Demo Content...")
 
@@ -129,6 +188,7 @@ def _run_seed_logic():
         print(f"\n🏛️  Seeding 'municipio'...")
         get_or_create_post(tenant, "Campaña de Vacunación 2025", "Acércate a tu centro de salud más cercano. Vacunación gratuita para mayores de 65 años.", "noticia", 2, "https://images.unsplash.com/photo-1606206591513-0a98aa6c7889?auto=format&fit=crop&w=800")
         get_or_create_post(tenant, "Festival de Música Local", "Este fin de semana disfrutá de las mejores bandas en la plaza principal.", "evento", 0, "https://images.unsplash.com/photo-1533174072545-e8d4aa97edf9?auto=format&fit=crop&w=800")
+        get_or_create_post(tenant, "Nuevas Obras de Pavimentación", "Comenzamos la repavimentación de la Avenida Principal.", "noticia", 5, "https://images.unsplash.com/photo-1590409459367-154744474705?auto=format&fit=crop&w=800")
 
         get_or_create_survey(tenant, "Satisfacción Recolección de Residuos", "municipio-residuos", [
             {"text": "¿Cómo califica el servicio de recolección?", "type": "single", "options": ["Excelente", "Bueno", "Regular", "Malo"]},
@@ -136,9 +196,18 @@ def _run_seed_logic():
             {"text": "Comentarios adicionales", "type": "text"}
         ])
 
+        get_or_create_survey(tenant, "Participación Ciudadana: Presupuesto 2025", "presupuesto-participativo", [
+            {"text": "¿Qué área debería tener prioridad?", "type": "single", "options": ["Salud", "Seguridad", "Espacios Verdes", "Cultura"]},
+            {"text": "Proponga un proyecto para su barrio", "type": "text"}
+        ])
+
         # Municipio Services/Products
         get_or_create_catalog_item(tenant, "Entrada Teatro Municipal", 5000, "Cultura", "https://images.unsplash.com/photo-1503095392237-fc74af0aaa08?auto=format&fit=crop&w=800", "Entrada general para la función del sábado.")
         get_or_create_catalog_item(tenant, "Bono Contribución Hospital", 2000, "Salud", "https://images.unsplash.com/photo-1538108149393-fbbd81895907?auto=format&fit=crop&w=800", "Ayuda a comprar insumos médicos.")
+        get_or_create_catalog_item(tenant, "Licencia de Conducir (Renovación)", 8500, "Trámites", "https://images.unsplash.com/photo-1555881400-74d7acaacd25?auto=format&fit=crop&w=800", "Pago online de tasa administrativa.")
+
+        create_sample_tickets(tenant)
+        create_sample_orders(tenant)
 
     else:
         print("⚠️ Tenant 'municipio' not found.")
@@ -160,6 +229,8 @@ def _run_seed_logic():
         get_or_create_catalog_item(tenant, "Cabernet Sauvignon", 9800, "Vinos Tintos", "https://images.unsplash.com/photo-1559563362-c667ba5f5480?auto=format&fit=crop&w=800", "Cuerpo robusto y especiado. Ideal para carnes rojas.")
         get_or_create_catalog_item(tenant, "Caja Degustación (6 u.)", 55000, "Promociones", "https://images.unsplash.com/photo-1506377247377-2a5b3b417ebb?auto=format&fit=crop&w=800", "Mix de nuestras mejores etiquetas.")
 
+        create_sample_orders(tenant)
+
     # 3. Ferretería Demo
     tenant = TenantProfile.query.filter_by(slug="ferreteria").first()
     if tenant:
@@ -175,6 +246,9 @@ def _run_seed_logic():
         get_or_create_catalog_item(tenant, "Taladro Percutor 700W", 85000, "Herramientas Eléctricas", "https://images.unsplash.com/photo-1504148455328-c376907d081c?auto=format&fit=crop&w=800", "Mandril de 13mm, velocidad variable y reversible.")
         get_or_create_catalog_item(tenant, "Set de Destornilladores (10 pz)", 15000, "Herramientas Manuales", "https://images.unsplash.com/photo-1530124566582-a618bc2615dc?auto=format&fit=crop&w=800", "Puntas magnéticas, mango ergonómico.")
         get_or_create_catalog_item(tenant, "Martillo Galponero", 12500, "Herramientas Manuales", "https://images.unsplash.com/photo-1586864387967-d02ef85d93e8?auto=format&fit=crop&w=800", "Mango de fibra de vidrio.")
+
+        create_sample_tickets(tenant)
+        create_sample_orders(tenant)
 
     db.session.commit()
     print("\n✅ Seeding complete.")

@@ -39,6 +39,7 @@ class DemoRubro:
     quick_actions: List[Dict[str, object]] = field(default_factory=list)
     capabilities: List[str] = field(default_factory=list)
     keywords: List[str] = field(default_factory=list)
+    padre_id: Optional[int] = None
 
     def to_internal_dict(self) -> Dict[str, object]:
         """Return a dict representation used by the chat routes."""
@@ -60,6 +61,7 @@ class DemoRubro:
             "quick_actions": [dict(item) for item in self.quick_actions],
             "capabilities": list(self.capabilities),
             "keywords": list(self.keywords),
+            "padre_id": self.padre_id,
         }
         if self.token:
             payload["token"] = self.token
@@ -87,6 +89,7 @@ class DemoRubro:
             "quick_actions": [dict(item) for item in self.quick_actions],
             "capabilities": list(self.capabilities),
             "keywords": list(self.keywords),
+            "padre_id": self.padre_id,
         }
 
 
@@ -347,6 +350,14 @@ def load_demo_rubros(require_owner: bool = True) -> List[DemoRubro]:
         rubro_id_value = getattr(rubro_obj, "id", None)
         rubro_clave_value = getattr(rubro_obj, "clave", None) or entry.get("rubro_clave") or key
 
+        # Infer Padre ID based on Segment
+        padre_id = getattr(rubro_obj, "padre_id", None)
+        if not padre_id:
+             if tipo_chat == "municipio" or segment.lower().startswith("gobierno"):
+                 padre_id = 1 # Hardcoded ID for Municipios Root
+             else:
+                 padre_id = 2 # Hardcoded ID for Empresas Root
+
         demo_rubro = DemoRubro(
             key=key,
             label=str(nombre),
@@ -366,6 +377,7 @@ def load_demo_rubros(require_owner: bool = True) -> List[DemoRubro]:
             quick_actions=quick_actions,
             capabilities=capabilities,
             keywords=keywords,
+            padre_id=padre_id
         )
 
         opciones.append(demo_rubro)
