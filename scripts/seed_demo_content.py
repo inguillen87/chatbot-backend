@@ -1,12 +1,13 @@
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 # Add project root to sys.path
 sys.path.insert(0, os.path.abspath(os.getcwd()))
 
 from app import create_app, db
-from models import TenantProfile, MunicipioPost, EncEncuesta, EncPregunta, EncOpcion, User
+from models import TenantProfile, MunicipioPost, EncEncuesta, EncPregunta, EncOpcion, User, CatalogoItem
 
 def get_or_create_post(tenant, title, content, type_post="noticia", days_offset=0, image_url=None):
     owner = tenant.municipio or tenant.pyme
@@ -84,6 +85,40 @@ def get_or_create_survey(tenant, title, slug, questions_data):
 
     print(f"  + Created Survey: {title}")
 
+def get_or_create_catalog_item(tenant, name, price, category, image_url=None, description=""):
+    owner = tenant.municipio or tenant.pyme
+    if not owner:
+        print(f"⚠️ Tenant {tenant.slug} has no owner. Skipping product '{name}'.")
+        return
+
+    existing = CatalogoItem.query.filter_by(tenant_id=tenant.id, nombre=name).first()
+    if existing:
+        existing.disponible = True  # Ensure it's available
+        existing.precio_monetario = Decimal(str(price))
+        existing.precio = str(price)
+        existing.imagen_url = image_url
+        existing.categoria = category
+        db.session.add(existing)
+        print(f"  - Product '{name}' updated.")
+        return
+
+    item = CatalogoItem(
+        tenant_id=tenant.id,
+        user_id=owner.id,
+        nombre=name,
+        precio=str(price),
+        precio_monetario=Decimal(str(price)),
+        moneda="ARS",
+        unidad="unidad",
+        categoria=category,
+        descripcion=description,
+        imagen_url=image_url,
+        disponible=True,
+        cantidad=100  # Default stock
+    )
+    db.session.add(item)
+    print(f"  + Created Product: {name}")
+
 def seed_content():
     app = create_app()
     with app.app_context():
@@ -101,6 +136,11 @@ def seed_content():
                 {"text": "¿En qué horario prefiere que pase el recolector?", "type": "single", "options": ["Mañana", "Tarde", "Noche"]},
                 {"text": "Comentarios adicionales", "type": "text"}
             ])
+
+            # Municipio Services/Products
+            get_or_create_catalog_item(tenant, "Entrada Teatro Municipal", 5000, "Cultura", "https://images.unsplash.com/photo-1503095392237-fc74af0aaa08?auto=format&fit=crop&w=800", "Entrada general para la función del sábado.")
+            get_or_create_catalog_item(tenant, "Bono Contribución Hospital", 2000, "Salud", "https://images.unsplash.com/photo-1538108149393-fbbd81895907?auto=format&fit=crop&w=800", "Ayuda a comprar insumos médicos.")
+
         else:
             print("⚠️ Tenant 'municipio' not found.")
 
@@ -116,6 +156,11 @@ def seed_content():
                 {"text": "¿Cuál fue su vino favorito?", "type": "text"}
             ])
 
+            # Bodega Products
+            get_or_create_catalog_item(tenant, "Malbec Reserva 2021", 12500, "Vinos Tintos", "https://images.unsplash.com/photo-1584916201218-f4242ceb4809?auto=format&fit=crop&w=800", "Notas de frutos rojos y vainilla. Crianza de 12 meses en roble.")
+            get_or_create_catalog_item(tenant, "Cabernet Sauvignon", 9800, "Vinos Tintos", "https://images.unsplash.com/photo-1559563362-c667ba5f5480?auto=format&fit=crop&w=800", "Cuerpo robusto y especiado. Ideal para carnes rojas.")
+            get_or_create_catalog_item(tenant, "Caja Degustación (6 u.)", 55000, "Promociones", "https://images.unsplash.com/photo-1506377247377-2a5b3b417ebb?auto=format&fit=crop&w=800", "Mix de nuestras mejores etiquetas.")
+
         # 3. Ferretería Demo
         tenant = TenantProfile.query.filter_by(slug="ferreteria").first()
         if tenant:
@@ -126,6 +171,11 @@ def seed_content():
                 {"text": "¿Encontró lo que buscaba?", "type": "boolean"},
                 {"text": "¿Cómo califica la atención?", "type": "stars"}
             ])
+
+            # Ferreteria Products
+            get_or_create_catalog_item(tenant, "Taladro Percutor 700W", 85000, "Herramientas Eléctricas", "https://images.unsplash.com/photo-1504148455328-c376907d081c?auto=format&fit=crop&w=800", "Mandril de 13mm, velocidad variable y reversible.")
+            get_or_create_catalog_item(tenant, "Set de Destornilladores (10 pz)", 15000, "Herramientas Manuales", "https://images.unsplash.com/photo-1530124566582-a618bc2615dc?auto=format&fit=crop&w=800", "Puntas magnéticas, mango ergonómico.")
+            get_or_create_catalog_item(tenant, "Martillo Galponero", 12500, "Herramientas Manuales", "https://images.unsplash.com/photo-1586864387967-d02ef85d93e8?auto=format&fit=crop&w=800", "Mango de fibra de vidrio.")
 
         db.session.commit()
         print("\n✅ Seeding complete.")
