@@ -290,7 +290,8 @@ def on_join(data):
     # Support for survey rooms
     if room.startswith("encuesta_"):
         current_app.logger.debug(f"Client joined survey room: {room}")
-    socketio.emit('status', {'msg': 'Conectado a la sala ' + room}, room=room)
+    # Remove 'status' emit to prevent annoying "pip" sound on frontend
+    # socketio.emit('status', {'msg': 'Conectado a la sala ' + room}, room=room)
 
 @socketio.on('new_chat')
 def on_new_chat(data):
