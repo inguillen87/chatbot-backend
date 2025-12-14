@@ -234,6 +234,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-allow-location": str(cfg.get("widget_allow_location", True)).lower(),
         "data-allow-audio": str(cfg.get("widget_allow_audio", True)).lower(),
         "data-domain": tenant.dominio or None,
+        "data-shadow-dom": "true",  # Ensure styles don't leak/conflict with host page
     }
 
     # Remove None values so the frontend only renders concrete attributes
