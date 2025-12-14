@@ -575,6 +575,9 @@ def serialize_catalogo_item(item: CatalogoItem) -> dict:
         "foto_url": item.imagen_url,
         "estado_activo": bool(item.disponible),
         "tags": (item.extra_metadata or {}).get("tags", []),
+        "unidad": item.unidad or "u",
+        "quantityLabel": item.unidad or "u",
+        "quantity_label": item.unidad or "u",
     }
 
 
@@ -671,14 +674,40 @@ def legacy_carrito_publico():
         abort(400, "tenant_slug query param required")
 
     tenant = _resolve_tenant_or_404(tenant_slug)
-    # Use persistent cart via market logic (handles anon_id)
-    cart = _get_or_create_cart_for_user(tenant, g.viewer if hasattr(g, "viewer") else None, create_if_missing=False)
 
-    items = []
-    if cart:
-        items = [{"producto_id": i.product_id, "cantidad": i.quantity} for i in cart.items]
+    # Use standard cart logic
+    from routes.carrito import _get_or_create_db_cart, _db_cart_summary
 
-    return jsonify({"items": items})
+    # Resolve current user safely
+    current_user_obj = g.viewer if hasattr(g, "viewer") else None
+
+    # Get cart (don't create if just reading)
+    cart = _get_or_create_db_cart(tenant, current_user_obj, create_if_missing=False)
+
+    # If no cart, return empty structure compatible with new frontend (rich object)
+    if not cart:
+        # We need an owner for _db_cart_summary fallback or just build manual empty structure
+        # But _db_cart_summary handles None owner gracefully? Let's check.
+        # Actually it requires an owner for product queries.
+        owner = tenant.municipio or tenant.pyme
+        if not owner:
+             # Fallback if tenant has no owner (unlikely for active tenants)
+             return jsonify({"items": [], "items_count": 0, "total_estimado": 0.0})
+
+        # Create a temp empty cart object or simulate response
+        # Using a minimal empty response structure that matches _db_cart_summary output
+        return jsonify({
+            "tenant_id": tenant.id,
+            "items": [],
+            "items_count": 0,
+            "total_estimado": 0.0,
+            "badge_count": 0,
+            "ui_signals": {"event": "refresh", "animation": "idle", "badge": 0},
+            "checkout_options": {"points_enabled": False}
+        })
+
+    owner = tenant.municipio or tenant.pyme
+    return jsonify(_db_cart_summary(cart, owner))
 
 
 @legacy_public_v2_bp.route("/productos", methods=["GET", "OPTIONS"])
@@ -734,24 +763,55 @@ def legacy_agregar_item_carrito():
 
     tenant = _resolve_tenant_or_404(tenant_slug)
     data = request.get_json(silent=True) or {}
-    producto_id = data.get("producto_id")
-    cantidad = int(data.get("cantidad") or 1)
 
-    cart = _get_or_create_cart_for_user(tenant, g.viewer if hasattr(g, "viewer") else None, create_if_missing=True)
+    # Support multiple ID formats including legacy 'producto_id'
+    item_id = data.get("catalogo_item_id") or data.get("item_id") or data.get("product_id") or data.get("id") or data.get("producto_id")
 
-    item = cart.items.filter(MarketCartItem.product_id == producto_id).first()
-    if item:
-        item.quantity += cantidad
+    if not item_id:
+        return jsonify({'error': 'catalogo_item_id requerido'}), 400
+
+    cantidad = 1
+    try:
+        cantidad = int(data.get('cantidad', 1))
+        if cantidad < 1: cantidad = 1
+    except:
+        pass
+
+    # Use standard cart logic
+    from routes.carrito import _get_or_create_db_cart, _db_cart_summary, _pricing_snapshot
+
+    current_user_obj = g.viewer if hasattr(g, "viewer") else None
+    cart = _get_or_create_db_cart(tenant, current_user_obj, create_if_missing=True)
+
+    owner = tenant.municipio or tenant.pyme
+
+    # Find product to add
+    product = CatalogoItem.query.get(item_id)
+    if not product:
+         return jsonify({'error': 'Producto no encontrado'}), 404
+
+    cart_item = cart.items.filter(MarketCartItem.product_id == product.id).first()
+    pricing = _pricing_snapshot(product)
+
+    if cart_item:
+        cart_item.quantity += cantidad
     else:
-        product = CatalogoItem.query.get(producto_id)
-        name_snapshot = product.nombre if product else "Item"
-        item = MarketCartItem(cart_id=cart.id, product_id=producto_id, quantity=cantidad, name_snapshot=name_snapshot)
-        db.session.add(item)
+        cart_item = MarketCartItem(
+            cart_id=cart.id,
+            product_id=product.id,
+            quantity=cantidad,
+            price_text=pricing.get("price_text"),
+            price_monetary=pricing.get("price_monetary"),
+            price_points=pricing.get("price_points"),
+            currency=pricing.get("currency"),
+            modalidad=pricing.get("modalidad"),
+            name_snapshot=product.nombre,
+        )
+        db.session.add(cart_item)
 
     db.session.commit()
 
-    items = [{"producto_id": i.product_id, "cantidad": i.quantity} for i in cart.items]
-    return jsonify({"items": items}), 201
+    return jsonify(_db_cart_summary(cart, owner, event="add")), 201
 
 
 @legacy_public_v2_bp.route("/checkout", methods=["POST", "OPTIONS"])

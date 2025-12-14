@@ -46,38 +46,54 @@ def get_all_rubros():
             if demo_lookup_by_clave.get(rubro.clave)
         )
 
+        # Inject missing demo entries if not present
         if not lista_rubros:
-            for demo in demo_entries:
-                lista_rubros.append(
-                    {
-                        "id": None,
-                        "nombre": demo.label,
-                        "clave": demo.rubro_clave or demo.key,
-                        "descripcion": demo.descripcion,
-                        "es_publico": True,
-                        "padre_id": None,
-                        "demo": demo.to_public_dict(),
-                    }
-                )
-        else:
-            for demo in demo_entries:
-                if demo.key in matched_demo_keys:
-                    continue
-                lista_rubros.append(
-                    {
-                        "id": demo.rubro_id,
-                        "nombre": demo.label,
-                        "clave": demo.rubro_clave or demo.key,
-                        "descripcion": demo.descripcion,
-                        "es_publico": True,
-                        "padre_id": None,
-                        "demo": demo.to_public_dict(),
-                    }
-                )
+            # If completely empty, assume we need full demo injection
+            pass
+
+        # Inject demos that are not matched in DB
+        for demo in demo_entries:
+            if demo.key in matched_demo_keys:
+                continue
+
+            # Heuristic to assign parent ID based on segment if missing from DB
+            padre_id = None
+            if demo.segment == "Gobiernos":
+                padre_id = 1
+            elif demo.segment == "Empresas":
+                padre_id = 2
+
+            lista_rubros.append(
+                {
+                    "id": demo.rubro_id, # Might be None
+                    "nombre": demo.label,
+                    "clave": demo.rubro_clave or demo.key,
+                    "descripcion": demo.descripcion,
+                    "es_publico": True,
+                    "padre_id": padre_id,
+                    "demo": demo.to_public_dict(),
+                    "is_virtual": True
+                }
+            )
+
+        # Ensure roots exist if we have orphans and list was empty or partial
+        has_roots = any(r['id'] in (1, 2) for r in lista_rubros if r.get('id'))
+        if not has_roots:
+             # Virtual roots if DB is empty
+             if not any(r['id'] == 1 for r in lista_rubros):
+                 lista_rubros.append({"id": 1, "nombre": "Soluciones para Sector Público", "padre_id": None, "es_publico": True, "is_virtual": True})
+             if not any(r['id'] == 2 for r in lista_rubros):
+                 lista_rubros.append({"id": 2, "nombre": "Soluciones para Empresas", "padre_id": None, "es_publico": True, "is_virtual": True})
 
         # Check for format=tree
         if request.args.get("format") == "tree":
             return jsonify(_build_tree(lista_rubros))
+
+        # If the client did NOT ask for tree, but the list is dominated by virtual items
+        # we return the flat list. The frontend is responsible for building hierarchy if needed,
+        # or calling with format=tree.
+        # However, to avoid "undefined" errors if the frontend expects real IDs,
+        # we ensure virtual items have temporary IDs or keys.
 
         return jsonify(lista_rubros)
     except Exception as e:  # pragma: no cover - log unexpected errors
@@ -86,24 +102,34 @@ def get_all_rubros():
 
 def _build_tree(flat_list):
     """Builds a nested tree structure from a flat list of rubros."""
-    # Filter items that have IDs to participate in the tree structure
-    node_map = {item['id']: {**item, 'children': []} for item in flat_list if item.get('id') is not None}
+    # Assign temporary negative IDs to virtual items without ID to allow tree building
+    temp_id_counter = -1
+    for item in flat_list:
+        if item.get('id') is None:
+            item['id'] = temp_id_counter
+            temp_id_counter -= 1
 
-    # Items without IDs (fallback demos) are treated as roots
-    orphans = [item for item in flat_list if item.get('id') is None]
+    node_map = {item['id']: {**item, 'children': []} for item in flat_list}
 
     tree = []
+    orphans = []
 
-    for item_id, node in node_map.items():
-        padre_id = node.get('padre_id')
+    for item in flat_list:
+        node = node_map[item['id']]
+        padre_id = item.get('padre_id')
+
         if padre_id and padre_id in node_map:
             parent = node_map[padre_id]
             parent['children'].append(node)
+        elif padre_id:
+            # Parent exists conceptually (e.g. 1 or 2) but wasn't in list?
+            # If we injected roots, this shouldn't happen.
+            orphans.append(node)
         else:
-            # Root node (or orphan if parent is not in the list)
+            # Root node
             tree.append(node)
 
-    # Add items that don't participate in ID-based hierarchy
+    # If we have orphans pointing to missing roots, add them to top level as fallback
     tree.extend(orphans)
 
     return tree

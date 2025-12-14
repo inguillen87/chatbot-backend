@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
+import logging
 
 from flask import Blueprint, g, jsonify, request, session, abort, make_response
 from flask_cors import cross_origin
@@ -34,6 +35,7 @@ from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 from utils.tenant import get_current_tenant_profile
 
 carrito_bp = Blueprint('carrito_bp', __name__, url_prefix='/carrito')
+logger = logging.getLogger(__name__)
 
 _CORS_ALLOWED_HEADERS = [
     "Content-Type",
@@ -282,10 +284,13 @@ def _db_cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = No
 
         total_count += entry.quantity
 
-        enriched.append({
+        item_data = {
             "catalogo_item_id": entry.product_id,
+            "product_id": entry.product_id, # Alias for some frontends
+            "id": entry.product_id, # Alias for some frontends
             "nombre": product.nombre if product else entry.name_snapshot,
             "cantidad": entry.quantity,
+            "quantity": entry.quantity, # Alias for JS
             "precio_unitario": price_monetary,
             "precio_unitario_texto": price_text,
             "subtotal": subtotal,
@@ -295,7 +300,19 @@ def _db_cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = No
             "imagen_url": formatted["formatted"].get("imagen_url") if formatted else None,
             "descripcion": formatted["formatted"].get("descripcion") if formatted else None,
             "categoria": formatted["formatted"].get("categoria") if formatted else None,
-        })
+        }
+
+        # Add unit/quantity_label to avoid ReferenceError on frontend
+        if product and product.unidad:
+            item_data["unidad"] = product.unidad
+            item_data["quantityLabel"] = product.unidad
+            item_data["quantity_label"] = product.unidad
+        else:
+            item_data["unidad"] = "u"
+            item_data["quantityLabel"] = "u"
+            item_data["quantity_label"] = "u"
+
+        enriched.append(item_data)
 
     # Legacy fields + New fields
     resumen = {
@@ -378,8 +395,10 @@ def agregar():
         return _tenant_missing_response()
 
     payload = request.get_json(silent=True) or {}
+    logger.debug(f"Carrito Add Payload: {payload}")
+
     # Support multiple formats
-    item_id = payload.get('catalogo_item_id') or payload.get('item_id') or payload.get('product_id')
+    item_id = payload.get('catalogo_item_id') or payload.get('item_id') or payload.get('product_id') or payload.get('id') or payload.get('producto_id')
     cantidad = 1
     try:
         cantidad = int(payload.get('cantidad', 1))
@@ -392,6 +411,8 @@ def agregar():
 
     product = _product_query_for_tenant(owner, tenant).filter(CatalogoItem.id == item_id).first()
     if not product:
+        # Fallback for demo mock matching by string ID if needed?
+        # But ensure_seed_catalog should have created integer IDs.
         return jsonify({'error': 'Producto no encontrado'}), 404
 
     cart = _get_or_create_db_cart(tenant, current_user, create_if_missing=True)
@@ -432,7 +453,7 @@ def actualizar():
         return _tenant_missing_response()
 
     payload = request.get_json(silent=True) or {}
-    item_id = payload.get('catalogo_item_id') or payload.get('item_id') or payload.get('product_id')
+    item_id = payload.get('catalogo_item_id') or payload.get('item_id') or payload.get('product_id') or payload.get('id') or payload.get('producto_id')
     try:
         cantidad = int(payload.get('cantidad', 0))
     except:
@@ -469,7 +490,7 @@ def eliminar():
         return _tenant_missing_response()
 
     payload = request.get_json(silent=True) or {}
-    item_id = payload.get('catalogo_item_id') or payload.get('item_id') or payload.get('product_id')
+    item_id = payload.get('catalogo_item_id') or payload.get('item_id') or payload.get('product_id') or payload.get('id') or payload.get('producto_id')
 
     if not item_id:
         return jsonify({'error': 'catalogo_item_id requerido'}), 400
