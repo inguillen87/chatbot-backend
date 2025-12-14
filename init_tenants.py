@@ -439,6 +439,14 @@ def init_tenants():
                 db.session.add(r)
 
     db.session.commit()
+
+    # --- Seed Demo Content (News, Events, Surveys) ---
+    try:
+        from scripts.seed_demo_content import seed_content
+        seed_content()
+    except Exception as e:
+        print(f"⚠️ Error seeding demo content: {e}")
+
     print("\n✅ Initialization complete.")
 
 if __name__ == "__main__":
