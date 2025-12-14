@@ -199,6 +199,23 @@ def init_tenants():
     except FileNotFoundError:
         pass
 
+    # Ensure 'municipio' is present even if files are missing
+    if not any(d.get("key") == "municipio" for d in demos_found):
+        print("  ⚠️ 'municipio' config not found on disk. Injecting default configuration...")
+        demos_found.append({
+            "key": "municipio",
+            "nombre": "Municipio Inteligente",
+            "rubro_clave": "municipio",
+            "tipo_chat": "municipio",
+            "welcome_title": "Municipio de Demo",
+            "welcome_subtitle": "Asistente Ciudadano",
+            "theme_config": {
+                "mode": "system",
+                "light": {"primary": "#006c3f", "secondary": "#d4a01a", "background": "#ffffff", "text": "#000000"},
+                "dark": {"primary": "#005230", "secondary": "#b08516", "background": "#1a1a1a", "text": "#ffffff"}
+            }
+        })
+
     email_map = {
         "almacen": "demo+almacen@chatboc.ar",
         "bodega": "demo+bodega@chatboc.ar",

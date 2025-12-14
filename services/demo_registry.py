@@ -72,6 +72,7 @@ class DemoRubro:
 
         return {
             "key": self.key,
+            "slug": self.key,
             "label": self.label,
             "descripcion": self.descripcion,
             "tipo_chat": self.tipo_chat,
