@@ -1,6 +1,8 @@
 [
   {
     "key": "municipio",
+    "segment": "Gobiernos",
+    "subsegment": "Municipios y ciudades",
     "nombre": "Municipio Inteligente",
     "tipo_chat": "municipio",
     "rubro_clave": "municipio",
@@ -11,29 +13,29 @@
         "title": "Guía de trámites digitales",
         "description": "Paso a paso para licencias, habilitaciones y exenciones.",
         "type": "pdf",
-        "url": "/static/demo/municipio/guia-tramites.pdf",
+        "url": "/static/demo/municipio/guia-tramites-rapidos.pdf",
         "cta_text": "Descargar guía",
         "highlight": "Actualizado 2024",
         "availability": "Online 24/7"
       },
       {
-        "title": "Calendario de vencimientos",
-        "description": "Fechas límite para tasas municipales y patentes.",
+        "title": "Plan de iluminación inteligente",
+        "description": "Cronograma de recambio LED y mantenimiento predictivo.",
         "type": "pdf",
-        "url": "/static/demo/municipio/calendario-fiscal.pdf",
-        "cta_text": "Ver calendario fiscal",
-        "highlight": "Vencimientos mensuales",
-        "availability": "Contribuyentes"
+        "url": "/static/demo/municipio/plan-iluminacion-inteligente.pdf",
+        "cta_text": "Ver plan",
+        "highlight": "Prioridad barrios",
+        "availability": "Obras Públicas"
       },
       {
-        "title": "Mapa de puntos verdes",
-        "description": "Ubicación de centros de reciclaje y compostaje.",
+        "title": "Centro de monitoreo",
+        "description": "Mapa de cámaras, botones antipánico y patrullajes.",
         "type": "image",
-        "url": "/static/demo/municipio/mapa-puntos-verdes.svg",
-        "thumbnail": "/static/demo/municipio/mapa-puntos-verdes.svg",
-        "cta_text": "Ver mapa eco",
-        "highlight": "+50 puntos activos",
-        "availability": "Todo el municipio"
+        "url": "/static/demo/municipio/centro-monitoreo-smart.svg",
+        "thumbnail": "/static/demo/municipio/centro-monitoreo-smart.svg",
+        "cta_text": "Ver mapa",
+        "highlight": "Cobertura 24/7",
+        "availability": "Seguridad"
       }
     ],
     "quick_actions": [
@@ -158,72 +160,556 @@
   },
   {
     "key": "almacen",
+    "segment": "Empresas",
+    "subsegment": "Retail y supermercados",
     "nombre": "Almacén Demo",
     "tipo_chat": "pyme",
     "rubro_clave": "almacen",
-    "welcome_message": "🛒 Hola, soy el asesor digital de ByM Almacén.\n\nSeleccioná una opción para gestionar pedidos express, reposiciones o integraciones."
+    "welcome_message": "🛒 Hola, soy el asesor digital de ByM Almacén.\n\nSeleccioná una opción para gestionar pedidos express, reposiciones o integraciones.",
+    "resources": [
+      {
+        "title": "Catálogo de combos",
+        "description": "Packs sugeridos con márgenes y stock.",
+        "type": "pdf",
+        "url": "/static/demo/almacen/catalogo-combos-2024.pdf",
+        "cta_text": "Ver combos"
+      },
+      {
+        "title": "Lista mayorista",
+        "description": "Precios escalonados por volumen.",
+        "type": "pdf",
+        "url": "/static/demo/almacen/lista-precios-mayoristas.pdf",
+        "cta_text": "Descargar lista"
+      },
+      {
+        "title": "Rutas de delivery",
+        "description": "Cobertura y ventanas horarias activas.",
+        "type": "image",
+        "url": "/static/demo/almacen/rutas-delivery.svg",
+        "thumbnail": "/static/demo/almacen/rutas-delivery.svg",
+        "cta_text": "Ver cobertura"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "🛍️",
+        "texto": "Armar pedido",
+        "prompt": "Armemos un pedido rápido con bebidas y snacks."
+      },
+      {
+        "emoji": "🚚",
+        "texto": "Reponer stock",
+        "prompt": "Necesito reponer lácteos y congelados con entrega hoy."
+      },
+      {
+        "emoji": "🎯",
+        "texto": "Promos",
+        "prompt": "Mostrame promociones activas para miembros del club."
+      }
+    ],
+    "capabilities": [
+      "🧾 Arma pedidos con combos sugeridos y tickets promedio.",
+      "🚚 Coordina logística con ventanas horarias.",
+      "🎁 Gestiona programas de puntos y cupones automáticos."
+    ]
   },
   {
     "key": "bodega",
+    "segment": "Empresas",
+    "subsegment": "Alimentos y bebidas",
     "nombre": "Bodega Cuatro Fincas",
     "tipo_chat": "pyme",
     "rubro_clave": "bodega",
-    "welcome_message": "🍷 Bienvenido al concierge digital de Cuatro Fincas.\n\nElegí una opción del menú para explorar nuestro portfolio, programas para el trade y experiencias."
+    "welcome_message": "🍷 Bienvenido al asistente digital de Cuatro Fincas.\n\nElegí una opción del menú para explorar nuestro portfolio, programas para el trade y experiencias.",
+    "resources": [
+      {
+        "title": "Catálogo premium",
+        "description": "Líneas reserva y ediciones limitadas.",
+        "type": "pdf",
+        "url": "/static/demo/bodega/catalogo-premium-2024.pdf",
+        "cta_text": "Explorar vinos"
+      },
+      {
+        "title": "Combos corporativos",
+        "description": "Cajas para eventos y regalos empresariales.",
+        "type": "pdf",
+        "url": "/static/demo/bodega/combos-degustacion-corporativas.pdf",
+        "cta_text": "Ver combos"
+      },
+      {
+        "title": "Rutas de envío",
+        "description": "Cobertura logística refrigerada.",
+        "type": "image",
+        "url": "/static/demo/bodega/rutas-envio-premium.svg",
+        "thumbnail": "/static/demo/bodega/rutas-envio-premium.svg",
+        "cta_text": "Ver rutas"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "📦",
+        "texto": "Pedido mayorista",
+        "prompt": "Quiero cotizar 10 cajas de Malbec reserva para un evento."
+      },
+      {
+        "emoji": "🎟️",
+        "texto": "Reservar cata",
+        "prompt": "Agendá una degustación virtual para distribuidores."
+      },
+      {
+        "emoji": "📊",
+        "texto": "Panel trade",
+        "prompt": "Mostrame el programa de incentivos para sommeliers."
+      },
+      {
+        "emoji": "🗳️",
+        "texto": "Encuesta en vivo",
+        "prompt": "Lanzá una encuesta rápida con QR para que los invitados voten su vino favorito y ver resultados al instante."
+      }
+    ],
+    "capabilities": [
+      "📦 Genera pedidos B2B con tarifas por canal.",
+      "🎟️ Gestiona reservas y aforos en tiempo real.",
+      "📈 Ofrece reportes de sell-out y KPIs comerciales.",
+      "🗳️ Muestra encuestas y votaciones en tiempo real desde el widget."
+    ]
   },
   {
     "key": "ferreteria",
+    "segment": "Empresas",
+    "subsegment": "Retail especializado",
     "nombre": "ProObra Ferretería",
     "tipo_chat": "pyme",
     "rubro_clave": "ferreteria",
-    "welcome_message": "🏗️ Hola, soy ProObra.\n\nElegí una opción del menú para consultar materiales, coordinar logística o ver planes de financiación."
+    "welcome_message": "🏗️ Hola, soy ProObra.\n\nElegí una opción del menú para consultar materiales, coordinar logística o ver planes de financiación.",
+    "resources": [
+      {
+        "title": "Catálogo de materiales",
+        "description": "Eléctrica, sanitarios y obra gruesa.",
+        "type": "pdf",
+        "url": "/static/demo/ferreteria/catalogo-materiales-obra.pdf",
+        "cta_text": "Descargar catálogo"
+      },
+      {
+        "title": "Plan logístico",
+        "description": "Entregas programadas y grúa.",
+        "type": "pdf",
+        "url": "/static/demo/ferreteria/plan-logistica-obra.pdf",
+        "cta_text": "Ver plan"
+      },
+      {
+        "title": "Cobertura de camiones",
+        "description": "Mapa de rutas con camión grúa.",
+        "type": "image",
+        "url": "/static/demo/ferreteria/camion-grua.svg",
+        "thumbnail": "/static/demo/ferreteria/camion-grua.svg",
+        "cta_text": "Ver cobertura"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "🧰",
+        "texto": "Armar cotización",
+        "prompt": "Cotizá materiales para una obra de 120 m2 con envío programado."
+      },
+      {
+        "emoji": "🚚",
+        "texto": "Estado de despacho",
+        "prompt": "¿Cómo va el envío del pedido de cementos y hierros?"
+      },
+      {
+        "emoji": "💳",
+        "texto": "Planes y crédito",
+        "prompt": "Mostrame planes de financiación para mayoristas."
+      }
+    ],
+    "capabilities": [
+      "🧰 Calcula listas de materiales por tipo de obra.",
+      "🚚 Coordina envíos multi-sucursal con seguimiento.",
+      "📑 Integra fichas técnicas y garantías en cada respuesta."
+    ]
   },
   {
     "key": "local_comercial_general",
+    "segment": "Empresas",
+    "subsegment": "Moda y lifestyle",
     "nombre": "Moda Urbana",
     "tipo_chat": "pyme",
     "rubro_clave": "local_comercial_general",
-    "welcome_message": "👗 Hola, soy tu planner de Moda Urbana.\n\nElegí una opción para ver lookbooks, fidelización, eventos o integraciones."
+    "welcome_message": "👗 Hola, soy tu planner de Moda Urbana.\n\nElegí una opción para ver lookbooks, fidelización, eventos o integraciones.",
+    "resources": [
+      {
+        "title": "Lookbook urbano",
+        "description": "Colección cápsula y básicos.",
+        "type": "pdf",
+        "url": "/static/demo/local_comercial/lookbook-urbano.pdf",
+        "cta_text": "Ver lookbook"
+      },
+      {
+        "title": "Programa de fidelización",
+        "description": "Beneficios por nivel y referidos.",
+        "type": "pdf",
+        "url": "/static/demo/local_comercial/programa-fidelizacion.pdf",
+        "cta_text": "Ver programa"
+      },
+      {
+        "title": "Combos corporativos",
+        "description": "Uniformes y regalos ejecutivos.",
+        "type": "image",
+        "url": "/static/demo/local_comercial/combos-corporativos.svg",
+        "thumbnail": "/static/demo/local_comercial/combos-corporativos.svg",
+        "cta_text": "Ver combos"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "🧥",
+        "texto": "Curar outfit",
+        "prompt": "Armá un outfit business casual talle M con entrega rápida."
+      },
+      {
+        "emoji": "🎁",
+        "texto": "Programa VIP",
+        "prompt": "Quiero activar puntos y beneficios para clientes premium."
+      },
+      {
+        "emoji": "🧾",
+        "texto": "Factura y envío",
+        "prompt": "Necesito factura A y entrega en 24hs para CABA."
+      }
+    ],
+    "capabilities": [
+      "🧠 Recomienda productos con talles y combinaciones.",
+      "📦 Genera carritos y reserva stock por canal.",
+      "📊 Muestra analíticas de conversión y heatmaps de tienda."
+    ]
   },
   {
     "key": "medico_general",
+    "segment": "Empresas",
+    "subsegment": "Salud y bienestar",
     "nombre": "Clínica Demo",
     "tipo_chat": "pyme",
     "rubro_clave": "medico_general",
-    "welcome_message": "🏥 Bienvenido a Clínica Demo.\n\nElegí una opción para gestionar turnos, estudios, telemedicina o convenios."
+    "welcome_message": "🏥 Bienvenido a Clínica Demo.\n\nElegí una opción para gestionar turnos, estudios, telemedicina o convenios.",
+    "resources": [
+      {
+        "title": "Agenda de turnos prioritarios",
+        "description": "Disponibilidad por especialidad y plan.",
+        "type": "pdf",
+        "url": "/static/demo/medico/agenda-turnos-prioritarios.pdf",
+        "cta_text": "Ver agenda"
+      },
+      {
+        "title": "Guía de estudios",
+        "description": "Preparación y coberturas por práctica.",
+        "type": "pdf",
+        "url": "/static/demo/medico/guia-preparacion-estudios.pdf",
+        "cta_text": "Descargar"
+      },
+      {
+        "title": "Flujo de teleconsulta",
+        "description": "Pasos para videollamada segura.",
+        "type": "image",
+        "url": "/static/demo/medico/teleconsulta-flujo.svg",
+        "thumbnail": "/static/demo/medico/teleconsulta-flujo.svg",
+        "cta_text": "Ver flujo"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "📅",
+        "texto": "Sacar turno",
+        "prompt": "Quiero un turno de clínica médica para la semana próxima."
+      },
+      {
+        "emoji": "🧪",
+        "texto": "Resultados",
+        "prompt": "¿Están listos mis estudios de laboratorio?"
+      },
+      {
+        "emoji": "📞",
+        "texto": "Teleconsulta",
+        "prompt": "Agendá una videollamada con pediatría."
+      }
+    ],
+    "capabilities": [
+      "📅 Gestiona turnos con recordatorios automatizados.",
+      "🧪 Vincula estudios y resultados al perfil del paciente.",
+      "🔒 Respeta flujos de privacidad y consentimientos."
+    ]
   },
   {
     "key": "energia",
+    "segment": "Empresas",
+    "subsegment": "Energía y servicios",
     "nombre": "Energía Demo",
     "tipo_chat": "pyme",
     "rubro_clave": "energia",
-    "welcome_message": "⚡ Hola, soy el hub digital de Energía Demo.\n\nSeleccioná una opción para acceder a dashboards de upstream, operaciones y sostenibilidad."
+    "welcome_message": "⚡ Hola, soy el hub digital de Energía Demo.\n\nSeleccioná una opción para acceder a dashboards de upstream, operaciones y sostenibilidad.",
+    "resources": [
+      {
+        "title": "Plan upstream 2025",
+        "description": "Obras, licencias y milestones.",
+        "type": "pdf",
+        "url": "/static/demo/energia/plan-upstream-2025.pdf",
+        "cta_text": "Ver plan"
+      },
+      {
+        "title": "Tablero operativo",
+        "description": "Indicadores de downstream y SLAs.",
+        "type": "pdf",
+        "url": "/static/demo/energia/tablero-operativo-downstream.pdf",
+        "cta_text": "Ver tablero"
+      },
+      {
+        "title": "Matriz HSEQ",
+        "description": "Licencias y cumplimiento por sitio.",
+        "type": "pdf",
+        "url": "/static/demo/energia/matriz-hseq-licencias.pdf",
+        "cta_text": "Descargar matriz"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "📊",
+        "texto": "KPIs",
+        "prompt": "Mostrame el uptime y SLAs de la última semana."
+      },
+      {
+        "emoji": "🛠️",
+        "texto": "Incidencias",
+        "prompt": "Crear ticket por corte de servicio en planta sur."
+      },
+      {
+        "emoji": "🌱",
+        "texto": "ESG",
+        "prompt": "Quiero ver métricas de emisiones y proyectos verdes."
+      }
+    ],
+    "capabilities": [
+      "📈 Lee y explica tableros operativos en tiempo real.",
+      "🛠️ Abre tickets y deriva a cuadrillas de mantenimiento.",
+      "🌱 Comunica KPIs ESG y reportes regulatorios."
+    ]
   },
   {
     "key": "inmobiliaria",
+    "segment": "Empresas",
+    "subsegment": "Real Estate",
     "nombre": "Inmobiliaria Demo",
     "tipo_chat": "pyme",
     "rubro_clave": "inmobiliaria",
-    "welcome_message": "🏙️ Hola, soy el advisor digital de Inmobiliaria Demo.\n\nSeleccioná una opción para ver proyectos, inversiones o gestionar operaciones."
+    "welcome_message": "🏙️ Hola, soy el advisor digital de Inmobiliaria Demo.\n\nSeleccioná una opción para ver proyectos, inversiones o gestionar operaciones.",
+    "resources": [
+      {
+        "title": "Portfolio proyectos prime",
+        "description": "Torres, cowork y lotes disponibles.",
+        "type": "pdf",
+        "url": "/static/demo/inmobiliaria/portfolio-proyectos-prime.pdf",
+        "cta_text": "Ver portfolio"
+      },
+      {
+        "title": "Market insights Q4",
+        "description": "Rentabilidades y absorción.",
+        "type": "pdf",
+        "url": "/static/demo/inmobiliaria/market-insights-q4.pdf",
+        "cta_text": "Ver insights"
+      },
+      {
+        "title": "Playbook legal",
+        "description": "Onboarding de inversores y compliance.",
+        "type": "pdf",
+        "url": "/static/demo/inmobiliaria/playbook-legal-onboarding.pdf",
+        "cta_text": "Descargar"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "🏢",
+        "texto": "Agendar visita",
+        "prompt": "Coordiná una visita al proyecto SkyView el viernes."
+      },
+      {
+        "emoji": "📑",
+        "texto": "Simular alquiler",
+        "prompt": "Simulá gastos y garantías para un 2 ambientes en Palermo."
+      },
+      {
+        "emoji": "📈",
+        "texto": "Reporte inversor",
+        "prompt": "Mostrame rentabilidad proyectada de los locales comerciales."
+      }
+    ],
+    "capabilities": [
+      "📅 Coordina visitas y agenda con recordatorios.",
+      "🧮 Calcula cuotas, expensas y escenarios de inversión.",
+      "🤝 Gestiona leads y deriva a brokers asignados."
+    ]
   },
   {
     "key": "fintech",
+    "segment": "Empresas",
+    "subsegment": "Finanzas y pagos",
     "nombre": "Fintech Demo",
     "tipo_chat": "pyme",
     "rubro_clave": "fintech",
-    "welcome_message": "💳 Bienvenido a Fintech Demo.\n\nElegí una opción del menú para explorar onboarding, cobranzas, riesgo o nuestras APIs."
+    "welcome_message": "💳 Bienvenido a Fintech Demo.\n\nElegí una opción del menú para explorar onboarding, cobranzas, riesgo o nuestras APIs.",
+    "resources": [
+      {
+        "title": "Suite de cobranzas",
+        "description": "Flujos omnicanal y conciliación.",
+        "type": "pdf",
+        "url": "/static/demo/fintech/suite-cobranzas-omnicanal.pdf",
+        "cta_text": "Ver suite"
+      },
+      {
+        "title": "Onboarding digital",
+        "description": "KYC/KYB y prevención de fraude.",
+        "type": "pdf",
+        "url": "/static/demo/fintech/onboarding-digital-2024.pdf",
+        "cta_text": "Descargar playbook"
+      },
+      {
+        "title": "Mapa de APIs",
+        "description": "SDKs y endpoints disponibles.",
+        "type": "image",
+        "url": "/static/demo/fintech/mapa-apis.svg",
+        "thumbnail": "/static/demo/fintech/mapa-apis.svg",
+        "cta_text": "Ver mapa"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "🧾",
+        "texto": "Cobrar",
+        "prompt": "Generá un link de pago por $25.000 con vencimiento mañana."
+      },
+      {
+        "emoji": "🛡️",
+        "texto": "Revisar riesgo",
+        "prompt": "Validá identidad y riesgo de Juan Pérez DNI 12345678."
+      },
+      {
+        "emoji": "⚙️",
+        "texto": "Probar APIs",
+        "prompt": "Mostrame cómo crear un checkout embebido."
+      }
+    ],
+    "capabilities": [
+      "💳 Genera links y órdenes de pago en segundos.",
+      "🛡️ Ejecuta flujos KYC/KYB y verifica documentos.",
+      "📈 Explica métricas de fraude y conciliación."
+    ]
   },
   {
     "key": "seguros",
+    "segment": "Empresas",
+    "subsegment": "Seguros",
     "nombre": "Seguros Demo",
     "tipo_chat": "pyme",
     "rubro_clave": "seguros",
-    "welcome_message": "🛡️ Bienvenido a ShieldOne.\n\nElegí una opción para ver programas corporativos, gestionar siniestros o consultar analítica."
+    "welcome_message": "🛡️ Bienvenido a ShieldOne.\n\nElegí una opción para ver programas corporativos, gestionar siniestros o consultar analítica.",
+    "resources": [
+      {
+        "title": "Coberturas enterprise",
+        "description": "Planes corporativos y asistencias.",
+        "type": "pdf",
+        "url": "/static/demo/seguros/coberturas-enterprise-2024.pdf",
+        "cta_text": "Ver coberturas"
+      },
+      {
+        "title": "Dashboard de siniestros",
+        "description": "KPIs y SLAs por ramo.",
+        "type": "pdf",
+        "url": "/static/demo/seguros/dashboard-siniestros-q3.pdf",
+        "cta_text": "Ver dashboard"
+      },
+      {
+        "title": "Red de asistencia",
+        "description": "Talleres, grúas y prestadores.",
+        "type": "image",
+        "url": "/static/demo/seguros/red-asistencia.svg",
+        "thumbnail": "/static/demo/seguros/red-asistencia.svg",
+        "cta_text": "Ver red"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "🚗",
+        "texto": "Denunciar siniestro",
+        "prompt": "Quiero denunciar un choque leve con fotos y ubicación."
+      },
+      {
+        "emoji": "📄",
+        "texto": "Ver cobertura",
+        "prompt": "¿Qué cobertura tengo para asistencia al hogar?"
+      },
+      {
+        "emoji": "📊",
+        "texto": "Informe ejecutivo",
+        "prompt": "Mostrá KPIs de siniestros del último trimestre."
+      }
+    ],
+    "capabilities": [
+      "📄 Explica coberturas y exclusiones con claridad.",
+      "🚨 Abre siniestros con fotos, voz y ubicación.",
+      "📊 Muestra dashboards de SLAs y ratios de aprobación."
+    ]
   },
   {
     "key": "logistica",
+    "segment": "Empresas",
+    "subsegment": "Logística y supply chain",
     "nombre": "Logística Demo",
     "tipo_chat": "pyme",
     "rubro_clave": "logistica",
-    "welcome_message": "🚚 Bienvenido a Logística Demo.\n\nElegí una opción del menú para conocer nuestras capacidades de fulfillment, operaciones y envíos internacionales."
+    "welcome_message": "🚚 Bienvenido a Logística Demo.\n\nElegí una opción del menú para conocer nuestras capacidades de fulfillment, operaciones y envíos internacionales.",
+    "resources": [
+      {
+        "title": "Blueprint operaciones",
+        "description": "Arquitectura omnicanal y SLAs.",
+        "type": "pdf",
+        "url": "/static/demo/logistica/blueprint-operaciones-omnicanal.pdf",
+        "cta_text": "Descargar blueprint"
+      },
+      {
+        "title": "Matriz SLA retail",
+        "description": "Tiempos por servicio y zona.",
+        "type": "pdf",
+        "url": "/static/demo/logistica/matriz-sla-retail.pdf",
+        "cta_text": "Ver matriz"
+      },
+      {
+        "title": "Red de hubs",
+        "description": "Cobertura regional y fulfilment.",
+        "type": "image",
+        "url": "/static/demo/logistica/red-hubs.svg",
+        "thumbnail": "/static/demo/logistica/red-hubs.svg",
+        "cta_text": "Ver hubs"
+      }
+    ],
+    "quick_actions": [
+      {
+        "emoji": "📦",
+        "texto": "Cotizar envío",
+        "prompt": "Cotizá un envío internacional a Chile con seguro."
+      },
+      {
+        "emoji": "⏱️",
+        "texto": "Estado de orden",
+        "prompt": "¿Dónde está el pedido #4581 y cuándo llega?"
+      },
+      {
+        "emoji": "🏬",
+        "texto": "Fulfillment",
+        "prompt": "Quiero ver niveles de stock por almacén."
+      }
+    ],
+    "capabilities": [
+      "🚚 Calcula ETAs y costos multicanal.",
+      "📦 Sincroniza inventario con marketplaces y WMS.",
+      "🛰️ Traza envíos con mapas y alertas en tiempo real."
+    ]
   }
 ]

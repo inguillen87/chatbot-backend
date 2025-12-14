@@ -104,42 +104,68 @@ class DemoOfflineResponsesTestCase(unittest.TestCase):
         db.create_all()
         self.client = self.app.test_client()
 
-        # Rubros
-        self.rubro_municipio = Rubro(clave="municipio", nombre="Municipio", es_publico=True)
-        self.rubro_bodega = Rubro(clave="bodega", nombre="Bodega", es_publico=False)
-        self.rubro_almacen = Rubro(clave="almacen", nombre="Almacén", es_publico=False)
-        db.session.add_all([self.rubro_municipio, self.rubro_bodega, self.rubro_almacen])
-        db.session.commit()
+        # Rubros (reusar si ya existen para evitar duplicados al inicializar demos)
+        self.rubro_municipio = Rubro.query.filter_by(clave="municipio").first()
+        self.rubro_bodega = Rubro.query.filter_by(clave="bodega").first()
+        self.rubro_almacen = Rubro.query.filter_by(clave="almacen").first()
+
+        nuevos_rubros = []
+        if not self.rubro_municipio:
+            self.rubro_municipio = Rubro(clave="municipio", nombre="Municipio", es_publico=True)
+            nuevos_rubros.append(self.rubro_municipio)
+        if not self.rubro_bodega:
+            self.rubro_bodega = Rubro(clave="bodega", nombre="Bodega", es_publico=False)
+            nuevos_rubros.append(self.rubro_bodega)
+        if not self.rubro_almacen:
+            self.rubro_almacen = Rubro(clave="almacen", nombre="Almacén", es_publico=False)
+            nuevos_rubros.append(self.rubro_almacen)
+
+        if nuevos_rubros:
+            db.session.add_all(nuevos_rubros)
+            db.session.commit()
 
         # Users associated to demos
-        self.muni_user = User(
-            name="Municipio Demo",
-            email="municipio@example.com",
-            password_hash="hash",
-            rubro=self.rubro_municipio,
-            tipo_chat="municipio",
-            rol="admin",
-        )
-        self.bodega_user = User(
-            name="Bodega Demo",
-            email="bodega@example.com",
-            password_hash="hash",
-            token="demo-bodega-token",
-            rubro=self.rubro_bodega,
-            tipo_chat="pyme",
-            nombre_empresa="Bodega Cuatro Fincas",
-        )
-        self.almacen_user = User(
-            name="Almacén Demo",
-            email="almacen@example.com",
-            password_hash="hash",
-            token="demo-almacen-token",
-            rubro=self.rubro_almacen,
-            tipo_chat="pyme",
-            nombre_empresa="Almacén Inteligente",
-        )
-        db.session.add_all([self.muni_user, self.bodega_user, self.almacen_user])
-        db.session.commit()
+        self.muni_user = User.query.filter_by(email="municipio@example.com").first()
+        self.bodega_user = User.query.filter_by(email="bodega@example.com").first()
+        self.almacen_user = User.query.filter_by(email="almacen@example.com").first()
+
+        nuevos_users = []
+        if not self.muni_user:
+            self.muni_user = User(
+                name="Municipio Demo",
+                email="municipio@example.com",
+                password_hash="hash",
+                rubro=self.rubro_municipio,
+                tipo_chat="municipio",
+                rol="admin",
+            )
+            nuevos_users.append(self.muni_user)
+        if not self.bodega_user:
+            self.bodega_user = User(
+                name="Bodega Demo",
+                email="bodega@example.com",
+                password_hash="hash",
+                token="demo-bodega-token",
+                rubro=self.rubro_bodega,
+                tipo_chat="pyme",
+                nombre_empresa="Bodega Cuatro Fincas",
+            )
+            nuevos_users.append(self.bodega_user)
+        if not self.almacen_user:
+            self.almacen_user = User(
+                name="Almacén Demo",
+                email="almacen@example.com",
+                password_hash="hash",
+                token="demo-almacen-token",
+                rubro=self.rubro_almacen,
+                tipo_chat="pyme",
+                nombre_empresa="Almacén Inteligente",
+            )
+            nuevos_users.append(self.almacen_user)
+
+        if nuevos_users:
+            db.session.add_all(nuevos_users)
+            db.session.commit()
 
         # FAQs for previews
         faq_muni = QA(

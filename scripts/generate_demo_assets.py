@@ -260,7 +260,7 @@ def main() -> None:
                     title="Beneficios",
                     bullets=[
                         "Mesa ejecutiva 24/7 para cuentas estratégicas",
-                        "Asistencia internacional y concierge premium",
+                        "Asistencia internacional y beneficios premium",
                         "Cláusulas tailor-made con retenciones flexibles",
                     ],
                 ),

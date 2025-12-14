@@ -86,6 +86,17 @@ def _resolve_session_identifier() -> str:
     frontend, which persists across browser sessions better than the Flask
     session cookie. Falls back to the Flask session if no anonymous ID is provided.
     """
+    chat_session_id = (
+        request.headers.get("X-Chat-Session-Id")
+        or request.headers.get("Chat-Session-Id")
+        or request.args.get("chat_session_id")
+    )
+    if not chat_session_id:
+        body = request.get_json(silent=True) or {}
+        chat_session_id = body.get("chat_session_uuid") or body.get("chatSessionId")
+    if chat_session_id:
+        return str(chat_session_id)
+
     # 1. Try Anon-Id from headers (most reliable for PWA/Widgets)
     anon_id = (
         request.headers.get("X-Anon-Id")

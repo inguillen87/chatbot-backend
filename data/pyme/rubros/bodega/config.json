@@ -2,7 +2,7 @@
   "nombre": "Bodega Demo",
   "descripcion": "Sommelier digital: portfolio ícono, programas trade y logística boutique.",
   "prompt_context": "Cuatro Fincas Winery produce microvinificaciones en Altamira, Agrelo, Vistalba y Gualtallary. Portfolio 2024/2025: Gran Malbec Reserva, Cabernet Franc Single Vineyard, Chardonnay Finca Don Matías, Bonarda Orgánica y Extra Brut Método Tradicional. Programas HoReCa, duty free y export LATAM con logística boutique, training de sommeliers y experiencias corporativas premium.",
-  "welcome_message": "🍷 Bienvenido al concierge digital de Cuatro Fincas.\n\nElegí una opción del menú para explorar nuestro portfolio, programas para el trade y experiencias.",
+  "welcome_message": "🍷 Bienvenido al asistente digital de Cuatro Fincas.\n\nElegí una opción del menú para explorar nuestro portfolio, programas para el trade y experiencias.",
   "resources": [
     {
       "title": "Catálogo íconos 2024/2025",
@@ -136,6 +136,26 @@
           "texto": "Hospitality en bodega",
           "prompt": "Necesito propuestas de hospitality en bodega para clientes top.",
           "description": "Menús maridaje y salas exclusivas"
+        }
+      ]
+    },
+    {
+      "emoji": "🗳️",
+      "texto": "Encuestas en vivo",
+      "description": "Votaciones rápidas con QR",
+      "category": "🗳️ Participación",
+      "submenu": [
+        {
+          "emoji": "🍷",
+          "texto": "Votación de varietales",
+          "prompt": "Armá una votación rápida entre Malbec y Cabernet y mostrale el QR para votar.",
+          "description": "Resultados en vivo"
+        },
+        {
+          "emoji": "🥂",
+          "texto": "Elegir experiencia",
+          "prompt": "Mostrá una encuesta para que elijan entre cata virtual o experiencia en bodega.",
+          "description": "Ideal para demos con clientes"
         }
       ]
     }
