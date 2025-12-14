@@ -41,6 +41,7 @@ def _resolve_tenant(slug: str) -> TenantProfile:
     try:
         # Reutilizamos el mismo resolver multitenant usado en el resto de la app
         # para respetar aliases y configuraciones de dominio.
+        # Esto incluye la creación "lazy" de demos si no existen en BD.
         tenant = resolve_tenant_only(tenant_slug=slug_clean, require_explicit_slug=True)
     except TenantResolutionError:
         tenant = None

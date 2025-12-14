@@ -15,6 +15,7 @@ portal_api_bp = Blueprint('portal_api', __name__)
 
 def _resolve_context(tenant_slug):
     try:
+        # Includes lazy demo creation if applicable
         tenant = resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=True)
     except TenantResolutionError:
         abort(404, "Tenant no encontrado")
