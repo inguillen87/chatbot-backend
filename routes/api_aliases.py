@@ -91,6 +91,16 @@ def carrito_alias_root():
 def carrito_alias_with_slug(tenant_slug: str):
     """Alias that allows /api/<slug>/carrito to reach the cart endpoint."""
 
+    # Explicitly set context from slug if middleware missed it
+    if tenant_slug:
+        from services.tenant_resolver import resolve_tenant_only
+        from flask import g
+        try:
+            # This triggers lazy creation if needed
+            g.tenant_profile = resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=False)
+        except Exception:
+            pass
+
     return carrito_root()
 
 
