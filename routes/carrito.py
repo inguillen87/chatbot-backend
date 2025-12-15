@@ -109,8 +109,8 @@ def _resolve_session_identifier() -> str:
     if anon_id:
         return anon_id
 
-    # 2. Try cookie (if standard web client)
-    anon_id_cookie = request.cookies.get("anon_id") or request.cookies.get("chatboc_anon_id")
+    # 2. Try cookie (if standard web client) - Prioritize 'chatboc_anon_id' as seen in logs
+    anon_id_cookie = request.cookies.get("chatboc_anon_id") or request.cookies.get("anon_id")
     if anon_id_cookie:
         return anon_id_cookie
 
