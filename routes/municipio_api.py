@@ -765,9 +765,12 @@ def legacy_agregar_item_carrito():
     data = request.get_json(silent=True) or {}
 
     # Support multiple ID formats including legacy 'producto_id'
+    # The frontend might send different keys depending on the version
     item_id = data.get("catalogo_item_id") or data.get("item_id") or data.get("product_id") or data.get("id") or data.get("producto_id")
 
     if not item_id:
+        # Check if the payload is just the ID directly (unlikely but possible in some legacy calls)
+        # or if it's nested. Assuming JSON dict.
         return jsonify({'error': 'catalogo_item_id requerido'}), 400
 
     cantidad = 1
