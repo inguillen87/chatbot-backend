@@ -125,6 +125,10 @@ def get_current_tenant() -> Optional[str]:
         {k: request.headers.get(k) for k in request.headers.keys() if "tenant" in k.lower()},
         dict(request.cookies),
     )
+    # Don't crash for global endpoints like /api/rubros
+    if request.path.startswith("/api/rubros"):
+        return None
+
     raise ApiError("tenant requerido", 400)
 
 def get_current_tenant_slug() -> Optional[str]:
