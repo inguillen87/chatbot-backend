@@ -797,6 +797,9 @@ def legacy_agregar_item_carrito():
     # Find product to add
     product = CatalogoItem.query.get(item_id)
     if not product:
+         current_app.logger.warning(
+             f"[legacy_agregar_item_carrito] Producto no encontrado ID={item_id} Tenant={tenant_slug}"
+         )
          return jsonify({'error': 'Producto no encontrado'}), 404
 
     cart_item = cart.items.filter(MarketCartItem.product_id == product.id).first()

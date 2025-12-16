@@ -175,10 +175,80 @@ _DEFAULT_MUNICIPAL_ITEMS: Sequence[SeedItem] = (
     ),
 )
 
+_FARMACIA_ITEMS: Sequence[SeedItem] = (
+    SeedItem(
+        nombre="Paracetamol 500mg",
+        categoria="Medicamentos",
+        descripcion="Analgésico y antipirético.",
+        precio="$1200",
+        unidad="caja",
+        sku="farma-paracetamol",
+        cantidad="Stock disponible",
+        imagen_url="https://images.unsplash.com/photo-1584308666744-24d5c474f2ae?auto=format&fit=crop&w=900&q=80",
+    ),
+    SeedItem(
+        nombre="Crema Hidratante Facial",
+        categoria="Cuidado Personal",
+        descripcion="Hidratación profunda para pieles sensibles.",
+        precio="$8500",
+        unidad="pote",
+        sku="farma-crema-facial",
+        cantidad="Stock disponible",
+        imagen_url="https://images.unsplash.com/photo-1611080541599-8c6dbde6edb8?auto=format&fit=crop&w=900&q=80",
+    ),
+)
+
+_LOGISTICA_ITEMS: Sequence[SeedItem] = (
+    SeedItem(
+        nombre="Envío Estándar AMBA",
+        categoria="Envíos",
+        descripcion="Entrega en 48hs hábiles en CABA y GBA.",
+        precio="$3500",
+        unidad="envio",
+        sku="log-envio-amba",
+        cantidad="Servicio disponible",
+    ),
+    SeedItem(
+        nombre="Pack Embalaje Frágil",
+        categoria="Insumos",
+        descripcion="Caja reforzada y plástico burbuja.",
+        precio="$1200",
+        unidad="pack",
+        sku="log-pack-fragil",
+        cantidad="Stock disponible",
+    ),
+)
+
+_GENERIC_B2B_ITEMS: Sequence[SeedItem] = (
+    SeedItem(
+        nombre="Consultoría IT - Hora",
+        categoria="Servicios",
+        descripcion="Asesoramiento técnico especializado.",
+        precio="$25000",
+        unidad="hora",
+        sku="b2b-consultoria",
+        cantidad="Agenda disponible",
+    ),
+    SeedItem(
+        nombre="Licencia Software Enterprise",
+        categoria="Software",
+        descripcion="Licencia anual para empresas.",
+        precio="$150000",
+        unidad="licencia",
+        sku="b2b-licencia",
+        cantidad="Disponible",
+    ),
+)
+
 _SEED_BY_KEY: Mapping[str, Sequence[SeedItem]] = {
     "municipalidad-de-junin": _JUNIN_ITEMS,
     "junin": _JUNIN_ITEMS,
     "junin-mendoza": _JUNIN_ITEMS,
+    "farmacia": _FARMACIA_ITEMS,
+    "logistica": _LOGISTICA_ITEMS,
+    "empresa": _GENERIC_B2B_ITEMS,
+    "soluciones": _GENERIC_B2B_ITEMS,
+    "seguros": _GENERIC_B2B_ITEMS,
 }
 
 
