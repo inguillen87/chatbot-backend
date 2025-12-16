@@ -163,13 +163,15 @@ def responder_chatboc(
         raise ValueError(f"Tipo de chat inválido: {tipo_chat}")
 
     # --- INICIO: Manejo de confusión Pyme/Municipio ---
-    if tipo_chat == "pyme" and not kwargs.get("demo_metadata"):
+    pregunta_text_check = pregunta if isinstance(pregunta, str) else pregunta.get("pregunta", "")
+    pregunta_norm_check = normalizar_texto(pregunta_text_check)
+    skip_confusion_check = any(k in pregunta_norm_check for k in ["catalogo", "catálogo", "carrito", "comprar", "pedido", "producto", "precio"])
+
+    if tipo_chat == "pyme" and not kwargs.get("demo_metadata") and not skip_confusion_check:
         from services.municipio_responder import MENU_KEYWORDS as MUNICIPIO_MENU_KEYWORDS
-        pregunta_text = pregunta if isinstance(pregunta, str) else pregunta.get("pregunta", "")
-        pregunta_norm = normalizar_texto(pregunta_text)
         # Check for municipal keywords in the user's query
         for action, keywords in MUNICIPIO_MENU_KEYWORDS.items():
-            if any(keyword in pregunta_norm for keyword in keywords):
+            if any(keyword in pregunta_norm_check for keyword in keywords):
                 pyme_name = getattr(effective_owner_user, "nombre_empresa", "este comercio")
                 return {
                     "message_body": f"Parece que estás consultando sobre un trámite municipal, pero te encuentras en el chat de {pyme_name}. ¿Querés que te dirija al asistente del municipio?",
