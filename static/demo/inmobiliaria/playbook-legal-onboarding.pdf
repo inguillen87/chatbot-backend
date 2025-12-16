@@ -1,123 +1,80 @@
 %PDF-1.4
-1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
-2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
-3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R /F3 7 0 R >> >> >> endobj
-4 0 obj << /Length 2164 >>
+%\x93\x8c\x8b\x9e ReportLab Generated PDF document (opensource)
+1 0 obj
+<<
+/F1 2 0 R /F2 3 0 R /F3 4 0 R
+>>
+endobj
+2 0 obj
+<<
+/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+>>
+endobj
+3 0 obj
+<<
+/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /Name /F2 /Subtype /Type1 /Type /Font
+>>
+endobj
+4 0 obj
+<<
+/BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding /Name /F3 /Subtype /Type1 /Type /Font
+>>
+endobj
+5 0 obj
+<<
+/Contents 9 0 R /MediaBox [ 0 0 595.2756 841.8898 ] /Parent 8 0 R /Resources <<
+/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>> /Rotate 0 /Trans <<
+
+>>
+  /Type /Page
+>>
+endobj
+6 0 obj
+<<
+/PageMode /UseNone /Pages 8 0 R /Type /Catalog
+>>
+endobj
+7 0 obj
+<<
+/Author (\(anonymous\)) /CreationDate (D:20251216063510+00'00') /Creator (\(unspecified\)) /Keywords () /ModDate (D:20251216063510+00'00') /Producer (ReportLab PDF Library - \(opensource\))
+  /Subject (\(unspecified\)) /Title (\(anonymous\)) /Trapped /False
+>>
+endobj
+8 0 obj
+<<
+/Count 1 /Kids [ 5 0 R ] /Type /Pages
+>>
+endobj
+9 0 obj
+<<
+/Filter [ /ASCII85Decode /FlateDecode ] /Length 831
+>>
 stream
-BT
-/F2 24 Tf
-54 738.00 Td
-(PLAYBOOK LEGAL & ONBOARDING) Tj
-ET
-BT
-/F3 14 Tf
-54 708.00 Td
-(Reservas digitales, compliance y firma remota) Tj
-ET
-BT
-/F2 14 Tf
-54 678.50 Td
-(PROCESO INTEGRAL) Tj
-ET
-BT
-/F1 11 Tf
-54 661.00 Td
-(? Reserva digital con pago parcial y verificacin KYC) Tj
-ET
-BT
-/F1 11 Tf
-54 647.25 Td
-(? Due diligence legal con checklist bilinge) Tj
-ET
-BT
-/F1 11 Tf
-54 633.50 Td
-(? Firma digital y escrituracin con escribana asociada) Tj
-ET
-BT
-/F2 14 Tf
-54 613.75 Td
-(DOCUMENTACIN) Tj
-ET
-BT
-/F1 11 Tf
-54 596.25 Td
-(? Contratos bilinges y certificados notariales) Tj
-ET
-BT
-/F1 11 Tf
-54 582.50 Td
-(? Certificacin de fondos para inversores extranjeros) Tj
-ET
-BT
-/F1 11 Tf
-54 568.75 Td
-(? Power of attorney y apostillas electrnicas) Tj
-ET
-BT
-/F2 14 Tf
-54 549.00 Td
-(SOPORTE) Tj
-ET
-BT
-/F1 11 Tf
-54 531.50 Td
-(? Mesa legal especializada 24/7) Tj
-ET
-BT
-/F1 11 Tf
-54 517.75 Td
-(? Seguimiento de hitos y recordatorios automatizados) Tj
-ET
-BT
-/F1 11 Tf
-54 504.00 Td
-(? Acceso a data room seguro para contrapartes) Tj
-ET
-BT
-/F2 13 Tf
-54 484.25 Td
-(HITOS DEL ONBOARDING) Tj
-ET
-BT /F2 11 Tf 54.00 468.00 Td (Etapa) Tj ET
-BT /F2 11 Tf 180.00 468.00 Td (Responsable) Tj ET
-BT /F2 11 Tf 306.00 468.00 Td (Plazo) Tj ET
-BT /F2 11 Tf 432.00 468.00 Td (Entrega) Tj ET
-BT /F1 10 Tf 54.00 454.00 Td (Reserva) Tj ET
-BT /F1 10 Tf 180.00 454.00 Td (Advisor) Tj ET
-BT /F1 10 Tf 306.00 454.00 Td (48 h) Tj ET
-BT /F1 10 Tf 432.00 454.00 Td (Recibo digital) Tj ET
-BT /F1 10 Tf 54.00 440.00 Td (Due diligence) Tj ET
-BT /F1 10 Tf 180.00 440.00 Td (Mesa legal) Tj ET
-BT /F1 10 Tf 306.00 440.00 Td (7 das) Tj ET
-BT /F1 10 Tf 432.00 440.00 Td (Reporte completo) Tj ET
-BT /F1 10 Tf 54.00 426.00 Td (Firma) Tj ET
-BT /F1 10 Tf 180.00 426.00 Td (Escribana) Tj ET
-BT /F1 10 Tf 306.00 426.00 Td (72 h) Tj ET
-BT /F1 10 Tf 432.00 426.00 Td (Documentacin digital) Tj ET
-BT /F3 9 Tf 54.00 36.00 Td (Manual confidencial  uso exclusivo Portfolio Prime Realty) Tj ET
-54 474.00 m 558.00 474.00 l S
-54 422.00 m 558.00 422.00 l S
-54.00 474.00 m 54.00 422.00 l S
-180.00 474.00 m 180.00 422.00 l S
-306.00 474.00 m 306.00 422.00 l S
-432.00 474.00 m 432.00 422.00 l S
-558.00 474.00 m 558.00 422.00 l S
-endstream endobj
-5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
-6 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >> endobj
-7 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique >> endobj
+Gasam9lldX&A@sBm&?1\-<Llni#\A`R<C?LO"rl[,(o53"dB@a2ZLKA+]E>R-Gp\BX/FdogCFVo+6q`P%IcB5jVJ8g6,!BB,7aN,>ipt%$Q>+H!biE?=glKB"s-/hAV.*.@Q^N-$B]Zk!Hu(?Dfc8(L-BDFc@BotSMB;sMDRp2qBD#fE:UE9c!"1P=tS]"e`J+;O-$!NfbB7,mdQXmiaP;k&t?M[1ii[<!U9t&s4AongfEuWD9OZC<a/_C#InL!7bUa!gO9!p!EhGd4?T?J0)J1<;F(gmRs;?S*h:1],9dG?>cC1q=di,OP9jd57[P#<R:;439NLd66]P?iBa+kin&o6of.m\b\3-Wr'l6V]d4-;R`aMuUKOGMeGen_hXu#jWp;6UCN0M-H)9ITiOu^3Nc:q69Vp:561P/IY!&%;!X%FDQEAHHieuc7(ZHs,%&iV'13,=:`3[DbFpN<[P0=]A5NR?oL#5kS\Kk_']$<i/RWJ&,FYgKnFTINr`f!EeYN93>M35aTMV3Z2N,f&DGR%6QqQ/3uiEh6`*s%la70RhBh;=,E6+hCrj>'L)$FK/06_PM[5A+5dNkq:/&Nhc*JbI4XdgY!fS3FF:&;&Ioe"3JQ)DLti+&F(pgj9Qp\-f=Ff(eW`c$NL%WpH\,H)E/CYpGNXXA7?EBqSQD/YV1;ADY?!Tg"qIQ]aa.*Do5:fUS;trf"iL?;>C/>GHWBG8D)_A&tH^\B#TsG^iX]+8lP(k/-?!SF]H*%=;1oc!K6#1=p[8AFS3,AG--5e-!s5kf;@qi4@enV"9gaGi;BM>etrEecJ?Lm3]\+sYkSH;AsHB~>endstream
+endobj
 xref
-0 8
+0 10
 0000000000 65535 f 
-0000000009 00000 n 
-0000000058 00000 n 
-0000000115 00000 n 
-0000000261 00000 n 
-0000002477 00000 n 
-0000002547 00000 n 
-0000002622 00000 n 
-trailer << /Size 8 /Root 1 0 R >>
+0000000061 00000 n
+0000000112 00000 n
+0000000219 00000 n
+0000000331 00000 n
+0000000446 00000 n
+0000000649 00000 n
+0000000717 00000 n
+0000000997 00000 n
+0000001056 00000 n
+trailer
+<<
+/ID
+[<1a257322ec987cc8a09d264826e13139><1a257322ec987cc8a09d264826e13139>]
+% ReportLab generated PDF document -- digest (opensource)
+
+/Info 7 0 R
+/Root 6 0 R
+/Size 10
+>>
 startxref
-2700
+1977
 %%EOF

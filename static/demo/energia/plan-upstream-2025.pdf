@@ -1,123 +1,80 @@
 %PDF-1.4
-1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
-2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
-3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R /F3 7 0 R >> >> >> endobj
-4 0 obj << /Length 2074 >>
+%\x93\x8c\x8b\x9e ReportLab Generated PDF document (opensource)
+1 0 obj
+<<
+/F1 2 0 R /F2 3 0 R /F3 4 0 R
+>>
+endobj
+2 0 obj
+<<
+/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+>>
+endobj
+3 0 obj
+<<
+/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /Name /F2 /Subtype /Type1 /Type /Font
+>>
+endobj
+4 0 obj
+<<
+/BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding /Name /F3 /Subtype /Type1 /Type /Font
+>>
+endobj
+5 0 obj
+<<
+/Contents 9 0 R /MediaBox [ 0 0 595.2756 841.8898 ] /Parent 8 0 R /Resources <<
+/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>> /Rotate 0 /Trans <<
+
+>>
+  /Type /Page
+>>
+endobj
+6 0 obj
+<<
+/PageMode /UseNone /Pages 8 0 R /Type /Catalog
+>>
+endobj
+7 0 obj
+<<
+/Author (\(anonymous\)) /CreationDate (D:20251216063510+00'00') /Creator (\(unspecified\)) /Keywords () /ModDate (D:20251216063510+00'00') /Producer (ReportLab PDF Library - \(opensource\))
+  /Subject (\(unspecified\)) /Title (\(anonymous\)) /Trapped /False
+>>
+endobj
+8 0 obj
+<<
+/Count 1 /Kids [ 5 0 R ] /Type /Pages
+>>
+endobj
+9 0 obj
+<<
+/Filter [ /ASCII85Decode /FlateDecode ] /Length 736
+>>
 stream
-BT
-/F2 24 Tf
-54 738.00 Td
-(PLAN UPSTREAM 2025) Tj
-ET
-BT
-/F3 14 Tf
-54 708.00 Td
-(Perforacin, workovers y estrategia de produccin) Tj
-ET
-BT
-/F2 14 Tf
-54 678.50 Td
-(OBJETIVOS CLAVE) Tj
-ET
-BT
-/F1 11 Tf
-54 661.00 Td
-(? 18 pozos horizontales con laterales 2.500 m) Tj
-ET
-BT
-/F1 11 Tf
-54 647.25 Td
-(? 9 workovers para recuperacin secundaria) Tj
-ET
-BT
-/F1 11 Tf
-54 633.50 Td
-(? Produccin meta: +18% YoY) Tj
-ET
-BT
-/F2 14 Tf
-54 613.75 Td
-(CAPEX & OPEX) Tj
-ET
-BT
-/F1 11 Tf
-54 596.25 Td
-(? Capex total USD 165 M) Tj
-ET
-BT
-/F1 11 Tf
-54 582.50 Td
-(? Opex optimizado con contratos de servicios integrados) Tj
-ET
-BT
-/F1 11 Tf
-54 568.75 Td
-(? KPIs de eficiencia: NPT < 8%) Tj
-ET
-BT
-/F2 14 Tf
-54 549.00 Td
-(TECNOLOGA) Tj
-ET
-BT
-/F1 11 Tf
-54 531.50 Td
-(? Monitoreo en tiempo real con edge computing) Tj
-ET
-BT
-/F1 11 Tf
-54 517.75 Td
-(? Gemelos digitales para anlisis predictivo) Tj
-ET
-BT
-/F1 11 Tf
-54 504.00 Td
-(? Integracin con sistema de gestin de pozos) Tj
-ET
-BT
-/F2 13 Tf
-54 484.25 Td
-(CALENDARIO DE PERFORACIN) Tj
-ET
-BT /F2 11 Tf 54.00 468.00 Td (Bloque) Tj ET
-BT /F2 11 Tf 180.00 468.00 Td (Pozos) Tj ET
-BT /F2 11 Tf 306.00 468.00 Td (Inicio) Tj ET
-BT /F2 11 Tf 432.00 468.00 Td (Operador) Tj ET
-BT /F1 10 Tf 54.00 454.00 Td (La Esperanza) Tj ET
-BT /F1 10 Tf 180.00 454.00 Td (6) Tj ET
-BT /F1 10 Tf 306.00 454.00 Td (Ene 2025) Tj ET
-BT /F1 10 Tf 432.00 454.00 Td (Andino Drilling) Tj ET
-BT /F1 10 Tf 54.00 440.00 Td (Cerro Verde) Tj ET
-BT /F1 10 Tf 180.00 440.00 Td (5) Tj ET
-BT /F1 10 Tf 306.00 440.00 Td (Mar 2025) Tj ET
-BT /F1 10 Tf 432.00 440.00 Td (GeoEnergy) Tj ET
-BT /F1 10 Tf 54.00 426.00 Td (Valle Norte) Tj ET
-BT /F1 10 Tf 180.00 426.00 Td (7) Tj ET
-BT /F1 10 Tf 306.00 426.00 Td (Jun 2025) Tj ET
-BT /F1 10 Tf 432.00 426.00 Td (Andino Drilling) Tj ET
-BT /F3 9 Tf 54.00 36.00 Td (Reporte interno  confidencial  actualizado agosto 2024) Tj ET
-54 474.00 m 558.00 474.00 l S
-54 422.00 m 558.00 422.00 l S
-54.00 474.00 m 54.00 422.00 l S
-180.00 474.00 m 180.00 422.00 l S
-306.00 474.00 m 306.00 422.00 l S
-432.00 474.00 m 432.00 422.00 l S
-558.00 474.00 m 558.00 422.00 l S
-endstream endobj
-5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
-6 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >> endobj
-7 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique >> endobj
+Gasam9lnc;&A@7.m'1XZN[.9'_@:2BPi8A<_^QC1/&<7\.^DudIm%TC"34!+j,#)N^3t<Q>)<<sL\c3m!5+>#nWj5f&9!-jJ4'5U<q5P>N-<9=6DVI`WMRH=9E\!@#^uo=<0BZ]&>9fui-$neUVd.Sj=HC`!@Er"Z%e_tJco1N+AUm)<>r@$KL0@^151,WnK#Q70L(5aTJ\ogU:;%s,!I`H^j?77/"in>E,hB5&lJfjjb%PQ[L$MI_Un[bG"*:]Js/j5BNT;DUAn<Dq13DsYK$IU=Vrh:AEV"@5soa/?NQK#aqfpi0pm!;4f(t-kt-Rk$=ju&OA%fU-VH"S+UHN_@g()mp(HnY7#Jl92H=#SG[0.dEBJmB`mu!A0-_k6s,?;Z\/N+7DTXe/ck-KjfS!5RB"UX/$7^e!.oYar2lCYc%(K;;,;Ts^e%'TGpiln=4#YX26I0diT.IXD;o6i'l_2=8Xj]knH>2NI?'ad6]\]f19jufg7uhlAVqfpHT@=W?>$%=N_40QF+*:YT1+P+Y@S*78Xo!m8[V!d]3gs)rLVLIH]$K"'nZ-T'_D_ZoEqnX(U^N<;a9^3@O6WsWg)*T](nU"NL6FMb79eQ+6S\$Hq-V/7nGs8In!lDt6F,bqnaN2[RPls`g14Q8O%fe7/[nktas>Fr4MndT)YOoCIOFs*arYA?5NNg@KuJD<Dj:;\9XHq_DgppH]1i9DZPpHT#UVJHbl.UBcrs6~>endstream
+endobj
 xref
-0 8
+0 10
 0000000000 65535 f 
-0000000009 00000 n 
-0000000058 00000 n 
-0000000115 00000 n 
-0000000261 00000 n 
-0000002387 00000 n 
-0000002457 00000 n 
-0000002532 00000 n 
-trailer << /Size 8 /Root 1 0 R >>
+0000000061 00000 n
+0000000112 00000 n
+0000000219 00000 n
+0000000331 00000 n
+0000000446 00000 n
+0000000649 00000 n
+0000000717 00000 n
+0000000997 00000 n
+0000001056 00000 n
+trailer
+<<
+/ID
+[<82c42bbdc10c3c73b507bc493982bee3><82c42bbdc10c3c73b507bc493982bee3>]
+% ReportLab generated PDF document -- digest (opensource)
+
+/Info 7 0 R
+/Root 6 0 R
+/Size 10
+>>
 startxref
-2610
+1882
 %%EOF

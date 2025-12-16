@@ -1,38 +1,80 @@
 %PDF-1.4
+%\x93\x8c\x8b\x9e ReportLab Generated PDF document (opensource)
 1 0 obj
-<< /Type /Catalog /Pages 2 0 R >>
+<<
+/F1 2 0 R /F2 3 0 R /F3 4 0 R
+>>
 endobj
 2 0 obj
-<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+<<
+/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+>>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 300] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+<<
+/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /Name /F2 /Subtype /Type1 /Type /Font
+>>
 endobj
 4 0 obj
-<< /Length 207 >>
-stream
-BT
-/F1 18 Tf
-36 260 Td (Programa de Fidelización) Tj
-0 -24 Td (Escalas de puntos y cupones automáticos) Tj
-0 -24 Td (Beneficios bancarios y wallet QR) Tj
-0 -24 Td (Reportes de recompra en dashboard) Tj
-ET
-endstream
+<<
+/BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding /Name /F3 /Subtype /Type1 /Type /Font
+>>
 endobj
 5 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+<<
+/Contents 9 0 R /MediaBox [ 0 0 595.2756 841.8898 ] /Parent 8 0 R /Resources <<
+/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>> /Rotate 0 /Trans <<
+
+>>
+  /Type /Page
+>>
+endobj
+6 0 obj
+<<
+/PageMode /UseNone /Pages 8 0 R /Type /Catalog
+>>
+endobj
+7 0 obj
+<<
+/Author (\(anonymous\)) /CreationDate (D:20251216063510+00'00') /Creator (\(unspecified\)) /Keywords () /ModDate (D:20251216063510+00'00') /Producer (ReportLab PDF Library - \(opensource\))
+  /Subject (\(unspecified\)) /Title (\(anonymous\)) /Trapped /False
+>>
+endobj
+8 0 obj
+<<
+/Count 1 /Kids [ 5 0 R ] /Type /Pages
+>>
+endobj
+9 0 obj
+<<
+/Filter [ /ASCII85Decode /FlateDecode ] /Length 782
+>>
+stream
+GasbX9lnc;&;KZL'mkJ!d$ZAH/D1L<%LjQ`dm=Fs;_Es0Ui'`ofM5'=4mPn6&!r<sQFqOOqe0%D",[Vi^0q(^'u8lD"3)Kd!u"'fE"2DHoR"LpV;m0j42glk50gqEi_n)=%M2-(.0niea5[f<bm9lFcMo3%9[Gd)/kY;sQ`c`0M9F9]Kcl!;NK"YMbZ62nmiZk*huYMA--1+^cQS@24W[c9*/>>IFB1hCIMmQ]S(UN5&d?n\=de9[%=0o>pUVcn6gXgQc13TuZi[1l0=XA/Q#<r+Khccf,5WFK4(3NR.@4<]%^kI*h'kEY-p6KMSe!HKYGtfaZ[;t?Q<!N!e$-P'O_LYIY4Z(\M/W&be9Yp9oM&QQV5cp:&\+?;[W![ERBH)(VP2i^[TAfeN6+ii;&@@lI9n:7Vu*pFFgb@[]Q@C+mE,5o40I!dS7%VcYOPp<p^s"/c@u?=Z$ZqQb3rC]HmCE#-!R,Z1,,2]@H_=k,#^q#T9m+(SK?%mRV8(bOYYXGRA]qY,GiXn;oO$5Vj[PchI*H-6)?YSL9P3LlH3M1@B<YT%T5.@la/pS?_;7D!0SoE,P'uMV`Xuen9nuMqgF#[:[RjNWXXk,XC5\8NJS]YHBNUDA0,Xag4l0LL8V;b@AgNlSQ":I;qm\@*L:R*:c)%f^F4<(B3i)rkVeSj]_47(%ef^CSei:h)t&kEq4Md7D7Y`PSVFC)n-iNd.G3`AoHuK-4Pj:u1`1r(`9'M>*\7@c/fBoJ(X2;IZ*GP.)HEkUQB7k7(.NcS#$69-~>endstream
 endobj
 xref
-0 6
+0 10
 0000000000 65535 f 
-0000000009 00000 n 
-0000000058 00000 n 
-0000000115 00000 n 
-0000000241 00000 n 
-0000000498 00000 n 
+0000000061 00000 n
+0000000112 00000 n
+0000000219 00000 n
+0000000331 00000 n
+0000000446 00000 n
+0000000649 00000 n
+0000000717 00000 n
+0000000997 00000 n
+0000001056 00000 n
 trailer
-<< /Size 6 /Root 1 0 R >>
+<<
+/ID
+[<55f3d83ddde1311028fac5733f0e4897><55f3d83ddde1311028fac5733f0e4897>]
+% ReportLab generated PDF document -- digest (opensource)
+
+/Info 7 0 R
+/Root 6 0 R
+/Size 10
+>>
 startxref
-568
+1928
 %%EOF

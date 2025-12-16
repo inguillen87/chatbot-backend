@@ -1,123 +1,80 @@
 %PDF-1.4
-1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
-2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
-3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R /F3 7 0 R >> >> >> endobj
-4 0 obj << /Length 2071 >>
+%\x93\x8c\x8b\x9e ReportLab Generated PDF document (opensource)
+1 0 obj
+<<
+/F1 2 0 R /F2 3 0 R /F3 4 0 R
+>>
+endobj
+2 0 obj
+<<
+/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+>>
+endobj
+3 0 obj
+<<
+/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /Name /F2 /Subtype /Type1 /Type /Font
+>>
+endobj
+4 0 obj
+<<
+/BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding /Name /F3 /Subtype /Type1 /Type /Font
+>>
+endobj
+5 0 obj
+<<
+/Contents 9 0 R /MediaBox [ 0 0 595.2756 841.8898 ] /Parent 8 0 R /Resources <<
+/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>> /Rotate 0 /Trans <<
+
+>>
+  /Type /Page
+>>
+endobj
+6 0 obj
+<<
+/PageMode /UseNone /Pages 8 0 R /Type /Catalog
+>>
+endobj
+7 0 obj
+<<
+/Author (\(anonymous\)) /CreationDate (D:20251216063510+00'00') /Creator (\(unspecified\)) /Keywords () /ModDate (D:20251216063510+00'00') /Producer (ReportLab PDF Library - \(opensource\))
+  /Subject (\(unspecified\)) /Title (\(anonymous\)) /Trapped /False
+>>
+endobj
+8 0 obj
+<<
+/Count 1 /Kids [ 5 0 R ] /Type /Pages
+>>
+endobj
+9 0 obj
+<<
+/Filter [ /ASCII85Decode /FlateDecode ] /Length 802
+>>
 stream
-BT
-/F2 24 Tf
-54 738.00 Td
-(TABLERO OPERATIVO DOWNSTREAM) Tj
-ET
-BT
-/F3 14 Tf
-54 708.00 Td
-(Utilizacin de refinera y cumplimiento de especificaciones) Tj
-ET
-BT
-/F2 14 Tf
-54 678.50 Td
-(KPIS OPERATIVOS) Tj
-ET
-BT
-/F1 11 Tf
-54 661.00 Td
-(? Utilizacin promedio 92%  blend crudo optimizado) Tj
-ET
-BT
-/F1 11 Tf
-54 647.25 Td
-(? Rendimiento de destilados medios +3,4%) Tj
-ET
-BT
-/F1 11 Tf
-54 633.50 Td
-(? Paradas programadas coordinadas con supply chain) Tj
-ET
-BT
-/F2 14 Tf
-54 613.75 Td
-(CALIDAD) Tj
-ET
-BT
-/F1 11 Tf
-54 596.25 Td
-(? Cumplimiento especificaciones Euro V) Tj
-ET
-BT
-/F1 11 Tf
-54 582.50 Td
-(? Control en lnea de azufre y octanaje) Tj
-ET
-BT
-/F1 11 Tf
-54 568.75 Td
-(? Sistema de trazabilidad para lotes crticos) Tj
-ET
-BT
-/F2 14 Tf
-54 549.00 Td
-(SUPPLY CHAIN) Tj
-ET
-BT
-/F1 11 Tf
-54 531.50 Td
-(? Logstica multimodal con monitoreo satelital) Tj
-ET
-BT
-/F1 11 Tf
-54 517.75 Td
-(? Planes de contingencia para picos de demanda) Tj
-ET
-BT
-/F1 11 Tf
-54 504.00 Td
-(? KPIs de despacho: 98% on time) Tj
-ET
-BT
-/F2 13 Tf
-54 484.25 Td
-(INDICADORES CLAVE) Tj
-ET
-BT /F2 11 Tf 54.00 468.00 Td (Unidad) Tj ET
-BT /F2 11 Tf 180.00 468.00 Td (Utilizacin) Tj ET
-BT /F2 11 Tf 306.00 468.00 Td (Planificado) Tj ET
-BT /F2 11 Tf 432.00 468.00 Td (Desvo) Tj ET
-BT /F1 10 Tf 54.00 454.00 Td (Destilacin) Tj ET
-BT /F1 10 Tf 180.00 454.00 Td (93%) Tj ET
-BT /F1 10 Tf 306.00 454.00 Td (91%) Tj ET
-BT /F1 10 Tf 432.00 454.00 Td (+2%) Tj ET
-BT /F1 10 Tf 54.00 440.00 Td (Craqueo cataltico) Tj ET
-BT /F1 10 Tf 180.00 440.00 Td (88%) Tj ET
-BT /F1 10 Tf 306.00 440.00 Td (87%) Tj ET
-BT /F1 10 Tf 432.00 440.00 Td (+1%) Tj ET
-BT /F1 10 Tf 54.00 426.00 Td (Isomerizacin) Tj ET
-BT /F1 10 Tf 180.00 426.00 Td (95%) Tj ET
-BT /F1 10 Tf 306.00 426.00 Td (94%) Tj ET
-BT /F1 10 Tf 432.00 426.00 Td (+1%) Tj ET
-BT /F3 9 Tf 54.00 36.00 Td (Datos SCADA 31/08/2024  uso interno) Tj ET
-54 474.00 m 558.00 474.00 l S
-54 422.00 m 558.00 422.00 l S
-54.00 474.00 m 54.00 422.00 l S
-180.00 474.00 m 180.00 422.00 l S
-306.00 474.00 m 306.00 422.00 l S
-432.00 474.00 m 432.00 422.00 l S
-558.00 474.00 m 558.00 422.00 l S
-endstream endobj
-5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
-6 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >> endobj
-7 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique >> endobj
+GasamgN&c;&:O:Slq:sGbQR5=EZZ74RC&AW/kho8U4DTl!ceiqg;!)s/TsgV@6e;rm-`8(8JDFo[/NN4^m>UE?R\eUi>SZa"GA_<$n!\Ag*4'<J`<8!F+k4inE*%Mr:'hqq()N,8>V](@Pbi:ZnHBL3A\n)!1fLJYpq\4";>0&JM;iC1,m0a`MM(g0U_kBiA6/ME,c.N6?i2EOqMe#MU[Yr$DM#qCBda<%&Vp#Y8o1\C[T?^kcCh1Z3Uj7,0)>4s8&i!W%Y.9f*Vf'4[u7).WArq!Zg%A5lDR31IdbuAN7W"@d)/&8VSGYHla^*.J[*7EXYk\,cNg@5[e&KNd.0!8jGUA;*oGN.2k=/,PZFuKW.$f:]f6)O:0[7._V_2H(7:$8-(MKE@OU;m*Qr-b!'EG8tDjA1es,R[r`p.`l()aC5W+?fYHO-*V0uPc?4'V8Znh!`I4>=1MkH[Fp=)c,!OR4,e3YlWakFU;f2[fb)^%*o7?EMF^s`Ij@YYSS4a5r(l(MNX94r!PY#IpY0Pm4dY=k`j'.2k0eTbd4d7l$29qlr>o#Ng_]O\/OmK>!%SRA/c<kb7]u-WPrfQPA$I3I27A],H?6+Q7pcc.r]t_FVf5>YBole;G$4jP(ZmKg$)*f,'RlK3mN=@8+%1crY_b"LY)lKt"Up3eM,co!LTkLK_IoYpn*d-_RZ-,ZFn^5O9+)L=ZG8Z3R[*)-L=tgF1S$/%.jADXMCsZ3!)KlTr^S>o6P.ei+6)sIE=hI&4"5q"Q8IF#@"d`#rI'aL@VRg$e,4gi_=IB!iP:hGY~>endstream
+endobj
 xref
-0 8
+0 10
 0000000000 65535 f 
-0000000009 00000 n 
-0000000058 00000 n 
-0000000115 00000 n 
-0000000261 00000 n 
-0000002384 00000 n 
-0000002454 00000 n 
-0000002529 00000 n 
-trailer << /Size 8 /Root 1 0 R >>
+0000000061 00000 n
+0000000112 00000 n
+0000000219 00000 n
+0000000331 00000 n
+0000000446 00000 n
+0000000649 00000 n
+0000000717 00000 n
+0000000997 00000 n
+0000001056 00000 n
+trailer
+<<
+/ID
+[<47c62793e4f2ca8fce60b2de7afa2cf8><47c62793e4f2ca8fce60b2de7afa2cf8>]
+% ReportLab generated PDF document -- digest (opensource)
+
+/Info 7 0 R
+/Root 6 0 R
+/Size 10
+>>
 startxref
-2607
+1948
 %%EOF

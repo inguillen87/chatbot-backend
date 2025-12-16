@@ -32,6 +32,14 @@
       "cta_text": "Ver experiencias",
       "highlight": "Reservas 2024 abiertas",
       "availability": "Eventos in winery & on-site"
+    },
+    {
+      "title": "Lista de precios (Excel)",
+      "description": "Formato editable para carga masiva.",
+      "type": "spreadsheet",
+      "url": "/static/demo/bodega/lista-precios-mayoristas.xlsx",
+      "cta_text": "Descargar Excel",
+      "highlight": "Compatible ERP"
     }
   ],
   "quick_actions": [

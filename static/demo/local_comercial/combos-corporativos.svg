@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180">
-  <rect width="320" height="180" fill="#fff0f6" />
-  <rect x="40" y="40" width="240" height="110" rx="16" fill="#ff85c0" opacity="0.3" />
-  <text x="60" y="80" font-size="20" font-family="Arial" fill="#d63384">Combo corporativo premium</text>
-  <text x="60" y="106" font-size="14" font-family="Arial" fill="#d63384">Box regalo + giftcard + tarjeta personalizada</text>
-  <text x="60" y="132" font-size="14" font-family="Arial" fill="#d63384">Entrega multinivel y seguimiento en panel</text>
-  <circle cx="250" cy="90" r="24" fill="#f783ac" />
-  <text x="237" y="96" font-size="18" font-family="Arial" fill="#fff">VIP</text>
-</svg>
+<svg width="800" height="600" xmlns="http://www.w3.org/2000/svg">
+      <rect width="100%" height="100%" fill="#f9f9f9" />
+
+          <text x="400" y="50" font-family="Arial" font-size="24" text-anchor="middle" fill="#333">Recurso: Moda Urbana</text>
+          <circle cx="400" cy="300" r="100" fill="#9B59B6" opacity="0.2" />
+          <text x="400" y="300" font-family="Arial" font-size="60" text-anchor="middle" dominant-baseline="middle" fill="#9B59B6">ℹ️</text>
+
+      <text x="400" y="580" font-family="Arial" font-size="12" text-anchor="middle" fill="#999">Generado por Chatboc Intelligence</text>
+    </svg>
