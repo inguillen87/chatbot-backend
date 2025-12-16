@@ -240,6 +240,75 @@ _GENERIC_B2B_ITEMS: Sequence[SeedItem] = (
     ),
 )
 
+_BODEGA_ITEMS: Sequence[SeedItem] = (
+    SeedItem(
+        nombre="Malbec Reserva 2020",
+        categoria="Vinos Tintos",
+        descripcion="Crianza de 12 meses en barrica de roble francés. Notas de ciruela y vainilla.",
+        descripcion_corta="Tinto con cuerpo y estructura",
+        precio="$8500",
+        unidad="botella",
+        sku="bod-malbec-reserva",
+        cantidad="Cajas disponibles",
+        imagen_url="https://images.unsplash.com/photo-1559563362-c667ba5f5480?auto=format&fit=crop&w=900&q=80",
+    ),
+    SeedItem(
+        nombre="Caja Degustación (6 botellas)",
+        categoria="Promociones",
+        descripcion="2 Malbec, 2 Cabernet, 2 Chardonnay. Ideal para regalar.",
+        descripcion_corta="Mix de varietales seleccionados",
+        precio="$45000",
+        unidad="caja",
+        sku="bod-caja-degustacion",
+        cantidad="Disponible",
+        imagen_url="https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?auto=format&fit=crop&w=900&q=80",
+    ),
+    SeedItem(
+        nombre="Visita Guiada y Degustación",
+        categoria="Enoturismo",
+        descripcion="Recorrido por viñedos y bodega con degustación de 4 etiquetas.",
+        descripcion_corta="Experiencia en bodega",
+        precio="$15000",
+        unidad="entrada",
+        sku="bod-visita-guiada",
+        cantidad="Reserva previa",
+        modalidad="reserva",
+    ),
+)
+
+_FERRETERIA_ITEMS: Sequence[SeedItem] = (
+    SeedItem(
+        nombre="Taladro Percutor 700W",
+        categoria="Herramientas Eléctricas",
+        descripcion="Mandril de 13mm, velocidad variable y reversible.",
+        precio="$85000",
+        unidad="unidad",
+        sku="fer-taladro-700w",
+        cantidad="3 en stock",
+        imagen_url="https://images.unsplash.com/photo-1504148455328-c376907d081c?auto=format&fit=crop&w=900&q=80",
+    ),
+    SeedItem(
+        nombre="Set de Destornilladores (6 piezas)",
+        categoria="Herramientas Manuales",
+        descripcion="Puntas imantadas, mango ergonómico. Plano y Phillips.",
+        precio="$12500",
+        unidad="set",
+        sku="fer-set-destornilladores",
+        cantidad="10 en stock",
+        imagen_url="https://images.unsplash.com/photo-1530124566582-a618bc2615dc?auto=format&fit=crop&w=900&q=80",
+    ),
+    SeedItem(
+        nombre="Lata de Pintura Látex Interior 20L",
+        categoria="Pinturas",
+        descripcion="Blanco mate, alto poder cubritivo.",
+        precio="$65000",
+        unidad="lata",
+        sku="fer-pintura-latex-20l",
+        cantidad="Disponible",
+        imagen_url="https://images.unsplash.com/photo-1562259949-e8e7689d7828?auto=format&fit=crop&w=900&q=80",
+    ),
+)
+
 _SEED_BY_KEY: Mapping[str, Sequence[SeedItem]] = {
     "municipalidad-de-junin": _JUNIN_ITEMS,
     "junin": _JUNIN_ITEMS,
@@ -249,6 +318,12 @@ _SEED_BY_KEY: Mapping[str, Sequence[SeedItem]] = {
     "empresa": _GENERIC_B2B_ITEMS,
     "soluciones": _GENERIC_B2B_ITEMS,
     "seguros": _GENERIC_B2B_ITEMS,
+    "bodega": _BODEGA_ITEMS,
+    "vino": _BODEGA_ITEMS,
+    "vinos": _BODEGA_ITEMS,
+    "ferreteria": _FERRETERIA_ITEMS,
+    "construccion": _FERRETERIA_ITEMS,
+    "herramientas": _FERRETERIA_ITEMS,
 }
 
 

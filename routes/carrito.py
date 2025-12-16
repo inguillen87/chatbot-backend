@@ -395,7 +395,8 @@ def agregar():
         return _tenant_missing_response()
 
     payload = request.get_json(silent=True) or {}
-    logger.debug(f"Carrito Add Payload: {payload}")
+    session_debug = _resolve_session_identifier()
+    logger.debug(f"Carrito Add Payload: {payload} | SessionID: {session_debug}")
 
     # Support multiple formats
     item_id = payload.get('catalogo_item_id') or payload.get('item_id') or payload.get('product_id') or payload.get('id') or payload.get('producto_id')
