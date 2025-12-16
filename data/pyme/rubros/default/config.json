@@ -2,6 +2,37 @@
   "nombre": "Chatboc Demo",
   "descripcion": "Equipo de ventas omnicanal que responde consultas, toma pedidos y coordina envíos para pymes de distintos rubros.",
   "welcome_message": "¡Hola! 👋 Soy tu asistente virtual. Estoy aquí para ayudarte a mostrar cómo funciona nuestra plataforma. Elige una opción:",
+  "resources": [
+    {
+      "title": "Catálogo de Productos",
+      "description": "Explora nuestra variedad de productos y servicios destacados.",
+      "type": "pdf",
+      "url": "/static/demo/default/catalogo-demo.pdf",
+      "cta_text": "Ver catálogo completo",
+      "price": "Ofertas especiales",
+      "highlight": "Novedades 2024",
+      "availability": "En stock"
+    },
+    {
+      "title": "Lista de Precios",
+      "description": "Precios actualizados para mayoristas y minoristas.",
+      "type": "pdf",
+      "url": "/static/demo/default/lista-precios.pdf",
+      "cta_text": "Descargar lista",
+      "highlight": "Válido por 30 días",
+      "availability": "Sujeto a cambios"
+    },
+    {
+      "title": "Dashboard de Métricas",
+      "description": "Visualiza el rendimiento de tus ventas y la satisfacción del cliente.",
+      "type": "image",
+      "url": "/static/demo/default/dashboard-preview.svg",
+      "thumbnail": "/static/demo/default/dashboard-preview.svg",
+      "cta_text": "Ver dashboard",
+      "highlight": "Datos en tiempo real",
+      "availability": "Acceso premium"
+    }
+  ],
   "quick_actions": [
     {
       "texto": "Ver demos disponibles",

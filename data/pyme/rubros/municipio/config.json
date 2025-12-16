@@ -1,0 +1,90 @@
+{
+  "nombre": "Municipio Inteligente",
+  "descripcion": "Gestión ciudadana: trámites, reclamos y participación vecinal.",
+  "prompt_context": "El Asistente Ciudadano responde consultas sobre trámites, toma reclamos de servicios públicos (luminaria, limpieza) y guía en la agenda cultural. Ofrece información sobre tasas, turnos y programas de salud.",
+  "welcome_message": "🏛️ Bienvenido al Municipio Inteligente.\n\nSoy tu asistente virtual. ¿En qué puedo ayudarte hoy?",
+  "resources": [
+    {
+      "title": "Guía de Trámites Rápidos",
+      "description": "Paso a paso para licencias, habilitaciones y pago de tasas.",
+      "type": "pdf",
+      "url": "/static/demo/municipio/guia-tramites-rapidos.pdf",
+      "cta_text": "Ver guía de trámites",
+      "highlight": "Trámites 100% online",
+      "availability": "Actualizado 2024"
+    },
+    {
+      "title": "Plan Iluminación Inteligente",
+      "description": "Mapa de nuevas obras LED y cronograma de mantenimiento barrial.",
+      "type": "pdf",
+      "url": "/static/demo/municipio/plan-iluminacion-inteligente.pdf",
+      "cta_text": "Ver mapa de obras",
+      "highlight": "Barrios priorizados",
+      "availability": "Ejecución Q3-Q4"
+    },
+    {
+      "title": "Centro de Monitoreo Smart",
+      "description": "Cámaras de seguridad, alertas vecinales y respuesta coordinada.",
+      "type": "image",
+      "url": "/static/demo/municipio/centro-monitoreo-smart.svg",
+      "thumbnail": "/static/demo/municipio/centro-monitoreo-smart.svg",
+      "cta_text": "Conocer sistema seguridad",
+      "highlight": "Vigilancia 24/7",
+      "availability": "Red conectada"
+    }
+  ],
+  "quick_actions": [
+    {
+      "emoji": "💡",
+      "texto": "Iniciar Reclamo",
+      "action": "iniciar_reclamo",
+      "description": "Luminaria, limpieza, bacheo",
+      "category": "💡 Servicios Públicos"
+    },
+    {
+      "emoji": "📅",
+      "texto": "Agenda Cultural",
+      "action": "agenda_y_noticias",
+      "description": "Eventos y actividades",
+      "category": "📅 Cultura y Eventos"
+    },
+    {
+      "emoji": "📋",
+      "texto": "Guía de Trámites",
+      "action": "mostrar_menu_tramites",
+      "description": "Licencias, tasas, turnos",
+      "category": "📋 Trámites"
+    },
+    {
+      "emoji": "🗳️",
+      "texto": "Participación",
+      "action": "mostrar_menu_encuestas",
+      "description": "Votá y opiná sobre tu barrio",
+      "category": "🗳️ Participación"
+    },
+    {
+      "emoji": "📞",
+      "texto": "Contactos Útiles",
+      "action": "contactos_utiles",
+      "description": "Emergencias, hospitales, guardia",
+      "category": "📞 Información"
+    }
+  ],
+  "theme_config": {
+    "mode": "system",
+    "light": {
+      "primary": "#006c3f",
+      "secondary": "#d4a01a",
+      "background": "#ffffff",
+      "text": "#000000"
+    },
+    "dark": {
+      "primary": "#005230",
+      "secondary": "#b08516",
+      "background": "#1a1a1a",
+      "text": "#ffffff"
+    }
+  },
+  "tipo_chat": "municipio",
+  "rubro_clave": "municipio"
+}
