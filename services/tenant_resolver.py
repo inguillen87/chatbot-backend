@@ -166,6 +166,15 @@ def _get_or_create_demo_tenant(slug: str) -> Optional[TenantProfile]:
         "almacen": {"label": "Almacén Demo", "segment": "Empresas"},
         "medico_general": {"label": "Clínica Demo", "segment": "Empresas"},
         "municipio": {"label": "Municipio Demo", "segment": "Gobiernos"},
+        "farmacia": {"label": "Farmacia Demo", "segment": "Empresas"},
+        "logistica": {"label": "Logística Demo", "segment": "Empresas"},
+        "seguros": {"label": "Seguros Demo", "segment": "Empresas"},
+        "inmobiliaria": {"label": "Inmobiliaria Demo", "segment": "Empresas"},
+        "fintech": {"label": "Fintech Demo", "segment": "Empresas"},
+        "energia": {"label": "Energía Demo", "segment": "Empresas"},
+        "local_comercial_general": {"label": "Comercio Demo", "segment": "Empresas"},
+        "empresa": {"label": "Empresa Genérica", "segment": "Empresas"},
+        "soluciones": {"label": "Soluciones Corporativas", "segment": "Empresas"},
     }
 
     fallback_data = fallback_map.get(slug_norm)
