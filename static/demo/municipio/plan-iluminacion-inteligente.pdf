@@ -1,39 +1,80 @@
 %PDF-1.4
+%\x93\x8c\x8b\x9e ReportLab Generated PDF document (opensource)
 1 0 obj
-<< /Type /Catalog /Pages 2 0 R >>
+<<
+/F1 2 0 R /F2 3 0 R /F3 4 0 R
+>>
 endobj
 2 0 obj
-<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+<<
+/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+>>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 440 320] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+<<
+/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /Name /F2 /Subtype /Type1 /Type /Font
+>>
 endobj
 4 0 obj
-<< /Length 190 >>
-stream
-BT
-/F1 16 Tf
-42 270 Td (Plan de iluminaci\303\263n inteligente - 2024) Tj
-0 -26 Td (Instalaci\303\263n de 1.500 luminarias LED con sensores IoT) Tj
-0 -22 Td (Tablero de monitoreo con alertas en tiempo real) Tj
-0 -22 Td (Cobertura prioritaria: escuelas, plazas y accesos principales) Tj
-0 -22 Td (Ahorro energ\303\251tico proyectado: 38% anual) Tj
-ET
-endstream
+<<
+/BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding /Name /F3 /Subtype /Type1 /Type /Font
+>>
 endobj
 5 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+<<
+/Contents 9 0 R /MediaBox [ 0 0 595.2756 841.8898 ] /Parent 8 0 R /Resources <<
+/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>> /Rotate 0 /Trans <<
+
+>>
+  /Type /Page
+>>
+endobj
+6 0 obj
+<<
+/PageMode /UseNone /Pages 8 0 R /Type /Catalog
+>>
+endobj
+7 0 obj
+<<
+/Author (\(anonymous\)) /CreationDate (D:20251216063510+00'00') /Creator (\(unspecified\)) /Keywords () /ModDate (D:20251216063510+00'00') /Producer (ReportLab PDF Library - \(opensource\))
+  /Subject (\(unspecified\)) /Title (\(anonymous\)) /Trapped /False
+>>
+endobj
+8 0 obj
+<<
+/Count 1 /Kids [ 5 0 R ] /Type /Pages
+>>
+endobj
+9 0 obj
+<<
+/Filter [ /ASCII85Decode /FlateDecode ] /Length 850
+>>
+stream
+GasamgJZc[&:Ml+lq=7`1H:OKfhUE3"GRD?69Tb\j@+&&C.=MfCt$SZGNBc=84(?193E;&*hU,B+Sa=GSJ;,P.88&::^6/&-kA;5="mDt5:<g*L(V?q(aR3S_&IVa+Q+dbC^'q#0bH3\pCm0d#M7#[X['W0)#&Iso3NkY!D>h4J91rbT50X'q."=$dSrj%pBm72O?Pr+*f`1q8E^h]9i>54ORg^U&`3,P%1enP*_0SE1pBksZZNL+X8,m?F_;O,%q2o-kj&X<,uA$u0PH\9q#X#Re1#C2N,irM56-\?PYE$(@Luu^]8L)SUH9@a3/GF2JV]K@Z=iYn69u0T],7&ip%q<7Mb'@W(tKsA.!gpj]Z&pB#N)Yc,Y]%D)W6s@KYjo`]M_7dAsI#-KnCg*67OHbN3Y7N6,dg+9N=u+[2[0.J=Dl?H:Gs4Upb.D+/a!<=5,htD1$c@7`)QUeXj":?3e/BR4OY+k?)b0&C>Q^)sMBG#4V.SRS6!kh?<`?GCIj-QHoM&Ql?3IT1`^a+U]7aM0'5[Smkna]:WVh^,.6uQ<Cp-UTitmlq)?'b,VihTJq,2G*[*MQA<P<#((*U;a/;^(uTpr/c*%Z:Y;V67HFqqr]hfs>5;Ehos.K@/OE3lZ3Nq/T&p56ZE3ok*8u>'I)=c.<t0?ipub`9)+@Ki\C'fRZ'!="2Cp(DHhcSAG"ZVg9lIojDJcoJD)eP!)fAgu's0j<%M!b#Kg/)<I5rH=`:hG0_>4,VY]-?jHoEKVfrQg1_CR+-+LB?pb$Z*#9[]\X''^*jIV65Eo;AGf[)@/sbKBKL#[kIO"[D\<oS9N62?OrHe_7SYfG`!gq$1U,Q9>~>endstream
 endobj
 xref
-0 6
+0 10
 0000000000 65535 f 
-0000000010 00000 n 
-0000000051 00000 n 
-0000000102 00000 n 
-0000000215 00000 n 
-0000000411 00000 n 
+0000000061 00000 n
+0000000112 00000 n
+0000000219 00000 n
+0000000331 00000 n
+0000000446 00000 n
+0000000649 00000 n
+0000000717 00000 n
+0000000997 00000 n
+0000001056 00000 n
 trailer
-<< /Size 6 /Root 1 0 R >>
+<<
+/ID
+[<a065385d0543394b1d464952950a6a63><a065385d0543394b1d464952950a6a63>]
+% ReportLab generated PDF document -- digest (opensource)
+
+/Info 7 0 R
+/Root 6 0 R
+/Size 10
+>>
 startxref
-472
+1996
 %%EOF

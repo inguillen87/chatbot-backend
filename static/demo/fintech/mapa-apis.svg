@@ -1,74 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540">
-  <defs>
-    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#0f172a"/>
-      <stop offset="100%" stop-color="#1e3a8a"/>
-    </linearGradient>
-    <style>
-      .title { font-family: 'Montserrat', 'Helvetica Neue', Arial, sans-serif; font-weight: 700; fill: #fff; }
-      .subtitle { font-family: 'Montserrat', 'Helvetica Neue', Arial, sans-serif; font-size: 20px; fill: #dbeafe; }
-      .node { font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif; font-weight: 600; fill: #0f172a; }
-      .label { font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif; font-size: 16px; fill: #0f172a; }
-      .connector { stroke: #38bdf8; stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 6 8; }
-      .legend { font-family: 'Inter', 'Helvetica Neue', Arial, sans-serif; font-size: 14px; fill: #dbeafe; }
-    </style>
-  </defs>
-  <rect width="960" height="540" rx="24" fill="url(#bg)"/>
-  <text x="60" y="90" class="title" font-size="38">Mapa de APIs Aurora</text>
-  <text x="60" y="130" class="subtitle">Open banking · scoring · pagos · loyalty</text>
+<svg width="800" height="600" xmlns="http://www.w3.org/2000/svg">
+      <rect width="100%" height="100%" fill="#f9f9f9" />
 
-  <g transform="translate(0,20)">
-    <g transform="translate(140,160)">
-      <rect x="-120" y="-70" width="240" height="140" rx="18" fill="#f0f9ff" opacity="0.85"/>
-      <circle cx="0" cy="-20" r="32" fill="#38bdf8"/>
-      <text x="0" y="-12" text-anchor="middle" class="node" font-size="18">OPEN</text>
-      <text x="0" y="18" text-anchor="middle" class="node" font-size="18">BANKING</text>
-      <text x="0" y="54" text-anchor="middle" class="label">Cuentas · Balances · PSD2</text>
-    </g>
+          <text x="400" y="50" font-family="Arial" font-size="24" text-anchor="middle" fill="#333">Recurso: Fintech Demo</text>
+          <circle cx="400" cy="300" r="100" fill="#8E44AD" opacity="0.2" />
+          <text x="400" y="300" font-family="Arial" font-size="60" text-anchor="middle" dominant-baseline="middle" fill="#8E44AD">ℹ️</text>
 
-    <g transform="translate(480,120)">
-      <rect x="-120" y="-70" width="240" height="140" rx="18" fill="#ecfdf5" opacity="0.88"/>
-      <circle cx="0" cy="-20" r="32" fill="#34d399"/>
-      <text x="0" y="-12" text-anchor="middle" class="node" font-size="18">SCORING</text>
-      <text x="0" y="18" text-anchor="middle" class="node" font-size="18">RISK</text>
-      <text x="0" y="54" text-anchor="middle" class="label">KYC · AML · listas negras</text>
-    </g>
-
-    <g transform="translate(820,190)">
-      <rect x="-120" y="-70" width="240" height="140" rx="18" fill="#fef3c7" opacity="0.9"/>
-      <circle cx="0" cy="-20" r="32" fill="#fbbf24"/>
-      <text x="0" y="-12" text-anchor="middle" class="node" font-size="18">PAYMENTS</text>
-      <text x="0" y="18" text-anchor="middle" class="node" font-size="18">CORE</text>
-      <text x="0" y="54" text-anchor="middle" class="label">Checkout · links · cash-in</text>
-    </g>
-
-    <g transform="translate(480,320)">
-      <rect x="-120" y="-70" width="240" height="140" rx="18" fill="#fdf2f8" opacity="0.9"/>
-      <circle cx="0" cy="-20" r="32" fill="#f472b6"/>
-      <text x="0" y="-12" text-anchor="middle" class="node" font-size="18">LOYALTY</text>
-      <text x="0" y="18" text-anchor="middle" class="node" font-size="18">CX</text>
-      <text x="0" y="54" text-anchor="middle" class="label">Rewards · campañas · NPS</text>
-    </g>
-
-    <g transform="translate(220,340)">
-      <rect x="-120" y="-70" width="240" height="140" rx="18" fill="#ede9fe" opacity="0.88"/>
-      <circle cx="0" cy="-20" r="32" fill="#8b5cf6"/>
-      <text x="0" y="-12" text-anchor="middle" class="node" font-size="18">INSIGHTS</text>
-      <text x="0" y="18" text-anchor="middle" class="node" font-size="18">DATA</text>
-      <text x="0" y="54" text-anchor="middle" class="label">Dashboards · cohortes</text>
-    </g>
-
-    <line x1="260" y1="160" x2="360" y2="120" class="connector"/>
-    <line x1="600" y1="120" x2="760" y2="190" class="connector"/>
-    <line x1="360" y1="320" x2="360" y2="200" class="connector"/>
-    <line x1="600" y1="320" x2="720" y2="240" class="connector"/>
-    <line x1="300" y1="300" x2="360" y2="260" class="connector"/>
-  </g>
-
-  <g transform="translate(60,420)">
-    <rect x="0" y="0" width="360" height="90" rx="14" fill="rgba(15,23,42,0.45)" stroke="#38bdf8" stroke-width="1.4"/>
-    <text x="24" y="32" class="legend">• Sandbox en 24 h · llaves rotativas · rate limits configurables</text>
-    <text x="24" y="56" class="legend">• Observabilidad integrada: latencia promedio 220 ms · uptime 99.98%</text>
-    <text x="24" y="80" class="legend">• Gestión de partners con revenue share y analytics en vivo</text>
-  </g>
-</svg>
+      <text x="400" y="580" font-family="Arial" font-size="12" text-anchor="middle" fill="#999">Generado por Chatboc Intelligence</text>
+    </svg>

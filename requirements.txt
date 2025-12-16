@@ -90,6 +90,8 @@ jsonschema
 h3==4.1.0
 faker==25.9.1
 webauthn>=2.0.0
+reportlab==4.4.6
+xlsxwriter==3.2.9
 
 ############################
 # GOOGLE CLOUD / GEN AI

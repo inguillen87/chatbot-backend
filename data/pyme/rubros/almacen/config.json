@@ -33,6 +33,14 @@
       "cta_text": "Ver zonas de entrega",
       "highlight": "Seguimiento en tiempo real",
       "availability": "Radio propio + mensajería aliada"
+    },
+    {
+      "title": "Lista mayorista (Excel)",
+      "description": "Precios por bulto y paletizado.",
+      "type": "spreadsheet",
+      "url": "/static/demo/almacen/lista-precios-mayoristas.xlsx",
+      "cta_text": "Descargar lista",
+      "highlight": "Formato pedido"
     }
   ],
   "quick_actions": [

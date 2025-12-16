@@ -32,6 +32,14 @@
       "cta_text": "Ver flota operativa",
       "highlight": "Cobertura 24/7",
       "availability": "Zona Cuyo + NOA"
+    },
+    {
+      "title": "Stock en tiempo real (Excel)",
+      "description": "Disponibilidad por depósito y fecha de ingreso.",
+      "type": "spreadsheet",
+      "url": "/static/demo/ferreteria/stock-materiales.xlsx",
+      "cta_text": "Descargar stock",
+      "highlight": "Actualizado hoy"
     }
   ],
   "quick_actions": [
