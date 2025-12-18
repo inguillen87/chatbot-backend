@@ -635,7 +635,9 @@ class TenantProfile(db.Model, TimestampMixin):
             config["dark"]["primary"] = primary
         if secondary:
             config["light"]["secondary"] = secondary
-            config["dark"]["secondary"] = secondary
+            # Do NOT automatically copy legacy secondary to dark mode, as it is often a light color
+            # that breaks dark mode contrast (e.g. white or light gray).
+            # We stick to the safe default dark secondary (#1f2937) unless explicitly overridden.
 
         # Merge explicit theme_config
         if self.widget_settings and isinstance(self.widget_settings.theme_config, dict):

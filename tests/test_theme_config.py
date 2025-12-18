@@ -44,6 +44,9 @@ class TestThemeConfig(unittest.TestCase):
         self.assertEqual(config["light"]["primary"], "#FF0000")
         self.assertEqual(config["dark"]["primary"], "#FF0000")
         self.assertEqual(config["light"]["secondary"], "#00FF00")
+        # Ensure dark secondary is NOT the light secondary (green), but default dark gray
+        self.assertNotEqual(config["dark"]["secondary"], "#00FF00")
+        self.assertEqual(config["dark"]["secondary"], "#1f2937")
 
     def test_get_theme_config_from_widget_settings(self):
         tenant = TenantProfile(slug="test-ws", nombre="WS", tipo="pyme", pyme_id=self.owner.id)
