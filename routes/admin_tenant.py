@@ -3,6 +3,7 @@ from utils.auth_helpers import token_requerido
 from middleware.tenant_context import require_tenant
 from models import db, TenantProfile, User, TenantConfig, Role, UserRole, CategoriaTicket
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
+from services.tenant_resolver import apply_tenant_alias
 
 admin_tenant_bp = Blueprint('admin_tenant_bp', __name__)
 
@@ -99,6 +100,7 @@ def create_tenant():
 @token_requerido
 @require_tenant
 def get_tenant_config_bundle(current_user, slug):
+    slug = apply_tenant_alias(slug) or slug
     tenant = TenantProfile.query.filter_by(slug=slug).first()
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
@@ -134,6 +136,7 @@ def get_tenant_config_bundle(current_user, slug):
 @token_requerido
 @require_tenant
 def update_tenant_config_bundle(current_user, slug):
+    slug = apply_tenant_alias(slug) or slug
     tenant = TenantProfile.query.filter_by(slug=slug).first()
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
@@ -188,6 +191,7 @@ def update_tenant_config_bundle(current_user, slug):
 @token_requerido
 @require_tenant
 def assign_whatsapp_number(current_user, slug):
+    slug = apply_tenant_alias(slug) or slug
     tenant = TenantProfile.query.filter_by(slug=slug).first()
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
@@ -377,6 +381,7 @@ def list_employees_by_slug(current_user, slug):
     """
     List employees for a specific tenant slug (supports admin dashboard deep linking).
     """
+    slug = apply_tenant_alias(slug) or slug
     tenant = TenantProfile.query.filter_by(slug=slug).first()
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404

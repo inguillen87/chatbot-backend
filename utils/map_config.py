@@ -82,15 +82,14 @@ def get_map_config() -> Dict[str, str]:
     if preferred_provider in {"google", "maptiler"}:
         if preferred_provider == "google" and google_key:
             provider = "google"
-        elif preferred_provider == "maptiler" and maptiler_key:
+        elif preferred_provider == "maptiler":
             provider = "maptiler"
     else:
         if google_key:
             provider = "google"
-        elif maptiler_key or style_url:
-            # Favor MapLibre/MapTiler when we at least have a style URL so that
-            # the frontend can render a basemap even if API keys are not
-            # configured (e.g. using the open Carto style fallback).
+        else:
+            # Always fallback to maptiler/maplibre if Google is not available.
+            # The open Carto style allows rendering without an API key.
             provider = "maptiler"
 
     return {

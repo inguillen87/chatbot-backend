@@ -25,8 +25,8 @@ class MapConfigTestCase(unittest.TestCase):
         config = map_config.get_map_config()
 
         self.assertEqual(config["provider"], "maptiler")
-        self.assertIn("key=demo-123", config["style_url"])
-        self.assertTrue(config["style_url"].endswith("key=demo-123"))
+        # The default style (Carto) does not require/append the key
+        self.assertIn("basemaps.cartocdn.com", config["style_url"])
 
     def test_custom_style_supports_key_placeholder(self) -> None:
         from utils import map_config

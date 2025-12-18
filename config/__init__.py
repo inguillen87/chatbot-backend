@@ -583,6 +583,8 @@ class Config:
         PUBLIC_ENCUESTAS_WHATSAPP_BANNER_MEDIA_URL
     )
 
+    PUBLIC_CATALOG_DEFAULT_TENANT = os.getenv("PUBLIC_CATALOG_DEFAULT_TENANT", "municipio")
+
     _encuestas_default = os.getenv("PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID")
     if _encuestas_default is None or _encuestas_default == "":
         PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID = 4
