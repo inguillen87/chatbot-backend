@@ -17,7 +17,7 @@ def _alias_map() -> dict[str, str]:
     alias_map = dict(current_app.config.get("TENANT_ALIASES", {}) or {})
     alias_target = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
     if alias_target:
-        for alias in ["whatsapp", "pwa", "municipio", "municipal", "market", "marketplace"]:
+        for alias in ["whatsapp", "pwa", "municipio", "municipal", "market", "marketplace", "estadisticas"]:
             alias_map.setdefault(alias, alias_target)
     return alias_map
 
