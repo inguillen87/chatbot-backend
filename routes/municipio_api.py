@@ -12,6 +12,8 @@ from models import (
     CatalogoItem,
     CategoriaTicket,
     MarketCartItem,
+    MarketOrder,
+    MarketOrderItem,
     MunicipioTicket,
     TenantProfile,
     User,
@@ -337,7 +339,9 @@ def obtener_widget_config(current_user: User, tenant_slug: str):
         db.session.add(config)
         db.session.commit()
 
-    return jsonify(config.to_dict())
+    data = config.to_dict()
+    data["theme_config"] = tenant.get_theme_config()
+    return jsonify(data)
 
 
 @municipio_api_bp.route("/widget-config", methods=["PUT"])
@@ -376,7 +380,10 @@ def obtener_config_publica(tenant_slug: str):
         config = WidgetConfig(tenant_id=tenant.id)
         db.session.add(config)
         db.session.commit()
-    return jsonify(config.to_dict())
+
+    data = config.to_dict()
+    data["theme_config"] = tenant.get_theme_config()
+    return jsonify(data)
 
 
 @municipio_api_bp.route("/tickets/heatmap", methods=["GET"])
@@ -838,14 +845,69 @@ def legacy_checkout_publico():
 
     tenant = _resolve_tenant_or_404(tenant_slug)
 
-    cart = _get_or_create_cart_for_user(tenant, g.viewer if hasattr(g, "viewer") else None, create_if_missing=False)
-    if cart:
-        # Clear items to simulate checkout/reset
-        for item in cart.items:
-            db.session.delete(item)
-        db.session.commit()
+    # Use standard cart logic consistent with legacy_carrito_publico
+    from routes.carrito import _get_or_create_db_cart, _db_cart_summary
 
-    return jsonify({"status": "ok", "tenant": tenant.slug, "carrito": {"items": []}})
+    current_user_obj = g.viewer if hasattr(g, "viewer") else None
+    cart = _get_or_create_db_cart(tenant, current_user_obj, create_if_missing=False)
+
+    if not cart or not cart.items.count():
+        return jsonify({"error": "El carrito está vacío"}), 400
+
+    data = request.get_json(silent=True) or {}
+    telefono = data.get("telefono") or data.get("phone") or getattr(current_user_obj, "telefono", None)
+    nombre = data.get("nombre") or data.get("name") or getattr(current_user_obj, "name", None)
+
+    if telefono:
+        cart.contact_phone = telefono
+    if nombre:
+        cart.contact_name = nombre
+
+    # Create Order
+    order = MarketOrder(
+        tenant_id=tenant.id,
+        user_id=cart.user_id,
+        cart_id=cart.id,
+        status="pending",
+        contact_name=cart.contact_name,
+        contact_phone=cart.contact_phone,
+        currency="ARS",
+    )
+
+    owner = tenant.municipio or tenant.pyme
+    if owner:
+        summary = _db_cart_summary(cart, owner)
+        order.total_monetary = summary.get("total_estimado")
+        order.total_points = summary.get("total_puntos_estimado")
+        order.metadata_payload = {"totales_monedas": summary.get("totales_monedas", {})}
+
+    db.session.add(order)
+
+    for entry in cart.items:
+        db.session.add(
+            MarketOrderItem(
+                order=order,
+                product_id=entry.product_id,
+                quantity=entry.quantity,
+                price_monetary=entry.price_monetary,
+                price_points=entry.price_points,
+                currency=entry.currency,
+                modalidad=entry.modalidad,
+                name_snapshot=entry.name_snapshot,
+                extra={"price_text": entry.price_text},
+            )
+        )
+
+    cart.status = "submitted"
+    db.session.commit()
+
+    return jsonify({
+        "status": "ok",
+        "order_id": order.id,
+        "tenant": tenant.slug,
+        "carrito": {"items": []},
+        "message": "Pedido creado correctamente"
+    })
 
 
 def _cart_key(tenant: TenantProfile) -> str:

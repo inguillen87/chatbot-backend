@@ -548,99 +548,21 @@ def public_tenant_widget_config(tenant_slug: str):
     owner = _tenant_owner(tenant)
     cfg = tenant.configuracion or {}
 
-    # Merge theme: WidgetConfig > Tenant.tema > Defaults
+    widget_cfg = tenant.widget_config
+    widget_settings = tenant.widget_settings
+
+    # Centralized theme resolution
+    theme_config = tenant.get_theme_config()
+
     theme = tenant.tema or {}
     if not isinstance(theme, dict):
         theme = {}
 
-    widget_cfg = tenant.widget_config
-    widget_settings = tenant.widget_settings
-
-    # 1. Resolve Legacy Colors (Priority: WidgetSettings > WidgetConfig > Tenant.tema > Default)
-    legacy_primary = None
-    legacy_secondary = None
-
-    if widget_settings:
-        try:
-            legacy_primary = getattr(widget_settings, "primary_color", None) or legacy_primary
-            legacy_secondary = getattr(widget_settings, "secondary_color", None) or legacy_secondary
-        except Exception:
-            pass
-
-    if not legacy_primary and widget_cfg and widget_cfg.primary_color:
-        legacy_primary = widget_cfg.primary_color
-    if not legacy_secondary and widget_cfg and widget_cfg.accent_color:
-        legacy_secondary = widget_cfg.accent_color
-
-    if not legacy_primary and isinstance(tenant.tema, dict) and tenant.tema.get("primaryColor"):
-         legacy_primary = tenant.tema.get("primaryColor")
-    if not legacy_secondary and isinstance(tenant.tema, dict) and tenant.tema.get("secondaryColor"):
-         legacy_secondary = tenant.tema.get("secondaryColor")
-
-    # 2. Populate theme_config from Legacy Colors if not explicitly provided
-    # This ensures that older tenants who haven't set up the new theme config still get their brand colors
-    # applied to the new variable system (light/dark modes).
-
-    has_explicit_theme_config = False
-    if widget_settings:
-        try:
-            raw_theme_config = getattr(widget_settings, "theme_config", None)
-            has_explicit_theme_config = isinstance(raw_theme_config, dict) and raw_theme_config
-        except Exception:
-            pass
-
-    # Robust Defaults template (only used if we actually return a config)
-    DEFAULT_THEME_TEMPLATE = {
-        "mode": "light",
-        "light": {
-            "primary": "#3B82F6",
-            "secondary": "#ffffff",
-            "background": "#ffffff",
-            "text": "#000000"
-        },
-        "dark": {
-            "primary": "#2563EB",
-            "secondary": "#1f2937",
-            "background": "#111827",
-            "text": "#ffffff"
-        }
-    }
-
-    theme_config = None
-
-    if has_explicit_theme_config:
-        import copy
-        theme_config = copy.deepcopy(DEFAULT_THEME_TEMPLATE)
-
-        # Re-fetch safely
-        ws_config = getattr(widget_settings, "theme_config", {})
-        theme_config["mode"] = ws_config.get("mode", theme_config["mode"])
-        if isinstance(ws_config.get("light"), dict):
-            theme_config["light"].update(ws_config["light"])
-        if isinstance(ws_config.get("dark"), dict):
-            theme_config["dark"].update(ws_config["dark"])
-    elif legacy_primary or legacy_secondary:
-        # Auto-generate theme config from legacy colors
-        import copy
-        theme_config = copy.deepcopy(DEFAULT_THEME_TEMPLATE)
-
-        if legacy_primary:
-            theme_config["light"]["primary"] = legacy_primary
-            theme_config["dark"]["primary"] = legacy_primary # Simple mapping for now
-            theme_config["light"]["text"] = "#000000" # Ensure readability
-
-        if legacy_secondary:
-            theme_config["light"]["secondary"] = legacy_secondary
-            theme_config["dark"]["secondary"] = legacy_secondary
-
-    # If neither explicit nor legacy, theme_config remains None.
-    # This allows the frontend to fall back to Embed attributes or client-side defaults.
-
-    # 3. Update the legacy 'theme' object for backward compatibility
-    if legacy_primary:
-        theme["primaryColor"] = legacy_primary
-    if legacy_secondary:
-        theme["secondaryColor"] = legacy_secondary
+    # Backfill legacy keys for compatibility
+    if theme_config["light"].get("primary"):
+        theme["primaryColor"] = theme_config["light"]["primary"]
+    if theme_config["light"].get("secondary"):
+        theme["secondaryColor"] = theme_config["light"]["secondary"]
 
     theme["config"] = theme_config
 

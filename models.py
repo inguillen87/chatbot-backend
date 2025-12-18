@@ -586,7 +586,67 @@ class TenantProfile(db.Model, TimestampMixin):
             "logo_url": self.logo_url,
             "dominio": self.dominio,
             "tema": self.tema or {},
+            "theme_config": self.get_theme_config(),
         }
+
+    def get_theme_config(self) -> dict:
+        """Returns a consolidated theme config merging legacy colors and defaults."""
+        DEFAULT_THEME = {
+            "mode": "light",
+            "light": {
+                "primary": "#3B82F6",
+                "secondary": "#ffffff",
+                "background": "#ffffff",
+                "text": "#000000"
+            },
+            "dark": {
+                "primary": "#2563EB",
+                "secondary": "#1f2937",
+                "background": "#111827",
+                "text": "#ffffff"
+            }
+        }
+        import copy
+        config = copy.deepcopy(DEFAULT_THEME)
+
+        primary = None
+        secondary = None
+
+        # 1. WidgetSettings (Modern)
+        if self.widget_settings:
+            primary = self.widget_settings.primary_color or primary
+            secondary = self.widget_settings.secondary_color or secondary
+
+        # 2. WidgetConfig (Legacy)
+        if not primary and self.widget_config:
+            primary = self.widget_config.primary_color
+        if not secondary and self.widget_config:
+            secondary = self.widget_config.accent_color
+
+        # 3. Tenant.tema
+        if not primary and isinstance(self.tema, dict):
+            primary = self.tema.get("primaryColor")
+        if not secondary and isinstance(self.tema, dict):
+            secondary = self.tema.get("secondaryColor")
+
+        # Apply legacy colors
+        if primary:
+            config["light"]["primary"] = primary
+            config["dark"]["primary"] = primary
+        if secondary:
+            config["light"]["secondary"] = secondary
+            config["dark"]["secondary"] = secondary
+
+        # Merge explicit theme_config
+        if self.widget_settings and isinstance(self.widget_settings.theme_config, dict):
+            stored = self.widget_settings.theme_config
+            config["mode"] = stored.get("mode", config["mode"])
+            if isinstance(stored.get("light"), dict):
+                config["light"].update(stored["light"])
+            if isinstance(stored.get("dark"), dict):
+                config["dark"].update(stored["dark"])
+
+        return config
 
     def __repr__(self) -> str:  # pragma: no cover - simple representation
         return f"<TenantProfile slug={self.slug!r} tipo={self.tipo!r}>"
