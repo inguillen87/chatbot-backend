@@ -729,6 +729,14 @@ def legacy_productos_publicos():
         abort(400, "tenant_slug query param required")
 
     tenant = _resolve_tenant_or_404(tenant_slug)
+
+    # Ensure demo content is seeded (avoids 404s for new demos)
+    owner = tenant.municipio or tenant.pyme
+    if owner:
+        from services.catalog_seed import ensure_seed_catalog
+
+        ensure_seed_catalog(owner, tenant)
+
     try:
         productos = (
             CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())
@@ -800,6 +808,12 @@ def legacy_agregar_item_carrito():
     cart = _get_or_create_db_cart(tenant, current_user_obj, create_if_missing=True)
 
     owner = tenant.municipio or tenant.pyme
+
+    # Ensure seed content if demo (in case adding to cart triggered seed logic elsewhere or parallel)
+    if owner:
+        from services.catalog_seed import ensure_seed_catalog
+
+        ensure_seed_catalog(owner, tenant)
 
     # Find product to add
     product = CatalogoItem.query.get(item_id)
@@ -906,7 +920,9 @@ def legacy_checkout_publico():
         "order_id": order.id,
         "tenant": tenant.slug,
         "carrito": {"items": []},
-        "message": "Pedido creado correctamente"
+        "message": "Pedido creado correctamente",
+        "portal_url": f"/portal/{tenant.slug}",
+        "tracking_url": f"/portal/{tenant.slug}/pedidos/{order.id}"
     })
 
 
