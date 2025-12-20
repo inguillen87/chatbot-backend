@@ -56,3 +56,14 @@ Based on the implemented Backend API for the Multi-tenant Modules (Pedidos, Port
 ## 6. General
 *   **Error Handling**: Handle 403 (Unauthorized/Tenant Mismatch) gracefully by redirecting to login or home.
 *   **Shadow DOM**: For embedded widgets, ensure styles are isolated (data-shadow-dom="true").
+
+## 7. Widget / Chat Integration
+*   **Conversational Sales Flow**:
+    *   Implement bot logic to suggest products from the catalog based on user queries.
+    *   Render "Add to Cart" buttons/actions within the chat interface.
+*   **Checkout Options (CTA)**:
+    *   When the user initiates purchase, provide choices:
+        *   **Option A**: Internal Checkout (via Chatboc `/checkout/start`).
+        *   **Option B**: "Pay on MercadoLibre" (link to external publication if available).
+        *   **Option C**: "Pay on TiendaNube" (link to external product if available).
+    *   Ensure all options trigger a notification to the owner (via backend).
