@@ -470,3 +470,29 @@ def list_employees_by_slug(current_user, slug):
         })
 
     return jsonify(results)
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/<string:integration_type>/sync', methods=['POST'])
+@token_requerido
+@require_tenant
+def sync_integration(current_user, slug, integration_type):
+    slug = apply_tenant_alias(slug) or slug
+    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+         return jsonify({'error': 'Unauthorized'}), 403
+
+    if integration_type.lower() == 'mercadolibre':
+        from services.integrations.mercadolibre import MercadoLibreService
+        service = MercadoLibreService(tenant)
+        result = service.sync_catalog()
+        return jsonify(result)
+
+    elif integration_type.lower() == 'tiendanube':
+        from services.integrations.tiendanube import TiendaNubeService
+        service = TiendaNubeService(tenant)
+        result = service.import_products()
+        return jsonify(result)
+
+    return jsonify({"error": "Integration not supported"}), 400

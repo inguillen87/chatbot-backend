@@ -779,6 +779,18 @@ def start_checkout(current_user, slug: str):
                         "currency_id": entry.currency or "ARS"
                     })
 
+            # Check stock
+            for entry in cart_items:
+                product = CatalogoItem.query.get(entry.product_id)
+                if product:
+                    # Try to parse stock if numeric
+                    try:
+                        stock_val = float(product.cantidad) if product.cantidad else 0
+                        if stock_val < entry.quantity:
+                            return jsonify({"error": f"Stock insuficiente para {product.nombre}", "stock_disponible": stock_val}), 400
+                    except (ValueError, TypeError):
+                        pass  # Ignore if stock is text like "Consultar"
+
             if preference_items:
                 pref_payload = {
                     "items": preference_items,
