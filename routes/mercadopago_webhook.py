@@ -71,6 +71,53 @@ def mercadopago_webhook():
         status = payment_info.get("status")
         if not external_reference:
             return jsonify({"error": "Sin referencia externa"}), 400
+
+        # Try MarketOrder first (new format MO-XXX)
+        if str(external_reference).startswith("MO-"):
+            from models import MarketOrder
+            from services.notification_dispatcher import dispatch_order_update
+
+            try:
+                order_id = int(str(external_reference).replace("MO-", ""))
+                order = MarketOrder.query.get(order_id)
+            except ValueError:
+                order = None
+
+            if order:
+                # Resolve tenant token
+                tenant_cfg = getattr(order.tenant, "configuracion", None) or {}
+                tenant_token = tenant_cfg.get("mercadopago_access_token")
+
+                if tenant_token and tenant_token != default_token:
+                    headers = {"Authorization": f"Bearer {tenant_token}"}
+                    retry_resp = requests.get(url, headers=headers)
+                    if retry_resp.ok:
+                        payment_info = retry_resp.json()
+                        status = payment_info.get("status")
+
+                # Update Order
+                meta = order.metadata_payload or {}
+                meta["mp_payment_id"] = str(payment_id)
+                meta["mp_status"] = status
+                order.metadata_payload = meta
+
+                if status == "approved":
+                    order.status = "paid"
+                    dispatch_order_update(order, "Tu pago ha sido aprobado. Procesando pedido.")
+                elif status == "rejected":
+                    order.status = "payment_failed"
+                    dispatch_order_update(order, "Tu pago fue rechazado.")
+
+                db.session.commit()
+                # Emit update
+                try:
+                    socketio.emit(f"market_order_{order.tenant.slug}", {"event": "order_update", "order_id": order.id, "status": order.status})
+                except Exception:
+                    pass
+
+                return jsonify({"ok": True, "estado": order.status, "model": "MarketOrder"})
+
+        # Fallback to PedidoConversacional (Legacy)
         pedido = PedidoConversacional.query.get(external_reference)
         if not pedido:
             return jsonify({"error": "Pedido no encontrado"}), 404

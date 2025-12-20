@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import requests
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Optional
@@ -757,6 +759,61 @@ def start_checkout(current_user, slug: str):
             )
         )
 
+    # Mercado Pago Integration
+    mp_init_point = None
+    mp_preference_id = None
+
+    tenant_cfg = tenant.configuracion or {}
+    mp_token = tenant_cfg.get("mercadopago_access_token") or os.getenv("MERCADOPAGO_ACCESS_TOKEN")
+
+    if mp_token and total_monetary and total_monetary > 0:
+        try:
+            # Create Preference
+            preference_items = []
+            for entry in cart_items:
+                if entry.price_monetary:
+                    preference_items.append({
+                        "title": entry.name_snapshot or "Producto",
+                        "quantity": entry.quantity,
+                        "unit_price": float(entry.price_monetary),
+                        "currency_id": entry.currency or "ARS"
+                    })
+
+            if preference_items:
+                pref_payload = {
+                    "items": preference_items,
+                    "external_reference": f"MO-{order.id}",
+                    "back_urls": {
+                        "success": f"https://chatboc.ar/{tenant.slug}/checkout/success",
+                        "failure": f"https://chatboc.ar/{tenant.slug}/checkout/failure",
+                        "pending": f"https://chatboc.ar/{tenant.slug}/checkout/pending"
+                    },
+                    "auto_return": "approved",
+                }
+
+                resp = requests.post(
+                    "https://api.mercadopago.com/checkout/preferences",
+                    json=pref_payload,
+                    headers={"Authorization": f"Bearer {mp_token}"},
+                    timeout=10
+                )
+
+                if resp.status_code in (200, 201):
+                    mp_data = resp.json()
+                    mp_init_point = mp_data.get("init_point")
+                    mp_preference_id = mp_data.get("id")
+
+                    # Update metadata
+                    meta = order.metadata_payload or {}
+                    meta["mp_preference_id"] = mp_preference_id
+                    meta["mp_init_point"] = mp_init_point
+                    order.metadata_payload = meta
+                else:
+                    print(f"MP Error: {resp.text}")
+
+        except Exception as e:
+            print(f"MP Exception: {e}")
+
     cart.status = "submitted"
     db.session.commit()
 
@@ -770,8 +827,10 @@ def start_checkout(current_user, slug: str):
             "total_monetary": float(total_monetary or 0.0) if total_monetary is not None else None,
             "total_points": total_points,
             "checkout_options": {
-                "mercadopago_ready": True,
-                "gateway_hint": "Mercado Pago preference/token flow listo para demo",
+                "mercadopago_ready": bool(mp_init_point),
+                "preference_id": mp_preference_id,
+                "init_point": mp_init_point,
+                "gateway_hint": "Mercado Pago",
                 "points_enabled": bool(total_points),
             },
         }
