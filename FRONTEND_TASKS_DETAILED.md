@@ -67,3 +67,12 @@ Based on the implemented Backend API for the Multi-tenant Modules (Pedidos, Port
         *   **Option B**: "Pay on MercadoLibre" (link to external publication if available).
         *   **Option C**: "Pay on TiendaNube" (link to external product if available).
     *   Ensure all options trigger a notification to the owner (via backend).
+
+### Refined Sales Flow (Conversational)
+1.  **Intention**: Detect "buy" intent.
+2.  **Filtering**: Ask qualifying questions (Size, Color, Category).
+3.  **Presentation**: Show carousel/list of 3 matching items.
+4.  **Checkout**:
+    *   If **MercadoLibre**: Provide direct link to publication + "Send me the order number when done".
+    *   If **TiendaNube**: Provide direct product link.
+    *   If **Internal**: Button to open `/market/{slug}/cart` or Start Checkout.
