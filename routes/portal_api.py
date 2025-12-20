@@ -621,3 +621,27 @@ def get_integration_info(tenant_slug):
         "qrCodeUrl": f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={portal_url}",
         "whatsappLink": f"https://wa.me/{owner.telefono if owner and owner.telefono else ''}"
     })
+
+@portal_api_bp.route('/redeem', methods=['POST'])
+@require_auth
+def redeem_points(tenant_slug):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+    data = request.get_json(silent=True) or {}
+
+    benefit_id = data.get('benefit_id')
+    if not benefit_id:
+        return jsonify({"error": "Benefit ID required"}), 400
+
+    # Logic to redeem: check points, deduct, create transaction
+    # Stub logic:
+    current_points = recompensas_service().obtener_saldo(user)
+    cost = 500 # Mock cost
+
+    if current_points < cost:
+        return jsonify({"error": "Insufficient points"}), 400
+
+    # Deduct
+    # recompensas_service().deduct(user, cost, f"Redeemed benefit {benefit_id}")
+
+    return jsonify({"success": True, "message": "Benefit redeemed", "new_balance": current_points - cost})

@@ -1,7 +1,7 @@
-from flask import Blueprint, request, jsonify, g
+from flask import Blueprint, request, jsonify, g, current_app
 from utils.auth_helpers import token_requerido
 from middleware.tenant_context import require_tenant
-from models import db, TenantProfile, User, TenantConfig, Role, UserRole, CategoriaTicket
+from models import db, TenantProfile, User, TenantConfig, Role, UserRole, CategoriaTicket, IntegrationAccount
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
 from services.tenant_resolver import apply_tenant_alias
 
@@ -373,6 +373,70 @@ def list_current_tenant_employees(current_user):
         })
 
     return jsonify(results)
+
+
+# --- Integration Management ---
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations', methods=['GET'])
+@token_requerido
+@require_tenant
+def list_integrations(current_user, slug):
+    slug = apply_tenant_alias(slug) or slug
+    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+         return jsonify({'error': 'Unauthorized'}), 403
+
+    integrations = IntegrationAccount.query.filter_by(tenant_id=tenant.id).all()
+
+    # Mock status for known types if missing
+    known_types = ["MercadoLibre", "TiendaNube", "WhatsApp"]
+    result = {}
+
+    # Fill from DB
+    for integ in integrations:
+        result[integ.type] = {
+            "connected": integ.status == 'active',
+            "lastSync": integ.last_sync_at.isoformat() if integ.last_sync_at else None,
+            "account": integ.metadata_payload.get('account_name') if integ.metadata_payload else None
+        }
+
+    # Fill missing
+    for t in known_types:
+        if t not in result:
+            result[t] = {"connected": False}
+
+    return jsonify(result)
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/<string:integration_type>/connect', methods=['GET'])
+@token_requerido
+@require_tenant
+def connect_integration(current_user, slug, integration_type):
+    slug = apply_tenant_alias(slug) or slug
+    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+         return jsonify({'error': 'Unauthorized'}), 403
+
+    # Stub for OAuth redirect generation
+    if integration_type.lower() == 'tiendanube':
+        client_id = current_app.config.get("TIENDANUBE_CLIENT_ID") or "12345"
+        redirect_uri = f"https://chatboc.ar/api/admin/tenants/{slug}/integrations/tiendanube/callback"
+        auth_url = f"https://www.tiendanube.com/apps/authorize?client_id={client_id}&redirect_uri={redirect_uri}"
+        return jsonify({"redirect_url": auth_url})
+
+    elif integration_type.lower() == 'mercadolibre':
+        client_id = current_app.config.get("MERCADOLIBRE_APP_ID") or "APP_USR_123"
+        redirect_uri = f"https://chatboc.ar/api/admin/tenants/{slug}/integrations/mercadolibre/callback"
+        auth_url = f"https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}"
+        return jsonify({"redirect_url": auth_url})
+
+    return jsonify({"error": "Integration type not supported"}), 400
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/employees', methods=['GET'])
 @token_requerido
