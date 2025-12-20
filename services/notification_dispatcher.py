@@ -72,6 +72,34 @@ def dispatch_ticket_update(
                 exc_info=True,
             )
 
+    # Notify Owner (Telegram/WhatsApp)
+    try:
+        tenant_obj = getattr(ticket, "tenant", None)
+        # If no tenant rel, try finding by id
+        if not tenant_obj and hasattr(ticket, "tenant_id") and ticket.tenant_id:
+            from models import TenantProfile
+            tenant_obj = TenantProfile.query.get(ticket.tenant_id)
+
+        if tenant_obj:
+            from flask import current_app
+            from services.telegram_service import send_telegram_message
+            config = getattr(tenant_obj, "configuracion", {}) or {}
+
+            chat_id = config.get("owner_telegram_chat_id")
+            bot_token = current_app.config.get("TELEGRAM_BOT_TOKEN")
+            if chat_id and bot_token:
+                send_telegram_message(chat_id, f"🎫 Ticket Update: {mensaje}", bot_token)
+                resultados["telegram_owner"] = True
+
+            owner_phone = config.get("owner_notification_phone")
+            if owner_phone:
+                from services.email_service import enviar_whatsapp
+                enviar_whatsapp(owner_phone, f"🎫 Ticket Update: {mensaje}")
+                resultados["whatsapp_owner"] = True
+
+    except Exception as e:
+        logger.error(f"[NOTIFY] Error notifying owner for ticket {getattr(ticket, 'id', 'N/A')}: {e}")
+
     return resultados
 
 
@@ -103,7 +131,26 @@ def dispatch_order_update(
     enable_whatsapp: bool = True,
 ) -> Dict[str, bool]:
     """Envía notificación de novedad de pedido."""
-    # Placeholder logic logging the event
     logger.info(f"[NOTIFY] Order {getattr(order, 'id', 'N/A')} update: {mensaje}")
-    # In future: call enviar_email_pedido_cliente or similar
-    return {"email": True, "sms": False, "whatsapp": False}
+
+    # Notify Owner
+    resultados = {"email": False, "sms": False, "whatsapp": False, "telegram": False}
+    if hasattr(order, "tenant"):
+        from flask import current_app
+        from services.telegram_service import send_telegram_message
+
+        config = getattr(order.tenant, "configuracion", {}) or {}
+
+        # Telegram
+        chat_id = config.get("owner_telegram_chat_id")
+        bot_token = current_app.config.get("TELEGRAM_BOT_TOKEN")
+        if chat_id and bot_token:
+            resultados["telegram"] = send_telegram_message(chat_id, f"📦 {mensaje}", bot_token)
+
+        # WhatsApp Owner
+        owner_phone = config.get("owner_notification_phone")
+        if owner_phone:
+            from services.email_service import enviar_whatsapp
+            resultados["whatsapp_owner"] = enviar_whatsapp(owner_phone, f"📦 {mensaje}")
+
+    return resultados
