@@ -4,7 +4,9 @@ New variables introduced for Multi-tenant Modules:
 
 ## Integrations
 *   `TIENDANUBE_CLIENT_ID`: Client ID for TiendaNube OAuth app.
+*   `TIENDANUBE_CLIENT_SECRET`: Secret for validating TiendaNube webhooks/OAuth.
 *   `MERCADOLIBRE_APP_ID`: App ID for MercadoLibre integration.
+*   `MERCADOLIBRE_CLIENT_SECRET`: Secret for validating MercadoLibre webhooks/OAuth.
 *   `MERCADOPAGO_ACCESS_TOKEN`: (Existing) Global access token, overridden by tenant configuration if present.
 
 ## Notifications
