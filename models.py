@@ -1408,12 +1408,14 @@ class PublicSurvey(db.Model):
     estado = db.Column(db.String(20), nullable=False, default="draft")
     created_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     municipio_id = db.Column(db.Integer, nullable=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True, index=True)
     created_at = db.Column(db.DateTime(timezone=True), default=get_local_now)
     updated_at = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now)
     published_at = db.Column(db.DateTime(timezone=True), nullable=True)
     archived_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     created_by = db.relationship("User")
+    tenant = db.relationship("TenantProfile")
 
     def estado_publico(self) -> str:
         """Devuelve el estado en español para las respuestas HTTP."""
@@ -2003,3 +2005,39 @@ class TwilioNumber(db.Model):
     tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True)
 
     tenant = db.relationship('TenantProfile', backref=db.backref('twilio_number', uselist=False))
+
+
+class IntegrationAccount(db.Model, TimestampMixin):
+    __tablename__ = "integration_account"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    type = db.Column(db.String(50), nullable=False)  # e.g., "MercadoLibre", "TiendaNube"
+    credentials = db.Column(JSONType, nullable=False)  # access_token, refresh_token, etc.
+    status = db.Column(db.String(20), default="active")
+    last_sync_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    metadata_payload = db.Column("metadata", JSONType, nullable=True)
+
+    tenant = db.relationship("TenantProfile", backref=db.backref("integrations", lazy="dynamic"))
+
+    def __repr__(self):
+        return f"<IntegrationAccount {self.type} tenant={self.tenant_id}>"
+
+
+class NotificationLog(db.Model, TimestampMixin):
+    __tablename__ = "notification_log"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    channel = db.Column(db.String(20), nullable=False)  # "email", "sms", "whatsapp"
+    recipient = db.Column(db.String(255), nullable=False)
+    message_type = db.Column(db.String(50), nullable=True)
+    status = db.Column(db.String(20), default="sent")
+    error_message = db.Column(db.Text, nullable=True)
+
+    tenant = db.relationship("TenantProfile")
+    user = db.relationship("User")
+
+    def __repr__(self):
+        return f"<NotificationLog {self.channel} to {self.recipient}>"
