@@ -96,3 +96,14 @@ def dispatch_ticket_state_change(
         enable_whatsapp=True,
     )
 
+
+def dispatch_order_update(
+    order: Any,
+    mensaje: str,
+    enable_whatsapp: bool = True,
+) -> Dict[str, bool]:
+    """Envía notificación de novedad de pedido."""
+    # Placeholder logic logging the event
+    logger.info(f"[NOTIFY] Order {getattr(order, 'id', 'N/A')} update: {mensaje}")
+    # In future: call enviar_email_pedido_cliente or similar
+    return {"email": True, "sms": False, "whatsapp": False}

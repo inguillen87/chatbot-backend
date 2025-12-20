@@ -24,6 +24,7 @@ from services.catalog_seed import ensure_seed_catalog
 from services.common_utils import parse_precio_flexible
 from services.rewards_demo import reward_profile_for_tenant
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
+from services.notification_dispatcher import dispatch_order_update
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 from socket_service import emit_tenant_update
@@ -912,3 +913,51 @@ def admin_delete_product(current_user, product_id: int):
     db.session.commit()
     emit_tenant_update(tenant.slug, 'catalog_update', {})
     return jsonify({"deleted": product_id, "tenant_id": tenant.id})
+
+
+@market_admin_bp.get("/orders")
+@token_requerido
+@require_role("admin", "super_admin")
+def admin_list_orders(current_user):
+    # payload for resolving tenant might come from query string if admin views multiple tenants,
+    # but _resolve_admin_tenant uses 'payload' dict usually from json body.
+    # Here we simulate payload from args for GET
+    payload = request.args.to_dict()
+    tenant = _resolve_admin_tenant(current_user, payload)
+
+    query = MarketOrder.query.filter_by(tenant_id=tenant.id)
+    status = payload.get('status')
+    if status:
+        query = query.filter(MarketOrder.status == status)
+
+    orders = query.order_by(MarketOrder.created_at.desc()).all()
+
+    return jsonify([{
+        "id": o.id,
+        "status": o.status,
+        "total": float(o.total_monetary or 0),
+        "created_at": o.created_at.isoformat(),
+        "contact_name": o.contact_name
+    } for o in orders])
+
+
+@market_admin_bp.put("/orders/<int:order_id>")
+@token_requerido
+@require_role("admin", "super_admin")
+def admin_update_order(current_user, order_id):
+    payload = request.get_json(silent=True) or {}
+    tenant = _resolve_admin_tenant(current_user, payload)
+
+    order = MarketOrder.query.filter_by(id=order_id, tenant_id=tenant.id).first()
+    if not order:
+        return jsonify({"error": "Order not found"}), 404
+
+    new_status = payload.get('status')
+    if new_status:
+        order.status = new_status
+        # Hook for notification
+        dispatch_order_update(order, f"Tu pedido #{order.id} cambió a estado: {new_status}")
+
+    db.session.commit()
+    emit_tenant_update(tenant.slug, 'order_update', {"id": order.id, "status": order.status})
+    return jsonify({"id": order.id, "status": order.status})
