@@ -3,7 +3,7 @@ from flask import Blueprint, jsonify, request, g, abort, current_app, url_for
 from sqlalchemy import or_
 from datetime import datetime, timezone, timedelta
 
-from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem, User, TenantProfile, WidgetConfig, EncEncuesta
+from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem, User, TenantProfile, WidgetConfig, EncEncuesta, PointsTransaction
 from extensions import db
 from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
 from services.rewards import recompensas_service
@@ -645,3 +645,63 @@ def redeem_points(tenant_slug):
     # recompensas_service().deduct(user, cost, f"Redeemed benefit {benefit_id}")
 
     return jsonify({"success": True, "message": "Benefit redeemed", "new_balance": current_points - cost})
+
+@portal_api_bp.route('/loyalty', methods=['GET'])
+@require_auth
+def get_loyalty_info(tenant_slug):
+    tenant = _resolve_context(tenant_slug)
+    user = g.viewer
+
+    rewards = recompensas_service()
+    balance = rewards.obtener_saldo(user)
+
+    history = PointsTransaction.query.filter_by(
+        user_id=user.id,
+        tenant_id=tenant.id
+    ).order_by(PointsTransaction.created_at.desc()).limit(20).all()
+
+    transactions = []
+    for t in history:
+        transactions.append({
+            "fecha": t.created_at.isoformat() if t.created_at else None,
+            "tipo": t.tipo,
+            "delta": t.delta,
+            "detalle": (t.metadata_payload or {}).get("detalle", t.tipo)
+        })
+
+    return jsonify({
+        "current_points": balance,
+        "transactions": transactions
+    })
+
+@portal_api_bp.route('/surveys/<slug>/responses', methods=['POST'])
+@require_auth
+def submit_portal_survey_response(tenant_slug, slug):
+    _resolve_context(tenant_slug) # Ensure tenant context
+    # user = g.viewer # Responses logic typically uses user_id from payload or infers it
+
+    from services.encuestas_service import save_respuesta, EncuestaError
+
+    data = request.get_json(silent=True) or {}
+
+    # Inject authenticated user info if not present
+    if 'user_id' not in data and g.viewer:
+        data['user_id'] = g.viewer.id
+
+    # Request context for fingerprinting
+    request_ctx = {
+        "ip": request.remote_addr,
+        "user_agent": request.headers.get("User-Agent"),
+        "anon_id": request.headers.get("X-Anon-Id"),
+        "canal": "portal"
+    }
+
+    try:
+        # Note: save_respuesta expects PUBLIC SLUG.
+        save_respuesta(slug, data, request_ctx)
+        return jsonify({"success": True}), 201
+    except EncuestaError as e:
+        return jsonify({"error": e.message}), e.status_code
+    except Exception as e:
+        current_app.logger.exception("Error submitting survey from portal")
+        return jsonify({"error": "Error interno"}), 500
