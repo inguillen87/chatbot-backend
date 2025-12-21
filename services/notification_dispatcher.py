@@ -9,13 +9,17 @@ errores de configuración (SMTP/Twilio) pasen desapercibidos y deja un punto
 from __future__ import annotations
 
 import logging
+import json
+import os
 from typing import Any, Dict
 
 from services.email_service import (
     enviar_email_ticket_novedad,
     enviar_sms_ticket_novedad,
     enviar_whatsapp_ticket_novedad,
+    enviar_whatsapp, # Generic sender
 )
+from services.telegram_service import send_telegram_message
 
 
 logger = logging.getLogger(__name__)
@@ -72,33 +76,8 @@ def dispatch_ticket_update(
                 exc_info=True,
             )
 
-    # Notify Owner (Telegram/WhatsApp)
-    try:
-        tenant_obj = getattr(ticket, "tenant", None)
-        # If no tenant rel, try finding by id
-        if not tenant_obj and hasattr(ticket, "tenant_id") and ticket.tenant_id:
-            from models import TenantProfile
-            tenant_obj = TenantProfile.query.get(ticket.tenant_id)
-
-        if tenant_obj:
-            from flask import current_app
-            from services.telegram_service import send_telegram_message
-            config = getattr(tenant_obj, "configuracion", {}) or {}
-
-            chat_id = config.get("owner_telegram_chat_id")
-            bot_token = current_app.config.get("TELEGRAM_BOT_TOKEN")
-            if chat_id and bot_token:
-                send_telegram_message(chat_id, f"🎫 Ticket Update: {mensaje}", bot_token)
-                resultados["telegram_owner"] = True
-
-            owner_phone = config.get("owner_notification_phone")
-            if owner_phone:
-                from services.email_service import enviar_whatsapp
-                enviar_whatsapp(owner_phone, f"🎫 Ticket Update: {mensaje}")
-                resultados["whatsapp_owner"] = True
-
-    except Exception as e:
-        logger.error(f"[NOTIFY] Error notifying owner for ticket {getattr(ticket, 'id', 'N/A')}: {e}")
+    # Notify Owner
+    _notify_owner_generic(ticket, mensaje, resultados)
 
     return resultados
 
@@ -133,24 +112,48 @@ def dispatch_order_update(
     """Envía notificación de novedad de pedido."""
     logger.info(f"[NOTIFY] Order {getattr(order, 'id', 'N/A')} update: {mensaje}")
 
+    resultados = {"email": False, "sms": False, "whatsapp": False}
+
     # Notify Owner
-    resultados = {"email": False, "sms": False, "whatsapp": False, "telegram": False}
-    if hasattr(order, "tenant"):
-        from flask import current_app
-        from services.telegram_service import send_telegram_message
-
-        config = getattr(order.tenant, "configuracion", {}) or {}
-
-        # Telegram
-        chat_id = config.get("owner_telegram_chat_id")
-        bot_token = current_app.config.get("TELEGRAM_BOT_TOKEN")
-        if chat_id and bot_token:
-            resultados["telegram"] = send_telegram_message(chat_id, f"📦 {mensaje}", bot_token)
-
-        # WhatsApp Owner
-        owner_phone = config.get("owner_notification_phone")
-        if owner_phone:
-            from services.email_service import enviar_whatsapp
-            resultados["whatsapp_owner"] = enviar_whatsapp(owner_phone, f"📦 {mensaje}")
+    _notify_owner_generic(order, mensaje, resultados, is_order=True)
 
     return resultados
+
+
+def _notify_owner_generic(entity: Any, message: str, results: Dict[str, bool], is_order: bool = False):
+    """Helper to send push notifications to the Tenant Owner."""
+    try:
+        tenant_obj = getattr(entity, "tenant", None)
+        if not tenant_obj and hasattr(entity, "tenant_id") and entity.tenant_id:
+            from models import TenantProfile
+            tenant_obj = TenantProfile.query.get(entity.tenant_id)
+
+        if not tenant_obj:
+            return
+
+        from flask import current_app
+        config = getattr(tenant_obj, "configuracion", {}) or {}
+
+        # 1. Telegram
+        chat_id = config.get("owner_telegram_chat_id")
+        bot_token = current_app.config.get("TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
+
+        if chat_id and bot_token:
+            prefix = "📦 Pedido" if is_order else "🎫 Ticket"
+            results["telegram_owner"] = send_telegram_message(chat_id, f"{prefix}: {message}", bot_token)
+
+        # 2. WhatsApp (Twilio Template for Push)
+        owner_phone = config.get("owner_notification_phone")
+
+        # If it's an order, we might use a specific template if configured
+        if is_order and owner_phone and config.get("twilio_order_template_sid"):
+            sid = config.get("twilio_order_template_sid")
+            # This requires advanced Twilio Client usage not fully wrapped in email_service yet.
+            # We will use the generic message for now or implement template sending if library supports it.
+            # Assuming simple message for MVP unless user provided specific SID logic
+            results["whatsapp_owner"] = enviar_whatsapp(owner_phone, f"📦 {message}")
+        elif owner_phone:
+             results["whatsapp_owner"] = enviar_whatsapp(owner_phone, f"🔔 {message}")
+
+    except Exception as e:
+        logger.error(f"[NOTIFY] Error notifying owner: {e}")

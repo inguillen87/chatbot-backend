@@ -1282,10 +1282,20 @@ class MarketOrder(db.Model, TimestampMixin):
     status = db.Column(db.String(20), nullable=False, default="pending")
     contact_name = db.Column(db.String(255), nullable=True)
     contact_phone = db.Column(db.String(50), nullable=True)
+    contact_email = db.Column(db.String(120), nullable=True)
+    channel = db.Column(db.String(50), default="web")
     total_monetary = db.Column(db.Numeric(12, 2), nullable=True)
     total_points = db.Column(db.Integer, nullable=True)
     currency = db.Column(db.String(10), nullable=True)
+    note = db.Column(db.Text, nullable=True)
+    external_provider = db.Column(db.String(50), nullable=True)
+    external_order_id = db.Column(db.String(120), nullable=True)
+    external_url = db.Column(db.String(500), nullable=True)
     metadata_payload = db.Column("metadata", JSONType, nullable=True)
+
+    __table_args__ = (
+        db.Index("ix_market_order_external", "tenant_id", "external_provider", "external_order_id"),
+    )
 
     tenant = db.relationship("TenantProfile")
     user = db.relationship("User")
@@ -2022,6 +2032,25 @@ class IntegrationAccount(db.Model, TimestampMixin):
 
     def __repr__(self):
         return f"<IntegrationAccount {self.type} tenant={self.tenant_id}>"
+
+
+class IntegrationEvent(db.Model, TimestampMixin):
+    __tablename__ = "integration_event"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    provider = db.Column(db.String(50), nullable=False) # mercadolibre, tiendanube
+    event_id = db.Column(db.String(120), nullable=False) # Unique ID from provider
+    event_type = db.Column(db.String(80), nullable=True) # order_created, etc.
+    payload = db.Column(JSONType, nullable=True)
+    processed = db.Column(db.Boolean, default=False)
+    error = db.Column(db.Text, nullable=True)
+
+    tenant = db.relationship("TenantProfile")
+
+    __table_args__ = (
+        db.UniqueConstraint("tenant_id", "provider", "event_id", name="uq_integration_event_dedupe"),
+    )
 
 
 class NotificationLog(db.Model, TimestampMixin):
