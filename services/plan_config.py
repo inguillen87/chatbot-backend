@@ -91,7 +91,7 @@ _PLAN_CATALOG: Dict[str, PlanMetadata] = {
     "pro": PlanMetadata(
         key="pro",
         name="Plan Pro",
-        price_ars=65_000,
+        price_ars=300_000,
         order=1,
         message_limit=250,
         summary="Automatización comercial y de soporte con 250 interacciones inteligentes al mes.",
@@ -115,7 +115,7 @@ _PLAN_CATALOG: Dict[str, PlanMetadata] = {
     "full": PlanMetadata(
         key="full",
         name="Plan Full",
-        price_ars=95_000,
+        price_ars=350_000,
         order=0,
         message_limit=None,
         summary="Interacciones ilimitadas y todo el stack omnicanal para escalar operaciones.",

@@ -43,9 +43,9 @@ class PlanConfigTests(unittest.TestCase):
 
         self.assertIsNotNone(pro)
         self.assertIsNotNone(full)
-        self.assertEqual(pro.price_ars, 65_000)
+        self.assertEqual(pro.price_ars, 300_000)
         self.assertEqual(pro.message_limit, 250)
-        self.assertEqual(full.price_ars, 95_000)
+        self.assertEqual(full.price_ars, 350_000)
         self.assertIsNone(full.message_limit)
 
     def test_apply_plan_updates_user_limits(self):
@@ -78,8 +78,8 @@ class PlanConfigTests(unittest.TestCase):
         catalog = {plan["key"]: plan for plan in payload["planes"]}
         self.assertIn("pro", catalog)
         self.assertIn("full", catalog)
-        self.assertEqual(catalog["pro"]["price_ars"], 65_000)
-        self.assertEqual(catalog["full"]["price_ars"], 95_000)
+        self.assertEqual(catalog["pro"]["price_ars"], 300_000)
+        self.assertEqual(catalog["full"]["price_ars"], 350_000)
 
         serialized = serialize_plan_catalog()
         self.assertTrue(any(plan["key"] == "pro" for plan in serialized))
