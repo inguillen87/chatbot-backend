@@ -1,0 +1,24 @@
+# Frontend Handover Notes
+
+## 1. Subscription Plans Update
+The subscription plans returned by `GET /auth/plans` (and related endpoints) have been reordered to prioritize the highest value plan.
+- **Order:** `Full` (First) -> `Pro` -> `Gratis` (Last).
+- **Prices:** The backend correctly serves the "real" prices:
+    - **Plan Full:** $95.000 (ID: `2c9380849763daeb0197658791ee00b1`)
+    - **Plan Pro:** $65.000 (ID: `2c9380849764e81a01976585767f0040`)
+    - **Plan Demo:** Gratis
+- **Action Required:** Ensure the frontend renders the list in the order provided by the API and does not force a local sort.
+
+## 2. Persistent Marketplace (Cart & Orders)
+The backend now supports fully persistent, database-backed Shopping Carts and Orders, enabling a robust multi-tenant marketplace experience.
+- **Models Added:** `MarketCart`, `MarketCartItem`, `MarketOrder`, `MarketOrderItem`.
+- **Behavior:**
+    - The `X-Anon-Id` header is used to persist carts for anonymous users.
+    - Upon login, anonymous carts are automatically merged/adopted by the authenticated user.
+    - Orders are now stored in `market_order` tables with status tracking (`pending`, `paid`, etc.).
+- **Endpoints:** The existing `routes/market.py` endpoints now write to these tables. No URL changes are required, but error handling might be more robust (500s will occur if tables are missing, which is now fixed).
+
+## 3. New Integration & Notification Modules
+- **IntegrationAccount:** A new model exists to store credentials for third-party integrations (MercadoLibre, TiendaNube).
+    - *Endpoint:* Admin endpoints available for managing these credentials.
+- **NotificationLog:** All system notifications (WhatsApp, Email) are now logged to the `notification_log` table for audit purposes.
