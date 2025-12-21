@@ -30,3 +30,10 @@ The backend now supports fully persistent, database-backed Shopping Carts and Or
 - **Push Notifications:**
     - Telegram and WhatsApp push notifications to the owner are now supported via `services/notification_dispatcher.py`.
     - Configure `owner_telegram_chat_id` and `owner_notification_phone` in tenant configuration.
+
+## 4. Mirror Catalog Strategy
+- **New Fields:** `CatalogoItem` now has `checkout_type` (e.g., 'mercadolibre') and `external_url`.
+- **Behavior:**
+    - When rendering products in the Chatbot or Web Catalog, check `checkout_type`.
+    - If `checkout_type` is 'mercadolibre' or 'tiendanube', render a **URL Button** (e.g., "Ver en ML") pointing to `external_url` instead of an "Add to Cart" button.
+    - This allows preserving the traffic within Chatboc while delegating the payment to the external platform preferred by the seller.
