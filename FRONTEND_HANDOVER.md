@@ -3,9 +3,9 @@
 ## 1. Subscription Plans Update
 The subscription plans returned by `GET /auth/plans` (and related endpoints) have been reordered to prioritize the highest value plan.
 - **Order:** `Full` (First) -> `Pro` -> `Gratis` (Last).
-- **Prices:** The backend correctly serves the "real" prices:
-    - **Plan Full:** $95.000 (ID: `2c9380849763daeb0197658791ee00b1`)
-    - **Plan Pro:** $65.000 (ID: `2c9380849764e81a01976585767f0040`)
+- **Prices:** The backend correctly serves the updated prices:
+    - **Plan Full:** $350.000 (ID: `2c9380849763daeb0197658791ee00b1`)
+    - **Plan Pro:** $300.000 (ID: `2c9380849764e81a01976585767f0040`)
     - **Plan Demo:** Gratis
 - **Action Required:** Ensure the frontend renders the list in the order provided by the API and does not force a local sort.
 
