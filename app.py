@@ -607,11 +607,13 @@ def create_app(config_class=Config):
     app.register_blueprint(webauthn_bp)
     app.register_blueprint(admin_tenant_bp)
     app.register_blueprint(public_tenant_bp)
-    app.register_blueprint(integrations_bp)
     app.register_blueprint(encuestas_admin_bp)
 
     from routes.super_admin import super_admin_bp
-    app.register_blueprint(super_admin_bp)
+    app.register_blueprint(integrations_bp, url_prefix='/api/integrations')
+
+    from routes.admin_market import admin_market_bp
+    app.register_blueprint(admin_market_bp, url_prefix='/api/admin/tenants/<slug>')
     app.register_blueprint(encuestas_public_bp)
     if FEATURE_ENCUESTAS:
         app.register_blueprint(encuestas_admin_api_bp)

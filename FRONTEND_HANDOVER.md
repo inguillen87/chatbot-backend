@@ -20,5 +20,13 @@ The backend now supports fully persistent, database-backed Shopping Carts and Or
 
 ## 3. New Integration & Notification Modules
 - **IntegrationAccount:** A new model exists to store credentials for third-party integrations (MercadoLibre, TiendaNube).
-    - *Endpoint:* Admin endpoints available for managing these credentials.
-- **NotificationLog:** All system notifications (WhatsApp, Email) are now logged to the `notification_log` table for audit purposes.
+- **NotificationLog:** All system notifications (WhatsApp, Email, Telegram) are logged to the `notification_log` table.
+- **Integrations API:**
+    - `POST /api/integrations/<provider>/connect`: Generate OAuth URL.
+    - `POST /api/integrations/webhooks/<provider>`: Handle external events (MercadoLibre orders).
+- **Admin Order API:**
+    - `GET /api/admin/tenants/<slug>/orders`: List/Filter orders.
+    - `PUT /api/admin/tenants/<slug>/orders/<id>`: Update order status.
+- **Push Notifications:**
+    - Telegram and WhatsApp push notifications to the owner are now supported via `services/notification_dispatcher.py`.
+    - Configure `owner_telegram_chat_id` and `owner_notification_phone` in tenant configuration.

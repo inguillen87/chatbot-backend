@@ -1,19 +1,17 @@
+"""Telegram Notification Service."""
 import requests
 import logging
 
 logger = logging.getLogger(__name__)
 
-def send_telegram_message(chat_id, text, bot_token=None):
-    if not bot_token or not chat_id:
-        return False
-
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text}
+def send_telegram_message(chat_id: str, text: str, bot_token: str) -> bool:
+    """Sends a message to a Telegram chat."""
     try:
-        resp = requests.post(url, json=payload, timeout=5)
-        if not resp.ok:
-            logger.error(f"[TELEGRAM] Error sending message: {resp.text}")
-        return resp.ok
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": text}
+        resp = requests.post(url, json=payload, timeout=10)
+        resp.raise_for_status()
+        return True
     except Exception as e:
-        logger.error(f"[TELEGRAM] Exception sending message: {e}")
+        logger.error(f"[TELEGRAM] Failed to send message to {chat_id}: {e}")
         return False
