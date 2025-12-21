@@ -26,10 +26,14 @@ The backend now supports fully persistent, database-backed Shopping Carts and Or
     - `POST /api/integrations/webhooks/<provider>`: Handle external events (MercadoLibre orders).
 - **Admin Order API:**
     - `GET /api/admin/tenants/<slug>/orders`: List/Filter orders.
+    - `POST /api/admin/tenants/<slug>/orders`: Create manual order (JSON payload: `contact_name`, `items`: `[{name, price, quantity}]`).
     - `PUT /api/admin/tenants/<slug>/orders/<id>`: Update order status.
+- **Notification Settings API:**
+    - `GET /api/admin/tenants/<slug>/notifications`: Get current config.
+    - `PUT /api/admin/tenants/<slug>/notifications`: Update `owner_phone`, `telegram_chat_id`, etc.
 - **Push Notifications:**
     - Telegram and WhatsApp push notifications to the owner are now supported via `services/notification_dispatcher.py`.
-    - Configure `owner_telegram_chat_id` and `owner_notification_phone` in tenant configuration.
+    - Backend logic reads from the tenant configuration managed via the API above.
 
 ## 4. Mirror Catalog Strategy
 - **New Fields:** `CatalogoItem` now has `checkout_type` (e.g., 'mercadolibre') and `external_url`.
