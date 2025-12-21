@@ -1076,6 +1076,9 @@ class CatalogoItem(db.Model):
     imagen_url = db.Column(db.String(512), nullable=True)
     pdf_url = db.Column(db.String(512), nullable=True)
     disponible = db.Column(db.Boolean, nullable=False, default=True)
+    # Nuevos campos para estrategia de catálogo espejo
+    checkout_type = db.Column(db.String(50), default="chatboc") # chatboc, mercadolibre, tiendanube
+    external_url = db.Column(db.String(500), nullable=True)
     timestamp = db.Column(db.DateTime(timezone=True), default=get_local_now)
 
     def __repr__(self):

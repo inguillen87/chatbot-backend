@@ -938,7 +938,23 @@ class CatalogoHandler(BaseHandler):
                 linea = f"| {nombre} | ${precio_f:,.2f} {moneda or 'ARS'} | {cantidad} |"
                 productos_formateados.append(linea)
                 identificador_accion = payload.get("sku") or item_db_id or nombre
-                botones_catalogo.append({"texto": f"Pedir {nombre[:20]}", "action": f"pedir_item_{identificador_accion}"})
+
+                # Check checkout_type logic
+                checkout_type = "chatboc"
+                external_url = None
+                if item_obj:
+                    checkout_type = getattr(item_obj, "checkout_type", "chatboc")
+                    external_url = getattr(item_obj, "external_url", None)
+
+                if checkout_type in ["mercadolibre", "tiendanube"] and external_url:
+                    label_site = "ML" if checkout_type == "mercadolibre" else "Web"
+                    botones_catalogo.append({
+                        "texto": f"Ver en {label_site}",
+                        "url": external_url,
+                        "type": "url"
+                    })
+                else:
+                    botones_catalogo.append({"texto": f"Pedir {nombre[:20]}", "action": f"pedir_item_{identificador_accion}"})
 
             if productos_formateados:
                 respuesta_texto = "Algunos productos que podrían interesarte:\n\n" + "\n".join(productos_formateados)
@@ -953,19 +969,20 @@ class CatalogoHandler(BaseHandler):
         body = respuesta_texto
         options = []
 
-        # Add "Pedir {nombre}" buttons from botones_catalogo (which were generated from resultados_qdrant)
-        # Assuming botones_catalogo was populated correctly if resultados_qdrant had hits
-        for btn_cat_original in botones_catalogo: # botones_catalogo was defined earlier in your original code
-            # Original action: f"pedir_item_{identificador_accion}"
-            # We need the identificador_accion part for the ID.
-            action_str = btn_cat_original.get("action", "")
-            id_suffix = action_str.replace("pedir_item_", "") if action_str.startswith("pedir_item_") else _normalize_user_input(btn_cat_original.get("texto", "")).replace(" ", "_")
+        # Add buttons from botones_catalogo
+        for btn_cat_original in botones_catalogo:
+            if btn_cat_original.get("type") == "url":
+                options.append(btn_cat_original)
+            else:
+                action_str = btn_cat_original.get("action", "")
+                id_suffix = action_str.replace("pedir_item_", "") if action_str.startswith("pedir_item_") else _normalize_user_input(btn_cat_original.get("texto", "")).replace(" ", "_")
 
-            options.append({
-                "id": f"pedir_item_pyme_{id_suffix}",
-                "texto": btn_cat_original.get("texto", "Pedir producto")[:20] # Ensure text is suitable for button title
-            })
-            if len(options) >= 7 and self.context.get("channel") == 'whatsapp': # Limit Pedir buttons for WhatsApp to leave space for general ones
+                options.append({
+                    "id": f"pedir_item_pyme_{id_suffix}",
+                    "texto": btn_cat_original.get("texto", "Pedir producto")[:20]
+                })
+
+            if len(options) >= 7 and self.context.get("channel") == 'whatsapp':
                 break
 
         # Add general action buttons
