@@ -4,23 +4,6 @@ import secrets
 from database import db
 from models import TenantProfile, User, TenantConfig, TwilioNumber
 from flask import current_app
-import re
-
-
-def normalize_whatsapp_sender(sender: str | None) -> str | None:
-    if not sender:
-        return None
-    candidate = str(sender).strip()
-    if not candidate:
-        return None
-    if candidate.lower().startswith("whatsapp:"):
-        candidate = candidate.split(":", 1)[1].strip()
-    digits = re.sub(r"\D", "", candidate)
-    if not digits:
-        return None
-    if digits.startswith("00"):
-        digits = digits[2:]
-    return f"whatsapp:+{digits}"
 
 def load_template(template_key, config_type):
     """
@@ -64,9 +47,7 @@ def assign_number_to_tenant(tenant: TenantProfile):
 
     number.status = "assigned"
     number.tenant_id = tenant.id
-    normalized_sender = normalize_whatsapp_sender(number.sender_id) or number.sender_id
-    tenant.whatsapp_sender_id = normalized_sender
-    tenant.whatsapp_sender = normalized_sender
+    tenant.whatsapp_sender_id = number.sender_id
     db.session.add(number)
     db.session.add(tenant)
     return number

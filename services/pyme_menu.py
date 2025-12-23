@@ -186,8 +186,8 @@ def get_pyme_menu_payload(context: Dict[str, Any], channel: str = "web") -> Dict
     }
 
     if channel.lower() == "whatsapp":
-        assistant_name = menu_config.get("assistant_name") or "ACA WinRey"
-        brand_name = nombre_pyme or menu_config.get("nombre_pyme") or "la bodega"
+        assistant_name = menu_config.get("assistant_name") or "Tu Asistente"
+        brand_name = nombre_pyme or menu_config.get("nombre_pyme") or "la empresa"
         whatsapp_lines = [
             f"🍷 ¡Hola! Soy *{assistant_name}*, tu asistente virtual de {brand_name}.",
         ]

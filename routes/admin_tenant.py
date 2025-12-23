@@ -126,8 +126,7 @@ def get_tenant_config_bundle(current_user, slug):
             "tipo": tenant.tipo,
             "plan": tenant.plan,
             "logo_url": tenant.logo_url,
-            "whatsapp_sender_id": tenant.whatsapp_sender_id,
-            "whatsapp_sender": tenant.whatsapp_sender
+            "whatsapp_sender_id": tenant.whatsapp_sender_id
         },
         "configs": config_dict
     }
@@ -424,17 +423,32 @@ def connect_integration(current_user, slug, integration_type):
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
 
-    # Stub for OAuth redirect generation
+    base_url = current_app.config.get("PUBLIC_BASE_URL", "https://chatboc.ar").rstrip("/")
+
+    # Uses Platform Credentials (configured in Render/Env) to generate the OAuth URL.
+    # The Client (Tenant Admin) clicks this URL, logs in to their account, and authorizes "Chatboc".
+    # We use the GENERIC callback URL defined in routes/integrations.py to allow a single app registration.
+    # The tenant context is preserved via the 'state' parameter (tenant.id).
+
     if integration_type.lower() == 'tiendanube':
-        client_id = current_app.config.get("TIENDANUBE_CLIENT_ID") or "12345"
-        redirect_uri = f"https://chatboc.ar/api/admin/tenants/{slug}/integrations/tiendanube/callback"
-        auth_url = f"https://www.tiendanube.com/apps/authorize?client_id={client_id}&redirect_uri={redirect_uri}"
+        client_id = current_app.config.get("TIENDANUBE_CLIENT_ID")
+        if not client_id:
+            return jsonify({"error": "Platform not configured for TiendaNube"}), 503
+
+        redirect_uri = f"{base_url}/api/integrations/tiendanube/callback"
+        # TiendaNube typically doesn't support 'state' in all docs, but standard OAuth does.
+        # We assume standard behavior or fallback to direct if needed.
+        auth_url = f"https://www.tiendanube.com/apps/authorize?client_id={client_id}&redirect_uri={redirect_uri}&state={tenant.id}"
         return jsonify({"redirect_url": auth_url})
 
     elif integration_type.lower() == 'mercadolibre':
-        client_id = current_app.config.get("MERCADOLIBRE_APP_ID") or "APP_USR_123"
-        redirect_uri = f"https://chatboc.ar/api/admin/tenants/{slug}/integrations/mercadolibre/callback"
-        auth_url = f"https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}"
+        client_id = current_app.config.get("ML_APP_ID")
+        if not client_id:
+             return jsonify({"error": "Platform not configured for MercadoLibre"}), 503
+
+        redirect_uri = f"{base_url}/api/integrations/mercadolibre/callback"
+        # MercadoLibre supports 'state' perfectly.
+        auth_url = f"https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&state={tenant.id}"
         return jsonify({"redirect_url": auth_url})
 
     return jsonify({"error": "Integration type not supported"}), 400
