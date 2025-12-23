@@ -529,7 +529,6 @@ class TenantProfile(db.Model, TimestampMixin):
     configuracion = db.Column(JSONType, nullable=True)
     plan = db.Column(db.String(50), default="free")
     whatsapp_sender_id = db.Column(db.String(255), nullable=True)
-    whatsapp_sender = db.Column(db.String(255), nullable=True, unique=True, index=True)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
 
     municipio = db.relationship(
