@@ -9,23 +9,6 @@ from extensions import db
 from models import TenantProfile, User, Rubro
 import uuid
 from datetime import datetime
-import re
-
-
-def normalize_whatsapp_sender(sender: str | None) -> str | None:
-    if not sender:
-        return None
-    candidate = str(sender).strip()
-    if not candidate:
-        return None
-    if candidate.lower().startswith("whatsapp:"):
-        candidate = candidate.split(":", 1)[1].strip()
-    digits = re.sub(r"\D", "", candidate)
-    if not digits:
-        return None
-    if digits.startswith("00"):
-        digits = digits[2:]
-    return f"whatsapp:+{digits}"
 
 def seed_servill():
     # Helper to run logic with or without existing context
@@ -35,7 +18,6 @@ def seed_servill():
         # 1. Ensure Tenant Exists
         tenant_slug = "servill"
         tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
-        whatsapp_sender = normalize_whatsapp_sender("whatsapp:+5492634947679")
 
         if not tenant:
             print(f"Creating tenant '{tenant_slug}'...")
@@ -43,16 +25,14 @@ def seed_servill():
                 slug=tenant_slug,
                 nombre="SERVILL Indumentaria",
                 tipo="pyme",
-                whatsapp_sender_id=whatsapp_sender,
-                whatsapp_sender=whatsapp_sender,
+                whatsapp_sender_id="whatsapp:+5492634947679",
                 plan="pyme"
             )
             db.session.add(tenant)
             db.session.commit()
         else:
             print(f"Updating tenant '{tenant_slug}'...")
-            tenant.whatsapp_sender_id = whatsapp_sender
-            tenant.whatsapp_sender = whatsapp_sender
+            tenant.whatsapp_sender_id = "whatsapp:+5492634947679"
             tenant.nombre = "SERVILL Indumentaria"
             db.session.add(tenant)
             db.session.commit()

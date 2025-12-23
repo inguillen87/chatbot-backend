@@ -10,11 +10,11 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from werkzeug.datastructures import FileStorage
-from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto, TenantProfile, IntegrationEvent  # Import necessary models
+from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
 from extensions import db  # Import db instance for database operations
 import uuid
 from services.logic import responder_chatboc  # Import the correct chatbot logic processor
-from sqlalchemy.exc import ProgrammingError, SQLAlchemyError, IntegrityError
+from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm import joinedload  # To potentially eager load User.rubro
 from utils.db_utils import ensure_chat_session_context_schema, safe_flag_modified
 from services.gcs_service import upload_to_gcs
@@ -514,28 +514,6 @@ def _normalize_whatsapp_address(value: Optional[str]) -> Optional[str]:
     return f"+{digits}"
 
 
-def _normalize_whatsapp_sender(value: Optional[str]) -> Optional[str]:
-    normalized = _normalize_whatsapp_address(value)
-    if not normalized:
-        return None
-    return f"whatsapp:{normalized}"
-
-
-def _lookup_tenant_by_sender(to_number_raw: str) -> Tuple[Optional[TenantProfile], Optional[str]]:
-    normalized = _normalize_whatsapp_address(to_number_raw)
-    if not normalized:
-        return None, None
-
-    candidates = {f"whatsapp:{normalized}"}
-    if normalized.startswith("+549") and len(normalized) == 13:
-        candidates.add(f"whatsapp:+54{normalized[4:]}")
-
-    tenant = TenantProfile.query.filter(
-        TenantProfile.whatsapp_sender.in_(candidates)
-    ).first()
-    return tenant, _normalize_whatsapp_sender(to_number_raw)
-
-
 def _lookup_whatsapp_mapping(to_number_raw: str) -> Tuple[Optional[WhatsappNumero], str, Optional[str]]:
     """Return the ``WhatsappNumero`` for the destination number, with fallbacks.
 
@@ -807,27 +785,19 @@ def whatsapp_webhook():
     to_number_raw = post_vars.get("To", "")
     from_number_raw = post_vars.get("From", "")
 
-    to_number_cleaned = (to_number_raw or "").replace("whatsapp:", "").strip()
-    to_number_normalized = _normalize_whatsapp_address(to_number_raw)
-    tenant_profile, sender_normalized = _lookup_tenant_by_sender(to_number_raw)
-    whatsapp_mapping = None
+    whatsapp_mapping, to_number_cleaned, to_number_normalized = _lookup_whatsapp_mapping(to_number_raw)
     from_number_cleaned = from_number_raw.replace("whatsapp:", "")
 
     current_app.logger.info(
-        "[WHATSAPP_WEBHOOK] Incoming message AccountSid=%s ServiceSid=%s MessageSid=%s To=%s (normalized=%s) From=%s",
+        "[WHATSAPP_WEBHOOK] Incoming message AccountSid=%s ServiceSid=%s To=%s (normalized=%s) From=%s",
         post_vars.get("AccountSid"),
         post_vars.get("MessagingServiceSid"),
-        post_vars.get("MessageSid"),
         to_number_cleaned,
         to_number_normalized,
         from_number_cleaned,
     )
 
-    if not tenant_profile:
-        whatsapp_mapping, to_number_cleaned, to_number_normalized = _lookup_whatsapp_mapping(to_number_raw)
-        tenant_profile = None
-
-    if not tenant_profile and not whatsapp_mapping:
+    if not whatsapp_mapping:
         looked_up = to_number_normalized or to_number_cleaned
         current_app.logger.error(
             "[WHATSAPP_WEBHOOK] No active mapping for destination number %s (raw=%s)",
@@ -836,28 +806,17 @@ def whatsapp_webhook():
         )
         return "WhatsApp number not configured for any client.", 404
 
-    client_user = None
-    if tenant_profile:
-        client_user = tenant_profile.pyme or tenant_profile.municipio
-        if not client_user:
-            current_app.logger.error(
-                "[WHATSAPP_WEBHOOK] Tenant %s has no owner user linked for sender %s",
-                tenant_profile.id,
-                sender_normalized,
-            )
-            return "Internal configuration error: tenant missing owner.", 500
-    else:
-        client_user = whatsapp_mapping.user
-        if not client_user:
-            print(f"Error: No user associated with WhatsappNumero id {whatsapp_mapping.id} for number {to_number_cleaned}.")
-            return "Internal configuration error: WhatsApp number mapped to non-existent user.", 500
+    client_user = whatsapp_mapping.user
+    if not client_user:
+        print(f"Error: No user associated with WhatsappNumero id {whatsapp_mapping.id} for number {to_number_cleaned}.")
+        return "Internal configuration error: WhatsApp number mapped to non-existent user.", 500
 
     # Store the owner entity on ``flask.g`` so downstream helpers (like the
     # storage fallback) know which empresa/municipio owns this conversation.
     g.owner_user = client_user
 
     empresa_id = client_user.id
-    tenant_profile = tenant_profile or (
+    tenant_profile = (
         getattr(client_user, "tenant", None)
         or getattr(client_user, "tenant_profile", None)
         or getattr(client_user, "tenant_profile_municipio", None)
@@ -866,62 +825,6 @@ def whatsapp_webhook():
     tenant_id = None
     if tenant_profile:
         tenant_id = getattr(tenant_profile, "id", None) or getattr(tenant_profile, "tenant_id", None)
-        if sender_normalized and not tenant_profile.whatsapp_sender:
-            existing_sender = TenantProfile.query.filter(
-                TenantProfile.whatsapp_sender == sender_normalized,
-                TenantProfile.id != tenant_profile.id,
-            ).first()
-            if not existing_sender:
-                tenant_profile.whatsapp_sender = sender_normalized
-                db.session.add(tenant_profile)
-                db.session.commit()
-
-    current_app.logger.info(
-        "[WHATSAPP_WEBHOOK] Routing tenant_id=%s from=%s to=%s message_sid=%s",
-        tenant_id,
-        from_number_cleaned,
-        sender_normalized or to_number_raw,
-        post_vars.get("MessageSid"),
-    )
-
-    message_sid = post_vars.get("MessageSid") or post_vars.get("SmsMessageSid")
-    if message_sid and tenant_id:
-        existing_event = IntegrationEvent.query.filter_by(
-            tenant_id=tenant_id,
-            provider="twilio_whatsapp",
-            event_id=message_sid,
-        ).first()
-        if existing_event:
-            current_app.logger.info(
-                "[WHATSAPP_WEBHOOK] Duplicate message ignored tenant_id=%s message_sid=%s",
-                tenant_id,
-                message_sid,
-            )
-            return "Duplicate message ignored.", 200
-
-        try:
-            db.session.add(
-                IntegrationEvent(
-                    tenant_id=tenant_id,
-                    provider="twilio_whatsapp",
-                    event_id=message_sid,
-                    event_type="incoming_message",
-                    payload={
-                        "from": from_number_cleaned,
-                        "to": sender_normalized or to_number_raw,
-                    },
-                    processed=True,
-                )
-            )
-            db.session.commit()
-        except IntegrityError:
-            db.session.rollback()
-            current_app.logger.info(
-                "[WHATSAPP_WEBHOOK] Duplicate message (race) ignored tenant_id=%s message_sid=%s",
-                tenant_id,
-                message_sid,
-            )
-            return "Duplicate message ignored.", 200
     from services.pymes import get_or_create_user_by_phone
     end_user = get_or_create_user_by_phone(from_number_cleaned, client_user)
 
