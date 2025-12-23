@@ -9,23 +9,6 @@ from extensions import db
 from models import TenantProfile, User, Rubro, WhatsappNumero
 import uuid
 from datetime import datetime
-import re
-
-
-def normalize_whatsapp_sender(sender: str | None) -> str | None:
-    if not sender:
-        return None
-    candidate = str(sender).strip()
-    if not candidate:
-        return None
-    if candidate.lower().startswith("whatsapp:"):
-        candidate = candidate.split(":", 1)[1].strip()
-    digits = re.sub(r"\D", "", candidate)
-    if not digits:
-        return None
-    if digits.startswith("00"):
-        digits = digits[2:]
-    return f"whatsapp:+{digits}"
 
 def seed_servill():
     # Helper to run logic with or without existing context
@@ -51,7 +34,6 @@ def seed_servill():
                 rol="admin_pyme",
                 tipo_chat="pyme",
                 rubro_id=rubro.id,
-                tenant_id=tenant.id,
                 token=str(uuid.uuid4()),
                 email_verified=True,
                 acepto_terminos=True,

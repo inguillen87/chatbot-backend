@@ -610,6 +610,7 @@ def create_app(config_class=Config):
     app.register_blueprint(encuestas_admin_bp)
 
     from routes.super_admin import super_admin_bp
+    app.register_blueprint(super_admin_bp)
     app.register_blueprint(integrations_bp, url_prefix='/api/integrations')
 
     from routes.admin_market import admin_market_bp
