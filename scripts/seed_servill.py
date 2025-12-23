@@ -4,7 +4,7 @@ import os
 # Add project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from app import app
+from flask import current_app
 from extensions import db
 from models import TenantProfile, User, Rubro
 import uuid
@@ -28,7 +28,8 @@ def normalize_whatsapp_sender(sender: str | None) -> str | None:
     return f"whatsapp:+{digits}"
 
 def seed_servill():
-    with app.app_context():
+    # Helper to run logic with or without existing context
+    def _run_seeding():
         print("Starting SERVILL seeding...")
 
         # 1. Ensure Tenant Exists
@@ -101,5 +102,13 @@ def seed_servill():
 
         print("✅ SERVILL seeding completed successfully.")
 
+    if current_app:
+        _run_seeding()
+    else:
+        # Fallback if somehow called without context (should not happen if pattern followed)
+        print("⚠️ seed_servill called without active app context. Skipping.")
+
 if __name__ == "__main__":
-    seed_servill()
+    from app import app
+    with app.app_context():
+        seed_servill()
