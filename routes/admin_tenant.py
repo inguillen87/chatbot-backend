@@ -126,7 +126,8 @@ def get_tenant_config_bundle(current_user, slug):
             "tipo": tenant.tipo,
             "plan": tenant.plan,
             "logo_url": tenant.logo_url,
-            "whatsapp_sender_id": tenant.whatsapp_sender_id
+            "whatsapp_sender_id": tenant.whatsapp_sender_id,
+            "whatsapp_sender": tenant.whatsapp_sender
         },
         "configs": config_dict
     }
