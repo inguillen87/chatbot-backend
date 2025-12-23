@@ -20,10 +20,11 @@ def list_tenants(current_user):
 
     tenants_data = []
     for tenant in pagination.items:
-        # Determine plan from owner
+        # Determine plan from owner or tenant
         owner = tenant.municipio or tenant.pyme
-        plan = owner.plan if owner else "unknown"
-        status = "active" # Default
+        plan = tenant.plan or (owner.plan if owner else "unknown")
+        # status logic: if is_active is false -> inactive. Else -> active.
+        status = "active" if getattr(tenant, 'is_active', True) else "inactive"
 
         tenants_data.append({
             "id": tenant.id,
@@ -32,6 +33,7 @@ def list_tenants(current_user):
             "tipo": tenant.tipo,
             "plan": plan,
             "status": status,
+            "is_active": getattr(tenant, 'is_active', True),
             "created_at": tenant.created_at.isoformat() if tenant.created_at else None
         })
 
@@ -77,6 +79,8 @@ def create_tenant(current_user):
         slug=slug,
         nombre=nombre,
         tipo=tipo,
+        plan=data.get('plan', 'free'),
+        is_active=True,
         municipio_id=owner.id if tipo == 'municipio' else None,
         pyme_id=owner.id if tipo == 'pyme' else None
     )
@@ -85,35 +89,77 @@ def create_tenant(current_user):
 
     return jsonify({"message": "Tenant creado", "id": tenant.id, "slug": tenant.slug}), 201
 
-@super_admin_bp.route('/tenants/<string:slug>/status', methods=['PUT'])
+@super_admin_bp.route('/tenants/<string:slug>', methods=['GET'])
 @token_requerido
 @super_admin_required
-def update_tenant_status(current_user, slug):
+def get_tenant_detail(current_user, slug):
     tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
-    data = request.get_json()
-
-    plan = data.get('plan')
-    status = data.get('status')
-
     owner = tenant.municipio or tenant.pyme
-    if not owner:
-        return jsonify({"error": "Tenant has no owner linked"}), 400
 
-    if plan:
-        owner.plan = plan
-        db.session.add(owner)
+    return jsonify({
+        "id": tenant.id,
+        "slug": tenant.slug,
+        "nombre": tenant.nombre,
+        "tipo": tenant.tipo,
+        "plan": tenant.plan,
+        "is_active": getattr(tenant, 'is_active', True),
+        "owner_email": owner.email if owner else None,
+        "created_at": tenant.created_at.isoformat() if tenant.created_at else None,
+        "whatsapp_sender_id": tenant.whatsapp_sender_id
+    })
+
+@super_admin_bp.route('/tenants/<string:slug>', methods=['PUT'])
+@token_requerido
+@super_admin_required
+def update_tenant_full(current_user, slug):
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    data = request.get_json() or {}
+
+    if 'nombre' in data: tenant.nombre = data['nombre']
+    if 'plan' in data: tenant.plan = data['plan']
+    if 'is_active' in data: tenant.is_active = bool(data['is_active'])
+    if 'whatsapp_sender_id' in data: tenant.whatsapp_sender_id = data['whatsapp_sender_id']
+
+    # Handle domain, etc if needed
+    if 'dominio' in data: tenant.dominio = data['dominio']
 
     try:
         db.session.commit()
         return jsonify({
             "message": "Tenant updated successfully",
             "slug": tenant.slug,
-            "plan": owner.plan,
-            "status": status or "active"
+            "is_active": tenant.is_active
         })
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 500
+
+@super_admin_bp.route('/tenants/<string:slug>', methods=['DELETE'])
+@token_requerido
+@super_admin_required
+def delete_tenant_soft(current_user, slug):
+    """Soft delete (deactivate) tenant."""
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    tenant.is_active = False
+    db.session.commit()
+    return jsonify({"message": "Tenant deactivated successfully"})
+
+@super_admin_bp.route('/tenants/<string:slug>/activate', methods=['POST'])
+@token_requerido
+@super_admin_required
+def activate_tenant(current_user, slug):
+    """Re-activate tenant."""
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    tenant.is_active = True
+    db.session.commit()
+    return jsonify({"message": "Tenant activated successfully"})
+
+# Deprecated but kept for backward compatibility if frontend uses it
+@super_admin_bp.route('/tenants/<string:slug>/status', methods=['PUT'])
+@token_requerido
+@super_admin_required
+def update_tenant_status(current_user, slug):
+    return update_tenant_full(current_user, slug)
 
 @super_admin_bp.route('/tenants/<string:slug>/impersonate', methods=['POST'])
 @token_requerido

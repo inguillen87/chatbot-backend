@@ -77,6 +77,11 @@ def fix_schema_issues():
                         conn.rollback()
                         safe_execute(conn, "ALTER TABLE widget_settings ADD COLUMN theme_config JSON DEFAULT '{}'", "Add theme_config (JSON)")
 
+            # 5. tenant_profile.is_active
+            if not column_exists('tenant_profile', 'is_active'):
+                print("  ⚠️ Adding 'is_active' to 'tenant_profile'...")
+                safe_execute(conn, "ALTER TABLE tenant_profile ADD COLUMN is_active BOOLEAN DEFAULT true", "Add is_active to tenant_profile")
+
             print("✅ Schema consistency check finished.")
     except Exception as e:
         print(f"❌ Critical error in schema check: {e}")
@@ -463,6 +468,13 @@ def init_tenants():
         seed_content()
     except Exception as e:
         print(f"⚠️ Error seeding demo content: {e}")
+
+    # --- Seed Servill Tenant (Specific Request) ---
+    try:
+        from scripts.seed_servill import seed_servill
+        seed_servill()
+    except Exception as e:
+        print(f"⚠️ Error seeding Servill content: {e}")
 
     print("\n✅ Initialization complete.")
 
