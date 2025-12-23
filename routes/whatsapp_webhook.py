@@ -817,11 +817,14 @@ def whatsapp_webhook():
 
     empresa_id = client_user.id
     tenant_profile = (
-        getattr(client_user, "tenant_profile", None)
+        getattr(client_user, "tenant", None)
+        or getattr(client_user, "tenant_profile", None)
         or getattr(client_user, "tenant_profile_municipio", None)
         or getattr(client_user, "tenant_profile_pyme", None)
     )
-    tenant_id = getattr(tenant_profile, "id", None)
+    tenant_id = None
+    if tenant_profile:
+        tenant_id = getattr(tenant_profile, "id", None) or getattr(tenant_profile, "tenant_id", None)
     from services.pymes import get_or_create_user_by_phone
     end_user = get_or_create_user_by_phone(from_number_cleaned, client_user)
 
