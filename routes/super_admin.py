@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, request, g, current_app
-from models import TenantProfile, User, db, generate_token
+from models import TenantProfile, User, db, generate_token, WhatsappNumero, Rubro
 from utils.auth_helpers import token_requerido
 from utils.admin_decorators import super_admin_required
 from sqlalchemy import desc
@@ -185,3 +185,110 @@ def impersonate_tenant(current_user, slug):
     token = jwt.encode(payload, current_app.config['SECRET_KEY'], algorithm="HS256")
 
     return jsonify({"token": token, "redirect_url": f"/portal/{tenant.slug}/admin"})
+
+@super_admin_bp.route('/tenants/<string:slug>/admin-user', methods=['POST'])
+@token_requerido
+@super_admin_required
+def create_tenant_admin(current_user, slug):
+    """Create or link an admin user to the tenant."""
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    data = request.get_json() or {}
+    email = data.get('email')
+    password = data.get('password')
+    name = data.get('name')
+
+    if not email or not password:
+        return jsonify({"error": "Email y contraseña requeridos"}), 400
+
+    existing_user = User.query.filter_by(email=email).first()
+
+    if existing_user:
+        # Check if already linked
+        if existing_user.tenant_id == tenant.id:
+            return jsonify({"message": "Usuario ya existe y está vinculado al tenant", "user_id": existing_user.id}), 200
+        # If user exists but not linked, we might link them, but be careful of overriding
+        return jsonify({"error": "El usuario ya existe pero no está vinculado a este tenant. Use endpoints de actualización."}), 409
+
+    # Create new user
+    rubro = Rubro.query.filter_by(clave="default").first() or Rubro.query.first()
+
+    new_user = User(
+        email=email,
+        name=name or f"Admin {tenant.nombre}",
+        rol=f"admin_{tenant.tipo}", # admin_pyme or admin_municipio
+        tipo_chat=tenant.tipo,
+        tenant_id=tenant.id,
+        rubro_id=rubro.id if rubro else None,
+        email_verified=True,
+        acepto_terminos=True,
+        token=generate_token()
+    )
+    new_user.set_password(password)
+    db.session.add(new_user)
+    db.session.flush()
+
+    # Link as owner if missing
+    if tenant.tipo == 'pyme' and not tenant.pyme_id:
+        tenant.pyme_id = new_user.id
+    elif tenant.tipo == 'municipio' and not tenant.municipio_id:
+        tenant.municipio_id = new_user.id
+
+    db.session.commit()
+    return jsonify({"message": "Admin user created successfully", "user_id": new_user.id}), 201
+
+@super_admin_bp.route('/tenants/<string:slug>/password', methods=['PUT'])
+@token_requerido
+@super_admin_required
+def reset_tenant_password(current_user, slug):
+    """Reset password for the tenant's owner/admin."""
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    owner = tenant.municipio or tenant.pyme
+    data = request.get_json() or {}
+    new_password = data.get('password')
+
+    if not owner:
+        return jsonify({"error": "Tenant no tiene usuario propietario asignado"}), 404
+
+    if not new_password:
+        return jsonify({"error": "Password requerido"}), 400
+
+    owner.set_password(new_password)
+    db.session.commit()
+    return jsonify({"message": "Contraseña actualizada correctamente"})
+
+@super_admin_bp.route('/tenants/<string:slug>/whatsapp', methods=['PUT'])
+@token_requerido
+@super_admin_required
+def configure_tenant_whatsapp(current_user, slug):
+    """Configure WhatsApp number mapping for the tenant."""
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    owner = tenant.municipio or tenant.pyme
+    data = request.get_json() or {}
+    number = data.get('number') # Expected format: +549...
+
+    if not owner:
+        return jsonify({"error": "Tenant no tiene usuario propietario asignado"}), 404
+
+    if not number:
+        return jsonify({"error": "Número de WhatsApp requerido"}), 400
+
+    # 1. Update Tenant Profile
+    tenant.whatsapp_sender_id = f"whatsapp:{number}" # Ensure Twilio format
+
+    # 2. Update/Create WhatsappNumero mapping
+    mapping = WhatsappNumero.query.filter_by(numero_whatsapp=number).first()
+    if mapping:
+        # Reassign if needed
+        if mapping.user_id != owner.id:
+            mapping.user_id = owner.id
+            mapping.is_active = True
+    else:
+        mapping = WhatsappNumero(
+            numero_whatsapp=number,
+            user_id=owner.id,
+            is_active=True
+        )
+        db.session.add(mapping)
+
+    db.session.commit()
+    return jsonify({"message": "WhatsApp configurado correctamente", "number": number})
