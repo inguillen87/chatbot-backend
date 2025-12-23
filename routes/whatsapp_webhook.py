@@ -804,7 +804,9 @@ def whatsapp_webhook():
             looked_up,
             to_number_raw,
         )
-        return "WhatsApp number not configured for any client.", 404
+        # Respond with 200 to prevent Twilio retries, while keeping a clear
+        # message in the body and logs for debugging/observability.
+        return "WhatsApp number not configured for any client.", 200
 
     client_user = whatsapp_mapping.user
     if not client_user:
