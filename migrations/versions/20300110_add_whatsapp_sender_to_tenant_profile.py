@@ -1,7 +1,7 @@
 """Add whatsapp_sender to tenant_profile.
 
 Revision ID: 20300110_add_whatsapp_sender_to_tenant_profile
-Revises: 20300107_make_whatsapp_sender_id_unique
+Revises: 20300108_add_tenant_is_active
 Create Date: 2030-01-10 00:00:00.000000
 """
 
@@ -10,7 +10,8 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "20300110_add_whatsapp_sender_to_tenant_profile"
-down_revision = "20300107_make_whatsapp_sender_id_unique"
+# Chain directly after the is_active migration to avoid multiple heads.
+down_revision = "20300108_add_tenant_is_active"
 branch_labels = None
 depends_on = None
 

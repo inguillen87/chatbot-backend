@@ -32,32 +32,7 @@ def seed_servill():
     def _run_seeding():
         print("Starting SERVILL seeding...")
 
-        # 1. Ensure Tenant Exists
-        tenant_slug = "servill"
-        tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
-        whatsapp_sender = normalize_whatsapp_sender("whatsapp:+5492634947679")
-
-        if not tenant:
-            print(f"Creating tenant '{tenant_slug}'...")
-            tenant = TenantProfile(
-                slug=tenant_slug,
-                nombre="SERVILL Indumentaria",
-                tipo="pyme",
-                whatsapp_sender_id=whatsapp_sender,
-                whatsapp_sender=whatsapp_sender,
-                plan="pyme"
-            )
-            db.session.add(tenant)
-            db.session.commit()
-        else:
-            print(f"Updating tenant '{tenant_slug}'...")
-            tenant.whatsapp_sender_id = whatsapp_sender
-            tenant.whatsapp_sender = whatsapp_sender
-            tenant.nombre = "SERVILL Indumentaria"
-            db.session.add(tenant)
-            db.session.commit()
-
-        # 2. Ensure Admin User Exists
+        # 1. Ensure Admin User Exists
         admin_email = "info@servill.ar"
         admin_user = User.query.filter_by(email=admin_email).first()
 
@@ -76,7 +51,6 @@ def seed_servill():
                 rol="admin_pyme", # Or whatever role is appropriate
                 tipo_chat="pyme",
                 rubro_id=rubro.id,
-                tenant_id=tenant.id,
                 token=str(uuid.uuid4()),
                 email_verified=True,
                 acepto_terminos=True,
@@ -87,17 +61,44 @@ def seed_servill():
             db.session.commit()
         else:
             print(f"Updating admin user '{admin_email}'...")
-            admin_user.tenant_id = tenant.id
             if not admin_user.rubro_id:
                 admin_user.rubro_id = rubro.id
             db.session.add(admin_user)
             db.session.commit()
 
+        # 2. Ensure Tenant Exists
+        tenant_slug = "servill"
+        tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+        whatsapp_sender = normalize_whatsapp_sender("whatsapp:+5492634947679")
+
+        if not tenant:
+            print(f"Creating tenant '{tenant_slug}'...")
+            tenant = TenantProfile(
+                slug=tenant_slug,
+                nombre="SERVILL Indumentaria",
+                tipo="pyme",
+                pyme_id=admin_user.id,
+                whatsapp_sender_id=whatsapp_sender,
+                whatsapp_sender=whatsapp_sender,
+                plan="pyme"
+            )
+            db.session.add(tenant)
+            db.session.commit()
+        else:
+            print(f"Updating tenant '{tenant_slug}'...")
+            tenant.whatsapp_sender_id = whatsapp_sender
+            tenant.whatsapp_sender = whatsapp_sender
+            tenant.nombre = "SERVILL Indumentaria"
+            if not tenant.pyme_id:
+                tenant.pyme_id = admin_user.id
+            db.session.add(tenant)
+            db.session.commit()
+
         # 3. Link Tenant to User (Owner)
         # Assuming Pyme relationship
-        if not tenant.pyme_id:
-            tenant.pyme_id = admin_user.id
-            db.session.add(tenant)
+        if admin_user.tenant_id != tenant.id:
+            admin_user.tenant_id = tenant.id
+            db.session.add(admin_user)
             db.session.commit()
 
         print("✅ SERVILL seeding completed successfully.")
