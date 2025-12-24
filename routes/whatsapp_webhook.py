@@ -1073,10 +1073,17 @@ def whatsapp_webhook():
 
                 greeting_sent = False
 
+                # Determine tenant name for greeting
+                tenant_name = "Tu Asistente"
+                if tenant_profile and getattr(tenant_profile, "nombre", None):
+                    tenant_name = tenant_profile.nombre
+                elif client_user:
+                    tenant_name = getattr(client_user, "nombre_empresa", None) or getattr(client_user, "name", "Tu Asistente")
+
                 greeting = (
-                    f"*¡Hola, {user_name}!* Acá *Juni* \U0001F44B"
+                    f"*¡Hola, {user_name}!* Acá *{tenant_name}* \U0001F44B"
                     if user_name
-                    else "*¡Hola!* Soy *Juni* \U0001F44B ¿Cómo te llamás?"
+                    else f"*¡Hola!* Soy *{tenant_name}* \U0001F44B ¿Cómo te llamás?"
                 )
                 try:
                     twilio_client.messages.create(
