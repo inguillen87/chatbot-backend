@@ -796,9 +796,9 @@ def start_checkout(current_user, slug: str):
                     "items": preference_items,
                     "external_reference": f"MO-{order.id}",
                     "back_urls": {
-                        "success": f"https://chatboc.ar/{tenant.slug}/checkout/success",
-                        "failure": f"https://chatboc.ar/{tenant.slug}/checkout/failure",
-                        "pending": f"https://chatboc.ar/{tenant.slug}/checkout/pending"
+                        "success": f"{os.getenv('APP_BASE_URL', 'https://chatboc.ar')}/{tenant.slug}/checkout/success",
+                        "failure": f"{os.getenv('APP_BASE_URL', 'https://chatboc.ar')}/{tenant.slug}/checkout/failure",
+                        "pending": f"{os.getenv('APP_BASE_URL', 'https://chatboc.ar')}/{tenant.slug}/checkout/pending"
                     },
                     "auto_return": "approved",
                 }

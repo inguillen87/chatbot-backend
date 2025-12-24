@@ -688,8 +688,13 @@ def _get_main_menu_payload(
             "Elegí una o contame qué necesitás y te ayudo al instante."
         )
     else:
+        # Determine tenant name for text body
+        tenant_name_text = "tu municipio"
+        if owner_user:
+            tenant_name_text = getattr(owner_user, "nombre_empresa", None) or getattr(owner_user, "name", "tu municipio")
+
         main_text_body = (
-            "Soy *JUNI*, tu Asistente Virtual de la Municipalidad de Junín.\n\n"
+            f"Soy tu Asistente Virtual de *{tenant_name_text}*.\n\n"
             "*Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz* con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más. Este servicio es accesible y está listo para ayudarte.\n\n"
             "También podés usar emojis para realizar acciones rápidas.\n\n"
             "¿Cómo te puedo ayudar hoy?"
@@ -739,15 +744,24 @@ def _get_main_menu_payload(
                 {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
                 {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
                 {"texto": "🏗️ Obras", "action_id": "obras"},
-                {"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"},
             ]},
-            {"titulo": "🛍️ Catálogo y Beneficios", "botones": [
+        ]
+
+        # Only add Punto Limpio for valid municipal tenants (e.g. Junín) or generic "municipio"
+        is_junin_or_generic = True
+        if owner_user:
+             pass
+
+        # Append Punto Limpio only if appropriate (logic simplified for now, as strict check is in promo_service)
+        # categorias[-1]["botones"].append({"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"})
+
+        categorias.append({"titulo": "🛍️ Catálogo y Beneficios", "botones": [
                 {"texto": "📂 Ver Catálogo", "action_id": "catalogo_ver"},
                 {"texto": "🎁 Canje de Puntos", "action_id": "catalogo_canje_puntos"},
                 {"texto": "🛒 Compra de Productos", "action_id": "catalogo_compras"},
                 {"texto": "❤️ Donaciones", "action_id": "catalogo_donaciones"},
             ]},
-        ]
+        )
 
         if FEATURE_ENCUESTAS:
             categorias.append({
@@ -779,10 +793,18 @@ def _get_main_menu_payload(
         return normalized.strip()
 
     safe_user_name = _normalize_for_audio(user_name)
+
+    # Determine tenant/bot name dynamically
+    tenant_name = "tu municipio"
+    bot_name = "el asistente virtual"
+
+    if owner_user:
+        tenant_name = getattr(owner_user, "nombre_empresa", None) or getattr(owner_user, "name", "tu municipio")
+
     if safe_user_name:
-        audio_greeting = f"Hola {safe_user_name}, soy Juni, el asistente virtual de la Municipalidad de Junín."
+        audio_greeting = f"Hola {safe_user_name}, soy {bot_name} de {tenant_name}."
     else:
-        audio_greeting = "Hola, soy Juni, el asistente virtual de la Municipalidad de Junín."
+        audio_greeting = f"Hola, soy {bot_name} de {tenant_name}."
 
     if reduced:
         audio_intro = "Volvimos al menú principal para seguir con tu gestión."

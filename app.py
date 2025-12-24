@@ -477,6 +477,7 @@ def create_app(config_class=Config):
     from routes.admin_tenant import admin_tenant_bp
     from routes.public_tenant import public_tenant_bp
     from routes.integrations import integrations_bp
+    from routes.pyme_catalog_fixes import pyme_catalog_fix_bp
     from cli_commands import register_commands
 
     if FEATURE_ENCUESTAS:
@@ -608,6 +609,7 @@ def create_app(config_class=Config):
     app.register_blueprint(admin_tenant_bp)
     app.register_blueprint(public_tenant_bp)
     app.register_blueprint(encuestas_admin_bp)
+    app.register_blueprint(pyme_catalog_fix_bp)
 
     from routes.super_admin import super_admin_bp
     app.register_blueprint(super_admin_bp)
