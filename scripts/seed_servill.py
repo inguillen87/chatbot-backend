@@ -7,6 +7,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from flask import current_app
 from extensions import db
 from models import TenantProfile, User, Rubro, WhatsappNumero
+from services.tenant_management.folder_manager import ensure_tenant_folder_structure
 import uuid
 from datetime import datetime
 
@@ -100,6 +101,13 @@ def seed_servill():
                 mapping.user_id = admin_user.id
                 db.session.add(mapping)
                 db.session.commit()
+
+        # 5. Ensure Professional Folder Structure
+        try:
+            folder_path = ensure_tenant_folder_structure(tenant_slug, "SERVILL Indumentaria", "pyme")
+            print(f"✅ Verified folder structure at {folder_path}")
+        except Exception as e:
+            print(f"⚠️ Failed to ensure folder structure: {e}")
 
         print("✅ SERVILL seeding completed successfully.")
 
