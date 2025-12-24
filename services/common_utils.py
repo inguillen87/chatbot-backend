@@ -748,12 +748,22 @@ def _get_main_menu_payload(
         ]
 
         # Only add Punto Limpio for valid municipal tenants (e.g. Junín) or generic "municipio"
-        is_junin_or_generic = True
+        is_junin_or_generic = False
         if owner_user:
-             pass
+            owner_type = getattr(owner_user, "tipo_chat", "")
+            owner_slug = getattr(owner_user, "municipio_id", "") # Assuming municipio_id might act as slug or id check
+            if owner_type == "municipio" or (owner_user.id == 4): # 4 is often default municipality
+                 is_junin_or_generic = True
+        elif context.get("chat_db_context_data", {}).get(CONTEXTO_MUNICIPIO):
+             is_junin_or_generic = True # Context exists, implies municipality
 
-        # Append Punto Limpio only if appropriate (logic simplified for now, as strict check is in promo_service)
-        # categorias[-1]["botones"].append({"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"})
+        # Explicit check for pyme context to disable it
+        if context.get("tipo_entidad") == "pyme":
+             is_junin_or_generic = False
+
+        if is_junin_or_generic:
+            # Append Punto Limpio only if appropriate
+            categorias[-1]["botones"].append({"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"})
 
         categorias.append({"titulo": "🛍️ Catálogo y Beneficios", "botones": [
                 {"texto": "📂 Ver Catálogo", "action_id": "catalogo_ver"},
