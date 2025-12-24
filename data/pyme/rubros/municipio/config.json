@@ -1,0 +1,40 @@
+{
+  "nombre": "Municipio Inteligente",
+  "descripcion": "Portal ciudadano omnicanal que centraliza reclamos, trámites y comunicaciones oficiales.",
+  "prompt_context": "Asistente virtual municipal para gestión ciudadana. Funciones: toma de reclamos geolocalizados, gestión de turnos, guía de trámites y difusión de noticias. Tono formal, empático y resolutivo.",
+  "welcome_message": "👋 ¡Hola! Soy tu asistente municipal virtual.\n\nEstoy aquí para ayudarte con trámites, reclamos y consultas las 24 horas. Seleccioná una opción para comenzar:",
+  "resources": [
+    {
+      "title": "Guía de Trámites 2024",
+      "description": "Requisitos y pasos para licencias, habilitaciones y tasas.",
+      "type": "pdf",
+      "url": "/static/demo/municipio/guia-tramites.pdf",
+      "cta_text": "Descargar Guía",
+      "highlight": "Actualizado 2024",
+      "availability": "Digital"
+    },
+    {
+      "title": "Calendario de Vencimientos",
+      "description": "Fechas límite para tasas municipales y patentes.",
+      "type": "pdf",
+      "url": "/static/demo/municipio/vencimientos.pdf",
+      "cta_text": "Ver Calendario",
+      "highlight": "Tasas Generales",
+      "availability": "Anual"
+    }
+  ],
+  "faq": [
+    {
+      "pregunta": "¿Cómo inicio un reclamo por alumbrado?",
+      "respuesta": "Podés iniciar un reclamo seleccionando 'Reclamos y Consultas' en el menú principal, o enviándome una foto y ubicación del problema."
+    },
+    {
+      "pregunta": "¿Cuáles son los requisitos para la licencia de conducir?",
+      "respuesta": "Necesitás DNI, libre deuda de infracciones y realizar el curso teórico-práctico. Podés descargar la guía completa desde la sección de recursos."
+    },
+    {
+      "pregunta": "¿Dónde pago mis tasas municipales?",
+      "respuesta": "Podés pagar online a través de nuestro portal web o en los puntos de pago habilitados (Rapipago, Pago Fácil)."
+    }
+  ]
+}

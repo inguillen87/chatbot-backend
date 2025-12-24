@@ -4,6 +4,7 @@ from utils.auth_helpers import token_requerido
 from utils.admin_decorators import super_admin_required
 from sqlalchemy import desc
 from datetime import datetime, timezone, timedelta
+from services.tenant_management.folder_manager import ensure_tenant_folder_structure
 import jwt
 
 super_admin_bp = Blueprint('super_admin', __name__, url_prefix='/api/admin')
@@ -86,6 +87,14 @@ def create_tenant(current_user):
     )
     db.session.add(tenant)
     db.session.commit()
+
+    # Ensure Professional Folder Structure
+    try:
+        folder_path = ensure_tenant_folder_structure(slug, nombre, tipo)
+        current_app.logger.info(f"Created professional folder structure for new tenant {slug} at {folder_path}")
+    except Exception as e:
+        current_app.logger.error(f"Failed to create folder structure for {slug}: {e}")
+        # Proceed, don't fail the request, but log it.
 
     return jsonify({"message": "Tenant creado", "id": tenant.id, "slug": tenant.slug}), 201
 
