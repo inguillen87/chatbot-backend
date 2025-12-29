@@ -9,7 +9,7 @@ admin_market_bp = Blueprint('admin_market', __name__)
 @admin_market_bp.route('/orders', methods=['GET'])
 @token_requerido
 @require_tenant
-def list_orders(user):
+def list_orders(user, slug):
     """List orders for the current tenant."""
     # Filter by status, channel
     status = request.args.get('status')
@@ -40,7 +40,7 @@ def list_orders(user):
 @admin_market_bp.route('/orders', methods=['POST'])
 @token_requerido
 @require_tenant
-def create_order(user):
+def create_order(user, slug):
     """Create a manual order."""
     data = request.get_json()
 
@@ -102,7 +102,7 @@ def create_order(user):
 @admin_market_bp.route('/orders/<int:order_id>', methods=['PUT'])
 @token_requerido
 @require_tenant
-def update_order(user, order_id):
+def update_order(user, order_id, slug):
     """Update order status or notes."""
     order = MarketOrder.query.filter_by(id=order_id, tenant_id=g.tenant_profile.id).first_or_404()
     data = request.get_json()
@@ -122,7 +122,7 @@ def update_order(user, order_id):
 @admin_market_bp.route('/notifications', methods=['GET', 'PUT'])
 @token_requerido
 @require_tenant
-def notification_settings(user):
+def notification_settings(user, slug):
     """Manage tenant notification settings."""
     tenant = g.tenant_profile
 
