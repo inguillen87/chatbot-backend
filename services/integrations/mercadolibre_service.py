@@ -12,13 +12,15 @@ ML_API_URL = "https://api.mercadolibre.com"
 class MercadoLibreService:
     @staticmethod
     def get_auth_url(tenant_id, redirect_uri):
-        app_id = current_app.config.get("ML_APP_ID")
+        app_id = current_app.config.get("ML_APP_ID") or current_app.config.get("MERCADOLIBRE_APP_ID")
+        if not app_id:
+            raise Exception("MERCADOLIBRE_APP_ID not configured")
         return f"{ML_AUTH_URL}?response_type=code&client_id={app_id}&redirect_uri={redirect_uri}&state={tenant_id}"
 
     @staticmethod
     def handle_callback(tenant_id, code, redirect_uri):
-        app_id = current_app.config.get("ML_APP_ID")
-        client_secret = current_app.config.get("ML_CLIENT_SECRET")
+        app_id = current_app.config.get("ML_APP_ID") or current_app.config.get("MERCADOLIBRE_APP_ID")
+        client_secret = current_app.config.get("ML_CLIENT_SECRET") or current_app.config.get("MERCADOLIBRE_CLIENT_SECRET")
 
         payload = {
             "grant_type": "authorization_code",

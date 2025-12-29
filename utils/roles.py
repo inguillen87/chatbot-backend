@@ -1,7 +1,7 @@
 """Role definitions and permission mappings for RBAC."""
 
 # Role Constants
-ROLE_SUPERADMIN = "superadmin"
+ROLE_SUPERADMIN = "super_admin"
 ROLE_TENANT_ADMIN = "admin"  # Maps to legacy 'admin' which is per-tenant
 ROLE_EMPLEADO = "empleado"
 ROLE_CLIENTE = "usuario"     # Maps to legacy 'usuario' (end user)
