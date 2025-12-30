@@ -1,0 +1,12 @@
+{
+  "nombre": "SERVILL Indumentaria",
+  "descripcion": "Descripción por defecto para SERVILL Indumentaria. Edite este archivo para personalizar.",
+  "welcome_message": "Bienvenido a SERVILL Indumentaria. ¿En qué podemos ayudarte?",
+  "prompt_context": "Eres un asistente virtual de SERVILL Indumentaria. Tu objetivo es ayudar a los clientes con información sobre productos y servicios.",
+  "resources": [],
+  "theme": {
+    "primaryColor": "#007bff",
+    "secondaryColor": "#6c757d",
+    "logo_url": ""
+  }
+}
