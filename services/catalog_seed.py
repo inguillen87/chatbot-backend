@@ -26,6 +26,8 @@ class SeedItem:
     imagen_url: Optional[str] = None
     modalidad: Optional[str] = None
     precio_puntos: Optional[int] = None
+    talles: Optional[str] = None
+    colores: Optional[str] = None
 
     def to_catalog_kwargs(self) -> Dict[str, Optional[str]]:
         payload = {
@@ -42,6 +44,15 @@ class SeedItem:
             "imagen_url": self.imagen_url,
             "modalidad": self.modalidad,
         }
+
+        extra_metadata = {}
+        if self.talles:
+            extra_metadata["talles"] = self.talles
+        if self.colores:
+            extra_metadata["colores"] = self.colores
+
+        if extra_metadata:
+            payload["extra_metadata"] = extra_metadata
 
         if self.modalidad:
             payload["modalidad"] = self.modalidad
