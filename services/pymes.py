@@ -548,6 +548,10 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
         viewer = context.get("viewer_user_obj")
         nombre_cliente = getattr(viewer, "name", None) if viewer else None
     if not nombre_cliente:
+        # Check Pyme context for stored name
+        pyme_ctx = context.get(CONTEXTO_PYME, {})
+        nombre_cliente = pyme_ctx.get("nombre_cliente")
+    if not nombre_cliente:
         nombre_cliente = "Cliente"
 
     telefono_cliente = cliente_info.get("telefono")
@@ -610,6 +614,10 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
     base_tracking_url = None
     if current_app:
         base_tracking_url = current_app.config.get("PYME_PEDIDOS_PUBLIC_URL")
+        if not base_tracking_url:
+            app_base_url = current_app.config.get("APP_BASE_URL")
+            if app_base_url and "localhost" not in app_base_url:
+                base_tracking_url = f"{app_base_url.rstrip('/')}/pyme/pedidos"
         if not base_tracking_url:
             panel_url = current_app.config.get("PANEL_URL")
             if panel_url:
@@ -689,9 +697,16 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
     for btn in default_buttons:
         _register_button(btn)
 
+    # Pass owner_user explicitly to avoid leakage via global context
+    owner_user_id = context.get("user_id")
+    owner_user_obj = None
+    if owner_user_id:
+        owner_user_obj = db.session.get(models.User, owner_user_id)
+
     promo_section = promo_service.build_ticket_promo_section(
         ticket_number=nro_pedido,
         neighbor_name=nombre_cliente,
+        owner_user=owner_user_obj
     )
     image_url = handler_response.get("image_url")
     if promo_section:
@@ -1572,6 +1587,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     )
     pyme_ctx_actual["rubro_slug"] = rubro_slug
 
+    # Resolve tenant slug for config loading
+    tenant_profile = getattr(owner_user, "tenant_profile_pyme", None)
+    tenant_slug = tenant_profile.slug if tenant_profile else None
+
     nombre_pyme_display = (
         getattr(owner_user, "nombre_empresa", None)
         or pyme_ctx_actual.get("nombre_pyme_cache")
@@ -1579,7 +1598,9 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     )
 
     static_bundle = pyme_ctx_actual.get("static_data_cache")
-    if not static_bundle or static_bundle.get("_slug") != rubro_slug:
+    # Check if we need to reload based on slug or tenant change
+    current_cache_key = f"{rubro_slug}_{tenant_slug or ''}"
+    if not static_bundle or static_bundle.get("_cache_key") != current_cache_key:
         data_files = {
             "config": "config.json",
             "catalogo_destacado": "catalogo_destacado.json",
@@ -1589,14 +1610,15 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         }
         loaded_bundle = {}
         for key, filename in data_files.items():
-            data = cargar_configuracion_pyme(rubro_slug, filename)
+            data = cargar_configuracion_pyme(rubro_slug, filename, tenant_slug=tenant_slug)
             if data:
                 loaded_bundle[key] = data
         if loaded_bundle:
             loaded_bundle["_slug"] = rubro_slug
+            loaded_bundle["_cache_key"] = current_cache_key
             static_bundle = loaded_bundle
         else:
-            static_bundle = {"_slug": rubro_slug}
+            static_bundle = {"_slug": rubro_slug, "_cache_key": current_cache_key}
         pyme_ctx_actual["static_data_cache"] = static_bundle
 
     config_data = static_bundle.get("config", {}) if static_bundle else {}
