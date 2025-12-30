@@ -116,6 +116,8 @@ def _serialise_item(item: CatalogoItem) -> Dict[str, Any]:
         "presentacion": item.cantidad or "unidad",
         "marca": item.marca,
         "categoria": item.categoria,
+        "talles": item.extra_metadata.get("talles") if item.extra_metadata else None,
+        "colores": item.extra_metadata.get("colores") if item.extra_metadata else None,
     }
 
 

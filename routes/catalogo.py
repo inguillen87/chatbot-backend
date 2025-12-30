@@ -402,6 +402,8 @@ def listar_catalogo(user, *args, **kwargs):
                 "imagen_url": item.imagen_url,
                 "descripcion_corta": item.descripcion_corta,
                 "promocion_info": item.promocion_info,
+                "talles": item.extra_metadata.get("talles") if item.extra_metadata else None,
+                "colores": item.extra_metadata.get("colores") if item.extra_metadata else None,
             }
         )
 
