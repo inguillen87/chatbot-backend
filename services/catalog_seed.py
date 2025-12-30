@@ -309,6 +309,43 @@ _FERRETERIA_ITEMS: Sequence[SeedItem] = (
     ),
 )
 
+_INDUMENTARIA_ITEMS: Sequence[SeedItem] = (
+    SeedItem(
+        nombre="Remera Básica Algodón Premium",
+        categoria="Remeras",
+        descripcion="100% algodón peinado, corte regular fit. Colores varios.",
+        precio="$18000",
+        unidad="unidad",
+        sku="ind-remera-basica",
+        cantidad="Stock en todos los talles",
+        imagen_url="https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?auto=format&fit=crop&w=900&q=80",
+        talles="S, M, L, XL, XXL",
+        colores="Blanco, Negro, Azul, Gris",
+    ),
+    SeedItem(
+        nombre="Jean Clásico Corte Recto",
+        categoria="Pantalones",
+        descripcion="Denim rígido 12oz, lavado stone wash. Durabilidad y estilo clásico.",
+        precio="$45000",
+        unidad="unidad",
+        sku="ind-jean-clasico",
+        cantidad="Stock disponible",
+        imagen_url="https://images.unsplash.com/photo-1542272454315-4c01d7abdf4a?auto=format&fit=crop&w=900&q=80",
+        talles="38 al 48",
+    ),
+    SeedItem(
+        nombre="Buzo Hoodie con Capucha",
+        categoria="Abrigos",
+        descripcion="Frisa invisible de alta calidad, bolsillo canguro y capucha forrada.",
+        precio="$38000",
+        unidad="unidad",
+        sku="ind-buzo-hoodie",
+        cantidad="Últimas unidades",
+        imagen_url="https://images.unsplash.com/photo-1556821840-3a63f95609a7?auto=format&fit=crop&w=900&q=80",
+        colores="Negro, Gris Melange, Rojo",
+    ),
+)
+
 _SEED_BY_KEY: Mapping[str, Sequence[SeedItem]] = {
     "municipalidad-de-junin": _JUNIN_ITEMS,
     "junin": _JUNIN_ITEMS,
@@ -324,6 +361,13 @@ _SEED_BY_KEY: Mapping[str, Sequence[SeedItem]] = {
     "ferreteria": _FERRETERIA_ITEMS,
     "construccion": _FERRETERIA_ITEMS,
     "herramientas": _FERRETERIA_ITEMS,
+    "indumentaria": _INDUMENTARIA_ITEMS,
+    "ropa": _INDUMENTARIA_ITEMS,
+    "textil": _INDUMENTARIA_ITEMS,
+    "tienda": _INDUMENTARIA_ITEMS,
+    "servill": _INDUMENTARIA_ITEMS,
+    "servill-ventas": _INDUMENTARIA_ITEMS,
+    "moda": _INDUMENTARIA_ITEMS,
 }
 
 

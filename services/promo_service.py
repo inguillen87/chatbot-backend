@@ -28,23 +28,36 @@ def get_active_promo() -> dict:
 
 from flask import g
 
-def build_ticket_promo_section(ticket_number: str | None = None, neighbor_name: str | None = None) -> dict | None:
+def build_ticket_promo_section(
+    ticket_number: str | None = None,
+    neighbor_name: str | None = None,
+    owner_user: object | None = None,
+    tenant_profile: object | None = None,
+) -> dict | None:
     """Build a promo snippet to append to the ticket confirmation message."""
 
     # Prevent leakage: only show promo for municipal tenants.
-    # We check g.tenant_profile or g.owner_user if available.
-    # If no context is available, we err on the side of caution and return None (except for explicit 'municipio' flows).
-
     is_municipio = False
-    if hasattr(g, "tenant_profile") and g.tenant_profile:
-        if getattr(g.tenant_profile, "tipo", "") == "municipio":
+
+    # Check explicit arguments first
+    if tenant_profile:
+        if getattr(tenant_profile, "tipo", "") == "municipio":
             is_municipio = True
-        elif getattr(g.tenant_profile, "slug", "") in ["municipio", "junin"]:
+        elif getattr(tenant_profile, "slug", "") in ["municipio", "junin"]:
             is_municipio = True
-    elif hasattr(g, "owner_user") and g.owner_user:
-        # Fallback to owner user type
-        if getattr(g.owner_user, "tipo_chat", "") == "municipio":
+    elif owner_user:
+        if getattr(owner_user, "tipo_chat", "") == "municipio":
             is_municipio = True
+    else:
+        # Fallback to global context
+        if hasattr(g, "tenant_profile") and g.tenant_profile:
+            if getattr(g.tenant_profile, "tipo", "") == "municipio":
+                is_municipio = True
+            elif getattr(g.tenant_profile, "slug", "") in ["municipio", "junin"]:
+                is_municipio = True
+        elif hasattr(g, "owner_user") and g.owner_user:
+            if getattr(g.owner_user, "tipo_chat", "") == "municipio":
+                is_municipio = True
 
     if not is_municipio:
         return None
