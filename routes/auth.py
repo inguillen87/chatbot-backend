@@ -817,6 +817,10 @@ def login():
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
 
+    response_slug = getattr(user, "tenant_slug", None)
+    if not response_slug and tenant_obj:
+        response_slug = tenant_obj.slug
+
     response_payload = {
         "mensaje": "Login exitoso",
         "id": user.id,
@@ -828,8 +832,8 @@ def login():
         "rubro": rubro_nombre,
         "tipo_chat": tipo_chat,
         "categorias": getattr(user, "categorias_lista", []),
-        "tenant_slug": getattr(user, "tenant_slug", None),
-        "tenantSlug": getattr(user, "tenant_slug", None),
+        "tenant_slug": response_slug,
+        "tenantSlug": response_slug,
     }
 
     entity_token_value = _include_entity_token_fields(response_payload, owner_token)
@@ -958,6 +962,13 @@ def google_login():
         }
         jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
 
+        # Determine tenant_slug for response
+        tenant_slug_out = getattr(user, "tenant_slug", None)
+        if not tenant_slug_out:
+            owner_tenant = _tenant_for_user(user)
+            if owner_tenant:
+                tenant_slug_out = owner_tenant.slug
+
         response_payload = {
             "id": user.id,
             "token": jwt_token,
@@ -968,8 +979,8 @@ def google_login():
             "rubro": rubro_nombre,
             "tipo_chat": tipo_chat,
             "categorias": getattr(user, "categorias_lista", []),
-            "tenant_slug": getattr(user, "tenant_slug", None),
-            "tenantSlug": getattr(user, "tenant_slug", None),
+            "tenant_slug": tenant_slug_out,
+            "tenantSlug": tenant_slug_out,
         }
 
         entity_token_value = _include_entity_token_fields(response_payload, owner_token)
