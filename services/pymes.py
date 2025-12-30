@@ -616,7 +616,7 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
         base_tracking_url = current_app.config.get("PYME_PEDIDOS_PUBLIC_URL")
         if not base_tracking_url:
             app_base_url = current_app.config.get("APP_BASE_URL")
-            if app_base_url and "localhost" not in app_base_url:
+            if app_base_url:
                 base_tracking_url = f"{app_base_url.rstrip('/')}/pyme/pedidos"
         if not base_tracking_url:
             panel_url = current_app.config.get("PANEL_URL")

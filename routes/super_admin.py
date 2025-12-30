@@ -45,6 +45,64 @@ def list_tenants(current_user):
         "current_page": page
     })
 
+@super_admin_bp.route('/tenants/<string:slug>/metrics', methods=['GET'])
+@token_requerido
+@super_admin_required
+def get_tenant_metrics(current_user, slug):
+    """
+    Returns summarized CRM metrics for a specific tenant:
+    - Messages received
+    - Orders placed
+    - Tickets/Claims created
+    - Basic heatmap data (aggregated points)
+    """
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+
+    # 1. Message Volume (Conversations or NotificationLog)
+    # Using Conversacion for inbound/outbound estimation
+    # Filter last 30 days
+    since = datetime.now(timezone.utc) - timedelta(days=30)
+
+    # Note: Conversacion table uses 'pyme_id' or 'user_id' which maps to User, not directly tenant_id often.
+    # We resolve the owner user ID.
+    owner_id = getattr(tenant, 'pyme_id', None) or getattr(tenant, 'municipio_id', None)
+
+    msg_count = 0
+    if owner_id:
+        # Count user interactions (questions)
+        from models import Conversacion
+        msg_count = Conversacion.query.filter(
+            (Conversacion.pyme_id == owner_id) | (Conversacion.user_id == owner_id),
+            Conversacion.timestamp >= since
+        ).count()
+
+    # 2. Orders (MarketOrder)
+    from models import MarketOrder
+    order_count = MarketOrder.query.filter_by(tenant_id=tenant.id).filter(
+        MarketOrder.created_at >= since
+    ).count()
+
+    # 3. Claims/Tickets
+    ticket_count = 0
+    if tenant.tipo == 'municipio':
+        from models import MunicipioTicket
+        ticket_count = MunicipioTicket.query.filter_by(tenant_id=tenant.id).filter(
+            MunicipioTicket.fecha >= since
+        ).count()
+    else:
+        from models import PymeTicket
+        ticket_count = PymeTicket.query.filter_by(tenant_id=tenant.id).filter(
+            PymeTicket.fecha >= since
+        ).count()
+
+    return jsonify({
+        "period": "30d",
+        "messages": msg_count,
+        "orders": order_count,
+        "tickets": ticket_count,
+        "plan": tenant.plan
+    })
+
 @super_admin_bp.route('/tenants', methods=['POST'])
 @token_requerido
 @super_admin_required

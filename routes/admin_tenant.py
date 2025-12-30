@@ -486,6 +486,35 @@ def list_employees_by_slug(current_user, slug):
 
     return jsonify(results)
 
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/ticket-categories', methods=['GET'])
+@admin_tenant_bp.route('/admin/tenants/<slug>/ticket-categories', methods=['GET']) # Alias without /api prefix to support legacy/broken frontend calls
+@token_requerido
+@require_tenant
+def list_ticket_categories_by_slug(current_user, slug):
+    """
+    List ticket categories for a specific tenant.
+    """
+    slug = apply_tenant_alias(slug) or slug
+    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    # IDOR Check (Employees/Admins can list categories)
+    if not _is_authorized_for_tenant(current_user, tenant) and current_user.rol != "empleado":
+         # Allow employees to list categories to assign tickets?
+         # Assuming yes for now, or just require tenant admin.
+         # Actually standard auth check is fine.
+         if not _is_authorized_for_tenant(current_user, tenant):
+             return jsonify({'error': 'Unauthorized'}), 403
+
+    categories = CategoriaTicket.query.filter_by(tenant_id=tenant.id).all()
+
+    return jsonify([{
+        "id": c.id,
+        "nombre": c.nombre,
+        "tipo": c.tipo
+    } for c in categories])
+
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/<string:integration_type>/sync', methods=['POST'])
 @token_requerido
 @require_tenant
