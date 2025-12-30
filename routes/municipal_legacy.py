@@ -1413,17 +1413,29 @@ def _prune_old_posts(municipio_id: int, max_posts: int = 200) -> int:
 
 
 @municipal_bp.route('/posts', methods=['GET'])
-@token_requerido
-@admin_o_empleado_requerido
-def list_municipal_posts(current_user):
+def list_municipal_posts():
     """Devuelve los posts municipales almacenados en la base de datos."""
+    from services.tenant_resolver import resolve_tenant_from_request
 
-    if current_user.tipo_chat != "municipio":
-        return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
+    tenant = resolve_tenant_from_request()
+    municipio_id = None
+    if tenant and tenant.municipio_id:
+        municipio_id = tenant.municipio_id
 
-    municipio_id = _resolve_current_municipio_id(current_user)
     if municipio_id is None:
-        return jsonify({"error": "No se pudo determinar el municipio asociado al usuario."}), 400
+        # Fallback to current_user if authenticated (for admin panel)
+        try:
+            from flask_jwt_extended import get_current_user
+            current_user = get_current_user()
+            if current_user:
+                municipio_id = _resolve_current_municipio_id(current_user)
+        except Exception:
+            pass
+
+    if municipio_id is None:
+        # Allow accessing if specific tenant header/slug context is missing but this is a legacy call often made by public frontend
+        # We need a default or return empty
+        return jsonify({"error": "No se pudo determinar el municipio."}), 400
 
     db_municipio_id = get_numeric_municipio_id(municipio_id)
     if db_municipio_id is None:

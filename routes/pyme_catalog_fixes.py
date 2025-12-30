@@ -80,3 +80,16 @@ def catalog_status(current_user, pyme_id):
 def catalog_status_options(pyme_id):
     response = jsonify({'status': 'ok'})
     return _add_cors_headers(response)
+
+@pyme_catalog_fix_bp.route('/<int:pyme_id>/catalog-vector-sync/status', methods=['GET'])
+@token_requerido
+def catalog_vector_sync_status(current_user, pyme_id):
+    """
+    Alias for catalog-status to match frontend requests.
+    """
+    return catalog_status(current_user, pyme_id)
+
+@pyme_catalog_fix_bp.route('/<int:pyme_id>/catalog-vector-sync/status', methods=['OPTIONS'])
+def catalog_vector_sync_status_options(pyme_id):
+    response = jsonify({'status': 'ok'})
+    return _add_cors_headers(response)

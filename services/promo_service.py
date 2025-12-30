@@ -41,15 +41,21 @@ def build_ticket_promo_section(
 
     # Check explicit arguments first
     if tenant_profile:
-        if getattr(tenant_profile, "tipo", "") == "municipio":
+        # Strict check for municipal tenants
+        if getattr(tenant_profile, "tipo", "") == "municipio" or getattr(tenant_profile, "type", "") == "government":
             is_municipio = True
-        elif getattr(tenant_profile, "slug", "") in ["municipio", "junin"]:
+        elif getattr(tenant_profile, "slug", "") in ["municipio", "junin", "municipalidad-de-junin"]:
             is_municipio = True
     elif owner_user:
+        # Strict check for owner user type
         if getattr(owner_user, "tipo_chat", "") == "municipio":
             is_municipio = True
-    else:
-        # Fallback to global context
+        # Explicit exclusion for known pyme types
+        if getattr(owner_user, "tipo_chat", "") in ["pyme", "empresa", "comercio"]:
+            is_municipio = False
+
+    # Fallback to global context only if no explicit context was decisive
+    if not is_municipio and not tenant_profile and not owner_user:
         if hasattr(g, "tenant_profile") and g.tenant_profile:
             if getattr(g.tenant_profile, "tipo", "") == "municipio":
                 is_municipio = True
