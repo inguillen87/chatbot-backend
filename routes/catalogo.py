@@ -327,6 +327,8 @@ def _formatear_producto(data: dict) -> dict:
         "modalidad": modalidad,
         "stock": data.get("cantidad") or data.get("stock"), # Qdrant tiene "stock", CatalogoItem "cantidad"
         "imagen_url": imagen_url,
+        "external_url": data.get("external_url"),
+        "checkout_type": data.get("checkout_type", "chatboc"),
         # Podríamos añadir aquí una lista de acciones sugeridas para el bot
         # "acciones_sugeridas": ["agregar_carrito", "mas_detalles"] # Ejemplo
     }

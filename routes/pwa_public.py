@@ -8,7 +8,7 @@ from flask import Blueprint, abort, g, jsonify, make_response, request, session
 from flask_cors import cross_origin
 from sqlalchemy import func
 
-from models import CatalogoItem, CatalogoModalidad, MunicipioPost, TenantProfile, User, WidgetConfig, WidgetSettings, MarketCartItem
+from models import CatalogoItem, CatalogoModalidad, MunicipioPost, TenantProfile, User, WidgetConfig, WidgetSettings, MarketCartItem, PymePedido
 from middleware import require_tenant
 from services.encuestas_service import (
     EncuestaError,
@@ -718,6 +718,37 @@ def public_events():
 def public_surveys():
     # Reuse existing logic which is standardized
     return list_surveys()
+
+
+@public_api_bp.get("/pyme/pedidos/<nro_pedido>")
+@cross_origin(**_cors_kwargs(["GET"]))
+def public_order_status(nro_pedido: str):
+    """
+    Endpoint público para seguimiento de pedidos por número de ticket.
+    Permite al cliente ver el estado de su pedido (similar a estado de reclamo).
+    """
+    pedido = PymePedido.query.filter_by(nro_pedido=nro_pedido).first()
+    if not pedido:
+        abort(404, description="Pedido no encontrado")
+
+    # Serialize explicitly to control public fields
+    data = pedido.to_dict()
+
+    # Enrich with tenant info if available
+    if pedido.pyme_id:
+        pyme_user = db.session.get(User, pedido.pyme_id)
+        if pyme_user:
+            data['pyme_nombre'] = pyme_user.nombre_empresa or pyme_user.name
+
+            # Add branding/logo if available (via TenantProfile if linked)
+            # This allows the tracking page to be branded
+            tenant = getattr(pyme_user, "tenant_profile_pyme", None)
+            if tenant:
+                data['tenant_slug'] = tenant.slug
+                data['tenant_logo'] = tenant.logo_url
+                data['tenant_theme'] = tenant.tema
+
+    return jsonify(data)
 
 
 @pwa_public_bp.get("/events")
