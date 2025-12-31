@@ -575,6 +575,11 @@ class Config:
 
     APP_BASE_URL = os.getenv("APP_BASE_URL", "https://chatboc.ar")
 
+    # If in production-like environment (not local debug/test) and env var is missing or default,
+    # reinforce the domain to ensure we don't accidentally use localhost defaults elsewhere
+    if ENV != "dev" and (not APP_BASE_URL or "localhost" in APP_BASE_URL):
+        APP_BASE_URL = "https://chatboc.ar"
+
     PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID = (
         PUBLIC_ENCUESTAS_WHATSAPP_BANNER_TEMPLATE_SID
     )

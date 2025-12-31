@@ -46,13 +46,18 @@ def build_ticket_promo_section(
             is_municipio = True
         elif getattr(tenant_profile, "slug", "") in ["municipio", "junin", "municipalidad-de-junin"]:
             is_municipio = True
+        else:
+            # If a tenant profile was provided but it's NOT a municipality,
+            # explicitly STOP here. Do not check owner_user or fall back to globals.
+            return None
+
     elif owner_user:
         # Strict check for owner user type
         if getattr(owner_user, "tipo_chat", "") == "municipio":
             is_municipio = True
         # Explicit exclusion for known pyme types
-        if getattr(owner_user, "tipo_chat", "") in ["pyme", "empresa", "comercio"]:
-            is_municipio = False
+        elif getattr(owner_user, "tipo_chat", "") in ["pyme", "empresa", "comercio"]:
+            return None
 
     # Fallback to global context only if no explicit context was decisive
     if not is_municipio and not tenant_profile and not owner_user:

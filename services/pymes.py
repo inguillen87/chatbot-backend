@@ -557,6 +557,12 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
         if candidate and candidate.lower() not in ["vecino/a", "cliente"]:
              nombre_cliente = candidate
 
+    # Try one more fallback: if we have a pyme context name even if not explicitly in client info
+    if not nombre_cliente or nombre_cliente.lower() in ["cliente", "vecino/a"]:
+         candidate_pyme = pyme_ctx.get("nombre_cliente")
+         if candidate_pyme and candidate_pyme.lower() not in ["cliente", "vecino/a"]:
+             nombre_cliente = candidate_pyme
+
     if not nombre_cliente:
         nombre_cliente = "Cliente"
 
@@ -621,6 +627,15 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
     if current_app:
         # Prioritize APP_BASE_URL for consistent production links
         app_base_url = current_app.config.get("APP_BASE_URL")
+
+        # FIX: Ensure we don't leak localhost in production-like contexts if config is missing
+        if not app_base_url or "localhost" in app_base_url:
+             # If we are in a context that looks like production but base_url is localhost,
+             # try to enforce the known public domain.
+             # Note: This is a safe default for this specific deployment.
+             if not current_app.debug and not current_app.testing:
+                  app_base_url = "https://chatboc.ar"
+
         if app_base_url:
             base_tracking_url = f"{app_base_url.rstrip('/')}/pyme/pedidos"
 
@@ -710,13 +725,17 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
     # Pass owner_user explicitly to avoid leakage via global context
     owner_user_id = context.get("user_id")
     owner_user_obj = None
+    tenant_profile = None
     if owner_user_id:
         owner_user_obj = db.session.get(models.User, owner_user_id)
+        if owner_user_obj:
+            tenant_profile = getattr(owner_user_obj, "tenant_profile_pyme", None)
 
     promo_section = promo_service.build_ticket_promo_section(
         ticket_number=nro_pedido,
         neighbor_name=nombre_cliente,
-        owner_user=owner_user_obj
+        owner_user=owner_user_obj,
+        tenant_profile=tenant_profile
     )
     image_url = handler_response.get("image_url")
     if promo_section:
