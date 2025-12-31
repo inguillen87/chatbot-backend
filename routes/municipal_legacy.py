@@ -1415,7 +1415,8 @@ def _prune_old_posts(municipio_id: int, max_posts: int = 200) -> int:
 @municipal_bp.route('/posts', methods=['GET'])
 def list_municipal_posts():
     """Devuelve los posts municipales almacenados en la base de datos."""
-    from services.tenant_resolver import resolve_tenant_from_request
+    # Use resolve_tenant_only as resolve_tenant_from_request might be deprecated or missing
+    from services.tenant_resolver import resolve_tenant_only as resolve_tenant_from_request
 
     tenant = resolve_tenant_from_request()
     municipio_id = None
