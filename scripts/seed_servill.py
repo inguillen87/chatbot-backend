@@ -11,6 +11,8 @@ from services.tenant_management.folder_manager import ensure_tenant_folder_struc
 from services.catalog_seed import ensure_seed_catalog, _SEED_BY_KEY
 import uuid
 from datetime import datetime
+from services.qdrant_utils import get_qdrant_client
+from qdrant_client.http import models as qdrant_models
 
 def seed_servill():
     # Helper to run logic with or without existing context
@@ -107,6 +109,32 @@ def seed_servill():
         print("🧹 Wiping existing catalog items for 'servill' to ensure data integrity...")
         CatalogoItem.query.filter_by(user_id=admin_user.id).delete()
         db.session.commit()
+
+        # 5b. WIPE QDRANT DATA (Ghost items fix)
+        print(f"🧹 Wiping Qdrant items for user {admin_user.id} to remove ghost data...")
+        try:
+            qdrant_cli = get_qdrant_client()
+            if qdrant_cli:
+                # Assuming standard collection name
+                collection_name = "catalogo_pyme"
+                qdrant_cli.delete(
+                    collection_name=collection_name,
+                    points_selector=qdrant_models.FilterSelector(
+                        filter=qdrant_models.Filter(
+                            must=[
+                                qdrant_models.FieldCondition(
+                                    key="user_id",
+                                    match=qdrant_models.MatchValue(value=admin_user.id)
+                                )
+                            ]
+                        )
+                    )
+                )
+                print("✅ Qdrant points deleted.")
+            else:
+                print("⚠️ Qdrant client unavailable, skipping vector cleanup.")
+        except Exception as e:
+            print(f"⚠️ Failed to wipe Qdrant data: {e}")
 
         # 6. Re-seed correct items
         print("🌱 Seeding 'servill' catalog items...")
