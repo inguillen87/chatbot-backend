@@ -317,12 +317,25 @@ def init_tenants():
                 dominio=f"{slug}.chatboc.ar",
                 configuracion={"menu": {"children": []}, "widget_tokens": []}
             )
-            if tipo_chat == "municipio": tenant.municipio_id = user.id
-            else: tenant.pyme_id = user.id
+            if tipo_chat == "municipio":
+                tenant.municipio_id = user.id
+                tenant.pyme_id = None
+            else:
+                tenant.pyme_id = user.id
+                tenant.municipio_id = None
             db.session.add(tenant)
         else:
-            if tipo_chat == "municipio" and not tenant.municipio_id: tenant.municipio_id = user.id
-            elif tipo_chat == "pyme" and not tenant.pyme_id: tenant.pyme_id = user.id
+            # Ensure mutual exclusivity for existing tenants to avoid constraint violation
+            if tipo_chat == "municipio":
+                if tenant.municipio_id != user.id:
+                    tenant.municipio_id = user.id
+                if tenant.pyme_id is not None:
+                    tenant.pyme_id = None
+            elif tipo_chat == "pyme":
+                if tenant.pyme_id != user.id:
+                    tenant.pyme_id = user.id
+                if tenant.municipio_id is not None:
+                    tenant.municipio_id = None
 
         # WidgetSettings with CTA and Theme
         db.session.flush()
