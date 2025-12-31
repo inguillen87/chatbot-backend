@@ -121,7 +121,24 @@ def send_post_ticket_promo(ctx: dict, *, ticket_number: str | None = None, neigh
         return None
 
     ctx["promo_sent_ts"] = time.time()
-    promo_payload = build_ticket_promo_section(ticket_number, neighbor_name)
+
+    # We must try to infer context from ctx to pass to build_ticket_promo_section
+    # otherwise it will fail to determine if it's a municipality and return None (correct behavior)
+    # or potentially leak if the fallback logic is weak (which we hardened above).
+
+    # Extract owner_user if available in context
+    owner_user_id = ctx.get("user_id") or ctx.get("pyme_id")
+    owner_user = None
+    if owner_user_id:
+         # Need to avoid circular imports if possible, or use local import
+         try:
+             from models import User
+             from extensions import db
+             owner_user = db.session.get(User, owner_user_id)
+         except Exception:
+             pass
+
+    promo_payload = build_ticket_promo_section(ticket_number, neighbor_name, owner_user=owner_user)
     if not promo_payload:
         return None
 

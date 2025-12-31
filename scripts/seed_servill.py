@@ -6,8 +6,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from flask import current_app
 from extensions import db
-from models import TenantProfile, User, Rubro, WhatsappNumero
+from models import TenantProfile, User, Rubro, WhatsappNumero, CatalogoItem
 from services.tenant_management.folder_manager import ensure_tenant_folder_structure
+from services.catalog_seed import ensure_seed_catalog, _SEED_BY_KEY
 import uuid
 from datetime import datetime
 
@@ -102,7 +103,21 @@ def seed_servill():
                 db.session.add(mapping)
                 db.session.commit()
 
-        # 5. Ensure Professional Folder Structure
+        # 5. FORCE WIPE CATALOG to prevent "Bodega" items
+        print("🧹 Wiping existing catalog items for 'servill' to ensure data integrity...")
+        CatalogoItem.query.filter_by(user_id=admin_user.id).delete()
+        db.session.commit()
+
+        # 6. Re-seed correct items
+        print("🌱 Seeding 'servill' catalog items...")
+        # Verify servill is in map
+        if "servill" in _SEED_BY_KEY:
+             ensure_seed_catalog(admin_user, tenant)
+             print("✅ 'servill' catalog seeded.")
+        else:
+             print("⚠️ 'servill' key not found in _SEED_BY_KEY, skipping catalog seed.")
+
+        # 7. Ensure Professional Folder Structure
         try:
             folder_path = ensure_tenant_folder_structure(tenant_slug, "SERVILL Indumentaria", "pyme")
             print(f"✅ Verified folder structure at {folder_path}")
