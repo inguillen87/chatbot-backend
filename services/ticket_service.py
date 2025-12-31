@@ -689,7 +689,15 @@ class ServicioTickets:
                     logger.warning(f"Formato de fecha_fin inválido: {fecha_fin}")
 
             categorias_filtrar_lower: list[str] = []
-            if categoria and hasattr(Model, 'categoria'):
+            # Check if model has a 'categoria' column before filtering by it
+            has_categoria_column = hasattr(Model, 'categoria')
+
+            # PymeTicket typically stores category in 'categoria' (String) as per schema,
+            # but log error 'column pyme_ticket.categoria_id does not exist' suggests
+            # something else might have been trying to join or filter by ID.
+            # The code block below filters by `Model.categoria` string column.
+
+            if categoria and has_categoria_column:
                 if isinstance(categoria, str):
                     raw_values = [categoria]
                 else:

@@ -544,24 +544,21 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
     if not isinstance(cliente_info, dict):
         cliente_info = {}
 
+    # Name Resolution Logic - improved to prioritize real names
+    pyme_ctx = context.get(CONTEXTO_PYME, {})
     nombre_cliente = cliente_info.get("nombre")
+
     if not nombre_cliente:
-        # Check Pyme context for stored name FIRST, as it might have been collected in the flow
-        pyme_ctx = context.get(CONTEXTO_PYME, {})
         nombre_cliente = pyme_ctx.get("nombre_cliente")
 
-    if not nombre_cliente:
-        viewer = context.get("viewer_user_obj")
-        # Ensure we don't use generic names if possible
-        candidate = getattr(viewer, "name", None) if viewer else None
-        if candidate and candidate.lower() not in ["vecino/a", "cliente"]:
-             nombre_cliente = candidate
+    viewer = context.get("viewer_user_obj")
+    candidate_user_name = getattr(viewer, "name", None) if viewer else None
 
-    # Try one more fallback: if we have a pyme context name even if not explicitly in client info
-    if not nombre_cliente or nombre_cliente.lower() in ["cliente", "vecino/a"]:
-         candidate_pyme = pyme_ctx.get("nombre_cliente")
-         if candidate_pyme and candidate_pyme.lower() not in ["cliente", "vecino/a"]:
-             nombre_cliente = candidate_pyme
+    # Trust authenticated user profile name if available and not generic
+    if candidate_user_name and candidate_user_name.lower() not in ["vecino/a", "cliente", "usuario", "unknown"]:
+        # If we currently have no name, or a generic name, overwrite it
+        if not nombre_cliente or nombre_cliente.lower() in ["cliente", "vecino/a", "vecino"]:
+            nombre_cliente = candidate_user_name
 
     if not nombre_cliente:
         nombre_cliente = "Cliente"
@@ -628,13 +625,9 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
         # Prioritize APP_BASE_URL for consistent production links
         app_base_url = current_app.config.get("APP_BASE_URL")
 
-        # FIX: Ensure we don't leak localhost in production-like contexts if config is missing
+        # FIX: Ensure we don't leak localhost. Enforce https://chatboc.ar if missing or localhost.
         if not app_base_url or "localhost" in app_base_url:
-             # If we are in a context that looks like production but base_url is localhost,
-             # try to enforce the known public domain.
-             # Note: This is a safe default for this specific deployment.
-             if not current_app.debug and not current_app.testing:
-                  app_base_url = "https://chatboc.ar"
+             app_base_url = "https://chatboc.ar"
 
         if app_base_url:
             base_tracking_url = f"{app_base_url.rstrip('/')}/pyme/pedidos"
@@ -731,22 +724,10 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
         if owner_user_obj:
             tenant_profile = getattr(owner_user_obj, "tenant_profile_pyme", None)
 
-    promo_section = promo_service.build_ticket_promo_section(
-        ticket_number=nro_pedido,
-        neighbor_name=nombre_cliente,
-        owner_user=owner_user_obj,
-        tenant_profile=tenant_profile
-    )
+    # Explicitly disabled for Pymes to prevent "Punto Limpio" leakage
+    # Pymes should strictly have their own branding or no promo section by default
+    promo_section = None
     image_url = handler_response.get("image_url")
-    if promo_section:
-        promo_text = promo_section.get("message_body")
-        if promo_text:
-            message_body = f"{message_body}\n\n{promo_text}".strip()
-        promo_button = promo_section.get("button")
-        if promo_button:
-            _register_button(promo_button)
-        if not image_url:
-            image_url = promo_section.get("image_url")
 
     if include_links:
         url_buttons_before_cleanup = [dict(btn) for btn in buttons if btn.get("url")]
