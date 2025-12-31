@@ -424,7 +424,7 @@ def extraer_productos_regex(texto: str) -> list[dict]:
                 if unidad_str and len(unidad_str.split()) > 2: nombre_str = f"{unidad_str} {nombre_str}".strip(); unidad_str = None
                 if nombre_str.lower().endswith(" de"): nombre_str = nombre_str[:-3].strip()
                 if nombre_str:
-                    item_data = {"nombre": nombre_str, "cantidad": int(float(cantidad_str.replace(',','.')))}
+                    item_data = {"nombre": nombre, "cantidad": int(float(cantidad_str.replace(',','.')))}
                     if unidad_str and unidad_str.lower() not in ["unidad", "unidades"]: item_data["unidad"] = unidad_str.lower()
                     items.append(item_data)
             except: pass
@@ -546,12 +546,17 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
 
     nombre_cliente = cliente_info.get("nombre")
     if not nombre_cliente:
-        viewer = context.get("viewer_user_obj")
-        nombre_cliente = getattr(viewer, "name", None) if viewer else None
-    if not nombre_cliente:
-        # Check Pyme context for stored name
+        # Check Pyme context for stored name FIRST, as it might have been collected in the flow
         pyme_ctx = context.get(CONTEXTO_PYME, {})
         nombre_cliente = pyme_ctx.get("nombre_cliente")
+
+    if not nombre_cliente:
+        viewer = context.get("viewer_user_obj")
+        # Ensure we don't use generic names if possible
+        candidate = getattr(viewer, "name", None) if viewer else None
+        if candidate and candidate.lower() not in ["vecino/a", "cliente"]:
+             nombre_cliente = candidate
+
     if not nombre_cliente:
         nombre_cliente = "Cliente"
 
@@ -2278,69 +2283,197 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             db.session.rollback()
 
     # Proactive suggestions (Intelligent)
-    sugerencia_proactiva = sugerir_productos_relacionados(historial_chat_llm, getattr(owner_user, "id", 0))
+    pyme_ctx_actual["turn_counter"] = int(pyme_ctx_actual.get("turn_counter", 0) or 0) + 1
+
+    cart_summary_now = cart_service.get_cart_summary(
+        global_context_for_orchestrator.get("chat_db_context_data", {}).get(cart_service.SESSION_CARTS_KEY, {}),
+        getattr(owner_user, "id", None),
+        getattr(viewer_user, "id", None),
+    )
+
+    sugerencia_proactiva = sugerir_productos_relacionados(
+        historial_chat_llm,
+        pyme_id=getattr(owner_user, "id", 0),
+        rubro_nombre=global_context_for_orchestrator.get("rubro_nombre", "general"),
+        nombre_pyme=nombre_pyme_display,
+        cart_summary=cart_summary_now,
+        last_intent=llm_response_structured.get("accion_backend") if isinstance(llm_response_structured, dict) else None,
+        pyme_ctx=pyme_ctx_actual,
+        channel=channel,
+    )
+
     if sugerencia_proactiva and final_response_dict.get("success", True):
         final_response_dict["message_body"] += f"\n\n{sugerencia_proactiva}"
 
     logger.info(f"[RESPONDER_PYME_END_V4 - {request_id}] Respuesta: '{final_response_dict['message_body'][:100]}...', Fuente: {final_response_dict['fuente']}")
     return final_response_dict
 
-def sugerir_productos_relacionados(historial_chat: list, pyme_id: int) -> Optional[str]:
-    """
-    Usa el LLM para sugerir productos complementarios inteligentemente basado en el historial reciente.
-    """
-    if not historial_chat:
-        return None
+def _trim_to_words(text: str, max_words: int) -> str:
+    words = (text or "").strip().split()
+    if len(words) <= max_words:
+        return " ".join(words).strip()
+    return " ".join(words[:max_words]).strip().rstrip(".,;:!?") + "…"
 
-    # Extraer el último mensaje del usuario para contexto inmediato
-    last_user_message = ""
+def _is_low_signal_message(msg: str) -> bool:
+    m = (msg or "").strip().lower()
+    return m in {"ok", "dale", "gracias", "👍", "si", "no", "bien"} or len(m) < 3
+
+def _pick_seed_product_from_cart(cart_summary: Optional[dict]) -> Optional[str]:
+    if not cart_summary or not isinstance(cart_summary.get("items_detalle"), list):
+        return None
+    for it in cart_summary["items_detalle"]:
+        if not isinstance(it, dict):
+            continue
+        nombre = (it.get("nombre_producto") or it.get("nombre") or "").strip()
+        if nombre:
+            return nombre
+    return None
+
+def _pick_last_user_message(historial_chat: list) -> str:
+    if not historial_chat:
+        return ""
     for msg in reversed(historial_chat):
         if msg.get("role") == "user":
-            last_user_message = msg.get("parts", [{}])[0].get("text", "")
-            break
+            parts = msg.get("parts") or []
+            if parts and isinstance(parts, list):
+                txt = (parts[0] or {}).get("text", "")
+                return txt or ""
+    return ""
 
-    if not last_user_message:
-        return None
-
-    # Prompt "ligero" para sugerencias rápidas
-    prompt = f"""
-    Eres un asistente de ventas experto.
-    Historial reciente del usuario: "{last_user_message}".
-
-    Tu tarea: Genera una sugerencia MUY BREVE (máximo 15 palabras) de cross-selling o up-selling relacionada con lo que el usuario acaba de decir o pedir.
-    Si no hay una oportunidad clara, responde "SKIP".
-
-    Ejemplos:
-    - User: "Quiero un vino tinto" -> "Te recomiendo llevar un queso para acompañarlo."
-    - User: "Tienen taladro?" -> "¿Necesitas también un set de mechas?"
-
-    Sugerencia:
+def sugerir_productos_relacionados(
+    historial_chat: list,
+    pyme_id: int,
+    rubro_nombre: str,
+    *,
+    nombre_pyme: str = "la tienda",
+    cart_summary: Optional[dict] = None,
+    last_intent: Optional[str] = None,
+    pyme_ctx: Optional[dict] = None,
+    channel: str = "web",
+    max_words: int = 16,
+) -> Optional[str]:
+    """
+    Sugerencia pro:
+    1) Intenta cross-sell REAL con Qdrant (catálogo).
+    2) Si no hay, intenta LLM (JSON estricto) pero SIN inventar productos.
+    3) Rate limit + evita momentos sensibles del flujo.
     """
 
+    if not pyme_id or not historial_chat:
+        return None
+
+    # ------------- Rate limit / timing -------------
+    pyme_ctx = pyme_ctx if isinstance(pyme_ctx, dict) else {}
+    turns = int(pyme_ctx.get("turn_counter", 0) or 0)  # si no lo tenés, lo podés incrementar en responder_pyme
+    last_turn = int(pyme_ctx.get("cross_sell_last_turn", -9999) or -9999)
+
+    # Evitar spamear: 1 sugerencia cada 4 turnos
+    if turns - last_turn < 4:
+        return None
+
+    # Evitar cuando el usuario está dejando datos / confirmando
+    estado = str(pyme_ctx.get("estado_conversacion") or "")
+    estados_sensibles = {
+        PymeConversationState.ESPERANDO_DATOS_CLIENTE_NOMBRE.name,
+        PymeConversationState.ESPERANDO_DATOS_CLIENTE_TELEFONO.name,
+        PymeConversationState.ESPERANDO_DATOS_CLIENTE_DIRECCION.name,
+        PymeConversationState.ESPERANDO_DATOS_CLIENTE_EMAIL.name,
+        PymeConversationState.CONFIRMANDO_PEDIDO.name,
+        PymeConversationState.ESPERANDO_CONFIRMACION_FINAL_CON_DATOS.name,
+    }
+    if estado in estados_sensibles:
+        return None
+
+    last_user_message = _pick_last_user_message(historial_chat)
+    if not last_user_message or _is_low_signal_message(last_user_message):
+        return None
+
+    # Si la intención es “hablar agente” o similar, no metas cross-sell
+    li = (last_intent or "").lower()
+    if any(x in li for x in ["hablar", "agente", "humano", "reclamo", "ticket"]):
+        return None
+
+    # ------------- 1) QDRANT FIRST (SUGERENCIA REAL) -------------
+    seed = _pick_seed_product_from_cart(cart_summary)
+    if not seed:
+        # intento simple desde el último mensaje (sin NLP pesado)
+        seed = last_user_message.strip()[:60]
+
     try:
-        # Usamos una llamada directa o un helper simplificado si existe, para no sobrecargar.
-        # Aquí reusamos llamar_llm_con_fallback pero con un prompt muy específico.
-        # Nota: llamar_llm_con_fallback espera un JSON estructurado, pero aquí queremos texto libre corto.
-        # Podríamos usar una función más simple si existiera 'generate_text_llm'.
-        # Asumiremos que robust_chat o similar está disponible o usamos la infraestructura existente.
-        # Dado que llamar_llm_con_fallback es complejo, usaremos un mock inteligente por ahora
-        # para no romper el flujo síncrono si la latencia es alta.
-        # En un entorno real, esto debería ser asíncrono o muy rápido.
+        query = f"complemento para {seed}"
+        hits = buscar_catalogo_qdrant(
+            pyme_id,
+            query,
+            rubro_nombre or "general",
+            3,
+            CATALOGO_PYME,
+        )
+        # elegí el primer hit decente
+        for hit in hits or []:
+            payload = getattr(hit, "payload", {}) or {}
+            nombre = (payload.get("nombre") or "").strip()
+            if not nombre:
+                continue
+            # Evitar sugerir exactamente lo mismo
+            if nombre.lower() in (seed or "").lower():
+                continue
 
-        # Implementación simple basada en reglas por ahora para garantizar velocidad,
-        # pero la estructura está lista para conectar el LLM real si se desea.
+            # opcional: precio si está
+            precio_txt = (payload.get("precio_str") or "").strip()
+            sugerencia = f"Sugerencia: ¿Querés sumar {nombre} para completar tu compra?"
+            if precio_txt and len(precio_txt) < 20:
+                sugerencia = f"Sugerencia: ¿Sumamos {nombre} ({precio_txt}) para completar?"
 
-        msg_lower = last_user_message.lower()
-        if "vino" in msg_lower or "malbec" in msg_lower:
-            return "💡 Tip: Un buen queso o unos chocolates amargos harían el maridaje perfecto."
-        elif "hamburguesa" in msg_lower or "lomo" in msg_lower:
-            return "¿Te agrego unas papas fritas o bebida para completar el combo?"
-        elif "zapatillas" in msg_lower:
-            return "No olvides revisar nuestras medias deportivas en oferta."
-        elif "taladro" in msg_lower or "herramienta" in msg_lower:
-            return "¿Necesitás insumos de seguridad o mechas?"
-
-        return None # SKIP por defecto
+            # guardar rate limit
+            pyme_ctx["cross_sell_last_turn"] = turns
+            return _trim_to_words(sugerencia, max_words)
     except Exception as e:
-        logger.error(f"Error generando sugerencia proactiva: {e}")
+        logger.warning(f"[cross_sell_qdrant] error: {e}")
+
+    # ------------- 2) LLM FALLBACK (JSON ESTRICTO, SIN INVENTAR) -------------
+    # Si no tenés catálogo o Qdrant no devolvió nada, el LLM puede sugerir un "extra" genérico
+    # (ej: "¿Querés coordinar envío o retiro?") pero sin inventar productos.
+    prompt = f"""
+Sos un asistente comercial de {nombre_pyme}.
+Objetivo: aumentar el ticket sin ser insistente.
+
+REGLAS:
+- NO inventes productos que no estén confirmados en el mensaje del usuario.
+- Si no hay una sugerencia clara, devolvé: {{ "suggestion": null }}
+- Si sí hay, devolvé JSON estricto: {{ "suggestion": "..." }}
+- 1 sola oración, tono profesional, máximo {max_words} palabras.
+- Sin emojis.
+
+Contexto:
+- Rubro: {rubro_nombre or "general"}
+- Último mensaje del usuario: "{last_user_message}"
+
+Salida JSON:
+""".strip()
+
+    try:
+        llm_out, _ = llamar_llm_con_fallback(
+            app=current_app,
+            mensaje_usuario=prompt,
+            usuario={"nombre": "system", "tipo_entidad": "pyme"},
+            historial=[],
+            chat_session_id=None,
+        )
+        suggestion = None
+        if isinstance(llm_out, dict):
+            suggestion = llm_out.get("suggestion") or llm_out.get("respuesta") or llm_out.get("message_body")
+        elif isinstance(llm_out, str):
+            suggestion = llm_out
+
+        if not suggestion:
+            return None
+
+        suggestion = str(suggestion).strip().strip('"').strip()
+        if suggestion.lower() in {"skip", "null", "none"}:
+            return None
+
+        pyme_ctx["cross_sell_last_turn"] = turns
+        return _trim_to_words(f"Sugerencia: {suggestion}", max_words)
+    except Exception as e:
+        logger.warning(f"[cross_sell_llm] error: {e}")
         return None
