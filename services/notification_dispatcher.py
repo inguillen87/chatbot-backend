@@ -112,7 +112,26 @@ def dispatch_order_update(
     """Envía notificación de novedad de pedido."""
     logger.info(f"[NOTIFY] Order {getattr(order, 'id', 'N/A')} update: {mensaje}")
 
-    resultados = {"email": False, "sms": False, "whatsapp": False}
+    resultados = {"email": False, "sms": False, "whatsapp": False, "whatsapp_customer": False}
+
+    # Notify Customer via WhatsApp
+    customer_phone = getattr(order, 'contact_phone', None)
+    logger.info(f"[NOTIFY_DEBUG] Checking conditions for customer WhatsApp. enable_whatsapp={enable_whatsapp}, customer_phone='{customer_phone}'")
+    if enable_whatsapp and customer_phone:
+        try:
+            logger.info(f"[NOTIFY] Attempting to send WhatsApp to customer at {customer_phone}")
+            resultados["whatsapp_customer"] = enviar_whatsapp(customer_phone, mensaje)
+            if resultados["whatsapp_customer"]:
+                logger.info(f"[NOTIFY] Successfully sent WhatsApp to customer.")
+            else:
+                logger.warning(f"[NOTIFY] Failed to send WhatsApp to customer.")
+        except Exception as exc:
+            logger.error(
+                "[NOTIFY] Error sending WhatsApp to customer for order %s: %s",
+                getattr(order, "id", "N/A"),
+                exc,
+                exc_info=True,
+            )
 
     # Notify Owner
     _notify_owner_generic(order, mensaje, resultados, is_order=True)

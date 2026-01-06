@@ -545,15 +545,26 @@ def user_from_token(token: str) -> Optional[User]:
     Busca un usuario a partir de un token de autenticación JWT.
     """
     if not token or not _is_jwt_token(token):
+        current_app.logger.warning(f"[user_from_token] Invalid token format: {token}")
         return None
     try:
         payload = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
         user_id = payload.get('user_id')
+        current_app.logger.info(f"[user_from_token] Decoded payload, user_id: {user_id}")
         if not user_id:
+            current_app.logger.warning(f"[user_from_token] No user_id in payload: {payload}")
             return None
-        return User.query.get(user_id)
-    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as e:
-        current_app.logger.warning(f"Error al decodificar token JWT: {e}")
+        user = User.query.get(user_id)
+        current_app.logger.info(f"[user_from_token] Found user: {user.email if user else 'None'}")
+        return user
+    except jwt.ExpiredSignatureError as e:
+        current_app.logger.warning(f"[user_from_token] Expired JWT token: {e}")
+        return None
+    except jwt.InvalidTokenError as e:
+        current_app.logger.warning(f"[user_from_token] Invalid JWT token: {e}")
+        return None
+    except Exception as e:
+        current_app.logger.error(f"[user_from_token] Unexpected error decoding token: {e}", exc_info=True)
         return None
 
 
