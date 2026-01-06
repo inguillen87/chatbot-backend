@@ -839,7 +839,9 @@ class PymePedido(db.Model):
         """Convierte el objeto Pedido a un diccionario serializable."""
         try:
             detalles_json = json.loads(self.detalles) if self.detalles else []
-        except json.JSONDecodeError:
+            if not isinstance(detalles_json, list):
+                detalles_json = []
+        except (json.JSONDecodeError, TypeError):
             detalles_json = []
 
         return {

@@ -29,6 +29,31 @@ RUBROS_PUBLICOS = {
     # Agregá acá los que consideres públicos
 }
 
+MENU_KEYWORDS = {
+    "ver_estado_reclamo": {"estado", "reclamo", "seguimiento"},
+    "iniciar_reclamo": {"iniciar", "nuevo", "hacer"},
+    "cancelar_reclamo": {"cancelar", "anular"},
+    "hablar_con_agente": {"agente", "hablar", "asesor", "representante", "humano"},
+    "consultar_otro_reclamo": {"otro", "consultar"},
+    "finalizar_conversacion": {"finalizar", "terminar", "chau", "adios"},
+    "menu_principal": {"menu", "principal", "inicio"},
+    "consultar_deuda": {"deuda", "pagar", "factura"},
+    "consultar_licencia": {"licencia", "conducir", "registro"},
+    "consultar_transporte": {"transporte", "colectivo", "sube"},
+    "consultar_eventos": {"eventos", "agenda", "actividades"},
+    "consultar_noticias": {"noticias", "novedades", "informacion"},
+    "consultar_tramites": {"tramites", "tramite", "gestiones"},
+    "consultar_servicios": {"servicios", "servicio"},
+    "consultar_turismo": {"turismo", "visitar", "pasear"},
+    "consultar_salud": {"salud", "hospital", "emergencia"},
+    "consultar_educacion": {"educacion", "escuelas", "cursos"},
+    "consultar_trabajo": {"trabajo", "empleo", "buscar"},
+    "consultar_mascotas": {"mascotas", "perros", "gatos"},
+    "consultar_ambiente": {"ambiente", "verde", "ecologia"},
+    "consultar_cultura": {"cultura", "arte", "museos"},
+    "consultar_deportes": {"deportes", "ejercicio", "gimnasio"},
+}
+
 def normalizar_rubro(rubro) -> str:
     """Devuelve el nombre del rubro en minúsculas."""
     if not rubro:
@@ -168,9 +193,8 @@ def responder_chatboc(
     skip_confusion_check = any(k in pregunta_norm_check for k in ["catalogo", "catálogo", "carrito", "comprar", "pedido", "producto", "precio"])
 
     if tipo_chat == "pyme" and not kwargs.get("demo_metadata") and not skip_confusion_check:
-        from services.municipio_responder import MENU_KEYWORDS as MUNICIPIO_MENU_KEYWORDS
         # Check for municipal keywords in the user's query
-        for action, keywords in MUNICIPIO_MENU_KEYWORDS.items():
+        for action, keywords in MENU_KEYWORDS.items():
             if any(keyword in pregunta_norm_check for keyword in keywords):
                 pyme_name = getattr(effective_owner_user, "nombre_empresa", "este comercio")
                 return {

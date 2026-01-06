@@ -22,7 +22,6 @@ from models import User, Rubro, Conversacion, db, ChatSessionContext # Added Cha
 from utils.db_utils import commit_with_retry, ensure_chat_session_context_schema
 from socket_service import socketio # Import socketio
 from services.logic import (
-    responder_chatboc,
     RUBROS_PUBLICOS,
     normalizar_rubro,
     es_rubro_publico,
@@ -1092,6 +1091,7 @@ def _parse_request(tipo_chat_fijo: str | None = None):
 
 
         if attachment_info:
+            from services.logic import responder_chatboc
             if not isinstance(attachment_info, dict) or not all(k in attachment_info for k in ['id', 'url']):
                 current_app.logger.warning(
                     "attachmentInfo validado de forma laxa. Contenido: %s",
