@@ -300,7 +300,11 @@ def _send_verification_email(user: User):
 
 
 def _tenant_for_user(user: User):
-    return getattr(user, "tenant_profile_municipio", None) or getattr(user, "tenant_profile_pyme", None)
+    if not user:
+        return None
+    return TenantProfile.query.filter(
+        (TenantProfile.municipio_id == user.id) | (TenantProfile.pyme_id == user.id)
+    ).first()
 
 
 def _apply_welcome_points_if_configured(user: User):
@@ -817,9 +821,21 @@ def login():
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
 
-    response_slug = getattr(user, "tenant_slug", None)
-    if not response_slug and tenant_obj:
-        response_slug = tenant_obj.slug
+    # Prioritize the tenant owned by the user if they are a tenant owner
+    owned_tenant = _tenant_for_user(user)
+    current_app.logger.info(f"[AUTH_DEBUG] User: {user.id}, Email: {user.email}")
+    current_app.logger.info(f"[AUTH_DEBUG] Owned Tenant (from _tenant_for_user): {owned_tenant.slug if owned_tenant else 'None'}")
+
+
+    if owned_tenant:
+        response_slug = owned_tenant.slug
+    else:
+        # Fallback to the attached tenant_slug or the resolved tenant object
+        response_slug = getattr(user, "tenant_slug", None)
+        if not response_slug and tenant_obj:
+            response_slug = tenant_obj.slug
+
+    current_app.logger.info(f"[AUTH_DEBUG] Resolved tenant slug for response: {response_slug}")
 
     response_payload = {
         "mensaje": "Login exitoso",
@@ -2145,19 +2161,33 @@ def admin_login():
 
     user = _user_query().filter_by(email=email.strip().lower()).first()
 
-    if not user or not user.check_password(password):
+    if not user:
+        current_app.logger.warning(f"[admin_login] User not found for email: {email.strip().lower()}")
+        return jsonify({"error": "Credenciales inválidas"}), 401
+
+    current_app.logger.info(f"[admin_login] Found user: {user.id}, email: {user.email}, role: {user.rol}, password_hash: {user.password_hash}")
+
+    if not user.check_password(password):
+        current_app.logger.warning(f"[admin_login] Invalid password for user: {user.email}")
         return jsonify({"error": "Credenciales inválidas"}), 401
 
     # Check Role
-    if user.rol not in ['admin', 'empleado', 'super_admin', 'superadmin']:
+    if user.rol not in ['admin', 'empleado', 'super_admin', 'superadmin', 'admin_pyme']:
         return jsonify({"error": "Acceso denegado: No tienes permisos administrativos."}), 403
 
     # Generate Token
-    tenant_slug = getattr(user, "tenant_slug", None)
-    if not tenant_slug:
-        tenant = _tenant_for_user(user)
-        if tenant:
-            tenant_slug = tenant.slug
+    # Prioritize the tenant owned by the user to ensure correct context.
+    owned_tenant = _tenant_for_user(user)
+    if owned_tenant:
+        tenant_slug = owned_tenant.slug
+    else:
+        # Fallback to the tenant_slug attached to the user if no owned tenant is found.
+        tenant_slug = getattr(user, "tenant_slug", None)
+
+    current_app.logger.info(f"[ADMIN_LOGIN_DEBUG] User: {user.id}, Email: {user.email}")
+    current_app.logger.info(f"[ADMIN_LOGIN_DEBUG] Owned Tenant: {owned_tenant.slug if owned_tenant else 'None'}")
+    current_app.logger.info(f"[ADMIN_LOGIN_DEBUG] Fallback tenant_slug on user: {getattr(user, 'tenant_slug', None)}")
+    current_app.logger.info(f"[ADMIN_LOGIN_DEBUG] Final resolved tenant slug: {tenant_slug}")
 
     jwt_payload = {
         'user_id': user.id,

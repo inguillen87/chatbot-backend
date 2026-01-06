@@ -233,6 +233,7 @@ def init_tenants():
         "fintech": "demo+fintech@chatboc.ar",
         "seguros": "demo+seguros@chatboc.ar",
         "logistica": "demo+logistica@chatboc.ar",
+        "servill": "info@servill.ar",
     }
 
     for demo in demos_found:
@@ -287,17 +288,19 @@ def init_tenants():
         if not user and token: user = User.query.filter_by(token=token).first()
 
         if not user:
+            password = "Servill2030!" if key == "servill" else "demo1234"
+            rol = "admin_pyme" if key == "servill" else "admin"
             user = User(
                 name=nombre,
                 email=email,
-                rol="admin",
+                rol=rol,
                 tipo_chat=tipo_chat,
                 rubro_id=target_rubro.id,
                 plan="enterprise",
                 nombre_empresa=nombre,
                 token=token or str(uuid.uuid4())
             )
-            user.set_password("demo1234")
+            user.set_password(password)
             db.session.add(user)
             db.session.flush()
         else:
@@ -482,12 +485,6 @@ def init_tenants():
     except Exception as e:
         print(f"⚠️ Error seeding demo content: {e}")
 
-    # --- Seed Servill Tenant (Specific Request) ---
-    try:
-        from scripts.seed_servill import seed_servill
-        seed_servill()
-    except Exception as e:
-        print(f"⚠️ Error seeding Servill content: {e}")
 
     print("\n✅ Initialization complete.")
 

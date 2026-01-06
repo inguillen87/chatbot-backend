@@ -9,6 +9,8 @@ from typing import Pattern
 # y el resto de la app vean las credenciales (e.g., SMTP) incluso cuando el
 # proceso se inicia fuera del CLI de Flask.
 from dotenv import load_dotenv
+import eventlet
+eventlet.monkey_patch()
 
 load_dotenv()  # override=False por defecto para respetar variables ya definidas
 
