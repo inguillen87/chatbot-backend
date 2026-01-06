@@ -27,7 +27,6 @@ from routes.estadisticas import (
 )
 from routes.municipal_legacy import (
     list_municipal_posts,
-    municipal_categorias,
     municipal_estados,
 )
 from routes.notifications import get_notifications, notifications_options
@@ -280,13 +279,6 @@ def pedidos_estado_alias(pedido_id: int):
 
 
 @api_aliases_bp.route(
-    "/municipal/categorias", methods=["GET", "OPTIONS"], strict_slashes=False
-)
-def municipal_categorias_alias():
-    return municipal_categorias()
-
-
-@api_aliases_bp.route(
     "/municipal/estados", methods=["GET", "OPTIONS"], strict_slashes=False
 )
 def municipal_estados_alias():
@@ -313,7 +305,7 @@ def _alias_tenant_slug() -> str | None:
 @api_aliases_bp.route(
     "/municipal/categorias", methods=["GET", "OPTIONS"], strict_slashes=False
 )
-def municipal_categorias_alias_v2():
+def municipal_categorias_alias():
     if request.method == "OPTIONS":
         return _options_ok()
     return listar_categorias_municipio(tenant_slug=_alias_tenant_slug())
