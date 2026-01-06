@@ -71,7 +71,12 @@ def get_widget_config(slug):
         return jsonify({"ok": True})
 
     tenant = _get_tenant_from_request(slug)
-    if not tenant: return jsonify({"error": "Tenant not found"}), 404
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
 
-    cfg = TenantConfig.query.filter_by(tenant_id=tenant.id, key='widget', channel=None).first()
-    return jsonify(cfg.json_value if cfg else {})
+    # Reuse the richer widget-config payload from routes.pwa_public to ensure
+    # consistent shapes (arrays vs. objects) and prevent frontend runtime errors
+    # when consumers expect list-like values.
+    from routes.pwa_public import public_tenant_widget_config
+
+    return public_tenant_widget_config(tenant.slug)
