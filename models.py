@@ -27,7 +27,7 @@ import uuid
 import json
 import os
 import random
-from services.gcs_service import resolve_attachment_thumb_url
+
 
 try:  # pragma: no cover - defensive fallback for circular imports during tests
     from config import TIMEZONE_OFFSET as _CONFIG_TIMEZONE_OFFSET
@@ -1009,7 +1009,7 @@ class TicketComentario(db.Model):
             meta = analisis.datos_estructurados if analisis else {}
             if not isinstance(meta, dict):
                 meta = {}
-
+            from services.gcs_service import resolve_attachment_thumb_url
             thumb_url, meta = resolve_attachment_thumb_url(
                 file_url=self.archivo_adjunto.url,
                 filename=self.archivo_adjunto.filename,

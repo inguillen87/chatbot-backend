@@ -6,7 +6,10 @@ from datetime import datetime
 from email.mime.application import MIMEApplication # Para adjuntos
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from models import ArchivoAdjunto
 
 from flask import current_app # Para acceder a la configuración
 from twilio.rest import Client
@@ -14,7 +17,6 @@ from twilio.rest import Client
 from services.config_loader import cargar_configuracion_municipio
 from services.map_preview import generate_static_map
 
-from models import ArchivoAdjunto, TicketComentario, User
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +66,7 @@ def _format_datetime(value: Any) -> Optional[str]:
         return str(value)
 
 
-def _serialize_attachment(archivo: ArchivoAdjunto) -> Dict[str, Any]:
+def _serialize_attachment(archivo) -> Dict[str, Any]:
     nombre = getattr(archivo, "nombre_original", None) or getattr(archivo, "filename", None)
     url = getattr(archivo, "url", None)
     mime = getattr(archivo, "mime", None) or ""
@@ -106,6 +108,7 @@ def _serialize_comment(ticket: Any, comentario: Any) -> Dict[str, Any]:
 
 
 def _collect_ticket_attachments(ticket: Any, datos_ticket: Dict[str, Any]) -> List[Dict[str, Any]]:
+    from models import ArchivoAdjunto
     adjuntos: List[Dict[str, Any]] = []
 
     archivos_rel = getattr(ticket, "archivos", None)
@@ -139,6 +142,7 @@ def _collect_ticket_attachments(ticket: Any, datos_ticket: Dict[str, Any]) -> Li
 
 
 def _collect_ticket_comments(ticket: Any, comentario_reciente: Any = None, limite: int = 6) -> List[Dict[str, Any]]:
+    from models import TicketComentario
     comentarios: List[Any] = []
     comentarios_rel = getattr(ticket, "comentarios", None)
     if comentarios_rel is not None:
@@ -832,7 +836,7 @@ def enviar_email_ticket_admin(
 
 import requests
 
-def enviar_email_con_multiples_adjuntos(destinos: List[str], asunto: str, cuerpo_html: str, adjuntos: List[ArchivoAdjunto], cuerpo_texto: str = "") -> bool:
+def enviar_email_con_multiples_adjuntos(destinos: List[str], asunto: str, cuerpo_html: str, adjuntos: List, cuerpo_texto: str = "") -> bool:
     """Envía un email con múltiples archivos adjuntos."""
     smtp_host = _get_config_val("SMTP_HOST")
     smtp_port = int(_get_config_val("SMTP_PORT", 587))
@@ -1148,6 +1152,7 @@ def enviar_whatsapp_ticket_novedad(ticket, mensaje: str, archivos_adjuntos: list
     Puede incluir archivos adjuntos si se proporcionan.
     `archivos_adjuntos` debe ser una lista de objetos ArchivoAdjunto.
     """
+    from models import User
     ticket_id_log = getattr(ticket, 'id', 'N/A')
     original_destino = getattr(ticket, "telefono", None)
 
