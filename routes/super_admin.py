@@ -183,7 +183,12 @@ def update_tenant_full(current_user, slug):
     data = request.get_json() or {}
 
     if 'nombre' in data: tenant.nombre = data['nombre']
-    if 'plan' in data: tenant.plan = data['plan']
+    if 'plan' in data:
+        tenant.plan = data['plan']
+        owner = tenant.municipio or tenant.pyme
+        if owner:
+            owner.plan = data['plan']
+
     if 'is_active' in data: tenant.is_active = bool(data['is_active'])
     if 'whatsapp_sender_id' in data: tenant.whatsapp_sender_id = data['whatsapp_sender_id']
 

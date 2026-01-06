@@ -15,7 +15,13 @@ def list_orders(user, slug):
     status = request.args.get('status')
     channel = request.args.get('channel')
 
-    query = MarketOrder.query.filter_by(tenant_id=g.tenant_profile.id)
+    tenant_id = g.tenant_profile.id
+    # Fallback for Pyme admins who might be hitting the wrong slug
+    if user.rol == 'admin_pyme' and user.tenant_id:
+        tenant_id = user.tenant_id
+
+    query = MarketOrder.query.filter_by(tenant_id=tenant_id)
+
 
     if status:
         query = query.filter_by(status=status)

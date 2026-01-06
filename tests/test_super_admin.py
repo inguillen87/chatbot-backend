@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 def test_super_admin_flow(client):
     # 1. Create Super Admin
-    sa = User(name="Super Admin", email="sa@chatboc.ar", rol="superadmin")
+    sa = User(name="Super Admin", email="sa@chatboc.ar", rol="super_admin")
     sa.set_password("admin123")
     db.session.add(sa)
     db.session.commit()
