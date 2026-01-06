@@ -13,6 +13,7 @@ from werkzeug.datastructures import FileStorage
 from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
 from extensions import db  # Import db instance for database operations
 import uuid
+from services.logic import responder_chatboc  # Import the correct chatbot logic processor
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm import joinedload  # To potentially eager load User.rubro
 from utils.db_utils import ensure_chat_session_context_schema, safe_flag_modified
@@ -1300,7 +1301,6 @@ def whatsapp_webhook():
         return "OK", 200
 
     # --- Profile confirmation flow ---
-    from services.logic import responder_chatboc
     if not session_context_db_entry.context_data.get("perfil_confirmado"):
         session_context_db_entry.context_data["perfil_confirmado"] = True
         session_context_db_entry.context_data.setdefault("estado_conversacion", "activo")

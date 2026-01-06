@@ -4,6 +4,7 @@ import os
 from app import create_app, db
 from config import Config
 from models import User, ChatSessionContext
+from services.logic import responder_chatboc
 from services.municipio_responder import CONTEXTO_MUNICIPIO, ConversationState
 
 
@@ -34,7 +35,6 @@ class WelcomeFlowTestCase(unittest.TestCase):
         db.session.add(session_ctx)
         db.session.commit()
 
-        from services.logic import responder_chatboc
         response = responder_chatboc(
             'hola', owner_user=owner, rubro_obj=None,
             chat_db_context=session_ctx, tipo_chat='municipio',
