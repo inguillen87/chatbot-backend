@@ -774,10 +774,6 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
     if audio_text:
         result["audio_text"] = audio_text
 
-    if delayed_payload:
-        result["delayed_payload"] = delayed_payload
-        result["delay_seconds"] = delay_seconds
-
     cliente_payload = {
         "nombre": nombre_cliente,
         "telefono": telefono_cliente,
