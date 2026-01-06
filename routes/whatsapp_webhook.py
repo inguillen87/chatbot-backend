@@ -19,6 +19,7 @@ from utils.db_utils import ensure_chat_session_context_schema, safe_flag_modifie
 from services.gcs_service import upload_to_gcs
 from services.attachment_service import create_attachment_with_thumbnail
 from services.llm_utils import extract_multiple_contact_details_llm
+from services.logic import responder_chatboc
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
 from utils.maps_utils import extraer_coordenadas_de_url_google_maps
@@ -1300,7 +1301,6 @@ def whatsapp_webhook():
         return "OK", 200
 
     # --- Profile confirmation flow ---
-    from services.logic import responder_chatboc
     if not session_context_db_entry.context_data.get("perfil_confirmado"):
         session_context_db_entry.context_data["perfil_confirmado"] = True
         session_context_db_entry.context_data.setdefault("estado_conversacion", "activo")
