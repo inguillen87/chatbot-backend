@@ -68,6 +68,28 @@ def _plan_allows_integrations(tenant: TenantProfile) -> bool:
     plan_key = (tenant.plan or "").strip().lower()
     return plan_key in ("pro", "full")
 
+
+def _resolve_admin_tenant(current_user: User, slug: str) -> TenantProfile | None:
+    slug = apply_tenant_alias(slug) or slug
+    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    if tenant and _is_authorized_for_tenant(current_user, tenant):
+        return tenant
+
+    tenant_hint = getattr(g, "tenant_profile", None)
+    if tenant_hint and _is_authorized_for_tenant(current_user, tenant_hint):
+        return tenant_hint
+
+    tenant_from_user = (
+        getattr(current_user, "tenant", None)
+        or getattr(current_user, "tenant_profile", None)
+        or getattr(current_user, "tenant_profile_municipio", None)
+        or getattr(current_user, "tenant_profile_pyme", None)
+    )
+    if tenant_from_user and _is_authorized_for_tenant(current_user, tenant_from_user):
+        return tenant_from_user
+
+    return tenant
+
 # --- Tenant Management ---
 
 @admin_tenant_bp.route('/api/admin/tenants', methods=['POST'])
@@ -105,8 +127,7 @@ def create_tenant():
 @token_requerido
 @require_tenant
 def get_tenant_config_bundle(current_user, slug):
-    slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
@@ -141,8 +162,7 @@ def get_tenant_config_bundle(current_user, slug):
 @token_requerido
 @require_tenant
 def update_tenant_config_bundle(current_user, slug):
-    slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
@@ -196,8 +216,7 @@ def update_tenant_config_bundle(current_user, slug):
 @token_requerido
 @require_tenant
 def assign_whatsapp_number(current_user, slug):
-    slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
@@ -386,8 +405,7 @@ def list_current_tenant_employees(current_user):
 @token_requerido
 @require_tenant
 def list_integrations(current_user, slug):
-    slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
@@ -430,8 +448,7 @@ def list_integrations(current_user, slug):
 @token_requerido
 @require_tenant
 def connect_integration(current_user, slug, integration_type):
-    slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
@@ -485,8 +502,7 @@ def list_employees_by_slug(current_user, slug):
     """
     List employees for a specific tenant slug (supports admin dashboard deep linking).
     """
-    slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
@@ -519,8 +535,7 @@ def list_ticket_categories_by_slug(current_user, slug):
     """
     List ticket categories for a specific tenant.
     """
-    slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
@@ -544,8 +559,7 @@ def list_ticket_categories_by_slug(current_user, slug):
 @token_requerido
 @require_tenant
 def sync_integration(current_user, slug, integration_type):
-    slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
