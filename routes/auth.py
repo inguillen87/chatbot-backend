@@ -325,6 +325,40 @@ def _resolve_tipo_chat(
     return "municipio" if es_rubro_publico(rubro_value) else "pyme"
 
 
+def _resolve_tenant_for_user(
+    user: User,
+    tenant_hint: Optional[TenantProfile] = None,
+) -> Optional[TenantProfile]:
+    if tenant_hint:
+        return tenant_hint
+
+    tenant_obj = _tenant_for_user(user)
+    if tenant_obj:
+        return tenant_obj
+
+    if getattr(user, "tenant_id", None):
+        tenant_obj = TenantProfile.query.get(user.tenant_id)
+        if tenant_obj:
+            return tenant_obj
+
+    tenant_slug = getattr(user, "tenant_slug", None)
+    if tenant_slug:
+        try:
+            tenant_obj = resolve_tenant_only(tenant_slug=tenant_slug)
+        except Exception:
+            tenant_obj = None
+        if tenant_obj:
+            return tenant_obj
+
+    empresa_id = getattr(user, "empresa_id", None)
+    if empresa_id:
+        owner_user = _user_query().get(empresa_id)
+        if owner_user:
+            return _tenant_for_owner(owner_user) or _tenant_for_user(owner_user)
+
+    return None
+
+
 def _apply_welcome_points_if_configured(user: User):
     try:
         recompensas_service().apply_welcome_points(user, _tenant_for_user(user))
@@ -368,7 +402,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     except Exception:
         rubro_es_publico = False
 
-    tipo_chat = getattr(user, "tipo_chat", None) or ("municipio" if rubro_es_publico else "pyme")
+    tipo_chat = _resolve_tipo_chat(user, tenant_obj=tenant_profile, rubro_nombre=rubro_nombre)
     catalogo_label = (
         "Cargar Catálogo de Trámites" if tipo_chat == "municipio" else "Cargar Catálogo de Productos"
     )
@@ -382,12 +416,9 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         owner_user = _user_query().get(user.empresa_id)
 
     tenant_profile = getattr(g, "tenant_profile", None) or getattr(g, "current_tenant", None)
-    if not tenant_profile and getattr(user, "tenant_id", None):
-        tenant_profile = TenantProfile.query.get(user.tenant_id)
-    if not tenant_profile:
-        tenant_profile = _tenant_for_user(user)
+    tenant_profile = _resolve_tenant_for_user(user, tenant_profile)
     if not tenant_profile and owner_user:
-        tenant_profile = _tenant_for_owner(owner_user) or _tenant_for_user(owner_user)
+        tenant_profile = _resolve_tenant_for_user(owner_user)
 
     plan_value = (
         tenant_profile.plan
@@ -820,6 +851,7 @@ def login():
                 except Exception:
                     pass
 
+    tenant_obj = _resolve_tenant_for_user(user, tenant_obj)
     if tenant_obj:
         _attach_user_to_tenant(user, tenant_obj)
         try:
@@ -859,7 +891,7 @@ def login():
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
 
     # Prioritize the tenant owned by the user if they are a tenant owner
-    owned_tenant = _tenant_for_user(user)
+    owned_tenant = _resolve_tenant_for_user(user)
     current_app.logger.info(f"[AUTH_DEBUG] User: {user.id}, Email: {user.email}")
     current_app.logger.info(f"[AUTH_DEBUG] Owned Tenant (from _tenant_for_user): {owned_tenant.slug if owned_tenant else 'None'}")
 
@@ -998,7 +1030,7 @@ def google_login():
             return resp
 
         rubro_nombre = user.rubro.nombre if user.rubro else "General"
-        tenant_obj = _tenant_for_user(user)
+        tenant_obj = _resolve_tenant_for_user(user)
         tipo_chat = _resolve_tipo_chat(user, tenant_obj=tenant_obj, rubro_nombre=rubro_nombre)
 
         # Integrar Flask-Login
@@ -1505,7 +1537,7 @@ def login_from_widget(owner_user):
     if not email or not password:
         return jsonify({"error": "Email y contraseña requeridos."}), 400
 
-    owner_tenant = _tenant_for_owner(owner_user)
+    owner_tenant = _resolve_tenant_for_user(owner_user, _tenant_for_owner(owner_user))
     if not owner_tenant:
         return jsonify({"error": "Tenant no especificado o no encontrado para el widget"}), 404
 
@@ -2214,7 +2246,7 @@ def admin_login():
 
     # Generate Token
     # Prioritize the tenant owned by the user to ensure correct context.
-    owned_tenant = _tenant_for_user(user)
+    owned_tenant = _resolve_tenant_for_user(user)
     if owned_tenant:
         tenant_slug = owned_tenant.slug
     else:

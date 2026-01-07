@@ -185,11 +185,12 @@ def update_tenant_full(current_user, slug):
 
     if 'nombre' in data: tenant.nombre = data['nombre']
     if 'plan' in data:
-        tenant.plan = data['plan']
+        normalized_plan = str(data['plan']).strip().lower()
+        tenant.plan = normalized_plan
         owner = tenant.municipio or tenant.pyme
         updated_user_ids = set()
         if owner:
-            apply_plan_to_user(owner, data['plan'])
+            apply_plan_to_user(owner, normalized_plan)
             updated_user_ids.add(owner.id)
 
         users_to_update = []
@@ -204,7 +205,7 @@ def update_tenant_full(current_user, slug):
         for user in users_to_update:
             if user.id in updated_user_ids:
                 continue
-            apply_plan_to_user(user, data['plan'])
+            apply_plan_to_user(user, normalized_plan)
             updated_user_ids.add(user.id)
 
     if 'is_active' in data: tenant.is_active = bool(data['is_active'])
