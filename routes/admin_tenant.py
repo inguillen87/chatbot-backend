@@ -63,6 +63,11 @@ def _is_authorized_for_tenant(current_user: User, tenant: TenantProfile) -> bool
 
     return False
 
+
+def _plan_allows_integrations(tenant: TenantProfile) -> bool:
+    plan_key = (tenant.plan or "").strip().lower()
+    return plan_key in ("pro", "full")
+
 # --- Tenant Management ---
 
 @admin_tenant_bp.route('/api/admin/tenants', methods=['POST'])
@@ -388,6 +393,16 @@ def list_integrations(current_user, slug):
 
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
+    if not _plan_allows_integrations(tenant):
+        return (
+            jsonify(
+                {
+                    "error": "plan_required",
+                    "message": "Integraciones disponibles para planes Pro/Full.",
+                }
+            ),
+            403,
+        )
 
     integrations = IntegrationAccount.query.filter_by(tenant_id=tenant.id).all()
 
@@ -422,6 +437,16 @@ def connect_integration(current_user, slug, integration_type):
 
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
+    if not _plan_allows_integrations(tenant):
+        return (
+            jsonify(
+                {
+                    "error": "plan_required",
+                    "message": "Integraciones disponibles para planes Pro/Full.",
+                }
+            ),
+            403,
+        )
 
     base_url = current_app.config.get("PUBLIC_BASE_URL", "https://chatboc.ar").rstrip("/")
 
@@ -526,6 +551,16 @@ def sync_integration(current_user, slug, integration_type):
 
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
+    if not _plan_allows_integrations(tenant):
+        return (
+            jsonify(
+                {
+                    "error": "plan_required",
+                    "message": "Integraciones disponibles para planes Pro/Full.",
+                }
+            ),
+            403,
+        )
 
     if integration_type.lower() == 'mercadolibre':
         from services.integrations.mercadolibre import MercadoLibreService

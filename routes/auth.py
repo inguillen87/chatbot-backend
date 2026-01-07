@@ -403,15 +403,6 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     except Exception:
         rubro_es_publico = False
 
-    tipo_chat = _resolve_tipo_chat(user, tenant_obj=tenant_profile, rubro_nombre=rubro_nombre)
-    catalogo_label = (
-        "Cargar Catálogo de Trámites" if tipo_chat == "municipio" else "Cargar Catálogo de Productos"
-    )
-    integration_guide_url = current_app.config.get(
-        "INTEGRATION_GUIDE_URL",
-        "https://docs.chatboc.ar/widget-integration",
-    ) or "https://docs.chatboc.ar/widget-integration"
-
     owner_user = None
     if getattr(user, "empresa_id", None):
         owner_user = _user_query().get(user.empresa_id)
@@ -420,6 +411,15 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     tenant_profile = _resolve_tenant_for_user(user, tenant_profile)
     if not tenant_profile and owner_user:
         tenant_profile = _resolve_tenant_for_user(owner_user)
+
+    tipo_chat = _resolve_tipo_chat(user, tenant_obj=tenant_profile, rubro_nombre=rubro_nombre)
+    catalogo_label = (
+        "Cargar Catálogo de Trámites" if tipo_chat == "municipio" else "Cargar Catálogo de Productos"
+    )
+    integration_guide_url = current_app.config.get(
+        "INTEGRATION_GUIDE_URL",
+        "https://docs.chatboc.ar/widget-integration",
+    ) or "https://docs.chatboc.ar/widget-integration"
 
     plan_value = (
         tenant_profile.plan
