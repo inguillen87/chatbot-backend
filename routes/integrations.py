@@ -3,8 +3,15 @@ from services.integrations.mercadolibre_service import MercadoLibreService
 from services.integrations.tiendanube_service import TiendaNubeService
 from utils.auth_helpers import token_requerido
 from models import IntegrationAccount, db, TenantProfile
+from services.plan_config import normalize_plan_key
 
 integrations_bp = Blueprint('integrations', __name__)
+
+
+def _plan_allows_integrations(tenant: TenantProfile) -> bool:
+    plan_key = normalize_plan_key(tenant.plan)
+    return plan_key in ("pro", "full")
+
 
 @integrations_bp.route('/<provider>/connect', methods=['POST'])
 @token_requerido
@@ -13,6 +20,16 @@ def connect(user, provider):
     tenant = g.tenant_profile
     if not tenant:
         return jsonify({"error": "Tenant required"}), 400
+    if not _plan_allows_integrations(tenant):
+        return (
+            jsonify(
+                {
+                    "error": "plan_required",
+                    "message": "Integraciones disponibles para planes Pro/Full.",
+                }
+            ),
+            403,
+        )
 
     redirect_uri = f"{request.host_url}api/integrations/{provider}/callback"
 
