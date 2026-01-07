@@ -5,6 +5,7 @@ from utils.admin_decorators import super_admin_required
 from sqlalchemy import desc
 from datetime import datetime, timezone, timedelta
 from services.tenant_management.folder_manager import ensure_tenant_folder_structure
+from services.plan_config import apply_plan_to_user
 import jwt
 
 super_admin_bp = Blueprint('super_admin', __name__, url_prefix='/api/admin')
@@ -184,10 +185,28 @@ def update_tenant_full(current_user, slug):
 
     if 'nombre' in data: tenant.nombre = data['nombre']
     if 'plan' in data:
-        tenant.plan = data['plan']
+        normalized_plan = str(data['plan']).strip().lower()
+        tenant.plan = normalized_plan
         owner = tenant.municipio or tenant.pyme
+        updated_user_ids = set()
         if owner:
-            owner.plan = data['plan']
+            apply_plan_to_user(owner, normalized_plan)
+            updated_user_ids.add(owner.id)
+
+        users_to_update = []
+        users_to_update.extend(
+            User.query.filter(User.tenant_id == tenant.id).all()
+        )
+        if owner:
+            users_to_update.extend(
+                User.query.filter(User.empresa_id == owner.id).all()
+            )
+
+        for user in users_to_update:
+            if user.id in updated_user_ids:
+                continue
+            apply_plan_to_user(user, normalized_plan)
+            updated_user_ids.add(user.id)
 
     if 'is_active' in data: tenant.is_active = bool(data['is_active'])
     if 'whatsapp_sender_id' in data: tenant.whatsapp_sender_id = data['whatsapp_sender_id']
