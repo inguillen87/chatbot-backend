@@ -1,7 +1,16 @@
+import json
 import logging
 from typing import Optional
 
-from models import db, PymePedido, User  # Asegúrate que PymePedido esté importado desde models
+from models import (
+    db,
+    CatalogoItem,
+    MarketOrder,
+    MarketOrderItem,
+    PymePedido,
+    TenantProfile,
+    User,
+)
 from .email_service import (
     enviar_email_pedido_admin,
     enviar_email_pedido_cliente,
@@ -22,6 +31,100 @@ logger = logging.getLogger(__name__)
 
 
 class PedidoService:
+    def _crear_market_order_desde_pyme(
+        self,
+        pedido: PymePedido,
+        channel: Optional[str] = None,
+    ) -> Optional[MarketOrder]:
+        tenant = TenantProfile.query.filter_by(pyme_id=pedido.pyme_id).first()
+        if not tenant:
+            return None
+
+        existing = MarketOrder.query.filter_by(
+            tenant_id=tenant.id,
+            external_provider="pyme_pedido",
+            external_order_id=pedido.nro_pedido,
+        ).first()
+        if existing:
+            return existing
+
+        status_map = {
+            "pendiente": "pending",
+            "confirmado": "confirmed",
+            "en_proceso": "processing",
+            "enviado": "shipped",
+            "entregado": "delivered",
+            "completado": "completed",
+            "cancelado": "cancelled",
+            "devuelto": "returned",
+        }
+        status = status_map.get((pedido.estado or "").lower(), "pending")
+
+        order = MarketOrder(
+            tenant_id=tenant.id,
+            user_id=pedido.user_id,
+            status=status,
+            contact_name=pedido.nombre_cliente,
+            contact_phone=pedido.telefono_cliente,
+            contact_email=pedido.email_cliente,
+            channel=channel or "chat",
+            total_monetary=pedido.monto_total,
+            currency="ARS",
+            external_provider="pyme_pedido",
+            external_order_id=pedido.nro_pedido,
+            metadata_payload={
+                "pyme_pedido_id": pedido.id,
+                "pyme_id": pedido.pyme_id,
+            },
+        )
+
+        try:
+            detalles_items = json.loads(pedido.detalles or "[]")
+        except (TypeError, ValueError):
+            detalles_items = []
+
+        for item in detalles_items if isinstance(detalles_items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            sku = item.get("sku")
+            nombre = item.get("nombre") or item.get("nombre_producto")
+            cantidad = item.get("cantidad") or 1
+            precio = item.get("precio_unitario") or item.get("precio") or item.get("precio_unitario_original")
+
+            producto = None
+            if sku:
+                producto = CatalogoItem.query.filter_by(user_id=pedido.pyme_id, sku=sku).first()
+            if not producto and nombre:
+                producto = CatalogoItem.query.filter_by(user_id=pedido.pyme_id, nombre=nombre).first()
+
+            try:
+                cantidad_normalizada = int(float(cantidad))
+            except (TypeError, ValueError):
+                cantidad_normalizada = 1
+
+            order.items.append(
+                MarketOrderItem(
+                    product_id=producto.id if producto else None,
+                    quantity=max(cantidad_normalizada, 1),
+                    price_monetary=precio,
+                    currency="ARS",
+                    name_snapshot=nombre or (producto.nombre if producto else None),
+                )
+            )
+
+        db.session.add(order)
+        return order
+
+    def sync_market_order_from_pyme(
+        self,
+        pedido: PymePedido,
+        channel: Optional[str] = None,
+    ) -> Optional[MarketOrder]:
+        order = self._crear_market_order_desde_pyme(pedido, channel=channel)
+        if order:
+            db.session.commit()
+        return order
+
     def crear_nuevo_pedido(self, pedido_data: dict) -> PymePedido | None:
         try:
             # Validar datos básicos
@@ -142,6 +245,19 @@ class PedidoService:
                     )
             except Exception as e:
                 logger.error(f"Error enviando SMS/WhatsApp de pedido: {e}")
+            try:
+                self.sync_market_order_from_pyme(
+                    nuevo_pedido,
+                    channel=pedido_data.get("channel"),
+                )
+            except Exception as e:
+                db.session.rollback()
+                logger.error(
+                    "Error creando MarketOrder para pedido %s: %s",
+                    nuevo_pedido.nro_pedido,
+                    e,
+                    exc_info=True,
+                )
             return nuevo_pedido
         except Exception as e:
             db.session.rollback()
