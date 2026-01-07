@@ -5,7 +5,7 @@ from utils.admin_decorators import super_admin_required
 from sqlalchemy import desc
 from datetime import datetime, timezone, timedelta
 from services.tenant_management.folder_manager import ensure_tenant_folder_structure
-from services.plan_config import apply_plan_to_user
+from services.plan_config import apply_plan_to_user, normalize_plan_key
 import jwt
 
 super_admin_bp = Blueprint('super_admin', __name__, url_prefix='/api/admin')
@@ -185,7 +185,7 @@ def update_tenant_full(current_user, slug):
 
     if 'nombre' in data: tenant.nombre = data['nombre']
     if 'plan' in data:
-        normalized_plan = str(data['plan']).strip().lower()
+        normalized_plan = normalize_plan_key(data['plan'])
         tenant.plan = normalized_plan
         owner = tenant.municipio or tenant.pyme
         updated_user_ids = set()

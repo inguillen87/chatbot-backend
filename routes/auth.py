@@ -59,6 +59,7 @@ from flask_login import current_user
 from utils.plan_limits import limite_para_usuario
 from services.plan_config import (
     get_plan_metadata,
+    normalize_plan_key,
     serialize_plan_catalog,
     serialize_plan_for_response,
 )
@@ -453,6 +454,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         else getattr(owner_user, "plan", None)
         or getattr(user, "plan", None)
     )
+    normalized_plan = normalize_plan_key(plan_value)
 
     profile_data: Dict[str, Any] = {
         "id": user.id,
@@ -470,7 +472,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "ciudad": getattr(user, "ciudad", None),
         "color_primario": getattr(user, "color_primario", None),
         "color_secundario": getattr(user, "color_secundario", None),
-        "plan": plan_value,
+        "plan": normalized_plan or plan_value,
         "limite_preguntas": limite_para_usuario(user),
         "acepta_marketing": getattr(user, "acepta_marketing", None),
         "tags": getattr(user, "tags", None),

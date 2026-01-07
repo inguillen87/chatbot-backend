@@ -3,6 +3,7 @@ from utils.auth_helpers import token_requerido
 from middleware.tenant_context import require_tenant
 from models import db, TenantProfile, User, TenantConfig, Role, UserRole, CategoriaTicket, IntegrationAccount
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
+from services.plan_config import normalize_plan_key
 from services.tenant_resolver import apply_tenant_alias
 
 admin_tenant_bp = Blueprint('admin_tenant_bp', __name__)
@@ -65,13 +66,17 @@ def _is_authorized_for_tenant(current_user: User, tenant: TenantProfile) -> bool
 
 
 def _plan_allows_integrations(tenant: TenantProfile) -> bool:
-    plan_key = (tenant.plan or "").strip().lower()
+    plan_key = normalize_plan_key(tenant.plan)
     return plan_key in ("pro", "full")
 
 
 def _resolve_admin_tenant(current_user: User, slug: str) -> TenantProfile | None:
     slug = apply_tenant_alias(slug) or slug
     tenant = TenantProfile.query.filter_by(slug=slug).first()
+    if not tenant and slug and slug.startswith("admin-"):
+        fallback_slug = slug.replace("admin-", "", 1)
+        fallback_slug = apply_tenant_alias(fallback_slug) or fallback_slug
+        tenant = TenantProfile.query.filter_by(slug=fallback_slug).first()
     if tenant and _is_authorized_for_tenant(current_user, tenant):
         return tenant
 

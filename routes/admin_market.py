@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify, g
 from models import db, MarketOrder, MarketOrderItem, CatalogoItem, TenantProfile
 from utils.auth_helpers import token_requerido
 from utils.tenant import require_tenant
+from services.tenant_resolver import apply_tenant_alias
 from sqlalchemy.orm.attributes import flag_modified
 
 admin_market_bp = Blueprint('admin_market', __name__)
@@ -35,7 +36,12 @@ def _tenant_matches_user(user, tenant) -> bool:
 
 
 def _resolve_market_tenant(user, slug):
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    normalized_slug = apply_tenant_alias(slug) or slug
+    tenant = TenantProfile.query.filter_by(slug=normalized_slug).first()
+    if not tenant and normalized_slug and normalized_slug.startswith("admin-"):
+        fallback_slug = normalized_slug.replace("admin-", "", 1)
+        fallback_slug = apply_tenant_alias(fallback_slug) or fallback_slug
+        tenant = TenantProfile.query.filter_by(slug=fallback_slug).first()
     if tenant and _tenant_matches_user(user, tenant):
         return tenant
 
