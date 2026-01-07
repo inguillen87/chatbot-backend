@@ -312,18 +312,26 @@ def _resolve_tipo_chat(
     tenant_obj: Optional[TenantProfile] = None,
     rubro_nombre: Optional[str] = None,
 ) -> str:
-    if tenant_obj and tenant_obj.tipo:
-        return str(tenant_obj.tipo).lower()
-
-    if getattr(user, "tipo_chat", None):
-        return str(user.tipo_chat).lower()
-
     rubro_value = rubro_nombre
     if not rubro_value:
         rubro_obj = getattr(user, "rubro", None)
         rubro_value = getattr(rubro_obj, "nombre", None) or rubro_obj
 
-    return "municipio" if es_rubro_publico(rubro_value) else "pyme"
+    rubro_es_publico = es_rubro_publico(rubro_value)
+
+    if tenant_obj and tenant_obj.tipo:
+        tenant_tipo = str(tenant_obj.tipo).lower()
+        if tenant_tipo == "municipio" and not rubro_es_publico:
+            return "pyme"
+        return tenant_tipo
+
+    if getattr(user, "tipo_chat", None):
+        user_tipo = str(user.tipo_chat).lower()
+        if user_tipo == "municipio" and not rubro_es_publico:
+            return "pyme"
+        return user_tipo
+
+    return "municipio" if rubro_es_publico else "pyme"
 
 
 def _resolve_tenant_for_user(

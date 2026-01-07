@@ -25,6 +25,8 @@ def apply_tenant_alias(slug: Optional[str]) -> Optional[str]:
     cleaned = _clean_slug(slug)
     if not cleaned:
         return None
+    if cleaned.lower().startswith("admin-"):
+        cleaned = cleaned[6:]
     alias_target = _alias_map().get(cleaned.lower())
     return alias_target or cleaned
 
