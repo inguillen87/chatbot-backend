@@ -4,8 +4,13 @@ import sys
 # Workaround for eventlet + Python 3.12 issue
 os.environ.setdefault("EVENTLET_NO_GREENDNS", "YES")
 
-import eventlet
-eventlet.monkey_patch()
+try:
+    import eventlet
+    eventlet.monkey_patch()
+except ImportError:
+    print("Eventlet not found, skipping monkey patching.")
+    pass
+
 import pytest
 
 # Evita que app.py cree una instancia global conectada a Postgres durante las pruebas.

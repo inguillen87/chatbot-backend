@@ -1,8 +1,9 @@
-from flask import Blueprint, request, jsonify, g
+from flask import Blueprint, request, jsonify, g, abort
 from models import db, MarketOrder, MarketOrderItem, CatalogoItem
 from utils.auth_helpers import token_requerido
 from utils.tenant import require_tenant
 from sqlalchemy.orm.attributes import flag_modified
+from utils.auth_decorators import _is_authorized_for_tenant
 
 admin_market_bp = Blueprint('admin_market', __name__)
 
@@ -11,14 +12,23 @@ admin_market_bp = Blueprint('admin_market', __name__)
 @require_tenant
 def list_orders(user, slug):
     """List orders for the current tenant."""
+    # Enforce authorization using the new decorator logic
+    if not _is_authorized_for_tenant(user, tenant_slug=slug):
+        # Even if require_tenant populates g.tenant_profile, this check ensures the user belongs to it.
+        # If the user has a tenant_id, it is the source of truth.
+        if user.tenant_id and g.tenant_profile.id != user.tenant_id:
+             abort(403, description=f"Acceso denegado al tenant '{slug}'. Tu token está asociado con otro tenant.")
+
     # Filter by status, channel
     status = request.args.get('status')
     channel = request.args.get('channel')
 
-    tenant_id = g.tenant_profile.id
-    # Fallback for Pyme admins who might be hitting the wrong slug
-    if user.rol == 'admin_pyme' and user.tenant_id:
-        tenant_id = user.tenant_id
+    # DERIVE tenant_id FROM THE AUTHENTICATED USER, NOT THE URL SLUG
+    # This is the key fix: ignore slug and use the user's assigned tenant.
+    tenant_id = user.tenant_id
+    if not tenant_id:
+        # Fallback for older users or different auth flows, but still prioritize token context over URL
+        tenant_id = g.tenant_profile.id
 
     query = MarketOrder.query.filter_by(tenant_id=tenant_id)
 

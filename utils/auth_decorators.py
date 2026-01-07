@@ -64,3 +64,53 @@ def require_permission(permission: str) -> Callable[[F], F]:
             return func(*args, **kwargs)
         return wrapper
     return decorator
+
+def _is_authorized_for_tenant(
+    user, tenant_id: int | None = None, tenant_slug: str | None = None
+) -> bool:
+    """
+    Checks if a user is authorized for a given tenant.
+    Authorization rules:
+    - Platform admins ('super_admin', 'admin') are always authorized.
+    - Users are authorized if their `tenant_id` matches.
+    - Users are authorized if they are the owner of the tenant (`municipio_id` or `pyme_id`).
+    - Users (like employees) are authorized if their `empresa_id` links to the tenant's owner.
+    """
+    if not user:
+        return False
+
+    # Platform-level admins are authorized for any tenant
+    if user.rol in ("super_admin", "admin"):
+        return True
+
+    # Direct tenant membership
+    if tenant_id is not None and getattr(user, "tenant_id", None) == tenant_id:
+        return True
+
+    # Resolve tenant to check ownership if tenant_id or tenant_slug is provided
+    from models import TenantProfile  # Local import to avoid circular dependencies
+
+    tenant = None
+    if tenant_id:
+        tenant = TenantProfile.query.get(tenant_id)
+    elif tenant_slug:
+        tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+
+    if not tenant:
+        # Cannot determine authorization without a tenant context
+        return False
+
+    # Re-check direct membership with the resolved tenant object
+    if getattr(user, "tenant_id", None) == tenant.id:
+        return True
+
+    # Direct ownership
+    if tenant.municipio_id == user.id or tenant.pyme_id == user.id:
+        return True
+
+    # Organizational affiliation (e.g., employee of the owner)
+    if user.empresa_id:
+        if tenant.municipio_id == user.empresa_id or tenant.pyme_id == user.empresa_id:
+            return True
+
+    return False

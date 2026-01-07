@@ -1159,3 +1159,12 @@ def anon_o_token_requerido(f):
         return _set_anon_cookie(resp, anon_id)
 
     return decorated
+
+def _get_user_from_token() -> Optional[User]:
+    """
+    Extracts user from JWT token found in request headers.
+    """
+    token = obtener_token()
+    if not token:
+        return None
+    return user_from_token(token)
