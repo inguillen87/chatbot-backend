@@ -59,6 +59,7 @@ from flask_login import current_user
 from utils.plan_limits import limite_para_usuario
 from services.plan_config import (
     get_plan_metadata,
+    normalize_plan_key,
     serialize_plan_catalog,
     serialize_plan_for_response,
 )
@@ -306,6 +307,84 @@ def _tenant_for_user(user: User):
         (TenantProfile.municipio_id == user.id) | (TenantProfile.pyme_id == user.id)
     ).first()
 
+def _resolve_tipo_chat(
+    user: User,
+    tenant_obj: Optional[TenantProfile] = None,
+    rubro_nombre: Optional[str] = None,
+) -> str:
+    if tenant_obj and tenant_obj.tipo:
+        return str(tenant_obj.tipo).lower()
+
+    if getattr(user, "tipo_chat", None):
+        return str(user.tipo_chat).lower()
+
+    rubro_value = rubro_nombre
+    if not rubro_value:
+        rubro_obj = getattr(user, "rubro", None)
+        rubro_value = getattr(rubro_obj, "nombre", None) or rubro_obj
+
+    return "municipio" if es_rubro_publico(rubro_value) else "pyme"
+
+
+def _resolve_tenant_for_user(
+    user: User,
+    tenant_hint: Optional[TenantProfile] = None,
+) -> Optional[TenantProfile]:
+    def _tenant_matches_user(tenant: TenantProfile) -> bool:
+        if not tenant or not user:
+            return False
+
+        if getattr(user, "tenant_id", None) and user.tenant_id == tenant.id:
+            return True
+
+        if getattr(user, "tenant_slug", None) and tenant.slug and user.tenant_slug.lower() == tenant.slug.lower():
+            return True
+
+        if tenant.municipio_id and str(user.id) == str(tenant.municipio_id):
+            return True
+        if tenant.pyme_id and str(user.id) == str(tenant.pyme_id):
+            return True
+
+        if getattr(user, "municipio_id", None) and tenant.municipio_id:
+            return str(user.municipio_id) == str(tenant.municipio_id)
+
+        if getattr(user, "pyme_id", None) and tenant.pyme_id:
+            return str(user.pyme_id) == str(tenant.pyme_id)
+
+        if getattr(user, "empresa_id", None) and tenant.pyme_id:
+            return str(user.empresa_id) == str(tenant.pyme_id)
+
+        return False
+
+    if tenant_hint and _tenant_matches_user(tenant_hint):
+        return tenant_hint
+
+    tenant_obj = _tenant_for_user(user)
+    if tenant_obj:
+        return tenant_obj
+
+    if getattr(user, "tenant_id", None):
+        tenant_obj = TenantProfile.query.get(user.tenant_id)
+        if tenant_obj:
+            return tenant_obj
+
+    tenant_slug = getattr(user, "tenant_slug", None)
+    if tenant_slug:
+        try:
+            tenant_obj = resolve_tenant_only(tenant_slug=tenant_slug)
+        except Exception:
+            tenant_obj = None
+        if tenant_obj:
+            return tenant_obj
+
+    empresa_id = getattr(user, "empresa_id", None)
+    if empresa_id:
+        owner_user = _user_query().get(empresa_id)
+        if owner_user:
+            return _tenant_for_owner(owner_user) or _tenant_for_user(owner_user)
+
+    return None
+
 
 def _apply_welcome_points_if_configured(user: User):
     try:
@@ -350,7 +429,16 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     except Exception:
         rubro_es_publico = False
 
-    tipo_chat = getattr(user, "tipo_chat", None) or ("municipio" if rubro_es_publico else "pyme")
+    owner_user = None
+    if getattr(user, "empresa_id", None):
+        owner_user = _user_query().get(user.empresa_id)
+
+    tenant_profile = getattr(g, "tenant_profile", None) or getattr(g, "current_tenant", None)
+    tenant_profile = _resolve_tenant_for_user(user, tenant_profile)
+    if not tenant_profile and owner_user:
+        tenant_profile = _resolve_tenant_for_user(owner_user)
+
+    tipo_chat = _resolve_tipo_chat(user, tenant_obj=tenant_profile, rubro_nombre=rubro_nombre)
     catalogo_label = (
         "Cargar Catálogo de Trámites" if tipo_chat == "municipio" else "Cargar Catálogo de Productos"
     )
@@ -358,6 +446,14 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "INTEGRATION_GUIDE_URL",
         "https://docs.chatboc.ar/widget-integration",
     ) or "https://docs.chatboc.ar/widget-integration"
+
+    plan_value = (
+        tenant_profile.plan
+        if tenant_profile and tenant_profile.plan
+        else getattr(owner_user, "plan", None)
+        or getattr(user, "plan", None)
+    )
+    normalized_plan = normalize_plan_key(plan_value)
 
     profile_data: Dict[str, Any] = {
         "id": user.id,
@@ -375,7 +471,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "ciudad": getattr(user, "ciudad", None),
         "color_primario": getattr(user, "color_primario", None),
         "color_secundario": getattr(user, "color_secundario", None),
-        "plan": getattr(user, "plan", None),
+        "plan": normalized_plan or plan_value,
         "limite_preguntas": limite_para_usuario(user),
         "acepta_marketing": getattr(user, "acepta_marketing", None),
         "tags": getattr(user, "tags", None),
@@ -761,7 +857,6 @@ def login():
     current_app.logger.info(f"Login exitoso para: {user.email}")
 
     rubro_nombre = user.rubro.nombre if user.rubro else "General"
-    tipo_chat = getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(user.rubro) else "pyme")
 
     # Integrar Flask-Login
     from flask_login import login_user
@@ -784,6 +879,7 @@ def login():
                 except Exception:
                     pass
 
+    tenant_obj = _resolve_tenant_for_user(user, tenant_obj)
     if tenant_obj:
         _attach_user_to_tenant(user, tenant_obj)
         try:
@@ -791,6 +887,7 @@ def login():
         except Exception:
             db.session.rollback()
             current_app.logger.warning("Failed to attach user to tenant during login")
+    tipo_chat = _resolve_tipo_chat(user, tenant_obj=tenant_obj, rubro_nombre=rubro_nombre)
 
     # Migrate anonymous data if anon_id is present
     req_anon_id = request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id") or data.get("anon_id")
@@ -822,7 +919,7 @@ def login():
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
 
     # Prioritize the tenant owned by the user if they are a tenant owner
-    owned_tenant = _tenant_for_user(user)
+    owned_tenant = _resolve_tenant_for_user(user)
     current_app.logger.info(f"[AUTH_DEBUG] User: {user.id}, Email: {user.email}")
     current_app.logger.info(f"[AUTH_DEBUG] Owned Tenant (from _tenant_for_user): {owned_tenant.slug if owned_tenant else 'None'}")
 
@@ -961,7 +1058,8 @@ def google_login():
             return resp
 
         rubro_nombre = user.rubro.nombre if user.rubro else "General"
-        tipo_chat = getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(user.rubro) else "pyme")
+        tenant_obj = _resolve_tenant_for_user(user)
+        tipo_chat = _resolve_tipo_chat(user, tenant_obj=tenant_obj, rubro_nombre=rubro_nombre)
 
         # Integrar Flask-Login
         from flask_login import login_user
@@ -981,9 +1079,8 @@ def google_login():
         # Determine tenant_slug for response
         tenant_slug_out = getattr(user, "tenant_slug", None)
         if not tenant_slug_out:
-            owner_tenant = _tenant_for_user(user)
-            if owner_tenant:
-                tenant_slug_out = owner_tenant.slug
+            if tenant_obj:
+                tenant_slug_out = tenant_obj.slug
 
         response_payload = {
             "id": user.id,
@@ -1468,7 +1565,7 @@ def login_from_widget(owner_user):
     if not email or not password:
         return jsonify({"error": "Email y contraseña requeridos."}), 400
 
-    owner_tenant = _tenant_for_owner(owner_user)
+    owner_tenant = _resolve_tenant_for_user(owner_user, _tenant_for_owner(owner_user))
     if not owner_tenant:
         return jsonify({"error": "Tenant no especificado o no encontrado para el widget"}), 404
 
@@ -1489,7 +1586,7 @@ def login_from_widget(owner_user):
     user_rubro = getattr(user, "rubro", None)
     owner_rubro = getattr(owner_user, "rubro", None)
     rubro_nombre = user_rubro.nombre if user_rubro else owner_rubro.nombre if owner_rubro else "General"
-    tipo_chat = getattr(user, "tipo_chat", None) or getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
+    tipo_chat = _resolve_tipo_chat(user, tenant_obj=owner_tenant, rubro_nombre=rubro_nombre)
 
     # Generar el token JWT
     jwt_payload = {
@@ -1794,7 +1891,7 @@ def chatuser_login_panel():
     db.session.commit()
 
     rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
-    tipo_chat = getattr(user, "tipo_chat", None) or getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(rubro_nombre) else "pyme")
+    tipo_chat = _resolve_tipo_chat(user, tenant_obj=owner_tenant, rubro_nombre=rubro_nombre)
 
     # Generar el token JWT
     jwt_payload = {
@@ -2177,7 +2274,7 @@ def admin_login():
 
     # Generate Token
     # Prioritize the tenant owned by the user to ensure correct context.
-    owned_tenant = _tenant_for_user(user)
+    owned_tenant = _resolve_tenant_for_user(user)
     if owned_tenant:
         tenant_slug = owned_tenant.slug
     else:
@@ -2189,10 +2286,11 @@ def admin_login():
     current_app.logger.info(f"[ADMIN_LOGIN_DEBUG] Fallback tenant_slug on user: {getattr(user, 'tenant_slug', None)}")
     current_app.logger.info(f"[ADMIN_LOGIN_DEBUG] Final resolved tenant slug: {tenant_slug}")
 
+    tipo_chat = _resolve_tipo_chat(user, tenant_obj=owned_tenant)
     jwt_payload = {
         'user_id': user.id,
         'rol': user.rol,
-        'tipo_chat': user.tipo_chat,
+        'tipo_chat': tipo_chat,
         'empresa_id': user.empresa_id,
         'municipio_id': user.municipio_id,
         'tenant_slug': tenant_slug,

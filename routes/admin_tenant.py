@@ -3,6 +3,7 @@ from utils.auth_helpers import token_requerido
 from middleware.tenant_context import require_tenant
 from models import db, TenantProfile, User, TenantConfig, Role, UserRole, CategoriaTicket, IntegrationAccount
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
+from services.plan_config import normalize_plan_key
 from services.tenant_resolver import apply_tenant_alias
 
 admin_tenant_bp = Blueprint('admin_tenant_bp', __name__)
@@ -63,6 +64,37 @@ def _is_authorized_for_tenant(current_user: User, tenant: TenantProfile) -> bool
 
     return False
 
+
+def _plan_allows_integrations(tenant: TenantProfile) -> bool:
+    plan_key = normalize_plan_key(tenant.plan)
+    return plan_key in ("pro", "full")
+
+
+def _resolve_admin_tenant(current_user: User, slug: str) -> TenantProfile | None:
+    slug = apply_tenant_alias(slug) or slug
+    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    if not tenant and slug and slug.startswith("admin-"):
+        fallback_slug = slug.replace("admin-", "", 1)
+        fallback_slug = apply_tenant_alias(fallback_slug) or fallback_slug
+        tenant = TenantProfile.query.filter_by(slug=fallback_slug).first()
+    if tenant and _is_authorized_for_tenant(current_user, tenant):
+        return tenant
+
+    tenant_hint = getattr(g, "tenant_profile", None)
+    if tenant_hint and _is_authorized_for_tenant(current_user, tenant_hint):
+        return tenant_hint
+
+    tenant_from_user = (
+        getattr(current_user, "tenant", None)
+        or getattr(current_user, "tenant_profile", None)
+        or getattr(current_user, "tenant_profile_municipio", None)
+        or getattr(current_user, "tenant_profile_pyme", None)
+    )
+    if tenant_from_user and _is_authorized_for_tenant(current_user, tenant_from_user):
+        return tenant_from_user
+
+    return tenant
+
 # --- Tenant Management ---
 
 @admin_tenant_bp.route('/api/admin/tenants', methods=['POST'])
@@ -100,8 +132,7 @@ def create_tenant():
 @token_requerido
 @require_tenant
 def get_tenant_config_bundle(current_user, slug):
-    slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
@@ -136,8 +167,7 @@ def get_tenant_config_bundle(current_user, slug):
 @token_requerido
 @require_tenant
 def update_tenant_config_bundle(current_user, slug):
-    slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
@@ -191,8 +221,7 @@ def update_tenant_config_bundle(current_user, slug):
 @token_requerido
 @require_tenant
 def assign_whatsapp_number(current_user, slug):
-    slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
@@ -381,13 +410,22 @@ def list_current_tenant_employees(current_user):
 @token_requerido
 @require_tenant
 def list_integrations(current_user, slug):
-    slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
+    if not _plan_allows_integrations(tenant):
+        return (
+            jsonify(
+                {
+                    "error": "plan_required",
+                    "message": "Integraciones disponibles para planes Pro/Full.",
+                }
+            ),
+            403,
+        )
 
     integrations = IntegrationAccount.query.filter_by(tenant_id=tenant.id).all()
 
@@ -415,13 +453,22 @@ def list_integrations(current_user, slug):
 @token_requerido
 @require_tenant
 def connect_integration(current_user, slug, integration_type):
-    slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
+    if not _plan_allows_integrations(tenant):
+        return (
+            jsonify(
+                {
+                    "error": "plan_required",
+                    "message": "Integraciones disponibles para planes Pro/Full.",
+                }
+            ),
+            403,
+        )
 
     base_url = current_app.config.get("PUBLIC_BASE_URL", "https://chatboc.ar").rstrip("/")
 
@@ -460,8 +507,7 @@ def list_employees_by_slug(current_user, slug):
     """
     List employees for a specific tenant slug (supports admin dashboard deep linking).
     """
-    slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
@@ -494,8 +540,7 @@ def list_ticket_categories_by_slug(current_user, slug):
     """
     List ticket categories for a specific tenant.
     """
-    slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
@@ -519,13 +564,22 @@ def list_ticket_categories_by_slug(current_user, slug):
 @token_requerido
 @require_tenant
 def sync_integration(current_user, slug, integration_type):
-    slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
 
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
+    if not _plan_allows_integrations(tenant):
+        return (
+            jsonify(
+                {
+                    "error": "plan_required",
+                    "message": "Integraciones disponibles para planes Pro/Full.",
+                }
+            ),
+            403,
+        )
 
     if integration_type.lower() == 'mercadolibre':
         from services.integrations.mercadolibre import MercadoLibreService

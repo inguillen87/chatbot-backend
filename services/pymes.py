@@ -34,6 +34,7 @@ from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_wit
 from services.webinfo import obtener_info_web
 from .common_utils import construir_respuesta_sugerir_registro # <--- NUEVA IMPORTACIÓN
 from services.preferences import add_preference
+from services.pedido_service import servicio_pedidos
 from services import cart as cart_service
 from services.promocion_service import promocion_service
 from services import promo_service
@@ -1246,6 +1247,19 @@ class FinalizarPedidoHandler(BaseHandler):
         try:
             db.session.add(nuevo_pedido)
             db.session.commit()
+            try:
+                market_order = servicio_pedidos.sync_market_order_from_pyme(
+                    nuevo_pedido,
+                    channel=self.context.get("channel"),
+                )
+            except Exception as e:
+                db.session.rollback()
+                logger.error(
+                    "Error creando MarketOrder para pedido %s: %s",
+                    nuevo_pedido.nro_pedido,
+                    e,
+                    exc_info=True,
+                )
 
             # Clear the cart
             cart_service.clear_pyme_cart(self.pyme_carts_data, self.pyme_id_actual)
