@@ -319,7 +319,7 @@ def resolve_tenant_only(
     host: Optional[str] = None,
     require_explicit_slug: bool = False,
 ) -> TenantProfile:
-    preferred_slug = _clean_slug(tenant_slug)
+    preferred_slug = apply_tenant_alias(tenant_slug)
     tenant = _tenant_by_slug(preferred_slug)
 
     if not tenant and preferred_slug:
