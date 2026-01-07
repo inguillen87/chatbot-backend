@@ -359,6 +359,10 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "https://docs.chatboc.ar/widget-integration",
     ) or "https://docs.chatboc.ar/widget-integration"
 
+    tenant = _tenant_for_user(user) or (db.session.get(TenantProfile, user.tenant_id) if user.tenant_id else None)
+    plan = (tenant.plan if tenant else None) or getattr(user, "plan", "unknown")
+
+
     profile_data: Dict[str, Any] = {
         "id": user.id,
         "name": user.name,
@@ -375,7 +379,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "ciudad": getattr(user, "ciudad", None),
         "color_primario": getattr(user, "color_primario", None),
         "color_secundario": getattr(user, "color_secundario", None),
-        "plan": getattr(user, "plan", None),
+        "plan": plan,
         "limite_preguntas": limite_para_usuario(user),
         "acepta_marketing": getattr(user, "acepta_marketing", None),
         "tags": getattr(user, "tags", None),

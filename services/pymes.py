@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import flag_modified
 from fuzzywuzzy import process
 
-from models import Conversacion, db, PymePedido, ArchivoAdjunto
+from models import Conversacion, db, ArchivoAdjunto, MarketOrder, MarketOrderItem
 try:
     from flask import session as flask_session, current_app, request # Añadir request
 except Exception:
@@ -1209,39 +1209,48 @@ class TicketStatusHandler(BaseActionHandler):
 
 class FinalizarPedidoHandler(BaseHandler):
     def execute(self, action_data):
-        if not self.pyme_id_actual:
-            return {"message_to_user": "No puedo identificar la tienda para finalizar el pedido.", "fuente": "finalizar_pedido_sin_pyme_id"}
+        tenant_id = self.context.get("tenant_id")
+        if not tenant_id:
+            return {"message_to_user": "No se pudo identificar el tenant para finalizar el pedido.", "fuente": "finalizar_pedido_sin_tenant_id"}
 
         cart_summary = cart_service.get_cart_summary(self.pyme_carts_data, self.pyme_id_actual, self.cliente_id_actual)
 
         if not cart_summary or not cart_summary.get("items_detalle"):
             return {"message_to_user": "Tu carrito está vacío. Agrega productos antes de finalizar el pedido.", "fuente": "finalizar_pedido_carrito_vacio"}
 
-        detalles_pedido = json.dumps(cart_summary.get("items_detalle"))
         monto_total_pedido = cart_summary.get("total_final_con_descuento")
+        items_detalle = cart_summary.get("items_detalle", [])
 
         # Get client data from context
         nombre_cliente = self.pyme_ctx.get("nombre_cliente")
         email_cliente = self.pyme_ctx.get("email_cliente")
         telefono_cliente = self.pyme_ctx.get("telefono_cliente")
-        direccion_cliente = self.pyme_ctx.get("direccion_cliente")
-        latitud_cliente = self.pyme_ctx.get("latitud_cliente")
-        longitud_cliente = self.pyme_ctx.get("longitud_cliente")
 
-        # Create the order
-        nuevo_pedido = PymePedido(
-            pyme_id=self.pyme_id_actual,
-            asunto=f"Pedido de {nombre_cliente or 'cliente'}",
-            detalles=detalles_pedido,
-            monto_total=monto_total_pedido,
-            nombre_cliente=nombre_cliente,
-            email_cliente=email_cliente,
-            telefono_cliente=telefono_cliente,
-            direccion=direccion_cliente,
-            latitud=latitud_cliente,
-            longitud=longitud_cliente,
-            user_id=self.cliente_id_actual
+        # Create the MarketOrder
+        nuevo_pedido = MarketOrder(
+            tenant_id=tenant_id,
+            user_id=self.cliente_id_actual,
+            status='pending',
+            channel=self.context.get("channel", "whatsapp"),
+            contact_name=nombre_cliente,
+            contact_phone=telefono_cliente,
+            contact_email=email_cliente,
+            total_monetary=monto_total_pedido,
+            currency=cart_summary.get("moneda", "ARS"),
+            note=f"Pedido de {nombre_cliente or 'cliente'}"
         )
+
+        # Create MarketOrderItems
+        for item_data in items_detalle:
+            order_item = MarketOrderItem(
+                order=nuevo_pedido,
+                product_id=item_data.get("product_id"),
+                quantity=item_data.get("cantidad", 1),
+                price_monetary=item_data.get("precio_unitario_original", 0),
+                currency=item_data.get("moneda", "ARS"),
+                name_snapshot=item_data.get("nombre_producto")
+            )
+            nuevo_pedido.items.append(order_item)
 
         try:
             db.session.add(nuevo_pedido)
@@ -1251,17 +1260,18 @@ class FinalizarPedidoHandler(BaseHandler):
             cart_service.clear_pyme_cart(self.pyme_carts_data, self.pyme_id_actual)
             self._guardar_contexto_pyme()
 
-            # TODO: Send email notification to logistics
+            nro_pedido_generado = f"PED-{nuevo_pedido.id}-{uuid.uuid4().hex[:6].upper()}"
+
 
             return {
                 "success": True,
-                "message_body": f"¡Gracias por tu compra! Tu pedido #{nuevo_pedido.nro_pedido} ha sido creado con éxito. Te mantendremos informado sobre el estado.",
+                "message_body": f"¡Gracias por tu compra! Tu pedido #{nro_pedido_generado} ha sido creado con éxito. Te mantendremos informado sobre el estado.",
                 "fuente": "pyme_pedido_finalizado_exitosamente",
-                "data": {"pedido_id": nuevo_pedido.id, "nro_pedido": nuevo_pedido.nro_pedido}
+                "data": {"pedido_id": nuevo_pedido.id, "nro_pedido": nro_pedido_generado}
             }
         except Exception as e:
             db.session.rollback()
-            logger.error(f"Error al crear pedido final desde carrito para pyme {self.pyme_id_actual}: {e}", exc_info=True)
+            logger.error(f"Error al crear MarketOrder desde carrito para tenant {tenant_id}: {e}", exc_info=True)
             return {
                 "success": False,
                 "message_body": "Hubo un problema al procesar tu pedido. Por favor, intenta de nuevo o contacta a un agente.",
