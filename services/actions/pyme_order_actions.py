@@ -160,6 +160,7 @@ class CrearPedidoAction(BaseActionHandler):
             "direccion": direccion_entrega,
             "monto_total": monto_total_estimado,
             "pyme_id": pyme_id,
+            "channel": self.context.get("channel"),
         }
 
         try:
