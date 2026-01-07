@@ -359,6 +359,25 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "https://docs.chatboc.ar/widget-integration",
     ) or "https://docs.chatboc.ar/widget-integration"
 
+    owner_user = None
+    if getattr(user, "empresa_id", None):
+        owner_user = _user_query().get(user.empresa_id)
+
+    tenant_profile = getattr(g, "tenant_profile", None) or getattr(g, "current_tenant", None)
+    if not tenant_profile and getattr(user, "tenant_id", None):
+        tenant_profile = TenantProfile.query.get(user.tenant_id)
+    if not tenant_profile:
+        tenant_profile = _tenant_for_user(user)
+    if not tenant_profile and owner_user:
+        tenant_profile = _tenant_for_owner(owner_user) or _tenant_for_user(owner_user)
+
+    plan_value = (
+        tenant_profile.plan
+        if tenant_profile and tenant_profile.plan
+        else getattr(owner_user, "plan", None)
+        or getattr(user, "plan", None)
+    )
+
     profile_data: Dict[str, Any] = {
         "id": user.id,
         "name": user.name,
@@ -375,7 +394,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "ciudad": getattr(user, "ciudad", None),
         "color_primario": getattr(user, "color_primario", None),
         "color_secundario": getattr(user, "color_secundario", None),
-        "plan": getattr(user, "plan", None),
+        "plan": plan_value,
         "limite_preguntas": limite_para_usuario(user),
         "acepta_marketing": getattr(user, "acepta_marketing", None),
         "tags": getattr(user, "tags", None),
