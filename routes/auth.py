@@ -394,6 +394,7 @@ def public_plan_catalog():
 def build_profile_payload(user: User) -> Dict[str, Any]:
     """Assemble the profile payload shared by the legacy and new endpoints."""
 
+    tenant_profile = None
     rubro_obj = getattr(user, "rubro", None)
     rubro_nombre = getattr(rubro_obj, "nombre", None) or "General"
 
