@@ -3,12 +3,13 @@ from services.integrations.mercadolibre_service import MercadoLibreService
 from services.integrations.tiendanube_service import TiendaNubeService
 from utils.auth_helpers import token_requerido
 from models import IntegrationAccount, db, TenantProfile
+from services.plan_config import normalize_plan_key
 
 integrations_bp = Blueprint('integrations', __name__)
 
 
 def _plan_allows_integrations(tenant: TenantProfile) -> bool:
-    plan_key = (tenant.plan or "").strip().lower()
+    plan_key = normalize_plan_key(tenant.plan)
     return plan_key in ("pro", "full")
 
 

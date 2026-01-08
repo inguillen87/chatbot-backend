@@ -25,6 +25,8 @@ def apply_tenant_alias(slug: Optional[str]) -> Optional[str]:
     cleaned = _clean_slug(slug)
     if not cleaned:
         return None
+    if cleaned.lower().startswith("admin-"):
+        cleaned = cleaned[6:]
     alias_target = _alias_map().get(cleaned.lower())
     return alias_target or cleaned
 
@@ -319,7 +321,7 @@ def resolve_tenant_only(
     host: Optional[str] = None,
     require_explicit_slug: bool = False,
 ) -> TenantProfile:
-    preferred_slug = _clean_slug(tenant_slug)
+    preferred_slug = apply_tenant_alias(tenant_slug)
     tenant = _tenant_by_slug(preferred_slug)
 
     if not tenant and preferred_slug:

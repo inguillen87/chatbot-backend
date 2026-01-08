@@ -152,8 +152,24 @@ def get_plan_metadata(plan_key: Optional[str]) -> Optional[PlanMetadata]:
 
     if not plan_key:
         return None
-    normalized = str(plan_key).strip().lower()
+    normalized = normalize_plan_key(plan_key)
     return _PLAN_CATALOG.get(normalized)
+
+
+def normalize_plan_key(plan_key: Optional[str]) -> str:
+    """Normalize plan keys from legacy aliases to catalog keys."""
+
+    if not plan_key:
+        return ""
+
+    normalized = str(plan_key).strip().lower()
+    if normalized in {"free", "plan_free", "plan_gratis"}:
+        return "gratis"
+    if normalized in {"full", "plan_full"}:
+        return "full"
+    if normalized in {"pro", "plan_pro"}:
+        return "pro"
+    return normalized
 
 
 def serialize_plan_catalog(public_only: bool = True) -> List[Dict[str, object]]:
@@ -198,7 +214,8 @@ def apply_plan_to_user(
     Returns the applied :class:`PlanMetadata` for convenience.
     """
 
-    metadata = get_plan_metadata(plan_key)
+    normalized_plan_key = normalize_plan_key(plan_key)
+    metadata = get_plan_metadata(normalized_plan_key)
     if metadata is None:
         raise ValueError(f"Plan desconocido: {plan_key}")
 
@@ -226,6 +243,7 @@ __all__ = [
     "format_limit",
     "format_price",
     "get_plan_metadata",
+    "normalize_plan_key",
     "serialize_plan_catalog",
     "serialize_plan_for_response",
 ]
