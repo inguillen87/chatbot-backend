@@ -5,7 +5,6 @@ from models import TenantProfile, WidgetSettings
 from services.tenant_resolver import (
     RESERVED_TENANT_SLUGS,
     TenantResolutionError,
-    apply_tenant_alias,
     inject_anon_cookie,
     resolve_tenant_and_user,
     resolve_tenant_only,
@@ -574,7 +573,6 @@ def widget_config():
 
     widget_token = _extract_widget_token()
     tenant_slug = request.args.get("tenant") or request.args.get("slug")
-    tenant_slug = apply_tenant_alias(tenant_slug) or tenant_slug
     whatsapp_destination_number = request.args.get("whatsapp_destination_number")
 
     try:

@@ -59,7 +59,6 @@ from flask_login import current_user
 from utils.plan_limits import limite_para_usuario
 from services.plan_config import (
     get_plan_metadata,
-    normalize_plan_key,
     serialize_plan_catalog,
     serialize_plan_for_response,
 )
@@ -312,59 +311,25 @@ def _resolve_tipo_chat(
     tenant_obj: Optional[TenantProfile] = None,
     rubro_nombre: Optional[str] = None,
 ) -> str:
+    if tenant_obj and tenant_obj.tipo:
+        return str(tenant_obj.tipo).lower()
+
+    if getattr(user, "tipo_chat", None):
+        return str(user.tipo_chat).lower()
+
     rubro_value = rubro_nombre
     if not rubro_value:
         rubro_obj = getattr(user, "rubro", None)
         rubro_value = getattr(rubro_obj, "nombre", None) or rubro_obj
 
-    rubro_es_publico = es_rubro_publico(rubro_value)
-
-    if tenant_obj and tenant_obj.tipo:
-        tenant_tipo = str(tenant_obj.tipo).lower()
-        if tenant_tipo == "municipio" and not rubro_es_publico:
-            return "pyme"
-        return tenant_tipo
-
-    if getattr(user, "tipo_chat", None):
-        user_tipo = str(user.tipo_chat).lower()
-        if user_tipo == "municipio" and not rubro_es_publico:
-            return "pyme"
-        return user_tipo
-
-    return "municipio" if rubro_es_publico else "pyme"
+    return "municipio" if es_rubro_publico(rubro_value) else "pyme"
 
 
 def _resolve_tenant_for_user(
     user: User,
     tenant_hint: Optional[TenantProfile] = None,
 ) -> Optional[TenantProfile]:
-    def _tenant_matches_user(tenant: TenantProfile) -> bool:
-        if not tenant or not user:
-            return False
-
-        if getattr(user, "tenant_id", None) and user.tenant_id == tenant.id:
-            return True
-
-        if getattr(user, "tenant_slug", None) and tenant.slug and user.tenant_slug.lower() == tenant.slug.lower():
-            return True
-
-        if tenant.municipio_id and str(user.id) == str(tenant.municipio_id):
-            return True
-        if tenant.pyme_id and str(user.id) == str(tenant.pyme_id):
-            return True
-
-        if getattr(user, "municipio_id", None) and tenant.municipio_id:
-            return str(user.municipio_id) == str(tenant.municipio_id)
-
-        if getattr(user, "pyme_id", None) and tenant.pyme_id:
-            return str(user.pyme_id) == str(tenant.pyme_id)
-
-        if getattr(user, "empresa_id", None) and tenant.pyme_id:
-            return str(user.empresa_id) == str(tenant.pyme_id)
-
-        return False
-
-    if tenant_hint and _tenant_matches_user(tenant_hint):
+    if tenant_hint:
         return tenant_hint
 
     tenant_obj = _tenant_for_user(user)
@@ -462,7 +427,6 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         else getattr(owner_user, "plan", None)
         or getattr(user, "plan", None)
     )
-    normalized_plan = normalize_plan_key(plan_value)
 
     profile_data: Dict[str, Any] = {
         "id": user.id,
@@ -480,7 +444,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "ciudad": getattr(user, "ciudad", None),
         "color_primario": getattr(user, "color_primario", None),
         "color_secundario": getattr(user, "color_secundario", None),
-        "plan": normalized_plan or plan_value,
+        "plan": plan_value,
         "limite_preguntas": limite_para_usuario(user),
         "acepta_marketing": getattr(user, "acepta_marketing", None),
         "tags": getattr(user, "tags", None),

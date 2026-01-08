@@ -1,70 +1,11 @@
 from flask import Blueprint, request, jsonify, g, abort
-from models import db, MarketOrder, MarketOrderItem, CatalogoItem
+from models import db, MarketOrder, MarketOrderItem, CatalogoItem, TenantProfile
 from utils.auth_helpers import token_requerido
 from utils.tenant import require_tenant
-from services.tenant_resolver import apply_tenant_alias
 from sqlalchemy.orm.attributes import flag_modified
 from utils.auth_decorators import _is_authorized_for_tenant
 
 admin_market_bp = Blueprint('admin_market', __name__)
-
-
-def _tenant_matches_user(user, tenant) -> bool:
-    if not user or not tenant:
-        return False
-
-    if getattr(user, "tenant_id", None) and user.tenant_id == tenant.id:
-        return True
-
-    if getattr(user, "tenant_slug", None) and tenant.slug and user.tenant_slug.lower() == tenant.slug.lower():
-        return True
-
-    if tenant.municipio_id and str(user.id) == str(tenant.municipio_id):
-        return True
-    if tenant.pyme_id and str(user.id) == str(tenant.pyme_id):
-        return True
-
-    if getattr(user, "municipio_id", None) and tenant.municipio_id:
-        return str(user.municipio_id) == str(tenant.municipio_id)
-
-    if getattr(user, "pyme_id", None) and tenant.pyme_id:
-        return str(user.pyme_id) == str(tenant.pyme_id)
-
-    if getattr(user, "empresa_id", None) and tenant.pyme_id:
-        return str(user.empresa_id) == str(tenant.pyme_id)
-
-    return False
-
-
-def _resolve_market_tenant(user, slug):
-    normalized_slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=normalized_slug).first()
-    if not tenant and normalized_slug and normalized_slug.startswith("admin-"):
-        fallback_slug = normalized_slug.replace("admin-", "", 1)
-        fallback_slug = apply_tenant_alias(fallback_slug) or fallback_slug
-        tenant = TenantProfile.query.filter_by(slug=fallback_slug).first()
-    if tenant and _tenant_matches_user(user, tenant):
-        return tenant
-
-    tenant_hint = getattr(g, "tenant_profile", None)
-    if tenant_hint and _tenant_matches_user(user, tenant_hint):
-        return tenant_hint
-
-    if getattr(user, "tenant_id", None):
-        tenant_from_id = TenantProfile.query.get(user.tenant_id)
-        if tenant_from_id and _tenant_matches_user(user, tenant_from_id):
-            return tenant_from_id
-
-    tenant_from_user = (
-        getattr(user, "tenant", None)
-        or getattr(user, "tenant_profile", None)
-        or getattr(user, "tenant_profile_municipio", None)
-        or getattr(user, "tenant_profile_pyme", None)
-    )
-    if tenant_from_user and _tenant_matches_user(user, tenant_from_user):
-        return tenant_from_user
-
-    return tenant or tenant_hint
 
 @admin_market_bp.route('/orders', methods=['GET'])
 @token_requerido
@@ -119,10 +60,7 @@ def create_order(user, slug):
     """Create a manual order."""
     data = request.get_json()
 
-    tenant = _resolve_market_tenant(user, slug)
-    if not tenant:
-        return jsonify({"error": "Tenant not found"}), 404
-    tenant_id = tenant.id
+    tenant_id = g.tenant_profile.id
 
     # Client info
     contact_name = data.get('contact_name') or "Cliente Mostrador"
@@ -182,10 +120,7 @@ def create_order(user, slug):
 @require_tenant
 def update_order(user, order_id, slug):
     """Update order status or notes."""
-    tenant = _resolve_market_tenant(user, slug)
-    if not tenant:
-        return jsonify({"error": "Tenant not found"}), 404
-    order = MarketOrder.query.filter_by(id=order_id, tenant_id=tenant.id).first_or_404()
+    order = MarketOrder.query.filter_by(id=order_id, tenant_id=g.tenant_profile.id).first_or_404()
     data = request.get_json()
 
     if 'status' in data:
@@ -205,9 +140,10 @@ def update_order(user, order_id, slug):
 @require_tenant
 def notification_settings(user, slug):
     """Manage tenant notification settings."""
-    tenant = _resolve_market_tenant(user, slug)
-    if not tenant:
-        return jsonify({"error": "Tenant not found"}), 404
+    tenant = g.tenant_profile
+
+    if not _is_authorized_for_tenant(user, tenant_slug=slug):
+        abort(403, description="Acceso denegado.")
 
     if request.method == 'GET':
         config = tenant.configuracion or {}

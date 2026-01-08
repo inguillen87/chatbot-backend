@@ -3,7 +3,6 @@ from utils.auth_helpers import token_requerido
 from middleware.tenant_context import require_tenant
 from models import db, TenantProfile, User, TenantConfig, Role, UserRole, CategoriaTicket, IntegrationAccount
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
-from services.plan_config import normalize_plan_key
 from services.tenant_resolver import apply_tenant_alias
 
 admin_tenant_bp = Blueprint('admin_tenant_bp', __name__)
@@ -66,17 +65,13 @@ def _is_authorized_for_tenant(current_user: User, tenant: TenantProfile) -> bool
 
 
 def _plan_allows_integrations(tenant: TenantProfile) -> bool:
-    plan_key = normalize_plan_key(tenant.plan)
+    plan_key = (tenant.plan or "").strip().lower()
     return plan_key in ("pro", "full")
 
 
 def _resolve_admin_tenant(current_user: User, slug: str) -> TenantProfile | None:
     slug = apply_tenant_alias(slug) or slug
     tenant = TenantProfile.query.filter_by(slug=slug).first()
-    if not tenant and slug and slug.startswith("admin-"):
-        fallback_slug = slug.replace("admin-", "", 1)
-        fallback_slug = apply_tenant_alias(fallback_slug) or fallback_slug
-        tenant = TenantProfile.query.filter_by(slug=fallback_slug).first()
     if tenant and _is_authorized_for_tenant(current_user, tenant):
         return tenant
 
@@ -159,7 +154,11 @@ def get_tenant_config_bundle(current_user, slug):
             "logo_url": tenant.logo_url,
             "whatsapp_sender_id": tenant.whatsapp_sender_id
         },
-        "configs": config_dict
+        "configs": config_dict,
+        "features": {
+            "integrations": _plan_allows_integrations(tenant),
+            "widget_customization": _plan_allows_integrations(tenant)
+        }
     }
     return jsonify(response)
 

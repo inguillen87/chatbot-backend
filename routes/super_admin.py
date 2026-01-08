@@ -5,7 +5,7 @@ from utils.admin_decorators import super_admin_required
 from sqlalchemy import desc
 from datetime import datetime, timezone, timedelta
 from services.tenant_management.folder_manager import ensure_tenant_folder_structure
-from services.plan_config import apply_plan_to_user, normalize_plan_key
+from services.plan_config import apply_plan_to_user
 import jwt
 
 super_admin_bp = Blueprint('super_admin', __name__, url_prefix='/api/admin')
@@ -190,23 +190,39 @@ def update_tenant_full(current_user, slug):
 
     if 'nombre' in data: tenant.nombre = data['nombre']
     if 'plan' in data:
-        normalized_plan = normalize_plan_key(data['plan'])
+        normalized_plan = str(data['plan']).strip().lower()
         tenant.plan = normalized_plan
-        owner = tenant.municipio or tenant.pyme
 
-        # Propagate plan change to all associated users (owner, direct members, employees)
         users_to_update = set()
+
+        # Method 1: Find the owner via TenantProfile's FK and their employees
+        owner = tenant.municipio or tenant.pyme
         if owner:
             users_to_update.add(owner)
-            # Add all employees of the owner
-            employees = User.query.filter(User.empresa_id == owner.id).all()
-            for emp in employees:
-                users_to_update.add(emp)
+            if owner.id: # safety check
+                employees = User.query.filter(User.empresa_id == owner.id).all()
+                for emp in employees:
+                    users_to_update.add(emp)
 
-        # Add all users directly assigned to the tenant
+        # Method 2: Find all users directly linked via User.tenant_id
         direct_members = User.query.filter(User.tenant_id == tenant.id).all()
         for member in direct_members:
             users_to_update.add(member)
+
+        # Method 3 (Fallback for demo/legacy tenants): Find users whose pyme_id/municipio_id points to this tenant's ID
+        if tenant.tipo == 'pyme':
+            fallback_members = User.query.filter(User.pyme_id == tenant.id).all()
+            for member in fallback_members:
+                users_to_update.add(member)
+        elif tenant.tipo == 'municipio':
+            fallback_members = User.query.filter(User.municipio_id == tenant.id).all()
+            for member in fallback_members:
+                users_to_update.add(member)
+
+        if not users_to_update:
+            current_app.logger.warning(f"SA:update_plan: No associated users found for tenant {tenant.slug}. Plan will not be propagated.")
+        else:
+             current_app.logger.info(f"SA:update_plan: Found {len(users_to_update)} users to update for tenant {tenant.slug}.")
 
         for user in users_to_update:
             apply_plan_to_user(user, normalized_plan)
