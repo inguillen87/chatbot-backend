@@ -22,11 +22,16 @@ def list_tenants(current_user):
 
     tenants_data = []
     for tenant in pagination.items:
-        # Determine plan from owner or tenant
+        # IMPROVED LOGIC: Determine plan from owner or tenant, ensuring owner is fetched.
         owner = tenant.municipio or tenant.pyme
-        plan = tenant.plan or (owner.plan if owner else "unknown")
-        # status logic: if is_active is false -> inactive. Else -> active.
-        status = "active" if getattr(tenant, 'is_active', True) else "inactive"
+        plan = "unknown"
+        if owner:
+            plan = owner.plan or tenant.plan or "free"
+        else:
+            plan = tenant.plan or "free"
+
+        # IMPROVED LOGIC: Status is derived from is_active field.
+        status = "active" if tenant.is_active else "inactive"
 
         tenants_data.append({
             "id": tenant.id,
@@ -35,7 +40,7 @@ def list_tenants(current_user):
             "tipo": tenant.tipo,
             "plan": plan,
             "status": status,
-            "is_active": getattr(tenant, 'is_active', True),
+            "is_active": tenant.is_active,
             "created_at": tenant.created_at.isoformat() if tenant.created_at else None
         })
 
@@ -188,25 +193,24 @@ def update_tenant_full(current_user, slug):
         normalized_plan = normalize_plan_key(data['plan'])
         tenant.plan = normalized_plan
         owner = tenant.municipio or tenant.pyme
-        updated_user_ids = set()
-        if owner:
-            apply_plan_to_user(owner, normalized_plan)
-            updated_user_ids.add(owner.id)
 
-        users_to_update = []
-        users_to_update.extend(
-            User.query.filter(User.tenant_id == tenant.id).all()
-        )
+        # Propagate plan change to all associated users (owner, direct members, employees)
+        users_to_update = set()
         if owner:
-            users_to_update.extend(
-                User.query.filter(User.empresa_id == owner.id).all()
-            )
+            users_to_update.add(owner)
+            # Add all employees of the owner
+            employees = User.query.filter(User.empresa_id == owner.id).all()
+            for emp in employees:
+                users_to_update.add(emp)
+
+        # Add all users directly assigned to the tenant
+        direct_members = User.query.filter(User.tenant_id == tenant.id).all()
+        for member in direct_members:
+            users_to_update.add(member)
 
         for user in users_to_update:
-            if user.id in updated_user_ids:
-                continue
             apply_plan_to_user(user, normalized_plan)
-            updated_user_ids.add(user.id)
+            current_app.logger.info(f"Applied plan '{normalized_plan}' to user {user.id} ({user.email}) for tenant {tenant.slug}")
 
     if 'is_active' in data: tenant.is_active = bool(data['is_active'])
     if 'whatsapp_sender_id' in data: tenant.whatsapp_sender_id = data['whatsapp_sender_id']
@@ -219,7 +223,8 @@ def update_tenant_full(current_user, slug):
         return jsonify({
             "message": "Tenant updated successfully",
             "slug": tenant.slug,
-            "is_active": tenant.is_active
+            "is_active": tenant.is_active,
+            "plan_applied": tenant.plan
         })
     except Exception as e:
         db.session.rollback()
