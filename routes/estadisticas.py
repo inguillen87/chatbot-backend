@@ -631,6 +631,11 @@ def estadisticas_dashboard(current_user):
 def mapa_calor_datos(current_user):
     """Devuelve los puntos para el mapa de calor en formato JSON."""
     args = request.args
+
+    # Early exit for superadmin to prevent 404s on a non-existent tenant
+    if args.get("tenant_slug") == "superadmin" or args.get("tenant") == "superadmin":
+        return jsonify({"heatmap": [], "stats": {}, "summary": {}, "cards": [], "filters": {}})
+
     tipo_ticket = args.get("tipo_ticket", "municipio")
 
     try:
@@ -747,6 +752,11 @@ def estadisticas_tickets(current_user):
     `municipio_id` o `rubro_id`, se utilizan los del `current_user`.
     """
     args = request.args
+
+    # Early exit for superadmin to prevent 404s on a non-existent tenant
+    if args.get("tenant_slug") == "superadmin" or args.get("tenant") == "superadmin":
+        return jsonify({"heatmap": [], "stats": {}, "summary": {}, "cards": [], "filters": {}})
+
     tipo = args.get("tipo", "municipio")
 
     try:

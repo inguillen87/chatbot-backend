@@ -25,21 +25,27 @@ def client(app):
 
 from models import Rubro
 def test_get_user_locations(client):
-    # Create test users
-    user1 = User(id=2, name='Test User 1', municipio_id=1, latitud=10.0, longitud=20.0, email='test1@test.com')
+    # Create test users without specifying IDs
+    user1 = User(name='Test User 1', municipio_id=1, latitud=10.0, longitud=20.0, email='test1@test.com')
     user1.set_password("test")
-    user2 = User(id=3, name='Test User 2', municipio_id=1, latitud=30.0, longitud=40.0, email='test2@test.com')
+    user2 = User(name='Test User 2', municipio_id=1, latitud=30.0, longitud=40.0, email='test2@test.com')
     user2.set_password("test")
 
-    admin_rubro = Rubro(id=1, nombre="municipio", clave="municipio")
-    db.session.add(admin_rubro)
-    db.session.commit()
+    admin_rubro = db.session.get(Rubro, 1)
+    if not admin_rubro:
+        admin_rubro = Rubro(id=1, nombre="municipio", clave="municipio")
+        db.session.add(admin_rubro)
+        db.session.commit()
 
-    admin_user = User(id=1, rol='admin', municipio_id=1, name='Admin User', email='admin@test.com', rubro_id=admin_rubro.id)
+    # Create admin user without specifying ID
+    admin_user = User(rol='admin', municipio_id=1, name='Admin User', email='admin@test.com', rubro_id=admin_rubro.id)
     admin_user.set_password("adminpass")
 
     db.session.add_all([user1, user2, admin_user])
     db.session.commit()
+
+    # Fetch the admin user to get the database-assigned ID
+    admin_user = User.query.filter_by(email='admin@test.com').first()
 
     jwt_payload = {'user_id': admin_user.id, 'exp': datetime.utcnow() + timedelta(days=1)}
     jwt_token = jwt.encode(jwt_payload, client.application.config['SECRET_KEY'], algorithm="HS256")
