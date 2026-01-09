@@ -411,6 +411,14 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     tenant_profile = _resolve_tenant_for_user(user, tenant_profile)
     if not tenant_profile and owner_user:
         tenant_profile = _resolve_tenant_for_user(owner_user)
+    if not tenant_profile:
+        token_payload = getattr(g, "token_payload", {}) or {}
+        tenant_slug_hint = token_payload.get("tenant_slug") or token_payload.get("tenant")
+        if tenant_slug_hint:
+            try:
+                tenant_profile = resolve_tenant_only(tenant_slug=str(tenant_slug_hint))
+            except Exception:
+                tenant_profile = None
 
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=tenant_profile, rubro_nombre=rubro_nombre)
     catalogo_label = (
