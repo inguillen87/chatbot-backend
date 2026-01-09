@@ -44,6 +44,7 @@ from utils.municipio_utils import (
 )
 from .actions.municipio_actions import (
     CrearReclamoActionHandler,
+    HacerSugerenciaActionHandler,
     _normalize_url_for_comparison,
 )
 from .herramientas_municipio import (
@@ -1911,6 +1912,17 @@ CLAIM_PENDING_FIELDS = {
     "confirmacion",
 }
 
+SUGGESTION_PENDING_FIELDS = {
+    "descripcion_sugerencia",
+    "ubicacion",
+    "direccion",
+    "datos_contacto_sugerencia",
+    "nombre",
+    "telefono",
+    "email",
+    "dni",
+}
+
 CLAIM_WAITING_STATES = {
     ConversationState.ESPERANDO_INFO_RECLAMO_LLM,
     ConversationState.ESPERANDO_DIRECCION_RECLAMO,
@@ -1923,12 +1935,26 @@ CLAIM_WAITING_STATES = {
     ConversationState.ESPERANDO_ADJUNTOS_RECLAMO,
 }
 
+SUGGESTION_WAITING_STATES = {
+    ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM,
+    ConversationState.ESPERANDO_TEXTO_SUGERENCIA,
+    ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA,
+    ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA,
+}
+
 
 def _is_claim_pending_field(field_name: Optional[str]) -> bool:
     if not field_name or not isinstance(field_name, str):
         return False
     normalized = unicodedata.normalize("NFKD", field_name).encode("ascii", "ignore").decode("ascii").lower().strip()
     return normalized in CLAIM_PENDING_FIELDS
+
+
+def _is_suggestion_pending_field(field_name: Optional[str]) -> bool:
+    if not field_name or not isinstance(field_name, str):
+        return False
+    normalized = unicodedata.normalize("NFKD", field_name).encode("ascii", "ignore").decode("ascii").lower().strip()
+    return normalized in SUGGESTION_PENDING_FIELDS
 
 
 def _normalize_pedir_info_value(pedir_info: Any) -> Optional[str]:
@@ -3224,7 +3250,12 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         estado_conversacion_enum = estado_conversacion_para_llm
     elif isinstance(estado_conversacion_para_llm, str):
         estado_conversacion_enum = ConversationState.__members__.get(estado_conversacion_para_llm)
-    waiting_state_active = estado_conversacion_enum in CLAIM_WAITING_STATES if estado_conversacion_enum else False
+    waiting_state_active = (
+        estado_conversacion_enum in CLAIM_WAITING_STATES
+        or estado_conversacion_enum in SUGGESTION_WAITING_STATES
+        if estado_conversacion_enum
+        else False
+    )
     invocar_llm = False
 
     # Si se está esperando info de un reclamo pero el usuario consulta un servicio
@@ -3253,11 +3284,24 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         ]:
             contexto_municipio_actual.pop(campo, None)
 
+    if (
+        estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name
+        and es_consulta_general(pregunta_str)
+    ):
+        logger_actual.info(
+            "[HANDLE_LLM] Cambio de tema detectado durante flujo de sugerencia. Reseteando contexto a conversacion general."
+        )
+        contexto_municipio_actual["historial_llm_sugerencia"] = []
+        contexto_municipio_actual["datos_parciales_llm_sugerencia"] = {}
+        contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
+        contexto_municipio_actual.pop("esperando_info_llm", None)
+
         contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
         estado_conversacion_para_llm = ConversationState.CONVERSACION_GENERAL_LLM.name
 
     if estado_conversacion_para_llm in [
         ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name,
+        ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name,
         ConversationState.CONVERSACION_GENERAL_LLM.name,
         ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name # Add this state to the LLM-handled states
     ]:
@@ -3270,6 +3314,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         logger.info(f"[HANDLE_LLM] Invocando LLM. Estado: {estado_conversacion_para_llm}")
 
     datos_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+    datos_sugerencia = contexto_municipio_actual.get("datos_parciales_llm_sugerencia", {})
     usuario_info_llm = {
         "nombre": datos_reclamo.get("nombre_usuario_detectado") or getattr(viewer_user, "nombre", "Vecino/a") if viewer_user else "Vecino/a",
         "tipo_entidad": "municipio",
@@ -3278,7 +3323,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             "telefono": datos_reclamo.get("telefono_detectado") or getattr(viewer_user, "telefono", None) if viewer_user else None,
             "email": datos_reclamo.get("email_detectado") or getattr(viewer_user, "email", None) if viewer_user else None
         },
-        "datos_reclamo_actuales": datos_reclamo
+        "datos_reclamo_actuales": datos_reclamo,
+        "datos_sugerencia_actuales": datos_sugerencia,
     }
 
     if demo_metadata:
@@ -3297,6 +3343,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
     historial_para_llm = []
     if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
         historial_para_llm = contexto_municipio_actual.get("historial_llm_reclamo", [])
+    elif estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name:
+        historial_para_llm = contexto_municipio_actual.get("historial_llm_sugerencia", [])
     else:
         historial_para_llm = contexto_municipio_actual.get("historial_conversacion_general_llm", [])
 
@@ -3317,10 +3365,23 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
     try:
         # FIX: Pre-process expected data to prevent state loss if LLM fails to return it
-        campo_esperado = contexto_municipio_actual.get("esperando_info_llm_reclamo")
-        campo_esperado = _normalize_pedir_info_value(campo_esperado)
-        if campo_esperado:
+        campo_esperado_reclamo = _normalize_pedir_info_value(
+            contexto_municipio_actual.get("esperando_info_llm_reclamo")
+        )
+        campo_esperado_sugerencia = _normalize_pedir_info_value(
+            contexto_municipio_actual.get("esperando_info_llm_sugerencia")
+        )
+        pending_flow = None
+        campo_esperado = None
+        if campo_esperado_reclamo:
+            pending_flow = "reclamo"
+            campo_esperado = campo_esperado_reclamo
             contexto_municipio_actual["esperando_info_llm_reclamo"] = campo_esperado
+        elif campo_esperado_sugerencia:
+            pending_flow = "sugerencia"
+            campo_esperado = campo_esperado_sugerencia
+            contexto_municipio_actual["esperando_info_llm_sugerencia"] = campo_esperado
+        if campo_esperado:
             contexto_municipio_actual["esperando_info_llm"] = campo_esperado
         estabamos_esperando_dato = bool(campo_esperado)
 
@@ -3333,9 +3394,15 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             logger_actual.info(
                 f"Guardando dato esperado '{campo_esperado}' en el contexto antes de llamar al LLM."
             )
-            datos_parciales = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
+            datos_key = (
+                "datos_parciales_llm_sugerencia"
+                if pending_flow == "sugerencia"
+                else "datos_parciales_llm_reclamo"
+            )
+            datos_parciales = contexto_municipio_actual.setdefault(datos_key, {})
 
             valor_a_guardar: Optional[str] = None
+            captured_field = False
             if campo_esperado == "ubicacion":
                 if context.get("ubicacion_usuario"):
                     lat = context["ubicacion_usuario"].get("latitude")
@@ -3355,6 +3422,17 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                         pass
                 else:
                     valor_a_guardar = pregunta_str.strip() if pregunta_str else None
+            elif pending_flow == "sugerencia" and campo_esperado in ["descripcion_sugerencia", "descripcion"]:
+                valor_a_guardar = pregunta_str.strip() if pregunta_str else None
+            elif pending_flow == "sugerencia" and campo_esperado == "datos_contacto_sugerencia":
+                campos_contacto = ["nombre", "dni", "email", "direccion", "telefono"]
+                nuevos_datos = extract_multiple_contact_details_regex(
+                    pregunta_str, campos_contacto
+                )
+                if nuevos_datos:
+                    datos_parciales.update(nuevos_datos)
+                    captured_field = True
+                    expected_value_captured = True
             else:
                 valor_a_guardar = _extract_value_for_expected_field(
                     campo_esperado,
@@ -3363,9 +3441,26 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 )
 
             if valor_a_guardar:
-                datos_parciales[campo_esperado] = valor_a_guardar
+                campo_destino = campo_esperado
+                if pending_flow == "sugerencia":
+                    if campo_esperado in ["descripcion_sugerencia", "descripcion"]:
+                        campo_destino = "descripcion"
+                    elif campo_esperado in ["direccion"]:
+                        campo_destino = "ubicacion"
+                datos_parciales[campo_destino] = valor_a_guardar
+                captured_field = True
                 expected_value_captured = True
-                contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                if pending_flow == "sugerencia":
+                    contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
+                else:
+                    contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                contexto_municipio_actual.pop("esperando_info_llm", None)
+                logger_actual.info(f"Datos parciales actualizados: {datos_parciales}")
+            elif captured_field:
+                if pending_flow == "sugerencia":
+                    contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
+                else:
+                    contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
                 contexto_municipio_actual.pop("esperando_info_llm", None)
                 logger_actual.info(f"Datos parciales actualizados: {datos_parciales}")
             else:
@@ -3375,21 +3470,35 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
         if expected_value_captured and (estabamos_esperando_dato or waiting_state_active):
             logger_actual.info(
-                "[HANDLE_LLM] Dato esperado recibido. Validando reclamo sin invocar al LLM."
+                "[HANDLE_LLM] Dato esperado recibido. Validando solicitud sin invocar al LLM."
             )
-            datos_parciales = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
-            handler = CrearReclamoActionHandler(context)
+            datos_parciales = contexto_municipio_actual.get(
+                "datos_parciales_llm_sugerencia" if pending_flow == "sugerencia" else "datos_parciales_llm_reclamo",
+                {},
+            )
+            if pending_flow == "sugerencia":
+                handler = HacerSugerenciaActionHandler(context)
+            else:
+                handler = CrearReclamoActionHandler(context)
             handler_response = handler.execute(datos_parciales)
 
             normalized_pending = _normalize_pedir_info_value(handler_response.get("pedir_info"))
             if normalized_pending:
-                contexto_municipio_actual["estado_conversacion"] = (
-                    ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-                )
-                contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending
-                contexto_municipio_actual["esperando_info_llm"] = normalized_pending
+                if pending_flow == "sugerencia":
+                    contexto_municipio_actual["estado_conversacion"] = (
+                        ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name
+                    )
+                    contexto_municipio_actual["esperando_info_llm_sugerencia"] = normalized_pending
+                    contexto_municipio_actual["esperando_info_llm"] = normalized_pending
+                else:
+                    contexto_municipio_actual["estado_conversacion"] = (
+                        ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+                    )
+                    contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending
+                    contexto_municipio_actual["esperando_info_llm"] = normalized_pending
             else:
                 contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
                 contexto_municipio_actual.pop("esperando_info_llm", None)
 
             return handler_response, contexto_municipio_actual
@@ -3439,7 +3548,11 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         pedir_info_llm = respuesta_llm_dict.get("pedir_info")
         botones_llm = respuesta_llm_dict.get("botones", [])
 
-        if not respuesta_usuario_llm and accion_backend_llm not in ["crear_reclamo", "ejecutar_herramienta"]:
+        if not respuesta_usuario_llm and accion_backend_llm not in [
+            "crear_reclamo",
+            "hacer_sugerencia",
+            "ejecutar_herramienta",
+        ]:
              logger_actual.warning("[HANDLE_LLM] LLM response did not contain a 'message_body' and was not a parameterless action. Returning None to trigger fallback.")
              return None, contexto_municipio_actual
 
@@ -3513,6 +3626,49 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
                 flag_modified(chat_db_context, "context_data")
             return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_reclamo"}, contexto_municipio_actual
+        elif accion_backend_llm == "hacer_sugerencia" and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
+            if contexto_municipio_actual.get("estado_conversacion") != ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name:
+                logger_actual.info("[CONTEXT_RESET] Nueva sugerencia detectada. Limpiando historiales de conversación.")
+                contexto_municipio_actual.pop("historial_conversacion_general_llm", None)
+                contexto_municipio_actual["datos_parciales_llm_sugerencia"] = {}
+                contexto_municipio_actual["historial_llm_sugerencia"] = []
+
+            contexto_municipio_actual.setdefault("datos_parciales_llm_sugerencia", {})
+            contexto_municipio_actual.setdefault("historial_llm_sugerencia", []).append(nuevo_turno_historial)
+
+            if not isinstance(contexto_municipio_actual.get("datos_parciales_llm_sugerencia"), dict):
+                contexto_municipio_actual["datos_parciales_llm_sugerencia"] = {}
+
+            datos_actuales_sugerencia = contexto_municipio_actual.get("datos_parciales_llm_sugerencia", {})
+            nuevos_datos_sugerencia = {k: v for k, v in datos_estructura_llm.items() if v is not None}
+            datos_actuales_sugerencia.update(nuevos_datos_sugerencia)
+            contexto_municipio_actual["datos_parciales_llm_sugerencia"] = datos_actuales_sugerencia
+
+            if not pedir_info_llm:
+                logger_actual.info("[HANDLE_LLM] LLM provided all data. Executing HacerSugerenciaActionHandler for validation and creation.")
+                handler = HacerSugerenciaActionHandler(context)
+                handler_response = handler.execute(datos_actuales_sugerencia)
+
+                pending_field = _normalize_pedir_info_value(handler_response.get("pedir_info"))
+                if pending_field:
+                    contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name
+                    contexto_municipio_actual["esperando_info_llm_sugerencia"] = pending_field
+                    contexto_municipio_actual["esperando_info_llm"] = pending_field
+                else:
+                    contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
+                    contexto_municipio_actual.pop("esperando_info_llm", None)
+
+                return handler_response, contexto_municipio_actual
+            else:
+                contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name
+                normalized_pending = _normalize_pedir_info_value(pedir_info_llm)
+                if normalized_pending:
+                    contexto_municipio_actual["esperando_info_llm_sugerencia"] = normalized_pending
+                    contexto_municipio_actual["esperando_info_llm"] = normalized_pending
+            if chat_db_context and hasattr(chat_db_context, 'context_data'):
+                chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+                flag_modified(chat_db_context, "context_data")
+            return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_pide_info_sugerencia"}, contexto_municipio_actual
         elif accion_backend_llm == "mostrar_menu":
             logger.info("[HANDLE_LLM] LLM solicitó mostrar el menú principal.")
             contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
@@ -3734,11 +3890,19 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending or pending_lookup_key
                 else:
                     contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                if _is_suggestion_pending_field(normalized_pending or pending_lookup_key):
+                    contexto_municipio_actual["esperando_info_llm_sugerencia"] = normalized_pending or pending_lookup_key
+                else:
+                    contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
             else:
                 # If no more info is needed, decide what to do
                 if estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
                     # If we were in a claim flow, it's time to create the ticket
                     return _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
+                elif estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name:
+                    handler = HacerSugerenciaActionHandler(context)
+                    datos_sugerencia = contexto_municipio_actual.get("datos_parciales_llm_sugerencia", {})
+                    return handler.execute(datos_sugerencia), contexto_municipio_actual
                 else:
                     contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
                     contexto_municipio_actual.pop("esperando_info_llm", None)
