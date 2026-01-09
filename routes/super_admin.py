@@ -5,10 +5,21 @@ from utils.admin_decorators import super_admin_required
 from sqlalchemy import desc
 from datetime import datetime, timezone, timedelta
 from services.tenant_management.folder_manager import ensure_tenant_folder_structure
-from services.plan_config import apply_plan_to_user
+from services.plan_config import apply_plan_to_user, get_plan_metadata
 import jwt
 
 super_admin_bp = Blueprint('super_admin', __name__, url_prefix='/api/admin')
+
+
+def _normalize_plan_key(raw_plan: str | None) -> str:
+    if not raw_plan:
+        return "gratis"
+    normalized = str(raw_plan).strip().lower()
+    if normalized in {"free", "demo"}:
+        normalized = "gratis"
+    if get_plan_metadata(normalized) is None:
+        return "gratis"
+    return normalized
 
 @super_admin_bp.route('/tenants', methods=['GET'])
 @token_requerido
@@ -24,11 +35,12 @@ def list_tenants(current_user):
     for tenant in pagination.items:
         # IMPROVED LOGIC: Determine plan from owner or tenant, ensuring owner is fetched.
         owner = tenant.municipio or tenant.pyme
-        plan = "unknown"
+        plan = "gratis"
         if owner:
-            plan = owner.plan or tenant.plan or "free"
+            plan = owner.plan or tenant.plan or "gratis"
         else:
-            plan = tenant.plan or "free"
+            plan = tenant.plan or "gratis"
+        plan = _normalize_plan_key(plan)
 
         # IMPROVED LOGIC: Status is derived from is_active field.
         status = "active" if tenant.is_active else "inactive"
@@ -144,7 +156,7 @@ def create_tenant(current_user):
         slug=slug,
         nombre=nombre,
         tipo=tipo,
-        plan=data.get('plan', 'free'),
+        plan=_normalize_plan_key(data.get('plan')),
         is_active=True,
         municipio_id=owner.id if tipo == 'municipio' else None,
         pyme_id=owner.id if tipo == 'pyme' else None
@@ -190,7 +202,7 @@ def update_tenant_full(current_user, slug):
 
     if 'nombre' in data: tenant.nombre = data['nombre']
     if 'plan' in data:
-        normalized_plan = str(data['plan']).strip().lower()
+        normalized_plan = _normalize_plan_key(data['plan'])
         tenant.plan = normalized_plan
 
         users_to_update = set()
