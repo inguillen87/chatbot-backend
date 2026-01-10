@@ -7996,6 +7996,19 @@ def responder_municipio(
     # --- INICIO: Manejo Proactivo de Ubicación ---
     if received_payload.get("es_ubicacion") and not pregunta_str.strip():
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        estado_actual = contexto_municipio_actual.get("estado_conversacion")
+        esperando_llm = contexto_municipio_actual.get("esperando_info_llm")
+        esperando_llm_sugerencia = contexto_municipio_actual.get("esperando_info_llm_sugerencia")
+        esperando_llm_ubicacion = esperando_llm in ["ubicacion", "direccion"]
+        esperando_llm_sugerencia_ubicacion = esperando_llm_sugerencia in ["ubicacion", "direccion"]
+        skip_proactive = (
+            estado_actual in [
+                ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name,
+                ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name,
+            ]
+            or esperando_llm_ubicacion
+            or esperando_llm_sugerencia_ubicacion
+        )
 
         if contexto_municipio_actual.get("reclamo_flow_v2", {}).get("state") == ReclamoState.ESPERANDO_DIRECCION.name:
             handler = ReclamoFlowHandler(context, chat_db_context)
@@ -8006,7 +8019,10 @@ def responder_municipio(
 
         # When already waiting for a location to answer a pending query (e.g., estacionamiento),
         # skip proactive handling so that the dedicated state logic can process it.
-        if contexto_municipio_actual.get("estado_conversacion") != ConversationState.ESPERANDO_UBICACION_GENERAL.name:
+        if (
+            not skip_proactive
+            and contexto_municipio_actual.get("estado_conversacion") != ConversationState.ESPERANDO_UBICACION_GENERAL.name
+        ):
             ultima_consulta = contexto_municipio_actual.get("ultima_consulta_poi")
             if ultima_consulta:
                 logger_actual.info(
