@@ -317,7 +317,7 @@ def _format_sugerencia_address(datos: Dict[str, Any]) -> str:
             value = ubicacion.get(key)
             if isinstance(value, str) and value.strip():
                 return value
-    elif isinstance(ubicacion, str) and ubicacion.strip():
+    elif isinstance(ubicacion, str) and ubicacion.strip() and ubicacion != "N/A":
         return ubicacion
     return ""
 
@@ -435,7 +435,7 @@ def _build_sugerencia_datos(
         "categoria": "Sugerencia",
         "descripcion": sugerencia_texto,
     }
-    if ubicacion:
+    if ubicacion and ubicacion != "N/A":
         datos["ubicacion"] = ubicacion
     if coordenadas:
         datos["coordenadas"] = coordenadas
@@ -7756,6 +7756,8 @@ def responder_municipio(
             ubicacion_sugerencia, coordenadas_sugerencia = _extract_sugerencia_location(
                 contexto_municipio_actual
             )
+            if ubicacion_sugerencia == "N/A":
+                ubicacion_sugerencia = None
             viewer_user_obj = context.get("viewer_user_obj")
             contacto_prev = contexto_municipio_actual.get('contacto_usuario', {}) or {}
             datos_sugerencia = _build_sugerencia_datos(
@@ -8643,6 +8645,8 @@ def responder_municipio(
             ubicacion_sugerencia, coordenadas_sugerencia = _extract_sugerencia_location(
                 contexto_municipio_actual
             )
+            if ubicacion_sugerencia == "N/A":
+                ubicacion_sugerencia = None
             viewer_user_obj = context.get("viewer_user_obj")
             contacto_prev = contexto_municipio_actual.get('contacto_usuario', {}) or {}
             datos_sugerencia = _build_sugerencia_datos(
@@ -9594,6 +9598,8 @@ def responder_municipio(
         ubicacion_sugerencia, coordenadas_sugerencia = _extract_sugerencia_location(
             contexto_municipio_actual
         )
+        if ubicacion_sugerencia == "N/A":
+            ubicacion_sugerencia = None
 
         # Crear ticket para la sugerencia
         contacto_prev = contexto_municipio_actual.get('contacto_usuario', {}) or {}
