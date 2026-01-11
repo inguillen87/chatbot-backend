@@ -668,9 +668,10 @@ def _build_sugerencia_success_payload(
     if audio_text:
         payload["audio_text"] = audio_text
 
-    if delayed_payload:
-        payload["delayed_payload"] = delayed_payload
-        payload["delay_seconds"] = handler_response.get("delay_seconds", 20)
+    # Explicitly disable delayed payload for suggestion success to avoid immediate re-greeting
+    # if delayed_payload:
+    #     payload["delayed_payload"] = delayed_payload
+    #     payload["delay_seconds"] = handler_response.get("delay_seconds", 20)
 
     return payload
 
@@ -7668,7 +7669,9 @@ def responder_municipio(
                 return _finalize_response(_get_reclamos_menu())
 
         elif estado_conversacion == ConversationState.ESPERANDO_INTENCION_UBICACION.name:
-            ubicacion_contextual = contexto_municipio_actual.pop('ubicacion_contextual', None)
+            # If we are here, it means we have a location context stored but the user has not yet
+            # selected an action (claim vs suggestion). We need to handle their input.
+            ubicacion_contextual = contexto_municipio_actual.get('ubicacion_contextual') # Don't pop yet, we might need it
             address = ubicacion_contextual.get('address', 'la ubicación proporcionada') if ubicacion_contextual else 'la ubicación proporcionada'
 
             if not action:
@@ -7677,30 +7680,96 @@ def responder_municipio(
                     pregunta_menu = pregunta_original
                 elif isinstance(pregunta_original, dict):
                     pregunta_menu = pregunta_original.get("pregunta", "")
+
+                # IMPORTANT: Include "Menú" in the options list so "4" works
                 opciones = [
                     {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
                     {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
                     {"texto": "Cancelar", "action_id": "cancelar"},
+                    {"texto": "Menú", "action_id": "menu_principal"},
                 ]
                 action = find_menu_action_by_input(pregunta_menu, opciones)
 
+            # If fuzzy matching failed for a menu option, try to detect intent from the text
+            # This handles cases like "Quiera hacer un pedido..."
+            if not action and _looks_like_free_form_input(pregunta_menu):
+                logger_actual.info(f"Input '{pregunta_menu}' did not match location options. Attempting intent classification.")
+                intent, _ = intent_classifier.classify(pregunta_menu)
+                if intent == "iniciar_reclamo":
+                    action = "iniciar_reclamo_con_ubicacion"
+                elif intent == "sugerencia": # Assuming intent classifier has this, or use keyword fallback
+                    action = "enviar_sugerencia_con_ubicacion"
+                # Fallback check for common keywords if intent classifier is limited
+                elif "reclamo" in normalizar_texto(pregunta_menu):
+                    action = "iniciar_reclamo_con_ubicacion"
+                elif "sugerencia" in normalizar_texto(pregunta_menu) or "pedido" in normalizar_texto(pregunta_menu):
+                    action = "enviar_sugerencia_con_ubicacion"
+
             if action == "iniciar_reclamo_con_ubicacion":
+                # Now safe to pop location context
+                ubicacion_contextual = contexto_municipio_actual.pop('ubicacion_contextual', None)
                 handler = ReclamoFlowHandler(context, chat_db_context)
                 datos_iniciales = {"direccion": address}
                 if ubicacion_contextual:
                     datos_iniciales['coordenadas'] = {"lat": ubicacion_contextual.get("latitude"), "lon": ubicacion_contextual.get("longitude")}
+
+                # If we inferred the action from free-form text, that text might also contain description
+                if _looks_like_free_form_input(pregunta_menu):
+                     datos_iniciales['descripcion'] = pregunta_menu
+
                 response_dict = handler.start_flow(datos_iniciales=datos_iniciales)
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return _finalize_response(response_dict)
+
             elif action == "enviar_sugerencia_con_ubicacion":
+                # Now safe to pop location context
+                ubicacion_contextual = contexto_municipio_actual.pop('ubicacion_contextual', None)
                 contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
                 _set_sugerencia_location_context(
                     contexto_municipio_actual,
                     ubicacion_contextual,
                     fallback_address=address,
                 )
+
+                if _looks_like_free_form_input(pregunta_menu):
+                    # If the user typed the suggestion directly, treat it as the text input
+                    # Call the function recursively to process the text in the new state
+                    logger_actual.info("User input detected as suggestion text. Recursively calling responder_municipio.")
+                    # Ensure context is saved before recursion so the new state is visible
+                    if chat_db_context:
+                        flag_modified(chat_db_context, "context_data")
+
+                    return responder_municipio(
+                        pregunta_original=pregunta_menu,
+                        owner_user=owner_user,
+                        rubro_obj=rubro_obj,
+                        viewer_user=viewer_user,
+                        chat_db_context=chat_db_context,
+                        anon_id=anon_id,
+                        channel=channel,
+                        location=location,
+                        demo_metadata=demo_metadata,
+                        **kwargs
+                    )
+
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return _finalize_response({"message_body": f"Excelente. Por favor, escribí tu sugerencia relacionada con la ubicación: *{address}*.", "fuente": "handler_enviar_sugerencia_con_ubicacion"})
+
+            elif action == "menu_principal":
+                 contexto_municipio_actual['estado_conversacion'] = None
+                 contexto_municipio_actual.pop('ubicacion_contextual', None)
+                 handler = GreetingHandler(context)
+                 response = handler.handle({})
+                 if chat_db_context:
+                     flag_modified(chat_db_context, "context_data")
+                 return _finalize_response(response)
+
+            elif action == "cancelar":
+                 contexto_municipio_actual['estado_conversacion'] = None
+                 contexto_municipio_actual.pop('ubicacion_contextual', None)
+                 if chat_db_context: flag_modified(chat_db_context, "context_data")
+                 return _finalize_response({"message_body": "Operación cancelada. ¿En qué más puedo ayudarte?", "options_list": [], "message_type": "text"})
+
             else:
                 contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
                 if chat_db_context:
@@ -9405,12 +9474,40 @@ def responder_municipio(
                 "message_body": f"Excelente. Por favor, escribí tu sugerencia relacionada con la ubicación: *{address}*.",
                 "fuente": "handler_enviar_sugerencia_con_ubicacion"
             })
-
-        else:  # Cancelar o no se entiende
+        elif action == "menu_principal":
             contexto_municipio_actual['estado_conversacion'] = None
+            contexto_municipio_actual.pop('ubicacion_contextual', None)
+            handler = GreetingHandler(context)
+            response = handler.handle({})
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
-            return GreetingHandler(context).handle({})
+            return _finalize_response(response)
+        elif action == "cancelar":
+            contexto_municipio_actual['estado_conversacion'] = None
+            contexto_municipio_actual.pop('ubicacion_contextual', None)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response({
+                "message_body": "Operación cancelada. ¿En qué más puedo ayudarte?",
+                "options_list": [],
+                "message_type": "text"
+            })
+        else:
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(
+                {
+                    "message_body": f"No entendí la opción. ¿Qué te gustaría hacer en *{address}*?",
+                    "options_list": [
+                        {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
+                        {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
+                        {"texto": "Cancelar", "action_id": "cancelar"},
+                        {"texto": "Menú", "action_id": "menu_principal"},
+                    ],
+                    "fuente": "proactive_location_handler",
+                }
+            )
 
 
     elif estado_conversacion == ConversationState.ESPERANDO_CORRECCION_DATOS_RECLAMO.name:

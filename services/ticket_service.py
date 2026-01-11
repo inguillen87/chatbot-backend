@@ -417,7 +417,9 @@ class ServicioTickets:
                 ticket_dict["telefono_vecino"] = getattr(ticket, 'telefono_vecino', None)
                 ticket_dict["email_vecino"] = getattr(ticket, 'email_vecino', None)
                 ticket_dict["municipio_id"] = getattr(ticket, 'municipio_id', None)
+                ticket_dict["consulta_pin"] = getattr(ticket, 'consulta_pin', None)
             elif tipo_ticket == "pyme":
+                ticket_dict["consulta_pin"] = getattr(ticket, 'consulta_pin', None)
                 ticket_dict["detalles"] = ticket.pregunta # PymeTicket uses 'pregunta'
                 ticket_dict["rubro_id"] = getattr(ticket, 'rubro_id', None)
 
