@@ -580,6 +580,10 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str 
         logger.error(f"{log_prefix} Error de autenticación SMTP: {e_auth}")
     except smtplib.SMTPServerDisconnected as e_disconnect:
         logger.error(f"{log_prefix} Servidor SMTP desconectado: {e_disconnect}")
+    except smtplib.SMTPSenderRefused as e_sender:
+        logger.error(f"{log_prefix} Sender Refused (Auth Required?): {e_sender} - Check SMTP_PASSWORD")
+    except smtplib.SMTPAuthenticationError as e_auth:
+        logger.error(f"{log_prefix} SMTP Auth Error: {e_auth}")
     except smtplib.SMTPException as e_smtp:
         logger.error(f"{log_prefix} Error SMTP general: {e_smtp}", exc_info=True)
     except Exception as e:
