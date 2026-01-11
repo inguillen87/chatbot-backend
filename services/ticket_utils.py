@@ -105,6 +105,11 @@ def construir_descripcion_breve(texto: str | None, max_chars: int = 80) -> str |
     if not texto:
         return texto
 
+    # Short-circuit for short texts to prevent aggressive summarization (e.g. "Quiera...")
+    if len(texto) <= max_chars:
+        cleaned = texto.replace("\n", " ").strip(" .,;")
+        return cleaned
+
     def _clean_candidate(sentence: str) -> str:
         candidate = sentence.strip()
         if not candidate:

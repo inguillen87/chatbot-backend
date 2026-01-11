@@ -560,6 +560,11 @@ def _build_sugerencia_success_payload(
     channel_value = (context.get("channel") or "").strip().lower()
     is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
 
+    # If channel is WhatsApp (not web), we prefer buttons over text links.
+    include_links = not is_web_like_channel
+    if channel_value == "whatsapp":
+        include_links = False
+
     message_body, base_buttons = formatear_ticket_respuesta(
         "sugerencia",
         nombre_vecino,
@@ -570,7 +575,7 @@ def _build_sugerencia_success_payload(
         base_chat_url,
         dni=dni_vecino,
         consulta_pin=consulta_pin,
-        include_links_in_message=not is_web_like_channel,
+        include_links_in_message=include_links,
     )
 
     buttons: list[dict] = []
@@ -9445,6 +9450,7 @@ def responder_municipio(
                 {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
                 {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
                 {"texto": "Cancelar", "action_id": "cancelar"},
+                {"texto": "Menú", "action_id": "menu_principal"},
             ]
             action = find_menu_action_by_input(pregunta_menu, opciones)
 
