@@ -779,6 +779,14 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
         municipio_db_id_para_ticket = getattr(owner_user, "municipio_id", None)
         nombre_vecino_final = nombre_vecino or getattr(viewer_user, "nombre", "Ciudadano Anónimo")
 
+        # --- Handle PIN (generate if missing) ---
+        pin_llm = action_data.get("consulta_pin")
+        pin_str = str(pin_llm).strip() if pin_llm else ""
+        if pin_str.isdigit() and len(pin_str) == 6:
+            pin_final = pin_str
+        else:
+            pin_final = f"{random.randint(0, 999999):06d}"
+
         ticket_data = {
             "asunto": "Sugerencia de Ciudadano",
             "categoria": "Sugerencia",
@@ -797,6 +805,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             "longitud": (
                 coordenadas_sugerencia.get("lng") if isinstance(coordenadas_sugerencia, dict) else None
             ),
+            "consulta_pin": pin_final,
         }
         if self.context.get("foto_url"):
             ticket_data["foto_url_directa"] = self.context.get("foto_url")
@@ -845,7 +854,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 {}, # No hay contacto especializado para sugerencias
                 base_chat_url,
                 dni=dni_vecino,
-                consulta_pin=ticket_creado.get("consulta_pin"),
+                consulta_pin=pin_final,
             )
 
             # Añadir el botón de acción específico para sugerencias
@@ -858,7 +867,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "options_list": botones_finales,
                 "message_type": "interactive_buttons",
                 "image_url": promo_image_url,
-                "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado"}
+                "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado", "consulta_pin": pin_final}
             }
         except Exception as e:
             logger.error(f"Error en HacerSugerenciaActionHandler: {e}", exc_info=True)
