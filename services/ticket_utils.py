@@ -546,7 +546,8 @@ def formatear_ticket_respuesta(
         texto = texto.strip()
         texto = re.sub(r"^tengo\s+un?\s+", "", texto, flags=re.IGNORECASE)
         texto = re.sub(r"^hay\s+un?\s+", "", texto, flags=re.IGNORECASE)
-        resumen = construir_descripcion_breve(texto, max_chars=70)
+        # Increased max_chars to 160 to prevent over-summarization of short/medium sentences
+        resumen = construir_descripcion_breve(texto, max_chars=160)
         return resumen or texto
 
     descripcion_resumen = _resumir_descripcion(descripcion)

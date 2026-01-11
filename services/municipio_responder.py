@@ -7695,6 +7695,14 @@ def responder_municipio(
                 ]
                 action = find_menu_action_by_input(pregunta_menu, opciones)
 
+                # Explicit handling for common escapes if fuzzy matcher is strict
+                norm_input = normalizar_texto(pregunta_menu).strip()
+                if not action:
+                    if norm_input in {"3", "cancelar", "salir"}:
+                        action = "cancelar"
+                    elif norm_input in {"4", "menu", "menu principal", "volver"}:
+                        action = "menu_principal"
+
             # If fuzzy matching failed for a menu option, try to detect intent from the text
             # This handles cases like "Quiera hacer un pedido..."
             if not action and _looks_like_free_form_input(pregunta_menu):
@@ -8635,6 +8643,10 @@ def responder_municipio(
                 contacto_especializado = contactos.get(ticket.categoria, contactos.get("default", {})) if isinstance(contactos, dict) else {}
                 municipio_config = context.get("municipio_config_actual", {})
                 base_chat_url = municipio_config.get("base_chat_url", "https://www.chatboc.ar/chat")
+
+                # Determine if we should include text links based on channel
+                include_links = channel != "whatsapp"
+
                 mensaje, botones = formatear_ticket_respuesta(
                     "reclamo",
                     ticket.nombre_vecino or "Vecino/a",
@@ -8644,6 +8656,7 @@ def responder_municipio(
                     contacto_especializado,
                     base_chat_url,
                     consulta_pin=ticket.consulta_pin,
+                    include_links_in_message=include_links,
                 )
                 mensaje += f"\n\n🔔 *Estado actual:* {ticket.estado}"
             else:
