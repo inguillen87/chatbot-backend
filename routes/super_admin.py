@@ -53,7 +53,8 @@ def list_tenants(current_user):
             "plan": plan,
             "status": status,
             "is_active": tenant.is_active,
-            "created_at": tenant.created_at.isoformat() if tenant.created_at else None
+            "created_at": tenant.created_at.isoformat() if tenant.created_at else None,
+            "owner_email": owner.email if owner else None  # Added as requested
         })
 
     return jsonify({

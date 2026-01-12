@@ -941,23 +941,78 @@ class CatalogoHandler(BaseHandler):
         query_qdrant = pregunta
         if self.context.get("intencion") == "ver_catalogo" and len(pregunta.split()) < 3: query_qdrant = "productos populares"
 
-        resultados_qdrant = buscar_catalogo_qdrant(self.pyme_id_actual, query_qdrant, self.context.get("rubro_nombre"), 3, self.context.get("coleccion_qdrant", CATALOGO_PYME))
+        # Detect filters from natural language
+        en_promocion = False
+        con_stock = False
+        precio_max = None
+
+        pregunta_lower = pregunta.lower()
+        if "oferta" in pregunta_lower or "promo" in pregunta_lower or "descuento" in pregunta_lower:
+            en_promocion = True
+        if "stock" in pregunta_lower or "disponible" in pregunta_lower:
+            con_stock = True
+
+        # Simple regex for "menor a 1000" or "menos de 1000"
+        match_precio = re.search(r"(?:menor|menos)\s+(?:a|de)\s+(?:\$)?\s*(\d+)", pregunta_lower)
+        if match_precio:
+            try:
+                precio_max = float(match_precio.group(1))
+            except ValueError:
+                pass
+
+        resultados_qdrant = buscar_catalogo_qdrant(
+            user_id=self.pyme_id_actual,
+            pregunta=query_qdrant,
+            limite=3,
+            categoria=self.context.get("rubro_nombre"),
+            coleccion=self.context.get("coleccion_qdrant", CATALOGO_PYME),
+            en_promocion=en_promocion,
+            con_stock=con_stock,
+            precio_max=precio_max
+        )
+
         chat_ctx = self.context.setdefault("chat_db_context_data", {})
         add_preference(chat_ctx, "busquedas", pregunta)
         
         respuesta_texto = ""; botones_catalogo = []; fuente_catalogo = "catalogo_qdrant_sin_resultados_v2"
 
         if resultados_qdrant:
+            # Use LLM to summarize results naturally
+            try:
+                from services.llm_utils import robust_chat
+                items_summary = []
+                for hit in resultados_qdrant:
+                    p = getattr(hit, "payload", {})
+                    items_summary.append(f"{p.get('nombre')} (${p.get('precio_str', '?')})")
+
+                context_summary = f"Productos encontrados: {', '.join(items_summary)}. Usuario preguntó: '{pregunta}'."
+                prompt_intro = f"Genera una frase corta y amigable presentando estos productos al cliente. {context_summary}"
+
+                intro_text = robust_chat(message=prompt_intro)
+                if not intro_text:
+                    intro_text = "Encontré estos productos que podrían interesarte:"
+            except Exception:
+                intro_text = "Encontré estos productos que podrían interesarte:"
+
             productos_formateados = []
-            productos_formateados.append("| Producto | Precio | Cantidad |")
-            productos_formateados.append("|---|---|---|")
+            if self.context.get("channel") != "whatsapp":
+                productos_formateados.append("| Producto | Precio | Cantidad |")
+                productos_formateados.append("|---|---|---|")
+
             for idx, hit in enumerate(resultados_qdrant):
                 payload = getattr(hit, "payload", {}); item_db_id = payload.get("db_id")
                 item_obj = db.session.get(models.CatalogoItem, item_db_id) if item_db_id else None
                 nombre = payload.get("nombre", "Producto")
                 precio_s, precio_f, moneda = parse_precio_flexible(payload.get("precio_str", ""))
                 cantidad = payload.get("cantidad", "")
-                linea = f"| {nombre} | ${precio_f:,.2f} {moneda or 'ARS'} | {cantidad} |"
+
+                if self.context.get("channel") == "whatsapp":
+                    linea = f"• *{nombre}*: ${precio_f:,.2f} {moneda or 'ARS'}"
+                    if cantidad:
+                        linea += f" (Disp: {cantidad})"
+                else:
+                    linea = f"| {nombre} | ${precio_f:,.2f} {moneda or 'ARS'} | {cantidad} |"
+
                 productos_formateados.append(linea)
                 identificador_accion = payload.get("sku") or item_db_id or nombre
 
@@ -979,7 +1034,7 @@ class CatalogoHandler(BaseHandler):
                     botones_catalogo.append({"texto": f"Pedir {nombre[:20]}", "action": f"pedir_item_{identificador_accion}"})
 
             if productos_formateados:
-                respuesta_texto = "Algunos productos que podrían interesarte:\n\n" + "\n".join(productos_formateados)
+                respuesta_texto = f"{intro_text}\n\n" + "\n".join(productos_formateados)
                 respuesta_texto += "\n\nSi quieres alguno, usa los botones o dime (ej: 'quiero 2 [nombre]')."
                 fuente_catalogo = "catalogo_qdrant_con_promos_v2"
         

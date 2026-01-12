@@ -46,6 +46,7 @@ class MunicipioTicketCreator(TicketCreator):
         return MunicipioTicket(
             user_id=ticket_data.get("user_id"),
             municipio_id=ticket_data.get("municipio_id"),
+            tenant_id=ticket_data.get("tenant_id") or ticket_data.get("municipio_id"), # Ensure tenant_id is set
             anon_id=ticket_data.get("anon_id"),
             asunto=ticket_data.get("asunto", "Sin Asunto"),
             categoria=ticket_data.get("categoria", "General"),
