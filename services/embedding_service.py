@@ -1,28 +1,45 @@
+
 import logging
 from typing import List, Optional
-from services.llm_bridge import llamar_llm as llamar_llm_para_generacion_texto
+from services.openai_bridge import client as openai_client
 
 logger = logging.getLogger(__name__)
 
 def embed_textos_llm(textos: List[str], input_type: str = "search_document") -> Optional[List[List[float]]]:
     """
-    Genera embeddings para una lista de textos utilizando la API del LLM.
+    Genera embeddings para una lista de textos utilizando la API del LLM (OpenAI).
+    Usa el modelo 'text-embedding-3-small' reducido a 1024 dimensiones.
 
     Args:
         textos: Una lista de strings para generar embeddings.
-        input_type: El tipo de input para el embedding (search_document o search_query).
+        input_type: El tipo de input para el embedding (ignorado por OpenAI, mantenido por compatibilidad).
 
     Returns:
-        Una lista de listas de floats, donde cada lista interna es un embedding.
+        Una lista de listas de floats, donde cada lista interna es un embedding de 1024 dimensiones.
         Retorna None si ocurre un error.
     """
     if not textos or not isinstance(textos, list) or not all(isinstance(t, str) for t in textos):
         logger.error("Entrada inválida: se esperaba una lista de strings.")
         return None
 
-    # NOTA: Esta es una implementación mock/placeholder. Debería ser reemplazada
-    # con una llamada real al servicio de embeddings del LLM.
-    # Los tests deben mockear esta función para devolver valores controlados.
-    logger.warning("Usando implementación MOCK de embed_textos_llm. Devolverá vectores de ceros.")
-    # Se devuelve un vector de 1024 para ser consistente con los datos de prueba existentes.
-    return [[0.0] * 1024 for _ in textos]
+    if not openai_client:
+        logger.error("Cliente OpenAI no inicializado.")
+        return None
+
+    try:
+        # Reemplazar saltos de línea para mejor rendimiento (recomendación común)
+        textos_limpios = [t.replace("\n", " ") for t in textos]
+
+        response = openai_client.embeddings.create(
+            input=textos_limpios,
+            model="text-embedding-3-small",
+            dimensions=1024
+        )
+
+        # Extraer los embeddings en orden
+        embeddings = [data.embedding for data in response.data]
+        return embeddings
+
+    except Exception as e:
+        logger.error(f"Error generando embeddings con OpenAI: {e}", exc_info=True)
+        return None
