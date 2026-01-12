@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, request, g, current_app
-from models import TenantProfile, User, db, generate_token, WhatsappNumero, Rubro
+from models import TenantProfile, User, db, generate_token, WhatsappNumero, Rubro, AdminAuditLog
 from utils.auth_helpers import token_requerido
 from utils.admin_decorators import super_admin_required
 from sqlalchemy import desc
@@ -20,6 +20,23 @@ def _normalize_plan_key(raw_plan: str | None) -> str:
     if get_plan_metadata(normalized) is None:
         return "gratis"
     return normalized
+
+def _log_admin_action(user_id: int, action: str, target: str, details: dict = None):
+    try:
+        log = AdminAuditLog(
+            admin_user_id=user_id,
+            action=action,
+            target_object=target,
+            details=details or {},
+            ip_address=request.remote_addr
+        )
+        db.session.add(log)
+        # Note: We rely on the caller's commit or commit here if safe.
+        # Since most routes commit at the end, we can let the route handle it,
+        # or commit immediately if we want logs even on failure.
+        # Here we trust the caller transaction for atomicity.
+    except Exception as e:
+        current_app.logger.error(f"Failed to create audit log: {e}")
 
 @super_admin_bp.route('/tenants', methods=['GET'])
 @token_requerido
@@ -163,6 +180,9 @@ def create_tenant(current_user):
         pyme_id=owner.id if tipo == 'pyme' else None
     )
     db.session.add(tenant)
+
+    _log_admin_action(current_user.id, "create_tenant", slug, {"nombre": nombre, "tipo": tipo, "owner_email": email_admin})
+
     db.session.commit()
 
     # Ensure Professional Folder Structure
@@ -203,8 +223,11 @@ def update_tenant_full(current_user, slug):
 
     if 'nombre' in data: tenant.nombre = data['nombre']
     if 'plan' in data:
+        old_plan = tenant.plan
         normalized_plan = _normalize_plan_key(data['plan'])
         tenant.plan = normalized_plan
+
+        _log_admin_action(current_user.id, "change_plan", slug, {"old": old_plan, "new": normalized_plan})
 
         users_to_update = set()
 
@@ -241,7 +264,11 @@ def update_tenant_full(current_user, slug):
             apply_plan_to_user(user, normalized_plan)
             current_app.logger.info(f"Applied plan '{normalized_plan}' to user {user.id} ({user.email}) for tenant {tenant.slug}")
 
-    if 'is_active' in data: tenant.is_active = bool(data['is_active'])
+    if 'is_active' in data:
+        old_active = tenant.is_active
+        tenant.is_active = bool(data['is_active'])
+        _log_admin_action(current_user.id, "toggle_active", slug, {"old": old_active, "new": tenant.is_active})
+
     if 'whatsapp_sender_id' in data: tenant.whatsapp_sender_id = data['whatsapp_sender_id']
 
     # Handle domain, etc if needed
@@ -266,6 +293,7 @@ def delete_tenant_soft(current_user, slug):
     """Soft delete (deactivate) tenant."""
     tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
     tenant.is_active = False
+    _log_admin_action(current_user.id, "deactivate_tenant", slug)
     db.session.commit()
     return jsonify({"message": "Tenant deactivated successfully"})
 
@@ -276,6 +304,7 @@ def activate_tenant(current_user, slug):
     """Re-activate tenant."""
     tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
     tenant.is_active = True
+    _log_admin_action(current_user.id, "activate_tenant", slug)
     db.session.commit()
     return jsonify({"message": "Tenant activated successfully"})
 
@@ -308,6 +337,8 @@ def impersonate_tenant(current_user, slug):
         'exp': datetime.now(timezone.utc) + timedelta(minutes=60)
     }
     token = jwt.encode(payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+
+    _log_admin_action(current_user.id, "impersonate_tenant", slug, {"target_user_id": owner.id})
 
     return jsonify({"token": token, "redirect_url": f"/portal/{tenant.slug}/admin"})
 
@@ -358,6 +389,7 @@ def create_tenant_admin(current_user, slug):
     elif tenant.tipo == 'municipio' and not tenant.municipio_id:
         tenant.municipio_id = new_user.id
 
+    _log_admin_action(current_user.id, "create_admin_user", slug, {"new_user_email": email})
     db.session.commit()
     return jsonify({"message": "Admin user created successfully", "user_id": new_user.id}), 201
 
@@ -378,6 +410,7 @@ def reset_tenant_password(current_user, slug):
         return jsonify({"error": "Password requerido"}), 400
 
     owner.set_password(new_password)
+    _log_admin_action(current_user.id, "reset_password", slug, {"target_user_id": owner.id})
     db.session.commit()
     return jsonify({"message": "Contraseña actualizada correctamente"})
 
@@ -415,5 +448,6 @@ def configure_tenant_whatsapp(current_user, slug):
         )
         db.session.add(mapping)
 
+    _log_admin_action(current_user.id, "configure_whatsapp", slug, {"number": number})
     db.session.commit()
     return jsonify({"message": "WhatsApp configurado correctamente", "number": number})

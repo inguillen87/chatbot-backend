@@ -23,6 +23,7 @@ except Exception:
 import models
 from services.qdrant_search import (
     buscar_catalogo_qdrant,
+    buscar_catalogo_db_fallback,
     armar_respuesta_legible,
     CATALOGO_PYME
 )
@@ -970,6 +971,20 @@ class CatalogoHandler(BaseHandler):
             con_stock=con_stock,
             precio_max=precio_max
         )
+
+        # Fallback mechanism: If Qdrant returns nothing, try SQL DB
+        if not resultados_qdrant:
+            try:
+                resultados_qdrant = buscar_catalogo_db_fallback(
+                    user_id=self.pyme_id_actual,
+                    pregunta=query_qdrant,
+                    limite=3,
+                    precio_max=precio_max
+                )
+                if resultados_qdrant:
+                    logger.info(f"Fallback DB search success for '{pregunta}'")
+            except Exception as e:
+                logger.error(f"Fallback search failed: {e}")
 
         chat_ctx = self.context.setdefault("chat_db_context_data", {})
         add_preference(chat_ctx, "busquedas", pregunta)

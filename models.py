@@ -2076,3 +2076,19 @@ class NotificationLog(db.Model, TimestampMixin):
 
     def __repr__(self):
         return f"<NotificationLog {self.channel} to {self.recipient}>"
+
+
+class AdminAuditLog(db.Model, TimestampMixin):
+    __tablename__ = "admin_audit_log"
+
+    id = db.Column(db.Integer, primary_key=True)
+    admin_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    action = db.Column(db.String(50), nullable=False) # e.g., "create_tenant", "change_plan"
+    target_object = db.Column(db.String(100), nullable=True) # e.g., tenant_slug or user_email
+    details = db.Column(JSONType, nullable=True) # Diff or specific params
+    ip_address = db.Column(db.String(50), nullable=True)
+
+    admin_user = db.relationship("User", backref=db.backref("audit_logs", lazy="dynamic"))
+
+    def __repr__(self):
+        return f"<AdminAuditLog {self.action} by {self.admin_user_id}>"
