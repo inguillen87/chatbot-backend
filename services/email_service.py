@@ -1,3 +1,4 @@
+# services/email_service.py
 import os
 import contextlib
 import logging
@@ -18,19 +19,11 @@ from models import ArchivoAdjunto, TicketComentario, User
 
 logger = logging.getLogger(__name__)
 
+# Feature flag to safely enable/disable email notifications globally
+ENABLE_EMAIL_NOTIFICATIONS = os.getenv("ENABLE_EMAIL_NOTIFICATIONS", "false").lower() in ("true", "1", "yes")
+
 # Las variables de configuración SMTP y Twilio ahora se leerán de current_app.config
-# SMTP_HOST = os.getenv("SMTP_HOST")
-# SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-# SMTP_USERNAME = os.getenv("SMTP_USERNAME")
-# SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-# FROM_EMAIL = os.getenv("FROM_EMAIL", SMTP_USERNAME)
-ADMIN_EMAIL = None # Se podría cargar desde config también: current_app.config.get("ADMIN_EMAIL")
-
-# TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-# TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-# TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
-# TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
-
+ADMIN_EMAIL = None
 
 def _coerce_float(value: Any) -> Optional[float]:
     try:
@@ -515,6 +508,9 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str 
     Envía un email simple en formato HTML y opcionalmente texto plano.
     Si es_campana es True, intenta usar configuraciones SMTP específicas para campañas.
     """
+    if not ENABLE_EMAIL_NOTIFICATIONS:
+        logger.info("[EMAIL] Notifications disabled by feature flag ENABLE_EMAIL_NOTIFICATIONS=False.")
+        return False
 
     smtp_host = _get_config_val("SMTP_HOST", campaign_specific=es_campana)
     smtp_port = int(_get_config_val("SMTP_PORT", 587, campaign_specific=es_campana))
@@ -593,6 +589,10 @@ def enviar_email(destino: str, asunto: str, cuerpo_html: str, cuerpo_texto: str 
 
 def enviar_email_con_adjunto(destino: str, asunto: str, cuerpo_html: str, nombre_archivo: str, contenido_adjunto: bytes, cuerpo_texto: str = "") -> bool:
     """Envía un email con un archivo adjunto."""
+    if not ENABLE_EMAIL_NOTIFICATIONS:
+        logger.info("[EMAIL_ADJ] Notifications disabled by feature flag ENABLE_EMAIL_NOTIFICATIONS=False.")
+        return False
+
     smtp_host = _get_config_val("SMTP_HOST")
     smtp_port = int(_get_config_val("SMTP_PORT", 587))
     smtp_user = _get_config_val("SMTP_USER")
@@ -681,6 +681,10 @@ def _render_items_html(pedido) -> str:
 
 def enviar_email_pedido_admin(pedido, *, pdf_bytes: bytes | None = None, empresa_info: Dict[str, Any] | None = None) -> bool:
     """Envía un correo al administrador con el nuevo pedido."""
+    if not ENABLE_EMAIL_NOTIFICATIONS:
+        logger.info("[EMAIL] Notifications disabled by feature flag ENABLE_EMAIL_NOTIFICATIONS=False.")
+        return False
+
     admin_email_val = current_app.config.get("ADMIN_EMAIL")
     if not admin_email_val or admin_email_val == "noreply@example.com":
         logger.warning("[EMAIL] ADMIN_EMAIL no configurado para notificación de pedido. Envío omitido.")
@@ -707,6 +711,10 @@ def enviar_email_pedido_admin(pedido, *, pdf_bytes: bytes | None = None, empresa
 
 def enviar_email_pedido_cliente(pedido, *, pdf_bytes: bytes | None = None, empresa_info: Dict[str, Any] | None = None) -> bool:
     """Envía un correo al cliente confirmando su pedido."""
+    if not ENABLE_EMAIL_NOTIFICATIONS:
+        logger.info("[EMAIL] Notifications disabled by feature flag ENABLE_EMAIL_NOTIFICATIONS=False.")
+        return False
+
     destino = getattr(pedido, "email_cliente", None)
     if not destino:
         logger.warning("[EMAIL] Pedido sin email de cliente.")
@@ -753,6 +761,9 @@ def enviar_email_ticket_admin(
     mensaje_resumen: Optional[str] = None,
 ) -> bool:
     """Envía un correo al administrador con la información completa del ticket."""
+    if not ENABLE_EMAIL_NOTIFICATIONS:
+        logger.info("[EMAIL] Notifications disabled by feature flag ENABLE_EMAIL_NOTIFICATIONS=False.")
+        return False
 
     destino = None
     if admin_user and getattr(admin_user, "email", None):
@@ -838,6 +849,10 @@ import requests
 
 def enviar_email_con_multiples_adjuntos(destinos: List[str], asunto: str, cuerpo_html: str, adjuntos: List[ArchivoAdjunto], cuerpo_texto: str = "") -> bool:
     """Envía un email con múltiples archivos adjuntos."""
+    if not ENABLE_EMAIL_NOTIFICATIONS:
+        logger.info("[EMAIL_MULTI_ADJ] Notifications disabled by feature flag ENABLE_EMAIL_NOTIFICATIONS=False.")
+        return False
+
     smtp_host = _get_config_val("SMTP_HOST")
     smtp_port = int(_get_config_val("SMTP_PORT", 587))
     smtp_user = _get_config_val("SMTP_USER")
@@ -935,6 +950,9 @@ def enviar_email_ticket_cliente(
     ticket_data: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Confirma al cliente que su reclamo o pedido fue recibido."""
+    if not ENABLE_EMAIL_NOTIFICATIONS:
+        logger.info("[EMAIL] Notifications disabled by feature flag ENABLE_EMAIL_NOTIFICATIONS=False.")
+        return False
 
     destino = (
         getattr(ticket, "email_vecino", None)
@@ -1015,6 +1033,9 @@ def enviar_email_ticket_novedad(
     comentario_reciente=None,
 ) -> bool:
     """Notifica al cliente que su ticket tiene una novedad usando la plantilla principal."""
+    if not ENABLE_EMAIL_NOTIFICATIONS:
+        logger.info("[EMAIL] Notifications disabled by feature flag ENABLE_EMAIL_NOTIFICATIONS=False.")
+        return False
 
     destino = getattr(ticket, "email", None)
     if not destino and getattr(ticket, "user_id", None) and hasattr(User, "query"):
