@@ -7702,6 +7702,8 @@ def responder_municipio(
                         action = "cancelar"
                     elif norm_input in {"4", "menu", "menu principal", "volver"}:
                         action = "menu_principal"
+                    else:
+                        logger_actual.info(f"[ESPERANDO_INTENCION] Input '{norm_input}' did not match explicit menu options.")
 
             # If fuzzy matching failed for a menu option, try to detect intent from the text
             # This handles cases like "Quiera hacer un pedido..."

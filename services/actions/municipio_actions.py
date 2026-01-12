@@ -540,7 +540,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 base_chat_url,
                 dni=ticket_data_cleaned.get("dni_vecino"),
                 consulta_pin=pin_final,
-                include_links_in_message=not is_web_like_channel,
+                include_links_in_message=is_web_like_channel,
             )
             if botones_finales is None:
                 botones_finales = []
@@ -844,6 +844,8 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
             promo_image_url = municipio_config.get('promo_image_url')
+            channel_value = (self.context.get("channel") or "").strip().lower()
+            is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
 
             respuesta_formateada, botones_generados = formatear_ticket_respuesta(
                 "sugerencia",
@@ -855,6 +857,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 base_chat_url,
                 dni=dni_vecino,
                 consulta_pin=pin_final,
+                include_links_in_message=is_web_like_channel,
             )
 
             # Añadir el botón de acción específico para sugerencias
