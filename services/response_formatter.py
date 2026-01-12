@@ -322,7 +322,10 @@ def build_interactive_response(options: list,
             for i, o in enumerate(options):
                 if o.get("type") == "url" and o.get("url"):
                     # For URL options, add them to the text body
-                    url_texts.append(f"➡️ {o.get('texto', 'Ver más')}: {o.get('url')}")
+                    url_value = str(o.get("url"))
+                    if url_value and url_value in body_text_to_update:
+                        continue
+                    url_texts.append(f"➡️ {o.get('texto', 'Ver más')}: {url_value}")
                 else:
                     # For other options, create a standard reply button
                     reply_buttons.append(
