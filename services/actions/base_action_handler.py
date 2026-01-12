@@ -22,8 +22,11 @@ class BaseActionHandler(ABC):
         :return: A dictionary containing the result of the action, e.g.,
                  {
                      "success": True/False,
-                     "message_to_user": "Optional message for the user",
-                     "data": { ... } // Any data to be passed back or stored in context
+                     "message_to_user": "Message for user (DEPRECATED - use message_body)",
+                     "message_body": "Primary text content for the response",
+                     "message_type": "text" | "interactive_buttons" | "interactive_list" | "media",
+                     "options_list": [],
+                     "data": { ... }
                  }
         """
         pass

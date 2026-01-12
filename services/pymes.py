@@ -953,7 +953,7 @@ class CatalogoHandler(BaseHandler):
             con_stock = True
 
         # Simple regex for "menor a 1000" or "menos de 1000"
-        match_precio = re.search(r"(?:menor|menos)\s+(?:a|de)\s+(?:$)?\s*(\d+)", pregunta_lower)
+        match_precio = re.search(r"(?:menor|menos)\s+(?:a|de)\s+(?:\$)?\s*(\d+)", pregunta_lower)
         if match_precio:
             try:
                 precio_max = float(match_precio.group(1))

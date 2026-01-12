@@ -530,8 +530,15 @@ class CrearReclamoActionHandler(BaseActionHandler):
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
             promo_image_url = municipio_config.get('promo_image_url')
+
+            # --- HERO IMAGE LOGIC (New) ---
+            closing_promo_enabled = municipio_config.get('closing_promo_enabled', False)
+            closing_promo_image_url = municipio_config.get('closing_promo_image_url')
+
             channel_value = (self.context.get("channel") or "").strip().lower()
             is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
+            is_whatsapp = "whatsapp" in channel_value
+
             categoria_display = categoria
             mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
                 "reclamo",
@@ -607,11 +614,20 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 if not promo_image_url and promo_section.get("image_url"):
                     promo_image_url = promo_section.get("image_url")
 
+            # --- Override promo with dedicated closing hero image if configured ---
+            if closing_promo_enabled and closing_promo_image_url:
+                promo_image_url = closing_promo_image_url
+
             if not is_web_like_channel:
                 botones_finales = remove_buttons_with_urls_in_message(
                     mensaje_respuesta,
                     botones_finales,
                 )
+
+            # Determine message type
+            message_type = "interactive_buttons" if botones_finales else "text"
+            if is_whatsapp and closing_promo_enabled and promo_image_url:
+                message_type = "media" # Special internal type for handler/sender to render as media+caption
 
             # Delayed menu
             menu_payload = _get_main_menu_payload(self.context)
@@ -620,7 +636,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "success": True,
                 "message_body": mensaje_respuesta,
                 "options_list": botones_finales,
-                "message_type": "interactive_buttons" if botones_finales else "text",
+                "message_type": message_type,
                 "image_url": promo_image_url,
                 "delayed_payload": menu_payload,
                 "delay_seconds": 20,
@@ -868,8 +884,14 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
             promo_image_url = municipio_config.get('promo_image_url')
+
+            # --- HERO IMAGE LOGIC (New for Suggestions) ---
+            closing_promo_enabled = municipio_config.get('closing_promo_enabled', False)
+            closing_promo_image_url = municipio_config.get('closing_promo_image_url')
+
             channel_value = (self.context.get("channel") or "").strip().lower()
             is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
+            is_whatsapp = "whatsapp" in channel_value
             include_links = not is_web_like_channel
 
             respuesta_formateada, botones_generados = formatear_ticket_respuesta(
@@ -945,18 +967,27 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 if not promo_image_url and promo_section.get("image_url"):
                     promo_image_url = promo_section.get("image_url")
 
+            # --- Override promo with dedicated closing hero image if configured ---
+            if closing_promo_enabled and closing_promo_image_url:
+                promo_image_url = closing_promo_image_url
+
             if not is_web_like_channel:
                 botones_finales = remove_buttons_with_urls_in_message(
                     respuesta_formateada,
                     botones_finales,
                 )
 
+            # Determine message type
+            message_type = "interactive_buttons"
+            if is_whatsapp and closing_promo_enabled and promo_image_url:
+                message_type = "media"
+
             return {
                 "success": True,
                 "message_to_user": respuesta_formateada,
                 "message_body": respuesta_formateada, # Added
                 "options_list": botones_finales,
-                "message_type": "interactive_buttons",
+                "message_type": message_type,
                 "image_url": promo_image_url,
                 "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado", "consulta_pin": pin_final}
             }
