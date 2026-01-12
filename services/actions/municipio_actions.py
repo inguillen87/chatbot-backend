@@ -871,12 +871,21 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             )
             if promo_section:
                 promo_text = promo_section.get("message_body")
-                if promo_text:
-                    respuesta_formateada = f"{respuesta_formateada}\n\n{promo_text}"
-
+                promo_url = None
                 promo_button = promo_section.get("button")
                 if promo_button:
                     promo_url = promo_button.get("url")
+
+                if promo_text:
+                    if promo_url and channel_value == "whatsapp":
+                        promo_lines = [
+                            line for line in promo_text.splitlines()
+                            if promo_url not in line
+                        ]
+                        promo_text = "\n".join(promo_lines).strip()
+                    respuesta_formateada = f"{respuesta_formateada}\n\n{promo_text}"
+
+                if promo_button:
                     matching_button = None
 
                     if promo_url:
