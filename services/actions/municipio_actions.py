@@ -846,7 +846,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             promo_image_url = municipio_config.get('promo_image_url')
             channel_value = (self.context.get("channel") or "").strip().lower()
             is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
-            include_links = channel_value != "whatsapp" and not is_web_like_channel
+            include_links = not is_web_like_channel
 
             respuesta_formateada, botones_generados = formatear_ticket_respuesta(
                 "sugerencia",
@@ -871,18 +871,10 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             )
             if promo_section:
                 promo_text = promo_section.get("message_body")
-                promo_url = None
                 promo_button = promo_section.get("button")
-                if promo_button:
-                    promo_url = promo_button.get("url")
+                promo_url = promo_button.get("url") if promo_button else None
 
                 if promo_text:
-                    if promo_url and channel_value == "whatsapp":
-                        promo_lines = [
-                            line for line in promo_text.splitlines()
-                            if promo_url not in line
-                        ]
-                        promo_text = "\n".join(promo_lines).strip()
                     respuesta_formateada = f"{respuesta_formateada}\n\n{promo_text}"
 
                 if promo_button:
