@@ -844,6 +844,9 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
             promo_image_url = municipio_config.get('promo_image_url')
+            channel_value = (self.context.get("channel") or "").strip().lower()
+            is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
+            include_links = not is_web_like_channel
 
             respuesta_formateada, botones_generados = formatear_ticket_respuesta(
                 "sugerencia",
@@ -855,11 +858,74 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 base_chat_url,
                 dni=dni_vecino,
                 consulta_pin=pin_final,
+                include_links_in_message=include_links,
             )
 
             # Añadir el botón de acción específico para sugerencias
-            botones_finales = botones_generados
+            botones_finales = botones_generados or []
             botones_finales.append({"texto": "Hacer otra sugerencia", "id_accion": "hacer_sugerencia"})
+
+            promo_section = promo_service.build_ticket_promo_section(
+                ticket_number=nro_ticket_str,
+                neighbor_name=nombre_vecino_final,
+            )
+            if promo_section:
+                promo_text = promo_section.get("message_body")
+                promo_button = promo_section.get("button")
+                promo_url = promo_button.get("url") if promo_button else None
+
+                if promo_text:
+                    respuesta_formateada = f"{respuesta_formateada}\n\n{promo_text}"
+
+                if promo_button:
+                    matching_button = None
+
+                    if promo_url:
+                        promo_domain, promo_path = _normalize_url_for_comparison(promo_url)
+                        for boton in botones_finales:
+                            if not isinstance(boton, dict):
+                                continue
+                            boton_type = boton.get("type")
+                            if boton_type and str(boton_type).lower() != "url":
+                                continue
+                            boton_url = boton.get("url")
+                            if not boton_url:
+                                continue
+
+                            boton_domain, boton_path = _normalize_url_for_comparison(boton_url)
+                            same_domain = bool(promo_domain and boton_domain and promo_domain == boton_domain)
+                            same_path = bool(promo_path and boton_path and promo_path == boton_path)
+
+                            if same_domain or same_path:
+                                matching_button = boton
+                                break
+
+                    if matching_button:
+                        promo_cta = promo_button.get("texto")
+                        existing_text = (matching_button.get("texto") or "").strip()
+                        normalized_existing = existing_text.replace("🌐", "").strip().lower()
+
+                        if promo_cta and (not existing_text or normalized_existing == "más información"):
+                            matching_button["texto"] = promo_cta
+
+                        matching_button.setdefault("type", "url")
+                    elif promo_url:
+                        existing_urls = {
+                            boton.get("url")
+                            for boton in botones_finales
+                            if isinstance(boton, dict) and boton.get("url")
+                        }
+                        if promo_url not in existing_urls:
+                            botones_finales.append(promo_button)
+
+                if not promo_image_url and promo_section.get("image_url"):
+                    promo_image_url = promo_section.get("image_url")
+
+            if not is_web_like_channel:
+                botones_finales = remove_buttons_with_urls_in_message(
+                    respuesta_formateada,
+                    botones_finales,
+                )
 
             return {
                 "success": True,
