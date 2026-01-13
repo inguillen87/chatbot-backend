@@ -654,6 +654,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             promo_section = promo_service.build_ticket_promo_section(
                 ticket_number=nro_ticket_str,
                 neighbor_name=ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
+                owner_user=owner_user,
+                municipio_config=municipio_config,
             )
             if promo_section:
                 promo_text = promo_section.get("message_body")
@@ -969,6 +971,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 ticket_number=nro_ticket_str,
                 neighbor_name=nombre_vecino_final,
                 owner_user=owner_user,
+                municipio_config=municipio_config,
             )
             if promo_section:
                 promo_text = promo_section.get("message_body")
