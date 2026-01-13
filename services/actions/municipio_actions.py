@@ -865,6 +865,14 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             botones_finales = botones_generados
             botones_finales.append({"texto": "Hacer otra sugerencia", "id_accion": "hacer_sugerencia"})
 
+            channel_value = (self.context.get("channel") or "").strip().lower()
+            is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
+            if not is_web_like_channel:
+                botones_finales = remove_buttons_with_urls_in_message(
+                    respuesta_formateada,
+                    botones_finales,
+                )
+
             return {
                 "success": True,
                 "message_to_user": respuesta_formateada,

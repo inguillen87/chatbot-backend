@@ -1973,12 +1973,7 @@ def _normalize_pedir_info_fields(pedir_info: Any) -> list[str]:
         for part in pedir_info.split(","):
             _append_field(part)
 
-    normalized: list[str] = []
-    for field in fields:
-        cleaned = field.strip()
-        if cleaned:
-            normalized.append(cleaned)
-    return normalized
+    return fields
 
 
 def _normalize_pedir_info_value(pedir_info: Any) -> Optional[str]:
@@ -1986,15 +1981,6 @@ def _normalize_pedir_info_value(pedir_info: Any) -> Optional[str]:
 
     fields = _normalize_pedir_info_fields(pedir_info)
     return fields[0] if fields else None
-
-
-def _normalize_single_expected_field(value: Optional[str]) -> Optional[str]:
-    """Return a single normalized field name from a raw pending value."""
-
-    if not value or not isinstance(value, str):
-        return None
-    normalized = _normalize_pedir_info_value(value)
-    return normalized or value.strip()
 
 
 def _prefill_contacto_from_context(
@@ -2009,12 +1995,16 @@ def _prefill_contacto_from_context(
     remaining_fields: list[str] = []
     for field in expected_fields:
         normalized = field.strip().lower()
-        if normalized in {"nombre", "dni", "email", "telefono", "direccion", "ubicacion"}:
-            contacto_key = normalized
-            if normalized == "ubicacion":
-                contacto_key = "direccion"
-            if contacto_usuario.get(contacto_key):
-                datos_parciales.setdefault(normalized, contacto_usuario.get(contacto_key))
+        if normalized == "datos_contacto_sugerencia":
+            required_fields = {"nombre", "dni", "email", "direccion"}
+            if required_fields.issubset(set(contacto_usuario.keys())):
+                for key in required_fields.union({"telefono"}):
+                    if contacto_usuario.get(key):
+                        datos_parciales.setdefault(key, contacto_usuario.get(key))
+                continue
+        if normalized in {"nombre", "dni", "email", "telefono", "direccion"}:
+            if contacto_usuario.get(normalized):
+                datos_parciales.setdefault(normalized, contacto_usuario.get(normalized))
                 continue
         remaining_fields.append(field)
     return remaining_fields
@@ -2091,23 +2081,6 @@ def _extract_expected_fields_from_text(
             extracted["distrito"] = location_hints["distrito"]
         elif location_hints.get("distrito_dudoso"):
             extracted["distrito"] = location_hints["distrito_dudoso"]
-        elif municipio_config:
-            known_districts = (
-                municipio_config.get("distritos")
-                or municipio_config.get("localidades")
-                or municipio_config.get("barrios")
-            )
-            if isinstance(known_districts, (list, tuple)) and text:
-                normalized_text = normalizar_texto(text)
-                for distrito in known_districts:
-                    if not distrito:
-                        continue
-                    distrito_str = str(distrito).strip()
-                    if not distrito_str:
-                        continue
-                    if normalizar_texto(distrito_str) in normalized_text:
-                        extracted["distrito"] = distrito_str
-                        break
 
     if "ubicacion" in extracted and "distrito" in normalized_fields and "distrito" not in extracted:
         ubicacion, distrito = split_ubicacion_y_distrito(extracted["ubicacion"])
@@ -3877,22 +3850,9 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                 normalized_pending_fields = _normalize_pedir_info_fields(pedir_info_llm)
                 if normalized_pending_fields:
-                    datos_actuales = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
-                    normalized_pending_fields = _prefill_contacto_from_context(
-                        contexto_municipio_actual,
-                        datos_actuales,
-                        normalized_pending_fields,
-                    )
-                    if normalized_pending_fields:
-                        contexto_municipio_actual["expected_fields_llm_reclamo"] = normalized_pending_fields
-                        contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending_fields[0]
-                        contexto_municipio_actual["esperando_info_llm"] = normalized_pending_fields[0]
-                    else:
-                        contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
-                        contexto_municipio_actual.pop("esperando_info_llm", None)
-                        contexto_municipio_actual.pop("expected_fields_llm_reclamo", None)
-                        handler = CrearReclamoActionHandler(context)
-                        return handler.execute(datos_actuales), contexto_municipio_actual
+                    contexto_municipio_actual["expected_fields_llm_reclamo"] = normalized_pending_fields
+                    contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending_fields[0]
+                    contexto_municipio_actual["esperando_info_llm"] = normalized_pending_fields[0]
             # Update the context that will be passed to the next turn
             if chat_db_context and hasattr(chat_db_context, 'context_data'):
                 chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
@@ -3937,21 +3897,9 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name
                 normalized_pending_fields = _normalize_pedir_info_fields(pedir_info_llm)
                 if normalized_pending_fields:
-                    normalized_pending_fields = _prefill_contacto_from_context(
-                        contexto_municipio_actual,
-                        datos_actuales_sugerencia,
-                        normalized_pending_fields,
-                    )
-                    if normalized_pending_fields:
-                        contexto_municipio_actual["expected_fields_llm_sugerencia"] = normalized_pending_fields
-                        contexto_municipio_actual["esperando_info_llm_sugerencia"] = normalized_pending_fields[0]
-                        contexto_municipio_actual["esperando_info_llm"] = normalized_pending_fields[0]
-                    else:
-                        contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
-                        contexto_municipio_actual.pop("esperando_info_llm", None)
-                        contexto_municipio_actual.pop("expected_fields_llm_sugerencia", None)
-                        handler = HacerSugerenciaActionHandler(context)
-                        return handler.execute(datos_actuales_sugerencia), contexto_municipio_actual
+                    contexto_municipio_actual["expected_fields_llm_sugerencia"] = normalized_pending_fields
+                    contexto_municipio_actual["esperando_info_llm_sugerencia"] = normalized_pending_fields[0]
+                    contexto_municipio_actual["esperando_info_llm"] = normalized_pending_fields[0]
             if chat_db_context and hasattr(chat_db_context, 'context_data'):
                 chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
                 flag_modified(chat_db_context, "context_data")
@@ -4163,7 +4111,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             # State transition logic based on 'pedir_info'
             if pedir_info_llm:
                 normalized_pending_fields = _normalize_pedir_info_fields(pedir_info_llm)
-                normalized_pending = normalized_pending_fields[0] if normalized_pending_fields else _normalize_pedir_info_value(pedir_info_llm)
+                normalized_pending = normalized_pending_fields[0] if normalized_pending_fields else None
                 pending_lookup_key = normalized_pending or pedir_info_llm
                 if not isinstance(pending_lookup_key, str):
                     pending_lookup_key = str(pending_lookup_key or "").strip()
@@ -4177,39 +4125,15 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 contexto_municipio_actual["esperando_info_llm"] = normalized_pending or pending_lookup_key
                 if _is_claim_pending_field(normalized_pending or pending_lookup_key):
                     if normalized_pending_fields:
-                        datos_actuales = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
-                        normalized_pending_fields = _prefill_contacto_from_context(
-                            contexto_municipio_actual,
-                            datos_actuales,
-                            normalized_pending_fields,
-                        )
-                    if normalized_pending_fields:
                         contexto_municipio_actual["expected_fields_llm_reclamo"] = normalized_pending_fields
-                        contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending_fields[0]
-                        contexto_municipio_actual["esperando_info_llm"] = normalized_pending_fields[0]
-                    else:
-                        contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
-                        contexto_municipio_actual.pop("expected_fields_llm_reclamo", None)
-                        contexto_municipio_actual.pop("esperando_info_llm", None)
+                    contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending or pending_lookup_key
                 else:
                     contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
                     contexto_municipio_actual.pop("expected_fields_llm_reclamo", None)
                 if _is_suggestion_pending_field(normalized_pending or pending_lookup_key):
                     if normalized_pending_fields:
-                        datos_actuales = contexto_municipio_actual.get("datos_parciales_llm_sugerencia", {})
-                        normalized_pending_fields = _prefill_contacto_from_context(
-                            contexto_municipio_actual,
-                            datos_actuales,
-                            normalized_pending_fields,
-                        )
-                    if normalized_pending_fields:
                         contexto_municipio_actual["expected_fields_llm_sugerencia"] = normalized_pending_fields
-                        contexto_municipio_actual["esperando_info_llm_sugerencia"] = normalized_pending_fields[0]
-                        contexto_municipio_actual["esperando_info_llm"] = normalized_pending_fields[0]
-                    else:
-                        contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
-                        contexto_municipio_actual.pop("expected_fields_llm_sugerencia", None)
-                        contexto_municipio_actual.pop("esperando_info_llm", None)
+                    contexto_municipio_actual["esperando_info_llm_sugerencia"] = normalized_pending or pending_lookup_key
                 else:
                     contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
                     contexto_municipio_actual.pop("expected_fields_llm_sugerencia", None)
