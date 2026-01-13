@@ -33,7 +33,7 @@ from utils.auth_helpers import (
     user_from_token,
 )
 from utils.map_config import get_map_config
-from utils.response_utils import ensure_buttons_compatibility
+from utils.response_utils import normalize_response_payload
 from datetime import datetime, timedelta
 
 chat_bp = Blueprint("chat_bp", __name__)
@@ -1230,7 +1230,7 @@ def _procesar_chat(
         """Emite un mensaje por Socket.IO si hay una sesión web activa."""
 
         if channel == "web" and chat_session_id_header:
-            ensure_buttons_compatibility(payload)
+            normalize_response_payload(payload)
 
             socketio.emit('message', payload, room=chat_session_id_header)
             current_app.logger.debug(
@@ -1944,7 +1944,7 @@ def _procesar_chat(
                     current_app.logger.info("Mensaje duplicado detectado; reenviando última respuesta.")
                     last_resp = chat_context_obj.context_data.get("last_bot_response")
                     if last_resp:
-                        ensure_buttons_compatibility(last_resp)
+                        normalize_response_payload(last_resp)
                         return jsonify(last_resp), 200
             except Exception:
                 pass
@@ -2001,7 +2001,7 @@ def _procesar_chat(
                     f"Error al guardar el estado del menú demo para la sesión {chat_session_id_header}: {e_commit}",
                     exc_info=True,
                 )
-            ensure_buttons_compatibility(menu_action_payload)
+            normalize_response_payload(menu_action_payload)
             _emit_socket_payload(menu_action_payload)
             return jsonify(menu_action_payload), 200
 
@@ -2437,6 +2437,9 @@ def _procesar_chat(
         # The 'resultado' dictionary from responder_chatboc is now structured
         # exactly as the LLM specified, which is what the frontend expects.
 
+        if isinstance(resultado, dict):
+            normalize_response_payload(resultado)
+
         # --- Audio Synthesis Step ---
         # If the response indicates that audio should be generated, do it now.
         if isinstance(resultado, dict) and resultado.get("generar_audio"):
@@ -2489,7 +2492,7 @@ def _procesar_chat(
             if audio_url and channel == "web" and "audio" not in resultado:
                 resultado["audio"] = {"link": audio_url}
 
-        ensure_buttons_compatibility(resultado)
+        normalize_response_payload(resultado)
 
         # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
         if is_anonymous and resultado and resultado.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"] and not (resultado.get("datos_estructura", {}).get("nombre_usuario_detectado") and resultado.get("datos_estructura", {}).get("telefono_detectado") and resultado.get("datos_estructura", {}).get("email_detectado")):
@@ -2512,7 +2515,7 @@ def _procesar_chat(
 
         # Emit the result via Socket.IO if the channel is web
         if channel == "web" and chat_session_id_header:
-            ensure_buttons_compatibility(resultado)
+            normalize_response_payload(resultado)
 
             socketio.emit('message', resultado, room=chat_session_id_header)
             current_app.logger.debug(
