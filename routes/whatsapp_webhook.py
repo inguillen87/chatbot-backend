@@ -945,7 +945,7 @@ def whatsapp_webhook():
 
     safe_flag_modified(session_context_db_entry, "context_data")
 
-    should_trigger_welcome = is_override or (is_greeting and not is_waiting_for_info)
+    should_trigger_welcome = is_greeting and not is_waiting_for_info
 
     request_root = request.url_root or ""
     request_root_stripped = request_root.rstrip("/")

@@ -8033,6 +8033,21 @@ def responder_municipio(
             switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context)
             if switch_response:
                 return _finalize_response(switch_response)
+            if not pregunta_str.strip() and (
+                context.get("es_ubicacion")
+                or context.get("ubicacion_usuario")
+                or received_payload.get("es_ubicacion")
+            ):
+                _set_sugerencia_location_context(
+                    contexto_municipio_actual,
+                    context.get("ubicacion_usuario") or received_payload.get("ubicacion_usuario"),
+                )
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response({
+                    "message_body": "¡Gracias! Ahora contame cuál es tu sugerencia.",
+                    "fuente": "handler_sugerencia_ubicacion_recibida",
+                })
             sugerencia_texto = pregunta_str
             if len(sugerencia_texto) < 10:
                 return _finalize_response({"message_body": "Tu sugerencia parece un poco corta. ¿Podrías darme un poco más de detalle?", "fuente": "sugerencia_muy_corta"})
@@ -9310,7 +9325,11 @@ def responder_municipio(
         menu_opciones = contexto_municipio_actual.get("menu_opciones", [])
         selected_action = action_payload or find_menu_action_by_input(pregunta_str_menu, menu_opciones)
 
-        if not action_payload and selected_action == "iniciar_reclamo":
+        if (
+            not action_payload
+            and selected_action == "iniciar_reclamo"
+            and not pregunta_str_menu.strip().isdigit()
+        ):
             # El usuario volvió a escribir "iniciar reclamo" en lugar de pulsar el botón.
             # Reenviamos el menú de reclamos para que pueda elegir una opción.
             submenu = _get_reclamos_consultas_menu()
