@@ -784,13 +784,6 @@ def _save_to_cloudinary(
             "thumbUrl": thumb_url,
         }
     except Exception as exc:  # pragma: no cover - the behaviour is tested via mocks
-        log_kwargs = {"exc_info": True}
-        message = "Cloudinary upload failed for %s: %s"
-        if has_app_context():
-            current_app.logger.error(message, original_filename, exc, **log_kwargs)
-        else:
-            logger.error(message, original_filename, exc, **log_kwargs)
-
         error_message = str(exc).lower()
         auth_errors = (
             "unknown api key",
@@ -801,7 +794,23 @@ def _save_to_cloudinary(
             "must supply api_secret",
             "must supply api secret",
         )
-        if any(token in error_message for token in auth_errors):
+
+        is_auth_error = any(token in error_message for token in auth_errors)
+        log_kwargs = {"exc_info": True}
+        message = "Cloudinary upload failed for %s: %s"
+
+        if is_auth_error:
+            if has_app_context():
+                current_app.logger.warning(message, original_filename, exc, **log_kwargs)
+            else:
+                logger.warning(message, original_filename, exc, **log_kwargs)
+        else:
+            if has_app_context():
+                current_app.logger.error(message, original_filename, exc, **log_kwargs)
+            else:
+                logger.error(message, original_filename, exc, **log_kwargs)
+
+        if is_auth_error:
             reason = "authentication error"
             if "unknown api key" in error_message:
                 reason = "unknown api key"
