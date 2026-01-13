@@ -2445,8 +2445,8 @@ def _procesar_chat(
         if isinstance(resultado, dict) and resultado.get("generar_audio"):
             from services.google_text_to_speech import TextToSpeechService
             tts_service = TextToSpeechService()
-            # The text to synthesize can be in 'message_body' (municipio) or 'respuesta' (pyme)
-            text_to_synthesize = resultado.get("message_body") or resultado.get("respuesta")
+            # Always synthesize from the normalized message_body.
+            text_to_synthesize = resultado.get("message_body")
             if text_to_synthesize:
                 try:
                     audio_url = tts_service.synthesize_speech(text_to_synthesize)
