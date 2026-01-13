@@ -45,10 +45,7 @@ from utils.municipio_utils import (
 from .actions.municipio_actions import (
     CrearReclamoActionHandler,
     HacerSugerenciaActionHandler,
-    build_ticket_closing_promo_payload,
     _normalize_url_for_comparison,
-    _render_template_safe,
-    _resolve_closing_promo_config,
 )
 from .herramientas_municipio import (
     consultar_recoleccion_por_direccion,
@@ -563,11 +560,6 @@ def _build_sugerencia_success_payload(
     channel_value = (context.get("channel") or "").strip().lower()
     is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
 
-    # If channel is WhatsApp (not web), we prefer buttons over text links.
-    include_links = not is_web_like_channel
-    if channel_value == "whatsapp":
-        include_links = False
-
     message_body, base_buttons = formatear_ticket_respuesta(
         "sugerencia",
         nombre_vecino,
@@ -578,7 +570,7 @@ def _build_sugerencia_success_payload(
         base_chat_url,
         dni=dni_vecino,
         consulta_pin=consulta_pin,
-        include_links_in_message=include_links,
+        include_links_in_message=not is_web_like_channel,
     )
 
     buttons: list[dict] = []
@@ -656,35 +648,8 @@ def _build_sugerencia_success_payload(
 
     if not is_web_like_channel:
         buttons = remove_buttons_with_urls_in_message(message_body, buttons)
-    if not buttons:
-        buttons = [
-            {"texto": "Menú", "action_id": "menu_principal"},
-            {"texto": "Cancelar", "action_id": "cancelar"},
-        ]
-
-    closing_payload = build_ticket_closing_promo_payload(
-        municipio_config=municipio_config,
-        ticket_type="sugerencia",
-        channel_value=channel_value,
-        message_body=message_body,
-        options_list=buttons,
-        image_url=image_url,
-        ticket_number=nro_ticket,
-        categoria=categoria,
-        descripcion=descripcion,
-        consulta_pin=consulta_pin,
-        base_chat_url=base_chat_url,
-        promo_message=promo_section.get("message_body") if promo_section else None,
-    )
-    message_body = closing_payload["message_body"]
-    buttons = closing_payload["options_list"]
-    image_url = closing_payload["image_url"]
-    twilio_pre_messages = closing_payload["_twilio_pre_messages"]
 
     delayed_payload = handler_response.get("delayed_payload") or _get_main_menu_payload(context)
-
-    if not is_web_like_channel:
-        image_url = None
 
     payload: Dict[str, Any] = {
         "success": True,
@@ -695,8 +660,6 @@ def _build_sugerencia_success_payload(
         "data": ticket_info,
         "fuente": "sugerencia_confirmada",
     }
-    if twilio_pre_messages:
-        payload["_twilio_pre_messages"] = twilio_pre_messages
 
     audio_url = handler_response.get("audio_url")
     if audio_url:
@@ -705,131 +668,9 @@ def _build_sugerencia_success_payload(
     if audio_text:
         payload["audio_text"] = audio_text
 
-    # Explicitly disable delayed payload for suggestion success to avoid immediate re-greeting
-    # if delayed_payload:
-    #     payload["delayed_payload"] = delayed_payload
-    #     payload["delay_seconds"] = handler_response.get("delay_seconds", 20)
-
-    return payload
-
-
-def _is_final_success_response(payload: Dict[str, Any]) -> bool:
-    if not isinstance(payload, dict):
-        return False
-    if payload.get("success") is True:
-        return True
-    fuente = str(payload.get("fuente") or "").strip().lower()
-    if not fuente:
-        return False
-    if any(token in fuente for token in ("pide", "pedir", "esperando", "error", "submenu", "menu")):
-        return False
-    if fuente.startswith(("llm_", "herramienta_")):
-        return True
-    if any(token in fuente for token in ("confirm", "final", "confirmada", "confirmado")):
-        return True
-    if fuente in {"municipio_fallback_google_search", "fallback_final"}:
-        return True
-    return False
-
-
-def _ensure_menu_cancel_options(options: Optional[Sequence[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-    normalized = formatear_opciones(options)
-    if normalized is None:
-        normalized = []
-
-    def _action_id(option: Dict[str, Any]) -> str:
-        return str(option.get("action_id") or option.get("id_accion") or option.get("action") or "").strip().lower()
-
-    has_menu = any(_action_id(option) in {"menu_principal", "menu"} for option in normalized)
-    has_cancel = any(_action_id(option) == "cancelar" for option in normalized)
-
-    if not has_menu:
-        normalized.append({"texto": "Menú principal", "action_id": "menu_principal"})
-    if not has_cancel:
-        normalized.append({"texto": "Cancelar", "action_id": "cancelar"})
-
-    return normalized
-
-
-def _apply_premium_closing_stub_2(payload: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-    if not _is_final_success_response(payload):
-        return payload
-
-    channel_value = (context.get("channel") or "").strip().lower()
-    is_whatsapp_channel = "whatsapp" in channel_value
-
-    options_list = _ensure_menu_cancel_options(payload.get("options_list") or [])
-    if options_list:
-        payload["options_list"] = options_list
-        if payload.get("message_type") in {None, "", "text"}:
-            payload["message_type"] = "interactive_buttons"
-
-    if not is_whatsapp_channel:
-        return payload
-
-    municipio_config = context.get("municipio_config_actual") or {}
-    fuente = str(payload.get("fuente") or "").strip().lower()
-    ticket_type = "reclamo" if "reclamo" in fuente else "sugerencia" if "sugerencia" in fuente else "general"
-
-    closing_enabled, closing_image_url, caption_template = _resolve_closing_promo_config(
-        municipio_config,
-        ticket_type,
-    )
-
-    image_url = payload.get("image_url")
-    closing_media_url = closing_image_url or image_url
-
-    pre_messages = payload.get("_twilio_pre_messages")
-    if not isinstance(pre_messages, list):
-        pre_messages = []
-
-    if closing_enabled and closing_media_url and not pre_messages:
-        contact_ctx = context.get(CONTEXTO_MUNICIPIO, {}).get("contacto_usuario", {})
-        nombre = (
-            contact_ctx.get("nombre")
-            or context.get("profile_name")
-            or context.get("profile_name_kwarg")
-            or "Vecino/a"
-        )
-        ticket_info = payload.get("data") or {}
-        nro_ticket = (
-            ticket_info.get("nro_ticket")
-            or payload.get("ticket_nro")
-            or payload.get("nro_ticket")
-        )
-        consulta_pin = ticket_info.get("consulta_pin") or payload.get("consulta_pin")
-        categoria = ticket_info.get("categoria") or payload.get("categoria") or ""
-        descripcion = ticket_info.get("descripcion") or payload.get("descripcion") or ""
-        base_chat_url = municipio_config.get("base_chat_url", "https://www.chatboc.ar/chat")
-        seguimiento_url = ""
-        if nro_ticket:
-            ticket_id_numeric = str(nro_ticket).replace("M-", "").replace("S-", "")
-            seguimiento_url = f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}"
-            if consulta_pin:
-                seguimiento_url = f"{seguimiento_url}?pin={consulta_pin}"
-
-        caption_values = {
-            "nombre": nombre,
-            "ticket": nro_ticket,
-            "categoria": categoria,
-            "descripcion": descripcion,
-            "pin": consulta_pin,
-            "seguimiento_url": seguimiento_url,
-        }
-        message_body = payload.get("message_body") or ""
-        caption_body = _render_template_safe(caption_template or message_body, caption_values)
-        pre_messages = [{"body": caption_body, "media_urls": [closing_media_url]}]
-
-    if pre_messages:
-        payload["_twilio_pre_messages"] = pre_messages
-
-    if payload.get("message_type") == "interactive_buttons" and payload.get("image_url"):
-        if not payload.get("_twilio_pre_messages"):
-            fallback_body = payload.get("message_body") or "Opciones disponibles:"
-            payload["_twilio_pre_messages"] = [
-                {"body": fallback_body, "media_urls": [payload["image_url"]]}
-            ]
-        payload["image_url"] = None
+    if delayed_payload:
+        payload["delayed_payload"] = delayed_payload
+        payload["delay_seconds"] = handler_response.get("delay_seconds", 20)
 
     return payload
 
@@ -7353,8 +7194,6 @@ def responder_municipio(
 
     def _finalize_response(response):
         """Return the response unchanged; also store it in cache for repeated queries."""
-        if isinstance(response, dict):
-            response = _apply_premium_closing_stub_2(response, context)
         if cache_key is not None:
             MUNICIPIO_RESPONSE_CACHE[cache_key] = response
         return response
@@ -7829,9 +7668,7 @@ def responder_municipio(
                 return _finalize_response(_get_reclamos_menu())
 
         elif estado_conversacion == ConversationState.ESPERANDO_INTENCION_UBICACION.name:
-            # If we are here, it means we have a location context stored but the user has not yet
-            # selected an action (claim vs suggestion). We need to handle their input.
-            ubicacion_contextual = contexto_municipio_actual.get('ubicacion_contextual') # Don't pop yet, we might need it
+            ubicacion_contextual = contexto_municipio_actual.pop('ubicacion_contextual', None)
             address = ubicacion_contextual.get('address', 'la ubicación proporcionada') if ubicacion_contextual else 'la ubicación proporcionada'
 
             if not action:
@@ -7840,104 +7677,30 @@ def responder_municipio(
                     pregunta_menu = pregunta_original
                 elif isinstance(pregunta_original, dict):
                     pregunta_menu = pregunta_original.get("pregunta", "")
-
-                # IMPORTANT: Include "Menú" in the options list so "4" works
                 opciones = [
                     {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
                     {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
                     {"texto": "Cancelar", "action_id": "cancelar"},
-                    {"texto": "Menú", "action_id": "menu_principal"},
                 ]
                 action = find_menu_action_by_input(pregunta_menu, opciones)
 
-                # Explicit handling for common escapes if fuzzy matcher is strict
-                norm_input = normalizar_texto(pregunta_menu).strip()
-                if not action:
-                    if norm_input in {"3", "cancelar", "salir"}:
-                        action = "cancelar"
-                    elif norm_input in {"4", "menu", "menu principal", "volver"}:
-                        action = "menu_principal"
-
-            # If fuzzy matching failed for a menu option, try to detect intent from the text
-            # This handles cases like "Quiera hacer un pedido..."
-            if not action and _looks_like_free_form_input(pregunta_menu):
-                logger_actual.info(f"Input '{pregunta_menu}' did not match location options. Attempting intent classification.")
-                intent, _ = intent_classifier.classify(pregunta_menu)
-                if intent == "iniciar_reclamo":
-                    action = "iniciar_reclamo_con_ubicacion"
-                elif intent == "sugerencia": # Assuming intent classifier has this, or use keyword fallback
-                    action = "enviar_sugerencia_con_ubicacion"
-                # Fallback check for common keywords if intent classifier is limited
-                elif "reclamo" in normalizar_texto(pregunta_menu):
-                    action = "iniciar_reclamo_con_ubicacion"
-                elif "sugerencia" in normalizar_texto(pregunta_menu) or "pedido" in normalizar_texto(pregunta_menu):
-                    action = "enviar_sugerencia_con_ubicacion"
-
             if action == "iniciar_reclamo_con_ubicacion":
-                # Now safe to pop location context
-                ubicacion_contextual = contexto_municipio_actual.pop('ubicacion_contextual', None)
                 handler = ReclamoFlowHandler(context, chat_db_context)
                 datos_iniciales = {"direccion": address}
                 if ubicacion_contextual:
                     datos_iniciales['coordenadas'] = {"lat": ubicacion_contextual.get("latitude"), "lon": ubicacion_contextual.get("longitude")}
-
-                # If we inferred the action from free-form text, that text might also contain description
-                if _looks_like_free_form_input(pregunta_menu):
-                     datos_iniciales['descripcion'] = pregunta_menu
-
                 response_dict = handler.start_flow(datos_iniciales=datos_iniciales)
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return _finalize_response(response_dict)
-
             elif action == "enviar_sugerencia_con_ubicacion":
-                # Now safe to pop location context
-                ubicacion_contextual = contexto_municipio_actual.pop('ubicacion_contextual', None)
                 contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
                 _set_sugerencia_location_context(
                     contexto_municipio_actual,
                     ubicacion_contextual,
                     fallback_address=address,
                 )
-
-                if _looks_like_free_form_input(pregunta_menu):
-                    # If the user typed the suggestion directly, treat it as the text input
-                    # Call the function recursively to process the text in the new state
-                    logger_actual.info("User input detected as suggestion text. Recursively calling responder_municipio.")
-                    # Ensure context is saved before recursion so the new state is visible
-                    if chat_db_context:
-                        flag_modified(chat_db_context, "context_data")
-
-                    return responder_municipio(
-                        pregunta_original=pregunta_menu,
-                        owner_user=owner_user,
-                        rubro_obj=rubro_obj,
-                        viewer_user=viewer_user,
-                        chat_db_context=chat_db_context,
-                        anon_id=anon_id,
-                        channel=channel,
-                        location=location,
-                        demo_metadata=demo_metadata,
-                        **kwargs
-                    )
-
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return _finalize_response({"message_body": f"Excelente. Por favor, escribí tu sugerencia relacionada con la ubicación: *{address}*.", "fuente": "handler_enviar_sugerencia_con_ubicacion"})
-
-            elif action == "menu_principal":
-                 contexto_municipio_actual['estado_conversacion'] = None
-                 contexto_municipio_actual.pop('ubicacion_contextual', None)
-                 handler = GreetingHandler(context)
-                 response = handler.handle({})
-                 if chat_db_context:
-                     flag_modified(chat_db_context, "context_data")
-                 return _finalize_response(response)
-
-            elif action == "cancelar":
-                 contexto_municipio_actual['estado_conversacion'] = None
-                 contexto_municipio_actual.pop('ubicacion_contextual', None)
-                 if chat_db_context: flag_modified(chat_db_context, "context_data")
-                 return _finalize_response({"message_body": "Operación cancelada. ¿En qué más puedo ayudarte?", "options_list": [], "message_type": "text"})
-
             else:
                 contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
                 if chat_db_context:
@@ -8097,7 +7860,7 @@ def responder_municipio(
                 or any(a in texto_normalizado for a in afirmativos)
             ):
                 datos_confirmados = contexto_municipio_actual.pop('datos_sugerencia', {})
-                handler = HacerSugerenciaActionHandler(context)
+                handler = CrearReclamoActionHandler(context)
                 response = handler.execute(datos_confirmados)
                 if response.get("success"):
                     # Re-synchronize the in-memory context after the handler cleanup
@@ -8111,7 +7874,12 @@ def responder_municipio(
                     if chat_db_context:
                         flag_modified(chat_db_context, "context_data")
 
-                    return _finalize_response(response)
+                    final_payload = _build_sugerencia_success_payload(
+                        context,
+                        datos_confirmados,
+                        response,
+                    )
+                    return _finalize_response(final_payload)
                 contexto_municipio_actual['datos_sugerencia'] = datos_confirmados
                 if response.get("pedir_info"):
                     contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
@@ -8793,10 +8561,6 @@ def responder_municipio(
                 contacto_especializado = contactos.get(ticket.categoria, contactos.get("default", {})) if isinstance(contactos, dict) else {}
                 municipio_config = context.get("municipio_config_actual", {})
                 base_chat_url = municipio_config.get("base_chat_url", "https://www.chatboc.ar/chat")
-
-                # Determine if we should include text links based on channel
-                include_links = channel != "whatsapp"
-
                 mensaje, botones = formatear_ticket_respuesta(
                     "reclamo",
                     ticket.nombre_vecino or "Vecino/a",
@@ -8806,7 +8570,6 @@ def responder_municipio(
                     contacto_especializado,
                     base_chat_url,
                     consulta_pin=ticket.consulta_pin,
-                    include_links_in_message=include_links,
                 )
                 mensaje += f"\n\n🔔 *Estado actual:* {ticket.estado}"
             else:
@@ -9613,7 +9376,6 @@ def responder_municipio(
                 {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
                 {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
                 {"texto": "Cancelar", "action_id": "cancelar"},
-                {"texto": "Menú", "action_id": "menu_principal"},
             ]
             action = find_menu_action_by_input(pregunta_menu, opciones)
 
@@ -9643,40 +9405,12 @@ def responder_municipio(
                 "message_body": f"Excelente. Por favor, escribí tu sugerencia relacionada con la ubicación: *{address}*.",
                 "fuente": "handler_enviar_sugerencia_con_ubicacion"
             })
-        elif action == "menu_principal":
+
+        else:  # Cancelar o no se entiende
             contexto_municipio_actual['estado_conversacion'] = None
-            contexto_municipio_actual.pop('ubicacion_contextual', None)
-            handler = GreetingHandler(context)
-            response = handler.handle({})
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
-            return _finalize_response(response)
-        elif action == "cancelar":
-            contexto_municipio_actual['estado_conversacion'] = None
-            contexto_municipio_actual.pop('ubicacion_contextual', None)
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-            return _finalize_response({
-                "message_body": "Operación cancelada. ¿En qué más puedo ayudarte?",
-                "options_list": [],
-                "message_type": "text"
-            })
-        else:
-            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-            return _finalize_response(
-                {
-                    "message_body": f"No entendí la opción. ¿Qué te gustaría hacer en *{address}*?",
-                    "options_list": [
-                        {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
-                        {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
-                        {"texto": "Cancelar", "action_id": "cancelar"},
-                        {"texto": "Menú", "action_id": "menu_principal"},
-                    ],
-                    "fuente": "proactive_location_handler",
-                }
-            )
+            return GreetingHandler(context).handle({})
 
 
     elif estado_conversacion == ConversationState.ESPERANDO_CORRECCION_DATOS_RECLAMO.name:

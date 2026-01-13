@@ -7,8 +7,8 @@ logger = logging.getLogger(__name__)
 # When Twilio hasn't approved interactive templates yet we fall back to
 # rendering every WhatsApp menu as plain text.  The environment variable
 # allows re‑enabling interactive components without touching the code.
-# MODIFIED: Default to FALSE to enable interactive components by default.
-WHATSAPP_FORCE_TEXT = os.getenv("WHATSAPP_FORCE_TEXT", "false").lower() != "false"
+# MODIFIED: Default to TRUE to satisfy user request for text-based menus.
+WHATSAPP_FORCE_TEXT = os.getenv("WHATSAPP_FORCE_TEXT", "true").lower() != "false"
 
 def render_audio_text(
     message: str,
@@ -322,10 +322,7 @@ def build_interactive_response(options: list,
             for i, o in enumerate(options):
                 if o.get("type") == "url" and o.get("url"):
                     # For URL options, add them to the text body
-                    url_value = str(o.get("url"))
-                    if url_value and url_value in body_text_to_update:
-                        continue
-                    url_texts.append(f"➡️ {o.get('texto', 'Ver más')}: {url_value}")
+                    url_texts.append(f"➡️ {o.get('texto', 'Ver más')}: {o.get('url')}")
                 else:
                     # For other options, create a standard reply button
                     reply_buttons.append(

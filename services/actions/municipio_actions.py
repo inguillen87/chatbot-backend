@@ -3,7 +3,6 @@ import logging
 import os
 import re
 import sys
-from collections import defaultdict
 from urllib.parse import urlparse
 
 from .base_action_handler import BaseActionHandler
@@ -20,7 +19,7 @@ from services.herramientas_municipio import (
 from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.config_loader import cargar_configuracion_municipio
-from models import MunicipioTicket, TenantProfile # Added TenantProfile import
+from models import MunicipioTicket
 from services.common_utils import _get_main_menu_payload
 from services import promo_service
 
@@ -51,101 +50,6 @@ def _normalize_url_for_comparison(raw_url: str) -> tuple[str, str]:
         path = path.rstrip("/")
 
     return domain, path
-
-
-def _render_template_safe(template: str, values: dict[str, str]) -> str:
-    if not template:
-        return ""
-    safe_values = defaultdict(str, {k: v for k, v in values.items() if v is not None})
-    try:
-        return template.format_map(safe_values).strip()
-    except Exception:
-        return template.strip()
-
-
-def _resolve_closing_promo_config(
-    municipio_config: dict,
-    ticket_type: str,
-) -> tuple[bool, str | None, str | None]:
-    has_flag = "closing_promo_enabled" in municipio_config
-    enabled = bool(municipio_config.get("closing_promo_enabled")) if has_flag else False
-    image_url = (
-        municipio_config.get(f"closing_promo_image_url_{ticket_type}")
-        or municipio_config.get("closing_promo_image_url")
-    )
-    if image_url and image_url.startswith("http://"):
-        image_url = image_url.replace("http://", "https://", 1)
-    if not has_flag and image_url:
-        enabled = True
-    caption_template = (
-        municipio_config.get(f"closing_promo_caption_template_{ticket_type}")
-        or municipio_config.get("closing_promo_caption_template")
-    )
-    return enabled, image_url, caption_template
-
-
-def build_ticket_closing_promo_payload(
-    *,
-    municipio_config: dict,
-    ticket_type: str,
-    channel_value: str,
-    message_body: str,
-    options_list: list[dict] | None,
-    image_url: str | None,
-    ticket_number: str | None,
-    categoria: str | None,
-    descripcion: str | None,
-    consulta_pin: str | None,
-    base_chat_url: str,
-    promo_message: str | None = None,
-    fallback_options: list[dict] | None = None,
-) -> dict[str, Any]:
-    closing_enabled, closing_image_url, caption_template = _resolve_closing_promo_config(
-        municipio_config,
-        ticket_type,
-    )
-    closing_image_url = closing_image_url or image_url
-    updated_message_body = message_body
-    updated_options = list(options_list or [])
-    updated_image_url = image_url
-    pre_messages = None
-
-    if channel_value == "whatsapp" and closing_enabled and closing_image_url:
-        ticket_id_numeric = str(ticket_number or "").replace("M-", "").replace("S-", "")
-        chat_url = ""
-        if base_chat_url and ticket_id_numeric:
-            chat_url = f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}"
-            if consulta_pin:
-                chat_url = f"{chat_url}?pin={consulta_pin}"
-        caption_values = {
-            "ticket": ticket_number,
-            "categoria": categoria,
-            "descripcion": descripcion,
-            "pin": consulta_pin,
-            "link": chat_url,
-            "seguimiento_url": chat_url,
-            "promo": promo_message or "",
-        }
-        caption_body = _render_template_safe(caption_template or message_body, caption_values)
-        updated_options = [
-            boton for boton in (updated_options or [])
-            if not (isinstance(boton, dict) and boton.get("url"))
-        ]
-        if not updated_options:
-            updated_options = list(fallback_options or [])
-        if not updated_options:
-            updated_options = [{"texto": "Menú principal", "action_id": "menu_principal"}]
-        updated_message_body = "Opciones disponibles:"
-        updated_image_url = None
-        pre_messages = [{"body": caption_body, "media_urls": [closing_image_url]}]
-
-    return {
-        "_twilio_pre_messages": pre_messages,
-        "message_body": updated_message_body,
-        "options_list": updated_options,
-        "image_url": updated_image_url,
-    }
-
 
 def _address_seems_generic(address: str | None) -> bool:
     if not address:
@@ -191,7 +95,6 @@ class BuscarEstacionamientoActionHandler(BaseActionHandler):
             return {
                 "success": False,
                 "message_to_user": "Para encontrar estacionamiento, por favor compartí tu ubicación o escribí una dirección (ej: San Martín 1200).",
-                "message_body": "Para encontrar estacionamiento, por favor compartí tu ubicación o escribí una dirección (ej: San Martín 1200).", # Added
                 "pedir_info": "ubicacion"
             }
 
@@ -209,7 +112,6 @@ class BuscarEstacionamientoActionHandler(BaseActionHandler):
         return {
             "success": True,
             "message_to_user": resultado["texto"],
-            "message_body": resultado["texto"], # Added
             "data": resultado
         }
 
@@ -451,8 +353,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
             return {
                 "success": False,
-                "message_to_user": mensaje,
-                "message_body": mensaje, # Added for schema consistency
+                "message_body": mensaje,
                 "pedir_info": campos_faltantes,
                 "options_list": botones,
                 "message_type": "interactive_list" if len(botones) > 3 else "interactive_buttons"
@@ -474,25 +375,6 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         # Recopilación final de datos y creación del ticket
         owner_user = self.context.get("user_obj")
-
-        # Resolve correct Tenant ID and Municipio ID
-        # Priority: explicit 'municipio_id' from context/user, then lookup by slug if available.
-        resolved_municipio_id = getattr(owner_user, "municipio_id", None)
-        resolved_tenant_id = getattr(owner_user, "tenant_id", None)
-
-        if not resolved_municipio_id and hasattr(owner_user, "tenant_slug"):
-             tenant = TenantProfile.query.filter_by(slug=owner_user.tenant_slug).first()
-             if tenant:
-                 resolved_tenant_id = tenant.id
-                 # If tenant type is 'municipio', link it.
-                 if tenant.tipo == 'municipio':
-                     # The TenantProfile.municipio_id points to the USER who owns it.
-                     # But for MunicipioTicket.municipio_id, we usually expect the User ID of the municipality admin/bot.
-                     resolved_municipio_id = tenant.municipio_id
-
-        # If still missing, try fallback logic or log warning.
-        if not resolved_municipio_id:
-             logger.warning(f"Could not resolve municipio_id for user {owner_user.id} ({owner_user.email}). Ticket might be orphaned or default.")
 
         # The logic for updating/creating the user is now handled by the ticket_service
         # to centralize user management and correctly handle IntegrityError.
@@ -533,8 +415,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "estado": "nuevo",
             "user_id": getattr(viewer_user, "id", None),
             "anon_id": self.context.get("anon_id"),
-            "municipio_id": resolved_municipio_id,
-            "tenant_id": resolved_tenant_id,
+            "municipio_id": getattr(owner_user, "municipio_id", None),  # Asegurar que el municipio_id se pasa aquí
             "latitud": coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None,
             "longitud": (
                 coordenadas_llm.get("lng") if isinstance(coordenadas_llm, dict) else None
@@ -622,19 +503,32 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 )
 
 
+            # Notificaciones
+            # if ticket_data_cleaned.get("telefono_vecino"):
+            #     try:
+            #         enviar_notificacion_whatsapp_con_plantilla(
+            #             ticket_data_cleaned["telefono_vecino"],
+            #             ticket_data_cleaned.get("nombre_vecino", "Vecino"),
+            #             str(ticket_nro),
+            #             ticket_data_cleaned.get("categoria", "Varios")
+            #         )
+            #     except Exception as e_whatsapp:
+            #         logger.error(f"Error enviando notificación de WhatsApp para {nro_ticket_str}: {e_whatsapp}")
+
+            #     try:
+            #         enviar_notificacion_sms(
+            #             ticket_data_cleaned["telefono_vecino"],
+            #             f"Hola {ticket_data_cleaned.get('nombre_vecino', 'Vecino')}! Tu reclamo M-{ticket_nro} ({ticket_data_cleaned.get('categoria', 'Varios')}) fue generado."
+            #         )
+            #     except Exception as e_sms:
+            #         logger.error(f"Error enviando notificación por SMS para {nro_ticket_str}: {e_sms}")
+
             # Formatear respuesta y obtener el botón de contacto
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
             promo_image_url = municipio_config.get('promo_image_url')
-
-            # --- HERO IMAGE LOGIC (New) ---
-            closing_promo_enabled = municipio_config.get('closing_promo_enabled', False)
-            closing_promo_image_url = municipio_config.get('closing_promo_image_url')
-
             channel_value = (self.context.get("channel") or "").strip().lower()
             is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
-            is_whatsapp = "whatsapp" in channel_value
-
             categoria_display = categoria
             mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
                 "reclamo",
@@ -710,54 +604,21 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 if not promo_image_url and promo_section.get("image_url"):
                     promo_image_url = promo_section.get("image_url")
 
-            # --- Override promo with dedicated closing hero image if configured ---
-            if closing_promo_enabled and closing_promo_image_url:
-                promo_image_url = closing_promo_image_url
-
             if not is_web_like_channel:
                 botones_finales = remove_buttons_with_urls_in_message(
                     mensaje_respuesta,
                     botones_finales,
                 )
-            if not botones_finales:
-                botones_finales = [
-                    {"texto": "Menú", "action_id": "menu_principal"},
-                    {"texto": "Cancelar", "action_id": "cancelar"},
-                ]
-
-            closing_payload = build_ticket_closing_promo_payload(
-                municipio_config=municipio_config,
-                ticket_type="reclamo",
-                channel_value=channel_value,
-                message_body=mensaje_respuesta,
-                options_list=botones_finales,
-                image_url=promo_image_url,
-                ticket_number=nro_ticket_str,
-                categoria=categoria_display,
-                descripcion=descripcion,
-                consulta_pin=pin_final,
-                base_chat_url=base_chat_url,
-                promo_message=promo_section.get("message_body") if promo_section else None,
-            )
-            mensaje_respuesta = closing_payload["message_body"]
-            botones_finales = closing_payload["options_list"]
-            promo_image_url = closing_payload["image_url"]
-            twilio_pre_messages = closing_payload["_twilio_pre_messages"]
-
-            if not is_web_like_channel:
-                promo_image_url = None
 
             # Delayed menu
             menu_payload = _get_main_menu_payload(self.context)
-            message_type = "interactive_buttons" if botones_finales else "text"
 
             return {
                 "success": True,
                 "message_body": mensaje_respuesta,
                 "options_list": botones_finales,
-                "message_type": message_type,
+                "message_type": "interactive_buttons" if botones_finales else "text",
                 "image_url": promo_image_url,
-                "_twilio_pre_messages": twilio_pre_messages,
                 "delayed_payload": menu_payload,
                 "delay_seconds": 20,
                 "data": {
@@ -791,7 +652,6 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
             return {
                 "success": False,
                 "message_to_user": "Para consultar el estado, necesito el número de ticket.",
-                "message_body": "Para consultar el estado, necesito el número de ticket.", # Added
                 "pedir_info": "id_ticket_mencionado"
             }
 
@@ -802,7 +662,6 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
             return {
                 "success": False,
                 "message_to_user": "Necesito el PIN de 6 dígitos para consultar el ticket.",
-                "message_body": "Necesito el PIN de 6 dígitos para consultar el ticket.", # Added
                 "pedir_info": "pin_ticket",
             }
 
@@ -811,7 +670,6 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
             return {
                 "success": False,
                 "message_to_user": f"No encontré el ticket M-{ticket_id_str} o el PIN es incorrecto.",
-                "message_body": f"No encontré el ticket M-{ticket_id_str} o el PIN es incorrecto.", # Added
                 "options_list": [{"texto": "Ingresar otro número", "id_accion": "consultar_estado_ticket"}],
                 "message_type": "interactive_buttons",
             }
@@ -824,7 +682,6 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
         return {
             "success": True,
             "message_to_user": user_message,
-            "message_body": user_message, # Added
             "options_list": botones,
             "message_type": "interactive_buttons",
             "data": {"ticket_id": ticket.nro_ticket, "status": ticket.estado}
@@ -838,7 +695,6 @@ class ConsultarInfoTramiteActionHandler(BaseActionHandler):
             return {
                 "success": False,
                 "message_to_user": "¿Sobre qué trámite necesitas información?",
-                "message_body": "¿Sobre qué trámite necesitas información?", # Added
                 "pedir_info": "nombre_tramite"
             }
 
@@ -850,7 +706,6 @@ class ConsultarInfoTramiteActionHandler(BaseActionHandler):
             return {
                 "success": False,
                 "message_to_user": f"No encontré información sobre el trámite '{tramite_nombre}'.",
-                "message_body": f"No encontré información sobre el trámite '{tramite_nombre}'.", # Added
                 "pedir_info": "nombre_tramite"
             }
         else:
@@ -859,7 +714,6 @@ class ConsultarInfoTramiteActionHandler(BaseActionHandler):
             return {
                 "success": True,
                 "message_to_user": info_tramite.get("contenido", "No hay información disponible para este trámite."),
-                "message_body": info_tramite.get("contenido", "No hay información disponible para este trámite."), # Added
                 "options_list": botones,
                 "message_type": "interactive_buttons",
                 "data": {"tramite_nombre": tramite_nombre, "info_recuperada": "json"}
@@ -873,7 +727,6 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             return {
                 "success": False,
                 "message_to_user": "Claro, ¿cuál es tu sugerencia?",
-                "message_body": "Claro, ¿cuál es tu sugerencia?", # Added
                 "pedir_info": "descripcion_sugerencia"
             }
 
@@ -883,7 +736,6 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             return {
                 "success": False,
                 "message_to_user": "¿En qué lugar aplica tu sugerencia? Podés darme una dirección o ubicación aproximada.",
-                "message_body": "¿En qué lugar aplica tu sugerencia? Podés darme una dirección o ubicación aproximada.", # Added
                 "pedir_info": "ubicacion"
             }
 
@@ -918,34 +770,14 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             return {
                 "success": False,
                 "message_to_user": "Para registrar tu sugerencia necesito tu nombre completo, DNI, email y dirección. Podés escribir todo en un solo mensaje.",
-                "message_body": "Para registrar tu sugerencia necesito tu nombre completo, DNI, email y dirección. Podés escribir todo en un solo mensaje.", # Added
                 "pedir_info": "datos_contacto_sugerencia"
             }
         # Create a ticket for the suggestion
         owner_user = self.context.get("user_obj")
         user_id_db = getattr(viewer_user, "id", None)
         anon_id_db = self.context.get("anon_id") if not user_id_db else None
-
-        # FIX: Resolve IDs correctly
-        resolved_municipio_id = getattr(owner_user, "municipio_id", None)
-        resolved_tenant_id = getattr(owner_user, "tenant_id", None)
-
-        if not resolved_municipio_id and hasattr(owner_user, "tenant_slug"):
-             tenant = TenantProfile.query.filter_by(slug=owner_user.tenant_slug).first()
-             if tenant:
-                 resolved_tenant_id = tenant.id
-                 if tenant.tipo == 'municipio':
-                     resolved_municipio_id = tenant.municipio_id
-
+        municipio_db_id_para_ticket = getattr(owner_user, "municipio_id", None)
         nombre_vecino_final = nombre_vecino or getattr(viewer_user, "nombre", "Ciudadano Anónimo")
-
-        # --- Handle PIN (generate if missing) ---
-        pin_llm = action_data.get("consulta_pin")
-        pin_str = str(pin_llm).strip() if pin_llm else ""
-        if pin_str.isdigit() and len(pin_str) == 6:
-            pin_final = pin_str
-        else:
-            pin_final = f"{random.randint(0, 999999):06d}"
 
         ticket_data = {
             "asunto": "Sugerencia de Ciudadano",
@@ -954,8 +786,6 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             "estado": "nuevo",
             "user_id": user_id_db,
             "anon_id": anon_id_db,
-            "municipio_id": resolved_municipio_id, # FIX: Pass resolved ID
-            "tenant_id": resolved_tenant_id, # FIX: Pass resolved ID
             "origen_reclamo": "LLM_CHATBOT",
             "nombre_vecino": nombre_vecino_final,
             "dni_vecino": dni_vecino,
@@ -967,12 +797,13 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             "longitud": (
                 coordenadas_sugerencia.get("lng") if isinstance(coordenadas_sugerencia, dict) else None
             ),
-            "consulta_pin": pin_final,
         }
         if self.context.get("foto_url"):
             ticket_data["foto_url_directa"] = self.context.get("foto_url")
 
         ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
+        if "municipio_id" in ticket_data_cleaned:
+            del ticket_data_cleaned["municipio_id"]
 
         try:
             ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
@@ -1004,14 +835,6 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
             promo_image_url = municipio_config.get('promo_image_url')
-            channel_value = (self.context.get("channel") or "").strip().lower()
-            is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
-            include_links = not is_web_like_channel
-
-            channel_value = (self.context.get("channel") or "").strip().lower()
-            is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
-            is_whatsapp = "whatsapp" in channel_value
-            include_links = not is_web_like_channel
 
             respuesta_formateada, botones_generados = formatear_ticket_respuesta(
                 "sugerencia",
@@ -1022,122 +845,26 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 {}, # No hay contacto especializado para sugerencias
                 base_chat_url,
                 dni=dni_vecino,
-                consulta_pin=pin_final,
-                include_links_in_message=include_links,
+                consulta_pin=ticket_creado.get("consulta_pin"),
             )
 
             # Añadir el botón de acción específico para sugerencias
-            botones_finales = botones_generados or []
+            botones_finales = botones_generados
             botones_finales.append({"texto": "Hacer otra sugerencia", "id_accion": "hacer_sugerencia"})
 
-            promo_section = promo_service.build_ticket_promo_section(
-                ticket_number=nro_ticket_str,
-                neighbor_name=nombre_vecino_final,
-            )
-            if promo_section:
-                promo_text = promo_section.get("message_body")
-                promo_button = promo_section.get("button")
-                promo_url = promo_button.get("url") if promo_button else None
-
-                if promo_text:
-                    respuesta_formateada = f"{respuesta_formateada}\n\n{promo_text}"
-
-                if promo_button:
-                    matching_button = None
-
-                    if promo_url:
-                        promo_domain, promo_path = _normalize_url_for_comparison(promo_url)
-                        for boton in botones_finales:
-                            if not isinstance(boton, dict):
-                                continue
-                            boton_type = boton.get("type")
-                            if boton_type and str(boton_type).lower() != "url":
-                                continue
-                            boton_url = boton.get("url")
-                            if not boton_url:
-                                continue
-
-                            boton_domain, boton_path = _normalize_url_for_comparison(boton_url)
-                            same_domain = bool(promo_domain and boton_domain and promo_domain == boton_domain)
-                            same_path = bool(promo_path and boton_path and promo_path == boton_path)
-
-                            if same_domain or same_path:
-                                matching_button = boton
-                                break
-
-                    if matching_button:
-                        promo_cta = promo_button.get("texto")
-                        existing_text = (matching_button.get("texto") or "").strip()
-                        normalized_existing = existing_text.replace("🌐", "").strip().lower()
-
-                        if promo_cta and (not existing_text or normalized_existing == "más información"):
-                            matching_button["texto"] = promo_cta
-
-                        matching_button.setdefault("type", "url")
-                    elif promo_url:
-                        existing_urls = {
-                            boton.get("url")
-                            for boton in botones_finales
-                            if isinstance(boton, dict) and boton.get("url")
-                        }
-                        if promo_url not in existing_urls:
-                            botones_finales.append(promo_button)
-
-                if not promo_image_url and promo_section.get("image_url"):
-                    promo_image_url = promo_section.get("image_url")
-
-            if not is_web_like_channel:
-                botones_finales = remove_buttons_with_urls_in_message(
-                    respuesta_formateada,
-                    botones_finales,
-                )
-            if not botones_finales:
-                botones_finales = [
-                    {"texto": "Menú", "action_id": "menu_principal"},
-                    {"texto": "Cancelar", "action_id": "cancelar"},
-                ]
-
-            closing_payload = build_ticket_closing_promo_payload(
-                municipio_config=municipio_config,
-                ticket_type="sugerencia",
-                channel_value=channel_value,
-                message_body=respuesta_formateada,
-                options_list=botones_finales,
-                image_url=promo_image_url,
-                ticket_number=nro_ticket_str,
-                categoria="Sugerencia",
-                descripcion=descripcion_sugerencia,
-                consulta_pin=pin_final,
-                base_chat_url=base_chat_url,
-                promo_message=promo_section.get("message_body") if promo_section else None,
-            )
-            respuesta_formateada = closing_payload["message_body"]
-            botones_finales = closing_payload["options_list"]
-            promo_image_url = closing_payload["image_url"]
-            twilio_pre_messages = closing_payload["_twilio_pre_messages"]
-            menu_payload = _get_main_menu_payload(self.context)
-            delay_seconds = 20
-
-            response = {
+            return {
                 "success": True,
                 "message_to_user": respuesta_formateada,
-                "message_body": respuesta_formateada, # Added
                 "options_list": botones_finales,
-                "message_type": "interactive_buttons" if botones_finales else "text",
+                "message_type": "interactive_buttons",
                 "image_url": promo_image_url,
-                "_twilio_pre_messages": twilio_pre_messages,
-                "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado", "consulta_pin": pin_final}
+                "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado"}
             }
-            if menu_payload:
-                response["delayed_payload"] = menu_payload
-                response["delay_seconds"] = delay_seconds
-            return response
         except Exception as e:
             logger.error(f"Error en HacerSugerenciaActionHandler: {e}", exc_info=True)
             return {
                 "success": False,
                 "message_to_user": "Hubo un problema al intentar registrar tu sugerencia. Por favor, intenta de nuevo más tarde.",
-                "message_body": "Hubo un problema al intentar registrar tu sugerencia. Por favor, intenta de nuevo más tarde.", # Added
                 "error_details": str(e)
             }
 
@@ -1147,7 +874,7 @@ class ConsultarPuntosDeInteresActionHandler(BaseActionHandler):
 
         tipo_de_comercio = action_data.get("tipo_comercio")
         if not tipo_de_comercio:
-            return {"success": False, "message_to_user": "No especificaste qué tipo de comercio buscar.", "message_body": "No especificaste qué tipo de comercio buscar."} # Added
+            return {"success": False, "message_to_user": "No especificaste qué tipo de comercio buscar."}
 
         # La ubicación se obtiene de los datos de la acción (si se proporcionó en el mensaje actual)
         # o del contexto de la conversación como fallback.
@@ -1161,7 +888,6 @@ class ConsultarPuntosDeInteresActionHandler(BaseActionHandler):
             return {
                 "success": False,
                 "message_to_user": "Para poder ayudarte mejor, necesito tu ubicación. ¿Podrías compartirla?",
-                "message_body": "Para poder ayudarte mejor, necesito tu ubicación. ¿Podrías compartirla?", # Added
                 "pedir_info": "ubicacion"
             }
 
@@ -1172,7 +898,6 @@ class ConsultarPuntosDeInteresActionHandler(BaseActionHandler):
         return {
             "success": True,
             "message_to_user": resultado,
-            "message_body": resultado, # Added
             "data": {"tipo_comercio_buscado": tipo_de_comercio, "ubicacion_usada": ubicacion}
         }
 
@@ -1188,7 +913,6 @@ class ActivarPanicoActionHandler(BaseActionHandler):
         return {
             "success": True,
             "message_to_user": user_message,
-            "message_body": user_message, # Added
             "data": {"alerta_status": "enviada"}
         }
 
@@ -1270,7 +994,6 @@ class DerivarHumanoActionHandler(BaseActionHandler):
             return {
                 "success": True,
                 "message_to_user": user_message,
-                "message_body": user_message, # Added
                 "data": {"ticket_id": sala_dict['id'], "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
             }
         except Exception as e:
@@ -1278,7 +1001,6 @@ class DerivarHumanoActionHandler(BaseActionHandler):
             return {
                 "success": False,
                 "message_to_user": "Ocurrió un problema al crear el chat en vivo. ¿Podés intentar de nuevo más tarde?",
-                "message_body": "Ocurrió un problema al crear el chat en vivo. ¿Podés intentar de nuevo más tarde?", # Added
                 "error_details": str(e),
             }
 
@@ -1292,7 +1014,7 @@ class ProcesarAdjuntoReclamoActionHandler(BaseActionHandler):
         analisis_imagen = action_data.get("analisis_imagen") # e.g., {'es_reclamo': True, 'categoria_sugerida': 'bache', ...}
 
         if not archivo_url:
-            return {"success": False, "message_to_user": "No se detectó ningún archivo adjunto.", "message_body": "No se detectó ningún archivo adjunto."}
+            return {"success": False, "message_to_user": "No se detectó ningún archivo adjunto."}
 
         # Simulate associating the attachment with a claim (either new or existing)
         # This might update a claim in progress or provide data for a new one.
@@ -1308,7 +1030,6 @@ class ProcesarAdjuntoReclamoActionHandler(BaseActionHandler):
         return {
             "success": True,
             "message_to_user": user_message,
-            "message_body": user_message, # Added
             "data": {"adjunto_procesado": True, "analisis_realizado": bool(analisis_imagen)}
         }
 
@@ -1323,7 +1044,6 @@ class CorregirDatosReclamoActionHandler(BaseActionHandler):
             return {
                 "success": False,
                 "message_to_user": "No especificaste qué dato corregir o cuál es el nuevo valor.",
-                "message_body": "No especificaste qué dato corregir o cuál es el nuevo valor.", # Added
                 "pedir_info": "detalle_correccion"
             }
 
@@ -1347,7 +1067,6 @@ class CorregirDatosReclamoActionHandler(BaseActionHandler):
         return {
             "success": True,
             "message_to_user": user_message,
-            "message_body": user_message, # Added
             "data": {"campo_corregido": campo_a_corregir, "valor_actualizado": nuevo_valor},
             "pedir_info": "confirmacion_tras_correccion"
         }
@@ -1359,7 +1078,6 @@ class MenuPrincipalActionHandler(BaseActionHandler):
         return {
             "success": True,
             "message_to_user": "Estas son las cosas que puedo hacer por vos:",
-            "message_body": "Estas son las cosas que puedo hacer por vos:", # Added
             "options_list": [
                 {"texto": "Hacer un Reclamo", "id_accion": "crear_reclamo"},
                 {"texto": "Consultas y Turnos", "id_accion": "consultar_tramite"},
