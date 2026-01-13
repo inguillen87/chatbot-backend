@@ -26,6 +26,7 @@ from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.openai_maps_service import geocodificar_inversa_llm
 from services.municipio_responder import CONTEXTO_MUNICIPIO
 from services.config_loader import cargar_configuracion_pyme
+from utils.response_utils import normalize_response_payload
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -894,6 +895,26 @@ def whatsapp_webhook():
     if not isinstance(session_context_db_entry.context_data, dict):
         session_context_db_entry.context_data = {}
 
+    message_sid = post_vars.get("MessageSid") or post_vars.get("SmsMessageSid")
+    media_message_sid = post_vars.get("MediaMessageSid") or post_vars.get("MediaSid0")
+    processed_message_sids = session_context_db_entry.context_data.setdefault("processed_message_sids", [])
+    processed_media_sids = session_context_db_entry.context_data.setdefault("processed_media_sids", [])
+
+    if message_sid and message_sid in processed_message_sids:
+        current_app.logger.info(f"[WHATSAPP_WEBHOOK] Duplicate MessageSid ignored: {message_sid}")
+        return "OK", 200
+    if media_message_sid and media_message_sid in processed_media_sids:
+        current_app.logger.info(f"[WHATSAPP_WEBHOOK] Duplicate MediaMessageSid ignored: {media_message_sid}")
+        return "OK", 200
+
+    if message_sid:
+        processed_message_sids.append(message_sid)
+        session_context_db_entry.context_data["processed_message_sids"] = processed_message_sids[-50:]
+    if media_message_sid:
+        processed_media_sids.append(media_message_sid)
+        session_context_db_entry.context_data["processed_media_sids"] = processed_media_sids[-50:]
+    safe_flag_modified(session_context_db_entry, "context_data")
+
     # --- Boti-style Welcome Message Branch ---
     from services.municipio_responder import normalizar_texto
     from datetime import datetime
@@ -1513,6 +1534,8 @@ def whatsapp_webhook():
             channel="whatsapp",
             **kwargs_for_bot
         )
+
+        normalize_response_payload(bot_response_dict)
 
         # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
         if not end_user and bot_response_dict.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"]:
