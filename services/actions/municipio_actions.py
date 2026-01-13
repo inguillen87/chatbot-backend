@@ -777,7 +777,19 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
         owner_user = self.context.get("user_obj")
         user_id_db = getattr(viewer_user, "id", None)
         anon_id_db = self.context.get("anon_id") if not user_id_db else None
-        municipio_db_id_para_ticket = getattr(owner_user, "municipio_id", None)
+
+        # Resolve tenant profile and ID
+        tenant_profile = (
+            getattr(owner_user, "tenant", None)
+            or getattr(owner_user, "tenant_profile", None)
+            or getattr(owner_user, "tenant_profile_municipio", None)
+        )
+        municipio_db_id_para_ticket = (
+            getattr(tenant_profile, "id", None)
+            or getattr(tenant_profile, "tenant_id", None)
+            or getattr(owner_user, "municipio_id", None)
+        )
+
         nombre_vecino_final = nombre_vecino or getattr(viewer_user, "nombre", "Ciudadano Anónimo")
 
         ticket_data = {
@@ -856,6 +868,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 ticket_number=nro_ticket_str,
                 neighbor_name=nombre_vecino_final,
                 owner_user=owner_user,
+                tenant_profile=tenant_profile,
             )
             if promo_section:
                 promo_text = promo_section.get("message_body")

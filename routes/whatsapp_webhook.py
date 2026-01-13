@@ -1136,7 +1136,8 @@ def whatsapp_webhook():
                     else:
                         welcome_response_payload.pop("_welcome_sticker_urls", None)
                         if not sticker_metadata_allowed:
-                            welcome_response_payload.pop("_preserve_welcome_header", None)
+                            # Explicitly disable header preservation to prevent duplication
+                            welcome_response_payload["_preserve_welcome_header"] = False
 
                     remaining_image_url = welcome_response_payload.get("image_url")
                     resolved_existing_image = _resolve_public_url(

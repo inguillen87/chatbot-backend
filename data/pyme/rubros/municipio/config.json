@@ -1,5 +1,5 @@
 {
-  "nombre": "Municipio Inteligente",
+  "nombre": "Municipalidad de Junín",
   "descripcion": "Portal ciudadano omnicanal que centraliza reclamos, trámites y comunicaciones oficiales.",
   "prompt_context": "Asistente virtual municipal para gestión ciudadana. Funciones: toma de reclamos geolocalizados, gestión de turnos, guía de trámites y difusión de noticias. Tono formal, empático y resolutivo.",
   "welcome_message": "👋 ¡Hola! Soy tu asistente municipal virtual.\n\nEstoy aquí para ayudarte con trámites, reclamos y consultas las 24 horas. Seleccioná una opción para comenzar:",
