@@ -676,8 +676,22 @@ def _get_main_menu_payload(
         # User's name is not known, ask for it.
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NOMBRE_INICIAL.name
+        tenant_name_text = "tu municipio"
+        municipio_config = context.get("municipio_config_actual") or {}
+        if isinstance(municipio_config, dict):
+            tenant_name_text = (
+                municipio_config.get("nombre")
+                or municipio_config.get("nombre_municipio")
+                or municipio_config.get("municipio_nombre")
+                or tenant_name_text
+            )
+        assistant_name = None
+        if isinstance(municipio_config, dict):
+            assistant_name = municipio_config.get("assistant_name") or municipio_config.get("bot_name")
+        if not assistant_name:
+            assistant_name = tenant_name_text if tenant_name_text != "tu municipio" else "JUNI"
         return {
-            "message_body": "¡Hola! Soy JUNI, tu Asistente Virtual. Para una atención más personalizada, ¿podrías decirme tu nombre?",
+            "message_body": f"¡Hola! Soy {assistant_name}, tu Asistente Virtual. Para una atención más personalizada, ¿podrías decirme tu nombre?",
             "message_type": "text",
             "fuente": "pedir_nombre_inicial"
         }
@@ -690,7 +704,15 @@ def _get_main_menu_payload(
     else:
         # Determine tenant name for text body
         tenant_name_text = "tu municipio"
-        if owner_user:
+        municipio_config = context.get("municipio_config_actual") or {}
+        if isinstance(municipio_config, dict):
+            tenant_name_text = (
+                municipio_config.get("nombre")
+                or municipio_config.get("nombre_municipio")
+                or municipio_config.get("municipio_nombre")
+                or tenant_name_text
+            )
+        if owner_user and tenant_name_text == "tu municipio":
             tenant_name_text = getattr(owner_user, "nombre_empresa", None) or getattr(owner_user, "name", "tu municipio")
 
         main_text_body = (
