@@ -1,29 +1,54 @@
 import time
 
-PUNTO_LIMPIO_URL = "https://www.juninmendoza.gov.ar/punto-limpio"
-PUNTO_LIMPIO_IMAGE = "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png"
-
-DEFAULT_PROMO_CONTENT = {
-    "headline": "♻️ Punto Limpio Junín",
-    "tagline": "Transformamos residuos en productos sustentables.",
-    "description": (
-        "Visitá nuestra planta y descubrí cómo convertimos materiales recuperados "
-        "en ladrillos, tejas, postes, mangueras, luminarias LED y más."
-    ),
-    "link": PUNTO_LIMPIO_URL,
-    "cta_text": "Visitar Punto Limpio",
-    "image_url": PUNTO_LIMPIO_IMAGE,
-}
+from services.config_loader import cargar_configuracion_municipio
 
 
-def get_active_promo() -> dict:
-    """Return the currently active promotional configuration.
+def _resolve_municipio_config(
+    *,
+    owner_user: object | None = None,
+    tenant_profile: object | None = None,
+    municipio_config: dict | None = None,
+) -> dict:
+    if isinstance(municipio_config, dict):
+        return municipio_config
 
-    This helper centralizes the promo definition so it can later be sourced
-    from a database or an admin panel without touching the code.
-    """
+    if tenant_profile and isinstance(getattr(tenant_profile, "configuracion", None), dict):
+        return tenant_profile.configuracion
 
-    return DEFAULT_PROMO_CONTENT.copy()
+    municipio_id = None
+    if tenant_profile and getattr(tenant_profile, "municipio_id", None):
+        municipio_id = tenant_profile.municipio_id
+    elif owner_user and getattr(owner_user, "municipio_id", None):
+        municipio_id = owner_user.municipio_id
+
+    if municipio_id:
+        config = cargar_configuracion_municipio(str(municipio_id), "config.json")
+        if isinstance(config, dict):
+            return config
+
+    return {}
+
+
+def get_active_promo(
+    *,
+    owner_user: object | None = None,
+    tenant_profile: object | None = None,
+    municipio_config: dict | None = None,
+) -> dict:
+    """Return the currently active promotional configuration."""
+
+    config = _resolve_municipio_config(
+        owner_user=owner_user,
+        tenant_profile=tenant_profile,
+        municipio_config=municipio_config,
+    )
+    promo = None
+    if isinstance(config.get("promo_section"), dict):
+        promo = config.get("promo_section")
+    elif isinstance(config.get("promo"), dict):
+        promo = config.get("promo")
+
+    return promo.copy() if promo else {}
 
 
 from flask import g
@@ -33,6 +58,7 @@ def build_ticket_promo_section(
     neighbor_name: str | None = None,
     owner_user: object | None = None,
     tenant_profile: object | None = None,
+    municipio_config: dict | None = None,
 ) -> dict | None:
     """Build a promo snippet to append to the ticket confirmation message."""
 
@@ -73,7 +99,11 @@ def build_ticket_promo_section(
     if not is_municipio:
         return None
 
-    promo = get_active_promo()
+    promo = get_active_promo(
+        owner_user=owner_user,
+        tenant_profile=tenant_profile,
+        municipio_config=municipio_config,
+    )
     if not promo:
         return None
 
