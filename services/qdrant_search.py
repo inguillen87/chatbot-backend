@@ -10,6 +10,7 @@ from .embedding_service import embed_textos_llm as embed_textos
 
 # from collections import Counter # Ya está importado arriba
 from qdrant_client.http import models as qdrant_models
+from models import CatalogoItem, db
 from .common_utils import limpiar_texto_base, unir_codigos_alfa_numericos # Changed from .utils
 from .herramientas_municipio import normalizar_texto
 
@@ -207,6 +208,81 @@ def buscar_catalogo_qdrant(
             f"[QDRANT SEARCH] Error buscando en Qdrant para {id_log}, pregunta '{pregunta_limpia}': {e_qdrant}",
             exc_info=True,
         )
+        return []
+
+def buscar_catalogo_db_fallback(
+    user_id: int,
+    pregunta: str,
+    limite: int = DEFAULT_SEARCH_LIMIT,
+    precio_max: Optional[float] = None
+) -> List[Any]:
+    """
+    Realiza una búsqueda básica en la base de datos (ILIKE) como fallback
+    cuando Qdrant no está disponible o no devuelve resultados.
+    Retorna objetos con interfaz similar a ScoredPoint para compatibilidad.
+    """
+    if not user_id or not pregunta:
+        return []
+
+    try:
+        terminos = pregunta.strip().split()
+        if not terminos:
+            return []
+
+        query = CatalogoItem.query.filter(CatalogoItem.user_id == user_id)
+
+        # Filtro básico por palabras clave (AND)
+        # Se busca que el nombre o descripción contenga CADA término
+        for termino in terminos:
+            if len(termino) > 2: # Ignorar palabras muy cortas
+                term_like = f"%{termino}%"
+                query = query.filter(
+                    (CatalogoItem.nombre.ilike(term_like)) |
+                    (CatalogoItem.descripcion.ilike(term_like)) |
+                    (CatalogoItem.categoria.ilike(term_like))
+                )
+
+        # Filtro de precio (si existe la columna y el valor)
+        if precio_max is not None:
+            # Nota: precio_monetario es un campo deferred en algunos modelos,
+            # pero aquí lo intentamos usar si está mapeado
+            try:
+                query = query.filter(CatalogoItem.precio_monetario <= precio_max)
+            except Exception:
+                pass # Ignorar si la columna falla
+
+        items = query.limit(limite).all()
+
+        resultados_mock = []
+        for item in items:
+            # Construir un payload compatible con lo que espera el frontend/bot
+            payload = {
+                "id": str(item.id),
+                "db_id": item.id,
+                "nombre": item.nombre,
+                "descripcion": item.descripcion or "",
+                "precio_str": item.precio or "",
+                "precio_float": float(item.precio_monetario) if item.precio_monetario else 0.0,
+                "sku": item.sku,
+                "cantidad": item.cantidad,
+                "marca": item.marca,
+                "categoria_qdrant": item.categoria
+            }
+            # Simular ScoredPoint
+            scored_point = SimpleNamespace(
+                id=item.id,
+                version=0,
+                score=0.5, # Score fijo arbitrario para fallback
+                payload=payload,
+                vector=None
+            )
+            resultados_mock.append(scored_point)
+
+        logger.info(f"[DB FALLBACK SEARCH] Encontrados {len(resultados_mock)} items para '{pregunta}'")
+        return resultados_mock
+
+    except Exception as e:
+        logger.error(f"[DB FALLBACK SEARCH] Error: {e}", exc_info=True)
         return []
 
 
