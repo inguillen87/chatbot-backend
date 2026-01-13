@@ -9330,6 +9330,9 @@ def responder_municipio(
             pregunta_str_menu = pregunta_original.get("pregunta", "")
             action_payload = pregunta_original.get("action")
 
+        if not action_payload:
+            action_payload = received_payload.get("action")
+
         menu_opciones = contexto_municipio_actual.get("menu_opciones", [])
         selected_action = action_payload or find_menu_action_by_input(pregunta_str_menu, menu_opciones)
 

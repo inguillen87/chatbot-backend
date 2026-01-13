@@ -1481,17 +1481,17 @@ def whatsapp_webhook():
 
     # Solo traducir números a acciones cuando no estamos esperando información libre.
     selected_option = None
+    selected_action_id = None
     if message_body.isdigit() and last_options and not esperando_info:
         idx = int(message_body) - 1
         if 0 <= idx < len(last_options):
             selected_option = last_options[idx]
-            message_body = (
-                selected_option.get("id")
-                or selected_option.get("action_id")
-                or selected_option.get("category_name")
+            selected_action_id = (
+                selected_option.get("action_id")
+                or selected_option.get("id")
                 or selected_option.get("id_accion")
+                or selected_option.get("category_name")
                 or selected_option.get("texto")
-                or message_body
             )
     elif last_options and not esperando_info:
         normalized_body = (message_body or "").strip().lower()
@@ -1500,6 +1500,13 @@ def whatsapp_webhook():
             option_action = (option.get("action_id") or option.get("id") or "").strip().lower()
             if normalized_body and normalized_body in {option_text, option_action}:
                 selected_option = option
+                selected_action_id = (
+                    option.get("action_id")
+                    or option.get("id")
+                    or option.get("id_accion")
+                    or option.get("category_name")
+                    or option.get("texto")
+                )
                 break
 
     if selected_option and selected_option.get("url") and not esperando_info:
@@ -1585,6 +1592,8 @@ def whatsapp_webhook():
         if interpretacion_media_data and not interpretacion_media_data.get("error"):
             # This will now only contain data from actual images/files, not locations.
             kwargs_for_bot["datos_interpretados_archivo"] = interpretacion_media_data
+        if selected_action_id:
+            kwargs_for_bot["action"] = selected_action_id
 
         profile_name = post_vars.get("ProfileName")
         if profile_name:
