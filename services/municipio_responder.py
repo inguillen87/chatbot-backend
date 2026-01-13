@@ -656,6 +656,11 @@ def _build_sugerencia_success_payload(
 
     if not is_web_like_channel:
         buttons = remove_buttons_with_urls_in_message(message_body, buttons)
+    if not buttons:
+        buttons = [
+            {"texto": "Menú", "action_id": "menu_principal"},
+            {"texto": "Cancelar", "action_id": "cancelar"},
+        ]
 
     closing_payload = build_ticket_closing_promo_payload(
         municipio_config=municipio_config,
@@ -677,6 +682,9 @@ def _build_sugerencia_success_payload(
     twilio_pre_messages = closing_payload["_twilio_pre_messages"]
 
     delayed_payload = handler_response.get("delayed_payload") or _get_main_menu_payload(context)
+
+    if not is_web_like_channel:
+        image_url = None
 
     payload: Dict[str, Any] = {
         "success": True,
