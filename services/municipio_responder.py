@@ -45,7 +45,10 @@ from utils.municipio_utils import (
 from .actions.municipio_actions import (
     CrearReclamoActionHandler,
     HacerSugerenciaActionHandler,
+<<<<<<< HEAD
     _normalize_url_for_comparison,
+=======
+>>>>>>> af6095878f57ff15f4d4a40fd3b76ba8a3f44b16
 )
 from .herramientas_municipio import (
     consultar_recoleccion_por_direccion,
@@ -533,6 +536,7 @@ def _extract_sugerencia_location(contexto: Dict[str, Any]) -> tuple[str, Optiona
     return "N/A", None
 
 
+<<<<<<< HEAD
 def _build_sugerencia_success_payload(
     context: Dict[str, Any],
     datos_confirmados: Dict[str, Any],
@@ -673,6 +677,8 @@ def _build_sugerencia_success_payload(
         payload["delay_seconds"] = handler_response.get("delay_seconds", 20)
 
     return payload
+=======
+>>>>>>> af6095878f57ff15f4d4a40fd3b76ba8a3f44b16
 
 class ReclamoState(Enum):
     ESPERANDO_CATEGORIA = auto()
@@ -8729,15 +8735,21 @@ def responder_municipio(
                 or any(a in texto_normalizado for a in afirmativos)
             ):
                 datos_confirmados = contexto_municipio_actual.pop('datos_sugerencia', {})
-                handler = CrearReclamoActionHandler(context)
+                handler = HacerSugerenciaActionHandler(context)
                 response = handler.execute(datos_confirmados)
                 if response.get("success"):
-                    response["message_to_user"] = f"✅ ¡Hemos recibido tu sugerencia! Muchas gracias por tu aporte. Lo hemos registrado con el número de ticket `{response.get('data', {}).get('nro_ticket', 'N/A')}` para su seguimiento."
-                    contexto_municipio_actual['estado_conversacion'] = None
-                    if chat_db_context: flag_modified(chat_db_context, "context_data")
-                    final_payload = _message_with_menu(response["message_to_user"], context)
-                    final_payload['success'] = True
-                    return _finalize_response(final_payload)
+                    # Re-synchronize the in-memory context after the handler cleanup
+                    contexto_municipio_actual = chat_db_context_live_data.setdefault(
+                        CONTEXTO_MUNICIPIO, {}
+                    )
+                    contexto_municipio_actual['estado_conversacion'] = (
+                        ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+                    )
+                    context[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+                    if chat_db_context:
+                        flag_modified(chat_db_context, "context_data")
+
+                    return _finalize_response(response)
                 contexto_municipio_actual['datos_sugerencia'] = datos_confirmados
                 if response.get("pedir_info"):
                     contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
