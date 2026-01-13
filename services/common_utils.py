@@ -746,6 +746,11 @@ def _get_main_menu_payload(
     assistant_name = None
     if isinstance(municipio_config, dict):
         assistant_name = municipio_config.get("assistant_name") or municipio_config.get("bot_name")
+    if isinstance(assistant_name, str):
+        normalized_assistant = assistant_name.strip().lower()
+        normalized_tenant = tenant_name_text.strip().lower()
+        if normalized_assistant in {"juni"} or normalized_assistant == normalized_tenant:
+            assistant_name = None
 
     assistant_intro = (
         f"Soy *{assistant_name}*, tu Asistente Virtual de *{tenant_name_text}*."

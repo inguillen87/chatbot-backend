@@ -1016,6 +1016,8 @@ def whatsapp_webhook():
                 if should_send_template:
                     should_send_sticker = False
                     sticker_metadata_allowed = False
+                else:
+                    should_send_sticker = False
 
                 if client_user and getattr(client_user, "tipo_chat", None) == "pyme":
                     if "sticker_cooldown_seconds" in pyme_welcome_overrides:
