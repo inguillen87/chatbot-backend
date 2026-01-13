@@ -114,6 +114,10 @@ def _ensure_tenant(
     if config_data:
         cfg.setdefault("municipio_config", config_data)
 
+    cfg.setdefault("assistant_name", "JUNI")
+    cfg.setdefault("nombre_municipio", DEFAULT_TENANT_NAME)
+    cfg.setdefault("nombre", DEFAULT_TENANT_NAME)
+
     tokens = cfg.get("widget_tokens") or []
     if isinstance(tokens, str):
         tokens = [tokens]
