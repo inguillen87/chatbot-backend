@@ -655,6 +655,11 @@ def _build_sugerencia_success_payload(
 
     if not is_web_like_channel:
         buttons = remove_buttons_with_urls_in_message(message_body, buttons)
+    if not buttons:
+        buttons = [
+            {"texto": "Menú", "action_id": "menu_principal"},
+            {"texto": "Cancelar", "action_id": "cancelar"},
+        ]
 
     closing_enabled, closing_image_url, caption_template = _resolve_closing_promo_config(
         municipio_config,
@@ -697,6 +702,9 @@ def _build_sugerencia_success_payload(
         "data": ticket_info,
         "fuente": "sugerencia_confirmada",
     }
+    if not buttons:
+        payload["delayed_payload"] = _get_main_menu_payload(context)
+        payload["delay_seconds"] = 20
     if channel_value == "whatsapp" and closing_enabled and closing_image_url:
         payload["_twilio_pre_messages"] = [
             {"body": caption_body, "media_urls": [closing_image_url]}

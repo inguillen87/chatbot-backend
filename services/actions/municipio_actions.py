@@ -655,6 +655,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     mensaje_respuesta,
                     botones_finales,
                 )
+            if not botones_finales:
+                botones_finales = [
+                    {"texto": "Menú", "action_id": "menu_principal"},
+                    {"texto": "Cancelar", "action_id": "cancelar"},
+                ]
 
             closing_enabled, closing_image_url, caption_template = _resolve_closing_promo_config(
                 municipio_config,
@@ -680,6 +685,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     boton for boton in (botones_finales or [])
                     if not (isinstance(boton, dict) and boton.get("url"))
                 ]
+                if not botones_finales:
+                    botones_finales = [
+                        {"texto": "Menú", "action_id": "menu_principal"},
+                        {"texto": "Cancelar", "action_id": "cancelar"},
+                    ]
                 mensaje_respuesta = (
                     "Opciones disponibles:" if botones_finales else "Gracias por tu mensaje."
                 )
@@ -690,6 +700,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
             # Delayed menu
             menu_payload = _get_main_menu_payload(self.context)
+            message_type = "interactive_buttons" if botones_finales else "text"
 
             return {
                 "success": True,
@@ -1039,6 +1050,11 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                     respuesta_formateada,
                     botones_finales,
                 )
+            if not botones_finales:
+                botones_finales = [
+                    {"texto": "Menú", "action_id": "menu_principal"},
+                    {"texto": "Cancelar", "action_id": "cancelar"},
+                ]
 
             closing_enabled, closing_image_url, caption_template = _resolve_closing_promo_config(
                 municipio_config,
@@ -1064,15 +1080,22 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                     boton for boton in (botones_finales or [])
                     if not (isinstance(boton, dict) and boton.get("url"))
                 ]
+                if not botones_finales:
+                    botones_finales = [
+                        {"texto": "Menú", "action_id": "menu_principal"},
+                        {"texto": "Cancelar", "action_id": "cancelar"},
+                    ]
                 respuesta_formateada = (
                     "Opciones disponibles:" if botones_finales else "Gracias por tu mensaje."
                 )
                 promo_image_url = None
+            menu_payload = None
+            delay_seconds = None
+            if not botones_finales:
+                menu_payload = _get_main_menu_payload(self.context)
+                delay_seconds = 20
 
-            if not is_web_like_channel:
-                promo_image_url = None
-
-            return {
+            response = {
                 "success": True,
                 "message_to_user": respuesta_formateada,
                 "message_body": respuesta_formateada, # Added
@@ -1086,6 +1109,10 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 ),
                 "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado", "consulta_pin": pin_final}
             }
+            if menu_payload:
+                response["delayed_payload"] = menu_payload
+                response["delay_seconds"] = delay_seconds
+            return response
         except Exception as e:
             logger.error(f"Error en HacerSugerenciaActionHandler: {e}", exc_info=True)
             return {
