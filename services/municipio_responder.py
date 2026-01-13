@@ -713,6 +713,127 @@ def _build_sugerencia_success_payload(
 
     return payload
 
+
+def _is_final_success_response(payload: Dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("success") is True:
+        return True
+    fuente = str(payload.get("fuente") or "").strip().lower()
+    if not fuente:
+        return False
+    if any(token in fuente for token in ("pide", "pedir", "esperando", "error", "submenu", "menu")):
+        return False
+    if fuente.startswith(("llm_", "herramienta_")):
+        return True
+    if any(token in fuente for token in ("confirm", "final", "confirmada", "confirmado")):
+        return True
+    if fuente in {"municipio_fallback_google_search", "fallback_final"}:
+        return True
+    return False
+
+
+def _ensure_menu_cancel_options(options: Optional[Sequence[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    normalized = formatear_opciones(options)
+    if normalized is None:
+        normalized = []
+
+    def _action_id(option: Dict[str, Any]) -> str:
+        return str(option.get("action_id") or option.get("id_accion") or option.get("action") or "").strip().lower()
+
+    has_menu = any(_action_id(option) in {"menu_principal", "menu"} for option in normalized)
+    has_cancel = any(_action_id(option) == "cancelar" for option in normalized)
+
+    if not has_menu:
+        normalized.append({"texto": "Menú principal", "action_id": "menu_principal"})
+    if not has_cancel:
+        normalized.append({"texto": "Cancelar", "action_id": "cancelar"})
+
+    return normalized
+
+
+def _apply_premium_closing_stub_2(payload: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    if not _is_final_success_response(payload):
+        return payload
+
+    channel_value = (context.get("channel") or "").strip().lower()
+    is_whatsapp_channel = "whatsapp" in channel_value
+
+    options_list = _ensure_menu_cancel_options(payload.get("options_list") or [])
+    if options_list:
+        payload["options_list"] = options_list
+        if payload.get("message_type") in {None, "", "text"}:
+            payload["message_type"] = "interactive_buttons"
+
+    if not is_whatsapp_channel:
+        return payload
+
+    municipio_config = context.get("municipio_config_actual") or {}
+    fuente = str(payload.get("fuente") or "").strip().lower()
+    ticket_type = "reclamo" if "reclamo" in fuente else "sugerencia" if "sugerencia" in fuente else "general"
+
+    closing_enabled, closing_image_url, caption_template = _resolve_closing_promo_config(
+        municipio_config,
+        ticket_type,
+    )
+
+    image_url = payload.get("image_url")
+    closing_media_url = closing_image_url or image_url
+
+    pre_messages = payload.get("_twilio_pre_messages")
+    if not isinstance(pre_messages, list):
+        pre_messages = []
+
+    if closing_enabled and closing_media_url and not pre_messages:
+        contact_ctx = context.get(CONTEXTO_MUNICIPIO, {}).get("contacto_usuario", {})
+        nombre = (
+            contact_ctx.get("nombre")
+            or context.get("profile_name")
+            or context.get("profile_name_kwarg")
+            or "Vecino/a"
+        )
+        ticket_info = payload.get("data") or {}
+        nro_ticket = (
+            ticket_info.get("nro_ticket")
+            or payload.get("ticket_nro")
+            or payload.get("nro_ticket")
+        )
+        consulta_pin = ticket_info.get("consulta_pin") or payload.get("consulta_pin")
+        categoria = ticket_info.get("categoria") or payload.get("categoria") or ""
+        descripcion = ticket_info.get("descripcion") or payload.get("descripcion") or ""
+        base_chat_url = municipio_config.get("base_chat_url", "https://www.chatboc.ar/chat")
+        seguimiento_url = ""
+        if nro_ticket:
+            ticket_id_numeric = str(nro_ticket).replace("M-", "").replace("S-", "")
+            seguimiento_url = f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}"
+            if consulta_pin:
+                seguimiento_url = f"{seguimiento_url}?pin={consulta_pin}"
+
+        caption_values = {
+            "nombre": nombre,
+            "ticket": nro_ticket,
+            "categoria": categoria,
+            "descripcion": descripcion,
+            "pin": consulta_pin,
+            "seguimiento_url": seguimiento_url,
+        }
+        message_body = payload.get("message_body") or ""
+        caption_body = _render_template_safe(caption_template or message_body, caption_values)
+        pre_messages = [{"body": caption_body, "media_urls": [closing_media_url]}]
+
+    if pre_messages:
+        payload["_twilio_pre_messages"] = pre_messages
+
+    if payload.get("message_type") == "interactive_buttons" and payload.get("image_url"):
+        if not payload.get("_twilio_pre_messages"):
+            fallback_body = payload.get("message_body") or "Opciones disponibles:"
+            payload["_twilio_pre_messages"] = [
+                {"body": fallback_body, "media_urls": [payload["image_url"]]}
+            ]
+        payload["image_url"] = None
+
+    return payload
+
 class ReclamoState(Enum):
     ESPERANDO_CATEGORIA = auto()
     ESPERANDO_DIRECCION = auto()
@@ -7233,6 +7354,8 @@ def responder_municipio(
 
     def _finalize_response(response):
         """Return the response unchanged; also store it in cache for repeated queries."""
+        if isinstance(response, dict):
+            response = _apply_premium_closing_stub_2(response, context)
         if cache_key is not None:
             MUNICIPIO_RESPONSE_CACHE[cache_key] = response
         return response
