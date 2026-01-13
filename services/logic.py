@@ -84,6 +84,7 @@ from services.constants import CONTEXTO_MUNICIPIO
 
 # ... otras funciones que ya tengas en logic.py (como responder_chatboc)
 from utils.db_utils import safe_flag_modified
+from utils.response_utils import normalize_response_payload
 
 def responder_chatboc(
     pregunta,
@@ -557,5 +558,8 @@ def responder_chatboc(
         if isinstance(response_data, dict):
             response_data["fuente"] = "demo_offline"
 
+
+    if isinstance(response_data, dict):
+        normalize_response_payload(response_data)
 
     return response_data
