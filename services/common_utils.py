@@ -668,16 +668,64 @@ def _get_main_menu_payload(
             if isinstance(nombre_contacto, str) and nombre_contacto.strip():
                 user_name = nombre_contacto.strip()
 
+    municipio_config = context.get("municipio_config_actual") or {}
+
+    def _resolve_tenant_name() -> str:
+        tenant_name = "tu municipio"
+        if isinstance(municipio_config, dict):
+            tenant_name = (
+                municipio_config.get("nombre")
+                or municipio_config.get("nombre_municipio")
+                or municipio_config.get("municipio_nombre")
+                or tenant_name
+            )
+        if owner_user and tenant_name == "tu municipio":
+            tenant_name = getattr(owner_user, "nombre_empresa", None) or getattr(owner_user, "name", "tu municipio")
+        return tenant_name
+
+    def _safe_format(template: str, values: dict) -> str:
+        class _SafeDict(dict):
+            def __missing__(self, key: str) -> str:
+                return "{" + key + "}"
+
+        return template.format_map(_SafeDict(values))
+
+    tenant_name_text = _resolve_tenant_name()
+
     if welcome_message_override:
         welcome_message = welcome_message_override
     elif user_name:
-        welcome_message = f"👋 ¡Hola, {user_name}!"
+        custom_welcome = None
+        if isinstance(municipio_config, dict):
+            custom_welcome = municipio_config.get("welcome_message") or municipio_config.get("mensaje_bienvenida")
+        if custom_welcome:
+            formatted = _safe_format(
+                custom_welcome,
+                {
+                    "nombre_tenant": tenant_name_text,
+                    "tenant": tenant_name_text,
+                    "municipio": tenant_name_text,
+                    "nombre": user_name,
+                    "usuario": user_name,
+                },
+            )
+            if user_name and user_name not in formatted:
+                welcome_message = f"👋 ¡Hola, {user_name}! {formatted}"
+            else:
+                welcome_message = formatted
+        else:
+            welcome_message = f"👋 ¡Hola, {user_name}! Bienvenido a {tenant_name_text}."
     else:
         # User's name is not known, ask for it.
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NOMBRE_INICIAL.name
+        assistant_name = None
+        if isinstance(municipio_config, dict):
+            assistant_name = municipio_config.get("assistant_name") or municipio_config.get("bot_name")
+        if not assistant_name:
+            assistant_name = tenant_name_text if tenant_name_text != "tu municipio" else "JUNI"
         return {
-            "message_body": "¡Hola! Soy JUNI, tu Asistente Virtual. Para una atención más personalizada, ¿podrías decirme tu nombre?",
+            "message_body": f"¡Hola! Soy {assistant_name}, el asistente virtual de {tenant_name_text}. Para una atención más personalizada, ¿podrías decirme tu nombre?",
             "message_type": "text",
             "fuente": "pedir_nombre_inicial"
         }
@@ -688,11 +736,6 @@ def _get_main_menu_payload(
             "Elegí una o contame qué necesitás y te ayudo al instante."
         )
     else:
-        # Determine tenant name for text body
-        tenant_name_text = "tu municipio"
-        if owner_user:
-            tenant_name_text = getattr(owner_user, "nombre_empresa", None) or getattr(owner_user, "name", "tu municipio")
-
         main_text_body = (
             f"Soy tu Asistente Virtual de *{tenant_name_text}*.\n\n"
             "*Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz* con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más. Este servicio es accesible y está listo para ayudarte.\n\n"
@@ -805,11 +848,10 @@ def _get_main_menu_payload(
     safe_user_name = _normalize_for_audio(user_name)
 
     # Determine tenant/bot name dynamically
-    tenant_name = "tu municipio"
+    tenant_name = tenant_name_text
     bot_name = "el asistente virtual"
-
-    if owner_user:
-        tenant_name = getattr(owner_user, "nombre_empresa", None) or getattr(owner_user, "name", "tu municipio")
+    if isinstance(municipio_config, dict):
+        bot_name = municipio_config.get("assistant_name") or municipio_config.get("bot_name") or bot_name
 
     if safe_user_name:
         audio_greeting = f"Hola {safe_user_name}, soy {bot_name} de {tenant_name}."
