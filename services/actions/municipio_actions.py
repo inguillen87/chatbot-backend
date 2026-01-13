@@ -1115,6 +1115,8 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             botones_finales = closing_payload["options_list"]
             promo_image_url = closing_payload["image_url"]
             twilio_pre_messages = closing_payload["_twilio_pre_messages"]
+            menu_payload = _get_main_menu_payload(self.context)
+            delay_seconds = 20
 
             response = {
                 "success": True,

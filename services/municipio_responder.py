@@ -3660,6 +3660,20 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
                 contexto_municipio_actual.pop("esperando_info_llm", None)
 
+            if (
+                pending_flow == "sugerencia"
+                and handler_response.get("success") is True
+                and not normalized_pending
+            ):
+                return (
+                    _build_sugerencia_success_payload(
+                        context,
+                        datos_parciales,
+                        handler_response,
+                    ),
+                    contexto_municipio_actual,
+                )
+
             return handler_response, contexto_municipio_actual
 
 
@@ -3816,6 +3830,16 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 else:
                     contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
                     contexto_municipio_actual.pop("esperando_info_llm", None)
+
+                if handler_response.get("success") is True and not pending_field:
+                    return (
+                        _build_sugerencia_success_payload(
+                            context,
+                            datos_actuales_sugerencia,
+                            handler_response,
+                        ),
+                        contexto_municipio_actual,
+                    )
 
                 return handler_response, contexto_municipio_actual
             else:
