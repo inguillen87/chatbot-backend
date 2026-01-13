@@ -696,27 +696,44 @@ def _get_main_menu_payload(
             "fuente": "pedir_nombre_inicial"
         }
 
+    # Determine tenant name for text body
+    tenant_name_text = "tu municipio"
+    municipio_config = context.get("municipio_config_actual") or {}
+    if isinstance(municipio_config, dict):
+        tenant_name_text = (
+            municipio_config.get("nombre")
+            or municipio_config.get("nombre_municipio")
+            or municipio_config.get("municipio_nombre")
+            or tenant_name_text
+        )
+    if owner_user and tenant_name_text == "tu municipio":
+        tenant_name_text = getattr(owner_user, "nombre_empresa", None) or getattr(owner_user, "name", "tu municipio")
+
+    assistant_name = None
+    if isinstance(municipio_config, dict):
+        assistant_name = municipio_config.get("assistant_name") or municipio_config.get("bot_name")
+    if isinstance(assistant_name, str):
+        normalized_assistant = assistant_name.strip().lower()
+        normalized_tenant = tenant_name_text.strip().lower()
+        if normalized_assistant in {"juni"} or normalized_assistant == normalized_tenant:
+            assistant_name = None
+
+    assistant_intro = (
+        f"Soy *{assistant_name}*, tu Asistente Virtual de *{tenant_name_text}*."
+        if assistant_name
+        else f"Soy tu Asistente Virtual de *{tenant_name_text}*."
+    )
+
     if reduced:
         main_text_body = (
+            f"{assistant_intro}\n\n"
             "Estas son las opciones principales del municipio.\n\n"
+            "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás.\n\n"
             "Elegí una o contame qué necesitás y te ayudo al instante."
         )
     else:
-        # Determine tenant name for text body
-        tenant_name_text = "tu municipio"
-        municipio_config = context.get("municipio_config_actual") or {}
-        if isinstance(municipio_config, dict):
-            tenant_name_text = (
-                municipio_config.get("nombre")
-                or municipio_config.get("nombre_municipio")
-                or municipio_config.get("municipio_nombre")
-                or tenant_name_text
-            )
-        if owner_user and tenant_name_text == "tu municipio":
-            tenant_name_text = getattr(owner_user, "nombre_empresa", None) or getattr(owner_user, "name", "tu municipio")
-
         main_text_body = (
-            f"Soy tu Asistente Virtual de *{tenant_name_text}*.\n\n"
+            f"{assistant_intro}\n\n"
             "*Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz* con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más. Este servicio es accesible y está listo para ayudarte.\n\n"
             "También podés usar emojis para realizar acciones rápidas.\n\n"
             "¿Cómo te puedo ayudar hoy?"
@@ -839,7 +856,10 @@ def _get_main_menu_payload(
         audio_greeting = f"Hola, soy {bot_name} de {tenant_name}."
 
     if reduced:
-        audio_intro = "Volvimos al menú principal para seguir con tu gestión."
+        audio_intro = (
+            "Volvimos al menú principal para seguir con tu gestión. "
+            "Podés enviar ubicación, fotos o notas de voz para que te ayudemos mejor."
+        )
         audio_prompt = "Elegí una categoría para continuar."
     else:
         audio_intro = (
