@@ -2790,7 +2790,10 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
         user_input = context.get("user_input_raw", "")
         reclamo_opts = _get_reclamos_menu().get("options_list", [])
-        menu_opciones = contexto_municipio_actual.get("menu_opciones", [])
+        menu_opciones = (
+            context.get("menu_opciones")
+            or contexto_municipio_actual.get("menu_opciones", [])
+        )
         came_from_list_menu = any(
             option.get("action_id") == "iniciar_reclamo"
             for option in menu_opciones
@@ -9415,6 +9418,7 @@ def responder_municipio(
             selected_action = find_global_menu_action(pregunta_str_menu)
 
         if selected_action:
+            context["menu_opciones"] = menu_opciones
             contexto_municipio_actual['estado_conversacion'] = None
             contexto_municipio_actual.pop('menu_opciones', None)
             if chat_db_context:
