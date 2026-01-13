@@ -2790,15 +2790,28 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
         user_input = context.get("user_input_raw", "")
         reclamo_opts = _get_reclamos_menu().get("options_list", [])
+        menu_opciones = contexto_municipio_actual.get("menu_opciones", [])
+        came_from_list_menu = any(
+            option.get("action_id") == "iniciar_reclamo"
+            for option in menu_opciones
+            if isinstance(option, dict)
+        )
 
         # Pass location context
         municipio_config = context.get("municipio_config_actual", {})
         default_localidad = municipio_config.get("ciudad")
         default_provincia = municipio_config.get("provincia")
 
-        details = extract_reclamo_details_from_text(user_input, reclamo_opts, default_localidad=default_localidad, default_provincia=default_provincia)
-
-        detected_category = details.pop("categoria", None)
+        details = {}
+        detected_category = None
+        if not (came_from_list_menu and user_input.strip().isdigit()):
+            details = extract_reclamo_details_from_text(
+                user_input,
+                reclamo_opts,
+                default_localidad=default_localidad,
+                default_provincia=default_provincia,
+            )
+            detected_category = details.pop("categoria", None)
         handler = ReclamoFlowHandler(context, chat_db_context)
         if detected_category:
             logger.info(
