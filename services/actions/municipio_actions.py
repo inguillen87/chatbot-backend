@@ -690,9 +690,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
             return {
                 "success": True,
+                "message_to_user": mensaje_respuesta,
                 "message_body": mensaje_respuesta,
                 "options_list": botones_finales,
-                "message_type": message_type,
+                "message_type": "interactive_buttons" if botones_finales else "text",
                 "image_url": promo_image_url,
                 "_twilio_pre_messages": (
                     [{"body": caption_body, "media_urls": [closing_image_url]}]
