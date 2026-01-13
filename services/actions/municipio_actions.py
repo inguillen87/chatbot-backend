@@ -802,9 +802,8 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
         if self.context.get("foto_url"):
             ticket_data["foto_url_directa"] = self.context.get("foto_url")
 
+        ticket_data["municipio_id"] = municipio_db_id_para_ticket  # Ensure municipio_id is explicitly set
         ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
-        if "municipio_id" in ticket_data_cleaned:
-            del ticket_data_cleaned["municipio_id"]
 
         try:
             ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
