@@ -552,6 +552,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             promo_section = promo_service.build_ticket_promo_section(
                 ticket_number=nro_ticket_str,
                 neighbor_name=ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
+                owner_user=owner_user,
             )
             if promo_section:
                 promo_text = promo_section.get("message_body")
@@ -835,6 +836,8 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
             promo_image_url = municipio_config.get('promo_image_url')
+            channel_value = (self.context.get("channel") or "").strip().lower()
+            is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
 
             respuesta_formateada, botones_generados = formatear_ticket_respuesta(
                 "sugerencia",
@@ -846,17 +849,81 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 base_chat_url,
                 dni=dni_vecino,
                 consulta_pin=ticket_creado.get("consulta_pin"),
+                include_links_in_message=not is_web_like_channel,
             )
 
+            # Append promotional content (image, CTA and button) in a structured way
+            promo_section = promo_service.build_ticket_promo_section(
+                ticket_number=nro_ticket_str,
+                neighbor_name=nombre_vecino_final,
+                owner_user=owner_user,
+            )
+            if promo_section:
+                promo_text = promo_section.get("message_body")
+                if promo_text:
+                    respuesta_formateada = f"{respuesta_formateada}\n\n{promo_text}"
+
+                promo_button = promo_section.get("button")
+                if promo_button:
+                    promo_url = promo_button.get("url")
+                    matching_button = None
+
+                    if promo_url:
+                        promo_domain, promo_path = _normalize_url_for_comparison(promo_url)
+                        for boton in (botones_generados or []):
+                            if not isinstance(boton, dict):
+                                continue
+                            boton_type = boton.get("type")
+                            if boton_type and str(boton_type).lower() != "url":
+                                continue
+                            boton_url = boton.get("url")
+                            if not boton_url:
+                                continue
+
+                            boton_domain, boton_path = _normalize_url_for_comparison(boton_url)
+                            same_domain = bool(promo_domain and boton_domain and promo_domain == boton_domain)
+                            same_path = bool(promo_path and boton_path and promo_path == boton_path)
+
+                            if same_domain or same_path:
+                                matching_button = boton
+                                break
+
+                    if matching_button:
+                        promo_cta = promo_button.get("texto")
+                        existing_text = (matching_button.get("texto") or "").strip()
+                        normalized_existing = existing_text.replace("🌐", "").strip().lower()
+
+                        if promo_cta and (not existing_text or normalized_existing == "más información"):
+                            matching_button["texto"] = promo_cta
+
+                        matching_button.setdefault("type", "url")
+                    elif promo_url:
+                        existing_urls = {
+                            boton.get("url")
+                            for boton in (botones_generados or [])
+                            if isinstance(boton, dict) and boton.get("url")
+                        }
+                        if promo_url not in existing_urls:
+                            botones_generados.append(promo_button)
+
+                if not promo_image_url and promo_section.get("image_url"):
+                    promo_image_url = promo_section.get("image_url")
+
             # Añadir el botón de acción específico para sugerencias
-            botones_finales = botones_generados
+            botones_finales = botones_generados or []
             botones_finales.append({"texto": "Hacer otra sugerencia", "id_accion": "hacer_sugerencia"})
+
+            if not is_web_like_channel:
+                botones_finales = remove_buttons_with_urls_in_message(
+                    respuesta_formateada,
+                    botones_finales,
+                )
 
             return {
                 "success": True,
                 "message_to_user": respuesta_formateada,
                 "options_list": botones_finales,
-                "message_type": "interactive_buttons",
+                "message_type": "interactive_buttons" if botones_finales else "text",
                 "image_url": promo_image_url,
                 "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado"}
             }
