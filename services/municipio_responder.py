@@ -675,6 +675,58 @@ def _build_sugerencia_success_payload(
 
     return payload
 
+
+def _build_sugerencia_confirmation_payload(
+    datos_sugerencia: Dict[str, Any],
+) -> Dict[str, Any]:
+    direccion = _format_sugerencia_address(datos_sugerencia)
+    telefono = datos_sugerencia.get("telefono") or "No informado"
+    descripcion = datos_sugerencia.get("descripcion") or ""
+
+    mensaje_confirmacion = (
+        "Por favor, confirmá si los datos para tu sugerencia son correctos:\n"
+        f"- **Nombre**: {datos_sugerencia.get('nombre')}\n"
+        f"- **DNI**: {datos_sugerencia.get('dni')}\n"
+        f"- **Email**: {datos_sugerencia.get('email')}\n"
+        f"- **Dirección**: {direccion}\n"
+        f"- **Teléfono**: {telefono}\n"
+        f"- **Sugerencia**: {descripcion}"
+    )
+
+    return {
+        "message_body": mensaje_confirmacion,
+        "options_list": [
+            {"texto": "Sí, enviar sugerencia", "action_id": "confirmar_sugerencia_si"},
+            {"texto": "No, corregir", "action_id": "confirmar_sugerencia_no"},
+        ],
+        "message_type": "interactive_buttons",
+        "fuente": "pide_confirmacion_sugerencia",
+    }
+
+
+def _maybe_prompt_sugerencia_confirmation(
+    contexto_municipio_actual: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    datos_sugerencia = contexto_municipio_actual.get("datos_parciales_llm_sugerencia", {})
+    if not isinstance(datos_sugerencia, dict):
+        return None
+
+    _ensure_sugerencia_address(datos_sugerencia)
+    if not datos_sugerencia.get("descripcion"):
+        return None
+
+    missing_fields = _get_missing_sugerencia_contact_fields(datos_sugerencia)
+    if missing_fields:
+        return None
+
+    contexto_municipio_actual["datos_sugerencia"] = datos_sugerencia
+    contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name
+    contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
+    contexto_municipio_actual.pop("expected_fields_llm_sugerencia", None)
+    contexto_municipio_actual.pop("esperando_info_llm", None)
+
+    return _build_sugerencia_confirmation_payload(datos_sugerencia)
+
 class ReclamoState(Enum):
     ESPERANDO_CATEGORIA = auto()
     ESPERANDO_DIRECCION = auto()
@@ -3702,6 +3754,12 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 {},
             )
             if pending_flow == "sugerencia":
+                confirmation_payload = _maybe_prompt_sugerencia_confirmation(
+                    contexto_municipio_actual,
+                )
+                if confirmation_payload:
+                    return confirmation_payload, contexto_municipio_actual
+            if pending_flow == "sugerencia":
                 handler = HacerSugerenciaActionHandler(context)
             else:
                 handler = CrearReclamoActionHandler(context)
@@ -3878,6 +3936,11 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
             if not pedir_info_llm:
                 logger_actual.info("[HANDLE_LLM] LLM provided all data. Executing HacerSugerenciaActionHandler for validation and creation.")
+                confirmation_payload = _maybe_prompt_sugerencia_confirmation(
+                    contexto_municipio_actual,
+                )
+                if confirmation_payload:
+                    return confirmation_payload, contexto_municipio_actual
                 handler = HacerSugerenciaActionHandler(context)
                 handler_response = handler.execute(datos_actuales_sugerencia)
 
@@ -4143,6 +4206,11 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     # If we were in a claim flow, it's time to create the ticket
                     return _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
                 elif estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name:
+                    confirmation_payload = _maybe_prompt_sugerencia_confirmation(
+                        contexto_municipio_actual,
+                    )
+                    if confirmation_payload:
+                        return confirmation_payload, contexto_municipio_actual
                     handler = HacerSugerenciaActionHandler(context)
                     datos_sugerencia = contexto_municipio_actual.get("datos_parciales_llm_sugerencia", {})
                     return handler.execute(datos_sugerencia), contexto_municipio_actual
@@ -8103,7 +8171,7 @@ def responder_municipio(
                 or any(a in texto_normalizado for a in afirmativos)
             ):
                 datos_confirmados = contexto_municipio_actual.pop('datos_sugerencia', {})
-                handler = CrearReclamoActionHandler(context)
+                handler = HacerSugerenciaActionHandler(context)
                 response = handler.execute(datos_confirmados)
                 if response.get("success"):
                     # Re-synchronize the in-memory context after the handler cleanup
@@ -8512,8 +8580,20 @@ def responder_municipio(
 
     # --- START INTENT CLASSIFICATION ---
     # If it's not a simple greeting, proceed with intent classification
-    intent, intent_payload = intent_classifier.classify(pregunta_str)
-    logger_actual.info(f"[IntentClassifier] Classified intent: {intent} with payload: {intent_payload}")
+    estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
+    if estado_conversacion in (
+        ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name,
+        ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name,
+    ):
+        intent = None
+        intent_payload = None
+        logger_actual.info(
+            "[IntentClassifier] Skipping intent classification due to active LLM flow (%s).",
+            estado_conversacion,
+        )
+    else:
+        intent, intent_payload = intent_classifier.classify(pregunta_str)
+        logger_actual.info(f"[IntentClassifier] Classified intent: {intent} with payload: {intent_payload}")
 
     if intent == "saludar":
         logger_actual.info("Greeting intent detected. Bypassing LLM and showing main menu.")
@@ -8607,6 +8687,8 @@ def responder_municipio(
         and estado_conversacion != ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name
         and estado_conversacion != ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
         and estado_conversacion != ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
+        and estado_conversacion != ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name
+        and estado_conversacion != ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
     ):
         inferred_action = find_global_menu_action(pregunta_str)
         if inferred_action:
