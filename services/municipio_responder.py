@@ -1400,15 +1400,7 @@ class ReclamoFlowHandler:
                 if image_url:
                     extra_payload["image_url"] = image_url
 
-                delayed_payload = result.get("delayed_payload")
-                if delayed_payload:
-                    extra_payload["delayed_payload"] = delayed_payload
-
-                delay_seconds = result.get("delay_seconds")
-                if delay_seconds is not None:
-                    extra_payload["delay_seconds"] = delay_seconds
-
-                show_menu = delayed_payload is None
+                show_menu = False
 
                 return self.end_flow(message, show_menu=show_menu, extra_payload=extra_payload)
             error_message = result.get(
@@ -3525,11 +3517,11 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         campo_esperado = None
         if campo_esperado_reclamo:
             pending_flow = "reclamo"
-            campo_esperado = campo_esperado_reclamo
+            campo_esperado = _normalize_single_expected_field(campo_esperado_reclamo)
             contexto_municipio_actual["esperando_info_llm_reclamo"] = campo_esperado
         elif campo_esperado_sugerencia:
             pending_flow = "sugerencia"
-            campo_esperado = campo_esperado_sugerencia
+            campo_esperado = _normalize_single_expected_field(campo_esperado_sugerencia)
             contexto_municipio_actual["esperando_info_llm_sugerencia"] = campo_esperado
         if campo_esperado:
             contexto_municipio_actual["esperando_info_llm"] = campo_esperado
@@ -4129,6 +4121,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 else:
                     # Fallback if a new 'pedir_info' value isn't in our map
                     contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+                normalized_pending = _normalize_single_expected_field(normalized_pending or pending_lookup_key)
                 contexto_municipio_actual["esperando_info_llm"] = normalized_pending or pending_lookup_key
                 if _is_claim_pending_field(normalized_pending or pending_lookup_key):
                     if normalized_pending_fields:
