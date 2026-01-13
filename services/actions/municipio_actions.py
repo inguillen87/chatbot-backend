@@ -760,6 +760,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             or action_data.get("direccion_contacto")
             or contacto_prev.get("direccion")
             or getattr(viewer_user, "direccion", None)
+            or ubicacion_sugerencia
         )
         telefono_vecino = (
             action_data.get("telefono")
@@ -848,9 +849,29 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 consulta_pin=ticket_creado.get("consulta_pin"),
             )
 
+            promo_section = promo_service.build_ticket_promo_section(
+                ticket_number=nro_ticket_str,
+                neighbor_name=nombre_vecino_final,
+                owner_user=owner_user,
+            )
+            if promo_section:
+                promo_text = promo_section.get("message_body")
+                if promo_text:
+                    respuesta_formateada = f"{respuesta_formateada}\n\n{promo_text}"
+                if not promo_image_url and promo_section.get("image_url"):
+                    promo_image_url = promo_section.get("image_url")
+
             # Añadir el botón de acción específico para sugerencias
             botones_finales = botones_generados
             botones_finales.append({"texto": "Hacer otra sugerencia", "id_accion": "hacer_sugerencia"})
+
+            channel_value = (self.context.get("channel") or "").strip().lower()
+            is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
+            if not is_web_like_channel:
+                botones_finales = remove_buttons_with_urls_in_message(
+                    respuesta_formateada,
+                    botones_finales,
+                )
 
             return {
                 "success": True,

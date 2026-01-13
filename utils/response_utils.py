@@ -82,6 +82,7 @@ def ensure_buttons_compatibility(payload: Any) -> Any:
         message_body = container.get("message_body")
         respuesta = container.get("respuesta")
         respuesta_usuario = container.get("respuesta_usuario")
+        message_to_user = container.get("message_to_user")
 
         def _has_content(value: Any) -> bool:
             if value is None:
@@ -94,7 +95,7 @@ def ensure_buttons_compatibility(payload: Any) -> Any:
             return value if isinstance(value, str) else str(value)
 
         canonical_text: str | None = None
-        for candidate in (message_body, respuesta, respuesta_usuario):
+        for candidate in (message_body, respuesta, respuesta_usuario, message_to_user):
             if _has_content(candidate):
                 canonical_text = _coerce(candidate)
                 break
@@ -108,6 +109,8 @@ def ensure_buttons_compatibility(payload: Any) -> Any:
             container["respuesta"] = canonical_text
         if not _has_content(respuesta_usuario):
             container["respuesta_usuario"] = canonical_text
+        if not _has_content(message_to_user):
+            container["message_to_user"] = canonical_text
 
     def _normalize(obj: Any) -> None:
         if isinstance(obj, MutableMapping):
@@ -129,4 +132,32 @@ def ensure_buttons_compatibility(payload: Any) -> Any:
                 _normalize(item)
 
     _normalize(payload)
+    return payload
+
+
+def normalize_response_payload(payload: Any) -> Any:
+    """Normalize response payloads to the standard contract."""
+
+    ensure_buttons_compatibility(payload)
+
+    if not isinstance(payload, MutableMapping):
+        return payload
+
+    if payload.get("message_to_user") and not payload.get("message_body"):
+        payload["message_body"] = payload["message_to_user"]
+
+    if payload.get("options_list") and not payload.get("botones"):
+        payload["botones"] = payload.get("options_list")
+    if payload.get("botones") and not payload.get("options_list"):
+        payload["options_list"] = payload.get("botones")
+
+    if "message_type" not in payload:
+        payload["message_type"] = "interactive_buttons" if payload.get("options_list") else "text"
+
+    success_value = payload.get("success")
+    if success_value is None:
+        payload["success"] = True
+    elif payload.get("pedir_info") and success_value is False:
+        payload["success"] = True
+
     return payload
