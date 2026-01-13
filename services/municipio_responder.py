@@ -2799,6 +2799,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             for option in menu_opciones
             if isinstance(option, dict)
         )
+        skip_autodetect = bool(context.pop("skip_reclamo_autodetect", False))
 
         # Pass location context
         municipio_config = context.get("municipio_config_actual", {})
@@ -2807,7 +2808,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
         details = {}
         detected_category = None
-        if not (came_from_list_menu and user_input.strip().isdigit()):
+        if not (skip_autodetect or (came_from_list_menu and user_input.strip().isdigit())):
             details = extract_reclamo_details_from_text(
                 user_input,
                 reclamo_opts,
@@ -9419,6 +9420,8 @@ def responder_municipio(
 
         if selected_action:
             context["menu_opciones"] = menu_opciones
+            if selected_action == "iniciar_reclamo" and pregunta_str_menu.strip().isdigit():
+                context["skip_reclamo_autodetect"] = True
             contexto_municipio_actual['estado_conversacion'] = None
             contexto_municipio_actual.pop('menu_opciones', None)
             if chat_db_context:
