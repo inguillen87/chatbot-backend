@@ -19,6 +19,23 @@ def test_prefill_contacto_from_context_removes_known_fields():
     assert remaining == ["telefono"]
 
 
+def test_prefill_contacto_from_context_handles_sugerencia_contacto_bundle():
+    contexto = {
+        "contacto_usuario": {
+            "nombre": "Ana",
+            "dni": "12345678",
+            "email": "ana@example.com",
+            "direccion": "Calle 1",
+            "telefono": "2615550000",
+        }
+    }
+    datos_parciales = {}
+    remaining = _prefill_contacto_from_context(contexto, datos_parciales, ["datos_contacto_sugerencia"])
+
+    assert remaining == []
+    assert datos_parciales["direccion"] == "Calle 1"
+
+
 def test_extract_expected_fields_from_text_finds_contact_and_location():
     raw_text = "Don Bosco 55 esquina Sarmiento, Junín. mail test@ex.com 2615551234"
     expected = ["ubicacion", "distrito", "email", "telefono"]
