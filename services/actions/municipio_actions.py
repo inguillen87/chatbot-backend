@@ -695,6 +695,9 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 )
                 promo_image_url = None
 
+            if not is_web_like_channel:
+                promo_image_url = None
+
             # Delayed menu
             menu_payload = _get_main_menu_payload(self.context)
             message_type = "interactive_buttons" if botones_finales else "text"

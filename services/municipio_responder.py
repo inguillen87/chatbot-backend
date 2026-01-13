@@ -690,6 +690,9 @@ def _build_sugerencia_success_payload(
 
     delayed_payload = handler_response.get("delayed_payload") or _get_main_menu_payload(context)
 
+    if not is_web_like_channel:
+        image_url = None
+
     payload: Dict[str, Any] = {
         "success": True,
         "message_body": message_body,
