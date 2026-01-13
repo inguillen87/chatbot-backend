@@ -46,6 +46,8 @@ from .actions.municipio_actions import (
     CrearReclamoActionHandler,
     HacerSugerenciaActionHandler,
     _normalize_url_for_comparison,
+    _render_template_safe,
+    _resolve_closing_promo_config,
 )
 from .herramientas_municipio import (
     consultar_recoleccion_por_direccion,
@@ -654,6 +656,33 @@ def _build_sugerencia_success_payload(
     if not is_web_like_channel:
         buttons = remove_buttons_with_urls_in_message(message_body, buttons)
 
+    closing_enabled, closing_image_url, caption_template = _resolve_closing_promo_config(
+        municipio_config,
+        "sugerencia",
+    )
+    closing_image_url = closing_image_url or image_url
+    if channel_value == "whatsapp" and closing_enabled and closing_image_url:
+        ticket_id_numeric = str(nro_ticket or "").replace("M-", "").replace("S-", "")
+        chat_url = f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}"
+        if consulta_pin:
+            chat_url = f"{chat_url}?pin={consulta_pin}"
+        caption_values = {
+            "nombre": nombre_vecino,
+            "ticket": nro_ticket,
+            "categoria": categoria,
+            "descripcion": descripcion,
+            "pin": consulta_pin,
+            "seguimiento_url": chat_url,
+            "promo": promo_section.get("message_body") if promo_section else "",
+        }
+        caption_body = _render_template_safe(caption_template or message_body, caption_values)
+        buttons = [
+            boton for boton in (buttons or [])
+            if not (isinstance(boton, dict) and boton.get("url"))
+        ]
+        message_body = "Opciones disponibles:" if buttons else "Gracias por tu mensaje."
+        image_url = None
+
     delayed_payload = handler_response.get("delayed_payload") or _get_main_menu_payload(context)
 
     payload: Dict[str, Any] = {
@@ -665,6 +694,10 @@ def _build_sugerencia_success_payload(
         "data": ticket_info,
         "fuente": "sugerencia_confirmada",
     }
+    if channel_value == "whatsapp" and closing_enabled and closing_image_url:
+        payload["_twilio_pre_messages"] = [
+            {"body": caption_body, "media_urls": [closing_image_url]}
+        ]
 
     audio_url = handler_response.get("audio_url")
     if audio_url:
@@ -7942,7 +7975,7 @@ def responder_municipio(
                 or any(a in texto_normalizado for a in afirmativos)
             ):
                 datos_confirmados = contexto_municipio_actual.pop('datos_sugerencia', {})
-                handler = CrearReclamoActionHandler(context)
+                handler = HacerSugerenciaActionHandler(context)
                 response = handler.execute(datos_confirmados)
                 if response.get("success"):
                     # Re-synchronize the in-memory context after the handler cleanup
@@ -7956,12 +7989,7 @@ def responder_municipio(
                     if chat_db_context:
                         flag_modified(chat_db_context, "context_data")
 
-                    final_payload = _build_sugerencia_success_payload(
-                        context,
-                        datos_confirmados,
-                        response,
-                    )
-                    return _finalize_response(final_payload)
+                    return _finalize_response(response)
                 contexto_municipio_actual['datos_sugerencia'] = datos_confirmados
                 if response.get("pedir_info"):
                     contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
