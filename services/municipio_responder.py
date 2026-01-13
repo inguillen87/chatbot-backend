@@ -2038,6 +2038,9 @@ def _extract_expected_fields_from_text(
     if "ubicacion" in normalized_fields and "direccion" not in fields_for_contact:
         fields_for_contact.append("direccion")
 
+    if "datos_contacto_sugerencia" in normalized_fields:
+        fields_for_contact = list({*fields_for_contact, "nombre", "dni", "email", "telefono", "direccion"})
+
     if fields_for_contact and text:
         extracted_contact = extract_multiple_contact_details_regex(text, fields_for_contact)
         for key, value in extracted_contact.items():
@@ -2045,6 +2048,8 @@ def _extract_expected_fields_from_text(
                 extracted.setdefault("ubicacion", value)
             else:
                 extracted.setdefault(key, value)
+        if "direccion" in extracted_contact and "datos_contacto_sugerencia" in normalized_fields:
+            extracted.setdefault("ubicacion", extracted_contact.get("direccion"))
 
     if "email" in normalized_fields and "email" not in extracted:
         email = extract_email(text)
@@ -3580,6 +3585,19 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     contexto_municipio_actual["expected_fields_llm_sugerencia"] = expected_fields_active
                 else:
                     contexto_municipio_actual["expected_fields_llm_reclamo"] = expected_fields_active
+
+                if campo_esperado and campo_esperado not in expected_fields_active:
+                    if expected_fields_active:
+                        campo_esperado = expected_fields_active[0]
+                    else:
+                        captured_field = True
+                        expected_value_captured = True
+                        campo_esperado = None
+                        if pending_flow == "sugerencia":
+                            contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
+                        else:
+                            contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                        contexto_municipio_actual.pop("esperando_info_llm", None)
 
             extracted_fields = _extract_expected_fields_from_text(
                 pregunta_str,
