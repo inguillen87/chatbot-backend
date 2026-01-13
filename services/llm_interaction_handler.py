@@ -17,6 +17,7 @@ from services.municipio_responder import _get_reclamos_menu
 from services.herramientas_municipio import TOOL_REGISTRY
 from services.municipio_responder import es_consulta_general
 from services.llm_utils import extract_multiple_contact_details_llm
+from utils.response_utils import normalize_response_payload
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,9 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             historial=historial_formateado,
             chat_session_id=context.get("chat_session_uuid")
         )
+
+        if isinstance(respuesta_llm_dict, dict):
+            normalize_response_payload(respuesta_llm_dict)
 
         if isinstance(context_dict, dict) and chat_db_context:
             chat_db_context.context_data.update(context_dict)

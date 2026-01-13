@@ -917,6 +917,8 @@ def whatsapp_webhook():
 
     # --- Boti-style Welcome Message Branch ---
     from services.municipio_responder import normalizar_texto
+    from services.config_loader import cargar_configuracion_municipio
+    from services.common_utils import _get_main_menu_payload
     from datetime import datetime
 
     button_payload = post_vars.get("ButtonPayload")
@@ -968,6 +970,9 @@ def whatsapp_webhook():
                 pyme_welcome_overrides.get("audio_url"), effective_base_url
             )
 
+    tenant_config: Dict[str, Any] = {}
+    assistant_name = None
+
     if should_trigger_welcome and not is_rate_limited:
         current_app.logger.info(f"[WELCOME] Triggering Boti-style welcome for user {from_number_cleaned}. Reason: '{normalized_input}'.")
 
@@ -991,9 +996,18 @@ def whatsapp_webhook():
                 sticker_metadata_allowed = True
                 template_variables_payload: Dict[str, str] = {"1": user_name or ""}
 
+                if tenant_profile and isinstance(getattr(tenant_profile, "configuracion", None), dict):
+                    tenant_config = tenant_profile.configuracion or {}
+                    assistant_name = tenant_config.get("assistant_name") or tenant_config.get("bot_name")
+
+                if assistant_name and getattr(client_user, "tipo_chat", "") == "municipio":
+                    should_send_template = False
+
                 if should_send_template:
                     should_send_sticker = False
                     sticker_metadata_allowed = False
+                else:
+                    should_send_sticker = False
 
                 if client_user and getattr(client_user, "tipo_chat", None) == "pyme":
                     if "sticker_cooldown_seconds" in pyme_welcome_overrides:
@@ -1048,6 +1062,9 @@ def whatsapp_webhook():
                             last_sticker_ts,
                         )
 
+                template_sent = False
+                sticker_sent = False
+
                 if should_send_template and template_sid:
                     params = {
                         "from_": to_number_raw,
@@ -1062,6 +1079,7 @@ def whatsapp_webhook():
                         twilio_client.messages.create(**params)
                         template_state["last_sent_ts"] = now
                         safe_flag_modified(session_context_db_entry, "context_data")
+                        template_sent = True
                         current_app.logger.info(
                             "[WELCOME] Template %s sent to %s with variables: %s",
                             template_sid,
@@ -1084,6 +1102,7 @@ def whatsapp_webhook():
                         )
                         sticker_state["last_sent_ts"] = now
                         safe_flag_modified(session_context_db_entry, "context_data")
+                        sticker_sent = True
                         current_app.logger.info(
                             f"[WELCOME] Sticker sent to {from_number_cleaned} using {resolved_sticker_url}."
                         )
@@ -1098,28 +1117,43 @@ def whatsapp_webhook():
 
                 greeting_sent = False
 
-                # Determine tenant name for greeting
-                tenant_name = "Tu Asistente"
-                if tenant_profile and getattr(tenant_profile, "nombre", None):
-                    tenant_name = tenant_profile.nombre
+                tenant_name = "Tu Municipio"
+                assistant_name = assistant_name or None
+                tenant_config = tenant_config or {}
+                if tenant_profile and isinstance(getattr(tenant_profile, "configuracion", None), dict):
+                    tenant_config = tenant_profile.configuracion or tenant_config
+                    assistant_name = assistant_name or tenant_config.get("assistant_name") or tenant_config.get("bot_name")
+                    tenant_name = (
+                        tenant_config.get("nombre_municipio")
+                        or tenant_config.get("nombre")
+                        or tenant_profile.nombre
+                        or tenant_name
+                    )
                 elif client_user:
-                    tenant_name = getattr(client_user, "nombre_empresa", None) or getattr(client_user, "name", "Tu Asistente")
+                    tenant_name = (
+                        getattr(client_user, "nombre_empresa", None)
+                        or getattr(client_user, "name", None)
+                        or tenant_name
+                    )
 
-                greeting = (
-                    f"*¡Hola, {user_name}!* Acá *{tenant_name}* \U0001F44B"
-                    if user_name
-                    else f"*¡Hola!* Soy *{tenant_name}* \U0001F44B ¿Cómo te llamás?"
-                )
-                try:
-                    twilio_client.messages.create(
-                        from_=to_number_raw, to=from_number_raw, body=greeting
+                greeting_name = f"{assistant_name} de {tenant_name}" if assistant_name else tenant_name
+
+                if not template_sent and user_name is not None:
+                    greeting = (
+                        f"*¡Hola, {user_name}!* Acá *{greeting_name}* \U0001F44B"
+                        if user_name
+                        else f"*¡Hola!* Soy *{greeting_name}* \U0001F44B ¿Cómo te llamás?"
                     )
-                    greeting_sent = True
-                except Exception as e:
-                    greeting_sent = False
-                    current_app.logger.error(
-                        f"[WELCOME] Failed to send welcome greeting to {from_number_cleaned}: {e}"
-                    )
+                    try:
+                        twilio_client.messages.create(
+                            from_=to_number_raw, to=from_number_raw, body=greeting
+                        )
+                        greeting_sent = True
+                    except Exception as e:
+                        greeting_sent = False
+                        current_app.logger.error(
+                            f"[WELCOME] Failed to send welcome greeting to {from_number_cleaned}: {e}"
+                        )
 
                 if not user_name and greeting_sent:
                     session_context_db_entry.context_data["awaiting_user_name"] = True
@@ -1130,11 +1164,29 @@ def whatsapp_webhook():
                 current_app.logger.error(f"[WELCOME] Failed to send welcome template or sticker: {e}")
 
             try:
-                welcome_response_payload = responder_chatboc(
-                    pregunta="hola", owner_user=client_user, current_user=end_user,
-                    rubro_obj=client_user.rubro, chat_db_context=session_context_db_entry,
-                    tipo_chat=client_user.tipo_chat, anon_id=from_number_cleaned,
-                    chat_session_uuid=chat_session_id_internal, channel="whatsapp"
+                municipio_config = {}
+                if client_user and getattr(client_user, "tipo_chat", "") == "municipio":
+                    municipio_id = getattr(client_user, "municipio_id", None) or getattr(client_user, "id", None)
+                    if municipio_id:
+                        loaded_config = cargar_configuracion_municipio(str(municipio_id), "config.json")
+                        if isinstance(loaded_config, dict):
+                            municipio_config.update(loaded_config)
+                if tenant_config:
+                    municipio_config.update(tenant_config)
+
+                menu_context = {
+                    "user_obj": client_user,
+                    "viewer_user_obj": end_user,
+                    "chat_db_context_data": session_context_db_entry.context_data,
+                    "channel": "whatsapp",
+                    "municipio_config_actual": municipio_config,
+                }
+                reduced_menu = template_sent or greeting_sent or sticker_sent
+                welcome_message_override = None
+                welcome_response_payload = _get_main_menu_payload(
+                    menu_context,
+                    welcome_message_override=welcome_message_override,
+                    reduced=reduced_menu,
                 )
                 if isinstance(welcome_response_payload, dict):
                     if effective_base_url:
