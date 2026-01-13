@@ -685,6 +685,9 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 )
                 promo_image_url = None
 
+            if not is_web_like_channel:
+                promo_image_url = None
+
             # Delayed menu
             menu_payload = _get_main_menu_payload(self.context)
 
@@ -1064,6 +1067,9 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 respuesta_formateada = (
                     "Opciones disponibles:" if botones_finales else "Gracias por tu mensaje."
                 )
+                promo_image_url = None
+
+            if not is_web_like_channel:
                 promo_image_url = None
 
             return {
