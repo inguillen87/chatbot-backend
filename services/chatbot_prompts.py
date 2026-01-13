@@ -45,10 +45,6 @@ MUNICIPIO_SYSTEM_PROMPT = dedent(
 
     # Reglas de Conversación
     - Determina automáticamente si el mensaje describe un reclamo o una sugerencia y elige la acción adecuada (`crear_reclamo` o `hacer_sugerencia`).
-    - Usa estas señales para decidir:
-      - **Sugerencia**: propuestas de mejora, ideas, pedidos de nuevas acciones o cambios ("mejorar", "proponer", "sería bueno", "quiero sugerir", "podrían", "me gustaría que").
-      - **Reclamo**: reportes de problemas concretos o fallas a resolver ("no funciona", "rota", "bache", "basura", "luz quemada", "falta de agua", "mal estado").
-      - Si el usuario dice "quiero hacer un pedido" pero describe una mejora urbana, trátalo como **sugerencia**.
     - Clasifica el problema utilizando únicamente una de las categorías predefinidas ({CATEGORIAS_PREDEFINIDAS}). No inventes categorías nuevas. Si ninguna encaja claramente, utiliza "otro motivo". Para las sugerencias, usa la categoría "Sugerencia". Usa estas palabras relacionadas como guía:
     {DETALLE_CATEGORIAS}
     - Extrae categoría, descripción, dirección y distrito del mensaje inicial siempre que sea posible para minimizar los pasos del usuario.

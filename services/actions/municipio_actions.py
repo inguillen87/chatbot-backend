@@ -618,7 +618,6 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
             # Delayed menu
             menu_payload = _get_main_menu_payload(self.context)
-            message_type = "interactive_buttons" if botones_finales else "text"
 
             return {
                 "success": True,
@@ -956,6 +955,9 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                     botones_finales,
                 )
 
+            # Delayed menu
+            menu_payload = _get_main_menu_payload(self.context)
+
             return {
                 "success": True,
                 "message_to_user": respuesta_formateada,
@@ -963,12 +965,10 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "options_list": botones_finales,
                 "message_type": "interactive_buttons" if botones_finales else "text",
                 "image_url": promo_image_url,
+                "delayed_payload": menu_payload,
+                "delay_seconds": 20,
                 "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado", "consulta_pin": pin_final}
             }
-            if menu_payload:
-                response["delayed_payload"] = menu_payload
-                response["delay_seconds"] = delay_seconds
-            return response
         except Exception as e:
             logger.error(f"Error en HacerSugerenciaActionHandler: {e}", exc_info=True)
             return {
