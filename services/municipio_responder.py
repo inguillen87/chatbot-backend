@@ -5007,15 +5007,20 @@ def extract_reclamo_details_from_text(
     if not user_input:
         return details
 
-    cleaned_description = _strip_trailing_phrases(_strip_leading_phrases(user_input))
-    if cleaned_description:
-        cleaned_description = re.sub(r"\s{2,}", " ", cleaned_description).strip()
-        if not _is_placeholder_description(cleaned_description):
-            details["descripcion_sugerida"] = cleaned_description
-
     category = find_reclamo_category_by_input(user_input, reclamo_options)
     if category:
         details["categoria_sugerida"] = category
+
+    # Si el input es solo un número que corresponde a una categoría,
+    # NO lo usamos como descripción.
+    is_numeric_selection = user_input.strip().isdigit() and category is not None
+
+    if not is_numeric_selection:
+        cleaned_description = _strip_trailing_phrases(_strip_leading_phrases(user_input))
+        if cleaned_description:
+            cleaned_description = re.sub(r"\s{2,}", " ", cleaned_description).strip()
+            if not _is_placeholder_description(cleaned_description):
+                details["descripcion_sugerida"] = cleaned_description
 
     # --- Address heuristics (incluye intersecciones) ---
     direccion_interseccion, intersection_hints = _parse_intersection_and_district(
@@ -7533,10 +7538,15 @@ def _get_reclamos_menu():
         "otro motivo": "⚫",
     }
     opciones = []
-    for categoria in CATEGORIAS_RECLAMO:
+
+    # Filter categories to display
+    displayable_categories = [
+        c for c in CATEGORIAS_RECLAMO
+        if normalizar_texto(c) != "sugerencia"
+    ]
+
+    for idx, categoria in enumerate(displayable_categories, 1):
         normalized = normalizar_texto(categoria)
-        if normalized == "sugerencia":
-            continue
         texto_categoria = categoria.title() if categoria else "Otros"
         if normalized == "otro motivo":
             texto_categoria = "Otros"
@@ -7545,6 +7555,7 @@ def _get_reclamos_menu():
             {
                 "texto": f"{emoji} *{texto_categoria}*",
                 "category_name": texto_categoria,
+                "id_accion": str(idx),
             }
         )
 
