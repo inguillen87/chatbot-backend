@@ -1241,6 +1241,11 @@ def whatsapp_webhook():
                     elif resolved_audio_url:
                         welcome_response_payload.setdefault("audio_url", resolved_audio_url)
 
+                    options_list = welcome_response_payload.get("options_list")
+                    if isinstance(options_list, list):
+                        session_context_db_entry.context_data["last_options_sent"] = options_list
+                        safe_flag_modified(session_context_db_entry, "context_data")
+
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
                 _send_delayed_payload(
                     client=twilio_client, to_number=to_number_raw, from_number=from_number_raw,
@@ -1341,6 +1346,11 @@ def whatsapp_webhook():
                     delay=delay,
                     app=current_app._get_current_object(),
                 )
+                if isinstance(welcome_response_payload, dict):
+                    options_list = welcome_response_payload.get("options_list")
+                    if isinstance(options_list, list):
+                        session_context_db_entry.context_data["last_options_sent"] = options_list
+                        safe_flag_modified(session_context_db_entry, "context_data")
                 # Persist any context updates from responder_chatboc
                 safe_flag_modified(session_context_db_entry, "context_data")
                 db.session.add(session_context_db_entry)

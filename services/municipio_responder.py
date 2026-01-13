@@ -196,7 +196,12 @@ def formatear_opciones(opciones: Optional[Sequence[Dict[str, Any]]]) -> List[Dic
 def _is_placeholder_description(value: Any) -> bool:
     if not value or not isinstance(value, str):
         return False
-    return normalizar_texto(value) in PLACEHOLDER_DESCRIPTIONS_NORMALIZED
+    normalized_value = normalizar_texto(value)
+    if normalized_value in PLACEHOLDER_DESCRIPTIONS_NORMALIZED:
+        return True
+    if normalized_value.isdigit():
+        return True
+    return False
 
 
 PLACEHOLDER_CONTACT_RESPONSES = {
