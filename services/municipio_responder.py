@@ -651,6 +651,8 @@ def _build_sugerencia_success_payload(
         buttons = remove_buttons_with_urls_in_message(message_body, buttons)
 
     delayed_payload = handler_response.get("delayed_payload") or _get_main_menu_payload(context)
+    if channel_value == "whatsapp":
+        delayed_payload = None
 
     payload: Dict[str, Any] = {
         "success": True,
@@ -7644,7 +7646,13 @@ def responder_municipio(
     else:
         identity_token = None
 
-    if normalized_question:
+    selection_states = {
+        ConversationState.ESPERANDO_SELECCION_DE_LISTA.name,
+        ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name,
+        ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name,
+    }
+
+    if normalized_question and context_state_token not in selection_states:
         owner_cache_key = None
         if owner_user is not None:
             owner_cache_key = getattr(owner_user, "id", None) or getattr(owner_user, "municipio_id", None)
