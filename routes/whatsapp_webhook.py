@@ -918,6 +918,8 @@ def whatsapp_webhook():
 
     # --- Boti-style Welcome Message Branch ---
     from services.municipio_responder import normalizar_texto
+    from services.config_loader import cargar_configuracion_municipio
+    from services.common_utils import _get_main_menu_payload
     from datetime import datetime
 
     button_payload = post_vars.get("ButtonPayload")
@@ -969,6 +971,9 @@ def whatsapp_webhook():
                 pyme_welcome_overrides.get("audio_url"), effective_base_url
             )
 
+    tenant_config: Dict[str, Any] = {}
+    assistant_name = None
+
     if should_trigger_welcome and not is_rate_limited:
         current_app.logger.info(f"[WELCOME] Triggering Boti-style welcome for user {from_number_cleaned}. Reason: '{normalized_input}'.")
 
@@ -1001,8 +1006,6 @@ def whatsapp_webhook():
                 sticker_metadata_allowed = True
                 template_variables_payload: Dict[str, str] = {"1": user_name or ""}
 
-                tenant_config = {}
-                assistant_name = None
                 if tenant_profile and isinstance(getattr(tenant_profile, "configuracion", None), dict):
                     tenant_config = tenant_profile.configuracion or {}
                     assistant_name = tenant_config.get("assistant_name") or tenant_config.get("bot_name")
@@ -1169,9 +1172,6 @@ def whatsapp_webhook():
                 current_app.logger.error(f"[WELCOME] Failed to send welcome template or sticker: {e}")
 
             try:
-                from services.common_utils import _get_main_menu_payload
-                from services.config_loader import cargar_configuracion_municipio
-
                 municipio_config = {}
                 if client_user and getattr(client_user, "tipo_chat", "") == "municipio":
                     municipio_id = getattr(client_user, "municipio_id", None) or getattr(client_user, "id", None)
