@@ -1598,7 +1598,7 @@ def whatsapp_webhook():
         # bot_response_dict is already set to a default error message, so we just log and continue
 
     # Update respuesta_del_bot_text for logging from the final bot_response_dict
-    respuesta_del_bot_text = bot_response_dict.get('message_body', "Error: message_body no encontrado en la respuesta del bot.")
+    respuesta_del_bot_text = bot_response_dict.get("message_body", "")
     print(f"Bot response text for logging: '{respuesta_del_bot_text}', Session context to save: {session_context_db_entry.context_data}")
 
     # --- Format Response and Save Session ---
@@ -1606,7 +1606,7 @@ def whatsapp_webhook():
     try:
         from services.response_formatter import build_interactive_response
 
-        body_text = bot_response_dict.get('message_body') or bot_response_dict.get('message_to_user', "Error de formato.")
+        body_text = bot_response_dict.get("message_body", "")
 
         # This call will modify bot_response_dict to include context for the numeric menu
         formatted_whatsapp_payload = build_interactive_response(

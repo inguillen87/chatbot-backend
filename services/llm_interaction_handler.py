@@ -8,7 +8,11 @@ from sqlalchemy.orm.attributes import flag_modified
 from services.llm_orchestrator import llamar_llm_con_fallback
 from services.conversation_state import ConversationState
 from services.actions.municipio_actions import CrearReclamoActionHandler
-from services.municipio_responder import GreetingHandler, _get_main_menu_payload
+from services.municipio_responder import (
+    GreetingHandler,
+    _get_main_menu_payload,
+    _normalize_pedir_info_fields,
+)
 from services.municipio_responder import _get_reclamos_menu
 from services.herramientas_municipio import TOOL_REGISTRY
 from services.municipio_responder import es_consulta_general
@@ -159,7 +163,12 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 return handler.execute(datos_actuales), contexto_municipio_actual
             else:
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-                contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
+                pending_fields = _normalize_pedir_info_fields(pedir_info_llm)
+                if pending_fields:
+                    contexto_municipio_actual["expected_fields_llm_reclamo"] = pending_fields
+                    contexto_municipio_actual["esperando_info_llm_reclamo"] = pending_fields[0]
+                else:
+                    contexto_municipio_actual["esperando_info_llm_reclamo"] = pedir_info_llm
                 return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text"}, contexto_municipio_actual
 
         # Other actions... (this is a simplified version of the logic)
