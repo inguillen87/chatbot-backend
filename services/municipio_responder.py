@@ -1040,11 +1040,13 @@ class ReclamoFlowHandler:
             return self._return_to_main_menu()
 
         reclamo_options = _get_reclamos_menu().get("options_list", [])
-        plain_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
 
-        category = find_reclamo_category_by_input(user_input, plain_options)
+        # Use full options to allow matching by id_accion
+        category = find_reclamo_category_by_input(user_input, reclamo_options)
+
         details = {}
         if not category:
+            plain_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
             municipio_config = self.context.get("municipio_config_actual", {})
             default_localidad = municipio_config.get("ciudad")
             default_provincia = municipio_config.get("provincia")
@@ -2790,7 +2792,11 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
         user_input = context.get("user_input_raw", "")
         reclamo_opts = _get_reclamos_menu().get("options_list", [])
+
         menu_opciones = contexto_municipio_actual.get("menu_opciones", [])
+        if not menu_opciones:
+            menu_opciones = context.get("previous_menu_options", [])
+
         came_from_list_menu = any(
             option.get("action_id") == "iniciar_reclamo"
             for option in menu_opciones
@@ -4682,11 +4688,16 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
         )
         return None
 
-    # 1. Check for numeric selection
+    # 1. Check for id_accion match
+    for option in reclamo_options:
+        if str(option.get("id_accion")) == normalized_input:
+            return option.get("category_name") or option.get("texto")
+
+    # 2. Check for numeric selection
     try:
         selection_index = int(normalized_input) - 1
         if 0 <= selection_index < len(reclamo_options):
-            return reclamo_options[selection_index].get('texto')
+            return reclamo_options[selection_index].get('category_name') or reclamo_options[selection_index].get('texto')
     except (ValueError, IndexError):
         pass
 
@@ -9416,7 +9427,9 @@ def responder_municipio(
 
         if selected_action:
             contexto_municipio_actual['estado_conversacion'] = None
-            contexto_municipio_actual.pop('menu_opciones', None)
+            previous_menu_options = contexto_municipio_actual.pop('menu_opciones', None)
+            if previous_menu_options:
+                context['previous_menu_options'] = previous_menu_options
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             response = handle_main_menu_action(selected_action, context, chat_db_context)
