@@ -1015,7 +1015,7 @@ def whatsapp_webhook():
 
                 if should_send_template:
                     should_send_sticker = False
-                    sticker_metadata_allowed = False
+                    sticker_metadata_allowed = True
                 else:
                     should_send_sticker = False
 

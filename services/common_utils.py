@@ -695,26 +695,7 @@ def _get_main_menu_payload(
     if welcome_message_override:
         welcome_message = welcome_message_override
     elif user_name:
-        custom_welcome = None
-        if isinstance(municipio_config, dict):
-            custom_welcome = municipio_config.get("welcome_message") or municipio_config.get("mensaje_bienvenida")
-        if custom_welcome:
-            formatted = _safe_format(
-                custom_welcome,
-                {
-                    "nombre_tenant": tenant_name_text,
-                    "tenant": tenant_name_text,
-                    "municipio": tenant_name_text,
-                    "nombre": user_name,
-                    "usuario": user_name,
-                },
-            )
-            if user_name and user_name not in formatted:
-                welcome_message = f"👋 ¡Hola, {user_name}! {formatted}"
-            else:
-                welcome_message = formatted
-        else:
-            welcome_message = f"👋 ¡Hola, {user_name}! Bienvenido a {tenant_name_text}."
+        welcome_message = f"👋 *¡Hola, {user_name}!*"
     else:
         # User's name is not known, ask for it.
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
@@ -743,20 +724,8 @@ def _get_main_menu_payload(
     if owner_user and tenant_name_text == "tu municipio":
         tenant_name_text = getattr(owner_user, "nombre_empresa", None) or getattr(owner_user, "name", "tu municipio")
 
-    assistant_name = None
-    if isinstance(municipio_config, dict):
-        assistant_name = municipio_config.get("assistant_name") or municipio_config.get("bot_name")
-    if isinstance(assistant_name, str):
-        normalized_assistant = assistant_name.strip().lower()
-        normalized_tenant = tenant_name_text.strip().lower()
-        if normalized_assistant in {"juni"} or normalized_assistant == normalized_tenant:
-            assistant_name = None
-
-    assistant_intro = (
-        f"Soy *{assistant_name}*, tu Asistente Virtual de *{tenant_name_text}*."
-        if assistant_name
-        else f"Soy tu Asistente Virtual de *{tenant_name_text}*."
-    )
+    if welcome_message == f"👋 *¡Hola, {user_name}!*":
+        welcome_message = f"{welcome_message} Bienvenido a *{tenant_name_text}*."
 
     if reduced:
         main_text_body = (
@@ -767,7 +736,6 @@ def _get_main_menu_payload(
         )
     else:
         main_text_body = (
-            f"{assistant_intro}\n\n"
             "*Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz* con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más. Este servicio es accesible y está listo para ayudarte.\n\n"
             "También podés usar emojis para realizar acciones rápidas.\n\n"
             "¿Cómo te puedo ayudar hoy?"
