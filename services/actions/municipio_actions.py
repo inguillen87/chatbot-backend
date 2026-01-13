@@ -6,7 +6,7 @@ import sys
 from urllib.parse import urlparse
 
 from .base_action_handler import BaseActionHandler
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import random
 from services.ticket_service import servicio_tickets
 from services.notifications import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
@@ -19,7 +19,7 @@ from services.herramientas_municipio import (
 from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.config_loader import cargar_configuracion_municipio
-from models import MunicipioTicket
+from models import MunicipioTicket, TenantProfile
 from services.common_utils import _get_main_menu_payload
 from services import promo_service
 
@@ -76,6 +76,105 @@ def _address_seems_generic(address: str | None) -> bool:
         return True
 
     return False
+
+
+def _resolve_municipio_tenant_ids(owner_user, context: Dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
+    """Resolve tenant_id and municipio_id for municipal tickets."""
+
+    municipio_config = (context or {}).get("municipio_config_actual", {}) or {}
+    tenant_slug = (
+        municipio_config.get("tenant_slug")
+        or municipio_config.get("slug")
+        or getattr(owner_user, "tenant_slug", None)
+    )
+    owner_id = (
+        getattr(owner_user, "municipio_id", None)
+        or getattr(owner_user, "id", None)
+    )
+
+    tenant = None
+    if tenant_slug:
+        tenant = TenantProfile.query.filter_by(slug=str(tenant_slug).strip()).first()
+    if not tenant and owner_id:
+        tenant = TenantProfile.query.filter_by(municipio_id=owner_id).first()
+
+    tenant_id = getattr(tenant, "id", None)
+    municipio_id = getattr(tenant, "municipio_id", None) or owner_id
+
+    if not municipio_id:
+        logger.warning(
+            "[tickets] municipio_id missing while resolving tenant. tenant_slug=%s owner_id=%s",
+            tenant_slug,
+            owner_id,
+        )
+
+    return tenant_id, municipio_id
+
+
+def _render_closing_caption_template(template: str | None, values: Dict[str, Any]) -> str:
+    """Render a caption template using {{placeholder}} or {placeholder} tokens."""
+
+    message_body = str(values.get("message_body") or "").strip()
+    if not template:
+        return message_body
+
+    rendered = str(template)
+    for key, value in values.items():
+        token_value = str(value) if value is not None else ""
+        rendered = rendered.replace(f"{{{{{key}}}}}", token_value)
+        rendered = rendered.replace(f"{{{key}}}", token_value)
+
+    return rendered
+
+
+def _apply_whatsapp_closing_promo(
+    payload: Dict[str, Any],
+    *,
+    context: Dict[str, Any],
+    caption_values: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Attach WhatsApp hero media for closing flows when enabled."""
+
+    channel = (context.get("channel") or "").strip().lower()
+    if not channel.startswith("whatsapp"):
+        return payload
+
+    municipio_config = context.get("municipio_config_actual", {}) or {}
+    if not municipio_config.get("closing_promo_enabled"):
+        return payload
+
+    image_url = (
+        municipio_config.get("closing_promo_image_url")
+        or municipio_config.get("promo_image_url")
+        or payload.get("image_url")
+    )
+    if not image_url:
+        return payload
+
+    caption_template = municipio_config.get("closing_promo_caption_template")
+    caption = _render_closing_caption_template(caption_template, caption_values)
+
+    pre_messages = payload.get("_twilio_pre_messages")
+    if not isinstance(pre_messages, list):
+        pre_messages = [] if pre_messages is None else [pre_messages]
+
+    pre_messages.append(
+        {
+            "channels": ["whatsapp"],
+            "body": caption,
+            "media_urls": [image_url],
+        }
+    )
+    payload["_twilio_pre_messages"] = pre_messages
+
+    if payload.get("options_list"):
+        payload["message_body"] = municipio_config.get(
+            "closing_promo_followup_text",
+            "Seleccioná una opción para continuar.",
+        )
+
+    payload.pop("image_url", None)
+    return payload
 
 
 class BuscarEstacionamientoActionHandler(BaseActionHandler):
@@ -400,6 +499,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             categoria = categoria_lookup
         contacto_especializado = dict(contactos.get(categoria_lookup, contactos.get("default", {})))
 
+        tenant_id, municipio_id = _resolve_municipio_tenant_ids(owner_user, self.context)
+
         ticket_data = {
             "pregunta": pregunta_original,
             "asunto": f"Reclamo (LLM): {categoria or 'General'}",
@@ -415,7 +516,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "estado": "nuevo",
             "user_id": getattr(viewer_user, "id", None),
             "anon_id": self.context.get("anon_id"),
-            "municipio_id": getattr(owner_user, "municipio_id", None),  # Asegurar que el municipio_id se pasa aquí
+            "municipio_id": municipio_id,
+            "tenant_id": tenant_id,
             "latitud": coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None,
             "longitud": (
                 coordenadas_llm.get("lng") if isinstance(coordenadas_llm, dict) else None
@@ -613,7 +715,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             # Delayed menu
             menu_payload = _get_main_menu_payload(self.context)
 
-            return {
+            response_payload = {
                 "success": True,
                 "message_body": mensaje_respuesta,
                 "options_list": botones_finales,
@@ -628,6 +730,20 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     "consulta_pin": pin_final,
                 }
             }
+            caption_values = {
+                "message_body": mensaje_respuesta,
+                "ticket_nro": nro_ticket_str,
+                "ticket_id": ticket_creado.get("id"),
+                "nombre": ticket_data_cleaned.get("nombre_vecino"),
+                "categoria": categoria_display,
+                "descripcion": descripcion,
+                "consulta_pin": pin_final,
+            }
+            return _apply_whatsapp_closing_promo(
+                response_payload,
+                context=self.context,
+                caption_values=caption_values,
+            )
         except Exception as e:
             logger.error(f"Error en CrearReclamoActionHandler: {e}", exc_info=True)
             response = {
@@ -777,7 +893,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
         owner_user = self.context.get("user_obj")
         user_id_db = getattr(viewer_user, "id", None)
         anon_id_db = self.context.get("anon_id") if not user_id_db else None
-        municipio_db_id_para_ticket = getattr(owner_user, "municipio_id", None)
+        tenant_id, municipio_id = _resolve_municipio_tenant_ids(owner_user, self.context)
         nombre_vecino_final = nombre_vecino or getattr(viewer_user, "nombre", "Ciudadano Anónimo")
 
         ticket_data = {
@@ -798,13 +914,13 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             "longitud": (
                 coordenadas_sugerencia.get("lng") if isinstance(coordenadas_sugerencia, dict) else None
             ),
+            "municipio_id": municipio_id,
+            "tenant_id": tenant_id,
         }
         if self.context.get("foto_url"):
             ticket_data["foto_url_directa"] = self.context.get("foto_url")
 
         ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
-        if "municipio_id" in ticket_data_cleaned:
-            del ticket_data_cleaned["municipio_id"]
 
         try:
             ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
@@ -865,7 +981,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             botones_finales = botones_generados
             botones_finales.append({"texto": "Hacer otra sugerencia", "id_accion": "hacer_sugerencia"})
 
-            return {
+            response_payload = {
                 "success": True,
                 "message_to_user": respuesta_formateada,
                 "options_list": botones_finales,
@@ -873,6 +989,20 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "image_url": promo_image_url,
                 "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado"}
             }
+            caption_values = {
+                "message_body": respuesta_formateada,
+                "ticket_nro": nro_ticket_str,
+                "ticket_id": ticket_creado.get("id"),
+                "nombre": nombre_vecino_final,
+                "categoria": "Sugerencia",
+                "descripcion": descripcion_sugerencia,
+                "consulta_pin": ticket_creado.get("consulta_pin"),
+            }
+            return _apply_whatsapp_closing_promo(
+                response_payload,
+                context=self.context,
+                caption_values=caption_values,
+            )
         except Exception as e:
             logger.error(f"Error en HacerSugerenciaActionHandler: {e}", exc_info=True)
             return {
