@@ -425,6 +425,57 @@ def _update_sugerencia_contact_fields(
         datos_guardados[campo] = valor_nuevo
 
 
+def _normalize_location_payload(
+    raw_location: Any,
+    *,
+    fallback_address: str | None = None,
+) -> Optional[Dict[str, Any]]:
+    """Normalize location payloads to address/latitude/longitude fields."""
+
+    if not raw_location:
+        if fallback_address:
+            return {"address": fallback_address}
+        return None
+
+    if isinstance(raw_location, str):
+        return {"address": raw_location}
+
+    if not isinstance(raw_location, dict):
+        if fallback_address:
+            return {"address": fallback_address}
+        return None
+
+    normalized = dict(raw_location)
+    lat = (
+        raw_location.get("latitude")
+        or raw_location.get("lat")
+        or raw_location.get("latitud")
+    )
+    lon = (
+        raw_location.get("longitude")
+        or raw_location.get("lon")
+        or raw_location.get("lng")
+        or raw_location.get("longitud")
+    )
+    if lat is not None:
+        normalized["latitude"] = lat
+    if lon is not None:
+        normalized["longitude"] = lon
+
+    address = (
+        raw_location.get("address")
+        or raw_location.get("label")
+        or raw_location.get("texto")
+        or raw_location.get("descripcion")
+        or raw_location.get("ubicacion")
+        or fallback_address
+    )
+    if address:
+        normalized["address"] = address
+
+    return normalized
+
+
 def _build_sugerencia_datos(
     sugerencia_texto: str,
     ubicacion: Optional[str],
@@ -493,40 +544,25 @@ def _set_sugerencia_location_context(
 ) -> None:
     """Persist full location information for suggestion flows."""
 
-    address = fallback_address or ""
-    if isinstance(raw_location, dict):
-        address = raw_location.get("address") or raw_location.get("label") or address
-    if not address:
-        address = "N/A"
+    normalized_location = _normalize_location_payload(raw_location, fallback_address=fallback_address)
+    if not normalized_location:
+        normalized_location = {"address": fallback_address or "N/A"}
+    else:
+        normalized_location.setdefault("address", fallback_address or "N/A")
 
-    location_payload: Dict[str, Any] = {"address": address}
-    if isinstance(raw_location, dict):
-        if raw_location.get("label"):
-            location_payload["label"] = raw_location.get("label")
-        lat = raw_location.get("latitude") or raw_location.get("lat")
-        lon = raw_location.get("longitude") or raw_location.get("lon")
-        if lat:
-            location_payload["latitude"] = lat
-        if lon:
-            location_payload["longitude"] = lon
-
-    contexto["ubicacion_contextual_sugerencia"] = location_payload
+    contexto["ubicacion_contextual_sugerencia"] = normalized_location
 
 
 def _extract_sugerencia_location(contexto: Dict[str, Any]) -> tuple[str, Optional[Dict[str, Any]]]:
     """Return stored suggestion location and normalized coordinates."""
 
     raw_location = contexto.pop("ubicacion_contextual_sugerencia", None)
-    if isinstance(raw_location, dict):
-        address = (
-            raw_location.get("address")
-            or raw_location.get("label")
-            or raw_location.get("texto")
-            or "N/A"
-        )
-        lat = raw_location.get("latitude") or raw_location.get("lat")
-        lon = raw_location.get("longitude") or raw_location.get("lon")
-        if lat and lon:
+    normalized_location = _normalize_location_payload(raw_location)
+    if isinstance(normalized_location, dict):
+        address = normalized_location.get("address") or "N/A"
+        lat = normalized_location.get("latitude")
+        lon = normalized_location.get("longitude")
+        if lat is not None and lon is not None:
             return address, {"lat": lat, "lng": lon}
         return address, None
     if isinstance(raw_location, str) and raw_location:
@@ -7740,6 +7776,12 @@ def responder_municipio(
         return cached_response
 
     # Crear el diccionario de contexto principal una sola vez
+    normalized_location = _normalize_location_payload(
+        location or received_payload.get("ubicacion_usuario"),
+    )
+    if normalized_location:
+        received_payload["ubicacion_usuario"] = normalized_location
+
     context = {
         "user_obj": owner_user,
         "viewer_user_obj": viewer_user,
@@ -7752,7 +7794,7 @@ def responder_municipio(
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
         "chat_db_context_data": chat_db_context_live_data, # Usar el dict vivo
         "intencion": kwargs.get("intencion"),
-        "ubicacion_usuario": location or received_payload.get("ubicacion_usuario"),
+        "ubicacion_usuario": normalized_location or received_payload.get("ubicacion_usuario"),
         "es_foto": received_payload.get("es_foto", False),
         "foto_url": received_payload.get("foto_url"),
         "es_ubicacion": received_payload.get("es_ubicacion", False),
@@ -7802,12 +7844,15 @@ def responder_municipio(
                 {"texto": "Cancelar", "action_id": "cancelar"},
             ]
             contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
-            contexto_municipio_actual['ubicacion_contextual'] = {
-                "address": address,
-                "latitude": location_link_info.get("latitude"),
-                "longitude": location_link_info.get("longitude"),
-                "source": location_link_info.get("source", "link"),
-            }
+            contexto_municipio_actual['ubicacion_contextual'] = _normalize_location_payload(
+                {
+                    "address": address,
+                    "latitude": location_link_info.get("latitude"),
+                    "longitude": location_link_info.get("longitude"),
+                    "source": location_link_info.get("source", "link"),
+                },
+                fallback_address=address,
+            )
             contexto_municipio_actual['menu_opciones'] = opciones_proactivas
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
@@ -8383,7 +8428,10 @@ def responder_municipio(
                 {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
                 {"texto": "Cancelar", "action_id": "cancelar"},
             ]
-            contexto_municipio_actual['ubicacion_contextual'] = received_payload.get("ubicacion_usuario")
+            contexto_municipio_actual['ubicacion_contextual'] = _normalize_location_payload(
+                received_payload.get("ubicacion_usuario"),
+                fallback_address=address,
+            )
             contexto_municipio_actual['menu_opciones'] = opciones_proactivas
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
@@ -9417,7 +9465,7 @@ def responder_municipio(
 
         normalized_input = normalizar_texto(pregunta_str_reclamo or "")
 
-        if pregunta_str_reclamo in {"0", "1"} or normalized_input in RETURN_TO_MAIN_MENU:
+        if pregunta_str_reclamo in {"0"} or normalized_input in RETURN_TO_MAIN_MENU:
             logger_actual.info("User requested to return to main menu from reclamos menu.")
             handler = GreetingHandler(context)
             response = handler.handle({})
@@ -9437,15 +9485,12 @@ def responder_municipio(
             logger_actual.info("Input requests reclamos menu again. Returning submenu.")
             return _finalize_response(_get_reclamos_menu())
 
-        # El menú se muestra numerado a partir de 1, mientras que los id_accion
-        # comienzan en 0. Convertimos la elección del usuario a id_accion.
         reclamo_options = _get_reclamos_menu().get("options_list", [])
         selected_category_name = None
 
         if pregunta_str_reclamo.isdigit():
-            expected_id = str(int(pregunta_str_reclamo) - 1)
             for option in reclamo_options:
-                if option.get("id_accion") == expected_id:
+                if option.get("id_accion") == pregunta_str_reclamo:
                     selected_category_name = option.get("category_name")
                     break
 
