@@ -1190,7 +1190,7 @@ def whatsapp_webhook():
                     "municipio_config_actual": municipio_config,
                 }
                 reduced_menu = template_sent or greeting_sent or sticker_sent
-                welcome_message_override = "¿Cómo te puedo ayudar hoy?" if reduced_menu else None
+                welcome_message_override = None
                 welcome_response_payload = _get_main_menu_payload(
                     menu_context,
                     welcome_message_override=welcome_message_override,
