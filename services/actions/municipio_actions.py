@@ -83,6 +83,70 @@ def _resolve_closing_promo_config(
     )
     return enabled, image_url, caption_template
 
+
+def build_ticket_closing_promo_payload(
+    *,
+    municipio_config: dict,
+    ticket_type: str,
+    channel_value: str,
+    message_body: str,
+    options_list: list[dict] | None,
+    image_url: str | None,
+    ticket_number: str | None,
+    categoria: str | None,
+    descripcion: str | None,
+    consulta_pin: str | None,
+    base_chat_url: str,
+    promo_message: str | None = None,
+    fallback_options: list[dict] | None = None,
+) -> dict[str, Any]:
+    closing_enabled, closing_image_url, caption_template = _resolve_closing_promo_config(
+        municipio_config,
+        ticket_type,
+    )
+    closing_image_url = closing_image_url or image_url
+    updated_message_body = message_body
+    updated_options = list(options_list or [])
+    updated_image_url = image_url
+    pre_messages = None
+
+    if channel_value == "whatsapp" and closing_enabled and closing_image_url:
+        ticket_id_numeric = str(ticket_number or "").replace("M-", "").replace("S-", "")
+        chat_url = ""
+        if base_chat_url and ticket_id_numeric:
+            chat_url = f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}"
+            if consulta_pin:
+                chat_url = f"{chat_url}?pin={consulta_pin}"
+        caption_values = {
+            "ticket": ticket_number,
+            "categoria": categoria,
+            "descripcion": descripcion,
+            "pin": consulta_pin,
+            "link": chat_url,
+            "seguimiento_url": chat_url,
+            "promo": promo_message or "",
+        }
+        caption_body = _render_template_safe(caption_template or message_body, caption_values)
+        updated_options = [
+            boton for boton in (updated_options or [])
+            if not (isinstance(boton, dict) and boton.get("url"))
+        ]
+        if not updated_options:
+            updated_options = list(fallback_options or [])
+        if not updated_options:
+            updated_options = [{"texto": "Menú principal", "action_id": "menu_principal"}]
+        updated_message_body = "Opciones disponibles:"
+        updated_image_url = None
+        pre_messages = [{"body": caption_body, "media_urls": [closing_image_url]}]
+
+    return {
+        "_twilio_pre_messages": pre_messages,
+        "message_body": updated_message_body,
+        "options_list": updated_options,
+        "image_url": updated_image_url,
+    }
+
+
 def _address_seems_generic(address: str | None) -> bool:
     if not address:
         return True
@@ -661,39 +725,24 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     {"texto": "Cancelar", "action_id": "cancelar"},
                 ]
 
-            closing_enabled, closing_image_url, caption_template = _resolve_closing_promo_config(
-                municipio_config,
-                "reclamo",
+            closing_payload = build_ticket_closing_promo_payload(
+                municipio_config=municipio_config,
+                ticket_type="reclamo",
+                channel_value=channel_value,
+                message_body=mensaje_respuesta,
+                options_list=botones_finales,
+                image_url=promo_image_url,
+                ticket_number=nro_ticket_str,
+                categoria=categoria_display,
+                descripcion=descripcion,
+                consulta_pin=pin_final,
+                base_chat_url=base_chat_url,
+                promo_message=promo_section.get("message_body") if promo_section else None,
             )
-            closing_image_url = closing_image_url or promo_image_url
-            if channel_value == "whatsapp" and closing_enabled and closing_image_url:
-                ticket_id_numeric = nro_ticket_str.replace("M-", "").replace("S-", "")
-                chat_url = f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}"
-                if pin_final:
-                    chat_url = f"{chat_url}?pin={pin_final}"
-                caption_values = {
-                    "nombre": ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
-                    "ticket": nro_ticket_str,
-                    "categoria": categoria_display,
-                    "descripcion": descripcion,
-                    "pin": pin_final,
-                    "seguimiento_url": chat_url,
-                    "promo": promo_section.get("message_body") if promo_section else "",
-                }
-                caption_body = _render_template_safe(caption_template or mensaje_respuesta, caption_values)
-                botones_finales = [
-                    boton for boton in (botones_finales or [])
-                    if not (isinstance(boton, dict) and boton.get("url"))
-                ]
-                if not botones_finales:
-                    botones_finales = [
-                        {"texto": "Menú", "action_id": "menu_principal"},
-                        {"texto": "Cancelar", "action_id": "cancelar"},
-                    ]
-                mensaje_respuesta = (
-                    "Opciones disponibles:" if botones_finales else "Gracias por tu mensaje."
-                )
-                promo_image_url = None
+            mensaje_respuesta = closing_payload["message_body"]
+            botones_finales = closing_payload["options_list"]
+            promo_image_url = closing_payload["image_url"]
+            twilio_pre_messages = closing_payload["_twilio_pre_messages"]
 
             if not is_web_like_channel:
                 promo_image_url = None
@@ -708,11 +757,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "options_list": botones_finales,
                 "message_type": message_type,
                 "image_url": promo_image_url,
-                "_twilio_pre_messages": (
-                    [{"body": caption_body, "media_urls": [closing_image_url]}]
-                    if channel_value == "whatsapp" and closing_enabled and closing_image_url
-                    else None
-                ),
+                "_twilio_pre_messages": twilio_pre_messages,
                 "delayed_payload": menu_payload,
                 "delay_seconds": 20,
                 "data": {
@@ -963,10 +1008,6 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
             include_links = not is_web_like_channel
 
-            # --- HERO IMAGE LOGIC (New for Suggestions) ---
-            closing_promo_enabled = municipio_config.get('closing_promo_enabled', False)
-            closing_promo_image_url = municipio_config.get('closing_promo_image_url')
-
             channel_value = (self.context.get("channel") or "").strip().lower()
             is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
             is_whatsapp = "whatsapp" in channel_value
@@ -1056,44 +1097,24 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                     {"texto": "Cancelar", "action_id": "cancelar"},
                 ]
 
-            closing_enabled, closing_image_url, caption_template = _resolve_closing_promo_config(
-                municipio_config,
-                "sugerencia",
+            closing_payload = build_ticket_closing_promo_payload(
+                municipio_config=municipio_config,
+                ticket_type="sugerencia",
+                channel_value=channel_value,
+                message_body=respuesta_formateada,
+                options_list=botones_finales,
+                image_url=promo_image_url,
+                ticket_number=nro_ticket_str,
+                categoria="Sugerencia",
+                descripcion=descripcion_sugerencia,
+                consulta_pin=pin_final,
+                base_chat_url=base_chat_url,
+                promo_message=promo_section.get("message_body") if promo_section else None,
             )
-            closing_image_url = closing_image_url or promo_image_url
-            if channel_value == "whatsapp" and closing_enabled and closing_image_url:
-                ticket_id_numeric = nro_ticket_str.replace("M-", "").replace("S-", "")
-                chat_url = f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}"
-                if pin_final:
-                    chat_url = f"{chat_url}?pin={pin_final}"
-                caption_values = {
-                    "nombre": nombre_vecino_final,
-                    "ticket": nro_ticket_str,
-                    "categoria": "Sugerencia",
-                    "descripcion": descripcion_sugerencia,
-                    "pin": pin_final,
-                    "seguimiento_url": chat_url,
-                    "promo": promo_section.get("message_body") if promo_section else "",
-                }
-                caption_body = _render_template_safe(caption_template or respuesta_formateada, caption_values)
-                botones_finales = [
-                    boton for boton in (botones_finales or [])
-                    if not (isinstance(boton, dict) and boton.get("url"))
-                ]
-                if not botones_finales:
-                    botones_finales = [
-                        {"texto": "Menú", "action_id": "menu_principal"},
-                        {"texto": "Cancelar", "action_id": "cancelar"},
-                    ]
-                respuesta_formateada = (
-                    "Opciones disponibles:" if botones_finales else "Gracias por tu mensaje."
-                )
-                promo_image_url = None
-            menu_payload = None
-            delay_seconds = None
-            if not botones_finales:
-                menu_payload = _get_main_menu_payload(self.context)
-                delay_seconds = 20
+            respuesta_formateada = closing_payload["message_body"]
+            botones_finales = closing_payload["options_list"]
+            promo_image_url = closing_payload["image_url"]
+            twilio_pre_messages = closing_payload["_twilio_pre_messages"]
 
             response = {
                 "success": True,
@@ -1102,11 +1123,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "options_list": botones_finales,
                 "message_type": "interactive_buttons" if botones_finales else "text",
                 "image_url": promo_image_url,
-                "_twilio_pre_messages": (
-                    [{"body": caption_body, "media_urls": [closing_image_url]}]
-                    if channel_value == "whatsapp" and closing_enabled and closing_image_url
-                    else None
-                ),
+                "_twilio_pre_messages": twilio_pre_messages,
                 "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado", "consulta_pin": pin_final}
             }
             if menu_payload:

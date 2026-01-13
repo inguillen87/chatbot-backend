@@ -45,6 +45,7 @@ from utils.municipio_utils import (
 from .actions.municipio_actions import (
     CrearReclamoActionHandler,
     HacerSugerenciaActionHandler,
+    build_ticket_closing_promo_payload,
     _normalize_url_for_comparison,
     _render_template_safe,
     _resolve_closing_promo_config,
@@ -661,32 +662,24 @@ def _build_sugerencia_success_payload(
             {"texto": "Cancelar", "action_id": "cancelar"},
         ]
 
-    closing_enabled, closing_image_url, caption_template = _resolve_closing_promo_config(
-        municipio_config,
-        "sugerencia",
+    closing_payload = build_ticket_closing_promo_payload(
+        municipio_config=municipio_config,
+        ticket_type="sugerencia",
+        channel_value=channel_value,
+        message_body=message_body,
+        options_list=buttons,
+        image_url=image_url,
+        ticket_number=nro_ticket,
+        categoria=categoria,
+        descripcion=descripcion,
+        consulta_pin=consulta_pin,
+        base_chat_url=base_chat_url,
+        promo_message=promo_section.get("message_body") if promo_section else None,
     )
-    closing_image_url = closing_image_url or image_url
-    if channel_value == "whatsapp" and closing_enabled and closing_image_url:
-        ticket_id_numeric = str(nro_ticket or "").replace("M-", "").replace("S-", "")
-        chat_url = f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}"
-        if consulta_pin:
-            chat_url = f"{chat_url}?pin={consulta_pin}"
-        caption_values = {
-            "nombre": nombre_vecino,
-            "ticket": nro_ticket,
-            "categoria": categoria,
-            "descripcion": descripcion,
-            "pin": consulta_pin,
-            "seguimiento_url": chat_url,
-            "promo": promo_section.get("message_body") if promo_section else "",
-        }
-        caption_body = _render_template_safe(caption_template or message_body, caption_values)
-        buttons = [
-            boton for boton in (buttons or [])
-            if not (isinstance(boton, dict) and boton.get("url"))
-        ]
-        message_body = "Opciones disponibles:" if buttons else "Gracias por tu mensaje."
-        image_url = None
+    message_body = closing_payload["message_body"]
+    buttons = closing_payload["options_list"]
+    image_url = closing_payload["image_url"]
+    twilio_pre_messages = closing_payload["_twilio_pre_messages"]
 
     delayed_payload = handler_response.get("delayed_payload") or _get_main_menu_payload(context)
 
@@ -702,13 +695,8 @@ def _build_sugerencia_success_payload(
         "data": ticket_info,
         "fuente": "sugerencia_confirmada",
     }
-    if not buttons:
-        payload["delayed_payload"] = _get_main_menu_payload(context)
-        payload["delay_seconds"] = 20
-    if channel_value == "whatsapp" and closing_enabled and closing_image_url:
-        payload["_twilio_pre_messages"] = [
-            {"body": caption_body, "media_urls": [closing_image_url]}
-        ]
+    if twilio_pre_messages:
+        payload["_twilio_pre_messages"] = twilio_pre_messages
 
     audio_url = handler_response.get("audio_url")
     if audio_url:
