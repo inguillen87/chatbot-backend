@@ -26,6 +26,8 @@ from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.openai_maps_service import geocodificar_inversa_llm
 from services.municipio_responder import CONTEXTO_MUNICIPIO
 from services.config_loader import cargar_configuracion_pyme
+from services.response_formatter import render_audio_text
+from services.tts_orchestrator import generar_audio
 from utils.response_utils import normalize_response_payload
 
 # Define the blueprint for WhatsApp webhooks
@@ -557,6 +559,34 @@ def _lookup_whatsapp_mapping(to_number_raw: str) -> Tuple[Optional[WhatsappNumer
                 return mapping, cleaned, normalized
 
     return None, cleaned, normalized
+
+
+def _ensure_welcome_audio_payload(payload: dict) -> None:
+    if not isinstance(payload, dict):
+        return
+
+    if payload.get("audio_url") or payload.get("skip_audio_generation"):
+        return
+
+    if not payload.get("generar_audio") and not payload.get("audio_text"):
+        return
+
+    text_to_speak = payload.get("audio_text")
+    if not text_to_speak:
+        categorias_for_audio = payload.get("categorias")
+        options_for_audio = payload.get("options_list") or payload.get("botones") or []
+        text_to_speak = render_audio_text(
+            message=payload.get("message_body", ""),
+            options=options_for_audio if not categorias_for_audio else None,
+            categorias=categorias_for_audio,
+            datos=payload.get("data"),
+            accion=payload.get("accion_backend"),
+        )
+
+    if text_to_speak:
+        audio_url = generar_audio(text_to_speak)
+        if audio_url:
+            payload["audio_url"] = audio_url
 
 
 def _send_delayed_payload(client, to_number: str, from_number: str, payload: dict, delay: int, app):
@@ -1231,6 +1261,8 @@ def whatsapp_webhook():
                     elif resolved_audio_url:
                         welcome_response_payload.setdefault("audio_url", resolved_audio_url)
 
+                    _ensure_welcome_audio_payload(welcome_response_payload)
+
                     options_list = welcome_response_payload.get("options_list")
                     if isinstance(options_list, list):
                         session_context_db_entry.context_data["last_options_sent"] = options_list
@@ -1326,6 +1358,8 @@ def whatsapp_webhook():
                         welcome_response_payload["audio_url"] = resolved_existing_audio
                     elif resolved_audio_url:
                         welcome_response_payload.setdefault("audio_url", resolved_audio_url)
+
+                    _ensure_welcome_audio_payload(welcome_response_payload)
 
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
                 _send_delayed_payload(
