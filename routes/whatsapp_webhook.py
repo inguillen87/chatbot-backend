@@ -1630,46 +1630,6 @@ def whatsapp_webhook():
                 )
                 break
 
-    if selected_option and selected_option.get("url") and not esperando_info:
-        url_value = selected_option.get("url")
-        bot_response_dict = {
-            "message_body": f"🔗 Acá podés ver tu ticket: {url_value}",
-            "options_list": [],
-            "message_type": "text",
-            "fuente": "whatsapp_url_shortcut",
-        }
-        normalize_response_payload(bot_response_dict)
-        respuesta_del_bot_text = bot_response_dict["message_body"]
-        formatted_whatsapp_payload = {}
-        try:
-            from services.response_formatter import build_interactive_response
-
-            formatted_whatsapp_payload = build_interactive_response(
-                options=bot_response_dict.get("options_list", []),
-                body_text=bot_response_dict.get("message_body", ""),
-                message_type=bot_response_dict.get("message_type", "text"),
-                channel="whatsapp",
-                include_audio=bool(bot_response_dict.get("audio_url")),
-                audio_url=bot_response_dict.get("audio_url"),
-            )
-        except Exception:
-            formatted_whatsapp_payload = {}
-
-        if formatted_whatsapp_payload:
-            try:
-                enviar_mensaje_whatsapp_con_fallback(
-                    numero_destino=from_number_raw,
-                    cuerpo=formatted_whatsapp_payload.get("body_text", bot_response_dict.get("message_body", "")),
-                    botones=formatted_whatsapp_payload.get("buttons"),
-                    lista=formatted_whatsapp_payload.get("list"),
-                )
-            except Exception as e:
-                current_app.logger.error(f"Error sending WhatsApp URL shortcut message: {e}", exc_info=True)
-
-        safe_flag_modified(session_context_db_entry, "context_data")
-        db.session.add(session_context_db_entry)
-        db.session.commit()
-        return "OK", 200
 
     # --- Call Real Chatbot Logic: responder_chatboc ---
     # Initialize with a default error response
@@ -1715,6 +1675,9 @@ def whatsapp_webhook():
             kwargs_for_bot["datos_interpretados_archivo"] = interpretacion_media_data
         if selected_action_id:
             kwargs_for_bot["action"] = selected_action_id
+
+        if selected_option:
+            kwargs_for_bot["selected_option_data"] = selected_option
 
         profile_name = post_vars.get("ProfileName")
         if profile_name:
