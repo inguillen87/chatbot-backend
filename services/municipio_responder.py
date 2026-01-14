@@ -3216,15 +3216,34 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
                 }
                 for link in config_links
             ]
+
+        final_options = botones + social_buttons
+        # Ensure we have navigation options so the user isn't stuck
+        nav_options = []
+        if not any(b.get("action_id") == "menu_principal" for b in final_options):
+            nav_options.append({"texto": "Menú", "action_id": "menu_principal"})
+        if not any(b.get("action_id") == "cancelar" for b in final_options):
+            nav_options.append({"texto": "Cancelar", "action_id": "cancelar"})
+
+        full_options_list = final_options + nav_options
+
         response = {
             "message_body": body,
-            "options_list": botones + social_buttons,
-            "message_type": "interactive_buttons" if botones or social_buttons else "text",
+            "options_list": full_options_list,
+            "message_type": "interactive_buttons" if full_options_list else "text",
             "fuente": f"info_{action_id}_json",
         }
         image = data.get("image_url")
         if image:
             response["image_url"] = image
+
+        # Set state to allow numeric interaction with the links
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_ACCION_POST_INFO_TRAMITE"
+        contexto_municipio_actual["menu_opciones"] = full_options_list
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+
         return response
 
     if action_id == "compartir_ubicacion":
@@ -9639,6 +9658,70 @@ def responder_municipio(
                 "fuente": "submenu_opcion_invalida",
             })
     # --- FIN: Manejo genérico de selección de submenús ---
+
+    # --- INICIO: Manejo de post-info de trámite (ej. click en link por número) ---
+    elif estado_conversacion == "ESPERANDO_ACCION_POST_INFO_TRAMITE":
+        pregunta_str_info = ""
+        action_payload = None
+        if isinstance(pregunta_original, str):
+            pregunta_str_info = pregunta_original
+        elif isinstance(pregunta_original, dict):
+            pregunta_str_info = pregunta_original.get("pregunta", "")
+            action_payload = pregunta_original.get("action")
+
+        if not action_payload:
+            action_payload = received_payload.get("action")
+
+        menu_opciones = contexto_municipio_actual.get("menu_opciones", [])
+        selected_action = action_payload or find_menu_action_by_input(pregunta_str_info, menu_opciones)
+
+        # Detect if it was a URL option selected via index
+        url_match = None
+        if selected_action:
+            selected_option = next((opt for opt in menu_opciones if opt.get("action_id") == selected_action), None)
+            if selected_option and selected_option.get("type") == "url" and selected_option.get("url"):
+                url_match = selected_option.get("url")
+
+        if url_match:
+            return _finalize_response({
+                "message_body": f"🔗 Podés acceder al enlace aquí:\n{url_match}\n\n¿Necesitás algo más?",
+                "options_list": [
+                    {"texto": "Menú principal", "action_id": "menu_principal"},
+                    {"texto": "Cancelar", "action_id": "cancelar"}
+                ],
+                "message_type": "interactive_buttons",
+                "fuente": "post_info_url_selection"
+            })
+
+        # If standard action (menu, back, etc), handle normally
+        if not selected_action:
+            selected_action = find_global_menu_action(pregunta_str_info)
+
+        if selected_action:
+            contexto_municipio_actual['estado_conversacion'] = None
+            contexto_municipio_actual.pop('menu_opciones', None)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            response = handle_main_menu_action(selected_action, context, chat_db_context)
+            if response:
+                return _finalize_response(response)
+        else:
+            # If input doesn't match any option, fall through to global LLM/Menu
+            logger_actual.info(f"Input '{pregunta_str_info}' in POST_INFO state not matched. Resetting state.")
+            contexto_municipio_actual['estado_conversacion'] = None
+            contexto_municipio_actual.pop('menu_opciones', None)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            # Recursive call or fall-through by not returning?
+            # Better to return the fallback response directly to avoid complex recursion issues here.
+            # We treat it as unknown input in this context.
+            return _finalize_response({
+                "message_body": "No entendí tu elección. Por favor, seleccioná una opción válida o escribí 'Menú'.",
+                "options_list": menu_opciones,
+                "message_type": "interactive_buttons",
+                "fuente": "post_info_opcion_invalida"
+            })
+    # --- FIN: Manejo de post-info de trámite ---
 
     # --- INICIO: Manejo de la espera por nombre de trámite ---
     elif estado_conversacion == ConversationState.ESPERANDO_SELECCION_TRAMITE.name:
