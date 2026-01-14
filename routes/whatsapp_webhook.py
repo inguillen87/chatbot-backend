@@ -29,6 +29,7 @@ from services.config_loader import cargar_configuracion_pyme
 from services.response_formatter import render_audio_text
 from services.tts_orchestrator import generar_audio
 from utils.response_utils import normalize_response_payload
+from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -982,7 +983,7 @@ def whatsapp_webhook():
 
     safe_flag_modified(session_context_db_entry, "context_data")
 
-    should_trigger_welcome = is_override or (is_greeting and not is_waiting_for_info)
+    should_trigger_welcome = is_greeting and not is_waiting_for_info
 
     request_root = request.url_root or ""
     request_root_stripped = request_root.rstrip("/")
@@ -1026,6 +1027,15 @@ def whatsapp_webhook():
                 user_name = getattr(end_user, "name", "") or (post_vars.get("ProfileName") or "").strip()
                 if user_name.lower() in {"vecino", "vecina", "vecino/a"}:
                     user_name = ""
+
+                municipio_config = {}
+                municipio_name = None
+                if client_user and getattr(client_user, "tipo_chat", None) == "municipio":
+                    municipio_id = getattr(client_user, "municipio_id", None)
+                    if municipio_id is not None:
+                        municipio_config = cargar_configuracion_municipio(str(municipio_id), "config.json") or {}
+                    if isinstance(municipio_config, dict):
+                        municipio_name = municipio_config.get("nombre") or None
 
                 should_send_template = bool(template_sid) and not template_state.get("disabled", False)
                 should_send_sticker = bool(resolved_sticker_url) and not sticker_state.get("disabled", False)
@@ -1566,18 +1576,75 @@ def whatsapp_webhook():
     esperando_info = _esperando_info_libre(municipio_ctx)
 
     # Solo traducir números a acciones cuando no estamos esperando información libre.
+    selected_option = None
+    selected_action_id = None
     if message_body.isdigit() and last_options and not esperando_info:
         idx = int(message_body) - 1
         if 0 <= idx < len(last_options):
-            selected = last_options[idx]
-            message_body = (
-                selected.get("id")
-                or selected.get("action_id")
-                or selected.get("category_name")
-                or selected.get("id_accion")
-                or selected.get("texto")
-                or message_body
+            selected_option = last_options[idx]
+            selected_action_id = (
+                selected_option.get("action_id")
+                or selected_option.get("id")
+                or selected_option.get("id_accion")
+                or selected_option.get("category_name")
+                or selected_option.get("texto")
             )
+    elif last_options and not esperando_info:
+        normalized_body = (message_body or "").strip().lower()
+        for option in last_options:
+            option_text = (option.get("texto") or "").strip().lower()
+            option_action = (option.get("action_id") or option.get("id") or "").strip().lower()
+            if normalized_body and normalized_body in {option_text, option_action}:
+                selected_option = option
+                selected_action_id = (
+                    option.get("action_id")
+                    or option.get("id")
+                    or option.get("id_accion")
+                    or option.get("category_name")
+                    or option.get("texto")
+                )
+                break
+
+    if selected_option and selected_option.get("url") and not esperando_info:
+        url_value = selected_option.get("url")
+        bot_response_dict = {
+            "message_body": f"🔗 Acá podés ver tu ticket: {url_value}",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "whatsapp_url_shortcut",
+        }
+        normalize_response_payload(bot_response_dict)
+        respuesta_del_bot_text = bot_response_dict["message_body"]
+        formatted_whatsapp_payload = {}
+        try:
+            from services.response_formatter import build_interactive_response
+
+            formatted_whatsapp_payload = build_interactive_response(
+                options=bot_response_dict.get("options_list", []),
+                body_text=bot_response_dict.get("message_body", ""),
+                message_type=bot_response_dict.get("message_type", "text"),
+                channel="whatsapp",
+                include_audio=bool(bot_response_dict.get("audio_url")),
+                audio_url=bot_response_dict.get("audio_url"),
+            )
+        except Exception:
+            formatted_whatsapp_payload = {}
+
+        if formatted_whatsapp_payload:
+            try:
+                enviar_mensaje_whatsapp_con_fallback(
+                    numero_destino=from_number_raw,
+                    cuerpo=formatted_whatsapp_payload.get("body_text", bot_response_dict.get("message_body", "")),
+                    botones=formatted_whatsapp_payload.get("buttons"),
+                    lista=formatted_whatsapp_payload.get("list"),
+                )
+            except Exception as e:
+                current_app.logger.error(f"Error sending WhatsApp URL shortcut message: {e}", exc_info=True)
+
+        safe_flag_modified(session_context_db_entry, "context_data")
+        db.session.add(session_context_db_entry)
+        db.session.commit()
+        return "OK", 200
 
     # --- Call Real Chatbot Logic: responder_chatboc ---
     # Initialize with a default error response
@@ -1621,6 +1688,8 @@ def whatsapp_webhook():
         if interpretacion_media_data and not interpretacion_media_data.get("error"):
             # This will now only contain data from actual images/files, not locations.
             kwargs_for_bot["datos_interpretados_archivo"] = interpretacion_media_data
+        if selected_action_id:
+            kwargs_for_bot["action"] = selected_action_id
 
         profile_name = post_vars.get("ProfileName")
         if profile_name:
