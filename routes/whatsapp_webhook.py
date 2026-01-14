@@ -569,8 +569,12 @@ def _ensure_welcome_audio_payload(payload: dict) -> None:
     if payload.get("audio_url") or payload.get("skip_audio_generation"):
         return
 
-    if not payload.get("generar_audio") and not payload.get("audio_text"):
+    has_menu_content = bool(payload.get("options_list") or payload.get("categorias") or payload.get("botones"))
+    if not payload.get("generar_audio") and not payload.get("audio_text") and not has_menu_content:
         return
+
+    if has_menu_content and not payload.get("generar_audio"):
+        payload["generar_audio"] = True
 
     text_to_speak = payload.get("audio_text")
     if not text_to_speak:
@@ -1974,6 +1978,8 @@ def whatsapp_webhook():
                 db.session.commit()
                 main_message = twilio_client.messages.create(**message_params)
                 print(f"Mensaje principal enviado a {from_number_raw}, SID: {main_message.sid}")
+
+            _ensure_welcome_audio_payload(bot_response_dict)
 
             # Second, if there is an audio URL, send it as a separate media message.
             audio_url = bot_response_dict.get('audio_url')
