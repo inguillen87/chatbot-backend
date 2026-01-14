@@ -1296,6 +1296,11 @@ def whatsapp_webhook():
                     _ensure_welcome_audio_payload(welcome_response_payload)
 
                 _reset_municipio_context_for_menu(session_context_db_entry)
+                if isinstance(welcome_response_payload, dict):
+                    options_list = welcome_response_payload.get("options_list")
+                    if isinstance(options_list, list):
+                        session_context_db_entry.context_data["last_options_sent"] = options_list
+                        safe_flag_modified(session_context_db_entry, "context_data")
 
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
                 _send_delayed_payload(
@@ -1391,6 +1396,11 @@ def whatsapp_webhook():
                     _ensure_welcome_audio_payload(welcome_response_payload)
 
                 _reset_municipio_context_for_menu(session_context_db_entry)
+                if isinstance(welcome_response_payload, dict):
+                    options_list = welcome_response_payload.get("options_list")
+                    if isinstance(options_list, list):
+                        session_context_db_entry.context_data["last_options_sent"] = options_list
+                        safe_flag_modified(session_context_db_entry, "context_data")
 
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
                 _send_delayed_payload(
