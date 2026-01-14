@@ -8654,6 +8654,20 @@ def responder_municipio(
     if kwargs:
         received_payload.update(kwargs)
 
+    # --- INICIO FIX: Manejo de opciones con URL (proactivo) ---
+    selected_option_data = received_payload.get("selected_option_data")
+    if selected_option_data and selected_option_data.get("url"):
+        url_val = selected_option_data.get("url")
+        text_val = selected_option_data.get("texto", "enlace")
+
+        return _finalize_response({
+            "message_body": f"🔗 Accedé a *{text_val}* ingresando aquí:\n{url_val}\n\n¿En qué más te puedo ayudar?",
+            "options_list": [{"texto": "Menú principal", "action_id": "menu_principal"}],
+            "message_type": "interactive_buttons",
+            "fuente": "responder_chatboc_url_option"
+        })
+    # --- FIN FIX ---
+
     location_link_info = None
     if (
         not received_payload.get("es_ubicacion")
