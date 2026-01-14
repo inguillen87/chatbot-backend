@@ -204,6 +204,36 @@ def _is_placeholder_description(value: Any) -> bool:
     return False
 
 
+def _location_action_options() -> list[dict[str, str]]:
+    return [
+        {"texto": "📝 Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
+        {"texto": "💡 Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
+        {"texto": "🅿️ Estacionamiento", "action_id": "buscar_estacionamiento_con_ubicacion"},
+        {"texto": "📍 Lugares cercanos", "action_id": "buscar_lugares_cerca"},
+        {"texto": "Cancelar", "action_id": "cancelar"},
+    ]
+
+
+def _build_proactive_location_response(
+    location_payload: dict[str, Any],
+    contexto_municipio_actual: dict[str, Any],
+    chat_db_context,
+) -> dict[str, Any]:
+    address = location_payload.get("address") or location_payload.get("label") or "la ubicación que compartiste"
+    opciones_proactivas = _location_action_options()
+    contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
+    contexto_municipio_actual['ubicacion_contextual'] = location_payload
+    contexto_municipio_actual['menu_opciones'] = opciones_proactivas
+    if chat_db_context:
+        flag_modified(chat_db_context, "context_data")
+    return {
+        "message_body": f"Recibí tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
+        "options_list": opciones_proactivas,
+        "message_type": "interactive_buttons",
+        "fuente": "proactive_location_handler",
+    }
+
+
 PLACEHOLDER_CONTACT_RESPONSES = {
     "ya te la envie",
     "ya te la mande",
@@ -8095,6 +8125,16 @@ def responder_municipio(
 
             logger_actual.info(f"Handling input in ESPERANDO_SELECCION_MENU_RECLAMOS state. Input: '{pregunta_str_reclamo}', Action: '{action}'")
 
+            if received_payload.get("es_ubicacion") and not pregunta_str_reclamo.strip():
+                location_payload = received_payload.get("ubicacion_usuario") or {}
+                return _finalize_response(
+                    _build_proactive_location_response(
+                        location_payload,
+                        contexto_municipio_actual,
+                        chat_db_context,
+                    )
+                )
+
             reclamo_categories = {
                 "reclamo_luminaria": "Luminaria", "reclamo_arbolado": "Arbolado",
                 "reclamo_limpieza_riego": "Limpieza y riego", "reclamo_arreglo_calle": "Arreglo de calle",
@@ -8152,12 +8192,7 @@ def responder_municipio(
                     pregunta_menu = pregunta_original
                 elif isinstance(pregunta_original, dict):
                     pregunta_menu = pregunta_original.get("pregunta", "")
-                opciones = [
-                    {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
-                    {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
-                    {"texto": "Cancelar", "action_id": "cancelar"},
-                ]
-                action = find_menu_action_by_input(pregunta_menu, opciones)
+                action = find_menu_action_by_input(pregunta_menu, _location_action_options())
 
             if action == "iniciar_reclamo_con_ubicacion":
                 handler = ReclamoFlowHandler(context, chat_db_context)
@@ -8176,6 +8211,24 @@ def responder_municipio(
                 )
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return _finalize_response({"message_body": f"Excelente. Por favor, escribí tu sugerencia relacionada con la ubicación: *{address}*.", "fuente": "handler_enviar_sugerencia_con_ubicacion"})
+            elif action == "buscar_estacionamiento_con_ubicacion":
+                contexto_municipio_actual['ultima_consulta_poi'] = 'estacionamiento'
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(
+                    PointsOfInterestHandler(context={}).handle(
+                        {"pregunta": "estacionamiento", "location": ubicacion_contextual or {}}
+                    )
+                )
+            elif action == "buscar_lugares_cerca":
+                contexto_municipio_actual['ultima_consulta_poi'] = 'lugares cercanos'
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(
+                    PointsOfInterestHandler(context={}).handle(
+                        {"pregunta": "lugares cercanos", "location": ubicacion_contextual or {}}
+                    )
+                )
             else:
                 contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
                 if chat_db_context:
@@ -8183,12 +8236,8 @@ def responder_municipio(
                 return _finalize_response(
                     {
                         "message_body": f"No entendí la opción. ¿Qué te gustaría hacer en *{address}*?",
-                        "options_list": [
-                            {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
-                            {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
-                            {"texto": "Cancelar", "action_id": "cancelar"},
-                            {"texto": "Menú", "action_id": "menu_principal"},
-                        ],
+                        "options_list": _location_action_options()
+                        + [{"texto": "Menú", "action_id": "menu_principal"}],
                         "fuente": "proactive_location_handler",
                     }
                 )
@@ -8533,26 +8582,13 @@ def responder_municipio(
 
             address = received_payload.get("ubicacion_usuario", {}).get("address", "la ubicación que compartiste")
 
-            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
-            opciones_proactivas = [
-                {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
-                {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
-                {"texto": "Cancelar", "action_id": "cancelar"},
-            ]
-            contexto_municipio_actual['ubicacion_contextual'] = _normalize_location_payload(
-                received_payload.get("ubicacion_usuario"),
-                fallback_address=address,
+            return _finalize_response(
+                _build_proactive_location_response(
+                    received_payload.get("ubicacion_usuario", {}),
+                    contexto_municipio_actual,
+                    chat_db_context,
+                )
             )
-            contexto_municipio_actual['menu_opciones'] = opciones_proactivas
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-
-            return _finalize_response({
-                "message_body": f"Recibí tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
-                "options_list": opciones_proactivas,
-                "message_type": "interactive_buttons",
-                "fuente": "proactive_location_handler",
-            })
     # --- FIN: Manejo Proactivo de Ubicación ---
 
 
@@ -8989,12 +9025,7 @@ def responder_municipio(
                     pregunta_menu = pregunta_original
                 elif isinstance(pregunta_original, dict):
                     pregunta_menu = pregunta_original.get("pregunta", "")
-                opciones = [
-                    {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
-                    {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
-                    {"texto": "Cancelar", "action_id": "cancelar"},
-                ]
-                action = find_menu_action_by_input(pregunta_menu, opciones)
+                action = find_menu_action_by_input(pregunta_menu, _location_action_options())
 
             if action == "iniciar_reclamo_con_ubicacion":
                 handler = ReclamoFlowHandler(context, chat_db_context)
@@ -9013,6 +9044,24 @@ def responder_municipio(
                 )
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return _finalize_response({"message_body": f"Excelente. Por favor, escribí tu sugerencia relacionada con la ubicación: *{address}*.", "fuente": "handler_enviar_sugerencia_con_ubicacion"})
+            elif action == "buscar_estacionamiento_con_ubicacion":
+                contexto_municipio_actual['ultima_consulta_poi'] = 'estacionamiento'
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(
+                    PointsOfInterestHandler(context={}).handle(
+                        {"pregunta": "estacionamiento", "location": ubicacion_contextual or {}}
+                    )
+                )
+            elif action == "buscar_lugares_cerca":
+                contexto_municipio_actual['ultima_consulta_poi'] = 'lugares cercanos'
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(
+                    PointsOfInterestHandler(context={}).handle(
+                        {"pregunta": "lugares cercanos", "location": ubicacion_contextual or {}}
+                    )
+                )
             else:
                 # If the user response doesn't match any option, keep the flow active
                 # and re-send the proactive menu instead of resetting the conversation.
@@ -9022,12 +9071,8 @@ def responder_municipio(
                 return _finalize_response(
                     {
                         "message_body": f"No entendí la opción. ¿Qué te gustaría hacer en *{address}*?",
-                        "options_list": [
-                            {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
-                            {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
-                            {"texto": "Cancelar", "action_id": "cancelar"},
-                            {"texto": "Menú", "action_id": "menu_principal"},
-                        ],
+                        "options_list": _location_action_options()
+                        + [{"texto": "Menú", "action_id": "menu_principal"}],
                         "fuente": "proactive_location_handler",
                     }
                 )
@@ -9894,12 +9939,7 @@ def responder_municipio(
                 pregunta_menu = pregunta_original
             elif isinstance(pregunta_original, dict):
                 pregunta_menu = pregunta_original.get("pregunta", "")
-            opciones = [
-                {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
-                {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
-                {"texto": "Cancelar", "action_id": "cancelar"},
-            ]
-            action = find_menu_action_by_input(pregunta_menu, opciones)
+            action = find_menu_action_by_input(pregunta_menu, _location_action_options())
 
         if action == "iniciar_reclamo_con_ubicacion":
             handler = ReclamoFlowHandler(context, chat_db_context)
@@ -9927,12 +9967,37 @@ def responder_municipio(
                 "message_body": f"Excelente. Por favor, escribí tu sugerencia relacionada con la ubicación: *{address}*.",
                 "fuente": "handler_enviar_sugerencia_con_ubicacion"
             })
-
-        else:  # Cancelar o no se entiende
-            contexto_municipio_actual['estado_conversacion'] = None
+        elif action == "buscar_estacionamiento_con_ubicacion":
+            contexto_municipio_actual['ultima_consulta_poi'] = 'estacionamiento'
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
-            return GreetingHandler(context).handle({})
+            return _finalize_response(
+                PointsOfInterestHandler(context={}).handle(
+                    {"pregunta": "estacionamiento", "location": ubicacion_contextual or {}}
+                )
+            )
+        elif action == "buscar_lugares_cerca":
+            contexto_municipio_actual['ultima_consulta_poi'] = 'lugares cercanos'
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(
+                PointsOfInterestHandler(context={}).handle(
+                    {"pregunta": "lugares cercanos", "location": ubicacion_contextual or {}}
+                )
+            )
+
+        else:  # Cancelar o no se entiende
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(
+                {
+                    "message_body": f"No entendí la opción. ¿Qué te gustaría hacer en *{address}*?",
+                    "options_list": _location_action_options()
+                    + [{"texto": "Menú", "action_id": "menu_principal"}],
+                    "fuente": "proactive_location_handler",
+                }
+            )
 
 
     elif estado_conversacion == ConversationState.ESPERANDO_CORRECCION_DATOS_RECLAMO.name:
