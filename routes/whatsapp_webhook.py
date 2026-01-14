@@ -594,6 +594,22 @@ def _ensure_welcome_audio_payload(payload: dict) -> None:
             payload["audio_url"] = audio_url
 
 
+def _reset_municipio_context_for_menu(session_context: ChatSessionContext) -> None:
+    if not session_context or not isinstance(session_context.context_data, dict):
+        return
+    municipio_ctx = session_context.context_data.get(CONTEXTO_MUNICIPIO)
+    if not isinstance(municipio_ctx, dict):
+        municipio_ctx = {}
+        session_context.context_data[CONTEXTO_MUNICIPIO] = municipio_ctx
+
+    municipio_ctx["estado_conversacion"] = "ESPERANDO_SELECCION_MENU_PRINCIPAL"
+    municipio_ctx.pop("ubicacion_contextual", None)
+    municipio_ctx.pop("ultima_consulta_poi", None)
+    municipio_ctx.pop("consulta_pendiente_ubicacion", None)
+    municipio_ctx.pop("menu_opciones", None)
+    safe_flag_modified(session_context, "context_data")
+
+
 def _send_delayed_payload(client, to_number: str, from_number: str, payload: dict, delay: int, app):
     """Send a payload via WhatsApp after a delay using a background thread."""
 
@@ -1279,10 +1295,7 @@ def whatsapp_webhook():
 
                     _ensure_welcome_audio_payload(welcome_response_payload)
 
-                    options_list = welcome_response_payload.get("options_list")
-                    if isinstance(options_list, list):
-                        session_context_db_entry.context_data["last_options_sent"] = options_list
-                        safe_flag_modified(session_context_db_entry, "context_data")
+                _reset_municipio_context_for_menu(session_context_db_entry)
 
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
                 _send_delayed_payload(
@@ -1376,6 +1389,8 @@ def whatsapp_webhook():
                         welcome_response_payload.setdefault("audio_url", resolved_audio_url)
 
                     _ensure_welcome_audio_payload(welcome_response_payload)
+
+                _reset_municipio_context_for_menu(session_context_db_entry)
 
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
                 _send_delayed_payload(
