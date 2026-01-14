@@ -7921,7 +7921,13 @@ def responder_municipio(
             or bool(contexto_municipio_actual.get("reclamo_flow_v2"))
         )
 
-    if cached_response and not flow_activo:
+    # --- FIX: Ensure URL logic bypasses cache ---
+    # We check for selected_option_data BEFORE the cache check.
+    # If the user selected a URL option, we must respond proactively, ignoring cache.
+    selected_option_data_preload = received_payload.get("selected_option_data")
+    is_url_option_preload = bool(selected_option_data_preload and selected_option_data_preload.get("url"))
+
+    if cached_response and not flow_activo and not is_url_option_preload:
         logger_actual.info("responder_municipio: returning cached response")
         return cached_response
 
@@ -8657,15 +8663,26 @@ def responder_municipio(
     # --- INICIO FIX: Manejo de opciones con URL (proactivo) ---
     selected_option_data = received_payload.get("selected_option_data")
     if selected_option_data and selected_option_data.get("url"):
-        url_val = selected_option_data.get("url")
-        text_val = selected_option_data.get("texto", "enlace")
+        # Ensure we don't interrupt a waiting flow unless it's a menu selection
+        # But usually 'selected_option_data' implies a direct menu choice.
+        municipio_ctx = chat_db_context_live_data.get(CONTEXTO_MUNICIPIO, {})
+        is_waiting = _esperando_info_libre(municipio_ctx)
 
-        return _finalize_response({
-            "message_body": f"🔗 Accedé a *{text_val}* ingresando aquí:\n{url_val}\n\n¿En qué más te puedo ayudar?",
-            "options_list": [{"texto": "Menú principal", "action_id": "menu_principal"}],
-            "message_type": "interactive_buttons",
-            "fuente": "responder_chatboc_url_option"
-        })
+        if not is_waiting:
+            url_val = selected_option_data.get("url")
+            text_val = selected_option_data.get("texto", "enlace")
+            logger_actual.info(f"Proactive URL response triggered for option '{text_val}' with URL: {url_val}")
+
+            return _finalize_response({
+                "message_body": f"🔗 Accedé a *{text_val}* ingresando aquí:\n{url_val}\n\n¿En qué más te puedo ayudar?",
+                "options_list": [
+                    {"texto": "Menú principal", "action_id": "menu_principal"},
+                    {"texto": "Volver", "action_id": "cancelar"},
+                    {"texto": "Cancelar", "action_id": "cancelar"} # WhatsApp buttons limit to 3, 'Volver' and 'Cancelar' might be redundant but safe. Let's stick to 3 distinct useful ones if possible or just standard ones.
+                ],
+                "message_type": "interactive_buttons",
+                "fuente": "responder_chatboc_url_option"
+            })
     # --- FIN FIX ---
 
     location_link_info = None
