@@ -4,6 +4,7 @@ import unicodedata
 import pandas as pd
 from typing import Dict, Any, Tuple, Optional, List
 from config.feature_flags import FEATURE_ENCUESTAS
+from services.response_formatter import render_audio_text
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
 
 # --- PLACEHOLDER DEFINITIONS ---
