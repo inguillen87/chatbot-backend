@@ -29,6 +29,7 @@ from services.config_loader import cargar_configuracion_pyme
 from services.response_formatter import render_audio_text
 from services.tts_orchestrator import generar_audio
 from utils.response_utils import normalize_response_payload
+from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -969,6 +970,8 @@ def whatsapp_webhook():
 
     # --- Boti-style Welcome Message Branch ---
     from services.municipio_responder import normalizar_texto
+    from services.config_loader import cargar_configuracion_municipio
+    from services.common_utils import _get_main_menu_payload
     from datetime import datetime
 
     button_payload = post_vars.get("ButtonPayload")
@@ -996,7 +999,7 @@ def whatsapp_webhook():
 
     safe_flag_modified(session_context_db_entry, "context_data")
 
-    should_trigger_welcome = is_override or (is_greeting and not is_waiting_for_info)
+    should_trigger_welcome = is_greeting and not is_waiting_for_info
 
     request_root = request.url_root or ""
     request_root_stripped = request_root.rstrip("/")
@@ -1020,6 +1023,9 @@ def whatsapp_webhook():
                 pyme_welcome_overrides.get("audio_url"), effective_base_url
             )
 
+    tenant_config: Dict[str, Any] = {}
+    assistant_name = None
+
     if should_trigger_welcome and not is_rate_limited:
         current_app.logger.info(f"[WELCOME] Triggering Boti-style welcome for user {from_number_cleaned}. Reason: '{normalized_input}'.")
 
@@ -1038,14 +1044,32 @@ def whatsapp_webhook():
                 if user_name.lower() in {"vecino", "vecina", "vecino/a"}:
                     user_name = ""
 
+                municipio_config = {}
+                municipio_name = None
+                if client_user and getattr(client_user, "tipo_chat", None) == "municipio":
+                    municipio_id = getattr(client_user, "municipio_id", None)
+                    if municipio_id is not None:
+                        municipio_config = cargar_configuracion_municipio(str(municipio_id), "config.json") or {}
+                    if isinstance(municipio_config, dict):
+                        municipio_name = municipio_config.get("nombre") or None
+
                 should_send_template = bool(template_sid) and not template_state.get("disabled", False)
                 should_send_sticker = bool(resolved_sticker_url) and not sticker_state.get("disabled", False)
                 sticker_metadata_allowed = True
                 template_variables_payload: Dict[str, str] = {"1": user_name or ""}
 
+                if tenant_profile and isinstance(getattr(tenant_profile, "configuracion", None), dict):
+                    tenant_config = tenant_profile.configuracion or {}
+                    assistant_name = tenant_config.get("assistant_name") or tenant_config.get("bot_name")
+
+                if assistant_name and getattr(client_user, "tipo_chat", "") == "municipio":
+                    should_send_template = False
+
                 if should_send_template:
                     should_send_sticker = False
-                    sticker_metadata_allowed = False
+                    sticker_metadata_allowed = True
+                else:
+                    should_send_sticker = False
 
                 if client_user and getattr(client_user, "tipo_chat", None) == "pyme":
                     if "sticker_cooldown_seconds" in pyme_welcome_overrides:
@@ -1100,6 +1124,9 @@ def whatsapp_webhook():
                             last_sticker_ts,
                         )
 
+                template_sent = False
+                sticker_sent = False
+
                 if should_send_template and template_sid:
                     params = {
                         "from_": to_number_raw,
@@ -1114,6 +1141,7 @@ def whatsapp_webhook():
                         twilio_client.messages.create(**params)
                         template_state["last_sent_ts"] = now
                         safe_flag_modified(session_context_db_entry, "context_data")
+                        template_sent = True
                         current_app.logger.info(
                             "[WELCOME] Template %s sent to %s with variables: %s",
                             template_sid,
@@ -1136,6 +1164,7 @@ def whatsapp_webhook():
                         )
                         sticker_state["last_sent_ts"] = now
                         safe_flag_modified(session_context_db_entry, "context_data")
+                        sticker_sent = True
                         current_app.logger.info(
                             f"[WELCOME] Sticker sent to {from_number_cleaned} using {resolved_sticker_url}."
                         )
@@ -1150,28 +1179,43 @@ def whatsapp_webhook():
 
                 greeting_sent = False
 
-                # Determine tenant name for greeting
-                tenant_name = "Tu Asistente"
-                if tenant_profile and getattr(tenant_profile, "nombre", None):
-                    tenant_name = tenant_profile.nombre
+                tenant_name = "Tu Municipio"
+                assistant_name = assistant_name or None
+                tenant_config = tenant_config or {}
+                if tenant_profile and isinstance(getattr(tenant_profile, "configuracion", None), dict):
+                    tenant_config = tenant_profile.configuracion or tenant_config
+                    assistant_name = assistant_name or tenant_config.get("assistant_name") or tenant_config.get("bot_name")
+                    tenant_name = (
+                        tenant_config.get("nombre_municipio")
+                        or tenant_config.get("nombre")
+                        or tenant_profile.nombre
+                        or tenant_name
+                    )
                 elif client_user:
-                    tenant_name = getattr(client_user, "nombre_empresa", None) or getattr(client_user, "name", "Tu Asistente")
+                    tenant_name = (
+                        getattr(client_user, "nombre_empresa", None)
+                        or getattr(client_user, "name", None)
+                        or tenant_name
+                    )
 
-                greeting = (
-                    f"*¡Hola, {user_name}!* Acá *{tenant_name}* \U0001F44B"
-                    if user_name
-                    else f"*¡Hola!* Soy *{tenant_name}* \U0001F44B ¿Cómo te llamás?"
-                )
-                try:
-                    twilio_client.messages.create(
-                        from_=to_number_raw, to=from_number_raw, body=greeting
+                greeting_name = f"{assistant_name} de {tenant_name}" if assistant_name else tenant_name
+
+                if not template_sent and user_name is not None:
+                    greeting = (
+                        f"*¡Hola, {user_name}!* Acá *{greeting_name}* \U0001F44B"
+                        if user_name
+                        else f"*¡Hola!* Soy *{greeting_name}* \U0001F44B ¿Cómo te llamás?"
                     )
-                    greeting_sent = True
-                except Exception as e:
-                    greeting_sent = False
-                    current_app.logger.error(
-                        f"[WELCOME] Failed to send welcome greeting to {from_number_cleaned}: {e}"
-                    )
+                    try:
+                        twilio_client.messages.create(
+                            from_=to_number_raw, to=from_number_raw, body=greeting
+                        )
+                        greeting_sent = True
+                    except Exception as e:
+                        greeting_sent = False
+                        current_app.logger.error(
+                            f"[WELCOME] Failed to send welcome greeting to {from_number_cleaned}: {e}"
+                        )
 
                 if not user_name and greeting_sent:
                     session_context_db_entry.context_data["awaiting_user_name"] = True
@@ -1182,11 +1226,29 @@ def whatsapp_webhook():
                 current_app.logger.error(f"[WELCOME] Failed to send welcome template or sticker: {e}")
 
             try:
-                welcome_response_payload = responder_chatboc(
-                    pregunta="hola", owner_user=client_user, current_user=end_user,
-                    rubro_obj=client_user.rubro, chat_db_context=session_context_db_entry,
-                    tipo_chat=client_user.tipo_chat, anon_id=from_number_cleaned,
-                    chat_session_uuid=chat_session_id_internal, channel="whatsapp"
+                municipio_config = {}
+                if client_user and getattr(client_user, "tipo_chat", "") == "municipio":
+                    municipio_id = getattr(client_user, "municipio_id", None) or getattr(client_user, "id", None)
+                    if municipio_id:
+                        loaded_config = cargar_configuracion_municipio(str(municipio_id), "config.json")
+                        if isinstance(loaded_config, dict):
+                            municipio_config.update(loaded_config)
+                if tenant_config:
+                    municipio_config.update(tenant_config)
+
+                menu_context = {
+                    "user_obj": client_user,
+                    "viewer_user_obj": end_user,
+                    "chat_db_context_data": session_context_db_entry.context_data,
+                    "channel": "whatsapp",
+                    "municipio_config_actual": municipio_config,
+                }
+                reduced_menu = template_sent or greeting_sent or sticker_sent
+                welcome_message_override = None
+                welcome_response_payload = _get_main_menu_payload(
+                    menu_context,
+                    welcome_message_override=welcome_message_override,
+                    reduced=reduced_menu,
                 )
                 if isinstance(welcome_response_payload, dict):
                     if effective_base_url:
@@ -1339,6 +1401,11 @@ def whatsapp_webhook():
                     delay=delay,
                     app=current_app._get_current_object(),
                 )
+                if isinstance(welcome_response_payload, dict):
+                    options_list = welcome_response_payload.get("options_list")
+                    if isinstance(options_list, list):
+                        session_context_db_entry.context_data["last_options_sent"] = options_list
+                        safe_flag_modified(session_context_db_entry, "context_data")
                 # Persist any context updates from responder_chatboc
                 safe_flag_modified(session_context_db_entry, "context_data")
                 db.session.add(session_context_db_entry)
@@ -1524,18 +1591,75 @@ def whatsapp_webhook():
     esperando_info = _esperando_info_libre(municipio_ctx)
 
     # Solo traducir números a acciones cuando no estamos esperando información libre.
+    selected_option = None
+    selected_action_id = None
     if message_body.isdigit() and last_options and not esperando_info:
         idx = int(message_body) - 1
         if 0 <= idx < len(last_options):
-            selected = last_options[idx]
-            message_body = (
-                selected.get("id")
-                or selected.get("action_id")
-                or selected.get("category_name")
-                or selected.get("id_accion")
-                or selected.get("texto")
-                or message_body
+            selected_option = last_options[idx]
+            selected_action_id = (
+                selected_option.get("action_id")
+                or selected_option.get("id")
+                or selected_option.get("id_accion")
+                or selected_option.get("category_name")
+                or selected_option.get("texto")
             )
+    elif last_options and not esperando_info:
+        normalized_body = (message_body or "").strip().lower()
+        for option in last_options:
+            option_text = (option.get("texto") or "").strip().lower()
+            option_action = (option.get("action_id") or option.get("id") or "").strip().lower()
+            if normalized_body and normalized_body in {option_text, option_action}:
+                selected_option = option
+                selected_action_id = (
+                    option.get("action_id")
+                    or option.get("id")
+                    or option.get("id_accion")
+                    or option.get("category_name")
+                    or option.get("texto")
+                )
+                break
+
+    if selected_option and selected_option.get("url") and not esperando_info:
+        url_value = selected_option.get("url")
+        bot_response_dict = {
+            "message_body": f"🔗 Acá podés ver tu ticket: {url_value}",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "whatsapp_url_shortcut",
+        }
+        normalize_response_payload(bot_response_dict)
+        respuesta_del_bot_text = bot_response_dict["message_body"]
+        formatted_whatsapp_payload = {}
+        try:
+            from services.response_formatter import build_interactive_response
+
+            formatted_whatsapp_payload = build_interactive_response(
+                options=bot_response_dict.get("options_list", []),
+                body_text=bot_response_dict.get("message_body", ""),
+                message_type=bot_response_dict.get("message_type", "text"),
+                channel="whatsapp",
+                include_audio=bool(bot_response_dict.get("audio_url")),
+                audio_url=bot_response_dict.get("audio_url"),
+            )
+        except Exception:
+            formatted_whatsapp_payload = {}
+
+        if formatted_whatsapp_payload:
+            try:
+                enviar_mensaje_whatsapp_con_fallback(
+                    numero_destino=from_number_raw,
+                    cuerpo=formatted_whatsapp_payload.get("body_text", bot_response_dict.get("message_body", "")),
+                    botones=formatted_whatsapp_payload.get("buttons"),
+                    lista=formatted_whatsapp_payload.get("list"),
+                )
+            except Exception as e:
+                current_app.logger.error(f"Error sending WhatsApp URL shortcut message: {e}", exc_info=True)
+
+        safe_flag_modified(session_context_db_entry, "context_data")
+        db.session.add(session_context_db_entry)
+        db.session.commit()
+        return "OK", 200
 
     # --- Call Real Chatbot Logic: responder_chatboc ---
     # Initialize with a default error response
@@ -1579,6 +1703,8 @@ def whatsapp_webhook():
         if interpretacion_media_data and not interpretacion_media_data.get("error"):
             # This will now only contain data from actual images/files, not locations.
             kwargs_for_bot["datos_interpretados_archivo"] = interpretacion_media_data
+        if selected_action_id:
+            kwargs_for_bot["action"] = selected_action_id
 
         profile_name = post_vars.get("ProfileName")
         if profile_name:
@@ -1867,6 +1993,8 @@ def whatsapp_webhook():
                 db.session.commit()
                 main_message = twilio_client.messages.create(**message_params)
                 print(f"Mensaje principal enviado a {from_number_raw}, SID: {main_message.sid}")
+
+            _ensure_welcome_audio_payload(bot_response_dict)
 
             # Second, if there is an audio URL, send it as a separate media message.
             audio_url = bot_response_dict.get('audio_url')

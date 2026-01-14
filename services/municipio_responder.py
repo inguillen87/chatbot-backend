@@ -23,9 +23,11 @@ from models import (
     SitioWebInfo,
     Conversacion,
     MunicipioPost,
+    TenantProfile,
 )
 from services.ticket_service import servicio_tickets
 from utils.db_utils import safe_flag_modified
+from utils.response_utils import normalize_response_payload
 # Compatibilidad hacia atrás para pruebas que parchean `flag_modified`
 flag_modified = safe_flag_modified
 
@@ -194,7 +196,42 @@ def formatear_opciones(opciones: Optional[Sequence[Dict[str, Any]]]) -> List[Dic
 def _is_placeholder_description(value: Any) -> bool:
     if not value or not isinstance(value, str):
         return False
-    return normalizar_texto(value) in PLACEHOLDER_DESCRIPTIONS_NORMALIZED
+    normalized_value = normalizar_texto(value)
+    if normalized_value in PLACEHOLDER_DESCRIPTIONS_NORMALIZED:
+        return True
+    if normalized_value.isdigit():
+        return True
+    return False
+
+
+def _location_action_options() -> list[dict[str, str]]:
+    return [
+        {"texto": "📝 Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
+        {"texto": "💡 Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
+        {"texto": "🅿️ Estacionamiento", "action_id": "buscar_estacionamiento_con_ubicacion"},
+        {"texto": "📍 Lugares cercanos", "action_id": "buscar_lugares_cerca"},
+        {"texto": "Cancelar", "action_id": "cancelar"},
+    ]
+
+
+def _build_proactive_location_response(
+    location_payload: dict[str, Any],
+    contexto_municipio_actual: dict[str, Any],
+    chat_db_context,
+) -> dict[str, Any]:
+    address = location_payload.get("address") or location_payload.get("label") or "la ubicación que compartiste"
+    opciones_proactivas = _location_action_options()
+    contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
+    contexto_municipio_actual['ubicacion_contextual'] = location_payload
+    contexto_municipio_actual['menu_opciones'] = opciones_proactivas
+    if chat_db_context:
+        flag_modified(chat_db_context, "context_data")
+    return {
+        "message_body": f"Recibí tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
+        "options_list": opciones_proactivas,
+        "message_type": "interactive_buttons",
+        "fuente": "proactive_location_handler",
+    }
 
 
 PLACEHOLDER_CONTACT_RESPONSES = {
@@ -425,6 +462,57 @@ def _update_sugerencia_contact_fields(
         datos_guardados[campo] = valor_nuevo
 
 
+def _normalize_location_payload(
+    raw_location: Any,
+    *,
+    fallback_address: str | None = None,
+) -> Optional[Dict[str, Any]]:
+    """Normalize location payloads to address/latitude/longitude fields."""
+
+    if not raw_location:
+        if fallback_address:
+            return {"address": fallback_address}
+        return None
+
+    if isinstance(raw_location, str):
+        return {"address": raw_location}
+
+    if not isinstance(raw_location, dict):
+        if fallback_address:
+            return {"address": fallback_address}
+        return None
+
+    normalized = dict(raw_location)
+    lat = (
+        raw_location.get("latitude")
+        or raw_location.get("lat")
+        or raw_location.get("latitud")
+    )
+    lon = (
+        raw_location.get("longitude")
+        or raw_location.get("lon")
+        or raw_location.get("lng")
+        or raw_location.get("longitud")
+    )
+    if lat is not None:
+        normalized["latitude"] = lat
+    if lon is not None:
+        normalized["longitude"] = lon
+
+    address = (
+        raw_location.get("address")
+        or raw_location.get("label")
+        or raw_location.get("texto")
+        or raw_location.get("descripcion")
+        or raw_location.get("ubicacion")
+        or fallback_address
+    )
+    if address:
+        normalized["address"] = address
+
+    return normalized
+
+
 def _build_sugerencia_datos(
     sugerencia_texto: str,
     ubicacion: Optional[str],
@@ -493,40 +581,25 @@ def _set_sugerencia_location_context(
 ) -> None:
     """Persist full location information for suggestion flows."""
 
-    address = fallback_address or ""
-    if isinstance(raw_location, dict):
-        address = raw_location.get("address") or raw_location.get("label") or address
-    if not address:
-        address = "N/A"
+    normalized_location = _normalize_location_payload(raw_location, fallback_address=fallback_address)
+    if not normalized_location:
+        normalized_location = {"address": fallback_address or "N/A"}
+    else:
+        normalized_location.setdefault("address", fallback_address or "N/A")
 
-    location_payload: Dict[str, Any] = {"address": address}
-    if isinstance(raw_location, dict):
-        if raw_location.get("label"):
-            location_payload["label"] = raw_location.get("label")
-        lat = raw_location.get("latitude") or raw_location.get("lat")
-        lon = raw_location.get("longitude") or raw_location.get("lon")
-        if lat:
-            location_payload["latitude"] = lat
-        if lon:
-            location_payload["longitude"] = lon
-
-    contexto["ubicacion_contextual_sugerencia"] = location_payload
+    contexto["ubicacion_contextual_sugerencia"] = normalized_location
 
 
 def _extract_sugerencia_location(contexto: Dict[str, Any]) -> tuple[str, Optional[Dict[str, Any]]]:
     """Return stored suggestion location and normalized coordinates."""
 
     raw_location = contexto.pop("ubicacion_contextual_sugerencia", None)
-    if isinstance(raw_location, dict):
-        address = (
-            raw_location.get("address")
-            or raw_location.get("label")
-            or raw_location.get("texto")
-            or "N/A"
-        )
-        lat = raw_location.get("latitude") or raw_location.get("lat")
-        lon = raw_location.get("longitude") or raw_location.get("lon")
-        if lat and lon:
+    normalized_location = _normalize_location_payload(raw_location)
+    if isinstance(normalized_location, dict):
+        address = normalized_location.get("address") or "N/A"
+        lat = normalized_location.get("latitude")
+        lon = normalized_location.get("longitude")
+        if lat is not None and lon is not None:
             return address, {"lat": lat, "lng": lon}
         return address, None
     if isinstance(raw_location, str) and raw_location:
@@ -651,6 +724,8 @@ def _build_sugerencia_success_payload(
         buttons = remove_buttons_with_urls_in_message(message_body, buttons)
 
     delayed_payload = handler_response.get("delayed_payload") or _get_main_menu_payload(context)
+    if channel_value == "whatsapp":
+        delayed_payload = None
 
     payload: Dict[str, Any] = {
         "success": True,
@@ -674,6 +749,58 @@ def _build_sugerencia_success_payload(
         payload["delay_seconds"] = handler_response.get("delay_seconds", 20)
 
     return payload
+
+
+def _build_sugerencia_confirmation_payload(
+    datos_sugerencia: Dict[str, Any],
+) -> Dict[str, Any]:
+    direccion = _format_sugerencia_address(datos_sugerencia)
+    telefono = datos_sugerencia.get("telefono") or "No informado"
+    descripcion = datos_sugerencia.get("descripcion") or ""
+
+    mensaje_confirmacion = (
+        "Por favor, confirmá si los datos para tu sugerencia son correctos:\n"
+        f"- **Nombre**: {datos_sugerencia.get('nombre')}\n"
+        f"- **DNI**: {datos_sugerencia.get('dni')}\n"
+        f"- **Email**: {datos_sugerencia.get('email')}\n"
+        f"- **Dirección**: {direccion}\n"
+        f"- **Teléfono**: {telefono}\n"
+        f"- **Sugerencia**: {descripcion}"
+    )
+
+    return {
+        "message_body": mensaje_confirmacion,
+        "options_list": [
+            {"texto": "Sí, enviar sugerencia", "action_id": "confirmar_sugerencia_si"},
+            {"texto": "No, corregir", "action_id": "confirmar_sugerencia_no"},
+        ],
+        "message_type": "interactive_buttons",
+        "fuente": "pide_confirmacion_sugerencia",
+    }
+
+
+def _maybe_prompt_sugerencia_confirmation(
+    contexto_municipio_actual: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    datos_sugerencia = contexto_municipio_actual.get("datos_parciales_llm_sugerencia", {})
+    if not isinstance(datos_sugerencia, dict):
+        return None
+
+    _ensure_sugerencia_address(datos_sugerencia)
+    if not datos_sugerencia.get("descripcion"):
+        return None
+
+    missing_fields = _get_missing_sugerencia_contact_fields(datos_sugerencia)
+    if missing_fields:
+        return None
+
+    contexto_municipio_actual["datos_sugerencia"] = datos_sugerencia
+    contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name
+    contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
+    contexto_municipio_actual.pop("expected_fields_llm_sugerencia", None)
+    contexto_municipio_actual.pop("esperando_info_llm", None)
+
+    return _build_sugerencia_confirmation_payload(datos_sugerencia)
 
 class ReclamoState(Enum):
     ESPERANDO_CATEGORIA = auto()
@@ -950,7 +1077,11 @@ class ReclamoFlowHandler:
             return self._return_to_main_menu()
 
         reclamo_options = _get_reclamos_menu().get("options_list", [])
-        plain_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
+        plain_options = [
+            {"texto": opt.get("category_name")}
+            for opt in reclamo_options
+            if opt.get("category_name")
+        ]
 
         category = find_reclamo_category_by_input(user_input, plain_options)
         details = {}
@@ -1973,12 +2104,7 @@ def _normalize_pedir_info_fields(pedir_info: Any) -> list[str]:
         for part in pedir_info.split(","):
             _append_field(part)
 
-    normalized: list[str] = []
-    for field in fields:
-        cleaned = field.strip()
-        if cleaned:
-            normalized.append(cleaned)
-    return normalized
+    return fields
 
 
 def _normalize_pedir_info_value(pedir_info: Any) -> Optional[str]:
@@ -1986,15 +2112,6 @@ def _normalize_pedir_info_value(pedir_info: Any) -> Optional[str]:
 
     fields = _normalize_pedir_info_fields(pedir_info)
     return fields[0] if fields else None
-
-
-def _normalize_single_expected_field(value: Optional[str]) -> Optional[str]:
-    """Return a single normalized field name from a raw pending value."""
-
-    if not value or not isinstance(value, str):
-        return None
-    normalized = _normalize_pedir_info_value(value)
-    return normalized or value.strip()
 
 
 def _prefill_contacto_from_context(
@@ -2009,12 +2126,16 @@ def _prefill_contacto_from_context(
     remaining_fields: list[str] = []
     for field in expected_fields:
         normalized = field.strip().lower()
-        if normalized in {"nombre", "dni", "email", "telefono", "direccion", "ubicacion"}:
-            contacto_key = normalized
-            if normalized == "ubicacion":
-                contacto_key = "direccion"
-            if contacto_usuario.get(contacto_key):
-                datos_parciales.setdefault(normalized, contacto_usuario.get(contacto_key))
+        if normalized == "datos_contacto_sugerencia":
+            required_fields = {"nombre", "dni", "email", "direccion"}
+            if required_fields.issubset(set(contacto_usuario.keys())):
+                for key in required_fields.union({"telefono"}):
+                    if contacto_usuario.get(key):
+                        datos_parciales.setdefault(key, contacto_usuario.get(key))
+                continue
+        if normalized in {"nombre", "dni", "email", "telefono", "direccion"}:
+            if contacto_usuario.get(normalized):
+                datos_parciales.setdefault(normalized, contacto_usuario.get(normalized))
                 continue
         remaining_fields.append(field)
     return remaining_fields
@@ -2091,23 +2212,6 @@ def _extract_expected_fields_from_text(
             extracted["distrito"] = location_hints["distrito"]
         elif location_hints.get("distrito_dudoso"):
             extracted["distrito"] = location_hints["distrito_dudoso"]
-        elif municipio_config:
-            known_districts = (
-                municipio_config.get("distritos")
-                or municipio_config.get("localidades")
-                or municipio_config.get("barrios")
-            )
-            if isinstance(known_districts, (list, tuple)) and text:
-                normalized_text = normalizar_texto(text)
-                for distrito in known_districts:
-                    if not distrito:
-                        continue
-                    distrito_str = str(distrito).strip()
-                    if not distrito_str:
-                        continue
-                    if normalizar_texto(distrito_str) in normalized_text:
-                        extracted["distrito"] = distrito_str
-                        break
 
     if "ubicacion" in extracted and "distrito" in normalized_fields and "distrito" not in extracted:
         ubicacion, distrito = split_ubicacion_y_distrito(extracted["ubicacion"])
@@ -2294,11 +2398,24 @@ class GreetingHandler(BaseMunicipioHandler):
 
 
 
-def _message_with_menu(message, context):
-    menu_payload = GreetingHandler(context).handle({})
+def _message_with_menu(message, context, include_greeting: bool = True):
+    if include_greeting:
+        menu_payload = GreetingHandler(context).handle({})
+        if message:
+            menu_payload["message_body"] = f"{message}\n\n{menu_payload['message_body']}"
+        return menu_payload
+
+    menu_payload = _get_main_menu_payload(context)
+    if menu_payload.get("fuente") == "pedir_nombre_inicial":
+        return {
+            "message_body": message or menu_payload.get("message_body", ""),
+            "message_type": "text",
+        }
     if message:
-        menu_payload["message_body"] = f"{message}\n\n{menu_payload['message_body']}"
+        menu_payload["message_body"] = message
     return menu_payload
+
+
 def handle_contactos_utiles_inicio(context, chat_db_context):
     """Handles the initial request for 'Contactos Útiles'."""
     municipio_id = context.get("municipio_id", MUNICIPIO_ID)
@@ -2727,15 +2844,32 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
         user_input = context.get("user_input_raw", "")
         reclamo_opts = _get_reclamos_menu().get("options_list", [])
+        menu_opciones = (
+            context.get("menu_opciones")
+            or contexto_municipio_actual.get("menu_opciones", [])
+        )
+        came_from_list_menu = any(
+            option.get("action_id") == "iniciar_reclamo"
+            for option in menu_opciones
+            if isinstance(option, dict)
+        )
+        skip_autodetect = bool(context.pop("skip_reclamo_autodetect", False))
 
         # Pass location context
         municipio_config = context.get("municipio_config_actual", {})
         default_localidad = municipio_config.get("ciudad")
         default_provincia = municipio_config.get("provincia")
 
-        details = extract_reclamo_details_from_text(user_input, reclamo_opts, default_localidad=default_localidad, default_provincia=default_provincia)
-
-        detected_category = details.pop("categoria", None)
+        details = {}
+        detected_category = None
+        if not (skip_autodetect or (came_from_list_menu and user_input.strip().isdigit())):
+            details = extract_reclamo_details_from_text(
+                user_input,
+                reclamo_opts,
+                default_localidad=default_localidad,
+                default_provincia=default_provincia,
+            )
+            detected_category = details.pop("categoria", None)
         handler = ReclamoFlowHandler(context, chat_db_context)
         if detected_category:
             logger.info(
@@ -3729,6 +3863,12 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 {},
             )
             if pending_flow == "sugerencia":
+                confirmation_payload = _maybe_prompt_sugerencia_confirmation(
+                    contexto_municipio_actual,
+                )
+                if confirmation_payload:
+                    return confirmation_payload, contexto_municipio_actual
+            if pending_flow == "sugerencia":
                 handler = HacerSugerenciaActionHandler(context)
             else:
                 handler = CrearReclamoActionHandler(context)
@@ -3877,22 +4017,9 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                 normalized_pending_fields = _normalize_pedir_info_fields(pedir_info_llm)
                 if normalized_pending_fields:
-                    datos_actuales = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
-                    normalized_pending_fields = _prefill_contacto_from_context(
-                        contexto_municipio_actual,
-                        datos_actuales,
-                        normalized_pending_fields,
-                    )
-                    if normalized_pending_fields:
-                        contexto_municipio_actual["expected_fields_llm_reclamo"] = normalized_pending_fields
-                        contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending_fields[0]
-                        contexto_municipio_actual["esperando_info_llm"] = normalized_pending_fields[0]
-                    else:
-                        contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
-                        contexto_municipio_actual.pop("esperando_info_llm", None)
-                        contexto_municipio_actual.pop("expected_fields_llm_reclamo", None)
-                        handler = CrearReclamoActionHandler(context)
-                        return handler.execute(datos_actuales), contexto_municipio_actual
+                    contexto_municipio_actual["expected_fields_llm_reclamo"] = normalized_pending_fields
+                    contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending_fields[0]
+                    contexto_municipio_actual["esperando_info_llm"] = normalized_pending_fields[0]
             # Update the context that will be passed to the next turn
             if chat_db_context and hasattr(chat_db_context, 'context_data'):
                 chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
@@ -3918,6 +4045,11 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
             if not pedir_info_llm:
                 logger_actual.info("[HANDLE_LLM] LLM provided all data. Executing HacerSugerenciaActionHandler for validation and creation.")
+                confirmation_payload = _maybe_prompt_sugerencia_confirmation(
+                    contexto_municipio_actual,
+                )
+                if confirmation_payload:
+                    return confirmation_payload, contexto_municipio_actual
                 handler = HacerSugerenciaActionHandler(context)
                 handler_response = handler.execute(datos_actuales_sugerencia)
 
@@ -3937,21 +4069,9 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name
                 normalized_pending_fields = _normalize_pedir_info_fields(pedir_info_llm)
                 if normalized_pending_fields:
-                    normalized_pending_fields = _prefill_contacto_from_context(
-                        contexto_municipio_actual,
-                        datos_actuales_sugerencia,
-                        normalized_pending_fields,
-                    )
-                    if normalized_pending_fields:
-                        contexto_municipio_actual["expected_fields_llm_sugerencia"] = normalized_pending_fields
-                        contexto_municipio_actual["esperando_info_llm_sugerencia"] = normalized_pending_fields[0]
-                        contexto_municipio_actual["esperando_info_llm"] = normalized_pending_fields[0]
-                    else:
-                        contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
-                        contexto_municipio_actual.pop("esperando_info_llm", None)
-                        contexto_municipio_actual.pop("expected_fields_llm_sugerencia", None)
-                        handler = HacerSugerenciaActionHandler(context)
-                        return handler.execute(datos_actuales_sugerencia), contexto_municipio_actual
+                    contexto_municipio_actual["expected_fields_llm_sugerencia"] = normalized_pending_fields
+                    contexto_municipio_actual["esperando_info_llm_sugerencia"] = normalized_pending_fields[0]
+                    contexto_municipio_actual["esperando_info_llm"] = normalized_pending_fields[0]
             if chat_db_context and hasattr(chat_db_context, 'context_data'):
                 chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
                 flag_modified(chat_db_context, "context_data")
@@ -4163,7 +4283,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             # State transition logic based on 'pedir_info'
             if pedir_info_llm:
                 normalized_pending_fields = _normalize_pedir_info_fields(pedir_info_llm)
-                normalized_pending = normalized_pending_fields[0] if normalized_pending_fields else _normalize_pedir_info_value(pedir_info_llm)
+                normalized_pending = normalized_pending_fields[0] if normalized_pending_fields else None
                 pending_lookup_key = normalized_pending or pedir_info_llm
                 if not isinstance(pending_lookup_key, str):
                     pending_lookup_key = str(pending_lookup_key or "").strip()
@@ -4177,39 +4297,15 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 contexto_municipio_actual["esperando_info_llm"] = normalized_pending or pending_lookup_key
                 if _is_claim_pending_field(normalized_pending or pending_lookup_key):
                     if normalized_pending_fields:
-                        datos_actuales = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
-                        normalized_pending_fields = _prefill_contacto_from_context(
-                            contexto_municipio_actual,
-                            datos_actuales,
-                            normalized_pending_fields,
-                        )
-                    if normalized_pending_fields:
                         contexto_municipio_actual["expected_fields_llm_reclamo"] = normalized_pending_fields
-                        contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending_fields[0]
-                        contexto_municipio_actual["esperando_info_llm"] = normalized_pending_fields[0]
-                    else:
-                        contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
-                        contexto_municipio_actual.pop("expected_fields_llm_reclamo", None)
-                        contexto_municipio_actual.pop("esperando_info_llm", None)
+                    contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending or pending_lookup_key
                 else:
                     contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
                     contexto_municipio_actual.pop("expected_fields_llm_reclamo", None)
                 if _is_suggestion_pending_field(normalized_pending or pending_lookup_key):
                     if normalized_pending_fields:
-                        datos_actuales = contexto_municipio_actual.get("datos_parciales_llm_sugerencia", {})
-                        normalized_pending_fields = _prefill_contacto_from_context(
-                            contexto_municipio_actual,
-                            datos_actuales,
-                            normalized_pending_fields,
-                        )
-                    if normalized_pending_fields:
                         contexto_municipio_actual["expected_fields_llm_sugerencia"] = normalized_pending_fields
-                        contexto_municipio_actual["esperando_info_llm_sugerencia"] = normalized_pending_fields[0]
-                        contexto_municipio_actual["esperando_info_llm"] = normalized_pending_fields[0]
-                    else:
-                        contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
-                        contexto_municipio_actual.pop("expected_fields_llm_sugerencia", None)
-                        contexto_municipio_actual.pop("esperando_info_llm", None)
+                    contexto_municipio_actual["esperando_info_llm_sugerencia"] = normalized_pending or pending_lookup_key
                 else:
                     contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
                     contexto_municipio_actual.pop("expected_fields_llm_sugerencia", None)
@@ -4219,6 +4315,11 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     # If we were in a claim flow, it's time to create the ticket
                     return _handle_ticket_creation(contexto_municipio_actual, context, datos_actuales)
                 elif estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name:
+                    confirmation_payload = _maybe_prompt_sugerencia_confirmation(
+                        contexto_municipio_actual,
+                    )
+                    if confirmation_payload:
+                        return confirmation_payload, contexto_municipio_actual
                     handler = HacerSugerenciaActionHandler(context)
                     datos_sugerencia = contexto_municipio_actual.get("datos_parciales_llm_sugerencia", {})
                     return handler.execute(datos_sugerencia), contexto_municipio_actual
@@ -5528,7 +5629,11 @@ def _try_start_reclamo_from_text(
         return None
 
     reclamo_options = _get_reclamos_menu().get("options_list", [])
-    plain_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
+    plain_options = [
+        {"texto": opt.get("category_name")}
+        for opt in reclamo_options
+        if opt.get("category_name")
+    ]
 
     details = extract_reclamo_details_from_text(
         pregunta_str,
@@ -7460,15 +7565,43 @@ def _get_ayuda_menu():
 
 def _get_reclamos_menu():
     """Devuelve la estructura del menú de reclamos estandarizado, con íconos y negritas."""
-    opciones = [
-        {"texto": "*Volver al inicio*", "id_accion": "0", "category_name": "Volver al inicio"},
-        {"texto": "💡 *Luminaria*", "id_accion": "1", "category_name": "Luminaria"},
-        {"texto": "🌳 *Arbolado*", "id_accion": "2", "category_name": "Arbolado"},
-        {"texto": "🗑️ *Limpieza y riego*", "id_accion": "3", "category_name": "Limpieza y riego"},
-        {"texto": "🚧 *Arreglo de calle*", "id_accion": "4", "category_name": "Arreglo de calle"},
-        {"texto": "💧 *Pérdida de agua*", "id_accion": "5", "category_name": "Pérdida de agua"},
-        {"texto": "⚫ *Otros*", "id_accion": "6", "category_name": "Otros"},
-    ]
+    iconos = {
+        "arbol caido": "🌳",
+        "arreglo de calle": "🚧",
+        "castracion de mascota": "🐾",
+        "falta de agua, rotura de caño": "💧",
+        "fumigacion": "🦟",
+        "inspeccion de comercio": "🏪",
+        "limpieza": "🗑️",
+        "luminaria": "💡",
+        "riego de calle": "🚿",
+        "rotura de semaforo": "🚦",
+        "tramites de obras privadas": "🏗️",
+        "incendio": "🔥",
+        "otro motivo": "⚫",
+    }
+    opciones = []
+    for categoria in CATEGORIAS_RECLAMO:
+        normalized = normalizar_texto(categoria)
+        if normalized == "sugerencia":
+            continue
+        texto_categoria = categoria.title() if categoria else "Otros"
+        if normalized == "otro motivo":
+            texto_categoria = "Otros"
+        emoji = iconos.get(normalized, "•")
+        opciones.append(
+            {
+                "texto": f"{emoji} *{texto_categoria}*",
+                "category_name": texto_categoria,
+            }
+        )
+
+    opciones.extend(
+        [
+            {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
+            {"texto": "Cancelar", "action_id": "cancelar"},
+        ]
+    )
     # El cuerpo del mensaje ahora instruye al usuario que puede responder con un número o seleccionar una opción.
     return {
         "message_body": "Elegí una opción para tu reclamo:",
@@ -7515,6 +7648,8 @@ def responder_municipio(
         """Return the response unchanged; also store it in cache for repeated queries."""
         if cache_key is not None:
             MUNICIPIO_RESPONSE_CACHE[cache_key] = response
+        if isinstance(response, dict):
+            normalize_response_payload(response)
         return response
 
     logger_actual.info(
@@ -7541,6 +7676,51 @@ def responder_municipio(
     loaded_specific_config = cargar_configuracion_municipio(owner_user_municipio_id_str, "config.json")
     if loaded_specific_config:
         final_municipio_config.update(loaded_specific_config)
+
+    tenant_profile = None
+    try:
+        owner_id = getattr(owner_user, "id", None) if owner_user else None
+        if owner_id:
+            tenant_profile = TenantProfile.query.filter_by(municipio_id=owner_id).first()
+        if tenant_profile and isinstance(tenant_profile.configuracion, dict):
+            final_municipio_config.update(tenant_profile.configuracion)
+            if not final_municipio_config.get("nombre") and tenant_profile.nombre:
+                final_municipio_config["nombre"] = tenant_profile.nombre
+    except Exception:  # pragma: no cover - defensive for optional tenant profiles
+        tenant_profile = None
+
+    if tenant_profile:
+        owner_email = getattr(owner_user, "email", "") if owner_user else ""
+        is_junin_tenant = (
+            tenant_profile.slug in {"junin", "municipalidad-de-junin"}
+            or owner_email.lower() == "mauricio@junin.com"
+        )
+        if is_junin_tenant:
+            updated_config = False
+            if final_municipio_config.get("nombre") in (None, "", "Municipio Inteligente"):
+                final_municipio_config["nombre"] = "Municipalidad de Junín"
+            if not final_municipio_config.get("assistant_name"):
+                final_municipio_config["assistant_name"] = "JUNI"
+            final_municipio_config.setdefault("nombre_municipio", "Municipalidad de Junín")
+            configuracion = tenant_profile.configuracion
+            if not isinstance(configuracion, dict):
+                configuracion = {}
+            if configuracion.get("assistant_name") != "JUNI":
+                configuracion["assistant_name"] = "JUNI"
+                updated_config = True
+            if configuracion.get("nombre_municipio") != "Municipalidad de Junín":
+                configuracion["nombre_municipio"] = "Municipalidad de Junín"
+                updated_config = True
+            if configuracion.get("nombre") != "Municipalidad de Junín":
+                configuracion["nombre"] = "Municipalidad de Junín"
+                updated_config = True
+            if updated_config:
+                tenant_profile.configuracion = configuracion
+                try:
+                    db.session.add(tenant_profile)
+                    db.session.commit()
+                except Exception:  # pragma: no cover - avoid breaking responder
+                    db.session.rollback()
 
     # Override with data from the User model (database) if available
     if owner_user:
@@ -7652,7 +7832,13 @@ def responder_municipio(
     else:
         identity_token = None
 
-    if normalized_question:
+    selection_states = {
+        ConversationState.ESPERANDO_SELECCION_DE_LISTA.name,
+        ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name,
+        ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name,
+    }
+
+    if normalized_question and context_state_token not in selection_states:
         owner_cache_key = None
         if owner_user is not None:
             owner_cache_key = getattr(owner_user, "id", None) or getattr(owner_user, "municipio_id", None)
@@ -7740,6 +7926,12 @@ def responder_municipio(
         return cached_response
 
     # Crear el diccionario de contexto principal una sola vez
+    normalized_location = _normalize_location_payload(
+        location or received_payload.get("ubicacion_usuario"),
+    )
+    if normalized_location:
+        received_payload["ubicacion_usuario"] = normalized_location
+
     context = {
         "user_obj": owner_user,
         "viewer_user_obj": viewer_user,
@@ -7752,7 +7944,7 @@ def responder_municipio(
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
         "chat_db_context_data": chat_db_context_live_data, # Usar el dict vivo
         "intencion": kwargs.get("intencion"),
-        "ubicacion_usuario": location or received_payload.get("ubicacion_usuario"),
+        "ubicacion_usuario": normalized_location or received_payload.get("ubicacion_usuario"),
         "es_foto": received_payload.get("es_foto", False),
         "foto_url": received_payload.get("foto_url"),
         "es_ubicacion": received_payload.get("es_ubicacion", False),
@@ -7802,12 +7994,15 @@ def responder_municipio(
                 {"texto": "Cancelar", "action_id": "cancelar"},
             ]
             contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
-            contexto_municipio_actual['ubicacion_contextual'] = {
-                "address": address,
-                "latitude": location_link_info.get("latitude"),
-                "longitude": location_link_info.get("longitude"),
-                "source": location_link_info.get("source", "link"),
-            }
+            contexto_municipio_actual['ubicacion_contextual'] = _normalize_location_payload(
+                {
+                    "address": address,
+                    "latitude": location_link_info.get("latitude"),
+                    "longitude": location_link_info.get("longitude"),
+                    "source": location_link_info.get("source", "link"),
+                },
+                fallback_address=address,
+            )
             contexto_municipio_actual['menu_opciones'] = opciones_proactivas
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
@@ -7943,6 +8138,16 @@ def responder_municipio(
 
             logger_actual.info(f"Handling input in ESPERANDO_SELECCION_MENU_RECLAMOS state. Input: '{pregunta_str_reclamo}', Action: '{action}'")
 
+            if received_payload.get("es_ubicacion") and not pregunta_str_reclamo.strip():
+                location_payload = received_payload.get("ubicacion_usuario") or {}
+                return _finalize_response(
+                    _build_proactive_location_response(
+                        location_payload,
+                        contexto_municipio_actual,
+                        chat_db_context,
+                    )
+                )
+
             reclamo_categories = {
                 "reclamo_luminaria": "Luminaria", "reclamo_arbolado": "Arbolado",
                 "reclamo_limpieza_riego": "Limpieza y riego", "reclamo_arreglo_calle": "Arreglo de calle",
@@ -7965,7 +8170,11 @@ def responder_municipio(
                             selected_category_name = option.get("category_name")
                             break
                 if not selected_category_name:
-                    plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
+                    plain_text_options = [
+                        {"texto": opt.get("category_name")}
+                        for opt in reclamo_options
+                        if opt.get("category_name")
+                    ]
                     details = extract_reclamo_details_from_text(pregunta_str_reclamo, plain_text_options)
                     selected_category_name = details.pop("categoria_sugerida", None)
 
@@ -7987,8 +8196,21 @@ def responder_municipio(
                 return _finalize_response(_get_reclamos_menu())
 
         elif estado_conversacion == ConversationState.ESPERANDO_INTENCION_UBICACION.name:
-            ubicacion_contextual = contexto_municipio_actual.pop('ubicacion_contextual', None)
+            ubicacion_contextual = contexto_municipio_actual.get('ubicacion_contextual')
             address = ubicacion_contextual.get('address', 'la ubicación proporcionada') if ubicacion_contextual else 'la ubicación proporcionada'
+
+            if received_payload.get("es_ubicacion") and received_payload.get("ubicacion_usuario"):
+                ubicacion_contextual = received_payload.get("ubicacion_usuario")
+                contexto_municipio_actual["ubicacion_contextual"] = ubicacion_contextual
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(
+                    _build_proactive_location_response(
+                        ubicacion_contextual,
+                        contexto_municipio_actual,
+                        chat_db_context,
+                    )
+                )
 
             if not action:
                 pregunta_menu = ""
@@ -7996,12 +8218,16 @@ def responder_municipio(
                     pregunta_menu = pregunta_original
                 elif isinstance(pregunta_original, dict):
                     pregunta_menu = pregunta_original.get("pregunta", "")
-                opciones = [
-                    {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
-                    {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
-                    {"texto": "Cancelar", "action_id": "cancelar"},
-                ]
-                action = find_menu_action_by_input(pregunta_menu, opciones)
+                action = find_menu_action_by_input(pregunta_menu, _location_action_options())
+                if not action and pregunta_menu.strip():
+                    contexto_municipio_actual['ultima_consulta_poi'] = pregunta_menu.strip()
+                    if chat_db_context:
+                        flag_modified(chat_db_context, "context_data")
+                    return _finalize_response(
+                        PointsOfInterestHandler(context).handle(
+                            {"pregunta": pregunta_menu.strip(), "location": ubicacion_contextual or {}}
+                        )
+                    )
 
             if action == "iniciar_reclamo_con_ubicacion":
                 handler = ReclamoFlowHandler(context, chat_db_context)
@@ -8020,19 +8246,33 @@ def responder_municipio(
                 )
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return _finalize_response({"message_body": f"Excelente. Por favor, escribí tu sugerencia relacionada con la ubicación: *{address}*.", "fuente": "handler_enviar_sugerencia_con_ubicacion"})
+            elif action == "buscar_estacionamiento_con_ubicacion":
+                contexto_municipio_actual['ultima_consulta_poi'] = 'estacionamiento'
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(
+                    PointsOfInterestHandler(context).handle(
+                        {"pregunta": "estacionamiento", "location": ubicacion_contextual or {}}
+                    )
+                )
+            elif action == "buscar_lugares_cerca":
+                contexto_municipio_actual['ultima_consulta_poi'] = 'lugares cercanos'
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(
+                    PointsOfInterestHandler(context).handle(
+                        {"pregunta": "lugares cercanos", "location": ubicacion_contextual or {}}
+                    )
+                )
             else:
                 contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
                 return _finalize_response(
                     {
-                        "message_body": f"No entendí la opción. ¿Qué te gustaría hacer en *{address}*?",
-                        "options_list": [
-                            {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
-                            {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
-                            {"texto": "Cancelar", "action_id": "cancelar"},
-                            {"texto": "Menú", "action_id": "menu_principal"},
-                        ],
+                        "message_body": f"Perfecto, ya tengo tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
+                        "options_list": _location_action_options()
+                        + [{"texto": "Menú", "action_id": "menu_principal"}],
                         "fuente": "proactive_location_handler",
                     }
                 )
@@ -8041,6 +8281,21 @@ def responder_municipio(
             switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context)
             if switch_response:
                 return _finalize_response(switch_response)
+            if not pregunta_str.strip() and (
+                context.get("es_ubicacion")
+                or context.get("ubicacion_usuario")
+                or received_payload.get("es_ubicacion")
+            ):
+                _set_sugerencia_location_context(
+                    contexto_municipio_actual,
+                    context.get("ubicacion_usuario") or received_payload.get("ubicacion_usuario"),
+                )
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response({
+                    "message_body": "¡Gracias! Ahora contame cuál es tu sugerencia.",
+                    "fuente": "handler_sugerencia_ubicacion_recibida",
+                })
             sugerencia_texto = pregunta_str
             if len(sugerencia_texto) < 10:
                 return _finalize_response({"message_body": "Tu sugerencia parece un poco corta. ¿Podrías darme un poco más de detalle?", "fuente": "sugerencia_muy_corta"})
@@ -8179,7 +8434,7 @@ def responder_municipio(
                 or any(a in texto_normalizado for a in afirmativos)
             ):
                 datos_confirmados = contexto_municipio_actual.pop('datos_sugerencia', {})
-                handler = CrearReclamoActionHandler(context)
+                handler = HacerSugerenciaActionHandler(context)
                 response = handler.execute(datos_confirmados)
                 if response.get("success"):
                     # Re-synchronize the in-memory context after the handler cleanup
@@ -8348,7 +8603,7 @@ def responder_municipio(
                     f"Location received for last POI query '{ultima_consulta}'."
                 )
                 return _finalize_response(
-                    PointsOfInterestHandler(context={}).handle(
+                    PointsOfInterestHandler(context).handle(
                         {
                             "pregunta": ultima_consulta,
                             "location": received_payload.get("ubicacion_usuario"),
@@ -8362,23 +8617,13 @@ def responder_municipio(
 
             address = received_payload.get("ubicacion_usuario", {}).get("address", "la ubicación que compartiste")
 
-            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
-            opciones_proactivas = [
-                {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
-                {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
-                {"texto": "Cancelar", "action_id": "cancelar"},
-            ]
-            contexto_municipio_actual['ubicacion_contextual'] = received_payload.get("ubicacion_usuario")
-            contexto_municipio_actual['menu_opciones'] = opciones_proactivas
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-
-            return _finalize_response({
-                "message_body": f"Recibí tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
-                "options_list": opciones_proactivas,
-                "message_type": "interactive_buttons",
-                "fuente": "proactive_location_handler",
-            })
+            return _finalize_response(
+                _build_proactive_location_response(
+                    received_payload.get("ubicacion_usuario", {}),
+                    contexto_municipio_actual,
+                    chat_db_context,
+                )
+            )
     # --- FIN: Manejo Proactivo de Ubicación ---
 
 
@@ -8588,8 +8833,20 @@ def responder_municipio(
 
     # --- START INTENT CLASSIFICATION ---
     # If it's not a simple greeting, proceed with intent classification
-    intent, intent_payload = intent_classifier.classify(pregunta_str)
-    logger_actual.info(f"[IntentClassifier] Classified intent: {intent} with payload: {intent_payload}")
+    estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
+    if estado_conversacion in (
+        ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name,
+        ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name,
+    ):
+        intent = None
+        intent_payload = None
+        logger_actual.info(
+            "[IntentClassifier] Skipping intent classification due to active LLM flow (%s).",
+            estado_conversacion,
+        )
+    else:
+        intent, intent_payload = intent_classifier.classify(pregunta_str)
+        logger_actual.info(f"[IntentClassifier] Classified intent: {intent} with payload: {intent_payload}")
 
     if intent == "saludar":
         logger_actual.info("Greeting intent detected. Bypassing LLM and showing main menu.")
@@ -8683,6 +8940,8 @@ def responder_municipio(
         and estado_conversacion != ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name
         and estado_conversacion != ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
         and estado_conversacion != ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
+        and estado_conversacion != ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name
+        and estado_conversacion != ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
     ):
         inferred_action = find_global_menu_action(pregunta_str)
         if inferred_action:
@@ -8766,7 +9025,11 @@ def responder_municipio(
                             selected_category_name = option.get("category_name")
                             break
                 if not selected_category_name:
-                    plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
+                    plain_text_options = [
+                        {"texto": opt.get("category_name")}
+                        for opt in reclamo_options
+                        if opt.get("category_name")
+                    ]
                     details = extract_reclamo_details_from_text(pregunta_str_reclamo, plain_text_options)
                     selected_category_name = details.pop("categoria_sugerida", None)
 
@@ -8797,12 +9060,7 @@ def responder_municipio(
                     pregunta_menu = pregunta_original
                 elif isinstance(pregunta_original, dict):
                     pregunta_menu = pregunta_original.get("pregunta", "")
-                opciones = [
-                    {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
-                    {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
-                    {"texto": "Cancelar", "action_id": "cancelar"},
-                ]
-                action = find_menu_action_by_input(pregunta_menu, opciones)
+                action = find_menu_action_by_input(pregunta_menu, _location_action_options())
 
             if action == "iniciar_reclamo_con_ubicacion":
                 handler = ReclamoFlowHandler(context, chat_db_context)
@@ -8821,6 +9079,24 @@ def responder_municipio(
                 )
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
                 return _finalize_response({"message_body": f"Excelente. Por favor, escribí tu sugerencia relacionada con la ubicación: *{address}*.", "fuente": "handler_enviar_sugerencia_con_ubicacion"})
+            elif action == "buscar_estacionamiento_con_ubicacion":
+                contexto_municipio_actual['ultima_consulta_poi'] = 'estacionamiento'
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(
+                    PointsOfInterestHandler(context).handle(
+                        {"pregunta": "estacionamiento", "location": ubicacion_contextual or {}}
+                    )
+                )
+            elif action == "buscar_lugares_cerca":
+                contexto_municipio_actual['ultima_consulta_poi'] = 'lugares cercanos'
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(
+                    PointsOfInterestHandler(context).handle(
+                        {"pregunta": "lugares cercanos", "location": ubicacion_contextual or {}}
+                    )
+                )
             else:
                 # If the user response doesn't match any option, keep the flow active
                 # and re-send the proactive menu instead of resetting the conversation.
@@ -8829,13 +9105,9 @@ def responder_municipio(
                     flag_modified(chat_db_context, "context_data")
                 return _finalize_response(
                     {
-                        "message_body": f"No entendí la opción. ¿Qué te gustaría hacer en *{address}*?",
-                        "options_list": [
-                            {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
-                            {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
-                            {"texto": "Cancelar", "action_id": "cancelar"},
-                            {"texto": "Menú", "action_id": "menu_principal"},
-                        ],
+                        "message_body": f"Perfecto, ya tengo tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
+                        "options_list": _location_action_options()
+                        + [{"texto": "Menú", "action_id": "menu_principal"}],
                         "fuente": "proactive_location_handler",
                     }
                 )
@@ -9301,10 +9573,17 @@ def responder_municipio(
             pregunta_str_menu = pregunta_original.get("pregunta", "")
             action_payload = pregunta_original.get("action")
 
+        if not action_payload:
+            action_payload = received_payload.get("action")
+
         menu_opciones = contexto_municipio_actual.get("menu_opciones", [])
         selected_action = action_payload or find_menu_action_by_input(pregunta_str_menu, menu_opciones)
 
-        if not action_payload and selected_action == "iniciar_reclamo":
+        if (
+            not action_payload
+            and selected_action == "iniciar_reclamo"
+            and not pregunta_str_menu.strip().isdigit()
+        ):
             # El usuario volvió a escribir "iniciar reclamo" en lugar de pulsar el botón.
             # Reenviamos el menú de reclamos para que pueda elegir una opción.
             submenu = _get_reclamos_consultas_menu()
@@ -9318,6 +9597,9 @@ def responder_municipio(
             selected_action = find_global_menu_action(pregunta_str_menu)
 
         if selected_action:
+            context["menu_opciones"] = menu_opciones
+            if selected_action == "iniciar_reclamo" and pregunta_str_menu.strip().isdigit():
+                context["skip_reclamo_autodetect"] = True
             contexto_municipio_actual['estado_conversacion'] = None
             contexto_municipio_actual.pop('menu_opciones', None)
             if chat_db_context:
@@ -9381,7 +9663,7 @@ def responder_municipio(
 
         normalized_input = normalizar_texto(pregunta_str_reclamo or "")
 
-        if pregunta_str_reclamo in {"0", "1"} or normalized_input in RETURN_TO_MAIN_MENU:
+        if pregunta_str_reclamo in {"0"} or normalized_input in RETURN_TO_MAIN_MENU:
             logger_actual.info("User requested to return to main menu from reclamos menu.")
             handler = GreetingHandler(context)
             response = handler.handle({})
@@ -9401,22 +9683,23 @@ def responder_municipio(
             logger_actual.info("Input requests reclamos menu again. Returning submenu.")
             return _finalize_response(_get_reclamos_menu())
 
-        # El menú se muestra numerado a partir de 1, mientras que los id_accion
-        # comienzan en 0. Convertimos la elección del usuario a id_accion.
         reclamo_options = _get_reclamos_menu().get("options_list", [])
         selected_category_name = None
 
         if pregunta_str_reclamo.isdigit():
-            expected_id = str(int(pregunta_str_reclamo) - 1)
             for option in reclamo_options:
-                if option.get("id_accion") == expected_id:
+                if option.get("id_accion") == pregunta_str_reclamo:
                     selected_category_name = option.get("category_name")
                     break
 
         # Si no es un número o no corresponde, intentar matchear por texto y extraer más datos.
         details = {}
         if not selected_category_name:
-            plain_text_options = [{"texto": opt.get("category_name")} for opt in reclamo_options]
+            plain_text_options = [
+                {"texto": opt.get("category_name")}
+                for opt in reclamo_options
+                if opt.get("category_name")
+            ]
             details = extract_reclamo_details_from_text(pregunta_str_reclamo, plain_text_options)
             selected_category_name = details.pop("categoria_sugerida", None)
 
@@ -9592,7 +9875,7 @@ def responder_municipio(
 
             if consulta_guardada:
                 logger_actual.info(f"Received location, processing saved query: '{consulta_guardada}'")
-                return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": consulta_guardada, "location": location}))
+                return _finalize_response(PointsOfInterestHandler(context).handle({"pregunta": consulta_guardada, "location": location}))
             else:
                 logger_actual.warning("In ESPERANDO_UBICACION_GENERAL state but no saved query found.")
                 return _finalize_response({"message_body": "Recibí tu ubicación, pero no recuerdo qué estabas buscando. ¿Podrías decírmelo de nuevo?", "options_list": [], "message_type": "text", "fuente": "error_no_saved_query"})
@@ -9621,7 +9904,7 @@ def responder_municipio(
                             "lat": geocoded_location.get("lat"),
                             "lon": geocoded_location.get("lng"),
                         }
-                        return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": consulta_guardada, "location": loc_payload}))
+                        return _finalize_response(PointsOfInterestHandler(context).handle({"pregunta": consulta_guardada, "location": loc_payload}))
                     else:
                         # This case is unlikely but handled for safety
                         logger_actual.warning("Geocoded address but no saved query found.")
@@ -9683,7 +9966,7 @@ def responder_municipio(
             })
 
     elif estado_conversacion == ConversationState.ESPERANDO_INTENCION_UBICACION.name:
-        ubicacion_contextual = contexto_municipio_actual.pop('ubicacion_contextual', None)
+        ubicacion_contextual = contexto_municipio_actual.get('ubicacion_contextual')
         address = ubicacion_contextual.get('address', 'la ubicación proporcionada') if ubicacion_contextual else 'la ubicación proporcionada'
         if not action:
             pregunta_menu = ""
@@ -9691,12 +9974,16 @@ def responder_municipio(
                 pregunta_menu = pregunta_original
             elif isinstance(pregunta_original, dict):
                 pregunta_menu = pregunta_original.get("pregunta", "")
-            opciones = [
-                {"texto": "Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
-                {"texto": "Enviar una Sugerencia", "action_id": "enviar_sugerencia_con_ubicacion"},
-                {"texto": "Cancelar", "action_id": "cancelar"},
-            ]
-            action = find_menu_action_by_input(pregunta_menu, opciones)
+            action = find_menu_action_by_input(pregunta_menu, _location_action_options())
+            if not action and pregunta_menu.strip():
+                contexto_municipio_actual['ultima_consulta_poi'] = pregunta_menu.strip()
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(
+                    PointsOfInterestHandler(context).handle(
+                        {"pregunta": pregunta_menu.strip(), "location": ubicacion_contextual or {}}
+                    )
+                )
 
         if action == "iniciar_reclamo_con_ubicacion":
             handler = ReclamoFlowHandler(context, chat_db_context)
@@ -9724,12 +10011,37 @@ def responder_municipio(
                 "message_body": f"Excelente. Por favor, escribí tu sugerencia relacionada con la ubicación: *{address}*.",
                 "fuente": "handler_enviar_sugerencia_con_ubicacion"
             })
-
-        else:  # Cancelar o no se entiende
-            contexto_municipio_actual['estado_conversacion'] = None
+        elif action == "buscar_estacionamiento_con_ubicacion":
+            contexto_municipio_actual['ultima_consulta_poi'] = 'estacionamiento'
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
-            return GreetingHandler(context).handle({})
+            return _finalize_response(
+                PointsOfInterestHandler(context).handle(
+                    {"pregunta": "estacionamiento", "location": ubicacion_contextual or {}}
+                )
+            )
+        elif action == "buscar_lugares_cerca":
+            contexto_municipio_actual['ultima_consulta_poi'] = 'lugares cercanos'
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(
+                PointsOfInterestHandler(context).handle(
+                    {"pregunta": "lugares cercanos", "location": ubicacion_contextual or {}}
+                )
+            )
+
+        else:  # Cancelar o no se entiende
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_INTENCION_UBICACION.name
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(
+                {
+                    "message_body": f"Perfecto, ya tengo tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
+                    "options_list": _location_action_options()
+                    + [{"texto": "Menú", "action_id": "menu_principal"}],
+                    "fuente": "proactive_location_handler",
+                }
+            )
 
 
     elif estado_conversacion == ConversationState.ESPERANDO_CORRECCION_DATOS_RECLAMO.name:

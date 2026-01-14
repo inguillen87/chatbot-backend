@@ -2,6 +2,7 @@
 
 ## 1. Subscription Plans Update
 The subscription plans returned by `GET /auth/plans` (and related endpoints) have been reordered to prioritize the highest value plan.
+
 - **Order:** `Full` (First) -> `Pro` -> `Gratis` (Last).
 - **Prices:** The backend correctly serves the updated prices:
     - **Plan Full:** $350.000 (ID: `2c9380849763daeb0197658791ee00b1`)
@@ -11,6 +12,7 @@ The subscription plans returned by `GET /auth/plans` (and related endpoints) hav
 
 ## 2. Persistent Marketplace (Cart & Orders)
 The backend now supports fully persistent, database-backed Shopping Carts and Orders, enabling a robust multi-tenant marketplace experience.
+
 - **Models Added:** `MarketCart`, `MarketCartItem`, `MarketOrder`, `MarketOrderItem`.
 - **Behavior:**
     - The `X-Anon-Id` header is used to persist carts for anonymous users.
@@ -19,6 +21,7 @@ The backend now supports fully persistent, database-backed Shopping Carts and Or
 - **Endpoints:** The existing `routes/market.py` endpoints now write to these tables. No URL changes are required, but error handling might be more robust (500s will occur if tables are missing, which is now fixed).
 
 ## 3. New Integration & Notification Modules
+
 - **IntegrationAccount:** A new model exists to store credentials for third-party integrations (MercadoLibre, TiendaNube).
 - **NotificationLog:** All system notifications (WhatsApp, Email, Telegram) are logged to the `notification_log` table.
 - **Integrations API:**
@@ -36,6 +39,7 @@ The backend now supports fully persistent, database-backed Shopping Carts and Or
     - Backend logic reads from the tenant configuration managed via the API above.
 
 ## 4. Mirror Catalog Strategy
+
 - **New Fields:** `CatalogoItem` now has `checkout_type` (e.g., 'mercadolibre') and `external_url`.
 - **Behavior:**
     - When rendering products in the Chatbot or Web Catalog, check `checkout_type`.
