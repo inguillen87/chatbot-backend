@@ -727,18 +727,29 @@ def _get_main_menu_payload(
     if welcome_message == f"👋 *¡Hola, {user_name}!*":
         welcome_message = f"{welcome_message} Bienvenido a *{tenant_name_text}*."
 
+    assistant_intro = ""
+
     if reduced:
-        main_text_body = (
-            f"{assistant_intro}\n\n"
-            "Estas son las opciones principales del municipio.\n\n"
-            "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás.\n\n"
-            "Elegí una o contame qué necesitás y te ayudo al instante."
+        main_text_body = "\n\n".join(
+            part
+            for part in [
+                assistant_intro,
+                "Estas son las opciones principales del municipio.",
+                "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás.",
+                "Elegí una o contame qué necesitás y te ayudo al instante.",
+            ]
+            if part
         )
     else:
-        main_text_body = (
-            "*Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz* con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más. Este servicio es accesible y está listo para ayudarte.\n\n"
-            "También podés usar emojis para realizar acciones rápidas.\n\n"
-            "¿Cómo te puedo ayudar hoy?"
+        main_text_body = "\n\n".join(
+            part
+            for part in [
+                assistant_intro,
+                "*Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz* con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más. Este servicio es accesible y está listo para ayudarte.",
+                "También podés usar emojis para realizar acciones rápidas.",
+                "¿Cómo te puedo ayudar hoy?",
+            ]
+            if part
         )
 
     channel = context.get("channel", "web")
