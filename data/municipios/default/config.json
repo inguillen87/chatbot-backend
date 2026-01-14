@@ -25,5 +25,13 @@
     "catalogo_compras": "https://chatbot-backend-2e14.onrender.com/productos?view=compras",
     "catalogo_donaciones": "https://chatbot-backend-2e14.onrender.com/productos?view=donaciones"
   },
-  "catalogo_banner_image_url": "https://chatbot-backend-2e14.onrender.com/static/encuestas/participacion_ciudadana.png"
+  "catalogo_banner_image_url": "https://chatbot-backend-2e14.onrender.com/static/encuestas/participacion_ciudadana.png",
+  "promo_section": {
+    "headline": "♻️ Punto Limpio Junín",
+    "tagline": "Transformamos residuos en productos sustentables.",
+    "description": "Visitá nuestra planta y descubrí cómo convertimos materiales recuperados en ladrillos, tejas, postes, mangueras, luminarias LED y más.",
+    "link": "https://www.juninmendoza.gov.ar/punto-limpio",
+    "cta_text": "Visitar Punto Limpio",
+    "image_url": "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png"
+  }
 }
