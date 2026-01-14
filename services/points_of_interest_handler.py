@@ -192,6 +192,7 @@ class PointsOfInterestHandler:
             payload = _message_with_menu(
                 "No tengo datos de estacionamiento disponibles en este momento.",
                 self.context,
+                include_greeting=False,
             )
             payload["fuente"] = "points_of_interest_handler"
             return payload
@@ -244,7 +245,11 @@ class PointsOfInterestHandler:
 
         if info.get("geocode_source") == "invalid_query" and not info.get("segmentos"):
             from .municipio_responder import _message_with_menu  # local import
-            payload = _message_with_menu(info.get("texto") or "Necesito una dirección para ayudarte.", self.context)
+            payload = _message_with_menu(
+                info.get("texto") or "Necesito una dirección para ayudarte.",
+                self.context,
+                include_greeting=False,
+            )
             payload.update({
                 "fuente": "points_of_interest_handler",
                 "geocode_source": info.get("geocode_source"),
@@ -254,7 +259,11 @@ class PointsOfInterestHandler:
         if lat is None or lon is None:
             message = info.get("texto") or "No pude ubicar esa dirección. Probá con calle y altura (ej.: San Martín 1200)."
             from .municipio_responder import _message_with_menu
-            payload = _message_with_menu(message, self.context)
+            payload = _message_with_menu(
+                message,
+                self.context,
+                include_greeting=False,
+            )
             payload.update({
                 "fuente": "points_of_interest_handler",
                 "geocode_source": info.get("geocode_source"),
@@ -358,7 +367,11 @@ class PointsOfInterestHandler:
         message_text = "\n".join(lines)
         try:
             from .municipio_responder import _message_with_menu  # local import to avoid circular dependency
-            base_payload = _message_with_menu(message_text, self.context)
+            base_payload = _message_with_menu(
+                message_text,
+                self.context,
+                include_greeting=False,
+            )
         except ImportError:  # pragma: no cover - fallback for circular imports in isolated tests
             base_payload = {"message_body": message_text}
         base_payload.update({
@@ -375,10 +388,75 @@ class PointsOfInterestHandler:
             "resolved_lon": lon,
         })
         return base_payload
+
+    @staticmethod
+    def _requires_refinement(message: str | None) -> bool:
+        if not message:
+            return True
+        lowered = message.lower()
+        return any(
+            phrase in lowered
+            for phrase in (
+                "no tengo información",
+                "no tengo info",
+                "no cuento con información",
+                "no pude encontrar",
+                "no pude encontrar información",
+            )
+        )
+
+    @staticmethod
+    def _poi_refinement_options() -> list[dict[str, str]]:
+        return [
+            {"texto": "🏥 Hospitales o clínicas", "action_id": "hospitales"},
+            {"texto": "🩺 Farmacias (incluye 24hs)", "action_id": "farmacias 24 horas"},
+            {"texto": "🚓 Comisarías", "action_id": "comisarias"},
+            {"texto": "🚒 Bomberos", "action_id": "bomberos"},
+            {"texto": "🏦 Cajeros/ATM", "action_id": "cajeros automáticos"},
+            {"texto": "🏞️ Parques o plazas", "action_id": "parques"},
+            {"texto": "Otro tipo de lugar", "action_id": "otro lugar"},
+        ]
+
+    def _build_refinement_prompt(self, location: dict | None) -> dict:
+        address = ""
+        if isinstance(location, dict):
+            address = location.get("address") or location.get("label") or ""
+        address_text = f"cerca de *{address}*" if address else "cerca de tu ubicación"
+        message_body = (
+            f"Perfecto, puedo buscar lugares {address_text}. "
+            "¿Qué tipo de lugar necesitás?"
+        )
+        return {
+            "message_body": message_body,
+            "options_list": self._poi_refinement_options(),
+            "message_type": "interactive_buttons",
+            "fuente": "points_of_interest_refinement",
+            "generar_audio": True,
+        }
     def handle(self, payload: dict) -> dict | None:
         original_question = payload.get("pregunta") or ""
         pregunta = original_question.lower()
         location = payload.get("location")
+
+        if not location:
+            municipio_ctx = (
+                self.context.get("chat_db_context_data", {})
+                .get(CONTEXTO_MUNICIPIO, {})
+            )
+            location = (
+                municipio_ctx.get("ubicacion_contextual")
+                or self.context.get("ubicacion_usuario")
+            )
+
+        if isinstance(location, dict):
+            normalized_location = {
+                "address": location.get("address") or location.get("label"),
+                "lat": location.get("lat") or location.get("latitude"),
+                "lon": location.get("lon") or location.get("longitude"),
+            }
+            if location.get("formatted_address") and not normalized_location.get("address"):
+                normalized_location["address"] = location.get("formatted_address")
+            location = {k: v for k, v in normalized_location.items() if v}
 
         keywords = ("estacionamiento", "estacionar", "lugar libre")
         if any(word in pregunta for word in keywords):
@@ -481,6 +559,9 @@ class PointsOfInterestHandler:
         message_body = respuesta_llm.get("message_body", "")
         botones = respuesta_llm.get("botones", [])
 
+        if accion == "responder_directamente" and self._requires_refinement(message_body):
+            return self._build_refinement_prompt(location if isinstance(location, dict) else None)
+
         if accion == "ejecutar_herramienta":
             datos = respuesta_llm.get("datos_estructura", {})
             nombre = datos.get("nombre_herramienta")
@@ -488,7 +569,11 @@ class PointsOfInterestHandler:
             herramienta = TOOL_REGISTRY.get(nombre)
             if not herramienta:
                 from .municipio_responder import _message_with_menu
-                final_payload = _message_with_menu(message_body or "No tengo una herramienta para eso.", self.context)
+                final_payload = _message_with_menu(
+                    message_body or "No tengo una herramienta para eso.",
+                    self.context,
+                    include_greeting=False,
+                )
                 final_payload["fuente"] = "points_of_interest_handler"
                 return final_payload
             try:
@@ -499,17 +584,29 @@ class PointsOfInterestHandler:
                     result_text = str(resultado)
                 final_message = f"{message_body}\n{result_text}".strip() or result_text
                 from .municipio_responder import _message_with_menu
-                final_payload = _message_with_menu(final_message, self.context)
+                final_payload = _message_with_menu(
+                    final_message,
+                    self.context,
+                    include_greeting=False,
+                )
                 final_payload["fuente"] = "points_of_interest_handler"
                 return final_payload
             except Exception as exc:  # pragma: no cover - defensive
                 logger.error("Error executing tool %s: %s", nombre, exc, exc_info=True)
                 from .municipio_responder import _message_with_menu
-                final_payload = _message_with_menu("Ocurrió un error al obtener la información solicitada.", self.context)
+                final_payload = _message_with_menu(
+                    "Ocurrió un error al obtener la información solicitada.",
+                    self.context,
+                    include_greeting=False,
+                )
                 final_payload["fuente"] = "points_of_interest_handler"
                 return final_payload
 
         from .municipio_responder import _message_with_menu
-        final_payload = _message_with_menu(message_body, self.context)
+        final_payload = _message_with_menu(
+            message_body,
+            self.context,
+            include_greeting=False,
+        )
         final_payload["fuente"] = "points_of_interest_handler"
         return final_payload
