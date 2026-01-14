@@ -2398,11 +2398,24 @@ class GreetingHandler(BaseMunicipioHandler):
 
 
 
-def _message_with_menu(message, context):
-    menu_payload = GreetingHandler(context).handle({})
+def _message_with_menu(message, context, include_greeting: bool = True):
+    if include_greeting:
+        menu_payload = GreetingHandler(context).handle({})
+        if message:
+            menu_payload["message_body"] = f"{message}\n\n{menu_payload['message_body']}"
+        return menu_payload
+
+    menu_payload = _get_main_menu_payload(context)
+    if menu_payload.get("fuente") == "pedir_nombre_inicial":
+        return {
+            "message_body": message or menu_payload.get("message_body", ""),
+            "message_type": "text",
+        }
     if message:
-        menu_payload["message_body"] = f"{message}\n\n{menu_payload['message_body']}"
+        menu_payload["message_body"] = message
     return menu_payload
+
+
 def handle_contactos_utiles_inicio(context, chat_db_context):
     """Handles the initial request for 'Contactos Útiles'."""
     municipio_id = context.get("municipio_id", MUNICIPIO_ID)
@@ -8186,6 +8199,19 @@ def responder_municipio(
             ubicacion_contextual = contexto_municipio_actual.get('ubicacion_contextual')
             address = ubicacion_contextual.get('address', 'la ubicación proporcionada') if ubicacion_contextual else 'la ubicación proporcionada'
 
+            if received_payload.get("es_ubicacion") and received_payload.get("ubicacion_usuario"):
+                ubicacion_contextual = received_payload.get("ubicacion_usuario")
+                contexto_municipio_actual["ubicacion_contextual"] = ubicacion_contextual
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(
+                    _build_proactive_location_response(
+                        ubicacion_contextual,
+                        contexto_municipio_actual,
+                        chat_db_context,
+                    )
+                )
+
             if not action:
                 pregunta_menu = ""
                 if isinstance(pregunta_original, str):
@@ -8198,7 +8224,7 @@ def responder_municipio(
                     if chat_db_context:
                         flag_modified(chat_db_context, "context_data")
                     return _finalize_response(
-                        PointsOfInterestHandler(context={}).handle(
+                        PointsOfInterestHandler(context).handle(
                             {"pregunta": pregunta_menu.strip(), "location": ubicacion_contextual or {}}
                         )
                     )
@@ -8225,7 +8251,7 @@ def responder_municipio(
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
                 return _finalize_response(
-                    PointsOfInterestHandler(context={}).handle(
+                    PointsOfInterestHandler(context).handle(
                         {"pregunta": "estacionamiento", "location": ubicacion_contextual or {}}
                     )
                 )
@@ -8234,7 +8260,7 @@ def responder_municipio(
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
                 return _finalize_response(
-                    PointsOfInterestHandler(context={}).handle(
+                    PointsOfInterestHandler(context).handle(
                         {"pregunta": "lugares cercanos", "location": ubicacion_contextual or {}}
                     )
                 )
@@ -8244,7 +8270,7 @@ def responder_municipio(
                     flag_modified(chat_db_context, "context_data")
                 return _finalize_response(
                     {
-                        "message_body": f"No entendí la opción. ¿Qué te gustaría hacer en *{address}*?",
+                        "message_body": f"Perfecto, ya tengo tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
                         "options_list": _location_action_options()
                         + [{"texto": "Menú", "action_id": "menu_principal"}],
                         "fuente": "proactive_location_handler",
@@ -8577,7 +8603,7 @@ def responder_municipio(
                     f"Location received for last POI query '{ultima_consulta}'."
                 )
                 return _finalize_response(
-                    PointsOfInterestHandler(context={}).handle(
+                    PointsOfInterestHandler(context).handle(
                         {
                             "pregunta": ultima_consulta,
                             "location": received_payload.get("ubicacion_usuario"),
@@ -9058,7 +9084,7 @@ def responder_municipio(
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
                 return _finalize_response(
-                    PointsOfInterestHandler(context={}).handle(
+                    PointsOfInterestHandler(context).handle(
                         {"pregunta": "estacionamiento", "location": ubicacion_contextual or {}}
                     )
                 )
@@ -9067,7 +9093,7 @@ def responder_municipio(
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
                 return _finalize_response(
-                    PointsOfInterestHandler(context={}).handle(
+                    PointsOfInterestHandler(context).handle(
                         {"pregunta": "lugares cercanos", "location": ubicacion_contextual or {}}
                     )
                 )
@@ -9079,7 +9105,7 @@ def responder_municipio(
                     flag_modified(chat_db_context, "context_data")
                 return _finalize_response(
                     {
-                        "message_body": f"No entendí la opción. ¿Qué te gustaría hacer en *{address}*?",
+                        "message_body": f"Perfecto, ya tengo tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
                         "options_list": _location_action_options()
                         + [{"texto": "Menú", "action_id": "menu_principal"}],
                         "fuente": "proactive_location_handler",
@@ -9849,7 +9875,7 @@ def responder_municipio(
 
             if consulta_guardada:
                 logger_actual.info(f"Received location, processing saved query: '{consulta_guardada}'")
-                return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": consulta_guardada, "location": location}))
+                return _finalize_response(PointsOfInterestHandler(context).handle({"pregunta": consulta_guardada, "location": location}))
             else:
                 logger_actual.warning("In ESPERANDO_UBICACION_GENERAL state but no saved query found.")
                 return _finalize_response({"message_body": "Recibí tu ubicación, pero no recuerdo qué estabas buscando. ¿Podrías decírmelo de nuevo?", "options_list": [], "message_type": "text", "fuente": "error_no_saved_query"})
@@ -9878,7 +9904,7 @@ def responder_municipio(
                             "lat": geocoded_location.get("lat"),
                             "lon": geocoded_location.get("lng"),
                         }
-                        return _finalize_response(PointsOfInterestHandler(context={}).handle({"pregunta": consulta_guardada, "location": loc_payload}))
+                        return _finalize_response(PointsOfInterestHandler(context).handle({"pregunta": consulta_guardada, "location": loc_payload}))
                     else:
                         # This case is unlikely but handled for safety
                         logger_actual.warning("Geocoded address but no saved query found.")
@@ -9954,7 +9980,7 @@ def responder_municipio(
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
                 return _finalize_response(
-                    PointsOfInterestHandler(context={}).handle(
+                    PointsOfInterestHandler(context).handle(
                         {"pregunta": pregunta_menu.strip(), "location": ubicacion_contextual or {}}
                     )
                 )
@@ -9990,7 +10016,7 @@ def responder_municipio(
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response(
-                PointsOfInterestHandler(context={}).handle(
+                PointsOfInterestHandler(context).handle(
                     {"pregunta": "estacionamiento", "location": ubicacion_contextual or {}}
                 )
             )
@@ -9999,7 +10025,7 @@ def responder_municipio(
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response(
-                PointsOfInterestHandler(context={}).handle(
+                PointsOfInterestHandler(context).handle(
                     {"pregunta": "lugares cercanos", "location": ubicacion_contextual or {}}
                 )
             )
@@ -10010,7 +10036,7 @@ def responder_municipio(
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response(
                 {
-                    "message_body": f"No entendí la opción. ¿Qué te gustaría hacer en *{address}*?",
+                    "message_body": f"Perfecto, ya tengo tu ubicación en *{address}*. ¿Qué te gustaría hacer?",
                     "options_list": _location_action_options()
                     + [{"texto": "Menú", "action_id": "menu_principal"}],
                     "fuente": "proactive_location_handler",
