@@ -151,6 +151,15 @@ def normalize_response_payload(payload: Any) -> Any:
     if payload.get("botones") and not payload.get("options_list"):
         payload["options_list"] = payload.get("botones")
 
+    if "message_body" not in payload or payload.get("message_body") is None:
+        payload["message_body"] = ""
+
+    options_list = payload.get("options_list")
+    if options_list is None:
+        payload["options_list"] = []
+    elif not isinstance(options_list, list):
+        payload["options_list"] = list(options_list) if isinstance(options_list, Sequence) else []
+
     if "message_type" not in payload:
         payload["message_type"] = "interactive_buttons" if payload.get("options_list") else "text"
 
@@ -159,5 +168,9 @@ def normalize_response_payload(payload: Any) -> Any:
         payload["success"] = True
     elif payload.get("pedir_info") and success_value is False:
         payload["success"] = True
+
+    payload.setdefault("data", {})
+    payload.setdefault("image_url", None)
+    payload.setdefault("audio_url", None)
 
     return payload

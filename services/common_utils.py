@@ -671,7 +671,7 @@ def _get_main_menu_payload(
     if welcome_message_override:
         welcome_message = welcome_message_override
     elif user_name:
-        welcome_message = f"👋 ¡Hola, {user_name}!"
+        welcome_message = f"👋 *¡Hola, {user_name}!*"
     else:
         # User's name is not known, ask for it.
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
@@ -696,30 +696,45 @@ def _get_main_menu_payload(
             "fuente": "pedir_nombre_inicial"
         }
 
+    # Determine tenant name for text body
+    tenant_name_text = "tu municipio"
+    municipio_config = context.get("municipio_config_actual") or {}
+    if isinstance(municipio_config, dict):
+        tenant_name_text = (
+            municipio_config.get("nombre")
+            or municipio_config.get("nombre_municipio")
+            or municipio_config.get("municipio_nombre")
+            or tenant_name_text
+        )
+    if owner_user and tenant_name_text == "tu municipio":
+        tenant_name_text = getattr(owner_user, "nombre_empresa", None) or getattr(owner_user, "name", "tu municipio")
+
+    if welcome_message == f"👋 *¡Hola, {user_name}!*":
+        welcome_message = f"{welcome_message} Bienvenido a *{tenant_name_text}*."
+
+    assistant_intro = ""
+
     if reduced:
-        main_text_body = (
-            "Estas son las opciones principales del municipio.\n\n"
-            "Elegí una o contame qué necesitás y te ayudo al instante."
+        main_text_body = "\n\n".join(
+            part
+            for part in [
+                assistant_intro,
+                "Estas son las opciones principales del municipio.",
+                "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás.",
+                "Elegí una o contame qué necesitás y te ayudo al instante.",
+            ]
+            if part
         )
     else:
-        # Determine tenant name for text body
-        tenant_name_text = "tu municipio"
-        municipio_config = context.get("municipio_config_actual") or {}
-        if isinstance(municipio_config, dict):
-            tenant_name_text = (
-                municipio_config.get("nombre")
-                or municipio_config.get("nombre_municipio")
-                or municipio_config.get("municipio_nombre")
-                or tenant_name_text
-            )
-        if owner_user and tenant_name_text == "tu municipio":
-            tenant_name_text = getattr(owner_user, "nombre_empresa", None) or getattr(owner_user, "name", "tu municipio")
-
-        main_text_body = (
-            f"Soy tu Asistente Virtual de *{tenant_name_text}*.\n\n"
-            "*Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz* con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más. Este servicio es accesible y está listo para ayudarte.\n\n"
-            "También podés usar emojis para realizar acciones rápidas.\n\n"
-            "¿Cómo te puedo ayudar hoy?"
+        main_text_body = "\n\n".join(
+            part
+            for part in [
+                assistant_intro,
+                "*Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz* con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más. Este servicio es accesible y está listo para ayudarte.",
+                "También podés usar emojis para realizar acciones rápidas.",
+                "¿Cómo te puedo ayudar hoy?",
+            ]
+            if part
         )
 
     channel = context.get("channel", "web")
@@ -839,7 +854,10 @@ def _get_main_menu_payload(
         audio_greeting = f"Hola, soy {bot_name} de {tenant_name}."
 
     if reduced:
-        audio_intro = "Volvimos al menú principal para seguir con tu gestión."
+        audio_intro = (
+            "Volvimos al menú principal para seguir con tu gestión. "
+            "Podés enviar ubicación, fotos o notas de voz para que te ayudemos mejor."
+        )
         audio_prompt = "Elegí una categoría para continuar."
     else:
         audio_intro = (
