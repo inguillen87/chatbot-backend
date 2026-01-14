@@ -597,6 +597,8 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
         with app.app_context():
             from services.response_formatter import build_interactive_response
 
+            _ensure_welcome_audio_payload(payload)
+
             audio_url = payload.get("audio_url")
 
             formatted = build_interactive_response(

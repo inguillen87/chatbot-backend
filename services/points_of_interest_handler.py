@@ -388,6 +388,51 @@ class PointsOfInterestHandler:
             "resolved_lon": lon,
         })
         return base_payload
+
+    @staticmethod
+    def _requires_refinement(message: str | None) -> bool:
+        if not message:
+            return True
+        lowered = message.lower()
+        return any(
+            phrase in lowered
+            for phrase in (
+                "no tengo información",
+                "no tengo info",
+                "no cuento con información",
+                "no pude encontrar",
+                "no pude encontrar información",
+            )
+        )
+
+    @staticmethod
+    def _poi_refinement_options() -> list[dict[str, str]]:
+        return [
+            {"texto": "🏥 Hospitales o clínicas", "action_id": "hospitales"},
+            {"texto": "🩺 Farmacias (incluye 24hs)", "action_id": "farmacias 24 horas"},
+            {"texto": "🚓 Comisarías", "action_id": "comisarias"},
+            {"texto": "🚒 Bomberos", "action_id": "bomberos"},
+            {"texto": "🏦 Cajeros/ATM", "action_id": "cajeros automáticos"},
+            {"texto": "🏞️ Parques o plazas", "action_id": "parques"},
+            {"texto": "Otro tipo de lugar", "action_id": "otro lugar"},
+        ]
+
+    def _build_refinement_prompt(self, location: dict | None) -> dict:
+        address = ""
+        if isinstance(location, dict):
+            address = location.get("address") or location.get("label") or ""
+        address_text = f"cerca de *{address}*" if address else "cerca de tu ubicación"
+        message_body = (
+            f"Perfecto, puedo buscar lugares {address_text}. "
+            "¿Qué tipo de lugar necesitás?"
+        )
+        return {
+            "message_body": message_body,
+            "options_list": self._poi_refinement_options(),
+            "message_type": "interactive_buttons",
+            "fuente": "points_of_interest_refinement",
+            "generar_audio": True,
+        }
     def handle(self, payload: dict) -> dict | None:
         original_question = payload.get("pregunta") or ""
         pregunta = original_question.lower()
@@ -513,6 +558,9 @@ class PointsOfInterestHandler:
         accion = respuesta_llm.get("accion_backend")
         message_body = respuesta_llm.get("message_body", "")
         botones = respuesta_llm.get("botones", [])
+
+        if accion == "responder_directamente" and self._requires_refinement(message_body):
+            return self._build_refinement_prompt(location if isinstance(location, dict) else None)
 
         if accion == "ejecutar_herramienta":
             datos = respuesta_llm.get("datos_estructura", {})
