@@ -3183,6 +3183,19 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             response["options_list"] = social_buttons
         if first_image:
             response["image_url"] = first_image
+
+        # Inject navigation state
+        options = (response.get("options_list") or []) + [
+            {"texto": "Menú", "action_id": "menu_principal"},
+            {"texto": "Cancelar", "action_id": "cancelar"}
+        ]
+        response["options_list"] = options
+        response["message_type"] = "interactive_buttons"
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_ACCION_POST_INFO_TRAMITE"
+        contexto_municipio_actual["menu_opciones"] = options
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
         return response
 
     if action_id == "web_municipio":
@@ -3281,12 +3294,24 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         }
 
     if action_id == "solicitar_turnos":
-        return {
+        response = {
             "message_body": "📅 Para solicitar turnos online, por favor ingresá al siguiente enlace:",
             "options_list": [{"texto": "Solicitar Turno", "url": "https://tlc.mendoza.gov.ar/turnos", "type": "url"}],
             "message_type": "interactive_buttons",
             "fuente": "info_solicitar_turnos_direct_link"
         }
+        # Inject navigation state
+        options = response["options_list"] + [
+            {"texto": "Menú", "action_id": "menu_principal"},
+            {"texto": "Cancelar", "action_id": "cancelar"}
+        ]
+        response["options_list"] = options
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_ACCION_POST_INFO_TRAMITE"
+        contexto_municipio_actual["menu_opciones"] = options
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return response
 
     if action_id == "zoonosis": # Handles the 'veterinaria_bromatologia' alias
         contactos_info = cargar_configuracion_municipio(context.get("municipio_id", MUNICIPIO_ID), "contactos_especializados.json")
@@ -3312,12 +3337,25 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             link_whatsapp = f"https://wa.me/{''.join(filter(str.isdigit, telefono))}"
             botones.append({"texto": "Contactar por WhatsApp", "url": link_whatsapp, "type": "url"})
 
-        return {
+        response = {
             "message_body": message_body.strip(),
             "options_list": botones,
             "message_type": "interactive_buttons" if botones else "text",
             "fuente": "info_veterinaria_json"
         }
+        # Inject navigation state
+        options = (response.get("options_list") or []) + [
+            {"texto": "Menú", "action_id": "menu_principal"},
+            {"texto": "Cancelar", "action_id": "cancelar"}
+        ]
+        response["options_list"] = options
+        response["message_type"] = "interactive_buttons"
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_ACCION_POST_INFO_TRAMITE"
+        contexto_municipio_actual["menu_opciones"] = options
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return response
 
     # Fallback for any other action that is not explicitly handled above
     return {

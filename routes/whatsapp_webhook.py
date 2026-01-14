@@ -1649,7 +1649,11 @@ def whatsapp_webhook():
         url_link = selected_option.get("url")
         bot_response_dict = {
             "message_body": f"Podés acceder a *{url_text}* ingresando aquí:\n{url_link}",
-            "message_type": "text",
+            "message_type": "interactive_buttons",
+            "options_list": [
+                {"texto": "Menú", "action_id": "menu_principal"},
+                {"texto": "Cancelar", "action_id": "cancelar"}
+            ],
             "fuente": "webhook_url_selection_fallback",
             "generar_audio": True # Ensure audio is generated for this fallback
         }
