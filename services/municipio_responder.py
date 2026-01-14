@@ -8183,7 +8183,7 @@ def responder_municipio(
                 return _finalize_response(_get_reclamos_menu())
 
         elif estado_conversacion == ConversationState.ESPERANDO_INTENCION_UBICACION.name:
-            ubicacion_contextual = contexto_municipio_actual.pop('ubicacion_contextual', None)
+            ubicacion_contextual = contexto_municipio_actual.get('ubicacion_contextual')
             address = ubicacion_contextual.get('address', 'la ubicación proporcionada') if ubicacion_contextual else 'la ubicación proporcionada'
 
             if not action:
@@ -8193,6 +8193,15 @@ def responder_municipio(
                 elif isinstance(pregunta_original, dict):
                     pregunta_menu = pregunta_original.get("pregunta", "")
                 action = find_menu_action_by_input(pregunta_menu, _location_action_options())
+                if not action and pregunta_menu.strip():
+                    contexto_municipio_actual['ultima_consulta_poi'] = pregunta_menu.strip()
+                    if chat_db_context:
+                        flag_modified(chat_db_context, "context_data")
+                    return _finalize_response(
+                        PointsOfInterestHandler(context={}).handle(
+                            {"pregunta": pregunta_menu.strip(), "location": ubicacion_contextual or {}}
+                        )
+                    )
 
             if action == "iniciar_reclamo_con_ubicacion":
                 handler = ReclamoFlowHandler(context, chat_db_context)
@@ -9931,7 +9940,7 @@ def responder_municipio(
             })
 
     elif estado_conversacion == ConversationState.ESPERANDO_INTENCION_UBICACION.name:
-        ubicacion_contextual = contexto_municipio_actual.pop('ubicacion_contextual', None)
+        ubicacion_contextual = contexto_municipio_actual.get('ubicacion_contextual')
         address = ubicacion_contextual.get('address', 'la ubicación proporcionada') if ubicacion_contextual else 'la ubicación proporcionada'
         if not action:
             pregunta_menu = ""
@@ -9940,6 +9949,15 @@ def responder_municipio(
             elif isinstance(pregunta_original, dict):
                 pregunta_menu = pregunta_original.get("pregunta", "")
             action = find_menu_action_by_input(pregunta_menu, _location_action_options())
+            if not action and pregunta_menu.strip():
+                contexto_municipio_actual['ultima_consulta_poi'] = pregunta_menu.strip()
+                if chat_db_context:
+                    flag_modified(chat_db_context, "context_data")
+                return _finalize_response(
+                    PointsOfInterestHandler(context={}).handle(
+                        {"pregunta": pregunta_menu.strip(), "location": ubicacion_contextual or {}}
+                    )
+                )
 
         if action == "iniciar_reclamo_con_ubicacion":
             handler = ReclamoFlowHandler(context, chat_db_context)
