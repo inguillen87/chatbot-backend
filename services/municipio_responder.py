@@ -5907,13 +5907,24 @@ def _resolve_tenant_identifiers(context: Optional[dict]) -> tuple[Optional[str],
     )
 
     # --- FALLBACK: Use user object if configuration failed to resolve IDs ---
-    if not tenant_id and (context or {}).get("user_obj"):
+    if (not tenant_id or not tenant_slug) and (context or {}).get("user_obj"):
         user = context["user_obj"]
+
+        # Try to resolve slug from tenant relation if missing
+        if not tenant_slug:
+            try:
+                tenant_obj = getattr(user, "tenant", None)
+                if tenant_obj:
+                    tenant_slug = getattr(tenant_obj, "slug", None)
+            except Exception:
+                pass
+
         # Try to resolve tenant_id from user relation or user ID itself if owner
-        try:
-            tenant_id = str(getattr(user, "tenant_id", "") or getattr(user, "id", "")).strip() or None
-        except Exception:
-            pass
+        if not tenant_id:
+            try:
+                tenant_id = str(getattr(user, "tenant_id", "") or getattr(user, "id", "")).strip() or None
+            except Exception:
+                pass
 
     if not owner_id and (context or {}).get("user_obj"):
         user = context["user_obj"]
