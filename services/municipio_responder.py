@@ -2864,6 +2864,38 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             flag_modified(chat_db_context, "context_data")
         return submenu
 
+    # --- NEW HANDLERS FOR TRAMITES (LICENCIA, TURNOS, TASAS) ---
+    if action_id in {"licencia_de_conducir", "solicitar_turnos", "pago_de_tasas_vigentes"}:
+        municipio_id = context.get("municipio_id", MUNICIPIO_ID)
+        # Use the key as the action_id to lookup in tramites.json
+        info = obtener_info_tramite_web(action_id, municipio_id)
+
+        # Fallback if not found by exact key, try friendly name
+        if "error" in info:
+            friendly_names = {
+                "licencia_de_conducir": "Licencia de Conducir",
+                "solicitar_turnos": "Solicitar Turnos",
+                "pago_de_tasas_vigentes": "Pago de Tasas"
+            }
+            info = obtener_info_tramite_web(friendly_names.get(action_id, action_id), municipio_id)
+
+        if "error" in info:
+            return {
+                "message_body": f"No encontré información sobre este trámite por el momento. ({action_id})",
+                "message_type": "text",
+                "fuente": "tramite_not_found"
+            }
+
+        response = {
+            "message_body": info.get("contenido", ""),
+            "options_list": info.get("botones", []),
+            "message_type": "interactive_buttons",
+            "fuente": f"info_tramite_{action_id}",
+            "generar_audio": True
+        }
+        return _responder_con_navegacion(response, context, chat_db_context)
+    # --- END NEW HANDLERS ---
+
     if action_id == "iniciar_reclamo":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         logger.info("[MENU_ACTION] Clearing previous claim context for new claim.")
@@ -5874,6 +5906,23 @@ def _resolve_tenant_identifiers(context: Optional[dict]) -> tuple[Optional[str],
         or (context or {}).get("municipio_id")
     )
 
+    # --- FALLBACK: Use user object if configuration failed to resolve IDs ---
+    if not tenant_id and (context or {}).get("user_obj"):
+        user = context["user_obj"]
+        # Try to resolve tenant_id from user relation or user ID itself if owner
+        try:
+            tenant_id = str(getattr(user, "tenant_id", "") or getattr(user, "id", "")).strip() or None
+        except Exception:
+            pass
+
+    if not owner_id and (context or {}).get("user_obj"):
+        user = context["user_obj"]
+        try:
+            owner_id = str(getattr(user, "id", "")).strip() or None
+        except Exception:
+            pass
+    # --- END FALLBACK ---
+
     def _clean(value: Optional[object]) -> Optional[str]:
         if value in (None, ""):
             return None
@@ -8072,7 +8121,12 @@ def responder_municipio(
     # --- START GREETING CHECK (MOVED) ---
     # This must run before any stateful logic to ensure greetings always reset the flow.
     normalized_input_for_greeting = normalizar_texto(pregunta_str or "").strip()
-    if (normalized_input_for_greeting in SIMPLE_GREETINGS or pregunta_str == "__INIT__"):
+    # FIX: Ensure numeric inputs are NOT treated as greetings
+    is_numeric_greeting = pregunta_str and pregunta_str.strip().isdigit()
+    if (
+        (normalized_input_for_greeting in SIMPLE_GREETINGS and not is_numeric_greeting)
+        or pregunta_str == "__INIT__"
+    ):
         logger_actual.info(f"Greeting keyword detected ('{pregunta_str}'). Resetting conversation and showing main menu.")
         handler = GreetingHandler(context)
         response = handler.handle(received_payload)
@@ -8837,7 +8891,14 @@ def responder_municipio(
     context["user_input_raw"] = pregunta_str
     normalized_input_menu = normalizar_texto(pregunta_str or "")
     action_id = received_payload.get("action_id") or received_payload.get("action")
-    if normalized_input_menu in {"menu", "menu principal"} or action_id == "menu_principal":
+
+    # FIX: Ensure numeric inputs are NOT treated as explicit menu requests unless action_id matches
+    is_numeric_menu_req = pregunta_str and pregunta_str.strip().isdigit()
+
+    if (
+        (normalized_input_menu in {"menu", "menu principal"} and not is_numeric_menu_req)
+        or action_id == "menu_principal"
+    ):
         contexto_municipio_actual.pop("reclamo_flow_v2", None)
         handler = GreetingHandler(context)
         response = handler.handle(received_payload)
@@ -8905,12 +8966,18 @@ def responder_municipio(
         logger_actual.info(f"[IntentClassifier] Classified intent: {intent} with payload: {intent_payload}")
 
     if intent == "saludar":
-        logger_actual.info("Greeting intent detected. Bypassing LLM and showing main menu.")
-        handler = GreetingHandler(context)
-        response = handler.handle(received_payload)
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return _finalize_response(response)
+        # Safeguard: Do not treat numeric inputs as greetings even if classified as such.
+        # This prevents accidental resets when users select menu options by number.
+        if pregunta_str and pregunta_str.strip().isdigit():
+            logger_actual.info(f"Ignored greeting intent for numeric input '{pregunta_str}'.")
+            intent = None
+        else:
+            logger_actual.info("Greeting intent detected. Bypassing LLM and showing main menu.")
+            handler = GreetingHandler(context)
+            response = handler.handle(received_payload)
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(response)
 
     if intent == "iniciar_reclamo":
         logger_actual.info("Claim initiation intent detected. Bypassing LLM and showing reclamos menu.")
