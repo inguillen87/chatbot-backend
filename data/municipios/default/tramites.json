@@ -669,14 +669,5 @@
                 "url": "https://www.juninmendoza.gov.ar/tramites/"
             }
         ]
-    },
-    "solicitar_turnos": {
-        "descripcion": "📅 Para solicitar turnos online, por favor ingresá al siguiente enlace:",
-        "botones": [
-            {
-                "texto": "Solicitar Turno",
-                "url": "https://tlc.mendoza.gov.ar/turnos"
-            }
-        ]
     }
 }

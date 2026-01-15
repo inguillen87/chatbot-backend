@@ -28,11 +28,6 @@ from services.municipio_responder import CONTEXTO_MUNICIPIO
 from services.config_loader import cargar_configuracion_pyme
 from services.response_formatter import render_audio_text
 from services.tts_orchestrator import generar_audio
-from services.common_utils import (
-    _get_main_menu_payload,
-    _ensure_welcome_audio_payload,
-    _esperando_info_libre,
-)
 from utils.response_utils import normalize_response_payload
 from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
 
@@ -567,6 +562,38 @@ def _lookup_whatsapp_mapping(to_number_raw: str) -> Tuple[Optional[WhatsappNumer
     return None, cleaned, normalized
 
 
+def _ensure_welcome_audio_payload(payload: dict) -> None:
+    if not isinstance(payload, dict):
+        return
+
+    if payload.get("audio_url") or payload.get("skip_audio_generation"):
+        return
+
+    has_menu_content = bool(payload.get("options_list") or payload.get("categorias") or payload.get("botones"))
+    if not payload.get("generar_audio") and not payload.get("audio_text") and not has_menu_content:
+        return
+
+    if has_menu_content and not payload.get("generar_audio"):
+        payload["generar_audio"] = True
+
+    text_to_speak = payload.get("audio_text")
+    if not text_to_speak:
+        categorias_for_audio = payload.get("categorias")
+        options_for_audio = payload.get("options_list") or payload.get("botones") or []
+        text_to_speak = render_audio_text(
+            message=payload.get("message_body", ""),
+            options=options_for_audio if not categorias_for_audio else None,
+            categorias=categorias_for_audio,
+            datos=payload.get("data"),
+            accion=payload.get("accion_backend"),
+        )
+
+    if text_to_speak:
+        audio_url = generar_audio(text_to_speak)
+        if audio_url:
+            payload["audio_url"] = audio_url
+
+
 def _reset_municipio_context_for_menu(session_context: ChatSessionContext) -> None:
     if not session_context or not isinstance(session_context.context_data, dict):
         return
@@ -767,6 +794,20 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
         timer.start()
 
 
+def _esperando_info_libre(municipio_ctx: dict) -> bool:
+    """True if any LLM prompt awaits free-form user input.
+
+    Both generic conversation fields and claim-specific flows use different
+    context keys when asking the user for additional information. This helper
+    centralizes the check so numeric shortcuts and other automated handlers
+    can pause while the bot waits for a free-form response.
+    """
+
+    return (
+        municipio_ctx.get("esperando_info_llm")
+        or municipio_ctx.get("esperando_info_llm_reclamo")
+    )
+
 # Load environment variables for Twilio credentials
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -930,6 +971,7 @@ def whatsapp_webhook():
     # --- Boti-style Welcome Message Branch ---
     from services.municipio_responder import normalizar_texto
     from services.config_loader import cargar_configuracion_municipio
+    from services.common_utils import _get_main_menu_payload
     from datetime import datetime
 
     button_payload = post_vars.get("ButtonPayload")
@@ -940,8 +982,7 @@ def whatsapp_webhook():
     GREETING_KEYWORDS = {"hola", "buenas", "buenos dias", "buenas tardes", "buenas noches"}
     OVERRIDE_KEYWORDS = {"menu", "menu principal", "reiniciar", "resetear", "volver", "cancelar", "terminar"}
 
-    # NLU Check: Don't trigger simple greeting if it looks like a complex intent
-    is_simple_greeting = normalized_input in GREETING_KEYWORDS
+    is_greeting = normalized_input in GREETING_KEYWORDS
     is_override = normalized_input in OVERRIDE_KEYWORDS
 
     municipio_ctx = session_context_db_entry.context_data.get(CONTEXTO_MUNICIPIO, {})
@@ -958,7 +999,7 @@ def whatsapp_webhook():
 
     safe_flag_modified(session_context_db_entry, "context_data")
 
-    should_trigger_welcome = is_simple_greeting and not is_waiting_for_info
+    should_trigger_welcome = is_greeting and not is_waiting_for_info
 
     request_root = request.url_root or ""
     request_root_stripped = request_root.rstrip("/")
@@ -1167,9 +1208,7 @@ def whatsapp_webhook():
                     )
                     try:
                         twilio_client.messages.create(
-                            from_=to_number_raw,
-                            to=from_number_raw,
-                            body=greeting
+                            from_=to_number_raw, to=from_number_raw, body=greeting
                         )
                         greeting_sent = True
                     except Exception as e:
@@ -1279,7 +1318,7 @@ def whatsapp_webhook():
         return "OK", 200
     elif should_trigger_welcome and is_rate_limited:
         current_app.logger.info(f"[WELCOME] Welcome skipped for {from_number_cleaned} due to rate-limit.")
-    elif is_simple_greeting and is_waiting_for_info:
+    elif is_greeting and is_waiting_for_info:
         current_app.logger.info(f"[WELCOME] Welcome skipped for {from_number_cleaned} because bot is waiting for info.")
 
     # Determine incoming text before any special handling (re-declaration to ensure it's available for the rest of the code)
@@ -1591,6 +1630,46 @@ def whatsapp_webhook():
                 )
                 break
 
+    if selected_option and selected_option.get("url") and not esperando_info:
+        url_value = selected_option.get("url")
+        bot_response_dict = {
+            "message_body": f"🔗 Acá podés ver tu ticket: {url_value}",
+            "options_list": [],
+            "message_type": "text",
+            "fuente": "whatsapp_url_shortcut",
+        }
+        normalize_response_payload(bot_response_dict)
+        respuesta_del_bot_text = bot_response_dict["message_body"]
+        formatted_whatsapp_payload = {}
+        try:
+            from services.response_formatter import build_interactive_response
+
+            formatted_whatsapp_payload = build_interactive_response(
+                options=bot_response_dict.get("options_list", []),
+                body_text=bot_response_dict.get("message_body", ""),
+                message_type=bot_response_dict.get("message_type", "text"),
+                channel="whatsapp",
+                include_audio=bool(bot_response_dict.get("audio_url")),
+                audio_url=bot_response_dict.get("audio_url"),
+            )
+        except Exception:
+            formatted_whatsapp_payload = {}
+
+        if formatted_whatsapp_payload:
+            try:
+                enviar_mensaje_whatsapp_con_fallback(
+                    numero_destino=from_number_raw,
+                    cuerpo=formatted_whatsapp_payload.get("body_text", bot_response_dict.get("message_body", "")),
+                    botones=formatted_whatsapp_payload.get("buttons"),
+                    lista=formatted_whatsapp_payload.get("list"),
+                )
+            except Exception as e:
+                current_app.logger.error(f"Error sending WhatsApp URL shortcut message: {e}", exc_info=True)
+
+        safe_flag_modified(session_context_db_entry, "context_data")
+        db.session.add(session_context_db_entry)
+        db.session.commit()
+        return "OK", 200
 
     # --- Call Real Chatbot Logic: responder_chatboc ---
     # Initialize with a default error response
@@ -1600,137 +1679,113 @@ def whatsapp_webhook():
         'message_type': 'text',
         'fuente': 'error_handler_whatsapp'
     }
-
-    # Check if we should bypass the bot logic because the user selected a URL option
-    bypass_bot_logic = False
-    if selected_option and selected_option.get("url"):
-        # If the option has a URL, we simply echo it back to the user
-        bypass_bot_logic = True
-        url_text = selected_option.get("texto", "enlace")
-        url_link = selected_option.get("url")
-        bot_response_dict = {
-            "message_body": f"Podés acceder a *{url_text}* ingresando aquí:\n{url_link}",
-            "message_type": "interactive_buttons",
-            "options_list": [
-                {"texto": "Menú", "action_id": "menu_principal"},
-                {"texto": "Cancelar", "action_id": "cancelar"}
-            ],
-            "fuente": "webhook_url_selection_fallback",
-            "generar_audio": True # Ensure audio is generated for this fallback
-        }
-        current_app.logger.info(f"Intercepted numeric selection for URL option: {url_text}")
-
     respuesta_del_bot_text = bot_response_dict['message_body']
 
     # The context_data from session_context_db_entry will be passed to responder_chatboc
     # and it's expected that responder_chatboc might modify it directly or return a new context.
 
     try:
-        if not bypass_bot_logic:
-            print(f"Calling responder_chatboc for session_id: {chat_session_id_internal}, owner_user: {client_user.name}")
+        print(f"Calling responder_chatboc for session_id: {chat_session_id_internal}, owner_user: {client_user.name}")
 
-            interpretacion_media_data = None
-            if uploaded_file_info:
-                mime_type = uploaded_file_info.get("mime_type", "")
-                if not skip_media_analysis and not mime_type.startswith("audio/"):
-                    interpretacion_media_data = clasificar_adjunto_whatsapp(uploaded_file_info, client_user)
-            # Location info should not be treated as interpreted media.
-            # It should be passed directly as location data.
+        interpretacion_media_data = None
+        if uploaded_file_info:
+            mime_type = uploaded_file_info.get("mime_type", "")
+            if not skip_media_analysis and not mime_type.startswith("audio/"):
+                interpretacion_media_data = clasificar_adjunto_whatsapp(uploaded_file_info, client_user)
+        # Location info should not be treated as interpreted media.
+        # It should be passed directly as location data.
 
-            kwargs_for_bot = {"source_channel": "whatsapp"}
-            if uploaded_file_info:
-                kwargs_for_bot["uploaded_file_info"] = uploaded_file_info
-                mime_type = uploaded_file_info.get("mime_type", "")
-                if mime_type.startswith("image/"):
-                    # Also add the specific keys the old flow handler expects
-                    kwargs_for_bot["es_foto"] = True
-                    kwargs_for_bot["foto_url"] = uploaded_file_info.get("url")
-                if skip_media_analysis:
-                    kwargs_for_bot["skip_media_analysis"] = True
-            if location_info:
-                # Pass location_info and mark it explicitly as a location payload
-                kwargs_for_bot["location"] = location_info
-                kwargs_for_bot["es_ubicacion"] = True
-                kwargs_for_bot["ubicacion_usuario"] = location_info
-            if interpretacion_media_data and not interpretacion_media_data.get("error"):
-                # This will now only contain data from actual images/files, not locations.
-                kwargs_for_bot["datos_interpretados_archivo"] = interpretacion_media_data
-            if selected_action_id:
-                kwargs_for_bot["action"] = selected_action_id
+        kwargs_for_bot = {"source_channel": "whatsapp"}
+        if uploaded_file_info:
+            kwargs_for_bot["uploaded_file_info"] = uploaded_file_info
+            mime_type = uploaded_file_info.get("mime_type", "")
+            if mime_type.startswith("image/"):
+                # Also add the specific keys the old flow handler expects
+                kwargs_for_bot["es_foto"] = True
+                kwargs_for_bot["foto_url"] = uploaded_file_info.get("url")
+            if skip_media_analysis:
+                kwargs_for_bot["skip_media_analysis"] = True
+        if location_info:
+            # Pass location_info and mark it explicitly as a location payload
+            kwargs_for_bot["location"] = location_info
+            kwargs_for_bot["es_ubicacion"] = True
+            kwargs_for_bot["ubicacion_usuario"] = location_info
+        if interpretacion_media_data and not interpretacion_media_data.get("error"):
+            # This will now only contain data from actual images/files, not locations.
+            kwargs_for_bot["datos_interpretados_archivo"] = interpretacion_media_data
+        if selected_action_id:
+            kwargs_for_bot["action"] = selected_action_id
 
-            if selected_option:
-                kwargs_for_bot["selected_option_data"] = selected_option
+        profile_name = post_vars.get("ProfileName")
+        if profile_name:
+            kwargs_for_bot["profile_name"] = profile_name
 
-            profile_name = post_vars.get("ProfileName")
-            if profile_name:
-                kwargs_for_bot["profile_name"] = profile_name
+        # The actual call that might raise an exception
+        bot_response_dict = responder_chatboc(
+            pregunta=message_body,
+            owner_user=client_user,
+            current_user=end_user,
+            rubro_obj=client_user.rubro,
+            chat_db_context=session_context_db_entry,
+            rubro_nombre_frontend=None,
+            tipo_chat=client_user.tipo_chat,
+            anon_id=from_number_cleaned,
+            chat_session_uuid=chat_session_id_internal,
+            channel="whatsapp",
+            **kwargs_for_bot
+        )
 
-            # The actual call that might raise an exception
-            bot_response_dict = responder_chatboc(
-                pregunta=message_body,
-                owner_user=client_user,
-                current_user=end_user,
-                rubro_obj=client_user.rubro,
-                chat_db_context=session_context_db_entry,
-                rubro_nombre_frontend=None,
-                tipo_chat=client_user.tipo_chat,
-                anon_id=from_number_cleaned,
-                chat_session_uuid=chat_session_id_internal,
-                channel="whatsapp",
-                **kwargs_for_bot
-            )
+        normalize_response_payload(bot_response_dict)
 
-            normalize_response_payload(bot_response_dict)
+        # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
+        if not end_user and bot_response_dict.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"]:
+            contexto_actual = session_context_db_entry.context_data.get("contexto_municipio", {})
+            datos_reclamo = contexto_actual.get("datos_parciales_llm_reclamo", {})
 
-            # Si el usuario es anónimo y la acción requiere datos personales, pedirlos
-            if not end_user and bot_response_dict.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"]:
-                contexto_actual = session_context_db_entry.context_data.get("contexto_municipio", {})
-                datos_reclamo = contexto_actual.get("datos_parciales_llm_reclamo", {})
+            # Extraer info del mensaje actual del usuario
+            potential_fields = ["nombre_cliente", "telefono_cliente", "email_cliente"]
+            current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracting {potential_fields} from: {message_body}")
+            extracted_data = extract_multiple_contact_details_llm(message_body, potential_fields)
+            current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracted: {extracted_data}")
 
-                # Extraer info del mensaje actual del usuario
-                potential_fields = ["nombre_cliente", "telefono_cliente", "email_cliente"]
-                current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracting {potential_fields} from: {message_body}")
-                extracted_data = extract_multiple_contact_details_llm(message_body, potential_fields)
-                current_app.logger.debug(f"[CONTACT_EXTRACTION] Extracted: {extracted_data}")
+            # Actualizar datos del reclamo con la info extraída
+            if extracted_data.get("nombre_cliente"):
+                datos_reclamo["nombre_usuario_detectado"] = extracted_data["nombre_cliente"]
+            if extracted_data.get("telefono_cliente"):
+                datos_reclamo["telefono_detectado"] = extracted_data["telefono_cliente"]
+            if extracted_data.get("email_cliente"):
+                datos_reclamo["email_detectado"] = extracted_data["email_cliente"]
 
-                # Actualizar datos del reclamo con la info extraída
-                if extracted_data.get("nombre_cliente"):
-                    datos_reclamo["nombre_usuario_detectado"] = extracted_data["nombre_cliente"]
-                if extracted_data.get("telefono_cliente"):
-                    datos_reclamo["telefono_detectado"] = extracted_data["telefono_cliente"]
-                if extracted_data.get("email_cliente"):
-                    datos_reclamo["email_detectado"] = extracted_data["email_cliente"]
+            # Guardar datos actualizados en el contexto
+            contexto_actual["datos_parciales_llm_reclamo"] = datos_reclamo
+            session_context_db_entry.context_data["contexto_municipio"] = contexto_actual
 
-                # Guardar datos actualizados en el contexto
-                contexto_actual["datos_parciales_llm_reclamo"] = datos_reclamo
-                session_context_db_entry.context_data["contexto_municipio"] = contexto_actual
-
-                # Verificar si ya tenemos toda la info
-                if not (datos_reclamo.get("nombre_usuario_detectado") and datos_reclamo.get("telefono_detectado") and datos_reclamo.get("email_detectado")):
-                    # Si falta info, volver a pedirla
-                    bot_response_dict = {
-                        "message_body": "Para poder registrar tu reclamo, necesito que me indiques tu nombre, tu número de teléfono y tu correo electrónico.",
-                        "pedir_info": ["nombre", "telefono", "email"]
-                    }
-
-            print(f"Raw response from responder_chatboc: {bot_response_dict}")
-
-            # Validate the response from the bot logic
-            if not isinstance(bot_response_dict, dict):
-                print(f"Warning: responder_chatboc did not return a dictionary. Response: {bot_response_dict}")
-                # Keep the default error response initialized earlier
+            # Verificar si ya tenemos toda la info
+            if not (datos_reclamo.get("nombre_usuario_detectado") and datos_reclamo.get("telefono_detectado") and datos_reclamo.get("email_detectado")):
+                # Si falta info, volver a pedirla
                 bot_response_dict = {
-                    'message_body': "Lo siento, hubo un error interno al procesar tu mensaje.",
-                    'options_list': [], 'message_type': 'text', 'fuente': 'error_handler_non_dict_response'
+                    "message_body": "Para poder registrar tu reclamo, necesito que me indiques tu nombre, tu número de teléfono y tu correo electrónico.",
+                    "pedir_info": ["nombre", "telefono", "email"]
                 }
 
-            # Ensure context_data is a dict for saving
-            if not isinstance(session_context_db_entry.context_data, dict):
-                print(f"Warning: context_data in session_context_db_entry is not a dict. Resetting. Data: {session_context_db_entry.context_data}")
-                session_context_db_entry.context_data = {
-                    "historial_chat": [{"role": "system", "content": "Context was reset due to invalid format."}],
-                    "estado_conversacion": "error_context"
-                }
+        print(f"Raw response from responder_chatboc: {bot_response_dict}")
+
+        # Validate the response from the bot logic
+        if not isinstance(bot_response_dict, dict):
+            print(f"Warning: responder_chatboc did not return a dictionary. Response: {bot_response_dict}")
+            # Keep the default error response initialized earlier
+            bot_response_dict = {
+                'message_body': "Lo siento, hubo un error interno al procesar tu mensaje.",
+                'options_list': [], 'message_type': 'text', 'fuente': 'error_handler_non_dict_response'
+            }
+
+        # Ensure context_data is a dict for saving
+        if not isinstance(session_context_db_entry.context_data, dict):
+            print(f"Warning: context_data in session_context_db_entry is not a dict. Resetting. Data: {session_context_db_entry.context_data}")
+            session_context_db_entry.context_data = {
+                "historial_chat": [{"role": "system", "content": "Context was reset due to invalid format."}],
+                "estado_conversacion": "error_context"
+            }
 
     except Exception as e:
         print(f"Error calling real chatbot logic (responder_chatboc): {e}")

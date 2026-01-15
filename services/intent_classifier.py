@@ -1,68 +1,82 @@
 import json
+import os
+import unicodedata
 import logging
-from typing import Any, Dict, List, Optional
-from config.feature_flags import FEATURE_ENCUESTAS
-from services.common_utils import (
-    crear_mapa_de_columnas_inteligente,
-    parse_precio_flexible,
-    limpiar_texto_base,
-    is_number,
-    get_logger,
-)
+from fuzzywuzzy import process, fuzz
 
-# Placeholder: In a real implementation, this would likely use a library or a separate service
-# to classify intents based on text. For now, it might be a simple keyword matcher or
-# a mock function.
+logger = logging.getLogger(__name__)
 
-logger = get_logger()
+class IntentClassifier:
+    def __init__(self, intents_file_path, min_confidence=85):
+        self.intents_file_path = intents_file_path
+        self.min_confidence = min_confidence
+        self.intents_by_rubro = self._load_intents()
 
-def classify_intent(text: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    Classifies the intent of the given text.
+    def _load_intents(self):
+        """Carga los intents desde el archivo JSON."""
+        try:
+            with open(self.intents_file_path, "r", encoding="utf-8") as f:
+                intents_data = json.load(f)
+            logger.info(f"Intents cargados exitosamente desde {self.intents_file_path}")
+            return intents_data
+        except FileNotFoundError:
+            logger.error(f"El archivo de intents no se encontró en: {self.intents_file_path}")
+            return {}
+        except json.JSONDecodeError:
+            logger.error(f"Error al decodificar el archivo JSON de intents: {self.intents_file_path}")
+            return {}
+        except Exception as e:
+            logger.error(f"Ocurrió un error inesperado al cargar los intents: {e}", exc_info=True)
+            return {}
 
-    Args:
-        text: The user's input text.
-        context: Optional conversation context.
+    def _normalize_text(self, text):
+        """Normaliza el texto para la comparación: minúsculas y sin acentos."""
+        if not text:
+            return ""
+        return "".join(
+            c for c in unicodedata.normalize("NFD", text.lower())
+            if unicodedata.category(c) != "Mn"
+        )
 
-    Returns:
-        A dictionary containing the detected intent and confidence.
-        Example: {"intent": "ver_catalogo", "confidence": 0.9}
-    """
-    if not text:
-        return {"intent": None, "confidence": 0.0}
+    def classify(self, text, rubro='municipios'):
+        """
+        Clasifica el texto del usuario y devuelve el intent con la mejor correspondencia si supera el umbral de confianza.
+        """
+        normalized_text = self._normalize_text(text)
+        if not normalized_text:
+            return None, 0
 
-    text_lower = text.lower().strip()
+        rubro_intents = self.intents_by_rubro.get(rubro, [])
+        if not rubro_intents:
+            logger.warning(f"No se encontraron intents para el rubro: {rubro}")
+            return None, 0
 
-    # --- Simple Keyword Matching (Placeholder Logic) ---
+        best_match = None
+        highest_score = 0
 
-    # Catalog Intents
-    if any(keyword in text_lower for keyword in ["catalogo", "catálogo", "productos", "comprar", "ver productos"]):
-         return {"intent": "ver_catalogo", "confidence": 0.95}
+        for intent in rubro_intents:
+            # Usar process.extractOne para encontrar la mejor coincidencia en los ejemplos
+            # Se usa token_sort_ratio para manejar el desorden de palabras
+            result = process.extractOne(
+                normalized_text,
+                [self._normalize_text(ej) for ej in intent.get("ejemplos", [])],
+                scorer=fuzz.token_sort_ratio,
+                score_cutoff=self.min_confidence,
+            )
 
-    # Claim Intents
-    if any(keyword in text_lower for keyword in ["reclamo", "queja", "reportar", "problema"]):
-        return {"intent": "iniciar_reclamo", "confidence": 0.9}
+            if result:
+                _, score = result
+                if score > highest_score:
+                    highest_score = score
+                    best_match = intent
 
-    # Greeting Intents
-    if text_lower in ["hola", "buen dia", "buenas", "que tal", "hello", "hi"]:
-        return {"intent": "saludo", "confidence": 0.9}
+        if best_match:
+            logger.info(f"Intent clasificado como '{best_match.get('categoria')}' con confianza {highest_score}% para el texto: '{text}'")
+            return best_match, highest_score
 
-    # Menu Intents
-    if text_lower in ["menu", "menú", "opciones", "inicio", "volver"]:
-        return {"intent": "menu_principal", "confidence": 0.95}
+        logger.info(f"No se encontró un intent con suficiente confianza para el texto: '{text}'")
+        return None, 0
 
-    # Default / Unknown
-    return {"intent": None, "confidence": 0.0}
-
-def load_intents_from_json(filepath: str) -> List[Dict[str, Any]]:
-    """Loads intent definitions from a JSON file."""
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            return data.get("intents", [])
-    except FileNotFoundError:
-        logger.error(f"Intent definition file not found: {filepath}")
-        return []
-    except json.JSONDecodeError:
-        logger.error(f"Error decoding JSON from: {filepath}")
-        return []
+# Instancia global para ser usada en la aplicación
+INTENTS_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "intents.json")
+intent_classifier = IntentClassifier(INTENTS_FILE)

@@ -1,89 +1,38 @@
 {
-  "intents": [
+  "municipios": [
     {
-      "intent": "saludo",
-      "keywords": [
-        "hola",
-        "buen dia",
-        "buenas",
-        "que tal",
-        "hello",
-        "hi",
-        "empezar",
-        "inicio"
+      "categoria": "iniciar_reclamo",
+      "ejemplos": [
+        "Quiero hacer un reclamo",
+        "Necesito denunciar un problema",
+        "Cómo hago para reclamar por un bache",
+        "Tengo un problema con el alumbrado",
+        "Se cayó un árbol",
+        "Hay un basural en mi calle",
+        "reclamo por un bache en la calle"
       ]
     },
     {
-      "intent": "ver_catalogo",
-      "keywords": [
-        "catalogo",
-        "catálogo",
-        "productos",
-        "comprar",
-        "ver productos",
-        "lista de precios",
-        "market",
-        "tienda",
-        "quiero comprar",
-        "ver catalogo",
-        "ver el catalogo"
+      "categoria": "saludar",
+      "ejemplos": [
+        "Hola",
+        "Buenos dias",
+        "Buenas tardes",
+        "Buenas noches",
+        "Que tal",
+        "Hola buenos dias"
       ]
     },
     {
-      "intent": "iniciar_reclamo",
-      "keywords": [
-        "reclamo",
-        "queja",
-        "reportar",
-        "problema",
-        "denuncia",
-        "incidente",
-        "no funciona",
-        "roto",
-        "basura"
+      "categoria": "licencia_de_conducir",
+      "ejemplos": [
+        "sacar licencia de conducir",
+        "quiero renovar el carnet",
+        "dónde hago el carnet de conducir",
+        "requisitos para la licencia",
+        "turno para la licencia",
+        "informacion sobre la licencia de conducir"
       ]
-    },
-    {
-      "intent": "consultar_estado_reclamo",
-      "keywords": [
-        "estado reclamo",
-        "seguimiento",
-        "como va mi reclamo",
-        "consultar reclamo",
-        "numero de reclamo"
-      ]
-    },
-    {
-      "intent": "menu_principal",
-      "keywords": [
-        "menu",
-        "menú",
-        "opciones",
-        "inicio",
-        "volver",
-        "atras",
-        "home"
-      ]
-    },
-    {
-      "intent": "cancelar",
-      "keywords": [
-        "cancelar",
-        "terminar",
-        "salir",
-        "chau",
-        "adios"
-      ]
-    },
-    {
-        "intent": "ayuda",
-        "keywords": [
-            "ayuda",
-            "help",
-            "socorro",
-            "no entiendo",
-            "como funciona"
-        ]
     }
   ]
 }

@@ -3,7 +3,7 @@ import openai
 import logging
 import json
 import httpx
-from typing import List, Dict, Optional, Any
+from typing import List, Dict
 
 from services.chatbot_prompts import get_system_prompt
 
@@ -122,117 +122,5 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
 
     except Exception as e:
         logger.error(f"Error calling OpenAI API: {e}", exc_info=True)
-        # Re-raise the exception to trigger the fallback mechanism
+        # Re-raise the exception to trigger the fallback mechanism.
         raise
-
-def detect_intent_municipio(texto_usuario: str) -> Optional[str]:
-    """
-    Uses OpenAI to classify the user's intent into a predefined set of municipal categories.
-    """
-    if not client:
-        logger.warning("OpenAI client not initialized; skipping LLM intent detection.")
-        return None
-
-    prompt = f"""
-    Eres un clasificador de intenciones para un chatbot municipal.
-    Analiza el siguiente texto y determina la intención más probable.
-
-    Categorías posibles:
-    - iniciar_reclamo: Reportar un problema (basura, luces, baches, ruidos, etc).
-    - consultar_estado_reclamo: Preguntar por el estado de un ticket existente.
-    - ver_catalogo: Interés en comprar productos, ver el mercado, economía social.
-    - enviar_sugerencia: Ideas o propuestas generales.
-    - licencia_de_conducir: Preguntas sobre carnet, licencia, turnos de licencia.
-    - solicitar_turnos: Turnos generales (no licencia).
-    - pago_de_tasas_vigentes: Impuestos, deudas, pagos.
-    - buscar_estacionamiento: Estacionamiento medido o lugares para aparcar.
-    - agenda_y_noticias: Eventos culturales, noticias.
-    - veterinaria_bromatologia: Mascotas, castraciones, bromatología.
-    - obras: Consultas sobre obras públicas.
-    - contactos_utiles: Teléfonos de emergencia, policía, etc.
-    - punto_limpio: Reciclaje, botellas, puntos verdes.
-    - saludo: Saludos simples sin otra intención.
-    - desconocido: No encaja claramente en ninguna anterior.
-
-    Texto del usuario: "{texto_usuario}"
-
-    Responde SOLO con un JSON válido: {{"intent": "nombre_categoria_detectada", "confidence": 0.0_to_1.0}}
-    """
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            response_format={"type": "json_object"},
-        )
-        content = response.choices[0].message.content
-        data = json.loads(content)
-        confidence = data.get("confidence", 0)
-        if confidence > 0.7:
-            return data.get("intent")
-        return None
-    except Exception as e:
-        logger.error(f"Error in detect_intent_municipio: {e}")
-        return None
-
-def extraer_datos_reclamo_llm(texto: str, campos_interes: List[str] = None) -> Dict[str, Any]:
-    """
-    Extracts structured data (name, phone, address, description) from unstructured text.
-    """
-    if not client:
-        return {}
-
-    if not campos_interes:
-        campos_interes = ["nombre", "telefono", "email", "direccion", "descripcion", "categoria"]
-
-    prompt = f"""
-    Extrae la siguiente información del texto del usuario para un reclamo municipal.
-    Campos buscados: {', '.join(campos_interes)}.
-
-    Texto: "{texto}"
-
-    Si un dato no está presente, usa null. Normaliza los teléfonos a formato numérico si es posible.
-    Responde SOLO JSON.
-    """
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            response_format={"type": "json_object"},
-        )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        logger.error(f"Error in extraer_datos_reclamo_llm: {e}")
-        return {}
-
-def generar_respuesta_municipio_llm(contexto: str, pregunta: str) -> str:
-    """
-    Generates a helpful response based on context (e.g., FAQ docs) and the user's question.
-    """
-    if not client:
-        return "Lo siento, no puedo procesar tu consulta en este momento."
-
-    prompt = f"""
-    Eres el asistente virtual de un municipio. Responde a la pregunta del vecino basándote en el siguiente contexto (si es relevante) o usando tu conocimiento general de forma cortés y servicial.
-
-    Contexto:
-    {contexto}
-
-    Pregunta del vecino: "{pregunta}"
-
-    Respuesta (breve, clara y amigable):
-    """
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.5,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error(f"Error in generar_respuesta_municipio_llm: {e}")
-        return "Hubo un error al generar la respuesta."
