@@ -3315,6 +3315,38 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             "fuente": "pedir_ubicacion_estacionamiento"
         }
 
+    if action_id == "zoonosis": # Handles the 'veterinaria_bromatologia' alias
+        contactos_info = cargar_configuracion_municipio(context.get("municipio_id", MUNICIPIO_ID), "contactos_especializados.json")
+        contacto_data = contactos_info.get("Veterinaria y Bromatologia", {})
+        if not contacto_data:
+            return {"message_body": "No se encontró la información de contacto en este momento.", "message_type": "text"}
+
+        nombre = contacto_data.get("nombre")
+        telefono = contacto_data.get("telefono")
+        horario = contacto_data.get("horario")
+
+        message_body = f"🐾 *Información de Veterinaria y Bromatología*\n\n"
+        if nombre:
+            message_body += f"Encargado/a: *{nombre}*\n"
+        if telefono:
+            link_whatsapp = f"https://wa.me/{''.join(filter(str.isdigit, telefono))}"
+            message_body += f"Teléfono: *{telefono}* (WhatsApp: {link_whatsapp})\n"
+        if horario:
+            message_body += f"Horario de atención: *{horario}*\n"
+
+        botones = []
+        if telefono:
+            link_whatsapp = f"https://wa.me/{''.join(filter(str.isdigit, telefono))}"
+            botones.append({"texto": "Contactar por WhatsApp", "url": link_whatsapp, "type": "url"})
+
+        response = {
+            "message_body": message_body.strip(),
+            "options_list": botones,
+            "message_type": "interactive_buttons" if botones else "text",
+            "fuente": "info_veterinaria_json"
+        }
+        return _responder_con_navegacion(response, context, chat_db_context)
+
 
     # Fallback for any other action that is not explicitly handled above
     return {
