@@ -28,6 +28,11 @@ from services.municipio_responder import CONTEXTO_MUNICIPIO
 from services.config_loader import cargar_configuracion_pyme
 from services.response_formatter import render_audio_text
 from services.tts_orchestrator import generar_audio
+from services.common_utils import (
+    _get_main_menu_payload,
+    _ensure_welcome_audio_payload,
+    _esperando_info_libre,
+)
 from utils.response_utils import normalize_response_payload
 from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
 
@@ -562,38 +567,6 @@ def _lookup_whatsapp_mapping(to_number_raw: str) -> Tuple[Optional[WhatsappNumer
     return None, cleaned, normalized
 
 
-def _ensure_welcome_audio_payload(payload: dict) -> None:
-    if not isinstance(payload, dict):
-        return
-
-    if payload.get("audio_url") or payload.get("skip_audio_generation"):
-        return
-
-    has_menu_content = bool(payload.get("options_list") or payload.get("categorias") or payload.get("botones"))
-    if not payload.get("generar_audio") and not payload.get("audio_text") and not has_menu_content:
-        return
-
-    if has_menu_content and not payload.get("generar_audio"):
-        payload["generar_audio"] = True
-
-    text_to_speak = payload.get("audio_text")
-    if not text_to_speak:
-        categorias_for_audio = payload.get("categorias")
-        options_for_audio = payload.get("options_list") or payload.get("botones") or []
-        text_to_speak = render_audio_text(
-            message=payload.get("message_body", ""),
-            options=options_for_audio if not categorias_for_audio else None,
-            categorias=categorias_for_audio,
-            datos=payload.get("data"),
-            accion=payload.get("accion_backend"),
-        )
-
-    if text_to_speak:
-        audio_url = generar_audio(text_to_speak)
-        if audio_url:
-            payload["audio_url"] = audio_url
-
-
 def _reset_municipio_context_for_menu(session_context: ChatSessionContext) -> None:
     if not session_context or not isinstance(session_context.context_data, dict):
         return
@@ -794,20 +767,6 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
         timer.start()
 
 
-def _esperando_info_libre(municipio_ctx: dict) -> bool:
-    """True if any LLM prompt awaits free-form user input.
-
-    Both generic conversation fields and claim-specific flows use different
-    context keys when asking the user for additional information. This helper
-    centralizes the check so numeric shortcuts and other automated handlers
-    can pause while the bot waits for a free-form response.
-    """
-
-    return (
-        municipio_ctx.get("esperando_info_llm")
-        or municipio_ctx.get("esperando_info_llm_reclamo")
-    )
-
 # Load environment variables for Twilio credentials
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -971,7 +930,6 @@ def whatsapp_webhook():
     # --- Boti-style Welcome Message Branch ---
     from services.municipio_responder import normalizar_texto
     from services.config_loader import cargar_configuracion_municipio
-    from services.common_utils import _get_main_menu_payload
     from datetime import datetime
 
     button_payload = post_vars.get("ButtonPayload")
@@ -982,7 +940,8 @@ def whatsapp_webhook():
     GREETING_KEYWORDS = {"hola", "buenas", "buenos dias", "buenas tardes", "buenas noches"}
     OVERRIDE_KEYWORDS = {"menu", "menu principal", "reiniciar", "resetear", "volver", "cancelar", "terminar"}
 
-    is_greeting = normalized_input in GREETING_KEYWORDS
+    # NLU Check: Don't trigger simple greeting if it looks like a complex intent
+    is_simple_greeting = normalized_input in GREETING_KEYWORDS
     is_override = normalized_input in OVERRIDE_KEYWORDS
 
     municipio_ctx = session_context_db_entry.context_data.get(CONTEXTO_MUNICIPIO, {})
@@ -999,7 +958,7 @@ def whatsapp_webhook():
 
     safe_flag_modified(session_context_db_entry, "context_data")
 
-    should_trigger_welcome = is_greeting and not is_waiting_for_info
+    should_trigger_welcome = is_simple_greeting and not is_waiting_for_info
 
     request_root = request.url_root or ""
     request_root_stripped = request_root.rstrip("/")
@@ -1208,7 +1167,9 @@ def whatsapp_webhook():
                     )
                     try:
                         twilio_client.messages.create(
-                            from_=to_number_raw, to=from_number_raw, body=greeting
+                            from_=to_number_raw,
+                            to=from_number_raw,
+                            body=greeting
                         )
                         greeting_sent = True
                     except Exception as e:
@@ -1318,7 +1279,7 @@ def whatsapp_webhook():
         return "OK", 200
     elif should_trigger_welcome and is_rate_limited:
         current_app.logger.info(f"[WELCOME] Welcome skipped for {from_number_cleaned} due to rate-limit.")
-    elif is_greeting and is_waiting_for_info:
+    elif is_simple_greeting and is_waiting_for_info:
         current_app.logger.info(f"[WELCOME] Welcome skipped for {from_number_cleaned} because bot is waiting for info.")
 
     # Determine incoming text before any special handling (re-declaration to ensure it's available for the rest of the code)
