@@ -2790,6 +2790,35 @@ def _get_posts_from_json(
         return "\n\n".join(formatted) + "\n", first_image
     return "<hr>".join(formatted), first_image
 
+def _responder_con_navegacion(response: dict, context: dict, chat_db_context) -> dict:
+    """
+    Enriches a response with standard navigation options and sets the conversation state
+    to wait for a navigation action (Menu/Cancel/Link selection).
+    """
+    options = response.get("options_list", [])
+
+    # Add navigation buttons if not present
+    if not any(b.get("action_id") == "menu_principal" for b in options):
+        options.append({"texto": "Menú", "action_id": "menu_principal"})
+    if not any(b.get("action_id") == "cancelar" for b in options):
+        options.append({"texto": "Cancelar", "action_id": "cancelar"})
+
+    response["options_list"] = options
+
+    # Ensure message type handles buttons
+    if response.get("message_type") == "text" and options:
+        response["message_type"] = "interactive_buttons"
+
+    # Update context state
+    contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+    contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_ACCION_NAVEGACION.name
+    contexto_municipio_actual["menu_opciones"] = options
+
+    if chat_db_context:
+        flag_modified(chat_db_context, "context_data")
+
+    return response
+
 def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> dict:
     """
     Handles actions from the new categorized main menu.
@@ -3183,6 +3212,19 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             response["options_list"] = social_buttons
         if first_image:
             response["image_url"] = first_image
+
+        # Inject navigation state
+        options = (response.get("options_list") or []) + [
+            {"texto": "Menú", "action_id": "menu_principal"},
+            {"texto": "Cancelar", "action_id": "cancelar"}
+        ]
+        response["options_list"] = options
+        response["message_type"] = "interactive_buttons"
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_ACCION_POST_INFO_TRAMITE"
+        contexto_municipio_actual["menu_opciones"] = options
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
         return response
 
     if action_id == "web_municipio":
@@ -3229,22 +3271,15 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
         response = {
             "message_body": body,
-            "options_list": full_options_list,
-            "message_type": "interactive_buttons" if full_options_list else "text",
+            "options_list": final_options,
+            "message_type": "interactive_buttons" if final_options else "text",
             "fuente": f"info_{action_id}_json",
         }
         image = data.get("image_url")
         if image:
             response["image_url"] = image
 
-        # Set state to allow numeric interaction with the links
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual["estado_conversacion"] = "ESPERANDO_ACCION_POST_INFO_TRAMITE"
-        contexto_municipio_actual["menu_opciones"] = full_options_list
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-
-        return response
+        return _responder_con_navegacion(response, context, chat_db_context)
 
     if action_id == "compartir_ubicacion":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
@@ -3280,44 +3315,6 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             "fuente": "pedir_ubicacion_estacionamiento"
         }
 
-    if action_id == "solicitar_turnos":
-        return {
-            "message_body": "📅 Para solicitar turnos online, por favor ingresá al siguiente enlace:",
-            "options_list": [{"texto": "Solicitar Turno", "url": "https://tlc.mendoza.gov.ar/turnos", "type": "url"}],
-            "message_type": "interactive_buttons",
-            "fuente": "info_solicitar_turnos_direct_link"
-        }
-
-    if action_id == "zoonosis": # Handles the 'veterinaria_bromatologia' alias
-        contactos_info = cargar_configuracion_municipio(context.get("municipio_id", MUNICIPIO_ID), "contactos_especializados.json")
-        contacto_data = contactos_info.get("Veterinaria y Bromatologia", {})
-        if not contacto_data:
-            return {"message_body": "No se encontró la información de contacto en este momento.", "message_type": "text"}
-
-        nombre = contacto_data.get("nombre")
-        telefono = contacto_data.get("telefono")
-        horario = contacto_data.get("horario")
-
-        message_body = f"🐾 *Información de Veterinaria y Bromatología*\n\n"
-        if nombre:
-            message_body += f"Encargado/a: *{nombre}*\n"
-        if telefono:
-            link_whatsapp = f"https://wa.me/{''.join(filter(str.isdigit, telefono))}"
-            message_body += f"Teléfono: *{telefono}* (WhatsApp: {link_whatsapp})\n"
-        if horario:
-            message_body += f"Horario de atención: *{horario}*\n"
-
-        botones = []
-        if telefono:
-            link_whatsapp = f"https://wa.me/{''.join(filter(str.isdigit, telefono))}"
-            botones.append({"texto": "Contactar por WhatsApp", "url": link_whatsapp, "type": "url"})
-
-        return {
-            "message_body": message_body.strip(),
-            "options_list": botones,
-            "message_type": "interactive_buttons" if botones else "text",
-            "fuente": "info_veterinaria_json"
-        }
 
     # Fallback for any other action that is not explicitly handled above
     return {
@@ -9660,7 +9657,7 @@ def responder_municipio(
     # --- FIN: Manejo genérico de selección de submenús ---
 
     # --- INICIO: Manejo de post-info de trámite (ej. click en link por número) ---
-    elif estado_conversacion == "ESPERANDO_ACCION_POST_INFO_TRAMITE":
+    elif estado_conversacion == ConversationState.ESPERANDO_ACCION_NAVEGACION.name:
         pregunta_str_info = ""
         action_payload = None
         if isinstance(pregunta_original, str):
@@ -9675,22 +9672,21 @@ def responder_municipio(
         menu_opciones = contexto_municipio_actual.get("menu_opciones", [])
         selected_action = action_payload or find_menu_action_by_input(pregunta_str_info, menu_opciones)
 
-        # Detect if it was a URL option selected via index
-        url_match = None
+        # Detect if it was a URL option selected via index (idempotent re-selection)
+        url_match_data = None
         if selected_action:
-            selected_option = next((opt for opt in menu_opciones if opt.get("action_id") == selected_action), None)
-            if selected_option and selected_option.get("type") == "url" and selected_option.get("url"):
-                url_match = selected_option.get("url")
+            selected_opt_match = next((opt for opt in menu_opciones if opt.get("action_id") == selected_action), None)
+            if selected_opt_match and selected_opt_match.get("type") == "url":
+                url_match_data = selected_opt_match
 
-        if url_match:
-            return _finalize_response({
-                "message_body": f"🔗 Podés acceder al enlace aquí:\n{url_match}\n\n¿Necesitás algo más?",
-                "options_list": [
-                    {"texto": "Menú principal", "action_id": "menu_principal"},
-                    {"texto": "Cancelar", "action_id": "cancelar"}
-                ],
+        if url_match_data:
+             # Re-display the URL message
+             return _finalize_response({
+                "message_body": f"Podés acceder a *{url_match_data.get('texto', 'enlace')}* ingresando aquí:\n{url_match_data['url']}\n\n¿En qué más puedo ayudarte?",
+                "options_list": menu_opciones,
                 "message_type": "interactive_buttons",
-                "fuente": "post_info_url_selection"
+                "fuente": "post_info_url_reselection",
+                "generar_audio": True
             })
 
         # If standard action (menu, back, etc), handle normally
@@ -9705,22 +9701,15 @@ def responder_municipio(
             response = handle_main_menu_action(selected_action, context, chat_db_context)
             if response:
                 return _finalize_response(response)
-        else:
-            # If input doesn't match any option, fall through to global LLM/Menu
-            logger_actual.info(f"Input '{pregunta_str_info}' in POST_INFO state not matched. Resetting state.")
-            contexto_municipio_actual['estado_conversacion'] = None
-            contexto_municipio_actual.pop('menu_opciones', None)
-            if chat_db_context:
-                flag_modified(chat_db_context, "context_data")
-            # Recursive call or fall-through by not returning?
-            # Better to return the fallback response directly to avoid complex recursion issues here.
-            # We treat it as unknown input in this context.
-            return _finalize_response({
-                "message_body": "No entendí tu elección. Por favor, seleccioná una opción válida o escribí 'Menú'.",
-                "options_list": menu_opciones,
-                "message_type": "interactive_buttons",
-                "fuente": "post_info_opcion_invalida"
-            })
+
+        # Fallback if input is not understood
+        return _finalize_response({
+            "message_body": "No entendí tu elección. Por favor, seleccioná una opción válida o escribí 'Menú'.",
+            "options_list": menu_opciones,
+            "message_type": "interactive_buttons",
+            "fuente": "post_info_opcion_invalida",
+            "generar_audio": True
+        })
     # --- FIN: Manejo de post-info de trámite ---
 
     # --- INICIO: Manejo de la espera por nombre de trámite ---

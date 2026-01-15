@@ -670,4 +670,23 @@
             }
         ]
     }
+,
+    "solicitar_turnos": {
+        "descripcion": "📅 Para solicitar turnos online, por favor ingresá al siguiente enlace:",
+        "botones": [
+            {
+                "texto": "Solicitar Turno",
+                "url": "https://tlc.mendoza.gov.ar/turnos"
+            }
+        ]
+    },
+    "zoonosis": {
+        "descripcion": "🐾 *Información de Veterinaria y Bromatología*\n\nEncargado/a: *Dra. Laura Funes*\nTeléfono: *+5492634521563* (WhatsApp: https://wa.me/5492634521563)\nHorario de atención: *Lunes a Viernes de 8:00 a 18:00 hs.*",
+        "botones": [
+            {
+                "texto": "Contactar por WhatsApp",
+                "url": "https://wa.me/5492634521563"
+            }
+        ]
+    }
 }
