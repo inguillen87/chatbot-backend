@@ -47,6 +47,7 @@ from utils.municipio_utils import (
 from .actions.municipio_actions import (
     CrearReclamoActionHandler,
     HacerSugerenciaActionHandler,
+    SolicitarLlamadaActionHandler,
     _normalize_url_for_comparison,
 )
 from .herramientas_municipio import (
@@ -2832,6 +2833,16 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
     # --- Handlers for New/Modified Menu Options ---
     if action_id == "contactos_utiles":
         return handle_contactos_utiles_inicio(context, chat_db_context)
+
+    if action_id == "solicitar_llamada":
+        handler = SolicitarLlamadaActionHandler(context)
+        response = handler.execute({"action_id": action_id})
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        # Reset state as the call takes over or fails
+        contexto_municipio_actual['estado_conversacion'] = None
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return response
 
     if action_id == "menu_principal":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
