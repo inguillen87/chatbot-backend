@@ -153,6 +153,12 @@ def voice_process():
     )
 
     if isinstance(result, dict):
+        if result.get("type") == "handoff":
+            # Handle Human Transfer
+            response.say(result.get("text", "Transfiriendo..."), language="es-AR")
+            response.dial(result.get("target"))
+            return Response(str(response), mimetype='text/xml')
+
         bot_response_text = result.get("text")
         audio_url = result.get("audio_url")
     else:

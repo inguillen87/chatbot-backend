@@ -102,6 +102,50 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
         # 4. Process Response for Voice
         message_body = response_dict.get('message_body', "No tengo respuesta.")
 
+        # Check for Human Handoff Intent
+        accion_backend = response_dict.get("accion_backend")
+        transfer_to_human = False
+
+        # Simple heuristic: specific action or keyword in text if action not explicit
+        if accion_backend in ["transferir_agente", "hablar_con_humano"]:
+            transfer_to_human = True
+
+        # Fallback check on text if no action set
+        if not transfer_to_human and "te comunico con un representante" in message_body.lower():
+            transfer_to_human = True
+
+        if transfer_to_human:
+             # --- Plan Check for Handoff: Only "full" plans allow transfer ---
+             plan = "free"
+             tenant_profile = (
+                getattr(client_user, "tenant", None)
+                or getattr(client_user, "tenant_profile", None)
+             )
+             if tenant_profile:
+                 plan = str(tenant_profile.plan or "free").lower()
+             elif hasattr(client_user, "plan"):
+                 plan = str(client_user.plan or "free").lower()
+
+             allowed_plans = {"full", "premium", "enterprise", "municipio_full"}
+
+             if plan in allowed_plans or plan.startswith("full"):
+                 # Return special signal for Dial
+                 # We need a configured phone number for the agent.
+                 # This should ideally be in TenantConfig or User profile.
+                 # Fallback to a placeholder or specific field if exists.
+                 agent_number = None
+                 if tenant_profile and tenant_profile.configuracion:
+                     agent_number = tenant_profile.configuracion.get("telefono_atencion")
+
+                 if not agent_number:
+                     agent_number = client_user.telefono # Fallback to owner phone
+
+                 if agent_number:
+                     return {"type": "handoff", "target": agent_number, "text": "Te estoy transfiriendo con un representante. Aguarda un momento."}
+
+             # If plan not allowed or no number found, fall through to standard response
+             message_body = "Lo siento, la transferencia a humanos no está disponible en este momento. Por favor deja tu mensaje."
+
         # Clean up text for speech
         speech_text = _clean_text_for_speech(message_body)
 
