@@ -167,12 +167,16 @@ def voice_process():
         bot_response_text = str(result)
         audio_url = None
 
+    # Use a loop structure: Play audio first, then Gather for new input.
+    # This structure <Gather><Play>...</Play></Gather> allows barge-in during the Play.
     gather = Gather(
         input='speech dtmf',
         num_digits=1,
         action=url_for('voice.voice_process', _external=True),
         language='es-AR',
-        bargeIn=True
+        bargeIn=True,
+        speechTimeout='auto',
+        timeout=5
     )
 
     if audio_url:
@@ -181,6 +185,12 @@ def voice_process():
         gather.say(bot_response_text, language="es-AR")
 
     response.append(gather)
+
+    # If gather times out or no input, we can redirect to process again (or a fallback)
+    # to keep the call alive if needed, or let it end.
+    # For now, let's redirect to itself with a no-input flag or just end if silent.
+    # To keep it conversational, we might want to prompt again.
+    # response.redirect(url_for('voice.voice_process', _external=True))
 
     return Response(str(response), mimetype='text/xml')
 

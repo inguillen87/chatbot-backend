@@ -1256,14 +1256,17 @@ class SolicitarLlamadaActionHandler(BaseActionHandler):
         elif hasattr(owner_user, "plan"):
             plan = str(owner_user.plan or "free").lower()
 
-        # Allow if plan is 'full', 'premium', 'enterprise' or similar high-tier
-        allowed_plans = {"full", "premium", "enterprise", "municipio_full"}
-        # (Add any other internal plan names as needed)
+        # Allow if plan is 'full' (legacy: 'premium', 'enterprise')
+        allowed_plans = {"full"}
 
-        if plan not in allowed_plans and not plan.startswith("full"):
+        # Map legacy high-tier plans to full
+        if plan in {"premium", "enterprise", "municipio_full"}:
+            plan = "full"
+
+        if plan not in allowed_plans:
              return {
                 "success": False,
-                "message_to_user": "Esta función (Llamada Saliente) está disponible solo en planes Full/Premium. Por favor, llamanos directamente o consultá por upgrade.",
+                "message_to_user": "Esta función (Llamada Saliente) está disponible solo en el plan Full. Por favor, llamanos directamente o consultá por upgrade.",
                 "message_type": "text"
             }
 
