@@ -99,7 +99,7 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
         # 3. Call Responder Logic
         # We use channel='voice' to instruct the bot to be brief and text-only
 
-        from services.municipio_responder import responder_chatboc
+        from services.logic import responder_chatboc
 
         response_dict = responder_chatboc(
             pregunta=user_speech,
@@ -128,11 +128,23 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
         safe_flag_modified(session_context, "context_data")
         db.session.commit()
 
-        return speech_text
+        # Try to generate premium audio
+        from services.tts_orchestrator import generar_audio
+        audio_url = None
+        try:
+            audio_url = generar_audio(speech_text)
+        except Exception as e:
+            logger.error(f"Failed to generate TTS audio: {e}")
+
+        # Return tuple (text, audio_url) if possible, or handle it in route.
+        # But handle_voice_interaction signature returns simple text in route currently.
+        # We need to change the contract or return a structure.
+        # Let's return a dict to be flexible.
+        return {"text": speech_text, "audio_url": audio_url}
 
     except Exception as e:
         logger.error(f"Error in handle_voice_interaction: {e}", exc_info=True)
-        return "Hubo un error al procesar tu solicitud."
+        return {"text": "Hubo un error al procesar tu solicitud.", "audio_url": None}
 
 def _clean_text_for_speech(text):
     """

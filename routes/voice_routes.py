@@ -1,9 +1,10 @@
 from flask import Blueprint, request, current_app, Response
-from twilio.twiml.voice_response import VoiceResponse, Gather
+from twilio.twiml.voice_response import VoiceResponse, Gather, Play
 from twilio.request_validator import RequestValidator
 from models import WhatsappNumero, ChatSessionContext, User
 from extensions import db
 from services.voice_handler import handle_voice_interaction
+from services.tts_orchestrator import generar_audio
 from utils.db_utils import ensure_chat_session_context_schema
 from sqlalchemy.orm import joinedload
 import os
@@ -20,29 +21,87 @@ def voice_welcome():
     """
     response = VoiceResponse()
 
-    # Check if we should record the call (optional)
-    # response.record(max_length=30)
+    # 1. Validate Request
+    if TWILIO_AUTH_TOKEN:
+        validator = RequestValidator(TWILIO_AUTH_TOKEN)
+        if not validator.validate(request.url, request.form, request.headers.get('X-Twilio-Signature', '')):
+           return "Forbidden", 403
 
     # Look up user to personalize greeting
-    to_number = request.form.get("To")
-    from_number = request.form.get("From") # Bot number in outbound call
+    # Note: For outbound calls initiated via API, 'To' is the user, 'From' is the bot (Twilio number).
+    # For inbound calls, 'From' is the user, 'To' is the bot.
+    # We can detect direction if needed, but for 'Solicitar llamada', it is outbound.
 
-    # For outbound calls initiated by the bot, 'To' is the user and 'From' is the bot.
-    # We need to reverse logic slightly if it was an inbound call.
-    # Assuming outbound for "Solicitar Llamada" feature.
+    user_phone = request.form.get("To", "").replace("whatsapp:", "").strip()
+    bot_phone = request.form.get("From", "").replace("whatsapp:", "").strip()
+    direction = request.form.get("Direction", "outbound-api")
+
+    if direction == "inbound":
+        user_phone, bot_phone = bot_phone, user_phone
 
     user_name = "Vecino"
-    # Attempt to find the user name from the session context if possible,
-    # but we might not have the session ID easily here without looking it up.
+    tenant_name = "tu municipio"
+    assistant_name = "el asistente virtual"
 
-    # Simple greeting
+    # Attempt to resolve context
+    try:
+        # Find Tenant via Bot Phone
+        whatsapp_mapping = WhatsappNumero.query.options(
+             joinedload(WhatsappNumero.user).joinedload(User.rubro)
+        ).filter(WhatsappNumero.numero_whatsapp.ilike(f"%{bot_phone.replace('+','').replace(' ','')}%")).first()
+
+        client_user = whatsapp_mapping.user if whatsapp_mapping else None
+
+        if client_user:
+            # Find End User
+            from services.pymes import get_or_create_user_by_phone
+            end_user = get_or_create_user_by_phone(user_phone, client_user)
+            if end_user and end_user.name and end_user.name != "Vecino/a":
+                user_name = end_user.name
+
+            # Resolve Tenant/Bot Name
+            tenant_profile = (
+                getattr(client_user, "tenant", None)
+                or getattr(client_user, "tenant_profile", None)
+                or getattr(client_user, "tenant_profile_municipio", None)
+            )
+            if tenant_profile and tenant_profile.configuracion:
+                config = tenant_profile.configuracion
+                tenant_name = (
+                    config.get("nombre_municipio")
+                    or config.get("nombre")
+                    or getattr(client_user, "nombre_empresa", None)
+                    or tenant_name
+                )
+                assistant_name = config.get("assistant_name") or config.get("bot_name") or assistant_name
+            elif client_user.nombre_empresa:
+                tenant_name = client_user.nombre_empresa
+
+    except Exception as e:
+        current_app.logger.error(f"[VOICE_WELCOME] Error resolving context: {e}")
+
+    greeting_text = f"Hola {user_name}, soy {assistant_name} de {tenant_name}. ¿En qué puedo ayudarte hoy?"
+
+    # Try premium TTS
+    audio_url = None
+    try:
+        audio_url = generar_audio(greeting_text)
+    except Exception as e:
+        current_app.logger.error(f"[VOICE_WELCOME] TTS failed: {e}")
+
     gather = Gather(
         input='speech',
         action='/voice/process',
         language='es-AR',
-        speechTimeout='auto'
+        speechTimeout='auto',
+        timeout=5
     )
-    gather.say(f"Hola, soy el asistente virtual. ¿En qué puedo ayudarte hoy?", language="es-AR")
+
+    if audio_url:
+        gather.play(audio_url)
+    else:
+        gather.say(greeting_text, language="es-AR")
+
     response.append(gather)
 
     # Loop if no input
@@ -78,16 +137,28 @@ def voice_process():
         return Response(str(response), mimetype='text/xml')
 
     # 2. Call the Logic Handler
-    bot_response_text = handle_voice_interaction(
+    result = handle_voice_interaction(
         user_speech=user_speech,
         user_phone=to_number,
         bot_phone=from_number,
         call_sid=call_sid
     )
 
+    if isinstance(result, dict):
+        bot_response_text = result.get("text")
+        audio_url = result.get("audio_url")
+    else:
+        bot_response_text = str(result)
+        audio_url = None
+
     # 3. Construct TwiML Response
     gather = Gather(input='speech', action='/voice/process', language='es-AR')
-    gather.say(bot_response_text, language="es-AR")
+
+    if audio_url:
+        gather.play(audio_url)
+    else:
+        gather.say(bot_response_text, language="es-AR")
+
     response.append(gather)
 
     # 4. Handle End of Conversation (optional detection)
