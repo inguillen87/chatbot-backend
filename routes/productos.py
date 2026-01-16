@@ -375,6 +375,13 @@ def obtener_productos():
         return "", 204
 
     view_mode = (request.args.get("view") or "").strip().lower()
+    accept_header = request.headers.get("Accept", "").lower()
+
+    # Check if this is an API call explicitly asking for JSON
+    is_api_call = (
+        "application/json" in accept_header or
+        view_mode in {"json", "api"}
+    )
 
     user = _resolve_authenticated_user()
     tenant_for_user = _tenant_for_user(user) if user else None
@@ -396,7 +403,9 @@ def obtener_productos():
 
     ensure_seed_catalog(owner, tenant)
 
-    if view_mode and view_mode not in {"json", "api"}:
+    # 1. BROWSER REDIRECT: If it's a browser request (not API) and contains view params,
+    # we redirect to the *external* frontend URL to avoid loops.
+    if view_mode and not is_api_call:
         query_dict = request.args.to_dict(flat=True)
         share_query = urlencode(query_dict) if query_dict else ""
 
@@ -405,13 +414,29 @@ def obtener_productos():
             or current_app.config.get("PANEL_URL")
             or request.host_url.rstrip("/")
         )
-        tenant_slug = None
-        if tenant and getattr(tenant, "slug", None):
-            tenant_slug = str(tenant.slug).strip().strip("/")
-        path_prefix = f"/{tenant_slug}" if tenant_slug else ""
-        target_base = f"{frontend_base.rstrip('/')}{path_prefix}/productos"
-        redirect_url = target_base + (f"?{share_query}" if share_query else "")
 
-        return redirect(redirect_url, code=302)
+        # If we are in local dev and no external frontend is defined, we can't redirect safely
+        # to prevent a loop if the backend is serving the same URL.
+        # Check if frontend_base is the same as current host.
+        current_host = request.host_url.rstrip("/")
+        is_same_host = frontend_base.rstrip("/") == current_host
 
+        # If external frontend is configured (different host), redirect there.
+        if not is_same_host:
+            tenant_slug = None
+            if tenant and getattr(tenant, "slug", None):
+                tenant_slug = str(tenant.slug).strip().strip("/")
+            path_prefix = f"/{tenant_slug}" if tenant_slug else ""
+            target_base = f"{frontend_base.rstrip('/')}{path_prefix}/productos"
+            redirect_url = target_base + (f"?{share_query}" if share_query else "")
+            return redirect(redirect_url, code=302)
+
+        # If we are on the same host (backend=frontend or missing config),
+        # we can't redirect to ourselves. We must serve JSON or a message.
+        # Since we deleted the HTML template per user request, we fall back to JSON
+        # but maybe wrap it or just serve it directly.
+        # For now, let's serve the JSON data so at least the data is visible.
+        pass
+
+    # 2. API RESPONSE: Return JSON data
     return listar_catalogo.__wrapped__(owner)
