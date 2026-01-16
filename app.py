@@ -481,6 +481,7 @@ def create_app(config_class=Config):
     from routes.integrations import integrations_bp
     from routes.pyme_catalog_fixes import pyme_catalog_fix_bp
     from routes.health import health_bp
+    from routes.voice_routes import voice_bp
     from cli_commands import register_commands
 
     if FEATURE_ENCUESTAS:
@@ -614,6 +615,7 @@ def create_app(config_class=Config):
     app.register_blueprint(encuestas_admin_bp)
     app.register_blueprint(pyme_catalog_fix_bp)
     app.register_blueprint(health_bp)
+    app.register_blueprint(voice_bp)
 
     from routes.super_admin import super_admin_bp
     app.register_blueprint(super_admin_bp)

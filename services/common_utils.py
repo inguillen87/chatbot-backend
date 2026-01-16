@@ -766,6 +766,7 @@ def _get_main_menu_payload(
             whatsapp_buttons.append({"texto": "🗳️ Participación Ciudadana", "action_id": "mostrar_menu_encuestas"})
         whatsapp_buttons.extend([
             {"texto": "🅿️ Estacionamiento", "action_id": "mostrar_menu_estacionamiento"},
+            {"texto": "📞 Solicitar llamada", "action_id": "solicitar_llamada"},
             {"texto": "❓ Ayuda", "action_id": "mostrar_menu_ayuda"},
         ])
 
@@ -837,6 +838,9 @@ def _get_main_menu_payload(
         categorias.extend([
             {"titulo": "🅿️ Estacionamiento", "botones": [
                 {"texto": "🅿️ Buscar Estacionamiento Libre", "action_id": "buscar_estacionamiento"},
+            ]},
+            {"titulo": "Accesibilidad", "botones": [
+                {"texto": "📞 Solicitar llamada de voz", "action_id": "solicitar_llamada"},
             ]},
             {"titulo": "❓ Ayuda", "botones": [
                 {"texto": "ℹ️ Cómo usar el bot", "action_id": "mostrar_menu_ayuda"},

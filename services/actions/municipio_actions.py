@@ -22,6 +22,7 @@ from services.config_loader import cargar_configuracion_municipio
 from models import MunicipioTicket, TenantProfile
 from services.common_utils import _get_main_menu_payload
 from services import promo_service
+from services.voice_handler import initiate_outbound_call
 
 logger = logging.getLogger(__name__)
 
@@ -1231,6 +1232,89 @@ class MenuPrincipalActionHandler(BaseActionHandler):
             ],
             "message_type": "interactive_buttons"
         }
+
+class SolicitarLlamadaActionHandler(BaseActionHandler):
+    action_name = "solicitar_llamada"
+
+    def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Inicia una llamada saliente al usuario para continuar la interacción por voz.
+        """
+        logger.info(f"Executing SolicitarLlamadaActionHandler with data: {action_data}")
+
+        viewer_user = self.context.get("viewer_user_obj")
+        owner_user = self.context.get("user_obj")
+
+        # Validar si tenemos el teléfono del usuario
+        # En WhatsApp, anon_id suele ser el número
+        user_phone = self.context.get("anon_id")
+
+        if not user_phone:
+             # Try getting from user object
+             if viewer_user and viewer_user.telefono:
+                 user_phone = viewer_user.telefono
+
+        if not user_phone:
+            return {
+                "success": False,
+                "message_to_user": "No pude identificar tu número de teléfono para llamarte. Por favor, escribime desde un número válido.",
+                "message_type": "text"
+            }
+
+        # Validar si tenemos el número del bot (owner) para usar como caller ID
+        # Necesitamos buscar el WhatsappNumero asociado al owner_user
+        # O usar un default si no es crítico que sea el mismo número
+
+        # Por simplicidad, intentamos usar el número configurado en Twilio o el del tenant
+        # Pero Twilio requiere que el 'From' sea un número verificado o comprado.
+        # Asumimos que el sistema usa el numero principal de Twilio por defecto si no se especifica otro.
+        bot_phone = os.environ.get("TWILIO_PHONE_NUMBER")
+
+        # Intentar obtener el numero especifico del tenant si existe
+        if hasattr(owner_user, 'whatsapp_numeros') and owner_user.whatsapp_numeros:
+             # Tomar el primero activo
+             for wn in owner_user.whatsapp_numeros:
+                 if wn.is_active:
+                     bot_phone = wn.numero_whatsapp
+                     break
+
+        if not bot_phone:
+             return {
+                "success": False,
+                "message_to_user": "Lo siento, el servicio de llamadas no está disponible en este momento (error de configuración).",
+                "message_type": "text"
+            }
+
+        # Iniciar la llamada
+        success = initiate_outbound_call(to_number=f"whatsapp:{user_phone}", from_number=bot_phone)
+
+        # Nota: Twilio no permite llamadas OUTBOUND a "whatsapp:+...", tiene que ser al numero real "+..."
+        # Si 'user_phone' viene sin 'whatsapp:', está bien. Si viene con, hay que limpiarlo.
+        # Y el destino debe ser PSTN (red telefónica), no la app de WhatsApp (Voice API es distinta).
+
+        # Corrección: Para llamadas de voz PSTN, los números deben ser E.164 limpios.
+        clean_user_phone = user_phone.replace("whatsapp:", "").strip()
+        if not clean_user_phone.startswith("+"):
+             clean_user_phone = f"+{clean_user_phone}"
+
+        clean_bot_phone = bot_phone.replace("whatsapp:", "").strip()
+        if not clean_bot_phone.startswith("+"):
+             clean_bot_phone = f"+{clean_bot_phone}"
+
+        success = initiate_outbound_call(to_number=clean_user_phone, from_number=clean_bot_phone)
+
+        if success:
+            return {
+                "success": True,
+                "message_to_user": "¡Listo! Te estoy llamando en este momento. Atendé por favor.",
+                "message_type": "text"
+            }
+        else:
+            return {
+                "success": False,
+                "message_to_user": "Hubo un error al intentar llamarte. Por favor, intentá de nuevo más tarde o continuá por chat.",
+                "message_type": "text"
+            }
 
 # Add other handlers as needed
 # e.g., CalificarAtencionActionHandler, ConfirmarCierreTicketActionHandler
