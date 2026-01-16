@@ -87,7 +87,8 @@ def voice_welcome():
         action=url_for('voice.voice_process', _external=True),
         language='es-AR',
         speechTimeout='auto',
-        timeout=5
+        timeout=5,
+        bargeIn=True
     )
 
     if audio_url:
@@ -132,7 +133,8 @@ def voice_process():
             input='speech dtmf',
             num_digits=1,
             action=url_for('voice.voice_process', _external=True),
-            language='es-AR'
+            language='es-AR',
+            bargeIn=True
         )
         gather.say("Lo siento, no te entendí bien. ¿Podrías repetirlo?", language="es-AR")
         response.append(gather)
@@ -169,7 +171,8 @@ def voice_process():
         input='speech dtmf',
         num_digits=1,
         action=url_for('voice.voice_process', _external=True),
-        language='es-AR'
+        language='es-AR',
+        bargeIn=True
     )
 
     if audio_url:

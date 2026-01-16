@@ -146,8 +146,35 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
              # If plan not allowed or no number found, fall through to standard response
              message_body = "Lo siento, la transferencia a humanos no está disponible en este momento. Por favor deja tu mensaje."
 
+        # Handling Pedir Info (Explicitly ask if needed)
+        pedir_info = response_dict.get("pedir_info")
+
         # Clean up text for speech
         speech_text = _clean_text_for_speech(message_body)
+
+        if pedir_info:
+            # If the bot is asking for info but the message body is short or doesn't seem to ask clearly,
+            # append a specific question.
+            # Convert list to single string if needed, or pick first item
+            if isinstance(pedir_info, list):
+                info_needed = pedir_info[0]
+            else:
+                info_needed = str(pedir_info)
+
+            # Simple heuristic: if '?' not in text, append question
+            if "?" not in speech_text:
+                friendly_map = {
+                    "direccion": "la dirección",
+                    "ubicacion": "tu ubicación",
+                    "nombre": "tu nombre",
+                    "telefono": "tu teléfono",
+                    "dni": "tu número de documento",
+                    "email": "tu correo electrónico",
+                    "descripcion": "los detalles",
+                    "categoria": "la categoría"
+                }
+                term = friendly_map.get(info_needed, info_needed.replace("_", " "))
+                speech_text += f" Por favor, indicame {term}."
 
         # Handling Options
         options = response_dict.get('options_list', [])
@@ -229,9 +256,16 @@ def _clean_text_for_speech(text):
     """
     if not text: return ""
 
+    # Remove URLs
     text = re.sub(r'http\S+', '', text)
+    # Remove Markdown bold/italic
     text = text.replace('*', '').replace('_', '')
+    # Normalize newlines
     text = text.replace('\n', ' ')
+    # Replace visual cues with audio cues
     text = text.replace('Hacé click en', 'Selecciona')
+    text = text.replace('hacé click', 'seleccioná')
+    # Remove emojis (basic range, can be improved)
+    text = re.sub(r'[^\w\s,.\?!¡¿:;áéíóúÁÉÍÓÚñÑ-]', '', text)
 
     return text.strip()
