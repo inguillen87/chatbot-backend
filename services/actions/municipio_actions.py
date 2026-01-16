@@ -1245,6 +1245,28 @@ class SolicitarLlamadaActionHandler(BaseActionHandler):
         viewer_user = self.context.get("viewer_user_obj")
         owner_user = self.context.get("user_obj")
 
+        # --- Plan Check: Only "full" (or enterprise/premium) plans allow outbound callback ---
+        # "pro" allows inbound only.
+
+        # Determine plan from tenant profile or user record
+        plan = "free"
+        tenant = getattr(owner_user, "tenant", None)
+        if tenant:
+            plan = str(tenant.plan or "free").lower()
+        elif hasattr(owner_user, "plan"):
+            plan = str(owner_user.plan or "free").lower()
+
+        # Allow if plan is 'full', 'premium', 'enterprise' or similar high-tier
+        allowed_plans = {"full", "premium", "enterprise", "municipio_full"}
+        # (Add any other internal plan names as needed)
+
+        if plan not in allowed_plans and not plan.startswith("full"):
+             return {
+                "success": False,
+                "message_to_user": "Esta función (Llamada Saliente) está disponible solo en planes Full/Premium. Por favor, llamanos directamente o consultá por upgrade.",
+                "message_type": "text"
+            }
+
         # Validar si tenemos el teléfono del usuario
         # En WhatsApp, anon_id suele ser el número
         user_phone = self.context.get("anon_id")
