@@ -125,6 +125,23 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             mensaje_completo_para_llm["imagen_url"] = context.get("foto_url")
 
         mensaje_para_llm = json.dumps(mensaje_completo_para_llm)
+
+        # --- Context Injection ---
+        # Add key links and identity info to the user context passed to the LLM
+        tenant_name = getattr(owner_user, "nombre", "Municipalidad")
+        # Assuming frontend URL can be derived or is in config
+        base_url = current_app.config.get("WIDGET_URL") or current_app.config.get("PANEL_URL") or "https://chatboc.ar"
+        tenant_slug = getattr(owner_user, "tenant_slug", "") or "municipio"
+
+        usuario_info_llm["contexto_tenant"] = {
+            "nombre": tenant_name,
+            "links": {
+                "portal_usuario": f"{base_url}/portal/{tenant_slug}",
+                "catalogo": f"{base_url}/{tenant_slug}/productos",
+                "perfil": f"{base_url}/portal/{tenant_slug}/perfil"
+            }
+        }
+
         respuesta_llm_dict, context_dict = llamar_llm_con_fallback(
             app=app,
             mensaje_usuario=mensaje_para_llm,
@@ -154,6 +171,14 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         if accion_backend_llm == "saludar":
             handler = GreetingHandler(context)
             return handler.handle({}), contexto_municipio_actual
+
+        if accion_backend_llm == "mostrar_menu_catalogo":
+             from services.municipio_responder import _get_catalogo_menu
+             # Delegate to the standard catalog menu responder
+             response = _get_catalogo_menu(context)
+             if respuesta_usuario_llm:
+                 response["message_body"] = respuesta_usuario_llm # Override or prepend LLM text if desired
+             return response, contexto_municipio_actual
 
         if accion_backend_llm in ["crear_reclamo", "iniciar_reclamo"] and datos_estructura_llm and datos_estructura_llm.get("target") == "municipio":
             contexto_municipio_actual.setdefault("historial_llm_reclamo", []).append(nuevo_turno_historial)

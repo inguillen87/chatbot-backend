@@ -57,22 +57,26 @@ class CatalogoHandler(BasePymeHandler):
 
         if resultados_qdrant:
             productos_formateados = []
-            productos_formateados.append("| Producto | Precio | Cantidad |")
-            productos_formateados.append("|---|---|---|")
             for idx, hit in enumerate(resultados_qdrant):
                 payload = getattr(hit, "payload", {}); item_db_id = payload.get("db_id")
-                item_obj = db.session.get(models.CatalogoItem, item_db_id) if item_db_id else None
+                # Removed redundant DB lookup if payload has info
                 nombre = payload.get("nombre", "Producto")
                 precio_s, precio_f, moneda = parse_precio_flexible(payload.get("precio_str", ""))
                 cantidad = payload.get("cantidad", "")
-                linea = f"| {nombre} | ${precio_f:,.2f} {moneda or 'ARS'} | {cantidad} |"
+
+                # Make the text more conversational
+                precio_txt = f"${precio_f:,.0f} {moneda or 'ARS'}" if precio_f else "Consultar precio"
+                linea = f"• *{nombre}* ({precio_txt})"
+                if cantidad:
+                    linea += f" - Stock: {cantidad}"
+
                 productos_formateados.append(linea)
                 identificador_accion = payload.get("sku") or item_db_id or nombre
-                botones_catalogo.append({"texto": f"Pedir {nombre[:20]}", "action": f"pedir_item_{identificador_accion}"})
+                botones_catalogo.append({"texto": f"Pedir {nombre[:15]}", "action": f"pedir_item_{identificador_accion}"})
 
             if productos_formateados:
-                respuesta_texto = "Algunos productos que podrían interesarte:\n\n" + "\n".join(productos_formateados)
-                respuesta_texto += "\n\nSi quieres alguno, usa los botones o dime (ej: 'quiero 2 [nombre]')."
+                respuesta_texto = "¡Claro! Aquí tienes algunos productos relacionados que encontré:\n\n" + "\n".join(productos_formateados)
+                respuesta_texto += "\n\n¿Te gustaría encargar alguno? Puedes usar los botones o decírmelo."
                 fuente_catalogo = "catalogo_qdrant_con_promos_v2"
 
         if not respuesta_texto:
@@ -99,7 +103,7 @@ class CatalogoHandler(BasePymeHandler):
 
             if fallback_items:
                 lines: List[str] = [
-                    "Estos son algunos destacados de nuestra bodega:"
+                    "Estos son algunos destacados de nuestra selección:"
                 ]
                 for idx, item in enumerate(fallback_items, 1):
                     nombre = item.get("nombre") or item.get("sku") or "Producto"
@@ -115,14 +119,14 @@ class CatalogoHandler(BasePymeHandler):
                         precio_txt = ""
                     line = f"*{idx}. {nombre}* ({presentacion}){precio_txt}"
                     if descripcion:
-                        line += f"\n   {descripcion}"
+                        line += f"\n   _{descripcion}_"
                     lines.append(line)
                 respuesta_texto = "\n\n".join(lines)
                 fuente_catalogo = "pyme_catalogo_destacado_static_v1"
             else:
                 respuesta_texto = (
-                    "No encontré productos listados todavía."
-                    " Si querés, puedo derivarte con un sommelier para que te ayude."
+                    "No encontré productos específicos para esa búsqueda por el momento."
+                    " ¿Te gustaría que te derive con un asesor para una atención personalizada?"
                 )
                 botones_catalogo = []
 
@@ -148,7 +152,7 @@ class CatalogoHandler(BasePymeHandler):
         if tiene_archivo_catalogo(self.pyme_id_actual):
             url_cat = url_descargar_catalogo_pyme(self.pyme_id_actual)
             if self.context.get("channel") == "whatsapp":
-                body += f"\n\nTambién puedes descargar nuestro catálogo completo en: {url_cat}"
+                body += f"\n\n📂 También puedes descargar nuestro catálogo completo aquí: {url_cat}"
             else:
                 options.append({
                     "id": "descargar_catalogo_pyme_pdf",
@@ -188,12 +192,12 @@ class OfertasHandler(BasePymeHandler):
         message_type = 'interactive_buttons'
 
         if promos:
-            body = "¡Tenemos estas promociones activas!\n" + "\n".join([
-                f"\n**{p.nombre_promocion}**: {p.descripcion_publica}" for p in promos[:3]
+            body = "🎉 **¡Aprovecha nuestras promociones actuales!**\n" + "\n".join([
+                f"\n✨ **{p.nombre_promocion}**: {p.descripcion_publica}" for p in promos[:3]
             ])
             if len(promos) > 3:
-                body += f"\n... y {len(promos) - 3} más!"
-            body += "\n\n¿Te interesa alguna o quieres ver productos?"
+                body += f"\n... ¡y {len(promos) - 3} más!"
+            body += "\n\n¿Te gustaría aprovechar alguna de estas ofertas o prefieres ver el catálogo general?"
             return {
                 "message_body": body,
                 "options_list": options,
@@ -216,19 +220,19 @@ class OfertasHandler(BasePymeHandler):
             canal = promo.get("canal")
             validez = promo.get("validez")
             descripcion = promo.get("descripcion") or promo.get("descripcion_publica") or ""
-            header = f"**{nombre}**"
+            header = f"✨ **{nombre}**"
             if canal:
                 header += f" · {canal}"
             if validez:
                 header += f" (vigente hasta {validez})"
             block = header
             if descripcion:
-                block += f"\n   {descripcion}"
+                block += f"\n   _{descripcion}_"
             formatted_promos.append(block)
 
         if formatted_promos:
-            body = "Estas son nuestras promos vigentes:\n\n" + "\n\n".join(formatted_promos)
-            body += "\n\nDecime cuál te interesa o pedime un pedido directo."
+            body = "🚀 **Promociones destacadas:**\n\n" + "\n\n".join(formatted_promos)
+            body += "\n\n¿Alguna te llama la atención? También puedes hacer un pedido directo."
             return {
                 "message_body": body,
                 "options_list": options,
@@ -236,7 +240,7 @@ class OfertasHandler(BasePymeHandler):
                 "fuente": "pyme_promos_estaticas_v1",
             }
 
-        body_no_ofertas = "No tenemos ofertas especiales ahora, pero explora nuestro catálogo."
+        body_no_ofertas = "Por el momento no tenemos ofertas especiales activas, pero te invito a explorar nuestro catálogo completo donde encontrarás excelentes productos."
         return {
             "message_body": body_no_ofertas,
             "options_list": options,
