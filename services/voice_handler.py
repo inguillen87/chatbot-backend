@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
+MESSAGING_SERVICE_SID = os.environ.get("MESSAGING_SERVICE_SID")
 
 def initiate_outbound_call(to_number, from_number):
     """
@@ -73,8 +74,9 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
         end_user = get_or_create_user_by_phone(user_phone_clean, client_user)
 
         # 2. Load/Create Chat Session
+        # Use a distinct session ID for voice to avoid state conflicts with WhatsApp
         empresa_id = client_user.id
-        chat_session_id = f"whatsapp_{empresa_id}_{user_phone_clean}"
+        chat_session_id = f"voice_{empresa_id}_{call_sid}" if call_sid else f"voice_{empresa_id}_{user_phone_clean}"
 
         session_context = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
         if not session_context:
@@ -126,9 +128,14 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
              elif hasattr(client_user, "plan"):
                  plan = str(client_user.plan or "free").lower()
 
-             allowed_plans = {"full", "premium", "enterprise", "municipio_full"}
+             # Simplified plans: gratuito, pro, full
+             allowed_plans = {"full"}
 
-             if plan in allowed_plans or plan.startswith("full"):
+             # Map legacy high-tier plans to full
+             if plan in {"premium", "enterprise", "municipio_full"}:
+                 plan = "full"
+
+             if plan in allowed_plans:
                  # Return special signal for Dial
                  # We need a configured phone number for the agent.
                  # This should ideally be in TenantConfig or User profile.
@@ -164,17 +171,22 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
             # Simple heuristic: if '?' not in text, append question
             if "?" not in speech_text:
                 friendly_map = {
-                    "direccion": "la dirección",
-                    "ubicacion": "tu ubicación",
-                    "nombre": "tu nombre",
-                    "telefono": "tu teléfono",
-                    "dni": "tu número de documento",
-                    "email": "tu correo electrónico",
-                    "descripcion": "los detalles",
-                    "categoria": "la categoría"
+                    "direccion": "¿Me decís la dirección exacta?",
+                    "ubicacion": "¿Dónde estás ahora mismo? Decime la dirección.",
+                    "nombre": "¿Me decís tu nombre completo?",
+                    "telefono": "¿Me dictás tu número de teléfono?",
+                    "dni": "¿Cuál es tu DNI?",
+                    "email": "¿Me decís tu email?",
+                    "descripcion": "¿Me contás bien qué pasó? Dame más detalles.",
+                    "categoria": "¿De qué se trata el reclamo?"
                 }
-                term = friendly_map.get(info_needed, info_needed.replace("_", " "))
-                speech_text += f" Por favor, indicame {term}."
+                # Default fallback
+                default_q = f"Por favor, indicame: {info_needed.replace('_', ' ')}."
+
+                question = friendly_map.get(info_needed, default_q)
+
+                # Append with a conversational connector
+                speech_text += f" {question}"
 
         # Handling Options
         options = response_dict.get('options_list', [])
@@ -241,9 +253,15 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
         # Assuming responder_chatboc logic puts something in context or we infer from recent logs.
         # For MVP, we send a simple follow-up.
 
+        # Ensure we use a valid sender. Use Messaging Service if available to avoid "From" errors.
+        kwargs = {}
+        if MESSAGING_SERVICE_SID:
+             kwargs["messaging_service_sid"] = MESSAGING_SERVICE_SID
+
         enviar_mensaje_whatsapp_con_fallback(
             numero_destino=user_phone_clean,
-            cuerpo=f"{summary_text} Si necesitas algo más, podés escribirnos por aquí."
+            cuerpo=f"{summary_text} Si necesitas algo más, podés escribirnos por aquí.",
+            **kwargs
         )
         logger.info(f"Sent post-call summary to {user_phone_clean}")
 

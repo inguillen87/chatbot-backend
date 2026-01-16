@@ -1723,10 +1723,16 @@ def _looks_like_free_form_input(text: str | None) -> bool:
     normalized = normalizar_texto(stripped)
     word_count = len(normalized.split())
 
+    # Strong keywords that always imply intent
+    strong_keywords = {"reclamo", "queja", "denuncia", "turno", "licencia", "quiero", "necesito"}
+    if any(k in normalized for k in strong_keywords):
+        return True
+
     if word_count >= 6:
         return True
 
     if len(stripped) >= 40:
+        # Check if it contains keywords to avoid skipping fuzzy match incorrectly for long unrelated text
         return True
 
     # Sentences with punctuation combined with at least a few words
@@ -8255,8 +8261,10 @@ def responder_municipio(
                     chat_db_context,
                     demo_metadata=demo_metadata,
                 )
+                # FIX: Return LLM response immediately if it exists, bypassing fallback.
                 if response_dict:
                     return _finalize_response(response_dict)
+
                 logger_actual.info(f"Input '{pregunta_str_menu}' is not a menu option. Treating as a general query.")
                 contexto_municipio_actual['estado_conversacion'] = None
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
@@ -9766,8 +9774,10 @@ def responder_municipio(
                 chat_db_context,
                 demo_metadata=demo_metadata,
             )
+                # FIX: Return LLM response immediately if it exists, bypassing fallback loop.
             if response_dict:
                 return _finalize_response(response_dict)
+
             # Reenviar el mismo submenú si la opción no es válida
             return _finalize_response({
                 "message_body": "No reconocí esa opción. Por favor, elegí una opción del menú.",
