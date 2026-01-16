@@ -104,6 +104,42 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
         # 4. Process Response for Voice
         message_body = response_dict.get('message_body', "No tengo respuesta.")
 
+        # --- Detect URLs to send via Message (Out-of-band delivery) ---
+        # Voice cannot convey URLs effectively. If the response contains links (e.g. payment, ticket),
+        # we send them via WhatsApp/SMS and notify the user.
+        found_urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', message_body)
+
+        # Check options for URLs
+        options_list = response_dict.get('options_list', [])
+        for opt in options_list:
+            if isinstance(opt, dict) and opt.get("url"):
+                found_urls.append(opt["url"])
+
+        if found_urls:
+            try:
+                # Send the full text (with links) to the user's phone
+                kwargs = {}
+                if MESSAGING_SERVICE_SID:
+                    kwargs["messaging_service_sid"] = MESSAGING_SERVICE_SID
+
+                # Format the body to be friendly
+                clean_body = message_body
+                # If message body is just a URL or very short, add context
+                if len(message_body) < 100 or message_body.startswith("http"):
+                    clean_body = f"Aquí tienes la información de tu llamada:\n\n{message_body}"
+
+                enviar_mensaje_whatsapp_con_fallback(
+                    numero_destino=user_phone_clean,
+                    cuerpo=clean_body,
+                    **kwargs
+                )
+
+                # Append a spoken notification
+                message_body += " Te acabo de enviar un mensaje con los enlaces y la información detallada para que la tengas a mano."
+                logger.info(f"Sent OOB message with URLs to {user_phone_clean}")
+            except Exception as e:
+                logger.error(f"Failed to send OOB message: {e}")
+
         # Check for Human Handoff Intent
         accion_backend = response_dict.get("accion_backend")
         transfer_to_human = False

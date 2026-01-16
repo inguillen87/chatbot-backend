@@ -2121,6 +2121,11 @@ def _normalize_pedir_info_value(pedir_info: Any) -> Optional[str]:
     return fields[0] if fields else None
 
 
+def _normalize_single_expected_field(field_name: Any) -> Optional[str]:
+    """Helper to ensure we have a clean string for a single expected field."""
+    return _normalize_pedir_info_value(field_name)
+
+
 def _prefill_contacto_from_context(
     contexto_municipio_actual: dict,
     datos_parciales: dict,
@@ -9774,7 +9779,7 @@ def responder_municipio(
                 chat_db_context,
                 demo_metadata=demo_metadata,
             )
-                # FIX: Return LLM response immediately if it exists, bypassing fallback loop.
+            # FIX: Return LLM response immediately if it exists, bypassing fallback loop.
             if response_dict:
                 return _finalize_response(response_dict)
 
