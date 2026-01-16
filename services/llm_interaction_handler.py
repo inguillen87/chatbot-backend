@@ -125,8 +125,18 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             mensaje_completo_para_llm["imagen_url"] = context.get("foto_url")
 
         # Inject voice channel instruction
-        if context.get("channel") == "voice":
-            mensaje_completo_para_llm["instruccion_canal"] = "El usuario está en una llamada de voz. Responde de forma muy breve (máximo 1 o 2 oraciones), directa y concisa. Evita listas largas o explicaciones detalladas a menos que se pidan."
+        is_voice = context.get("channel") == "voice"
+        # Check explicit flag from DB context if channel didn't propagate
+        if not is_voice and chat_db_context and chat_db_context.context_data:
+            is_voice = chat_db_context.context_data.get("_voice_mode")
+
+        if is_voice:
+            mensaje_completo_para_llm["instruccion_canal"] = (
+                "El usuario está en una llamada de voz y tu respuesta será convertida a audio. "
+                "Responde de forma breve (1-2 oraciones), conversacional, amigable y fluida. "
+                "Evita listas largas, Markdown complejo, URLs o explicaciones robóticas. "
+                "Actúa como un asistente humano útil y cálido."
+            )
 
         mensaje_para_llm = json.dumps(mensaje_completo_para_llm)
 
