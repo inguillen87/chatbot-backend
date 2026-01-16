@@ -124,6 +124,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         if context.get("es_foto") and context.get("foto_url"):
             mensaje_completo_para_llm["imagen_url"] = context.get("foto_url")
 
+        # Inject voice channel instruction
+        if context.get("channel") == "voice":
+            mensaje_completo_para_llm["instruccion_canal"] = "El usuario está en una llamada de voz. Responde de forma muy breve (máximo 1 o 2 oraciones), directa y concisa. Evita listas largas o explicaciones detalladas a menos que se pidan."
+
         mensaje_para_llm = json.dumps(mensaje_completo_para_llm)
 
         # --- Context Injection ---
