@@ -1,12 +1,13 @@
 import logging
 import re
-from flask import current_app, g
+import os
+from flask import current_app, url_for
 from models import WhatsappNumero, User, ChatSessionContext
 from extensions import db
 from utils.db_utils import safe_flag_modified
 from sqlalchemy.orm import joinedload
 from twilio.rest import Client
-import os
+from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +25,9 @@ def initiate_outbound_call(to_number, from_number):
 
     client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-    # Ensure URL is absolute. In production, this must be the public HTTPS URL.
-    # For dev, we assume current_app.config['APP_BASE_URL'] is set (e.g. ngrok)
+    # In production, this must be the public HTTPS URL.
+    # We use url_for with _external=True to generate absolute URL.
+    # Note: Flask's SERVER_NAME or equivalent must be set correctly, or use APP_BASE_URL config.
     base_url = current_app.config.get("APP_BASE_URL") or current_app.config.get("BACKEND_URL")
     if not base_url:
         logger.error("APP_BASE_URL or BACKEND_URL not set. Cannot trigger voice call.")
@@ -37,7 +39,8 @@ def initiate_outbound_call(to_number, from_number):
         call = client.calls.create(
             to=to_number,
             from_=from_number,
-            url=url
+            url=url,
+            method="POST"
         )
         logger.info(f"Outbound call initiated SID: {call.sid}")
         return True
@@ -51,29 +54,17 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
     """
     try:
         # 1. Resolve Users (Tenant & End User) similar to WhatsApp Webhook
-        # Note: In outbound calls, 'To' is the user, 'From' is the bot.
-        # But we need to find the WhatsappNumero config to know which Tenant matches the 'From' (bot) number.
-
-        # We need to clean numbers to match DB format usually
-        # user_phone might be '+549...' or '+54...'
-        # bot_phone might be 'whatsapp:+...' (unlikely for voice) or just '+...'
-
-        # Cleanup
         user_phone_clean = user_phone.replace("whatsapp:", "").strip()
         bot_phone_clean = bot_phone.replace("whatsapp:", "").strip()
 
         # Find the Tenant (Owner) via the Bot's phone number
-        # We search in WhatsappNumero where numero_whatsapp matches bot_phone_clean
-        # (This assumes the voice number is the same as the WA number, or configured similarly)
         whatsapp_mapping = WhatsappNumero.query.options(
              joinedload(WhatsappNumero.user).joinedload(User.rubro)
         ).filter(WhatsappNumero.numero_whatsapp.ilike(f"%{bot_phone_clean.replace('+','').replace(' ','')}%")).first()
 
         if not whatsapp_mapping:
-             # Fallback: Try to match without country code or partial
-             # This is tricky. Let's assume for MVP we find it.
              logger.warning(f"Could not find tenant for bot phone {bot_phone_clean}")
-             return "Lo siento, hubo un error de configuración."
+             return {"text": "Lo siento, hubo un error de configuración.", "audio_url": None}
 
         client_user = whatsapp_mapping.user
 
@@ -82,7 +73,6 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
         end_user = get_or_create_user_by_phone(user_phone_clean, client_user)
 
         # 2. Load/Create Chat Session
-        # We use the SAME session ID format as WhatsApp so the bot "remembers" the text conversation context!
         empresa_id = client_user.id
         chat_session_id = f"whatsapp_{empresa_id}_{user_phone_clean}"
 
@@ -97,8 +87,6 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
             db.session.commit()
 
         # 3. Call Responder Logic
-        # We use channel='voice' to instruct the bot to be brief and text-only
-
         from services.logic import responder_chatboc
 
         response_dict = responder_chatboc(
@@ -114,14 +102,14 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
         # 4. Process Response for Voice
         message_body = response_dict.get('message_body', "No tengo respuesta.")
 
-        # Clean up text for speech (remove Markdown, URLs, etc.)
+        # Clean up text for speech
         speech_text = _clean_text_for_speech(message_body)
 
-        # Handling Options: If there are buttons, we list them.
+        # Handling Options
         options = response_dict.get('options_list', [])
         if options:
             speech_text += " Puedes decir: "
-            option_texts = [opt.get('texto', '') for opt in options[:3]] # Limit to 3 options for sanity
+            option_texts = [opt.get('texto', '') for opt in options[:3]]
             speech_text += ", o ".join(option_texts)
 
         # Save context
@@ -136,15 +124,60 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
         except Exception as e:
             logger.error(f"Failed to generate TTS audio: {e}")
 
-        # Return tuple (text, audio_url) if possible, or handle it in route.
-        # But handle_voice_interaction signature returns simple text in route currently.
-        # We need to change the contract or return a structure.
-        # Let's return a dict to be flexible.
         return {"text": speech_text, "audio_url": audio_url}
 
     except Exception as e:
         logger.error(f"Error in handle_voice_interaction: {e}", exc_info=True)
         return {"text": "Hubo un error al procesar tu solicitud.", "audio_url": None}
+
+def handle_call_status(call_sid, call_status, to_number, from_number, direction):
+    """
+    Handles call status updates (e.g. 'completed') to send a summary via WhatsApp.
+    """
+    if call_status not in ['completed']:
+        return
+
+    try:
+        user_phone = to_number if direction == 'outbound-api' else from_number
+        bot_phone = from_number if direction == 'outbound-api' else to_number
+
+        user_phone_clean = user_phone.replace("whatsapp:", "").strip()
+        bot_phone_clean = bot_phone.replace("whatsapp:", "").strip()
+
+        # Identify Tenant
+        whatsapp_mapping = WhatsappNumero.query.options(
+             joinedload(WhatsappNumero.user)
+        ).filter(WhatsappNumero.numero_whatsapp.ilike(f"%{bot_phone_clean.replace('+','').replace(' ','')}%")).first()
+
+        if not whatsapp_mapping:
+            return
+
+        client_user = whatsapp_mapping.user
+        empresa_id = client_user.id
+        chat_session_id = f"whatsapp_{empresa_id}_{user_phone_clean}"
+
+        session_context = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
+        if not session_context or not session_context.context_data:
+            return
+
+        # Check for recent activity or specific flags indicating a completed transaction/claim
+        # For simplicity, we send a generic "Thanks for calling" or specific summary if available.
+        # Ideally, look into context_data for 'last_ticket_created' or similar.
+
+        summary_text = "Gracias por tu llamada. "
+
+        # Example check for ticket (needs specific logic depending on how ticket info is stored in context)
+        # Assuming responder_chatboc logic puts something in context or we infer from recent logs.
+        # For MVP, we send a simple follow-up.
+
+        enviar_mensaje_whatsapp_con_fallback(
+            numero_destino=user_phone_clean,
+            cuerpo=f"{summary_text} Si necesitas algo más, podés escribirnos por aquí."
+        )
+        logger.info(f"Sent post-call summary to {user_phone_clean}")
+
+    except Exception as e:
+        logger.error(f"Error handling call status: {e}", exc_info=True)
 
 def _clean_text_for_speech(text):
     """
@@ -152,16 +185,9 @@ def _clean_text_for_speech(text):
     """
     if not text: return ""
 
-    # Remove URLs
     text = re.sub(r'http\S+', '', text)
-
-    # Remove Markdown bold/italic
     text = text.replace('*', '').replace('_', '')
-
-    # Remove excessive newlines
     text = text.replace('\n', ' ')
-
-    # Remove specific button instructions often found in bot text
     text = text.replace('Hacé click en', 'Selecciona')
 
     return text.strip()

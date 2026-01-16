@@ -1,9 +1,9 @@
-from flask import Blueprint, request, current_app, Response
+from flask import Blueprint, request, current_app, Response, url_for
 from twilio.twiml.voice_response import VoiceResponse, Gather, Play
 from twilio.request_validator import RequestValidator
 from models import WhatsappNumero, ChatSessionContext, User
 from extensions import db
-from services.voice_handler import handle_voice_interaction
+from services.voice_handler import handle_voice_interaction, handle_call_status
 from services.tts_orchestrator import generar_audio
 from utils.db_utils import ensure_chat_session_context_schema
 from sqlalchemy.orm import joinedload
@@ -24,13 +24,10 @@ def voice_welcome():
     # 1. Validate Request
     if TWILIO_AUTH_TOKEN:
         validator = RequestValidator(TWILIO_AUTH_TOKEN)
+        # Using request.url might be HTTP if behind proxy, causing validation failure.
+        # Ideally rely on ProxyFix, but be aware.
         if not validator.validate(request.url, request.form, request.headers.get('X-Twilio-Signature', '')):
            return "Forbidden", 403
-
-    # Look up user to personalize greeting
-    # Note: For outbound calls initiated via API, 'To' is the user, 'From' is the bot (Twilio number).
-    # For inbound calls, 'From' is the user, 'To' is the bot.
-    # We can detect direction if needed, but for 'Solicitar llamada', it is outbound.
 
     user_phone = request.form.get("To", "").replace("whatsapp:", "").strip()
     bot_phone = request.form.get("From", "").replace("whatsapp:", "").strip()
@@ -43,9 +40,7 @@ def voice_welcome():
     tenant_name = "tu municipio"
     assistant_name = "el asistente virtual"
 
-    # Attempt to resolve context
     try:
-        # Find Tenant via Bot Phone
         whatsapp_mapping = WhatsappNumero.query.options(
              joinedload(WhatsappNumero.user).joinedload(User.rubro)
         ).filter(WhatsappNumero.numero_whatsapp.ilike(f"%{bot_phone.replace('+','').replace(' ','')}%")).first()
@@ -53,13 +48,11 @@ def voice_welcome():
         client_user = whatsapp_mapping.user if whatsapp_mapping else None
 
         if client_user:
-            # Find End User
             from services.pymes import get_or_create_user_by_phone
             end_user = get_or_create_user_by_phone(user_phone, client_user)
             if end_user and end_user.name and end_user.name != "Vecino/a":
                 user_name = end_user.name
 
-            # Resolve Tenant/Bot Name
             tenant_profile = (
                 getattr(client_user, "tenant", None)
                 or getattr(client_user, "tenant_profile", None)
@@ -82,7 +75,6 @@ def voice_welcome():
 
     greeting_text = f"Hola {user_name}, soy {assistant_name} de {tenant_name}. ¿En qué puedo ayudarte hoy?"
 
-    # Try premium TTS
     audio_url = None
     try:
         audio_url = generar_audio(greeting_text)
@@ -90,8 +82,9 @@ def voice_welcome():
         current_app.logger.error(f"[VOICE_WELCOME] TTS failed: {e}")
 
     gather = Gather(
-        input='speech',
-        action='/voice/process',
+        input='speech dtmf',
+        num_digits=1,
+        action=url_for('voice.voice_process', _external=True),
         language='es-AR',
         speechTimeout='auto',
         timeout=5
@@ -104,9 +97,8 @@ def voice_welcome():
 
     response.append(gather)
 
-    # Loop if no input
     response.say("No te escuché. ¿Podrías repetirlo?", language="es-AR")
-    response.redirect('/voice/welcome')
+    response.redirect(url_for('voice.voice_welcome', _external=True))
 
     return Response(str(response), mimetype='text/xml')
 
@@ -115,32 +107,48 @@ def voice_process():
     """
     Endpoint that processes speech input and returns the bot's response.
     """
-    # 1. Validate Request
     if TWILIO_AUTH_TOKEN:
         validator = RequestValidator(TWILIO_AUTH_TOKEN)
         if not validator.validate(request.url, request.form, request.headers.get('X-Twilio-Signature', '')):
            return "Forbidden", 403
 
     user_speech = request.form.get('SpeechResult')
+    digits = request.form.get('Digits')
+
+    # Prioritize speech, fallback to digits (simple mapping for now, or just pass as text)
+    input_text = user_speech or digits
+
     confidence = float(request.form.get('Confidence', 0.0))
 
-    to_number = request.form.get("To") # User phone in outbound
-    from_number = request.form.get("From") # Bot phone in outbound
+    to_number = request.form.get("To")
+    from_number = request.form.get("From")
     call_sid = request.form.get("CallSid")
+    direction = request.form.get("Direction", "outbound-api")
 
     response = VoiceResponse()
 
-    if not user_speech or confidence < 0.5:
-        gather = Gather(input='speech', action='/voice/process', language='es-AR')
+    if not input_text or (user_speech and confidence < 0.5):
+        gather = Gather(
+            input='speech dtmf',
+            num_digits=1,
+            action=url_for('voice.voice_process', _external=True),
+            language='es-AR'
+        )
         gather.say("Lo siento, no te entendí bien. ¿Podrías repetirlo?", language="es-AR")
         response.append(gather)
         return Response(str(response), mimetype='text/xml')
 
-    # 2. Call the Logic Handler
+    if direction == "inbound":
+        user_phone = from_number
+        bot_phone = to_number
+    else:
+        user_phone = to_number
+        bot_phone = from_number
+
     result = handle_voice_interaction(
-        user_speech=user_speech,
-        user_phone=to_number,
-        bot_phone=from_number,
+        user_speech=input_text,
+        user_phone=user_phone,
+        bot_phone=bot_phone,
         call_sid=call_sid
     )
 
@@ -151,8 +159,12 @@ def voice_process():
         bot_response_text = str(result)
         audio_url = None
 
-    # 3. Construct TwiML Response
-    gather = Gather(input='speech', action='/voice/process', language='es-AR')
+    gather = Gather(
+        input='speech dtmf',
+        num_digits=1,
+        action=url_for('voice.voice_process', _external=True),
+        language='es-AR'
+    )
 
     if audio_url:
         gather.play(audio_url)
@@ -161,7 +173,24 @@ def voice_process():
 
     response.append(gather)
 
-    # 4. Handle End of Conversation (optional detection)
-    # If bot_response_text indicates goodbye, we could use response.hangup()
-
     return Response(str(response), mimetype='text/xml')
+
+@voice_bp.route('/voice/status', methods=['POST'])
+def voice_status():
+    """
+    Handles call status updates.
+    """
+    if TWILIO_AUTH_TOKEN:
+        validator = RequestValidator(TWILIO_AUTH_TOKEN)
+        if not validator.validate(request.url, request.form, request.headers.get('X-Twilio-Signature', '')):
+           return "Forbidden", 403
+
+    call_sid = request.form.get('CallSid')
+    call_status = request.form.get('CallStatus')
+    to_number = request.form.get("To")
+    from_number = request.form.get("From")
+    direction = request.form.get("Direction")
+
+    handle_call_status(call_sid, call_status, to_number, from_number, direction)
+
+    return Response(status=200)
