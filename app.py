@@ -673,6 +673,9 @@ def create_app(config_class=Config):
     if socketio is not None:
         socketio.init_app(app)
 
+    # Inicializar Flask-Sock
+    sock.init_app(app)
+
     return app
 
 # Objeto global de app para Gunicorn (se puede omitir en tests configurando

@@ -231,6 +231,34 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             if not datos_actuales.get("categoria"):
                 datos_actuales["categoria"] = "otros"
 
+            # --- VALIDATION BLOCK START ---
+            # 1. Check for invalid/suspicious address values (e.g., greetings)
+            address_val = datos_actuales.get("ubicacion", "")
+            invalid_address_triggers = ["hola", "buenas", "buen dia", "buenas tardes", "test", "prueba", "si", "no"]
+            if address_val and (len(address_val.strip()) < 4 or address_val.strip().lower() in invalid_address_triggers):
+                logger_actual.info(f"[VALIDATION] Rejected invalid address: '{address_val}'. Removing from data.")
+                datos_actuales.pop("ubicacion")
+                # Force asking for it again
+                if not pedir_info_llm:
+                    pedir_info_llm = "ubicacion"
+                    # Add a clearer prompt if the LLM didn't provide one
+                    if not respuesta_usuario_llm or "direcc" not in respuesta_usuario_llm.lower():
+                        respuesta_usuario_llm = "Disculpá, no entendí bien la dirección. ¿Podrías indicarme dónde es el problema (calle y altura o intersección)?"
+
+            # 2. Check for missing required fields before execution
+            required = ["descripcion", "ubicacion"]
+            missing = [field for field in required if not datos_actuales.get(field)]
+
+            if missing and not pedir_info_llm:
+                logger_actual.info(f"[VALIDATION] Missing fields {missing} but LLM wanted to execute. Blocking execution.")
+                pedir_info_llm = ", ".join(missing)
+                # If we are blocking execution, we must ensure the user knows what we need
+                if "ubicacion" in missing:
+                     respuesta_usuario_llm = "Entendido. Para registrar el reclamo, necesito que me digas la dirección exacta del problema."
+                elif "descripcion" in missing:
+                     respuesta_usuario_llm = "Por favor, describime brevemente cuál es el problema para poder registrarlo."
+            # --- VALIDATION BLOCK END ---
+
             if not pedir_info_llm:
                 handler = CrearReclamoActionHandler(context)
                 return handler.execute(datos_actuales), contexto_municipio_actual

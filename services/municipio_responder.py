@@ -1057,12 +1057,6 @@ class ReclamoFlowHandler:
                 if self.context.get('foto_url'):
                     datos['foto_url'] = self.context.get('foto_url')
                 else:
-                    # Skip photo prompt if in voice mode (users can't send photos during call)
-                    # We will ask for it in the post-call summary instead.
-                    if self.context.get("channel") == "voice" or self.municipal_ctx.get("_voice_mode"):
-                        self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
-                        return self.ask_for_contact_details()
-
                     self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
                     return {
                         "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
@@ -1339,12 +1333,6 @@ class ReclamoFlowHandler:
             if self.flow_context['datos_reclamo'].get('foto_url') or self.context.get('foto_url'):
                 self.flow_context['datos_reclamo'].setdefault('foto_url', self.context.get('foto_url'))
                 return self.ask_for_contact_details()
-
-            # Skip photo prompt if in voice mode
-            if self.context.get("channel") == "voice" or self.municipal_ctx.get("_voice_mode"):
-                self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
-                return self.ask_for_contact_details()
-
             self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
             return {
                 "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
@@ -2126,28 +2114,6 @@ def _normalize_pedir_info_value(pedir_info: Any) -> Optional[str]:
     return fields[0] if fields else None
 
 
-def _normalize_single_expected_field(field: str | None) -> str | None:
-    if not field:
-        return None
-
-    f = str(field).strip().lower()
-
-    aliases = {
-        "ubicacion": ["ubicacion", "dirección", "direccion", "ubicación", "location", "lugar", "zona"],
-        "distrito": ["distrito", "barrio", "localidad"],
-        "descripcion": ["descripcion", "descripción", "detalle", "problema", "reclamo"],
-        "categoria": ["categoria", "categoría", "tipo"],
-        "telefono": ["telefono", "teléfono", "celular", "whatsapp"],
-        "nombre": ["nombre", "apellido"],
-    }
-
-    for canon, keys in aliases.items():
-        if f in keys:
-            return canon
-
-    return f
-
-
 def _prefill_contacto_from_context(
     contexto_municipio_actual: dict,
     datos_parciales: dict,
@@ -2899,6 +2865,82 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         return submenu
 
     # --- NEW HANDLERS FOR TRAMITES (LICENCIA, TURNOS, TASAS) ---
+    if action_id == "solicitar_llamada":
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        # Extract phone number robustly
+        phone_number = None
+        contacto = contexto_municipio_actual.get("contacto_usuario", {})
+
+        # 1. Try from explicit user object (if logged in or previously identified)
+        if context.get("user_obj"):
+             phone_number = getattr(context.get("user_obj"), "telefono", None)
+
+        # 2. Try from viewer_user_obj (the end-user interacting)
+        if not phone_number and context.get("viewer_user_obj"):
+             phone_number = getattr(context.get("viewer_user_obj"), "telefono", None)
+
+        # 3. Try from session context
+        if not phone_number and contacto.get("telefono"):
+             phone_number = contacto.get("telefono")
+
+        # 4. Try from anon_id (if it's a phone number)
+        if not phone_number and context.get("anon_id"):
+             anon_id_val = context.get("anon_id")
+             # Clean anon_id to check if it looks like a phone number
+             cleaned_anon = "".join(filter(str.isdigit, str(anon_id_val)))
+             if len(cleaned_anon) >= 10: # Rough validation for a phone number
+                 phone_number = "+" + cleaned_anon if not str(anon_id_val).startswith("+") else str(anon_id_val)
+
+        if phone_number:
+            # Trigger outbound call (Implementation placeholder - requires Twilio Client)
+            try:
+                from twilio.rest import Client
+                account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
+                auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
+                twilio_phone = os.environ.get("TWILIO_PHONE_NUMBER")
+
+                if account_sid and auth_token and twilio_phone:
+                    client = Client(account_sid, auth_token)
+
+                    # Construct the absolute URL for the TwiML stream
+                    backend_url = current_app.config.get("BACKEND_URL") or "https://www.chatboc.ar"
+                    twiml_url = f"{backend_url}/twilio/voice/inbound" # We reuse the inbound TwiML which connects to the stream
+
+                    call = client.calls.create(
+                        to=phone_number,
+                        from_=twilio_phone,
+                        url=twiml_url
+                    )
+                    return {
+                        "message_body": f"¡Entendido! Te estamos llamando al {phone_number}. Por favor, atendé la llamada para continuar.",
+                        "message_type": "text",
+                        "fuente": "solicitar_llamada_success"
+                    }
+                else:
+                    logger.error("Twilio credentials missing for outbound call.")
+                    return {
+                        "message_body": "Lo siento, el servicio de llamadas no está configurado correctamente en este momento.",
+                        "message_type": "text",
+                        "fuente": "solicitar_llamada_error_config"
+                    }
+            except Exception as e:
+                logger.error(f"Error initiating outbound call: {e}")
+                return {
+                    "message_body": "Hubo un error al intentar realizar la llamada. Por favor, intentá más tarde.",
+                    "message_type": "text",
+                    "fuente": "solicitar_llamada_error_api"
+                }
+        else:
+            # If no phone number found, ask for it
+            contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_TELEFONO_VECINO.name
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return {
+                "message_body": "Para llamarte, necesito tu número de teléfono. Por favor, escribilo (ej: 261 123 4567).",
+                "message_type": "text",
+                "fuente": "solicitar_llamada_pedir_telefono"
+            }
+
     if action_id in {"licencia_de_conducir", "solicitar_turnos", "pago_de_tasas_vigentes"}:
         municipio_id = context.get("municipio_id", MUNICIPIO_ID)
         # Use the key as the action_id to lookup in tramites.json
@@ -3052,36 +3094,6 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
     if action_id.startswith("encuesta_compartir::"):
         slug_publico = action_id.split("::", 1)[1] if "::" in action_id else ""
         return _build_encuesta_share_payload(slug_publico, context, chat_db_context)
-
-    if action_id == "solicitar_llamada":
-        # Initiate outbound call
-        from services.voice_handler import initiate_outbound_call
-
-        target_phone = getattr(context.get("viewer_user_obj"), "id", None) or getattr(context.get("viewer_user_obj"), "telefono", None)
-
-        # If target_phone looks like a phone
-        if target_phone:
-             bot_phone = getattr(context.get("user_obj"), "telefono", None)
-             # initiate_outbound_call will sanitize inputs and use env var for caller ID
-             success = initiate_outbound_call(to_number=target_phone, from_number=bot_phone)
-             if success:
-                 return {
-                     "message_body": "Te estamos llamando en este momento...",
-                     "message_type": "text",
-                     "fuente": "solicitar_llamada_ok"
-                 }
-             else:
-                 return {
-                     "message_body": "No pudimos iniciar la llamada. Por favor intenta más tarde.",
-                     "message_type": "text",
-                     "fuente": "solicitar_llamada_error"
-                 }
-        else:
-             return {
-                 "message_body": "No tengo tu número registrado para llamarte.",
-                 "message_type": "text",
-                 "fuente": "solicitar_llamada_no_phone"
-             }
 
     if action_id == "mostrar_menu_estacionamiento":
         submenu = _get_estacionamiento_menu()
@@ -4045,24 +4057,6 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
 
         mensaje_completo_para_llm = {"texto": pregunta_str}
-
-        # --- VOICE MODE PROMPT INJECTION ---
-        is_voice = context.get("channel") == "voice"
-        if not is_voice:
-             ctx_data = context.get("chat_db_context_data") or (chat_db_context.context_data if chat_db_context else {})
-             if isinstance(ctx_data, dict):
-                 is_voice = ctx_data.get("_voice_mode")
-
-        if is_voice:
-            mensaje_completo_para_llm["instruccion_canal"] = (
-                "ESTAS HABLANDO POR TELEFONO (VOZ). "
-                "Tus respuestas deben ser MUY BREVES, concisas y naturales para ser escuchadas. "
-                "Evita listas largas, markdown complejo o URLs. "
-                "Usa lenguaje coloquial y directo. "
-                "Si tienes que dar opciones, da maximo 2 o 3."
-            )
-        # --- END VOICE MODE ---
-
         if context.get("es_foto") and context.get("foto_url"):
             mensaje_completo_para_llm["imagen_url"] = context.get("foto_url")
             if contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw"):
@@ -4493,11 +4487,11 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
     except Exception as e_llm:
         logger.error(f"[HANDLE_LLM] Error: {e_llm}", exc_info=True)
-        # for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo", "historial_conversacion_general_llm", "estado_conversacion"]:
-        #     if k == "estado_conversacion" and contexto_municipio_actual.get(k) in [ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name, ConversationState.CONVERSACION_GENERAL_LLM.name]:
-        #         contexto_municipio_actual[k] = None
-        #     elif k != "estado_conversacion":
-        #         contexto_municipio_actual.pop(k, None)
+        for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo", "historial_conversacion_general_llm", "estado_conversacion"]:
+            if k == "estado_conversacion" and contexto_municipio_actual.get(k) in [ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name, ConversationState.CONVERSACION_GENERAL_LLM.name]:
+                contexto_municipio_actual[k] = None
+            elif k != "estado_conversacion":
+                contexto_municipio_actual.pop(k, None)
         return None, contexto_municipio_actual
 
 MENU_KEYWORDS = {
@@ -10584,77 +10578,9 @@ def responder_municipio(
         logger_actual.info(f"[CONTEXT_SAVE_FINAL] Final context data being flagged for save: {chat_db_context.context_data}")
 
 
-    # --- Persistence: Save Chat History for Ticket ---
-    # If we have a newly created ticket (from this turn) or an active ticket in context, save the message.
-    # Note: We rely on 'nro_ticket' being present in the response data or context.
-    try:
-        from services.ticket_service import servicio_tickets
-        # Check if a ticket was created in this turn (look at final_response_dict['data'])
-        created_ticket_id = None
-        if final_response_dict.get("success") and final_response_dict.get("data", {}).get("id"):
-             created_ticket_id = final_response_dict["data"]["id"]
-
-        # Or check context for active ticket being discussed (not implemented yet, but placeholder)
-        # active_ticket_id = contexto_municipio_actual.get("active_ticket_id")
-
-        target_ticket_id = created_ticket_id # or active_ticket_id
-
-        if target_ticket_id and viewer_user:
-            # 1. Save User Message
-            servicio_tickets.crear_comentario(
-                ticket_id=target_ticket_id,
-                tipo_ticket="municipio",
-                comentario_data={
-                    "comentario": pregunta_str_for_check, # Original user input
-                    "user_id": viewer_user.id,
-                    "es_admin": False,
-                    "origen": "chat_persistence"
-                }
-            )
-            # 2. Save Bot Response
-            bot_text = final_response_dict.get("message_body", "")
-            if bot_text:
-                servicio_tickets.crear_comentario(
-                    ticket_id=target_ticket_id,
-                    tipo_ticket="municipio",
-                    comentario_data={
-                        "comentario": bot_text,
-                        "user_id": owner_user.id if owner_user else None, # Bot acts on behalf of owner
-                        "es_admin": True,
-                        "origen": "chat_persistence"
-                    }
-                )
-            logger_actual.info(f"Persisted chat messages to Ticket ID {target_ticket_id}")
-
-            # --- Update context for Voice Status Handlers ---
-            # If this was a successful ticket creation response, save metadata for the voice summary
-            if final_response_dict.get("success") and final_response_dict.get("data", {}).get("nro_ticket"):
-                ticket_data = final_response_dict["data"]
-                # Save to main context
-                chat_db_context.context_data["latest_ticket_id"] = ticket_data.get("id")
-                chat_db_context.context_data["latest_ticket_nro"] = ticket_data.get("nro_ticket")
-                # Try to find a link in the body
-                import re
-                tracking_links = re.findall(r"https?://\S+/seg[^\s]*", final_response_dict.get("message_body", ""))
-                if tracking_links:
-                    chat_db_context.context_data["latest_tracking_url"] = tracking_links[0]
-                elif ticket_data.get("consulta_pin"): # Fallback url construction if not in body
-                    base_url = "https://www.chatboc.ar/reclamos" # Default
-                    if context.get("municipio_config_actual"):
-                         base_url = context["municipio_config_actual"].get("base_chat_url", base_url)
-                    chat_db_context.context_data["latest_tracking_url"] = f"{base_url}/seguimiento?id={ticket_data.get('nro_ticket')}&pin={ticket_data.get('consulta_pin')}"
-
-                flag_modified(chat_db_context, "context_data")
-
-    except Exception as e_persist:
-        logger_actual.warning(f"Failed to persist chat messages to ticket: {e_persist}")
-
     # --- Fallback logic ---
     logger_actual.info(f"LLM no manejó la respuesta. Intentando fallback con Google Search.")
-    search_results = []
-    if os.environ.get("GOOGLE_API_KEY") and os.environ.get("GOOGLE_CSE_ID"):
-        search_results = google_search(pregunta_str)
-
+    search_results = google_search(pregunta_str)
     if search_results:
         search_items = []
         for result in search_results[:3]:
