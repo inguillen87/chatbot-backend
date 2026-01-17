@@ -2151,13 +2151,44 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
 
     llm_response_structured = manual_llm_output
     if not llm_response_structured:
+        # --- Voice/Channel Injection ---
+        mensaje_payload = {"texto": mensaje_para_llm}
+        # Check context for voice mode (similar to municipio)
+        is_voice = channel == "voice" or pyme_ctx_actual.get("_voice_mode")
+
+        if is_voice:
+            mensaje_payload["instruccion_canal"] = (
+                "El usuario está en una llamada de voz y tu respuesta será convertida a audio. "
+                "PRIORIDAD MÁXIMA: Intenta resolver la consulta (tomar pedido, dar info) AUTOMÁTICAMENTE. "
+                "Solo sugiere hablar con un humano si el usuario lo pide explícitamente y ya intentaste ayudar. "
+                "Responde de forma breve (1-2 oraciones), conversacional, amigable y fluida. "
+                "Evita listas largas, Markdown complejo, URLs o explicaciones robóticas."
+            )
+
+        mensaje_para_llm_json = json.dumps(mensaje_payload)
+
         llm_response_structured, _ = llamar_llm_con_fallback(
             app=current_app,
-            mensaje_usuario=mensaje_para_llm,
+            mensaje_usuario=mensaje_para_llm_json,
             usuario=usuario_info_for_llm,
             historial=historial_chat_llm,
             chat_session_id=kwargs.get("chat_session_uuid")
         )
+
+    # --- Gating / Hard Rules: Prevent premature handoff (Pyme) ---
+    accion_backend = llm_response_structured.get("accion_backend")
+
+    # Check if we have items in cart or a current intent
+    cart_summary_check = cart_service.get_cart_summary(self.pyme_carts_data, self.pyme_id_actual, self.cliente_id_actual)
+    has_cart_items = cart_summary_check and bool(cart_summary_check.get("items_detalle"))
+
+    if accion_backend in ["pyme_hablar_agente"] and not has_cart_items:
+        # Check if user query explicitly demands human strongly, or if it's just "quiero hablar con alguien"
+        # For now, we enforce a soft block: Ask what they need first.
+        logger_actual.info("[PYME_GATING] Blocking premature human handoff. Forcing sales inquiry.")
+        llm_response_structured["accion_backend"] = "responder_directamente"
+        llm_response_structured["message_body"] = "Te comunico en un momento. Para agilizar la atención, ¿me contás qué estabas buscando o en qué producto estás interesado?"
+        llm_response_structured["pedir_info"] = "necesidad_cliente"
 
     # Actualizar historial para la próxima llamada al LLM
     if "mensajes_previos_llm_formato" not in chat_db_context.context_data:
@@ -2349,7 +2380,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     if action_handler_result.get("delayed_payload"):
         final_response_dict["delayed_payload"] = action_handler_result["delayed_payload"]
 
-    # Log de conversación
+    # Log de conversación (Legacy)
     if anon_id and not viewer_user:
         try:
             db.session.add(Conversacion(
@@ -2361,6 +2392,43 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         except Exception as e_conv_pyme_final:
             logger_actual.error(f"Error guardando Conversacion final (PYME): {e_conv_pyme_final}", exc_info=True)
             db.session.rollback()
+
+    # --- Persistence: Save Chat History for Ticket (Pyme) ---
+    try:
+        # Check if an active ticket exists in the context (set by HumanHandler)
+        active_ticket_id = pyme_ctx_actual.get("ultimo_ticket_creado")
+        # Or if one was created in this turn
+        if final_response_dict.get("ticket_id"):
+            active_ticket_id = final_response_dict["ticket_id"]
+
+        if active_ticket_id:
+            # 1. Save User Message
+            servicio_tickets.crear_comentario(
+                ticket_id=active_ticket_id,
+                tipo_ticket="pyme",
+                comentario_data={
+                    "comentario": pregunta_str, # Original user input
+                    "user_id": getattr(viewer_user, "id", None),
+                    "es_admin": False,
+                    "origen": "chat_persistence"
+                }
+            )
+            # 2. Save Bot Response
+            bot_text = final_response_dict.get("message_body", "")
+            if bot_text:
+                servicio_tickets.crear_comentario(
+                    ticket_id=active_ticket_id,
+                    tipo_ticket="pyme",
+                    comentario_data={
+                        "comentario": bot_text,
+                        "user_id": getattr(owner_user, "id", None), # Bot acts on behalf of owner
+                        "es_admin": True,
+                        "origen": "chat_persistence"
+                    }
+                )
+            logger_actual.info(f"Persisted Pyme chat messages to Ticket ID {active_ticket_id}")
+    except Exception as e_persist:
+        logger_actual.warning(f"Failed to persist Pyme chat messages: {e_persist}")
 
     # Proactive suggestions (Intelligent)
     pyme_ctx_actual["turn_counter"] = int(pyme_ctx_actual.get("turn_counter", 0) or 0) + 1
