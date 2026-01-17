@@ -4003,6 +4003,24 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
 
         mensaje_completo_para_llm = {"texto": pregunta_str}
+
+        # --- VOICE MODE PROMPT INJECTION ---
+        is_voice = context.get("channel") == "voice"
+        if not is_voice:
+             ctx_data = context.get("chat_db_context_data") or (chat_db_context.context_data if chat_db_context else {})
+             if isinstance(ctx_data, dict):
+                 is_voice = ctx_data.get("_voice_mode")
+
+        if is_voice:
+            mensaje_completo_para_llm["instruccion_canal"] = (
+                "ESTAS HABLANDO POR TELEFONO (VOZ). "
+                "Tus respuestas deben ser MUY BREVES, concisas y naturales para ser escuchadas. "
+                "Evita listas largas, markdown complejo o URLs. "
+                "Usa lenguaje coloquial y directo. "
+                "Si tienes que dar opciones, da maximo 2 o 3."
+            )
+        # --- END VOICE MODE ---
+
         if context.get("es_foto") and context.get("foto_url"):
             mensaje_completo_para_llm["imagen_url"] = context.get("foto_url")
             if contexto_municipio_actual.get("analisis_imagen_reclamo_auto_raw"):
