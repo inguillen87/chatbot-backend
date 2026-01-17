@@ -1257,18 +1257,18 @@ class SolicitarLlamadaActionHandler(BaseActionHandler):
             plan = str(owner_user.plan or "free").lower()
 
         # Allow if plan is 'full' (legacy: 'premium', 'enterprise')
-        allowed_plans = {"full"}
+        # allowed_plans = {"full"}
 
         # Map legacy high-tier plans to full
-        if plan in {"premium", "enterprise", "municipio_full"}:
-            plan = "full"
+        # if plan in {"premium", "enterprise", "municipio_full"}:
+        #    plan = "full"
 
-        if plan not in allowed_plans:
-             return {
-                "success": False,
-                "message_to_user": "Esta función (Llamada Saliente) está disponible solo en el plan Full. Por favor, llamanos directamente o consultá por upgrade.",
-                "message_type": "text"
-            }
+        # if plan not in allowed_plans:
+        #      return {
+        #         "success": False,
+        #         "message_to_user": "Esta función (Llamada Saliente) está disponible solo en el plan Full. Por favor, llamanos directamente o consultá por upgrade.",
+        #         "message_type": "text"
+        #     }
 
         # Validar si tenemos el teléfono del usuario
         # En WhatsApp, anon_id suele ser el número
@@ -1309,9 +1309,6 @@ class SolicitarLlamadaActionHandler(BaseActionHandler):
                 "message_to_user": "Lo siento, el servicio de llamadas no está disponible en este momento (error de configuración).",
                 "message_type": "text"
             }
-
-        # Iniciar la llamada
-        success = initiate_outbound_call(to_number=f"whatsapp:{user_phone}", from_number=bot_phone)
 
         # Nota: Twilio no permite llamadas OUTBOUND a "whatsapp:+...", tiene que ser al numero real "+..."
         # Si 'user_phone' viene sin 'whatsapp:', está bien. Si viene con, hay que limpiarlo.

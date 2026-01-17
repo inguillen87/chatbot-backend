@@ -47,7 +47,6 @@ from utils.municipio_utils import (
 from .actions.municipio_actions import (
     CrearReclamoActionHandler,
     HacerSugerenciaActionHandler,
-    SolicitarLlamadaActionHandler,
     _normalize_url_for_comparison,
 )
 from .herramientas_municipio import (
@@ -1723,16 +1722,10 @@ def _looks_like_free_form_input(text: str | None) -> bool:
     normalized = normalizar_texto(stripped)
     word_count = len(normalized.split())
 
-    # Strong keywords that always imply intent
-    strong_keywords = {"reclamo", "queja", "denuncia", "turno", "licencia", "quiero", "necesito"}
-    if any(k in normalized for k in strong_keywords):
-        return True
-
     if word_count >= 6:
         return True
 
     if len(stripped) >= 40:
-        # Check if it contains keywords to avoid skipping fuzzy match incorrectly for long unrelated text
         return True
 
     # Sentences with punctuation combined with at least a few words
@@ -2121,9 +2114,26 @@ def _normalize_pedir_info_value(pedir_info: Any) -> Optional[str]:
     return fields[0] if fields else None
 
 
-def _normalize_single_expected_field(field_name: Any) -> Optional[str]:
-    """Helper to ensure we have a clean string for a single expected field."""
-    return _normalize_pedir_info_value(field_name)
+def _normalize_single_expected_field(field: str | None) -> str | None:
+    if not field:
+        return None
+
+    f = str(field).strip().lower()
+
+    aliases = {
+        "ubicacion": ["ubicacion", "dirección", "direccion", "ubicación", "location", "lugar", "zona"],
+        "distrito": ["distrito", "barrio", "localidad"],
+        "descripcion": ["descripcion", "descripción", "detalle", "problema", "reclamo"],
+        "categoria": ["categoria", "categoría", "tipo"],
+        "telefono": ["telefono", "teléfono", "celular", "whatsapp"],
+        "nombre": ["nombre", "apellido"],
+    }
+
+    for canon, keys in aliases.items():
+        if f in keys:
+            return canon
+
+    return f
 
 
 def _prefill_contacto_from_context(
@@ -2844,16 +2854,6 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
     # --- Handlers for New/Modified Menu Options ---
     if action_id == "contactos_utiles":
         return handle_contactos_utiles_inicio(context, chat_db_context)
-
-    if action_id == "solicitar_llamada":
-        handler = SolicitarLlamadaActionHandler(context)
-        response = handler.execute({"action_id": action_id})
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        # Reset state as the call takes over or fails
-        contexto_municipio_actual['estado_conversacion'] = None
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return response
 
     if action_id == "menu_principal":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
@@ -4433,11 +4433,11 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
     except Exception as e_llm:
         logger.error(f"[HANDLE_LLM] Error: {e_llm}", exc_info=True)
-        for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo", "historial_conversacion_general_llm", "estado_conversacion"]:
-            if k == "estado_conversacion" and contexto_municipio_actual.get(k) in [ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name, ConversationState.CONVERSACION_GENERAL_LLM.name]:
-                contexto_municipio_actual[k] = None
-            elif k != "estado_conversacion":
-                contexto_municipio_actual.pop(k, None)
+        # for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo", "historial_conversacion_general_llm", "estado_conversacion"]:
+        #     if k == "estado_conversacion" and contexto_municipio_actual.get(k) in [ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name, ConversationState.CONVERSACION_GENERAL_LLM.name]:
+        #         contexto_municipio_actual[k] = None
+        #     elif k != "estado_conversacion":
+        #         contexto_municipio_actual.pop(k, None)
         return None, contexto_municipio_actual
 
 MENU_KEYWORDS = {
@@ -8266,10 +8266,8 @@ def responder_municipio(
                     chat_db_context,
                     demo_metadata=demo_metadata,
                 )
-                # FIX: Return LLM response immediately if it exists, bypassing fallback.
                 if response_dict:
                     return _finalize_response(response_dict)
-
                 logger_actual.info(f"Input '{pregunta_str_menu}' is not a menu option. Treating as a general query.")
                 contexto_municipio_actual['estado_conversacion'] = None
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
@@ -9779,10 +9777,8 @@ def responder_municipio(
                 chat_db_context,
                 demo_metadata=demo_metadata,
             )
-            # FIX: Return LLM response immediately if it exists, bypassing fallback loop.
             if response_dict:
                 return _finalize_response(response_dict)
-
             # Reenviar el mismo submenú si la opción no es válida
             return _finalize_response({
                 "message_body": "No reconocí esa opción. Por favor, elegí una opción del menú.",
@@ -10530,7 +10526,10 @@ def responder_municipio(
 
     # --- Fallback logic ---
     logger_actual.info(f"LLM no manejó la respuesta. Intentando fallback con Google Search.")
-    search_results = google_search(pregunta_str)
+    search_results = []
+    if os.environ.get("GOOGLE_API_KEY") and os.environ.get("GOOGLE_CSE_ID"):
+        search_results = google_search(pregunta_str)
+
     if search_results:
         search_items = []
         for result in search_results[:3]:

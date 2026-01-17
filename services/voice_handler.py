@@ -76,7 +76,15 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
         # 2. Load/Create Chat Session
         # Use a distinct session ID for voice to avoid state conflicts with WhatsApp
         empresa_id = client_user.id
-        chat_session_id = f"voice_{empresa_id}_{call_sid}" if call_sid else f"voice_{empresa_id}_{user_phone_clean}"
+        # FIX: Ensure ID fits in VARCHAR(36). Use CallSid directly if available (34 chars) or hash.
+        # CallSid is typically CA... (34 chars). Prefixing it breaks the limit.
+        if call_sid and len(call_sid) <= 36:
+            chat_session_id = call_sid
+        else:
+            # Fallback: truncate/hash to fit
+            import hashlib
+            raw_id = f"v_{empresa_id}_{user_phone_clean}"
+            chat_session_id = hashlib.md5(raw_id.encode()).hexdigest()
 
         session_context = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
         if not session_context:
@@ -90,6 +98,13 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
 
         # 3. Call Responder Logic
         from services.logic import responder_chatboc
+
+        # Inject Voice-Specific Instructions into context for LLM
+        context_data = session_context.context_data or {}
+        # We add a transient flag or instruction.
+        # Note: responder_chatboc uses this context.
+        context_data["_voice_mode"] = True
+        session_context.context_data = context_data
 
         response_dict = responder_chatboc(
             pregunta=user_speech,
@@ -271,35 +286,35 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
         if not whatsapp_mapping:
             return
 
+        # Ensure we have the correct formatting for the bot's phone to use as sender
+        # Try to find exact match in DB or fallback to cleaned version
+        sender_number = whatsapp_mapping.numero_whatsapp or bot_phone_clean
+        if not sender_number.startswith("whatsapp:") and not MESSAGING_SERVICE_SID:
+            sender_number = f"whatsapp:{sender_number}"
+
         client_user = whatsapp_mapping.user
         empresa_id = client_user.id
+        # Note: Summary uses the WhatsApp session to be continuous with text chat
         chat_session_id = f"whatsapp_{empresa_id}_{user_phone_clean}"
 
-        session_context = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
-        if not session_context or not session_context.context_data:
-            return
+        # We don't strictly need the session context to say thanks, but it helps for context.
+        # If unavailable, we just send a generic message.
 
-        # Check for recent activity or specific flags indicating a completed transaction/claim
-        # For simplicity, we send a generic "Thanks for calling" or specific summary if available.
-        # Ideally, look into context_data for 'last_ticket_created' or similar.
+        summary_text = "Gracias por tu llamada."
 
-        summary_text = "Gracias por tu llamada. "
-
-        # Example check for ticket (needs specific logic depending on how ticket info is stored in context)
-        # Assuming responder_chatboc logic puts something in context or we infer from recent logs.
-        # For MVP, we send a simple follow-up.
-
-        # Ensure we use a valid sender. Use Messaging Service if available to avoid "From" errors.
+        # Send the message
         kwargs = {}
         if MESSAGING_SERVICE_SID:
              kwargs["messaging_service_sid"] = MESSAGING_SERVICE_SID
+        else:
+             kwargs["numero_origen"] = sender_number
 
         enviar_mensaje_whatsapp_con_fallback(
             numero_destino=user_phone_clean,
             cuerpo=f"{summary_text} Si necesitas algo más, podés escribirnos por aquí.",
             **kwargs
         )
-        logger.info(f"Sent post-call summary to {user_phone_clean}")
+        logger.info(f"Sent post-call summary to {user_phone_clean} using sender {sender_number if not MESSAGING_SERVICE_SID else MESSAGING_SERVICE_SID}")
 
     except Exception as e:
         logger.error(f"Error handling call status: {e}", exc_info=True)
