@@ -3053,6 +3053,36 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
         slug_publico = action_id.split("::", 1)[1] if "::" in action_id else ""
         return _build_encuesta_share_payload(slug_publico, context, chat_db_context)
 
+    if action_id == "solicitar_llamada":
+        # Initiate outbound call
+        from services.voice_handler import initiate_outbound_call
+
+        target_phone = getattr(context.get("viewer_user_obj"), "id", None) or getattr(context.get("viewer_user_obj"), "telefono", None)
+
+        # If target_phone looks like a phone
+        if target_phone:
+             bot_phone = getattr(context.get("user_obj"), "telefono", None)
+             # initiate_outbound_call will sanitize inputs and use env var for caller ID
+             success = initiate_outbound_call(to_number=target_phone, from_number=bot_phone)
+             if success:
+                 return {
+                     "message_body": "Te estamos llamando en este momento...",
+                     "message_type": "text",
+                     "fuente": "solicitar_llamada_ok"
+                 }
+             else:
+                 return {
+                     "message_body": "No pudimos iniciar la llamada. Por favor intenta más tarde.",
+                     "message_type": "text",
+                     "fuente": "solicitar_llamada_error"
+                 }
+        else:
+             return {
+                 "message_body": "No tengo tu número registrado para llamarte.",
+                 "message_type": "text",
+                 "fuente": "solicitar_llamada_no_phone"
+             }
+
     if action_id == "mostrar_menu_estacionamiento":
         submenu = _get_estacionamiento_menu()
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
