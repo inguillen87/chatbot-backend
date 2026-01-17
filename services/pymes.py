@@ -2159,10 +2159,11 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         if is_voice:
             mensaje_payload["instruccion_canal"] = (
                 "El usuario está en una llamada de voz y tu respuesta será convertida a audio. "
-                "PRIORIDAD MÁXIMA: Intenta resolver la consulta (tomar pedido, dar info) AUTOMÁTICAMENTE. "
-                "Solo sugiere hablar con un humano si el usuario lo pide explícitamente y ya intentaste ayudar. "
-                "Responde de forma breve (1-2 oraciones), conversacional, amigable y fluida. "
-                "Evita listas largas, Markdown complejo, URLs o explicaciones robóticas."
+                "PRIORIDAD MÁXIMA: Actúa como un vendedor humano real, servicial y rápido. Usa lenguaje coloquial argentino ('dale', 'genial', 'bárbaro'). "
+                "Sé EXTREMADAMENTE BREVE (máximo 1 o 2 frases cortas). "
+                "No uses listas, markdown, URLs ni explicaciones largas. "
+                "Intenta tomar el pedido o dar la info directamente. Si faltan datos, pídelos uno por uno. "
+                "Tu objetivo es cerrar la venta o resolver la duda rápidamente, como en una llamada real."
             )
 
         mensaje_para_llm_json = json.dumps(mensaje_payload)
