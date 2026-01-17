@@ -2866,6 +2866,26 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
     # --- NEW HANDLERS FOR TRAMITES (LICENCIA, TURNOS, TASAS) ---
     if action_id == "solicitar_llamada":
+        # Present options for call type
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        options = [
+            {"texto": "📞 Llamame ahora (IA)", "action_id": "solicitar_llamada_ia"},
+            {"texto": "📅 Agendar llamado humano", "action_id": "solicitar_llamada_agendar"},
+            {"texto": "Cancelar", "action_id": "cancelar"}
+        ]
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+        contexto_municipio_actual['menu_opciones'] = options
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+
+        return {
+            "message_body": "¿Cómo preferís proceder?",
+            "message_type": "interactive_buttons",
+            "options_list": options,
+            "fuente": "solicitar_llamada_menu"
+        }
+
+    if action_id == "solicitar_llamada_ia":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         # Extract phone number robustly
         phone_number = None
@@ -2940,6 +2960,17 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
                 "message_type": "text",
                 "fuente": "solicitar_llamada_pedir_telefono"
             }
+
+    if action_id == "solicitar_llamada_agendar":
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_HORARIO_LLAMADA.name
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return {
+            "message_body": "Por favor, indicame en qué horarios preferís que un agente te llame.",
+            "message_type": "text",
+            "fuente": "solicitar_llamada_agendar_prompt"
+        }
 
     if action_id in {"licencia_de_conducir", "solicitar_turnos", "pago_de_tasas_vigentes"}:
         municipio_id = context.get("municipio_id", MUNICIPIO_ID)
@@ -10308,6 +10339,51 @@ def responder_municipio(
                     "fuente": "proactive_location_handler",
                 }
             )
+
+    elif estado_conversacion == ConversationState.ESPERANDO_HORARIO_LLAMADA.name:
+        horario_preferido = pregunta_str.strip()
+
+        datos_solicitud = {
+            "categoria": "Solicitud Llamada",
+            "descripcion": f"El vecino solicita ser contactado. Horario preferido: {horario_preferido}",
+            "prioridad": "Alta"
+        }
+
+        # Populate contact details
+        contacto_prev = contexto_municipio_actual.get('contacto_usuario', {}) or {}
+        viewer_user_obj = context.get("viewer_user_obj")
+
+        if viewer_user_obj:
+            datos_solicitud.setdefault("usuario", getattr(viewer_user_obj, "name", None))
+            datos_solicitud.setdefault("telefono", getattr(viewer_user_obj, "telefono", None))
+            datos_solicitud.setdefault("email", getattr(viewer_user_obj, "email", None))
+
+        for k, v in contacto_prev.items():
+            if v and k in ["nombre", "telefono", "email", "dni"]:
+                key_map = {"nombre": "usuario"}
+                datos_solicitud.setdefault(key_map.get(k, k), v)
+
+        # Create ticket
+        handler = CrearReclamoActionHandler(context)
+        response = handler.execute(datos_solicitud)
+
+        if response.get("success"):
+            response["message_body"] = f"✅ Solicitud registrada con éxito. Un agente te contactará en el horario indicado. Ticket: {response.get('data', {}).get('nro_ticket')}"
+            contexto_municipio_actual['estado_conversacion'] = None
+        else:
+            # Fallback if ticket creation fails (e.g., missing data)
+            # Just acknowledge and reset
+            response = {
+                "message_body": "Gracias. Hemos tomado nota de tu solicitud y horario.",
+                "message_type": "text",
+                "fuente": "solicitud_llamada_fallback"
+            }
+            contexto_municipio_actual['estado_conversacion'] = None
+
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+
+        return _finalize_response(response)
 
 
     elif estado_conversacion == ConversationState.ESPERANDO_CORRECCION_DATOS_RECLAMO.name:
