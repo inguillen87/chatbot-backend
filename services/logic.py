@@ -284,12 +284,14 @@ def responder_chatboc(
                 kwargs.setdefault("es_audio", True)
                 from services.audio_transcription_service import transcribe_audio_from_url
 
-                # Re-introduce the specific error handling for the final solution
-                transcript = ""
-                try:
-                    transcript = transcribe_audio_from_url(file_url, mime_type)
-                except Exception as e:
-                    logger.error(f"Error inesperado durante la transcripción de audio web: {e}", exc_info=True)
+                # Check if we already have the transcript (e.g. from WhatsApp/Twilio metadata)
+                transcript = uploaded_file_info.get("transcribed_text")
+
+                if not transcript:
+                    try:
+                        transcript = transcribe_audio_from_url(file_url, mime_type)
+                    except Exception as e:
+                        logger.error(f"Error inesperado durante la transcripción de audio web: {e}", exc_info=True)
 
                 if transcript:
                     # This is the key change: pass the transcript in the same way WhatsApp does,

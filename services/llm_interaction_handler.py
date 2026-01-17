@@ -187,6 +187,21 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             handler = GreetingHandler(context)
             return handler.handle({}), contexto_municipio_actual
 
+        # --- Gating / Hard Rules: Prevent premature handoff ---
+        # If LLM wants to handoff but we don't have a ticket or sufficient info, block it.
+        # Check if we have at least a description and category in the partial data.
+        datos_parciales = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+        has_min_data = bool(datos_parciales.get("descripcion"))
+
+        if accion_backend_llm in ["derivar_humano", "hablar_con_agente"] and not has_min_data:
+            logger_actual.info("[GATING] Blocking premature human handoff. Forcing data collection.")
+            # Override action to keep collecting info
+            accion_backend_llm = "crear_reclamo"
+            # If the LLM didn't ask for anything specific, force it to ask for the problem
+            if not pedir_info_llm:
+                pedir_info_llm = "descripcion, ubicacion"
+                respuesta_usuario_llm = "Entendido, te comunicaré con un agente en breve. Para poder generar tu número de reclamo primero, necesito que me digas brevemente qué pasó y dónde."
+
         if accion_backend_llm == "mostrar_menu_catalogo":
              from services.municipio_responder import _get_catalogo_menu
              # Delegate to the standard catalog menu responder

@@ -10542,6 +10542,51 @@ def responder_municipio(
         logger_actual.info(f"[CONTEXT_SAVE_FINAL] Final context data being flagged for save: {chat_db_context.context_data}")
 
 
+    # --- Persistence: Save Chat History for Ticket ---
+    # If we have a newly created ticket (from this turn) or an active ticket in context, save the message.
+    # Note: We rely on 'nro_ticket' being present in the response data or context.
+    try:
+        from services.ticket_service import servicio_tickets
+        # Check if a ticket was created in this turn (look at final_response_dict['data'])
+        created_ticket_id = None
+        if final_response_dict.get("success") and final_response_dict.get("data", {}).get("id"):
+             created_ticket_id = final_response_dict["data"]["id"]
+
+        # Or check context for active ticket being discussed (not implemented yet, but placeholder)
+        # active_ticket_id = contexto_municipio_actual.get("active_ticket_id")
+
+        target_ticket_id = created_ticket_id # or active_ticket_id
+
+        if target_ticket_id and viewer_user:
+            # 1. Save User Message
+            servicio_tickets.crear_comentario(
+                ticket_id=target_ticket_id,
+                tipo_ticket="municipio",
+                comentario_data={
+                    "comentario": pregunta_str_for_check, # Original user input
+                    "user_id": viewer_user.id,
+                    "es_admin": False,
+                    "origen": "chat_persistence"
+                }
+            )
+            # 2. Save Bot Response
+            bot_text = final_response_dict.get("message_body", "")
+            if bot_text:
+                servicio_tickets.crear_comentario(
+                    ticket_id=target_ticket_id,
+                    tipo_ticket="municipio",
+                    comentario_data={
+                        "comentario": bot_text,
+                        "user_id": owner_user.id if owner_user else None, # Bot acts on behalf of owner
+                        "es_admin": True,
+                        "origen": "chat_persistence"
+                    }
+                )
+            logger_actual.info(f"Persisted chat messages to Ticket ID {target_ticket_id}")
+
+    except Exception as e_persist:
+        logger_actual.warning(f"Failed to persist chat messages to ticket: {e_persist}")
+
     # --- Fallback logic ---
     logger_actual.info(f"LLM no manejó la respuesta. Intentando fallback con Google Search.")
     search_results = []
