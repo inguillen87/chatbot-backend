@@ -18,6 +18,15 @@ voice_bp = Blueprint('voice', __name__)
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 logger = logging.getLogger(__name__)
 
+@voice_bp.route('/voice/fallback', methods=['POST'])
+def voice_fallback():
+    """
+    Fallback endpoint for Twilio errors.
+    """
+    response = VoiceResponse()
+    response.say("Lo siento, ha ocurrido un error técnico. Por favor intenta más tarde.", language="es-AR")
+    return Response(str(response), mimetype='text/xml')
+
 @voice_bp.route('/voice/welcome', methods=['POST'])
 def voice_welcome():
     """

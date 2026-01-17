@@ -34,7 +34,7 @@ def initiate_outbound_call(to_number, from_number):
         logger.error("APP_BASE_URL or BACKEND_URL not set. Cannot trigger voice call.")
         return False
 
-    url = f"{base_url.rstrip('/')}/voice/welcome"
+    url = f"{base_url.rstrip('/')}/twilio/voice/inbound"
 
     try:
         call = client.calls.create(
