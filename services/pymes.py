@@ -2428,6 +2428,20 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                     }
                 )
             logger_actual.info(f"Persisted Pyme chat messages to Ticket ID {active_ticket_id}")
+
+            # --- Update context for Voice Status Handlers (Pyme) ---
+            if final_response_dict.get("success") and final_response_dict.get("data", {}).get("nro_pedido"):
+                ticket_data = final_response_dict["data"]
+                chat_db_context.context_data["latest_ticket_id"] = ticket_data.get("pedido_id")
+                chat_db_context.context_data["latest_ticket_nro"] = ticket_data.get("nro_pedido")
+                # Try to extract tracking link from body or build it
+                import re
+                tracking_links = re.findall(r"https?://\S+/pyme/pedidos\S*", final_response_dict.get("message_body", ""))
+                if tracking_links:
+                    chat_db_context.context_data["latest_tracking_url"] = tracking_links[0]
+
+                flag_modified(chat_db_context, "context_data")
+
     except Exception as e_persist:
         logger_actual.warning(f"Failed to persist Pyme chat messages: {e_persist}")
 
