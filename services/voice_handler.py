@@ -37,9 +37,24 @@ def initiate_outbound_call(to_number, from_number):
     url = f"{base_url.rstrip('/')}/twilio/voice/inbound"
 
     try:
+        # Sanitize numbers for Voice API (E.164 required, no whatsapp: prefix)
+        to_number_voice = to_number.replace("whatsapp:", "").strip()
+
+        # Determine valid Caller ID
+        # If from_number is a WhatsApp ID (e.g. whatsapp:+1...), it cannot be used as Caller ID.
+        # We must use a verified Twilio number.
+        from_number_voice = from_number.replace("whatsapp:", "").strip()
+
+        # Check if from_number is likely valid (e.g. matching configured numbers)
+        # For simplicity/safety, we prefer the environment variable TWILIO_PHONE_NUMBER if set
+        twilio_verified_number = os.environ.get("TWILIO_PHONE_NUMBER")
+
+        if twilio_verified_number:
+            from_number_voice = twilio_verified_number
+
         call = client.calls.create(
-            to=to_number,
-            from_=from_number,
+            to=to_number_voice,
+            from_=from_number_voice,
             url=url,
             method="POST"
         )
