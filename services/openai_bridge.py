@@ -56,6 +56,12 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
     try:
         message_data = json.loads(mensaje_usuario)
         message = message_data.get("texto", str(message_data))
+
+        # Check for channel-specific instructions (e.g. voice mode constraints)
+        instruccion_canal = message_data.get("instruccion_canal")
+        if instruccion_canal and messages and messages[0].get("role") == "system":
+            messages[0]["content"] += f"\n\nCONTEXTO DEL CANAL: {instruccion_canal}"
+
     except (json.JSONDecodeError, TypeError):
         message = str(mensaje_usuario)
 
