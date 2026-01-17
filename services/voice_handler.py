@@ -303,18 +303,14 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
         summary_text = "Gracias por tu llamada."
 
         # Send the message
-        kwargs = {}
-        if MESSAGING_SERVICE_SID:
-             kwargs["messaging_service_sid"] = MESSAGING_SERVICE_SID
-        else:
-             kwargs["numero_origen"] = sender_number
+        # Note: enviar_mensaje_whatsapp_con_fallback uses the default configured sender.
+        # We cannot pass dynamic sender/service_sid to it currently.
 
         enviar_mensaje_whatsapp_con_fallback(
             numero_destino=user_phone_clean,
-            cuerpo=f"{summary_text} Si necesitas algo más, podés escribirnos por aquí.",
-            **kwargs
+            cuerpo=f"{summary_text} Si necesitas algo más, podés escribirnos por aquí."
         )
-        logger.info(f"Sent post-call summary to {user_phone_clean} using sender {sender_number if not MESSAGING_SERVICE_SID else MESSAGING_SERVICE_SID}")
+        logger.info(f"Sent post-call summary to {user_phone_clean}")
 
     except Exception as e:
         logger.error(f"Error handling call status: {e}", exc_info=True)

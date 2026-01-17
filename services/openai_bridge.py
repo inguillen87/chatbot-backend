@@ -67,6 +67,13 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
 
     messages.append({"role": "user", "content": message})
 
+    # SAFETY CHECK: Ensure "JSON" is in the system prompt if we request json_object
+    if messages and messages[0]["role"] == "system":
+        content = messages[0]["content"] or ""
+        if "JSON" not in content and "json" not in content:
+            logger.warning("System prompt missing 'JSON' keyword. Appending safety instruction.")
+            messages[0]["content"] = content + "\n\nIMPORTANTE: Tu respuesta DEBE ser un objeto JSON válido."
+
     def _estimate_tokens(text: str) -> int:
         if _TOKEN_ENCODER:
             return len(_TOKEN_ENCODER.encode(text))
