@@ -154,4 +154,4 @@ webauthn>=2.0.0
 xlsxwriter==3.2.9
 yarl==1.20.1
 flask-sock==0.7.0
-websockets==12.0
+websockets>=13.0
