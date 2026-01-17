@@ -44,7 +44,7 @@ from sqlalchemy import event as sa_event
 
 from config import Config, ALLOWED_ORIGINS
 from config.feature_flags import FEATURE_ENCUESTAS
-from extensions import db, migrate, login_manager  # livianos
+from extensions import db, migrate, login_manager, sock  # livianos
 from middleware import tenant_middleware
 from utils.errors import ApiError
 
