@@ -133,10 +133,12 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         if is_voice:
             mensaje_completo_para_llm["instruccion_canal"] = (
                 "El usuario está en una llamada de voz y tu respuesta será convertida a audio. "
-                "PRIORIDAD MÁXIMA: Intenta resolver la consulta (tomar reclamo/pedido, dar info, agendar turno) AUTOMÁTICAMENTE. "
-                "Solo sugiere hablar con un humano si el usuario lo pide explícitamente o es imposible resolverlo. "
-                "Responde de forma breve (1-2 oraciones), conversacional, amigable y fluida. "
-                "Evita listas largas, Markdown complejo, URLs o explicaciones robóticas."
+                "PRIORIDAD MÁXIMA: Actúa como un operador humano real y empático. Usa lenguaje coloquial argentino ('dale', 'perfecto', 'te escucho'). "
+                "Sé EXTREMADAMENTE BREVE (máximo 1 o 2 frases cortas). "
+                "No saludes de nuevo si ya estamos hablando. Si necesitas un dato, pídelo directamente. "
+                "No uses listas, markdown, URLs ni explicaciones largas. "
+                "Intenta resolver la consulta (tomar reclamo/pedido, dar info) sin transferir, a menos que sea imposible. "
+                "Tu objetivo es que la charla sea rápida y fluida, como una conversación real."
             )
 
         mensaje_para_llm = json.dumps(mensaje_completo_para_llm)
