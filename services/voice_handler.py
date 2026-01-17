@@ -332,12 +332,31 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
         # If we can't find it easily, we default to generic message.
 
         summary_text = "Gracias por tu llamada."
+
+        # Determine incomplete status to recover
+        # If ticket was NOT created, but we have partial data, prompt for it.
+        if not ticket_info_text:
+            # Check Municipio partials
+            datos_parciales = municipio_ctx.get("datos_parciales_llm_reclamo", {})
+            if datos_parciales.get("descripcion") and not datos_parciales.get("ubicacion"):
+                summary_text = "⚠️ Se cortó la llamada y me faltó la ubicación para terminar tu reclamo. Por favor escribí la dirección o compartí tu ubicación por acá."
+            elif datos_parciales.get("descripcion") and not municipio_ctx.get("ultimo_ticket_creado"):
+                summary_text = "⚠️ Se cortó la llamada antes de confirmar el reclamo. Por favor escribí 'continuar' para terminarlo."
+
+            # Check Pyme partials (simplified check)
+            elif pyme_ctx.get("estado_conversacion") and pyme_ctx.get("estado_conversacion") != "IDLE":
+                 summary_text = "⚠️ Se cortó la llamada. Si querés retomar tu pedido, escribí 'hola' por acá."
+
         if ticket_info_text:
             summary_text = f"{summary_text}\n\n{ticket_info_text}"
 
+            # Append photo prompt if applicable (Municipality)
+            if created_ticket_nro and "M-" in str(created_ticket_nro):
+                 summary_text += "\n\n📷 Si tenés una foto del problema, podés enviarla respondiendo a este mensaje."
+
         enviar_mensaje_whatsapp_con_fallback(
             numero_destino=user_phone_clean,
-            cuerpo=f"{summary_text}\nSi necesitas algo más, podés escribirnos por aquí."
+            cuerpo=f"{summary_text}\n\nSi necesitas algo más, podés escribirnos por aquí."
         )
         logger.info(f"Sent post-call summary to {user_phone_clean}")
 

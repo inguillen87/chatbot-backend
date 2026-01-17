@@ -1057,6 +1057,12 @@ class ReclamoFlowHandler:
                 if self.context.get('foto_url'):
                     datos['foto_url'] = self.context.get('foto_url')
                 else:
+                    # Skip photo prompt if in voice mode (users can't send photos during call)
+                    # We will ask for it in the post-call summary instead.
+                    if self.context.get("channel") == "voice" or self.municipal_ctx.get("_voice_mode"):
+                        self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
+                        return self.ask_for_contact_details()
+
                     self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
                     return {
                         "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
@@ -1333,6 +1339,12 @@ class ReclamoFlowHandler:
             if self.flow_context['datos_reclamo'].get('foto_url') or self.context.get('foto_url'):
                 self.flow_context['datos_reclamo'].setdefault('foto_url', self.context.get('foto_url'))
                 return self.ask_for_contact_details()
+
+            # Skip photo prompt if in voice mode
+            if self.context.get("channel") == "voice" or self.municipal_ctx.get("_voice_mode"):
+                self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
+                return self.ask_for_contact_details()
+
             self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
             return {
                 "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
