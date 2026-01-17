@@ -27,9 +27,10 @@ except Exception as e:
     logger.error(f"Failed to initialize OpenAI client: {e}")
     client = None
 
-def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, chat_session_id: str) -> tuple[dict, dict]:
+def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, chat_session_id: str, model: str = "gpt-4o-mini") -> tuple[dict, dict]:
     """
     Calls the OpenAI API and formats the response to be compatible with the application's structure.
+    Allows specifying the model (default: gpt-4o-mini).
     """
     if not client:
         raise ConnectionError("OpenAI client is not initialized. Check API key.")
@@ -99,7 +100,7 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
     try:
         # 3. Make the API call
         response = client.chat.completions.create(
-            model="gpt-4o-mini", # A good, cost-effective default model
+            model=model,
             messages=messages,
             temperature=0.3,
             response_format={"type": "json_object"}, # Request JSON output

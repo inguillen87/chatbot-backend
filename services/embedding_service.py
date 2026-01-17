@@ -8,7 +8,8 @@ logger = logging.getLogger(__name__)
 def embed_textos_llm(textos: List[str], input_type: str = "search_document") -> Optional[List[List[float]]]:
     """
     Genera embeddings para una lista de textos utilizando la API del LLM (OpenAI).
-    Usa el modelo 'text-embedding-3-small' reducido a 1024 dimensiones.
+    Usa el modelo 'text-embedding-3-large' reducido a 1024 dimensiones para máxima calidad semántica
+    manteniendo compatibilidad con la base de datos vectorial existente.
 
     Args:
         textos: Una lista de strings para generar embeddings.
@@ -32,7 +33,7 @@ def embed_textos_llm(textos: List[str], input_type: str = "search_document") -> 
 
         response = openai_client.embeddings.create(
             input=textos_limpios,
-            model="text-embedding-3-small",
+            model="text-embedding-3-large",
             dimensions=1024
         )
 
