@@ -284,31 +284,79 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
         ).filter(WhatsappNumero.numero_whatsapp.ilike(f"%{bot_phone_clean.replace('+','').replace(' ','')}%")).first()
 
         if not whatsapp_mapping:
+            logger.warning(f"Could not find tenant for bot phone {bot_phone_clean}")
             return
-
-        # Ensure we have the correct formatting for the bot's phone to use as sender
-        # Try to find exact match in DB or fallback to cleaned version
-        sender_number = whatsapp_mapping.numero_whatsapp or bot_phone_clean
-        if not sender_number.startswith("whatsapp:") and not MESSAGING_SERVICE_SID:
-            sender_number = f"whatsapp:{sender_number}"
 
         client_user = whatsapp_mapping.user
         empresa_id = client_user.id
-        # Note: Summary uses the WhatsApp session to be continuous with text chat
-        chat_session_id = f"whatsapp_{empresa_id}_{user_phone_clean}"
 
-        # We don't strictly need the session context to say thanks, but it helps for context.
-        # If unavailable, we just send a generic message.
+        # Determine chat_session_id used during voice call
+        # Logic matches handle_voice_interaction
+        if call_sid and len(call_sid) <= 36:
+            chat_session_id = call_sid
+        else:
+            import hashlib
+            raw_id = f"v_{empresa_id}_{user_phone_clean}"
+            chat_session_id = hashlib.md5(raw_id.encode()).hexdigest()
+
+        # Retrieve the session context to find created ticket info
+        session_context = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
+
+        ticket_info_text = ""
+        context_data = session_context.context_data if session_context else {}
+
+        # Check for Municipio Ticket
+        municipio_ctx = context_data.get("contexto_municipio_v2", {})
+        # Not all flows save to 'ultimo_ticket_creado' but action handlers often return data
+        # We rely on 'numero_ticket_creado_sesion' or similar if persisted.
+        # Alternatively, we can check the last message body if it contains ticket info,
+        # but structured data is better.
+
+        # Let's check for standard keys we'll ensure are saved
+        created_ticket_id = context_data.get("latest_ticket_id") or municipio_ctx.get("ultimo_ticket_creado")
+        created_ticket_nro = context_data.get("latest_ticket_nro")
+        tracking_url = context_data.get("latest_tracking_url")
+
+        if created_ticket_nro:
+            ticket_info_text = (
+                f"✅ *Ticket generado con éxito*\n"
+                f"Número: *{created_ticket_nro}*\n"
+            )
+            if tracking_url:
+                ticket_info_text += f"Seguí el estado aquí: {tracking_url}\n"
+
+        # Check for Pyme Order
+        pyme_ctx = context_data.get("contexto_pyme_v2", {})
+        created_order_id = pyme_ctx.get("ultimo_ticket_creado") # Usually stores ID
+        # Pyme logic saves order number in 'nro_pedido' inside success payload
+        # If we can't find it easily, we default to generic message.
 
         summary_text = "Gracias por tu llamada."
 
-        # Send the message
-        # Note: enviar_mensaje_whatsapp_con_fallback uses the default configured sender.
-        # We cannot pass dynamic sender/service_sid to it currently.
+        # Determine incomplete status to recover
+        # If ticket was NOT created, but we have partial data, prompt for it.
+        if not ticket_info_text:
+            # Check Municipio partials
+            datos_parciales = municipio_ctx.get("datos_parciales_llm_reclamo", {})
+            if datos_parciales.get("descripcion") and not datos_parciales.get("ubicacion"):
+                summary_text = "⚠️ Se cortó la llamada y me faltó la ubicación para terminar tu reclamo. Por favor escribí la dirección o compartí tu ubicación por acá."
+            elif datos_parciales.get("descripcion") and not municipio_ctx.get("ultimo_ticket_creado"):
+                summary_text = "⚠️ Se cortó la llamada antes de confirmar el reclamo. Por favor escribí 'continuar' para terminarlo."
+
+            # Check Pyme partials (simplified check)
+            elif pyme_ctx.get("estado_conversacion") and pyme_ctx.get("estado_conversacion") != "IDLE":
+                 summary_text = "⚠️ Se cortó la llamada. Si querés retomar tu pedido, escribí 'hola' por acá."
+
+        if ticket_info_text:
+            summary_text = f"{summary_text}\n\n{ticket_info_text}"
+
+            # Append photo prompt if applicable (Municipality)
+            if created_ticket_nro and "M-" in str(created_ticket_nro):
+                 summary_text += "\n\n📷 Si tenés una foto del problema, podés enviarla respondiendo a este mensaje."
 
         enviar_mensaje_whatsapp_con_fallback(
             numero_destino=user_phone_clean,
-            cuerpo=f"{summary_text} Si necesitas algo más, podés escribirnos por aquí."
+            cuerpo=f"{summary_text}\n\nSi necesitas algo más, podés escribirnos por aquí."
         )
         logger.info(f"Sent post-call summary to {user_phone_clean}")
 

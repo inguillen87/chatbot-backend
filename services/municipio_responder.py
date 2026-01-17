@@ -1057,6 +1057,12 @@ class ReclamoFlowHandler:
                 if self.context.get('foto_url'):
                     datos['foto_url'] = self.context.get('foto_url')
                 else:
+                    # Skip photo prompt if in voice mode (users can't send photos during call)
+                    # We will ask for it in the post-call summary instead.
+                    if self.context.get("channel") == "voice" or self.municipal_ctx.get("_voice_mode"):
+                        self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
+                        return self.ask_for_contact_details()
+
                     self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
                     return {
                         "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
@@ -1333,6 +1339,12 @@ class ReclamoFlowHandler:
             if self.flow_context['datos_reclamo'].get('foto_url') or self.context.get('foto_url'):
                 self.flow_context['datos_reclamo'].setdefault('foto_url', self.context.get('foto_url'))
                 return self.ask_for_contact_details()
+
+            # Skip photo prompt if in voice mode
+            if self.context.get("channel") == "voice" or self.municipal_ctx.get("_voice_mode"):
+                self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
+                return self.ask_for_contact_details()
+
             self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
             return {
                 "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
@@ -10583,6 +10595,26 @@ def responder_municipio(
                     }
                 )
             logger_actual.info(f"Persisted chat messages to Ticket ID {target_ticket_id}")
+
+            # --- Update context for Voice Status Handlers ---
+            # If this was a successful ticket creation response, save metadata for the voice summary
+            if final_response_dict.get("success") and final_response_dict.get("data", {}).get("nro_ticket"):
+                ticket_data = final_response_dict["data"]
+                # Save to main context
+                chat_db_context.context_data["latest_ticket_id"] = ticket_data.get("id")
+                chat_db_context.context_data["latest_ticket_nro"] = ticket_data.get("nro_ticket")
+                # Try to find a link in the body
+                import re
+                tracking_links = re.findall(r"https?://\S+/seg[^\s]*", final_response_dict.get("message_body", ""))
+                if tracking_links:
+                    chat_db_context.context_data["latest_tracking_url"] = tracking_links[0]
+                elif ticket_data.get("consulta_pin"): # Fallback url construction if not in body
+                    base_url = "https://www.chatboc.ar/reclamos" # Default
+                    if context.get("municipio_config_actual"):
+                         base_url = context["municipio_config_actual"].get("base_chat_url", base_url)
+                    chat_db_context.context_data["latest_tracking_url"] = f"{base_url}/seguimiento?id={ticket_data.get('nro_ticket')}&pin={ticket_data.get('consulta_pin')}"
+
+                flag_modified(chat_db_context, "context_data")
 
     except Exception as e_persist:
         logger_actual.warning(f"Failed to persist chat messages to ticket: {e_persist}")
