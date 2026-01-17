@@ -158,12 +158,25 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             }
         }
 
+        # Select model based on conversation state (Flagship for extraction/intent, Mini for simple flows)
+        model_to_use = "gpt-4o-mini"
+        if estado_conversacion_para_llm in [
+            ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name,
+            ConversationState.CONVERSACION_GENERAL_LLM.name,
+        ]:
+            model_to_use = "gpt-4o"
+
+        # Force gpt-4o if channel is voice to ensure maximum intelligence/brevity handling
+        if is_voice:
+            model_to_use = "gpt-4o"
+
         respuesta_llm_dict, context_dict = llamar_llm_con_fallback(
             app=app,
             mensaje_usuario=mensaje_para_llm,
             usuario=usuario_info_llm,
             historial=historial_formateado,
-            chat_session_id=context.get("chat_session_uuid")
+            chat_session_id=context.get("chat_session_uuid"),
+            model=model_to_use
         )
 
         if isinstance(respuesta_llm_dict, dict):
