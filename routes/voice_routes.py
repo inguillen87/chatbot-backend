@@ -1,31 +1,34 @@
 from flask import Blueprint, request, current_app, Response, url_for
-from twilio.twiml.voice_response import VoiceResponse, Gather, Play
+from twilio.twiml.voice_response import VoiceResponse, Gather, Play, Connect
 from twilio.request_validator import RequestValidator
 from models import WhatsappNumero, ChatSessionContext, User
-from extensions import db
+from extensions import db, sock
 from services.voice_handler import handle_voice_interaction, handle_call_status
 from services.tts_orchestrator import generar_audio
 from utils.db_utils import ensure_chat_session_context_schema
 from sqlalchemy.orm import joinedload
 import os
+import json
+import base64
+import logging
+from services.voice_stream_service import VoiceStreamService
 
 voice_bp = Blueprint('voice', __name__)
 
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
+logger = logging.getLogger(__name__)
 
 @voice_bp.route('/voice/welcome', methods=['POST'])
 def voice_welcome():
     """
-    Endpoint for the initial call greeting.
-    Twilio requests this URL when the call starts.
+    Endpoint for the initial call greeting (Legacy TwiML).
+    Retained for backward compatibility or simple flows if needed.
     """
     response = VoiceResponse()
 
     # 1. Validate Request
     if TWILIO_AUTH_TOKEN:
         validator = RequestValidator(TWILIO_AUTH_TOKEN)
-        # Using request.url might be HTTP if behind proxy, causing validation failure.
-        # Ideally rely on ProxyFix, but be aware.
         if not validator.validate(request.url, request.form, request.headers.get('X-Twilio-Signature', '')):
            return "Forbidden", 403
 
@@ -103,10 +106,53 @@ def voice_welcome():
 
     return Response(str(response), mimetype='text/xml')
 
+@voice_bp.route('/twilio/voice/inbound', methods=['POST'])
+def voice_inbound_stream():
+    """
+    New Endpoint for Inbound Calls using Twilio Media Streams & OpenAI Realtime.
+    Returns TwiML with <Connect><Stream>.
+    """
+    response = VoiceResponse()
+
+    # 1. Validate Request
+    if TWILIO_AUTH_TOKEN:
+        validator = RequestValidator(TWILIO_AUTH_TOKEN)
+        # Using request.url might be HTTP if behind proxy.
+        if not validator.validate(request.url, request.form, request.headers.get('X-Twilio-Signature', '')):
+           return "Forbidden", 403
+
+    # Extract call details to pass to the stream (via custom parameters if needed,
+    # or just use the callSid in the stream URL params)
+    call_sid = request.form.get('CallSid')
+    from_number = request.form.get('From')
+    to_number = request.form.get('To')
+
+    # We can pass context via query params to the WebSocket URL
+    # Assuming the app is running on a domain, we need to construct the wss URL
+    # current_app.config['BACKEND_URL'] is usually http(s). We need ws(s).
+    backend_url = current_app.config.get("BACKEND_URL", "http://localhost:8080")
+    ws_url = backend_url.replace("http://", "ws://").replace("https://", "wss://")
+    stream_url = f"{ws_url}/ws/voice/stream"
+
+    connect = Connect()
+    stream = connect.stream(url=stream_url)
+    # Pass metadata to the stream context
+    stream.parameter(name="from_number", value=from_number)
+    stream.parameter(name="to_number", value=to_number)
+    stream.parameter(name="call_sid", value=call_sid)
+
+    response.append(connect)
+
+    # Fallback if stream fails
+    response.say("Lo siento, hubo un error de conexión. Por favor intenta más tarde.")
+
+    return Response(str(response), mimetype='text/xml')
+
 @voice_bp.route('/voice/process', methods=['POST'])
 def voice_process():
     """
-    Endpoint that processes speech input and returns the bot's response.
+    Legacy Endpoint that processes speech input (Gather) and returns TwiML.
+    Kept for backward compatibility or non-streaming flows.
     """
     if TWILIO_AUTH_TOKEN:
         validator = RequestValidator(TWILIO_AUTH_TOKEN)
@@ -115,12 +161,8 @@ def voice_process():
 
     user_speech = request.form.get('SpeechResult')
     digits = request.form.get('Digits')
-
-    # Prioritize speech, fallback to digits (simple mapping for now, or just pass as text)
     input_text = user_speech or digits
-
     confidence = float(request.form.get('Confidence', 0.0))
-
     to_number = request.form.get("To")
     from_number = request.form.get("From")
     call_sid = request.form.get("CallSid")
@@ -156,7 +198,6 @@ def voice_process():
 
     if isinstance(result, dict):
         if result.get("type") == "handoff":
-            # Handle Human Transfer
             response.say(result.get("text", "Transfiriendo..."), language="es-AR")
             response.dial(result.get("target"))
             return Response(str(response), mimetype='text/xml')
@@ -167,8 +208,6 @@ def voice_process():
         bot_response_text = str(result)
         audio_url = None
 
-    # Use a loop structure: Play audio first, then Gather for new input.
-    # This structure <Gather><Play>...</Play></Gather> allows barge-in during the Play.
     gather = Gather(
         input='speech dtmf',
         num_digits=1,
@@ -185,13 +224,6 @@ def voice_process():
         gather.say(bot_response_text, language="es-AR")
 
     response.append(gather)
-
-    # If gather times out or no input, we can redirect to process again (or a fallback)
-    # to keep the call alive if needed, or let it end.
-    # For now, let's redirect to itself with a no-input flag or just end if silent.
-    # To keep it conversational, we might want to prompt again.
-    # response.redirect(url_for('voice.voice_process', _external=True))
-
     return Response(str(response), mimetype='text/xml')
 
 @voice_bp.route('/voice/status', methods=['POST'])
@@ -213,3 +245,14 @@ def voice_status():
     handle_call_status(call_sid, call_status, to_number, from_number, direction)
 
     return Response(status=200)
+
+# WebSocket Route for Media Streams
+# Using flask-sock extension
+@sock.route('/ws/voice/stream')
+def voice_stream_socket(ws):
+    """
+    WebSocket handler for Twilio Media Streams <-> OpenAI Realtime.
+    """
+    logger.info("New Voice Stream WebSocket connection")
+    stream_service = VoiceStreamService(ws)
+    stream_service.run()
