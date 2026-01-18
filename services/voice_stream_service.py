@@ -197,15 +197,16 @@ class VoiceStreamService:
         user_name = getattr(self.user, "name", "Vecino")
 
         base_prompt = (
-            f"Sos el asistente de voz de {tenant_name}. Hablás con {user_name}. "
-            "Tu misión es ayudar de forma eficiente, profesional y empática. "
-            "TONO: Argentino natural, cercano pero respetuoso. Evitá jerga excesiva ('joya', 'che'). "
-            "Usá 'vos' para tratar al usuario. "
-            "OBJETIVO: Registrar reclamos o pedidos. Si faltan datos, pedilos amablemente uno por uno. "
-            "REGLA: RESPUESTAS BREVES (máximo 2 oraciones). "
-            "Si el usuario se despide, usá la tool 'finalizar_llamada'. "
-            "Si mencionan fotos, deciles: 'Al cortar te va a llegar un mensaje por WhatsApp donde podés enviar las fotos'. "
-            "Escuchá, confirmá y ejecutá."
+            f"Sos el asistente telefónico de {tenant_name}. "
+            "Tu objetivo es resolver rápido y con claridad. "
+            "Español argentino neutro: usá 'vos' pero sin jerga (no digas 'joya', 'che', 'dale'). "
+            "Tono: amable, empático y profesional. "
+            "Respuestas cortas: máximo 1 o 2 oraciones. "
+            "Hacé preguntas directas y específicas. "
+            "No repitas datos si ya están guardados: confirmalos con una pregunta corta. "
+            "Cuando tengas los datos mínimos, ejecutá la acción inmediatamente. "
+            "Al finalizar, confirmá lo registrado y decí el número de ticket/pedido. "
+            "Si hay fotos, pedí que las envíen por WhatsApp respondiendo al mensaje de resumen."
         )
         return base_prompt
 
@@ -235,32 +236,38 @@ class VoiceStreamService:
             import eventlet
 
             def listen_openai():
-                try:
-                    while True:
-                        msg = self.openai_ws.recv()
-                        if not msg:
-                            break
-                        data = json.loads(msg)
-                        self.handle_openai_message(data)
-                except Exception as e:
-                    logger.error(f"OpenAI listener error: {e}")
+                # Use self.app if available, else fallback to current_app (which fails in threads)
+                app_ctx = self.app.app_context() if self.app else current_app.app_context()
+                with app_ctx:
+                    try:
+                        while True:
+                            msg = self.openai_ws.recv()
+                            if not msg:
+                                break
+                            data = json.loads(msg)
+                            self.handle_openai_message(data)
+                    except Exception as e:
+                        logger.error(f"OpenAI listener error: {e}")
 
             # Spawn OpenAI listener
             openai_thread = eventlet.spawn(listen_openai)
 
             # Main Loop (Twilio Listener)
-            while True:
-                try:
-                    message = self.ws.receive()
-                except ConnectionClosed:
-                    logger.info("Twilio WebSocket connection closed.")
-                    break
+            # Use self.app if available, else fallback to current_app (which fails in threads)
+            app_ctx = self.app.app_context() if self.app else current_app.app_context()
+            with app_ctx:
+                while True:
+                    try:
+                        message = self.ws.receive()
+                    except ConnectionClosed:
+                        logger.info("Twilio WebSocket connection closed.")
+                        break
 
-                if not message:
-                    break
+                    if not message:
+                        break
 
-                data = json.loads(message)
-                self.handle_twilio_message(data)
+                    data = json.loads(message)
+                    self.handle_twilio_message(data)
 
             # Cleanup
             openai_thread.kill()
@@ -381,19 +388,27 @@ class VoiceStreamService:
                         result = f"Reclamo creado con éxito. Número: {nro}."
                         if self.session_context:
                             self.session_context.context_data["latest_ticket_nro"] = nro
+                            # Save awaiting photo flag to bridge with WhatsApp Webhook
+                            self.session_context.context_data["awaiting_photo_for_ticket"] = nro
+                            if data.get("ticket_id"):
+                                self.session_context.context_data["latest_ticket_id"] = data.get("ticket_id")
+
                             safe_flag_modified(self.session_context, "context_data")
                             db.session.commit()
 
-                        # Send WhatsApp Summary with explicit instructions for photos
+                        # Send WhatsApp Summary IMMEDIATELLY
                         if self.user and self.user.telefono:
                              try:
                                  messaging_service_sid = os.environ.get("MESSAGING_SERVICE_SID")
                                  from_ = messaging_service_sid if messaging_service_sid else os.environ.get("TWILIO_PHONE_NUMBER")
                                  if from_:
                                      msg_body = (
-                                         f"✅ *Reclamo registrado con éxito*\n"
-                                         f"🆔 Ticket: {nro}\n\n"
-                                         f"📸 *Si tenés fotos del problema, por favor envialas ahora respondiendo a este mensaje.*"
+                                         f"✅ *Reclamo registrado*\n"
+                                         f"📌 N°: *{nro}*\n"
+                                         f"🧾 Categoría: {args.get('categoria', 'General')}\n"
+                                         f"📝 {args.get('descripcion', '')}\n"
+                                         f"📍 {args.get('ubicacion', '')}\n\n"
+                                         f"📷 *Si tenés una foto, respondé a este mensaje con la imagen.*"
                                      )
                                      enviar_mensaje_whatsapp_con_fallback(
                                          self.user.telefono,
