@@ -84,6 +84,18 @@ class VoiceStreamService:
                     "properties": {},
                     "required": []
                 }
+            },
+            {
+                "type": "function",
+                "name": "consultar_producto",
+                "description": "Busca un producto en el catálogo por nombre y devuelve precio y stock.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "nombre": {"type": "string", "description": "Nombre o descripción del producto a buscar"}
+                    },
+                    "required": ["nombre"]
+                }
             }
         ]
 
@@ -195,6 +207,14 @@ class VoiceStreamService:
              tenant_name = getattr(self.owner_user, "nombre_empresa", "Tu Municipio")
 
         user_name = getattr(self.user, "name", "Vecino")
+        user_phone = getattr(self.user, "telefono", "")
+        user_addr = getattr(self.user, "direccion", "")
+
+        known_data_str = f"Datos conocidos del usuario: Nombre: {user_name}."
+        if user_phone:
+            known_data_str += f" Teléfono: {user_phone}."
+        if user_addr:
+            known_data_str += f" Dirección: {user_addr}."
 
         base_prompt = (
             f"Sos el asistente telefónico de {tenant_name}. "
@@ -203,7 +223,8 @@ class VoiceStreamService:
             "Tono: amable, empático y profesional. "
             "Respuestas cortas: máximo 1 o 2 oraciones. "
             "Hacé preguntas directas y específicas. "
-            "No repitas datos si ya están guardados: confirmalos con una pregunta corta. "
+            f"{known_data_str} "
+            "Si ya tenés estos datos, NO los preguntes de nuevo, solo confirmalos brevemente si es necesario para el trámite (ej: '¿Confirmás que es para la dirección X?'). "
             "Cuando tengas los datos mínimos, ejecutá la acción inmediatamente. "
             "Al finalizar, confirmá lo registrado y decí el número de ticket/pedido. "
             "Si hay fotos, pedí que las envíen por WhatsApp respondiendo al mensaje de resumen."
@@ -424,7 +445,72 @@ class VoiceStreamService:
                         result = res.get("message_body") or res.get("message_to_user") or "No se pudo crear el reclamo. Faltan datos."
 
                 elif name == "crear_pedido":
-                     result = "Pedido registrado (simulado). En breve te contactamos."
+                    from services.actions.pyme_order_actions import CrearPedidoAction
+                    ctx = {
+                        "user_obj": self.owner_user,
+                        "viewer_user_obj": self.user,
+                        "channel": "voice",
+                        "cliente_id": self.user.id if self.user else None,
+                        "chat_db_context_data": self.session_context.context_data if self.session_context else {}
+                    }
+                    handler = CrearPedidoAction(ctx)
+                    res = handler.execute(args)
+
+                    if res.get("success"):
+                        data = res.get("data", {})
+                        nro_pedido = data.get("nro_pedido", "N/A")
+                        monto = data.get("monto_total", 0)
+                        resumen = data.get("order_summary_text", "")
+
+                        result = f"Pedido creado con éxito. Número: {nro_pedido}. Total: ${monto}."
+
+                        if self.session_context:
+                            self.session_context.context_data["latest_order_id"] = data.get("pedido_id")
+                            self.session_context.context_data["latest_order_nro"] = nro_pedido
+                            safe_flag_modified(self.session_context, "context_data")
+                            db.session.commit()
+
+                        # Send WhatsApp Summary IMMEDIATELY for Orders
+                        if self.user and self.user.telefono:
+                             try:
+                                 messaging_service_sid = os.environ.get("MESSAGING_SERVICE_SID")
+                                 from_ = messaging_service_sid if messaging_service_sid else os.environ.get("TWILIO_PHONE_NUMBER")
+                                 if from_:
+                                     msg_body = (
+                                         f"✅ *Pedido registrado*\n"
+                                         f"🆔 N°: *{nro_pedido}*\n"
+                                         f"📦 *Resumen:*\n{resumen}\n\n"
+                                         f"💰 *Total: ${monto:,.2f}*\n"
+                                     )
+                                     enviar_mensaje_whatsapp_con_fallback(
+                                         self.user.telefono,
+                                         msg_body,
+                                         None, # image_url
+                                         from_number=from_
+                                     )
+                             except Exception as ex:
+                                 logger.warning(f"Could not send WhatsApp summary for order: {ex}")
+                    else:
+                        result = res.get("message_body") or res.get("message_to_user") or "No se pudo crear el pedido. Faltan datos."
+
+                elif name == "consultar_producto":
+                    from services.actions.pyme_order_actions import ConsultarProductoAction
+                    ctx = {
+                        "user_obj": self.owner_user,
+                        "viewer_user_obj": self.user,
+                        "channel": "voice",
+                        "chat_db_context_data": self.session_context.context_data if self.session_context else {}
+                    }
+                    handler = ConsultarProductoAction(ctx)
+                    # Map 'nombre' param to 'nombre_producto_mencionado' which the action expects
+                    action_args = {"nombre_producto_mencionado": args.get("nombre")}
+                    res = handler.execute(action_args)
+
+                    if res.get("success"):
+                        # The action returns a nice formatted message in 'message_to_user'
+                        result = res.get("message_to_user")
+                    else:
+                        result = res.get("message_to_user") or "No encontré información sobre ese producto."
 
                 elif name == "transferir_humano":
                      motivo = args.get("motivo", "General")
