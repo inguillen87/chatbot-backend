@@ -1529,6 +1529,66 @@ def whatsapp_webhook():
                     uploaded_file_info['transcribed_text'] = transcribed_text
                 else:
                     current_app.logger.warning("Audio transcription failed or returned empty.")
+
+            # --- Voice Bot Photo Bridge ---
+            # If we were waiting for a photo for a specific ticket (set by voice bot), link it now.
+            awaiting_ticket_nro = session_context_db_entry.context_data.get("awaiting_photo_for_ticket")
+
+            if awaiting_ticket_nro and not media_content_type.startswith("audio/"):
+                try:
+                    current_app.logger.info(f"[VOICE_BRIDGE] Received photo for ticket {awaiting_ticket_nro}")
+
+                    # 1. Find the ticket
+                    # We assume it's a Municipio ticket for now based on voice bot usage
+                    from models import MunicipioTicket, TicketComentario
+                    ticket = MunicipioTicket.query.filter_by(nro_ticket=awaiting_ticket_nro).first()
+
+                    if ticket:
+                         # 2. Attach the file
+                         # adjunto was created above
+                         if adjunto:
+                             adjunto.municipio_ticket_id = ticket.id
+                             # Also set as foto_principal if none exists
+                             if not ticket.foto_principal:
+                                 ticket.foto_principal = adjunto.url
+
+                             db.session.add(adjunto)
+                             db.session.add(ticket)
+
+                             # 3. Add system comment/tracking via TicketComentario
+                             comentario = TicketComentario(
+                                 municipio_ticket_id=ticket.id,
+                                 comentario="[SISTEMA] Vecino adjuntó foto solicitada por llamada de voz.",
+                                 user_id=end_user.id if end_user else None,
+                                 es_admin=False,
+                                 origen="chat",
+                                 estado_ticket=ticket.estado,
+                                 archivo_adjunto_id=adjunto.id
+                             )
+                             db.session.add(comentario)
+                             db.session.commit()
+
+                             # 4. Confirm to user (Intercepting normal flow)
+                             twilio_client.messages.create(
+                                 from_=to_number_raw,
+                                 to=from_number_raw,
+                                 body=f"✅ Foto recibida y adjuntada al reclamo *{awaiting_ticket_nro}*. ¡Muchas gracias!"
+                             )
+
+                             # 5. Clear flag so we don't attach subsequent unrelated photos
+                             session_context_db_entry.context_data.pop("awaiting_photo_for_ticket", None)
+                             safe_flag_modified(session_context_db_entry, "context_data")
+                             db.session.commit()
+
+                             # We can optionally stop processing here or let it continue.
+                             # Returning "OK" stops the bot from replying "No entendi"
+                             return "OK", 200
+                    else:
+                        current_app.logger.warning(f"[VOICE_BRIDGE] Ticket {awaiting_ticket_nro} not found for photo attachment.")
+
+                except Exception as e_bridge:
+                    current_app.logger.error(f"[VOICE_BRIDGE] Error attaching photo: {e_bridge}")
+
             else:
                 # If it's not audio, remove the source_is_audio flag
                 session_context_db_entry.context_data.pop('source_is_audio', None)
