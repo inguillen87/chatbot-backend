@@ -49,6 +49,7 @@ class VoiceStreamService:
         self.pending_end_call = False
         self.last_ticket_nro = None
         self.last_order_nro = None
+        self.response_active = False
 
         # Tools definitions
         self.tools = [
@@ -233,7 +234,8 @@ class VoiceStreamService:
             "Regla: si falta un dato (ubicación/categoría/descr), preguntalo directo. "
             "Cuando tengas lo mínimo, ejecutá la herramienta correspondiente. "
             "Al finalizar, confirmá lo registrado y avisá que se envía un resumen por WhatsApp para adjuntar fotos. "
-            "Si el usuario se despide y ya está resuelto, cerrá la conversación."
+            "Si el usuario confirma que ya está todo listo o dice 'no', 'nada más', 'listo' o 'perfecto', "
+            "resumí en una frase lo registrado, avisá que se envía por WhatsApp y ejecutá finalizar_llamada."
         )
 
         # Si podés detectar tipo tenant: municipio vs pyme
@@ -360,6 +362,7 @@ class VoiceStreamService:
                             }
                         )
                     )
+                    self.response_active = True
 
         elif event_type == "media":
             if self.openai_ws:
@@ -389,11 +392,17 @@ class VoiceStreamService:
                         }
                     )
                 )
+            self.response_active = True
+
+        elif msg_type == "response.created":
+            self.response_active = True
 
         elif msg_type == "input_audio_buffer.speech_started":
             # Interrupción real-time
             self.ws.send(json.dumps({"event": "clear", "streamSid": self.stream_sid}))
-            self.openai_ws.send(json.dumps({"type": "response.cancel"}))
+            if self.response_active:
+                self.openai_ws.send(json.dumps({"type": "response.cancel"}))
+                self.response_active = False
 
         elif msg_type == "response.function_call_arguments.done":
             call_id = data.get("call_id")
@@ -403,6 +412,7 @@ class VoiceStreamService:
 
         # ✅ IMPORTANTÍSIMO: cuando el modelo termina de hablar, si ya registramos ticket/pedido -> cortamos la llamada
         elif msg_type in ("response.done", "response.completed"):
+            self.response_active = False
             if self.pending_end_call:
                 self.pending_end_call = False
                 self._safe_end_call_twilio()
@@ -441,6 +451,11 @@ class VoiceStreamService:
                         "chat_db_context_data": chat_data,
                     }
 
+                    if self.user:
+                        args.setdefault("telefono", getattr(self.user, "telefono", None))
+                        args.setdefault("nombre", getattr(self.user, "name", None) or getattr(self.user, "nombre", None))
+                        args.setdefault("email", getattr(self.user, "email", None))
+
                     handler = CrearReclamoActionHandler(ctx)
                     res = handler.execute(args)
 
@@ -465,7 +480,12 @@ class VoiceStreamService:
                             db.session.commit()
 
                         # ✅ Enviar resumen por WhatsApp (bien armado)
+                        whatsapp_target = None
                         if self.user and getattr(self.user, "telefono", None):
+                            whatsapp_target = self.user.telefono
+                        elif self.from_number:
+                            whatsapp_target = self._normalize_phone(self.from_number)
+                        if whatsapp_target:
                             try:
                                 msg_body = (
                                     f"✅ *Reclamo registrado*\n"
@@ -477,7 +497,7 @@ class VoiceStreamService:
                                 )
 
                                 enviar_mensaje_whatsapp_con_fallback(
-                                    self.user.telefono,
+                                    whatsapp_target,
                                     msg_body,
                                     image_url=None,
                                     from_number=TWILIO_WHATSAPP_NUMBER,
@@ -511,6 +531,15 @@ class VoiceStreamService:
                         "chat_db_context_data": chat_data,
                     }
 
+                    if self.user:
+                        args.setdefault("telefono_detectado", getattr(self.user, "telefono", None))
+                        args.setdefault(
+                            "nombre_usuario_detectado",
+                            getattr(self.user, "name", None) or getattr(self.user, "nombre", None),
+                        )
+                        args.setdefault("email_detectado", getattr(self.user, "email", None))
+                        args.setdefault("direccion_entrega", getattr(self.user, "direccion", None))
+
                     handler = CrearPedidoAction(ctx)
                     res = handler.execute(args)
 
@@ -533,7 +562,12 @@ class VoiceStreamService:
                             safe_flag_modified(session_context, "context_data")
                             db.session.commit()
 
+                        whatsapp_target = None
                         if self.user and getattr(self.user, "telefono", None):
+                            whatsapp_target = self.user.telefono
+                        elif self.from_number:
+                            whatsapp_target = self._normalize_phone(self.from_number)
+                        if whatsapp_target:
                             try:
                                 msg_body = (
                                     f"✅ *Pedido registrado*\n"
@@ -543,7 +577,7 @@ class VoiceStreamService:
                                 )
 
                                 enviar_mensaje_whatsapp_con_fallback(
-                                    self.user.telefono,
+                                    whatsapp_target,
                                     msg_body,
                                     image_url=None,
                                     from_number=TWILIO_WHATSAPP_NUMBER,
@@ -626,6 +660,7 @@ class VoiceStreamService:
                 )
             )
             self.openai_ws.send(json.dumps({"type": "response.create"}))
+            self.response_active = True
 
         except Exception as e:
             logger.error(f"[VOICE] Tool execution failed: {e}", exc_info=True)

@@ -2090,7 +2090,7 @@ def _normalize_pedir_info_fields(pedir_info: Any) -> list[str]:
         cleaned = value.strip()
         if not cleaned:
             return
-        for part in re.split(r"\s+y\s+|\s+e\s+", cleaned, flags=re.IGNORECASE):
+        for part in re.split(r"\s+y\s+|\s+e\s+|\s+o\s+", cleaned, flags=re.IGNORECASE):
             part_clean = part.strip()
             if part_clean:
                 fields.append(part_clean)
@@ -2112,6 +2112,77 @@ def _normalize_pedir_info_value(pedir_info: Any) -> Optional[str]:
 
     fields = _normalize_pedir_info_fields(pedir_info)
     return fields[0] if fields else None
+
+
+def _normalize_expected_fields_list(fields: list[Any]) -> list[str]:
+    normalized_fields: list[str] = []
+    for field in fields:
+        for candidate in _normalize_pedir_info_fields(field):
+            normalized = _normalize_single_expected_field(candidate)
+            if normalized:
+                normalized_fields.append(normalized)
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for field in normalized_fields:
+        if field in seen:
+            continue
+        seen.add(field)
+        deduped.append(field)
+    return deduped
+
+
+def _normalize_single_expected_field(field_name: Optional[str]) -> Optional[str]:
+    if not field_name:
+        return None
+    if not isinstance(field_name, str):
+        field_name = str(field_name)
+
+    normalized = normalizar_str(field_name)
+    if not normalized:
+        return None
+
+    def _map_candidate(candidate: str) -> Optional[str]:
+        if not candidate:
+            return None
+        if candidate in CLAIM_PENDING_FIELDS or candidate in SUGGESTION_PENDING_FIELDS:
+            return candidate
+        if candidate in PEDIR_INFO_TO_STATE:
+            return candidate
+        if "correo" in candidate or "mail" in candidate or "email" in candidate:
+            return "email"
+        if "dni" in candidate or "documento" in candidate:
+            return "dni"
+        if "telefono" in candidate or "celular" in candidate or "whatsapp" in candidate:
+            return "telefono"
+        if "nombre" in candidate:
+            return "nombre"
+        if "descripcion" in candidate:
+            return "descripcion"
+        if "categoria" in candidate:
+            return "categoria"
+        if "ubicacion" in candidate or "direccion" in candidate or "domicilio" in candidate:
+            return "ubicacion"
+        if "confirmacion" in candidate:
+            return "confirmacion"
+        if "adjunto" in candidate or "foto" in candidate or "imagen" in candidate:
+            return "adjuntos"
+        if "datos_contacto_sugerencia" in candidate or "datos contacto" in candidate:
+            return "datos_contacto_sugerencia"
+        if "descripcion_sugerencia" in candidate or "sugerencia" in candidate:
+            return "descripcion_sugerencia"
+        return None
+
+    candidates = [
+        part.strip()
+        for part in re.split(r"[,/]|\\s+y\\s+|\\s+e\\s+|\\s+o\\s+", normalized)
+        if part.strip()
+    ]
+    for candidate in candidates:
+        mapped = _map_candidate(candidate)
+        if mapped:
+            return mapped
+
+    return _map_candidate(normalized) or normalized
 
 
 def _prefill_contacto_from_context(
@@ -3838,6 +3909,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         expected_fields_sugerencia = contexto_municipio_actual.get("expected_fields_llm_sugerencia")
         if not isinstance(expected_fields_sugerencia, list):
             expected_fields_sugerencia = []
+        expected_fields_reclamo = _normalize_expected_fields_list(expected_fields_reclamo)
+        expected_fields_sugerencia = _normalize_expected_fields_list(expected_fields_sugerencia)
+        contexto_municipio_actual["expected_fields_llm_reclamo"] = expected_fields_reclamo
+        contexto_municipio_actual["expected_fields_llm_sugerencia"] = expected_fields_sugerencia
 
         pending_reclamo_raw = contexto_municipio_actual.get("esperando_info_llm_reclamo")
         if not expected_fields_reclamo and pending_reclamo_raw:
@@ -3989,7 +4064,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     context,
                 )
 
-            if valor_a_guardar and not extracted_fields:
+            if valor_a_guardar and campo_esperado not in extracted_fields:
                 campo_destino = campo_esperado
                 if pending_flow == "sugerencia":
                     if campo_esperado in ["descripcion_sugerencia", "descripcion"]:
@@ -4083,6 +4158,23 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 contexto_municipio_actual.pop("esperando_info_llm", None)
                 contexto_municipio_actual.pop("expected_fields_llm_reclamo", None)
                 contexto_municipio_actual.pop("expected_fields_llm_sugerencia", None)
+
+            if (
+                context.get("es_audio")
+                and not contexto_municipio_actual.get("saludo_audio_enviado")
+                and handler_response.get("message_body")
+            ):
+                municipio_config = context.get("municipio_config_actual") or {}
+                nombre_municipio = (
+                    municipio_config.get("nombre")
+                    or municipio_config.get("nombre_municipio")
+                    or "el municipio"
+                )
+                handler_response["message_body"] = (
+                    f"Hola, soy el asistente de {nombre_municipio}. "
+                    f"{handler_response['message_body']}"
+                )
+                contexto_municipio_actual["saludo_audio_enviado"] = True
 
             return handler_response, contexto_municipio_actual
 
@@ -8181,6 +8273,16 @@ def responder_municipio(
 
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
 
+    if received_payload.get("es_audio") and isinstance(pregunta_str, str) and pregunta_str.strip():
+        lowered_question = pregunta_str.lower()
+        estado_actual = contexto_municipio_actual.get("estado_conversacion")
+        if "reclamo" in lowered_question and not estado_actual:
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+        if any(keyword in lowered_question for keyword in ("llamar", "llamada", "agente", "humano")):
+            kwargs["intencion"] = "hablar_con_agente"
+            context["intencion"] = "hablar_con_agente"
+            contexto_municipio_actual["preferencia_canal"] = "voice"
+
     if location_link_info:
         flow_state = (
             contexto_municipio_actual.get("reclamo_flow_v2", {})
@@ -10550,7 +10652,8 @@ def responder_municipio(
     if USAR_LLM_PARA_RECLAMOS:
         # --- INICIO FIX: Resetear contexto de reclamo si llega una nueva imagen analizada ---
         datos_interpretados = context.get("datos_interpretados_archivo") or kwargs.get("datos_interpretados_archivo")
-        if datos_interpretados and isinstance(datos_interpretados, dict):
+        is_audio_upload = bool(received_payload.get("es_audio"))
+        if datos_interpretados and isinstance(datos_interpretados, dict) and not is_audio_upload:
             logger_actual.info("[CONTEXT_RESET] Se detectaron datos de archivo interpretados. Forzando reseteo de contexto de reclamo.")
 
             # Guardar datos de contacto antes de limpiar
