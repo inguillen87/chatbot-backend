@@ -11,6 +11,7 @@ from utils.db_utils import safe_flag_modified
 from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
 import hashlib
 from twilio.rest import Client as TwilioClient
+from simple_websocket.errors import ConnectionClosed
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +21,9 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 
 class VoiceStreamService:
-    def __init__(self, ws):
+    def __init__(self, ws, app=None):
         self.ws = ws # Flask-Sock WebSocket (client connection from Twilio)
+        self.app = app # Flask App Instance (for context in threads)
         self.openai_ws = None
         self.stream_sid = None
         self.call_sid = None
@@ -71,6 +73,16 @@ class VoiceStreamService:
                         "motivo": {"type": "string"}
                     },
                     "required": ["motivo"]
+                }
+            },
+            {
+                "type": "function",
+                "name": "finalizar_llamada",
+                "description": "Corta la llamada telefónica.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
                 }
             }
         ]
@@ -186,12 +198,13 @@ class VoiceStreamService:
 
         base_prompt = (
             f"Sos el asistente de voz de {tenant_name}. Hablás con {user_name}. "
-            "Tu misión es resolver YA (tomar el reclamo o pedido) sin vueltas. "
-            "TONO: Argentino Rioplatense natural. Usá 'vos', 'che', 'dale', 'joya', 'bárbaro'. "
-            "REGLA DE ORO: RESPUESTAS DE MAXIMO 1 O 2 ORACIONES. Sé conciso y directo. "
-            "Evitá formalismos de bot como '¿En qué puedo ayudarle?'. Mejor: '¿Qué pasó?' o 'Decime'. "
-            "Si piden humano, usá la tool 'transferir_humano'. "
-            "Fotos: deciles que las manden por WhatsApp al cortar. "
+            "Tu misión es ayudar de forma eficiente, profesional y empática. "
+            "TONO: Argentino natural, cercano pero respetuoso. Evitá jerga excesiva ('joya', 'che'). "
+            "Usá 'vos' para tratar al usuario. "
+            "OBJETIVO: Registrar reclamos o pedidos. Si faltan datos, pedilos amablemente uno por uno. "
+            "REGLA: RESPUESTAS BREVES (máximo 2 oraciones). "
+            "Si el usuario se despide, usá la tool 'finalizar_llamada'. "
+            "Si mencionan fotos, deciles: 'Al cortar te va a llegar un mensaje por WhatsApp donde podés enviar las fotos'. "
             "Escuchá, confirmá y ejecutá."
         )
         return base_prompt
@@ -237,7 +250,12 @@ class VoiceStreamService:
 
             # Main Loop (Twilio Listener)
             while True:
-                message = self.ws.receive()
+                try:
+                    message = self.ws.receive()
+                except ConnectionClosed:
+                    logger.info("Twilio WebSocket connection closed.")
+                    break
+
                 if not message:
                     break
 
@@ -265,7 +283,10 @@ class VoiceStreamService:
 
             logger.info(f"Stream started: {self.stream_sid} Call: {self.call_sid}")
 
-            with current_app.app_context():
+            # Use self.app if available, else fallback to current_app (which fails in threads)
+            app_ctx = self.app.app_context() if self.app else current_app.app_context()
+
+            with app_ctx:
                 if self._resolve_context(self.from_number, self.to_number, self.call_sid):
                     # Init Session
                      session_update = {
@@ -294,7 +315,7 @@ class VoiceStreamService:
                         "type": "response.create",
                         "response": {
                             "modalities": ["text", "audio"],
-                            "instructions": "Saludá breve y directo: 'Hola, soy el asistente. Decime qué pasó.'"
+                            "instructions": "Saludá amablemente: 'Hola, soy el asistente virtual. ¿En qué puedo ayudarte?'"
                         }
                     }))
 
@@ -340,7 +361,10 @@ class VoiceStreamService:
             args = json.loads(args_str)
             result = "Error executing tool"
 
-            with current_app.app_context():
+            # Use self.app if available, else fallback to current_app (which fails in threads)
+            app_ctx = self.app.app_context() if self.app else current_app.app_context()
+
+            with app_ctx:
                 if name == "crear_reclamo":
                     from services.actions.municipio_actions import CrearReclamoActionHandler
                     ctx = {
@@ -359,6 +383,27 @@ class VoiceStreamService:
                             self.session_context.context_data["latest_ticket_nro"] = nro
                             safe_flag_modified(self.session_context, "context_data")
                             db.session.commit()
+
+                        # Send WhatsApp Summary with explicit instructions for photos
+                        if self.user and self.user.telefono:
+                             try:
+                                 messaging_service_sid = os.environ.get("MESSAGING_SERVICE_SID")
+                                 from_ = messaging_service_sid if messaging_service_sid else os.environ.get("TWILIO_PHONE_NUMBER")
+                                 if from_:
+                                     msg_body = (
+                                         f"✅ *Reclamo registrado con éxito*\n"
+                                         f"🆔 Ticket: {nro}\n\n"
+                                         f"📸 *Si tenés fotos del problema, por favor envialas ahora respondiendo a este mensaje.*"
+                                     )
+                                     enviar_mensaje_whatsapp_con_fallback(
+                                         self.user.telefono,
+                                         msg_body,
+                                         None, # image_url
+                                         from_number=from_
+                                     )
+                             except Exception as ex:
+                                 logger.warning(f"Could not send WhatsApp summary: {ex}")
+
                     else:
                         # Return the error message to the LLM so it can ask for missing info
                         result = res.get("message_body") or res.get("message_to_user") or "No se pudo crear el reclamo. Faltan datos."
@@ -394,20 +439,15 @@ class VoiceStreamService:
                              logger.error(f"Failed to transfer call: {exc}")
                              result = "No pude transferir la llamada. Intente más tarde."
 
-            # Send summary via WhatsApp if successful (Optional)
-            if name == "crear_reclamo" and "exito" in result and self.user and self.user.telefono:
-                 try:
-                     messaging_service_sid = os.environ.get("MESSAGING_SERVICE_SID")
-                     from_ = messaging_service_sid if messaging_service_sid else os.environ.get("TWILIO_PHONE_NUMBER")
-                     if from_:
-                         enviar_mensaje_whatsapp_con_fallback(
-                             self.user.telefono,
-                             f"Resumen de llamada: {result}",
-                             None, # image_url
-                             from_number=from_
-                         )
-                 except Exception as ex:
-                     logger.warning(f"Could not send WhatsApp summary: {ex}")
+                elif name == "finalizar_llamada":
+                    result = "Cortando llamada..."
+                    if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and self.call_sid:
+                         try:
+                             client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+                             client.calls(self.call_sid).update(status="completed")
+                             logger.info(f"Ended call {self.call_sid}")
+                         except Exception as exc:
+                             logger.error(f"Failed to end call: {exc}")
 
             # Send output back to OpenAI
             self.openai_ws.send(json.dumps({
