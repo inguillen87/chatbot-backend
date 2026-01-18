@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import hashlib
+import re
 
 from flask import current_app, url_for
 from websockets.sync.client import connect as ws_connect
@@ -42,6 +43,9 @@ class VoiceStreamService:
         self.user = None
         self.owner_user = None
         self.tenant_profile = None
+
+        self.user_id = None
+        self.owner_user_id = None
 
         self.chat_session_id = None
 
@@ -175,6 +179,8 @@ class VoiceStreamService:
                 self.user = get_or_create_user_by_phone(user_phone_clean, self.owner_user)
             else:
                 self.user = User(name="Vecino", email=f"{user_phone_clean}@voice.temp")
+            self.user_id = getattr(self.user, "id", None) if self.user else None
+            self.owner_user_id = getattr(self.owner_user, "id", None) if self.owner_user else None
 
             # 4) Session ID
             empresa_id = self.owner_user.id if self.owner_user else 0
@@ -362,8 +368,6 @@ class VoiceStreamService:
                             }
                         )
                     )
-                    self.response_active = True
-
         elif event_type == "media":
             if self.openai_ws:
                 self.openai_ws.send(
@@ -397,6 +401,11 @@ class VoiceStreamService:
         elif msg_type == "response.created":
             self.response_active = True
 
+        elif msg_type == "response.created":
+            self.response_active = True
+        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
+            self.response_active = False
+
         elif msg_type == "input_audio_buffer.speech_started":
             # Interrupción real-time
             self.ws.send(json.dumps({"event": "clear", "streamSid": self.stream_sid}))
@@ -419,6 +428,8 @@ class VoiceStreamService:
 
         elif msg_type == "error":
             logger.error(f"[VOICE] OpenAI error: {data}")
+            if data.get("error", {}).get("code") == "response_cancel_not_active":
+                self.response_active = False
 
     # ----------------------------
     # Tools executor
@@ -431,6 +442,11 @@ class VoiceStreamService:
 
             app_ctx = self.app.app_context() if self.app else current_app.app_context()
             with app_ctx:
+                if self.owner_user_id:
+                    self.owner_user = db.session.get(User, self.owner_user_id)
+                if self.user_id:
+                    self.user = db.session.get(User, self.user_id)
+
                 session_context = (
                     ChatSessionContext.query.filter_by(chat_session_id=self.chat_session_id).first()
                     if self.chat_session_id
@@ -450,6 +466,16 @@ class VoiceStreamService:
                         "channel": "voice",
                         "chat_db_context_data": chat_data,
                     }
+
+                    nombre_raw = args.get("nombre")
+                    if isinstance(nombre_raw, str):
+                        words = re.findall(r"[a-záéíóúñ]+", nombre_raw.lower())
+                        if words and all(word in {"hola", "buenas", "buenos"} for word in words):
+                            args.pop("nombre", None)
+
+                    email_raw = args.get("email")
+                    if isinstance(email_raw, str) and email_raw.endswith("@whatsapp.chatboc.com"):
+                        args.pop("email", None)
 
                     if self.user:
                         args.setdefault("telefono", getattr(self.user, "telefono", None))
@@ -480,7 +506,12 @@ class VoiceStreamService:
                             db.session.commit()
 
                         # ✅ Enviar resumen por WhatsApp (bien armado)
+                        whatsapp_target = None
                         if self.user and getattr(self.user, "telefono", None):
+                            whatsapp_target = self.user.telefono
+                        elif self.from_number:
+                            whatsapp_target = self._normalize_phone(self.from_number)
+                        if whatsapp_target:
                             try:
                                 msg_body = (
                                     f"✅ *Reclamo registrado*\n"
@@ -492,7 +523,7 @@ class VoiceStreamService:
                                 )
 
                                 enviar_mensaje_whatsapp_con_fallback(
-                                    self.user.telefono,
+                                    whatsapp_target,
                                     msg_body,
                                     image_url=None,
                                     from_number=TWILIO_WHATSAPP_NUMBER,
@@ -526,6 +557,16 @@ class VoiceStreamService:
                         "chat_db_context_data": chat_data,
                     }
 
+                    nombre_raw = args.get("nombre_usuario_detectado")
+                    if isinstance(nombre_raw, str):
+                        words = re.findall(r"[a-záéíóúñ]+", nombre_raw.lower())
+                        if words and all(word in {"hola", "buenas", "buenos"} for word in words):
+                            args.pop("nombre_usuario_detectado", None)
+
+                    email_raw = args.get("email_detectado")
+                    if isinstance(email_raw, str) and email_raw.endswith("@whatsapp.chatboc.com"):
+                        args.pop("email_detectado", None)
+
                     if self.user:
                         args.setdefault("telefono_detectado", getattr(self.user, "telefono", None))
                         args.setdefault(
@@ -557,7 +598,12 @@ class VoiceStreamService:
                             safe_flag_modified(session_context, "context_data")
                             db.session.commit()
 
+                        whatsapp_target = None
                         if self.user and getattr(self.user, "telefono", None):
+                            whatsapp_target = self.user.telefono
+                        elif self.from_number:
+                            whatsapp_target = self._normalize_phone(self.from_number)
+                        if whatsapp_target:
                             try:
                                 msg_body = (
                                     f"✅ *Pedido registrado*\n"
@@ -567,7 +613,7 @@ class VoiceStreamService:
                                 )
 
                                 enviar_mensaje_whatsapp_con_fallback(
-                                    self.user.telefono,
+                                    whatsapp_target,
                                     msg_body,
                                     image_url=None,
                                     from_number=TWILIO_WHATSAPP_NUMBER,
