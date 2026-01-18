@@ -2090,7 +2090,7 @@ def _normalize_pedir_info_fields(pedir_info: Any) -> list[str]:
         cleaned = value.strip()
         if not cleaned:
             return
-        for part in re.split(r"\s+y\s+|\s+e\s+", cleaned, flags=re.IGNORECASE):
+        for part in re.split(r"\s+y\s+|\s+e\s+|\s+o\s+", cleaned, flags=re.IGNORECASE):
             part_clean = part.strip()
             if part_clean:
                 fields.append(part_clean)
@@ -2112,6 +2112,56 @@ def _normalize_pedir_info_value(pedir_info: Any) -> Optional[str]:
 
     fields = _normalize_pedir_info_fields(pedir_info)
     return fields[0] if fields else None
+
+
+def _normalize_single_expected_field(field_name: Optional[str]) -> Optional[str]:
+    if not field_name:
+        return None
+    if not isinstance(field_name, str):
+        field_name = str(field_name)
+
+    normalized = normalizar_str(field_name)
+    if not normalized:
+        return None
+
+    def _map_candidate(candidate: str) -> Optional[str]:
+        if not candidate:
+            return None
+        if candidate in CLAIM_PENDING_FIELDS or candidate in SUGGESTION_PENDING_FIELDS:
+            return candidate
+        if candidate in PEDIR_INFO_TO_STATE:
+            return candidate
+        if "correo" in candidate or "mail" in candidate or "email" in candidate:
+            return "email"
+        if "dni" in candidate or "documento" in candidate:
+            return "dni"
+        if "telefono" in candidate or "celular" in candidate or "whatsapp" in candidate:
+            return "telefono"
+        if "nombre" in candidate:
+            return "nombre"
+        if "descripcion" in candidate:
+            return "descripcion"
+        if "categoria" in candidate:
+            return "categoria"
+        if "ubicacion" in candidate or "direccion" in candidate or "domicilio" in candidate:
+            return "ubicacion"
+        if "confirmacion" in candidate:
+            return "confirmacion"
+        if "adjunto" in candidate or "foto" in candidate or "imagen" in candidate:
+            return "adjuntos"
+        if "datos_contacto_sugerencia" in candidate or "datos contacto" in candidate:
+            return "datos_contacto_sugerencia"
+        if "descripcion_sugerencia" in candidate or "sugerencia" in candidate:
+            return "descripcion_sugerencia"
+        return None
+
+    candidates = [part.strip() for part in re.split(r"[,/]|\\s+y\\s+|\\s+e\\s+|\\s+o\\s+", normalized) if part.strip()]
+    for candidate in candidates:
+        mapped = _map_candidate(candidate)
+        if mapped:
+            return mapped
+
+    return _map_candidate(normalized) or normalized
 
 
 def _prefill_contacto_from_context(
