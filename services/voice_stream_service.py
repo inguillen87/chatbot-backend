@@ -32,7 +32,8 @@ class VoiceStreamService:
         self.user = None
         self.owner_user = None
         self.tenant_profile = None
-        self.session_context = None
+        self.chat_session_id = None
+        self.session_context = None # Deprecated: use self.chat_session_id and query fresh
 
         # Tools definitions
         self.tools = [
@@ -181,14 +182,17 @@ class VoiceStreamService:
                 raw_id = f"v_{empresa_id}_{user_phone_clean}"
                 chat_session_id = hashlib.md5(raw_id.encode()).hexdigest()
 
-            self.session_context = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
-            if not self.session_context:
-                self.session_context = ChatSessionContext(
+            self.chat_session_id = chat_session_id
+
+            # Ensure session exists
+            session_context = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
+            if not session_context:
+                session_context = ChatSessionContext(
                     chat_session_id=chat_session_id,
                     user_id=empresa_id,
                     context_data={}
                 )
-                db.session.add(self.session_context)
+                db.session.add(session_context)
                 db.session.commit()
 
             return True
@@ -339,11 +343,20 @@ class VoiceStreamService:
                      self.openai_ws.send(json.dumps(session_update))
 
                      # Initial greeting trigger
+                     # Construct dynamic greeting
+                     tenant_name = "tu municipio"
+                     if self.tenant_profile:
+                         tenant_name = self.tenant_profile.nombre
+                     elif self.owner_user:
+                         tenant_name = getattr(self.owner_user, "nombre_empresa", "tu municipio")
+
+                     greeting_text = f"Hola, soy el asistente de {tenant_name}. Te llamo para ayudarte. ¿En qué puedo ser útil?"
+
                      self.openai_ws.send(json.dumps({
                         "type": "response.create",
                         "response": {
                             "modalities": ["text", "audio"],
-                            "instructions": "Saludá amablemente: 'Hola, soy el asistente virtual. ¿En qué puedo ayudarte?'"
+                            "instructions": f"Saludá presentándote: '{greeting_text}'"
                         }
                     }))
 
@@ -393,13 +406,17 @@ class VoiceStreamService:
             app_ctx = self.app.app_context() if self.app else current_app.app_context()
 
             with app_ctx:
+                # Reload context to avoid Detached Instance error
+                session_context = ChatSessionContext.query.filter_by(chat_session_id=self.chat_session_id).first() if self.chat_session_id else None
+                chat_data = session_context.context_data if session_context else {}
+
                 if name == "crear_reclamo":
                     from services.actions.municipio_actions import CrearReclamoActionHandler
                     ctx = {
                         "user_obj": self.owner_user,
                         "viewer_user_obj": self.user,
                         "channel": "voice",
-                        "chat_db_context_data": self.session_context.context_data if self.session_context else {}
+                        "chat_db_context_data": chat_data
                     }
                     handler = CrearReclamoActionHandler(ctx)
                     res = handler.execute(args)
@@ -407,14 +424,14 @@ class VoiceStreamService:
                         data = res.get("data", {})
                         nro = data.get("nro_ticket", "N/A")
                         result = f"Reclamo creado con éxito. Número: {nro}."
-                        if self.session_context:
-                            self.session_context.context_data["latest_ticket_nro"] = nro
+                        if session_context:
+                            session_context.context_data["latest_ticket_nro"] = nro
                             # Save awaiting photo flag to bridge with WhatsApp Webhook
-                            self.session_context.context_data["awaiting_photo_for_ticket"] = nro
+                            session_context.context_data["awaiting_photo_for_ticket"] = nro
                             if data.get("ticket_id"):
-                                self.session_context.context_data["latest_ticket_id"] = data.get("ticket_id")
+                                session_context.context_data["latest_ticket_id"] = data.get("ticket_id")
 
-                            safe_flag_modified(self.session_context, "context_data")
+                            safe_flag_modified(session_context, "context_data")
                             db.session.commit()
 
                         # Send WhatsApp Summary IMMEDIATELLY
@@ -451,7 +468,7 @@ class VoiceStreamService:
                         "viewer_user_obj": self.user,
                         "channel": "voice",
                         "cliente_id": self.user.id if self.user else None,
-                        "chat_db_context_data": self.session_context.context_data if self.session_context else {}
+                        "chat_db_context_data": chat_data
                     }
                     handler = CrearPedidoAction(ctx)
                     res = handler.execute(args)
@@ -464,10 +481,10 @@ class VoiceStreamService:
 
                         result = f"Pedido creado con éxito. Número: {nro_pedido}. Total: ${monto}."
 
-                        if self.session_context:
-                            self.session_context.context_data["latest_order_id"] = data.get("pedido_id")
-                            self.session_context.context_data["latest_order_nro"] = nro_pedido
-                            safe_flag_modified(self.session_context, "context_data")
+                        if session_context:
+                            session_context.context_data["latest_order_id"] = data.get("pedido_id")
+                            session_context.context_data["latest_order_nro"] = nro_pedido
+                            safe_flag_modified(session_context, "context_data")
                             db.session.commit()
 
                         # Send WhatsApp Summary IMMEDIATELY for Orders
@@ -499,7 +516,7 @@ class VoiceStreamService:
                         "user_obj": self.owner_user,
                         "viewer_user_obj": self.user,
                         "channel": "voice",
-                        "chat_db_context_data": self.session_context.context_data if self.session_context else {}
+                        "chat_db_context_data": chat_data
                     }
                     handler = ConsultarProductoAction(ctx)
                     # Map 'nombre' param to 'nombre_producto_mencionado' which the action expects
