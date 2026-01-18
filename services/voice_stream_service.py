@@ -526,6 +526,15 @@ class VoiceStreamService:
                         "chat_db_context_data": chat_data,
                     }
 
+                    if self.user:
+                        args.setdefault("telefono_detectado", getattr(self.user, "telefono", None))
+                        args.setdefault(
+                            "nombre_usuario_detectado",
+                            getattr(self.user, "name", None) or getattr(self.user, "nombre", None),
+                        )
+                        args.setdefault("email_detectado", getattr(self.user, "email", None))
+                        args.setdefault("direccion_entrega", getattr(self.user, "direccion", None))
+
                     handler = CrearPedidoAction(ctx)
                     res = handler.execute(args)
 
