@@ -1,5 +1,5 @@
 from flask import Blueprint, request, current_app, Response, url_for
-from twilio.twiml.voice_response import VoiceResponse, Gather, Play, Connect
+from twilio.twiml.voice_response import VoiceResponse, Gather, Play, Connect, Dial
 from twilio.request_validator import RequestValidator
 from models import WhatsappNumero, ChatSessionContext, User
 from extensions import db, sock
@@ -141,7 +141,11 @@ def voice_inbound_stream():
     # current_app.config['BACKEND_URL'] is usually http(s). We need ws(s).
     backend_url = current_app.config.get("BACKEND_URL", "http://localhost:8080")
     ws_url = backend_url.replace("http://", "ws://").replace("https://", "wss://")
-    stream_url = f"{ws_url}/ws/voice/stream"
+
+    # Updated path as per requirement
+    stream_url = f"{ws_url}/twilio/voice/stream"
+
+    response.say("Hola, un momento por favor...", language="es-AR")
 
     connect = Connect()
     stream = connect.stream(url=stream_url)
@@ -154,6 +158,23 @@ def voice_inbound_stream():
 
     # Fallback if stream fails
     response.say("Lo siento, hubo un error de conexión. Por favor intenta más tarde.")
+
+    return Response(str(response), mimetype='text/xml')
+
+@voice_bp.route('/twilio/voice/transfer', methods=['POST'])
+def voice_transfer():
+    """
+    Endpoint that returns TwiML to transfer the call to a human agent.
+    Expected to be called via Call Update API.
+    """
+    target = request.args.get("target") or request.form.get("target")
+    response = VoiceResponse()
+
+    if target:
+        response.say("Transfiriendo a un representante. Aguarde un momento, por favor.", language="es-AR")
+        response.dial(target)
+    else:
+        response.say("Lo siento, no pude conectar con un representante.", language="es-AR")
 
     return Response(str(response), mimetype='text/xml')
 
@@ -257,7 +278,7 @@ def voice_status():
 
 # WebSocket Route for Media Streams
 # Using flask-sock extension
-@sock.route('/ws/voice/stream')
+@sock.route('/twilio/voice/stream')
 def voice_stream_socket(ws):
     """
     WebSocket handler for Twilio Media Streams <-> OpenAI Realtime.
