@@ -8231,6 +8231,16 @@ def responder_municipio(
 
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
 
+    if received_payload.get("es_audio") and isinstance(pregunta_str, str) and pregunta_str.strip():
+        lowered_question = pregunta_str.lower()
+        estado_actual = contexto_municipio_actual.get("estado_conversacion")
+        if "reclamo" in lowered_question and not estado_actual:
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+        if any(keyword in lowered_question for keyword in ("llamar", "llamada", "agente", "humano")):
+            kwargs["intencion"] = "hablar_con_agente"
+            context["intencion"] = "hablar_con_agente"
+            contexto_municipio_actual["preferencia_canal"] = "voice"
+
     if location_link_info:
         flow_state = (
             contexto_municipio_actual.get("reclamo_flow_v2", {})
@@ -10600,7 +10610,8 @@ def responder_municipio(
     if USAR_LLM_PARA_RECLAMOS:
         # --- INICIO FIX: Resetear contexto de reclamo si llega una nueva imagen analizada ---
         datos_interpretados = context.get("datos_interpretados_archivo") or kwargs.get("datos_interpretados_archivo")
-        if datos_interpretados and isinstance(datos_interpretados, dict):
+        is_audio_upload = bool(received_payload.get("es_audio"))
+        if datos_interpretados and isinstance(datos_interpretados, dict) and not is_audio_upload:
             logger_actual.info("[CONTEXT_RESET] Se detectaron datos de archivo interpretados. Forzando reseteo de contexto de reclamo.")
 
             # Guardar datos de contacto antes de limpiar

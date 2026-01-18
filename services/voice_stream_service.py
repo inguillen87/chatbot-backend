@@ -234,7 +234,8 @@ class VoiceStreamService:
             "Regla: si falta un dato (ubicación/categoría/descr), preguntalo directo. "
             "Cuando tengas lo mínimo, ejecutá la herramienta correspondiente. "
             "Al finalizar, confirmá lo registrado y avisá que se envía un resumen por WhatsApp para adjuntar fotos. "
-            "Si el usuario se despide o confirma que no necesita nada más, ejecutá finalizar_llamada."
+            "Si el usuario confirma que ya está todo listo o dice 'no', 'nada más', 'listo' o 'perfecto', "
+            "resumí en una frase lo registrado, avisá que se envía por WhatsApp y ejecutá finalizar_llamada."
         )
 
         # Si podés detectar tipo tenant: municipio vs pyme
@@ -449,6 +450,11 @@ class VoiceStreamService:
                         "channel": "voice",
                         "chat_db_context_data": chat_data,
                     }
+
+                    if self.user:
+                        args.setdefault("telefono", getattr(self.user, "telefono", None))
+                        args.setdefault("nombre", getattr(self.user, "name", None) or getattr(self.user, "nombre", None))
+                        args.setdefault("email", getattr(self.user, "email", None))
 
                     handler = CrearReclamoActionHandler(ctx)
                     res = handler.execute(args)
