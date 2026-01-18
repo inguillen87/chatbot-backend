@@ -3913,6 +3913,9 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         expected_fields_sugerencia = _normalize_expected_fields_list(expected_fields_sugerencia)
         contexto_municipio_actual["expected_fields_llm_reclamo"] = expected_fields_reclamo
         contexto_municipio_actual["expected_fields_llm_sugerencia"] = expected_fields_sugerencia
+        datos_parciales_reclamo = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
+        if isinstance(datos_parciales_reclamo, dict) and "email o dni" in datos_parciales_reclamo:
+            datos_parciales_reclamo.pop("email o dni", None)
 
         pending_reclamo_raw = contexto_municipio_actual.get("esperando_info_llm_reclamo")
         if not expected_fields_reclamo and pending_reclamo_raw:
@@ -4027,6 +4030,36 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     else:
                         contexto_municipio_actual["esperando_info_llm_reclamo"] = campo_esperado
                     contexto_municipio_actual["esperando_info_llm"] = campo_esperado
+            if (
+                pregunta_str
+                and "descripcion" in {field.strip().lower() for field in expected_fields_active}
+                and "descripcion" not in {field.lower() for field in extracted_fields}
+            ):
+                datos_parciales.setdefault("descripcion", pregunta_str.strip())
+                expected_fields_active = [
+                    field
+                    for field in expected_fields_active
+                    if field.strip().lower() != "descripcion"
+                ]
+                if pending_flow == "sugerencia":
+                    contexto_municipio_actual["expected_fields_llm_sugerencia"] = expected_fields_active
+                else:
+                    contexto_municipio_actual["expected_fields_llm_reclamo"] = expected_fields_active
+                if expected_fields_active:
+                    campo_esperado = expected_fields_active[0]
+                    if pending_flow == "sugerencia":
+                        contexto_municipio_actual["esperando_info_llm_sugerencia"] = campo_esperado
+                    else:
+                        contexto_municipio_actual["esperando_info_llm_reclamo"] = campo_esperado
+                    contexto_municipio_actual["esperando_info_llm"] = campo_esperado
+                else:
+                    if pending_flow == "sugerencia":
+                        contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
+                    else:
+                        contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                    contexto_municipio_actual.pop("esperando_info_llm", None)
+                captured_field = True
+                expected_value_captured = True
             if campo_esperado == "ubicacion":
                 if context.get("ubicacion_usuario"):
                     lat = context["ubicacion_usuario"].get("latitude")
@@ -10547,6 +10580,7 @@ def responder_municipio(
         "es_foto": False, "foto_url": None, # Defaults, will be updated after inspecting payload
         "es_ubicacion": received_payload.get("es_ubicacion", False),
         "es_archivo": received_payload.get("es_archivo", False),
+        "es_audio": received_payload.get("es_audio", False),
         "action": received_payload.get("action"), # From button clicks, etc.
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),

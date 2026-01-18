@@ -1579,6 +1579,12 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
 
+        if pyme_ctx_actual.get("saludo_audio_pendiente") and flow_result.message_body:
+            flow_result.message_body = (
+                f"Hola, soy el asistente de {nombre_pyme_display}. {flow_result.message_body}"
+            )
+            pyme_ctx_actual["saludo_audio_pendiente"] = False
+
         final_payload = {
             "success": True,
             "message_body": flow_result.message_body,
@@ -1861,6 +1867,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             contextual_notes.append("El usuario envió una nota de voz.")
             transcripcion = uploaded_info.get("transcribed_text")
             if transcripcion:
+                if not pyme_ctx_actual.get("saludo_audio_enviado"):
+                    pyme_ctx_actual["saludo_audio_pendiente"] = True
+                    pyme_ctx_actual["saludo_audio_enviado"] = True
+
                 normalized_audio = _normalize_user_input(transcripcion)
                 agent_keywords = RAW_PYME_MENU_KEYWORDS.get("pyme_hablar_agente", set())
                 if normalized_audio and any(
@@ -2394,6 +2404,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             message_type_pyme = "interactive_buttons"
         elif num_opt > 3:
             message_type_pyme = "interactive_list"
+
+    if pyme_ctx_actual.get("saludo_audio_pendiente") and respuesta_final_texto:
+        respuesta_final_texto = f"Hola, soy el asistente de {nombre_pyme_display}. {respuesta_final_texto}"
+        pyme_ctx_actual["saludo_audio_pendiente"] = False
 
     final_response_dict = {
         "message_body": respuesta_final_texto, "options_list": opciones_finales,
