@@ -284,5 +284,6 @@ def voice_stream_socket(ws):
     WebSocket handler for Twilio Media Streams <-> OpenAI Realtime.
     """
     logger.info("New Voice Stream WebSocket connection")
-    stream_service = VoiceStreamService(ws)
+    # Pass the actual application object to the service to allow context creation in threads
+    stream_service = VoiceStreamService(ws, app=current_app._get_current_object())
     stream_service.run()
