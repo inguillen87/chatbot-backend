@@ -417,10 +417,13 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         # Validación de datos esenciales para la creación del ticket
         # Default required fields if not specified in config
-        campos_requeridos = municipio_config.get(
-            "campos_requeridos_reclamo",
-            ['descripcion', 'ubicacion', 'nombre', 'telefono', 'email']
-        )
+        if self.context.get("channel") == "voice":
+            campos_requeridos = ['descripcion', 'ubicacion', 'telefono']
+        else:
+            campos_requeridos = municipio_config.get(
+                "campos_requeridos_reclamo",
+                ['descripcion', 'ubicacion', 'nombre', 'telefono', 'email']
+            )
 
         datos_finales_reclamo = {
             "categoria": categoria,

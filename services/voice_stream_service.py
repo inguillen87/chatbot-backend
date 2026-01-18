@@ -34,6 +34,7 @@ class VoiceStreamService:
         self.tenant_profile = None
         self.chat_session_id = None
         self.session_context = None # Deprecated: use self.chat_session_id and query fresh
+        self.response_active = False # Flag to track active OpenAI response
 
         # Tools definitions
         self.tools = [
@@ -46,7 +47,9 @@ class VoiceStreamService:
                     "properties": {
                         "categoria": {"type": "string", "description": "Categoría del reclamo (ej: Alumbrado, Limpieza)"},
                         "descripcion": {"type": "string", "description": "Qué pasó"},
-                        "ubicacion": {"type": "string", "description": "Dónde ocurrió (dirección)"}
+                        "ubicacion": {"type": "string", "description": "Dónde ocurrió (dirección)"},
+                        "telefono": {"type": "string", "description": "Teléfono de contacto (opcional si ya se conoce)"},
+                        "nombre": {"type": "string", "description": "Nombre del vecino (opcional si ya se conoce)"}
                     },
                     "required": ["categoria", "descripcion", "ubicacion"]
                 }
@@ -230,8 +233,9 @@ class VoiceStreamService:
             f"{known_data_str} "
             "Si ya tenés estos datos, NO los preguntes de nuevo, solo confirmalos brevemente si es necesario para el trámite (ej: '¿Confirmás que es para la dirección X?'). "
             "Cuando tengas los datos mínimos, ejecutá la acción inmediatamente. "
-            "Al finalizar, confirmá lo registrado y decí el número de ticket/pedido. "
-            "Si hay fotos, pedí que las envíen por WhatsApp respondiendo al mensaje de resumen."
+            "Si el usuario confirma que ya está todo listo, o dice 'no', 'nada más', 'listo', 'perfecto', "
+            "o muestra intención de terminar, FINALIZÁ la llamada usando la herramienta finalizar_llamada. "
+            "Antes de cortar, repetí un resumen muy corto del reclamo/pedido y avisá que se envía por WhatsApp."
         )
         return base_prompt
 
@@ -374,7 +378,13 @@ class VoiceStreamService:
     def handle_openai_message(self, data):
         msg_type = data.get('type')
 
-        if msg_type == 'response.audio.delta':
+        if msg_type == 'response.created':
+            self.response_active = True
+
+        elif msg_type == 'response.done':
+            self.response_active = False
+
+        elif msg_type == 'response.audio.delta':
             audio_payload = data.get('delta')
             if audio_payload:
                 self.ws.send(json.dumps({
@@ -388,7 +398,9 @@ class VoiceStreamService:
                 "event": "clear",
                 "streamSid": self.stream_sid
             }))
-            self.openai_ws.send(json.dumps({"type": "response.cancel"}))
+            # Only cancel if there is an active response
+            if self.response_active:
+                self.openai_ws.send(json.dumps({"type": "response.cancel"}))
 
         elif msg_type == 'response.function_call_arguments.done':
             call_id = data.get('call_id')
@@ -411,6 +423,15 @@ class VoiceStreamService:
                 chat_data = session_context.context_data if session_context else {}
 
                 if name == "crear_reclamo":
+                    # AUTO-COMPLETE MISSING DATA
+                    if self.user:
+                         if not args.get("telefono") and self.user.telefono:
+                             args["telefono"] = self.user.telefono
+                         if not args.get("nombre") and self.user.name and self.user.name != "Vecino":
+                             args["nombre"] = self.user.name
+                         if not args.get("email") and self.user.email and "voice.temp" not in self.user.email:
+                             args["email"] = self.user.email
+
                     from services.actions.municipio_actions import CrearReclamoActionHandler
                     ctx = {
                         "user_obj": self.owner_user,

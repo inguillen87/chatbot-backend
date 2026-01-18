@@ -2067,6 +2067,24 @@ SUGGESTION_WAITING_STATES = {
 }
 
 
+def _normalize_single_expected_field(field: str) -> str:
+    if not field:
+        return ""
+    f = field.strip().lower()
+
+    if "email" in f or "correo" in f or "mail" in f:
+        return "email"
+    if "dni" in f or "documento" in f:
+        return "dni"
+    if "telefono" in f or "teléfono" in f or "cel" in f or "whatsapp" in f:
+        return "telefono"
+    if "nombre" in f:
+        return "nombre"
+
+    # fallback
+    return f
+
+
 def _is_claim_pending_field(field_name: Optional[str]) -> bool:
     if not field_name or not isinstance(field_name, str):
         return False
@@ -9003,6 +9021,16 @@ def responder_municipio(
                 if "pregunta" in received_payload:
                     received_payload["pregunta"] = pregunta_str
 
+                # --- Voice Note Intent Detection ---
+                txt_lower = pregunta_str.lower()
+                if "reclamo" in txt_lower or "quiero reclamar" in txt_lower:
+                     contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+                     logger_actual.info("Voice note detected as 'reclamo'. Setting state to ESPERANDO_INFO_RECLAMO_LLM.")
+
+                if "llamar" in txt_lower or "agente" in txt_lower:
+                     context["preferencia_canal"] = "voice"
+                     logger_actual.info("Voice note detected intent for 'voice' preference.")
+
 
     # --- INICIO FIX: Manejo explícito de solicitud de menú principal ---
     # Si el usuario pide explícitamente el menú, lo mostramos directamente sin pasar por el LLM.
@@ -10550,7 +10578,12 @@ def responder_municipio(
     if USAR_LLM_PARA_RECLAMOS:
         # --- INICIO FIX: Resetear contexto de reclamo si llega una nueva imagen analizada ---
         datos_interpretados = context.get("datos_interpretados_archivo") or kwargs.get("datos_interpretados_archivo")
-        if datos_interpretados and isinstance(datos_interpretados, dict):
+        uploaded_file_info = kwargs.get("uploaded_file_info") or context.get("uploaded_file_info")
+        mime_type = (uploaded_file_info or {}).get("mime_type", "")
+        is_audio = mime_type.startswith("audio/")
+
+        # Only reset if it is NOT an audio file (to preserve conversation flow for voice notes)
+        if datos_interpretados and isinstance(datos_interpretados, dict) and not is_audio:
             logger_actual.info("[CONTEXT_RESET] Se detectaron datos de archivo interpretados. Forzando reseteo de contexto de reclamo.")
 
             # Guardar datos de contacto antes de limpiar
