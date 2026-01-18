@@ -396,6 +396,10 @@ class VoiceStreamService:
                         }
                     )
                 )
+            self.response_active = True
+
+        elif msg_type == "response.created":
+            self.response_active = True
 
         elif msg_type == "response.created":
             self.response_active = True
@@ -692,6 +696,7 @@ class VoiceStreamService:
                 )
             )
             self.openai_ws.send(json.dumps({"type": "response.create"}))
+            self.response_active = True
 
         except Exception as e:
             logger.error(f"[VOICE] Tool execution failed: {e}", exc_info=True)
