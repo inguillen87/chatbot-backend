@@ -30,32 +30,47 @@ def enviar_mensaje_whatsapp_con_fallback(numero_destino, cuerpo, botones=None, l
     if not client or not TWILIO_WHATSAPP_NUMBER:
         return False
 
+    # Sanitizar número destino: si viene como "+549...", asegurarse de tener "whatsapp:"
+    # Si viene como "whatsapp:+549...", está bien.
+    if not numero_destino.startswith("whatsapp:"):
+        numero_destino = f"whatsapp:{numero_destino}"
+
+    # Validar sender:
+    sender = f"whatsapp:{TWILIO_WHATSAPP_NUMBER}" if not TWILIO_WHATSAPP_NUMBER.startswith("whatsapp:") else TWILIO_WHATSAPP_NUMBER
+
     try:
         if botones:
             # Lógica para enviar con botones
+            # Nota: content_sid podría ser requerido para templates pre-aprobados en prod.
+            # Aquí usamos el modo "session" (ventana de 24hs) o templates si estuvieran configurados.
+            # Para simplificar, asumimos que el mensaje es libre si estamos en ventana.
             message = client.messages.create(
-                from_=f"whatsapp:{TWILIO_WHATSAPP_NUMBER}",
-                to=f"whatsapp:{numero_destino}",
+                from_=sender,
+                to=numero_destino,
                 body=cuerpo,
-                actions=[{"id": f"btn_{i+1}", "type": "reply", "title": texto_boton} for i, texto_boton in enumerate(botones)],
+                # actions no es soportado directamente en create() salvo via content_sid o messaging service
+                # Twilio no soporta botones dinámicos en 'body' + 'actions' para WhatsApp directamente sin templates.
+                # A MENOS que sea Sandbox.
+                # Intentamos texto plano con botones si es sandbox, o fallback si falla.
+                # Para mantener compatibilidad, si falla 'actions' no estándar, vamos a fallback.
+                # Nota: La librería de python usa 'content_sid' para templates.
+                # Si queremos botones libres, Twilio no los soporta fuera de templates aprobados.
+                # EXCEPTO reply buttons en sesión iniciada por usuario.
+                # Intentaremos mandar texto + lista textual.
             )
-            print(f"Mensaje interactivo de WhatsApp enviado con SID: {message.sid}")
-            return True
+            # Como create() no acepta 'actions' arbitrarios para WhatsApp sin content_sid,
+            # forzamos el fallback directamente si botones están presentes,
+            # O asumimos que la implementación anterior usaba una librería modificada o wrapper.
+            # Dado el error reportado, mejor simplificar a texto.
+            raise Exception("Botones dinámicos no soportados sin Template.")
+
         elif lista:
-            # Lógica para enviar con lista
-            message = client.messages.create(
-                from_=f"whatsapp:{TWILIO_WHATSAPP_NUMBER}",
-                to=f"whatsapp:{numero_destino}",
-                body=cuerpo,
-                actions=[{"button": lista["titulo"], "sections": lista["secciones"]}],
-            )
-            print(f"Mensaje de lista interactiva de WhatsApp enviado con SID: {message.sid}")
-            return True
+             raise Exception("Listas dinámicas no soportadas sin Template.")
         else:
             # Lógica para enviar mensaje simple
             message = client.messages.create(
-                from_=f"whatsapp:{TWILIO_WHATSAPP_NUMBER}",
-                to=f"whatsapp:{numero_destino}",
+                from_=sender,
+                to=numero_destino,
                 body=cuerpo,
             )
             print(f"Mensaje de texto simple de WhatsApp enviado con SID: {message.sid}")
@@ -74,8 +89,8 @@ def enviar_mensaje_whatsapp_con_fallback(numero_destino, cuerpo, botones=None, l
                         fallback_body += f"- {row['title']}\n"
 
             message = client.messages.create(
-                from_=f"whatsapp:{TWILIO_WHATSAPP_NUMBER}",
-                to=f"whatsapp:{numero_destino}",
+                from_=sender,
+                to=numero_destino,
                 body=fallback_body,
             )
             print(f"Mensaje de fallback de WhatsApp enviado con SID: {message.sid}")
@@ -101,10 +116,14 @@ def enviar_imagen_whatsapp(numero_destino, cuerpo, url_imagen):
     if not client or not TWILIO_WHATSAPP_NUMBER:
         return False
 
+    sender = f"whatsapp:{TWILIO_WHATSAPP_NUMBER}" if not TWILIO_WHATSAPP_NUMBER.startswith("whatsapp:") else TWILIO_WHATSAPP_NUMBER
+    if not numero_destino.startswith("whatsapp:"):
+        numero_destino = f"whatsapp:{numero_destino}"
+
     try:
         message = client.messages.create(
-            from_=f"whatsapp:{TWILIO_WHATSAPP_NUMBER}",
-            to=f"whatsapp:{numero_destino}",
+            from_=sender,
+            to=numero_destino,
             body=cuerpo,
             media_url=[url_imagen],
         )
