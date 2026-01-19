@@ -483,20 +483,27 @@ def _normalize_location_payload(
         return None
 
     normalized = dict(raw_location)
-    lat = (
+    def _to_float(value: Any) -> float | None:
+        try:
+            return float(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+
+    lat_raw = (
         raw_location.get("latitude")
         or raw_location.get("lat")
         or raw_location.get("latitud")
     )
-    lon = (
+    lon_raw = (
         raw_location.get("longitude")
         or raw_location.get("lon")
         or raw_location.get("lng")
         or raw_location.get("longitud")
     )
-    if lat is not None:
+    lat = _to_float(lat_raw)
+    lon = _to_float(lon_raw)
+    if lat is not None and -90 <= lat <= 90 and lon is not None and -180 <= lon <= 180:
         normalized["latitude"] = lat
-    if lon is not None:
         normalized["longitude"] = lon
 
     address = (
@@ -2355,13 +2362,7 @@ def _extract_expected_fields_from_text(
                 extracted["ubicacion"] = address
         if "ubicacion" not in extracted and text:
             normalized_text = text.strip()
-            looks_like_address = bool(
-                re.search(r"\b(esquina|calle|av\.?|avenida|ruta|km|altura)\b", normalized_text, re.IGNORECASE)
-                or re.search(r"\d", normalized_text)
-                or "maps.google" in normalized_text
-                or "goo.gl/maps" in normalized_text
-            )
-            if looks_like_address:
+            if _looks_like_address_text(normalized_text):
                 extracted["ubicacion"] = normalized_text
 
     if "distrito" in normalized_fields and "distrito" not in extracted:
@@ -4392,6 +4393,13 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             # Combinar datos antiguos y nuevos
             datos_actuales = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
             nuevos_datos = {k: v for k, v in datos_estructura_llm.items() if v is not None}
+            existing_coords = datos_actuales.get("coordenadas") or (
+                context.get("ubicacion_usuario", {}).get("latitude")
+                and context.get("ubicacion_usuario", {}).get("longitude")
+            )
+            if existing_coords and not nuevos_datos.get("coordenadas"):
+                if isinstance(nuevos_datos.get("ubicacion"), str):
+                    nuevos_datos.pop("ubicacion", None)
             datos_actuales.update(nuevos_datos)
             contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_actuales
 
@@ -4655,6 +4663,13 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             if datos_estructura_llm:
                 datos_actuales = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
                 nuevos_datos = {k: v for k, v in datos_estructura_llm.items() if v is not None}
+                existing_coords = datos_actuales.get("coordenadas") or (
+                    context.get("ubicacion_usuario", {}).get("latitude")
+                    and context.get("ubicacion_usuario", {}).get("longitude")
+                )
+                if existing_coords and not nuevos_datos.get("coordenadas"):
+                    if isinstance(nuevos_datos.get("ubicacion"), str):
+                        nuevos_datos.pop("ubicacion", None)
                 if nuevos_datos:
                     datos_actuales.update(nuevos_datos)
                     logger_actual.info(f"[CONTEXT_MERGE] Datos parciales de reclamo actualizados en flujo 'responder_directamente': {datos_actuales}")
