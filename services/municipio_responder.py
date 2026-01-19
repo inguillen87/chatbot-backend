@@ -2229,6 +2229,25 @@ def _build_missing_reclamo_prompt(pending_fields: list[str], datos_actuales: dic
         message += "\n\nEj: Don Bosco 55, Junín."
     return message
 
+
+def _looks_like_address_text(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    normalized_text = normalizar_texto(text)
+    if not normalized_text:
+        return False
+    greeting_words = {"hola", "buenas", "buenos", "buenas tardes", "buenos dias", "buenas noches"}
+    if normalized_text in greeting_words:
+        return False
+    if re.search(r"\b(esquina|calle|av\.?|avenida|ruta|km|altura)\b", normalized_text, re.IGNORECASE):
+        return True
+    if re.search(r"\d", normalized_text):
+        return True
+    if "maps.google" in normalized_text or "goo.gl/maps" in normalized_text:
+        return True
+    return False
+
+
 def _prefill_contacto_from_context(
     contexto_municipio_actual: dict,
     datos_parciales: dict,
@@ -4122,7 +4141,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     except (TypeError, ValueError):
                         pass
                 else:
-                    valor_a_guardar = pregunta_str.strip() if pregunta_str else None
+                    if _looks_like_address_text(pregunta_str):
+                        valor_a_guardar = pregunta_str.strip() if pregunta_str else None
             elif pending_flow == "sugerencia" and campo_esperado in ["descripcion_sugerencia", "descripcion"]:
                 valor_a_guardar = pregunta_str.strip() if pregunta_str else None
             elif pending_flow == "sugerencia" and campo_esperado == "datos_contacto_sugerencia":
