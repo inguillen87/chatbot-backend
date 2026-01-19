@@ -204,6 +204,24 @@ def _is_placeholder_description(value: Any) -> bool:
     return False
 
 
+def is_probably_description(text: str) -> bool:
+    """Detecta si el texto es probablemente una descripción y no una categoría corta."""
+    if not text:
+        return False
+    t = text.strip()
+    # Si es muy largo (> 40 chars) o tiene muchas palabras (> 6), es descripción
+    if len(t) > 40 or len(t.split()) > 6:
+        return True
+
+    # Si contiene palabras conectoras típicas de una oración
+    normalized = normalizar_texto(t)
+    keywords = {"tengo", "hay", "esta", "está", "problema", "sucedio", "frente", "calle", "sobre", "mi casa", "en la"}
+    if any(k in normalized.split() for k in keywords):
+        return True
+
+    return False
+
+
 def _location_action_options() -> list[dict[str, str]]:
     return [
         {"texto": "📝 Iniciar un Reclamo", "action_id": "iniciar_reclamo_con_ubicacion"},
@@ -1201,10 +1219,11 @@ class ReclamoFlowHandler:
                 original_has_number = bool(re.search(r"\d", original_address or ""))
                 formatted_has_number = bool(re.search(r"\d", formatted_address or ""))
 
+                # Fix: Solo sobrescribir si la original no existe o no tiene altura.
+                # Evitar sobrescribir "25 de Mayo 19" con "de Mayo 19" solo porque la segunda tiene numero.
                 if formatted_address and (
                     not original_address
                     or not original_has_number
-                    or formatted_has_number
                 ):
                     address = formatted_address
 
@@ -4243,6 +4262,21 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     datos_parciales.update(nuevos_datos)
                     captured_field = True
                     expected_value_captured = True
+            elif campo_esperado == "categoria" and is_probably_description(pregunta_str):
+                # Bug Fix: Si el usuario manda un texto largo cuando se espera categoría,
+                # lo guardamos como descripción y tratamos de inferir la categoría.
+                logger_actual.info(f"Input largo detectado para categoría. Guardando como descripción: '{pregunta_str[:20]}...'")
+                datos_parciales["descripcion"] = pregunta_str
+
+                # Intentar inferir categoría
+                cat_inferida = categorizar_reclamo_por_palabra_clave(pregunta_str)
+                if cat_inferida and cat_inferida != "Otros":
+                    valor_a_guardar = cat_inferida
+                    logger_actual.info(f"Categoría inferida de descripción: {cat_inferida}")
+                else:
+                    valor_a_guardar = None # No guardar el texto largo como categoría
+
+                captured_field = True # Se capturó algo (descripción)
             else:
                 valor_a_guardar = _extract_value_for_expected_field(
                     campo_esperado,
@@ -5110,6 +5144,10 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
             button_text_norm = normalizar_texto(button.get("texto", ""))
             if button_text_norm.startswith(normalized_input):
                 return button.get("action_id")
+
+    # 3.5 Check for human handoff keywords explicitly before length check
+    if any(k in normalized_input for k in ["llamar", "llamada", "hablar con", "humano", "agente", "operador", "persona"]):
+        return "solicitar_llamada"
 
     # 4. For longer free-form phrases, skip fuzzy matching to avoid
     # misclassifying natural sentences as menu keywords. Let higher-level
