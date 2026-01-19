@@ -85,18 +85,24 @@ def _ubicacion_es_valida(ubicacion: str | None) -> bool:
     normalized = normalizar_texto(ubicacion)
     if not normalized:
         return False
-    greeting_words = {
-        "hola",
-        "buenas",
-        "buenos",
-        "buenas tardes",
-        "buenos dias",
-        "buenas noches",
-    }
-    if normalized in greeting_words:
-        return False
+
+    # Reject common non-address phrases (false positives from LLM)
+    # Use regex with word boundaries to avoid matching substrings in valid names (e.g. "Guardia", "Concordia")
+    forbidden_patterns = [
+        r"\bhola\b",
+        r"\bbuenos dias\b", r"\bbuenas tardes\b", r"\bbuenas noches\b", r"\bbuen dia\b",
+        r"\bdescripcion es\b", r"\bproblema es\b", r"\bel problema\b",
+        r"\btengo un\b", r"\bhay un\b", r"\bse cayo\b", r"\barbol caido\b", r"\bbasura en\b",
+        r"\bmi casa\b", r"\bmi direccion\b", r"\bvivo en\b",
+    ]
+
+    for pattern in forbidden_patterns:
+        if re.search(pattern, normalized):
+            return False
+
     if re.search(r"-?\d{1,3}\.\d+", normalized):
         return True
+
     # Stricter validation: Require a number if it looks like a street, or explicit intersection/barrio keywords
     has_street_keyword = bool(re.search(r"\b(calle|av\.?|avenida|ruta|km)\b", normalized))
     has_number = bool(re.search(r"\d", normalized))
@@ -104,12 +110,12 @@ def _ubicacion_es_valida(ubicacion: str | None) -> bool:
     if has_street_keyword and not has_number:
         return False
 
-    if re.search(r"\b(esquina|altura|barrio|manzana|mz|lote)\b", normalized):
+    if re.search(r"\b(esquina|altura|barrio|manzana|mz|lote|casa|frente)\b", normalized):
         return True
 
     if has_number:
         # Check if it's too long (likely a description)
-        if len(normalized.split()) > 12:
+        if len(normalized.split()) > 10:
             return False
         return True
 
@@ -313,11 +319,19 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if ubicacion_llm:
             lower_ubi = ubicacion_llm.lower()
             # Stricter heuristic: if it's long and has 'descripción' or looks like narrative
-            if "descripción es" in lower_ubi or "problema es" in lower_ubi or len(lower_ubi.split()) > 12:
+            # Or if it matches our forbidden phrases in _ubicacion_es_valida
+            is_narrative = (
+                "descripción es" in lower_ubi or
+                "problema es" in lower_ubi or
+                "tengo un" in lower_ubi or
+                len(lower_ubi.split()) > 10
+            )
+
+            if is_narrative:
                 # Likely a description or junk text
                 if not descripcion:
                     descripcion = ubicacion_llm # Move to description if empty
-                logger.info(f"[VALIDATION] Location rejected (too long or narrative): {ubicacion_llm}")
+                logger.info(f"[VALIDATION] Location rejected (narrative/too long): {ubicacion_llm}")
                 ubicacion_llm = None
             elif not _ubicacion_es_valida(ubicacion_llm):
                 logger.info(f"[VALIDATION] Ubicacion invalida detectada: {ubicacion_llm}")
