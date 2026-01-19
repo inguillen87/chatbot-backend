@@ -297,9 +297,17 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 if not ubicacion_llm or _address_seems_generic(ubicacion_llm):
                     ubicacion_llm = geocoded_from_coords.get("formatted_address")
 
-        if ubicacion_llm and not _ubicacion_es_valida(ubicacion_llm):
-            logger.info(f"[VALIDATION] Ubicacion invalida detectada: {ubicacion_llm}")
-            ubicacion_llm = None
+        # Check if the extracted location is actually a description
+        if ubicacion_llm:
+            lower_ubi = ubicacion_llm.lower()
+            if "descripción es" in lower_ubi or "problema es" in lower_ubi or len(lower_ubi.split()) > 15:
+                # Likely a description or junk text
+                if not descripcion:
+                    descripcion = ubicacion_llm # Move to description if empty
+                ubicacion_llm = None
+            elif not _ubicacion_es_valida(ubicacion_llm):
+                logger.info(f"[VALIDATION] Ubicacion invalida detectada: {ubicacion_llm}")
+                ubicacion_llm = None
 
         municipio_config = self.context.get("municipio_config_actual", {})
         if ubicacion_llm and not distrito_llm and direccion_es_valida(ubicacion_llm):
