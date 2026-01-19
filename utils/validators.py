@@ -199,11 +199,16 @@ def extract_address(text: str) -> Optional[str]:
     """Extract a simple address candidate from text using heuristics."""
     if not text:
         return None
-    match = re.search(r"[A-Za-zÁÉÍÓÚÑáéíóúñ ]+\s+\d+[\w\s,]*", text)
-    if match:
-        addr = match.group(0).strip()
-        if validate_address(addr):
-            return addr
+    patterns = [
+        r"[A-Za-zÁÉÍÓÚÑáéíóúñ ]+\s+\d+[\w\s,]*",
+        r"\d+\s+[A-Za-zÁÉÍÓÚÑáéíóúñ ]+\s*\d*[\w\s,]*",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            addr = match.group(0).strip()
+            if validate_address(addr):
+                return addr
     return None
 
 
