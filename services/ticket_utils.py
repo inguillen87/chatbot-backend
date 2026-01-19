@@ -527,6 +527,8 @@ def formatear_ticket_respuesta(
             # We aggressively strip non-digit characters from the pin just in case
             clean_pin = str(consulta_pin).strip()
             clean_pin = re.sub(r"[^0-9]", "", clean_pin)
+            # Limit to 6 digits to avoid capturing trailing garbage if regex failed somehow (redundant but safe)
+            clean_pin = clean_pin[:6]
             chat_url += f"?pin={clean_pin}"
         botones.append({
             "texto": "💬 Ver mi Ticket",

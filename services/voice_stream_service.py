@@ -238,6 +238,7 @@ class VoiceStreamService:
             "Objetivo: resolver rápido. "
             f"{known_data_str} "
             "Regla PRIORITARIA: Si el nombre del usuario es 'Vecino' o desconocido, TU PRIMERA PRIORIDAD es decir: 'No tengo tu nombre agendado, ¿cómo te llamas?' "
+            "IMPORTANTE: No confundas saludos como 'Hola', 'Buenas', 'Hola hola' con el nombre del usuario. Si dice 'Hola', preguntá el nombre. "
             "Regla CRÍTICA: NUNCA inventes tickets, números o confirmaciones. "
             "Solo confirmás ticket/pedido cuando la herramienta devuelve el número. "
             "Regla: si falta un dato (ubicación/categoría/descr), preguntalo directo. "
@@ -643,8 +644,11 @@ class VoiceStreamService:
 
                     nombre_raw = args.get("nombre")
                     if isinstance(nombre_raw, str):
-                        words = re.findall(r"[a-záéíóúñ]+", nombre_raw.lower())
-                        if words and all(word in {"hola", "buenas", "buenos"} for word in words):
+                        # Filter out repetitive greetings captured as names
+                        normalized = re.sub(r"[^\w\s]", "", nombre_raw.lower())
+                        forbidden = {"hola", "buenas", "buenos", "buen", "dia", "tarde", "noche", "saludos"}
+                        words = normalized.split()
+                        if words and all(word in forbidden for word in words):
                             args.pop("nombre", None)
 
                     email_raw = args.get("email")
