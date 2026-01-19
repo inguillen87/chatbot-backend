@@ -396,7 +396,15 @@ def _init_cloudinary():  # pragma: no cover - thin wrapper validated via tests
 
     config_kwargs.setdefault("secure", True)
     try:
-        cloudinary.config(**config_kwargs)
+        if has_all_explicit and cloudinary_url:
+            original_url = os.environ.pop("CLOUDINARY_URL", None)
+            try:
+                cloudinary.config(**config_kwargs)
+            finally:
+                if original_url is not None:
+                    os.environ["CLOUDINARY_URL"] = original_url
+        else:
+            cloudinary.config(**config_kwargs)
     except Exception as exc:  # pragma: no cover - configuration errors logged
         logger.error("Failed to configure Cloudinary: %s", exc, exc_info=True)
         return False, None, {}
