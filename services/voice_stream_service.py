@@ -56,6 +56,7 @@ class VoiceStreamService:
         self.response_active = False
         self.response_id = None
         self.cancel_pending = False
+        self.greeting_sent = False
 
         # Tools definitions
         self.tools = [
@@ -233,23 +234,21 @@ class VoiceStreamService:
         prompt = (
             f"Sos el asistente telefónico de {tenant_name}. "
             "Hablas en español argentino neutro (usá 'vos', sin jerga). "
-            "Tono: amable, empático y profesional. "
-            "Respuestas MUY cortas: 1 o 2 oraciones. "
-            "Objetivo: resolver rápido. "
+            "Tono: amable, empático y humano. Evita sonar robótico. "
+            "Respuestas MUY cortas y directas. "
             f"{known_data_str} "
-            "Regla PRIORITARIA: Si el nombre del usuario es 'Vecino' o desconocido, TU PRIMERA PRIORIDAD es decir: 'No tengo tu nombre agendado, ¿cómo te llamas?' "
-            "IMPORTANTE: No confundas saludos como 'Hola', 'Buenas', 'Hola hola' con el nombre del usuario. Si dice 'Hola', preguntá el nombre. "
+            "Regla PRIORITARIA: Si el nombre del usuario es 'Vecino' o desconocido, TU PRIMERA PRIORIDAD es decir: 'Disculpa, no tengo tu nombre agendado, ¿cómo te llamas?' "
+            "IMPORTANTE: No confundas saludos como 'Hola', 'Buenas' con el nombre. Si dice 'Hola', preguntá el nombre. "
             "Regla CRÍTICA: NUNCA inventes tickets, números o confirmaciones. "
-            "Solo confirmás ticket/pedido cuando la herramienta devuelve el número. "
-            "DISTINGUISH CLEARLY: 'Don Bosco 55' is a location. 'Tree fallen' is a description. Never mix them in the tool arguments. "
-            "SUMMARIZE the description for the tool. Do not send the full raw transcript. Ex: 'Árbol caído en garage'. "
-            "Be empathetic and human: 'Uy, qué problema', 'Entiendo', 'Lo siento', 'Ya mismo lo dejo asentado'. "
-            "Regla: si falta un dato (ubicación/categoría/descr), preguntalo directo. "
-            "Cuando tengas lo mínimo, ejecutá la herramienta correspondiente. "
-            "Al finalizar, DEBES DECIR: 'Listo [Nombre]. Tu reclamo quedó cargado con el número [Nro]'. "
-            "Avisá que se envió el comprobante por WhatsApp. "
-            "Si el usuario confirma que ya está todo listo o dice 'no', 'nada más', 'listo' o 'perfecto', "
-            "saludá y ejecutá finalizar_llamada."
+            "Solo confirmás ticket/pedido cuando la herramienta 'crear_reclamo' devuelve el número. "
+            "UBICACIÓN vs DESCRIPCIÓN: "
+            " - 'Don Bosco 55', 'San Martin y Lavalle' -> Es UBICACIÓN. "
+            " - 'Tengo un arbol caido', 'La descripcion es...' -> Es DESCRIPCIÓN. NUNCA lo pongas en ubicación. "
+            "RESUMEN: Para el campo 'descripcion', resume el problema en 1 o 2 oraciones factuales. Ej: 'Árbol caído obstruyendo garage.' NO envíes el texto crudo. "
+            "EMPATÍA: Usa frases cortas como 'Uh, entiendo', 'Qué problema', 'Ya lo cargo'. "
+            "CONFIRMACIÓN FINAL: Al recibir el numero de ticket de la herramienta, DEBES DECIRLO CLARAMENTE: 'Listo [Nombre]. Tu reclamo es el número [Nro]'. "
+            "Y preguntá: '¿Necesitas algo más?' "
+            "Si el usuario dice 'no', 'listo' o 'chau', ejecutá finalizar_llamada."
         )
 
         # Si podés detectar tipo tenant: municipio vs pyme
@@ -358,41 +357,44 @@ class VoiceStreamService:
                     }
                     self.openai_ws.send(json.dumps(session_update))
 
-                    tenant_name = "tu municipio"
-                    if self.tenant_profile:
-                        tenant_name = self.tenant_profile.nombre
-                    elif self.owner_user:
-                        tenant_name = getattr(self.owner_user, "nombre_empresa", "tu municipio")
+                    # Send greeting only once
+                    if not self.greeting_sent:
+                        tenant_name = "tu municipio"
+                        if self.tenant_profile:
+                            tenant_name = self.tenant_profile.nombre
+                        elif self.owner_user:
+                            tenant_name = getattr(self.owner_user, "nombre_empresa", "tu municipio")
 
-                    # Dynamic Greeting based on User context
-                    user_name = getattr(self.user, "name", None)
-                    # Ignore generic placeholder names from auto-creation
-                    if user_name and user_name.lower() in ["vecino", "vecino/a", "cliente", "usuario"]:
-                        user_name = None
+                        # Dynamic Greeting based on User context
+                        user_name = getattr(self.user, "name", None)
+                        # Ignore generic placeholder names from auto-creation
+                        if user_name and user_name.lower() in ["vecino", "vecino/a", "cliente", "usuario"]:
+                            user_name = None
 
-                    # Prompt "Ninja": Personalizado, empático y directo.
-                    if user_name:
-                        greeting_text = (
-                            f"Saludá con entusiasmo: '¡Hola {user_name}! Hablas con el asistente de {tenant_name}.' "
-                            "Luego preguntá cortito: '¿En qué te ayudo?'"
-                        )
-                    else:
-                        greeting_text = (
-                            f"Saludá amable: '¡Hola! Soy el asistente de {tenant_name}.' "
-                            "Y preguntá inmediatamente: 'No tengo tu nombre agendado, ¿cómo te llamas?'"
-                        )
+                        # Prompt "Ninja": Personalizado, empático y directo.
+                        if user_name:
+                            greeting_text = (
+                                f"Saludá con calidez: '¡Hola {user_name}! Soy el asistente de {tenant_name}.' "
+                                "Preguntá: '¿En qué puedo ayudarte hoy?'"
+                            )
+                        else:
+                            greeting_text = (
+                                f"Saludá amable: '¡Hola! Soy el asistente de {tenant_name}.' "
+                                "Preguntá: 'No tengo tu nombre agendado, ¿cómo te llamas?'"
+                            )
 
-                    self.openai_ws.send(
-                        json.dumps(
-                            {
-                                "type": "response.create",
-                                "response": {
-                                    "modalities": ["text", "audio"],
-                                    "instructions": greeting_text,
-                                },
-                            }
+                        self.openai_ws.send(
+                            json.dumps(
+                                {
+                                    "type": "response.create",
+                                    "response": {
+                                        "modalities": ["text", "audio"],
+                                        "instructions": greeting_text,
+                                    },
+                                }
+                            )
                         )
-                    )
+                        self.greeting_sent = True
         elif event_type == "media":
             if self.openai_ws:
                 self.openai_ws.send(
@@ -673,9 +675,9 @@ class VoiceStreamService:
                         self.last_ticket_nro = nro
 
                         result = (
-                            f"Listo {getattr(self.user, 'name', '')}. Registré tu reclamo con el número {nro}. "
-                            "Te acabo de enviar el comprobante por WhatsApp con un link para seguirlo. "
-                            "Si tenés una foto, podés responder a ese mensaje con la imagen. ¿Necesitas algo más?"
+                            f"¡Listo {getattr(self.user, 'name', '')}! Tu reclamo quedó registrado con el número {nro}. "
+                            f"Repito: número {nro}. "
+                            "Te envié el comprobante por WhatsApp. ¿Necesitas hacer otro reclamo?"
                         )
 
                         if session_context:
