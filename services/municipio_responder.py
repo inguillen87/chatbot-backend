@@ -1263,6 +1263,13 @@ class ReclamoFlowHandler:
             return {"message_body": "La dirección parece muy corta. Por favor, ingresá una dirección más completa (calle y número)."}
         else:
             direccion_ingresada = user_input.strip()
+            if not _looks_like_address(direccion_ingresada):
+                return {
+                    "message_body": (
+                        "Necesito la dirección exacta del problema (calle y número). "
+                        "Ejemplo: Don Bosco 55."
+                    )
+                }
             self.flow_context['datos_reclamo']['direccion'] = direccion_ingresada
 
             try:
@@ -1432,10 +1439,13 @@ class ReclamoFlowHandler:
 
     def get_confirmation_message(self):
         datos = self.flow_context.get('datos_reclamo', {})
+        descripcion_resumida = datos.get("descripcion_resumida") or construir_descripcion_breve(
+            datos.get("descripcion", "")
+        )
         mensaje = "Por favor, confirmá que los datos de tu reclamo son correctos:\n\nDatos del reclamo:\n"
         mensaje += f"- Categoría: {datos.get('categoria', 'No especificada')}\n"
         mensaje += f"- Dirección: {datos.get('direccion', 'No especificada')}\n"
-        mensaje += f"- Descripción: {datos.get('descripcion', 'No especificada')}\n\n"
+        mensaje += f"- Descripción: {descripcion_resumida or 'No especificada'}\n\n"
         mensaje += "Datos personales:\n"
         mensaje += f"- Nombre: {datos.get('nombre', 'No especificado')}\n"
         mensaje += f"- DNI: {datos.get('dni', 'No especificado')}\n"
@@ -3851,6 +3861,15 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     telefono_usuario = datos_reclamo.get("telefono_detectado")
     email_usuario = datos_reclamo.get("email_detectado")
 
+    if ubicacion and not _looks_like_address(ubicacion):
+        ubicacion = None
+        datos_reclamo.pop("ubicacion", None)
+
+    descripcion_resumida = datos_reclamo.get("descripcion_resumida")
+    if not descripcion_resumida and descripcion:
+        descripcion_resumida = construir_descripcion_breve(descripcion)
+        datos_reclamo["descripcion_resumida"] = descripcion_resumida
+
     campos_faltantes = [campo for campo, valor in {
         "categoría": categoria, "descripción": descripcion, "ubicación": ubicacion,
         "nombre": nombre_usuario, "teléfono": telefono_usuario, "email": email_usuario
@@ -3868,7 +3887,7 @@ def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura
     mensaje_confirmacion = (
         f"Por favor, confirmá si los datos para tu reclamo son correctos:\n"
         f"- **Categoría**: {categoria}\n"
-        f"- **Descripción**: {descripcion}\n"
+        f"- **Descripción**: {descripcion_resumida or descripcion}\n"
         f"- **Ubicación**: {ubicacion}\n"
         f"- **Nombre**: {nombre_usuario}\n"
         f"- **Teléfono**: {telefono_usuario}\n"
@@ -4371,10 +4390,18 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     or municipio_config.get("nombre_municipio")
                     or "el municipio"
                 )
-                handler_response["message_body"] = (
-                    f"Hola, soy el asistente de {nombre_municipio}. "
-                    f"{handler_response['message_body']}"
-                )
+                nombre_usuario = getattr(viewer_user, "nombre", None) if viewer_user else None
+                if nombre_usuario:
+                    saludo = f"Hola {nombre_usuario} 👋 "
+                else:
+                    saludo = "Hola 👋 "
+
+                normalized_message = normalizar_texto(handler_response["message_body"])
+                if not normalized_message.startswith(("hola", "buenas", "buenos dias", "buenas tardes", "buenas noches")):
+                    handler_response["message_body"] = (
+                        f"{saludo}Soy el asistente de {nombre_municipio}. "
+                        f"{handler_response['message_body']}"
+                    )
                 contexto_municipio_actual["saludo_audio_enviado"] = True
 
             return handler_response, contexto_municipio_actual
