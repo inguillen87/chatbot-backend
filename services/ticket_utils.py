@@ -580,6 +580,8 @@ def formatear_ticket_respuesta(
             )
 
     respuesta_lineas: list[str] = [f"✅ *¡{texto_tipo} recibido, {nombre_usuario}!*"]
+    if tipo == "reclamo" and id_ticket:
+        respuesta_lineas.append(f"Listo {nombre_usuario} ✅ Tu reclamo quedó cargado con el número `{id_ticket}`.")
     if resumen_lineas:
         respuesta_lineas.append("")
         respuesta_lineas.append("📄 *Resumen:*")
