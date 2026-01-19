@@ -552,8 +552,8 @@ def formatear_ticket_respuesta(
         texto = texto.strip()
         texto = re.sub(r"^tengo\s+un?\s+", "", texto, flags=re.IGNORECASE)
         texto = re.sub(r"^hay\s+un?\s+", "", texto, flags=re.IGNORECASE)
-        # Increased max_chars to 160 to prevent over-summarization of short/medium sentences
-        resumen = construir_descripcion_breve(texto, max_chars=160)
+        # Keep summaries short (1-2 useful sentences)
+        resumen = construir_descripcion_breve(texto, max_chars=120)
         return resumen or texto
 
     descripcion_resumen = _resumir_descripcion(descripcion)
@@ -600,6 +600,10 @@ def formatear_ticket_respuesta(
             respuesta_lineas.append(f"• *Teléfono:* {telefono_asesor}")
         if horario_asesor:
             respuesta_lineas.append(f"• *Horario:* {horario_asesor}")
+
+    if tipo == "reclamo":
+        respuesta_lineas.append("")
+        respuesta_lineas.append("¿Querés hacer otro reclamo?")
 
     respuesta = "\n".join(respuesta_lineas).strip()
 
