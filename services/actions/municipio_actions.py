@@ -97,10 +97,22 @@ def _ubicacion_es_valida(ubicacion: str | None) -> bool:
         return False
     if re.search(r"-?\d{1,3}\.\d+", normalized):
         return True
-    if re.search(r"\b(esquina|calle|av\.?|avenida|ruta|km|altura|barrio|manzana|mz|lote)\b", normalized):
+    # Stricter validation: Require a number if it looks like a street, or explicit intersection/barrio keywords
+    has_street_keyword = bool(re.search(r"\b(calle|av\.?|avenida|ruta|km)\b", normalized))
+    has_number = bool(re.search(r"\d", normalized))
+
+    if has_street_keyword and not has_number:
+        return False
+
+    if re.search(r"\b(esquina|altura|barrio|manzana|mz|lote)\b", normalized):
         return True
-    if re.search(r"\d", normalized):
+
+    if has_number:
+        # Check if it's too long (likely a description)
+        if len(normalized.split()) > 12:
+            return False
         return True
+
     return direccion_es_valida(ubicacion)
 
 
@@ -300,10 +312,12 @@ class CrearReclamoActionHandler(BaseActionHandler):
         # Check if the extracted location is actually a description
         if ubicacion_llm:
             lower_ubi = ubicacion_llm.lower()
-            if "descripción es" in lower_ubi or "problema es" in lower_ubi or len(lower_ubi.split()) > 15:
+            # Stricter heuristic: if it's long and has 'descripción' or looks like narrative
+            if "descripción es" in lower_ubi or "problema es" in lower_ubi or len(lower_ubi.split()) > 12:
                 # Likely a description or junk text
                 if not descripcion:
                     descripcion = ubicacion_llm # Move to description if empty
+                logger.info(f"[VALIDATION] Location rejected (too long or narrative): {ubicacion_llm}")
                 ubicacion_llm = None
             elif not _ubicacion_es_valida(ubicacion_llm):
                 logger.info(f"[VALIDATION] Ubicacion invalida detectada: {ubicacion_llm}")
