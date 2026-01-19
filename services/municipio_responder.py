@@ -2236,16 +2236,42 @@ def _looks_like_address_text(text: Optional[str]) -> bool:
     normalized_text = normalizar_texto(text)
     if not normalized_text:
         return False
-    greeting_words = {"hola", "buenas", "buenos", "buenas tardes", "buenos dias", "buenas noches"}
+    greeting_words = {
+        "hola",
+        "buenas",
+        "buenos",
+        "buenas tardes",
+        "buenos dias",
+        "buenas noches",
+    }
     if normalized_text in greeting_words:
         return False
-    if re.search(r"\b(esquina|calle|av\.?|avenida|ruta|km|altura)\b", normalized_text, re.IGNORECASE):
+    if re.search(r"\b(esquina|calle|av\.?|avenida|ruta|km|altura|barrio|manzana|mz|lote)\b", normalized_text, re.IGNORECASE):
         return True
     if re.search(r"\d", normalized_text):
+        return True
+    if re.search(r"-?\d{1,3}\.\d+", normalized_text):
         return True
     if "maps.google" in normalized_text or "goo.gl/maps" in normalized_text:
         return True
     return False
+
+
+def _detect_high_priority_action(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+    normalized = normalizar_texto(text)
+    if not normalized:
+        return None
+    if normalized in {"cancelar", "salir", "basta", "terminar"}:
+        return "cancelar"
+    if "menu" in normalized or "menú" in normalized or "inicio" in normalized or "volver" in normalized:
+        return "menu_principal"
+    if "llamar" in normalized or "llamada" in normalized or "agente" in normalized or "humano" in normalized:
+        return "solicitar_llamada"
+    if "nuevo reclamo" in normalized or "otro reclamo" in normalized:
+        return "mostrar_menu_reclamos"
+    return None
 
 
 def _prefill_contacto_from_context(
@@ -2346,13 +2372,6 @@ def _extract_expected_fields_from_text(
             extracted["distrito"] = location_hints["distrito"]
         elif location_hints.get("distrito_dudoso"):
             extracted["distrito"] = location_hints["distrito_dudoso"]
-
-    if "ubicacion" in extracted and "distrito" in normalized_fields and "distrito" not in extracted:
-        ubicacion, distrito = split_ubicacion_y_distrito(extracted["ubicacion"])
-        if ubicacion:
-            extracted["ubicacion"] = ubicacion
-        if distrito:
-            extracted["distrito"] = distrito
 
     return {k: v for k, v in extracted.items() if v}
 
@@ -4022,6 +4041,17 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             campo_esperado = campo_esperado or "ubicacion"
 
         if campo_esperado and (pregunta_str or context.get("es_ubicacion")):
+            high_priority_action = _detect_high_priority_action(pregunta_str)
+            if high_priority_action and not context.get("es_ubicacion"):
+                logger_actual.info(
+                    f"[HANDLE_LLM] Interrupción por intención prioritaria detectada: {high_priority_action}"
+                )
+                response = handle_main_menu_action(
+                    high_priority_action,
+                    context,
+                    chat_db_context,
+                )
+                return response, contexto_municipio_actual
             logger_actual.info(
                 f"Guardando dato esperado '{campo_esperado}' en el contexto antes de llamar al LLM."
             )
