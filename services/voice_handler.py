@@ -317,8 +317,13 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
         # Retrieve the session context to find created ticket info
         session_context = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
 
-        ticket_info_text = ""
         context_data = session_context.context_data if session_context else {}
+
+        if context_data.get("receipt_sent"):
+            logger.info("Receipt already sent during stream. Skipping status summary.")
+            return
+
+        ticket_info_text = ""
 
         # Check for Municipio Ticket
         municipio_ctx = context_data.get("contexto_municipio_v2", {})

@@ -237,7 +237,7 @@ class VoiceStreamService:
             "Respuestas MUY cortas: 1 o 2 oraciones. "
             "Objetivo: resolver rápido. "
             f"{known_data_str} "
-            "Regla PRIORITARIA: Si el nombre del usuario es 'Vecino' o desconocido, TU PRIMERA PRIORIDAD es pedirle su nombre amablemente para agendarlo. "
+            "Regla PRIORITARIA: Si el nombre del usuario es 'Vecino' o desconocido, TU PRIMERA PRIORIDAD es decir: 'No tengo tu nombre agendado, ¿cómo te llamas?' "
             "Regla CRÍTICA: NUNCA inventes tickets, números o confirmaciones. "
             "Solo confirmás ticket/pedido cuando la herramienta devuelve el número. "
             "Regla: si falta un dato (ubicación/categoría/descr), preguntalo directo. "
@@ -365,10 +365,17 @@ class VoiceStreamService:
                     if user_name and user_name.lower() in ["vecino", "vecino/a", "cliente", "usuario"]:
                         user_name = None
 
+                    # Prompt "Ninja": Personalizado, empático y directo.
                     if user_name:
-                        greeting_text = f"Tu primera frase DEBE ser: '¡Hola {user_name}! Soy el asistente virtual de {tenant_name}. ¿En qué te puedo ayudar hoy?'"
+                        greeting_text = (
+                            f"Saludá con entusiasmo: '¡Hola {user_name}! Hablas con el asistente de {tenant_name}.' "
+                            "Luego preguntá cortito: '¿En qué te ayudo?'"
+                        )
                     else:
-                        greeting_text = f"Tu primera frase DEBE ser: '¡Hola! Soy el asistente virtual de {tenant_name}. No tengo tu nombre agendado, ¿podrías decírmelo para comenzar?'"
+                        greeting_text = (
+                            f"Saludá amable: '¡Hola! Soy el asistente de {tenant_name}.' "
+                            "Y preguntá inmediatamente: 'No tengo tu nombre agendado, ¿cómo te llamas?'"
+                        )
 
                     self.openai_ws.send(
                         json.dumps(
@@ -658,9 +665,9 @@ class VoiceStreamService:
                         self.last_ticket_nro = nro
 
                         result = (
-                            f"Listo. Registré tu reclamo. Tu número de ticket es {nro}. "
-                            "Te envío un resumen por WhatsApp para que puedas adjuntar una foto si querés. "
-                            "Gracias, hasta luego."
+                            f"Listo {getattr(self.user, 'name', '')}. Registré tu reclamo con el número {nro}. "
+                            "Te acabo de enviar el comprobante por WhatsApp con un link para seguirlo. "
+                            "Si tenés una foto, podés responder a ese mensaje con la imagen. ¿Necesitas algo más?"
                         )
 
                         if session_context:
@@ -668,30 +675,38 @@ class VoiceStreamService:
                             session_context.context_data["awaiting_photo_for_ticket"] = nro
                             if data.get("ticket_id"):
                                 session_context.context_data["latest_ticket_id"] = data.get("ticket_id")
+                            # Marcar que ya enviamos el recibo para evitar duplicados en handle_call_status
+                            session_context.context_data["receipt_sent"] = True
 
                             safe_flag_modified(session_context, "context_data")
                             db.session.commit()
 
-                        # ✅ Enviar resumen por WhatsApp (bien armado)
+                        # ✅ Enviar resumen por WhatsApp (Rich Receipt)
                         whatsapp_target = None
                         if self.user and getattr(self.user, "telefono", None):
                             whatsapp_target = self.user.telefono
                         elif self.from_number:
                             whatsapp_target = self._normalize_phone(self.from_number)
+
                         if whatsapp_target:
                             try:
-                                msg_body = res.get("message_body") or (
-                                    f"✅ *Reclamo registrado*\n"
-                                    f"📌 N°: *{nro}*\n"
-                                    f"🧾 Categoría: {args.get('categoria', 'General')}\n"
-                                    f"📝 {args.get('descripcion', '')}\n"
-                                    f"📍 {args.get('ubicacion', '')}\n\n"
-                                    f"📷 *Si tenés una foto, respondé a este mensaje con la imagen.*"
-                                )
-                                image_url = res.get("image_url")
+                                # Usamos el payload rico que devuelve la acción (botones, imagen promo, texto formateado)
+                                msg_body = res.get("message_body")
+                                if not msg_body:
+                                    msg_body = (
+                                        f"✅ *Reclamo registrado*\n"
+                                        f"📌 N°: *{nro}*\n"
+                                        f"🧾 Categoría: {args.get('categoria', 'General')}\n"
+                                        f"📝 {args.get('descripcion', '')}\n"
+                                        f"📍 {args.get('ubicacion', '')}"
+                                    )
 
-                                # Extract buttons if available in response
+                                image_url = res.get("image_url")
                                 botones = res.get("options_list") or res.get("botones")
+
+                                # Fallback de imagen promo si la acción no la trajo pero existe en config
+                                if not image_url and self.tenant_profile and self.tenant_profile.configuracion:
+                                    image_url = self.tenant_profile.configuracion.get("promo_image_url")
 
                                 enviar_mensaje_whatsapp_con_fallback(
                                     whatsapp_target,
@@ -701,8 +716,9 @@ class VoiceStreamService:
                                     from_number=TWILIO_WHATSAPP_NUMBER,
                                     messaging_service_sid=MESSAGING_SERVICE_SID,
                                 )
+                                logger.info(f"[VOICE] Sent Rich Receipt to {whatsapp_target} for ticket {nro}")
                             except Exception as ex:
-                                logger.warning(f"[VOICE] Could not send WhatsApp summary: {ex}")
+                                logger.error(f"[VOICE] Could not send WhatsApp summary: {ex}", exc_info=True)
 
                         # ✅ Marca que hay que cortar cuando termine de hablar
                         self.pending_end_call = True
@@ -760,13 +776,16 @@ class VoiceStreamService:
                         self.last_order_nro = nro_pedido
 
                         result = (
-                            f"Perfecto. Registré tu pedido número {nro_pedido}. "
-                            f"El total es {monto}. Te mando el resumen por WhatsApp. Gracias, hasta luego."
+                            f"Excelente. Tu pedido número {nro_pedido} ya está registrado. "
+                            f"El total es {monto}. Te acabo de enviar el detalle completo por WhatsApp. "
+                            "¿Querés agregar algo más?"
                         )
 
                         if session_context:
                             session_context.context_data["latest_order_id"] = data.get("pedido_id")
                             session_context.context_data["latest_order_nro"] = nro_pedido
+                            # Marcar que ya enviamos el recibo para evitar duplicados
+                            session_context.context_data["receipt_sent"] = True
                             safe_flag_modified(session_context, "context_data")
                             db.session.commit()
 
@@ -775,22 +794,27 @@ class VoiceStreamService:
                             whatsapp_target = self.user.telefono
                         elif self.from_number:
                             whatsapp_target = self._normalize_phone(self.from_number)
+
                         if whatsapp_target:
                             try:
-                                msg_body = (
-                                    f"✅ *Pedido registrado*\n"
-                                    f"🆔 N°: *{nro_pedido}*\n"
-                                    f"📦 *Resumen:*\n{resumen}\n\n"
-                                    f"💰 *Total: {monto:,.2f}*\n"
-                                )
+                                # Usar el body que ya viene formateado si es posible, o construirlo
+                                msg_body = res.get("message_body")
+                                if not msg_body:
+                                    msg_body = (
+                                        f"✅ *Pedido registrado*\n"
+                                        f"🆔 N°: *{nro_pedido}*\n"
+                                        f"📦 *Resumen:*\n{resumen}\n\n"
+                                        f"💰 *Total: {monto:,.2f}*\n"
+                                    )
 
                                 # Extract buttons if available in response
                                 botones = res.get("options_list") or res.get("botones")
+                                image_url = res.get("image_url")
 
                                 enviar_mensaje_whatsapp_con_fallback(
                                     whatsapp_target,
                                     msg_body,
-                                    image_url=None,
+                                    image_url=image_url,
                                     botones=botones,
                                     from_number=TWILIO_WHATSAPP_NUMBER,
                                     messaging_service_sid=MESSAGING_SERVICE_SID,

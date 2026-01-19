@@ -524,7 +524,9 @@ def formatear_ticket_respuesta(
         chat_url = f"{base_chat_url}/{ticket_id_numeric}"
         if consulta_pin:
             # Ensure no trailing punctuation is accidentally added
-            clean_pin = str(consulta_pin).strip().strip("',. ")
+            # We aggressively strip non-digit characters from the pin just in case
+            clean_pin = str(consulta_pin).strip()
+            clean_pin = re.sub(r"[^0-9]", "", clean_pin)
             chat_url += f"?pin={clean_pin}"
         botones.append({
             "texto": "💬 Ver mi Ticket",
