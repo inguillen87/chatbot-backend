@@ -241,11 +241,13 @@ class VoiceStreamService:
             "IMPORTANTE: No confundas saludos como 'Hola', 'Buenas', 'Hola hola' con el nombre del usuario. Si dice 'Hola', preguntá el nombre. "
             "Regla CRÍTICA: NUNCA inventes tickets, números o confirmaciones. "
             "Solo confirmás ticket/pedido cuando la herramienta devuelve el número. "
+            "DISTINGUISH CLEARLY: 'Don Bosco 55' is a location. 'Tree fallen' is a description. Never mix them in the tool arguments. "
+            "Be empathetic: 'Uy, qué problema', 'Entiendo', 'Lo siento'. "
             "Regla: si falta un dato (ubicación/categoría/descr), preguntalo directo. "
             "Cuando tengas lo mínimo, ejecutá la herramienta correspondiente. "
-            "Al finalizar, confirmá lo registrado y avisá que se envía un resumen por WhatsApp para adjuntar fotos. "
+            "Al finalizar, LEE EN VOZ ALTA EL NÚMERO DE TICKET y avisá que se envió el comprobante por WhatsApp. "
             "Si el usuario confirma que ya está todo listo o dice 'no', 'nada más', 'listo' o 'perfecto', "
-            "resumí en una frase lo registrado, avisá que se envía por WhatsApp y ejecutá finalizar_llamada."
+            "saludá y ejecutá finalizar_llamada."
         )
 
         # Si podés detectar tipo tenant: municipio vs pyme
@@ -724,8 +726,9 @@ class VoiceStreamService:
                             except Exception as ex:
                                 logger.error(f"[VOICE] Could not send WhatsApp summary: {ex}", exc_info=True)
 
-                        # ✅ Marca que hay que cortar cuando termine de hablar
-                        self.pending_end_call = True
+                        # We do NOT enable pending_end_call here anymore.
+                        # We let the AI speak the result (including the ticket number) and ask if anything else is needed.
+                        # self.pending_end_call = True
 
                     else:
                         # Esto hace que el modelo pregunte lo que falta (sin inventar)
@@ -826,7 +829,8 @@ class VoiceStreamService:
                             except Exception as ex:
                                 logger.warning(f"[VOICE] Could not send WhatsApp summary for order: {ex}")
 
-                        self.pending_end_call = True
+                        # We do NOT enable pending_end_call here anymore.
+                        # self.pending_end_call = True
 
                     else:
                         result = (
