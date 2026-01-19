@@ -1579,6 +1579,12 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
 
+        if pyme_ctx_actual.get("saludo_audio_pendiente") and flow_result.message_body:
+            flow_result.message_body = (
+                f"Hola, soy el asistente de {nombre_pyme_display}. {flow_result.message_body}"
+            )
+            pyme_ctx_actual["saludo_audio_pendiente"] = False
+
         final_payload = {
             "success": True,
             "message_body": flow_result.message_body,
@@ -1861,6 +1867,38 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             contextual_notes.append("El usuario envió una nota de voz.")
             transcripcion = uploaded_info.get("transcribed_text")
             if transcripcion:
+                if not pyme_ctx_actual.get("saludo_audio_enviado"):
+                    pyme_ctx_actual["saludo_audio_pendiente"] = True
+                    pyme_ctx_actual["saludo_audio_enviado"] = True
+
+                normalized_audio = _normalize_user_input(transcripcion)
+                agent_keywords = RAW_PYME_MENU_KEYWORDS.get("pyme_hablar_agente", set())
+                if normalized_audio and any(
+                    _normalize_user_input(keyword) in normalized_audio for keyword in agent_keywords | {"llamar", "llamada"}
+                ):
+                    from services.actions.pyme_actions import DerivarHumanoActionHandlerPyme
+
+                    handler_context = {
+                        CONTEXTO_PYME: pyme_ctx_actual,
+                        "user_obj": owner_user,
+                        "viewer_user_obj": viewer_user,
+                        "cliente_id": getattr(viewer_user, "id", None),
+                        "anon_id": anon_id,
+                        "user_id": getattr(owner_user, "id", None),
+                        "chat_db_context_data": chat_db_context.context_data,
+                        "channel": channel,
+                        "target_entity_type": "pyme",
+                        "pregunta_actual_usuario": transcripcion,
+                    }
+                    handler = DerivarHumanoActionHandlerPyme(handler_context)
+                    handler_result = handler.execute({"motivo_derivacion": "Solicitud de contacto por nota de voz"})
+                    flow_result = PymeFlowResult(
+                        message_body=handler_result.get("message_to_user") or handler_result.get("message_body", ""),
+                        source="pyme_handoff_audio",
+                        data=handler_result.get("data", {}),
+                    )
+                    return _finalize_early_response(flow_result, intent="pyme_hablar_agente")
+
                 intent_from_audio = detect_intent_from_text(transcripcion)
                 if intent_from_audio:
                     logger_actual.info(
@@ -2366,6 +2404,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             message_type_pyme = "interactive_buttons"
         elif num_opt > 3:
             message_type_pyme = "interactive_list"
+
+    if pyme_ctx_actual.get("saludo_audio_pendiente") and respuesta_final_texto:
+        respuesta_final_texto = f"Hola, soy el asistente de {nombre_pyme_display}. {respuesta_final_texto}"
+        pyme_ctx_actual["saludo_audio_pendiente"] = False
 
     final_response_dict = {
         "message_body": respuesta_final_texto, "options_list": opciones_finales,
