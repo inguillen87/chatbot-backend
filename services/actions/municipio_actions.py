@@ -976,6 +976,12 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "message_to_user": "Para registrar tu sugerencia necesito tu nombre completo, DNI, email y dirección. Podés escribir todo en un solo mensaje.",
                 "pedir_info": "datos_contacto_sugerencia"
             }
+        pin_llm = action_data.get("pin") or action_data.get("consulta_pin")
+        pin_str = str(pin_llm).strip() if pin_llm else ""
+        if pin_str.isdigit() and len(pin_str) == 6:
+            pin_final = pin_str
+        else:
+            pin_final = f"{random.randint(0, 999999):06d}"
         # Create a ticket for the suggestion
         owner_user = self.context.get("user_obj")
         user_id_db = getattr(viewer_user, "id", None)
@@ -1003,6 +1009,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             ),
             "municipio_id": municipio_id,
             "tenant_id": tenant_id,
+            "consulta_pin": pin_final,
         }
         if self.context.get("foto_url"):
             ticket_data["foto_url_directa"] = self.context.get("foto_url")
@@ -1049,7 +1056,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 {}, # No hay contacto especializado para sugerencias
                 base_chat_url,
                 dni=dni_vecino,
-                consulta_pin=ticket_creado.get("consulta_pin"),
+                consulta_pin=ticket_creado.get("consulta_pin") or pin_final,
             )
 
             promo_section = promo_service.build_ticket_promo_section(
@@ -1084,7 +1091,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "nombre": nombre_vecino_final,
                 "categoria": "Sugerencia",
                 "descripcion": descripcion_sugerencia,
-                "consulta_pin": ticket_creado.get("consulta_pin"),
+                "consulta_pin": ticket_creado.get("consulta_pin") or pin_final,
             }
             return _apply_whatsapp_closing_promo(
                 response_payload,
