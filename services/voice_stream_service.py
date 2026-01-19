@@ -54,6 +54,8 @@ class VoiceStreamService:
         self.last_ticket_nro = None
         self.last_order_nro = None
         self.response_active = False
+        self.response_id = None
+        self.cancel_pending = False
 
         # Tools definitions
         self.tools = [
@@ -406,12 +408,30 @@ class VoiceStreamService:
         elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
             self.response_active = False
 
+        elif msg_type == "response.created":
+            self.response_active = True
+            response_payload = data.get("response") or {}
+            self.response_id = (
+                data.get("response_id")
+                or response_payload.get("id")
+                or data.get("id")
+            )
+            self.cancel_pending = False
+        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
+            self.response_active = False
+            self.response_id = None
+            self.cancel_pending = False
+
         elif msg_type == "input_audio_buffer.speech_started":
             # Interrupción real-time
             self.ws.send(json.dumps({"event": "clear", "streamSid": self.stream_sid}))
-            if self.response_active:
-                self.openai_ws.send(json.dumps({"type": "response.cancel"}))
+            if self.response_active and not self.cancel_pending:
+                cancel_payload = {"type": "response.cancel"}
+                if self.response_id:
+                    cancel_payload["response_id"] = self.response_id
+                self.openai_ws.send(json.dumps(cancel_payload))
                 self.response_active = False
+                self.cancel_pending = True
 
         elif msg_type == "response.function_call_arguments.done":
             call_id = data.get("call_id")
@@ -422,11 +442,20 @@ class VoiceStreamService:
         # ✅ IMPORTANTÍSIMO: cuando el modelo termina de hablar, si ya registramos ticket/pedido -> cortamos la llamada
         elif msg_type in ("response.done", "response.completed"):
             self.response_active = False
+            self.response_id = None
+            self.cancel_pending = False
             if self.pending_end_call:
                 self.pending_end_call = False
                 self._safe_end_call_twilio()
 
         elif msg_type == "error":
+            error_info = data.get("error", {})
+            if error_info.get("code") == "response_cancel_not_active":
+                logger.warning(f"[VOICE] OpenAI warning: {data}")
+                self.response_active = False
+                self.response_id = None
+                self.cancel_pending = False
+                return
             logger.error(f"[VOICE] OpenAI error: {data}")
             if data.get("error", {}).get("code") == "response_cancel_not_active":
                 self.response_active = False
