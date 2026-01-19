@@ -366,9 +366,9 @@ class VoiceStreamService:
                         user_name = None
 
                     if user_name:
-                        greeting_text = f"Saludá a {user_name} por su nombre. Presentate como el asistente de {tenant_name} y preguntale en qué podés ayudarlo hoy."
+                        greeting_text = f"Tu primera frase DEBE ser: '¡Hola {user_name}! Soy el asistente virtual de {tenant_name}. ¿En qué te puedo ayudar hoy?'"
                     else:
-                        greeting_text = f"Saludá al usuario. NO tenés su nombre. Presentate como el asistente de {tenant_name} y pedile su nombre para agendarlo antes de continuar."
+                        greeting_text = f"Tu primera frase DEBE ser: '¡Hola! Soy el asistente virtual de {tenant_name}. No tengo tu nombre agendado, ¿podrías decírmelo para comenzar?'"
 
                     self.openai_ws.send(
                         json.dumps(
