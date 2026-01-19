@@ -338,16 +338,44 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "favor",
                 "hola",
                 "buenas",
+                "buenos",
                 "tengo",
                 "hay",
+                "soy",
+                "mi",
+                "nombre",
+                "es",
+                "me",
+                "llamo",
             }
-            if any(token in cleaned_lower for token in forbidden_tokens):
+
+            # Tokenize and filter out forbidden words to extract the actual name
+            words = cleaned_lower.split()
+            filtered_words = [w for w in words if w not in forbidden_tokens]
+
+            if not filtered_words:
                 return None
-            if any(char.isdigit() for char in cleaned_lower):
+
+            # Reconstruct the name from the original casing based on the filtered indices?
+            # Simpler approach: Remove forbidden tokens from the cleaned string but preserve casing of the rest if possible.
+            # Or just use the filtered words and capitalize them.
+
+            # Let's use a regex replace to preserve original casing of remaining words
+            # But simple filtering is robust enough for names usually.
+
+            cleaned_filtered = " ".join([word.title() for word in filtered_words])
+
+            if len(cleaned_filtered) < 3: # "Al" ? maybe too short
                 return None
-            if len(cleaned.split()) > 6:
+
+            if any(char.isdigit() for char in cleaned_filtered):
                 return None
-            return cleaned
+
+            # Check length again on the filtered result
+            if len(cleaned_filtered.split()) > 5:
+                return None
+
+            return cleaned_filtered
 
         trusted_candidates = [
             getattr(viewer_user, "name", None) if viewer_user else None,
