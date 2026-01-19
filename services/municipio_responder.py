@@ -4808,6 +4808,48 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 else:
                     contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
 
+            normalized_pending_fields: list[str] = []
+            normalized_pending: Optional[str] = None
+            if pedir_info_llm:
+                normalized_pending_fields = _normalize_expected_fields_list(
+                    _normalize_pedir_info_fields(pedir_info_llm)
+                )
+                pending_lookup_key = normalized_pending_fields[0] if normalized_pending_fields else _normalize_pedir_info_value(pedir_info_llm)
+                if pending_lookup_key and not isinstance(pending_lookup_key, str):
+                    pending_lookup_key = str(pending_lookup_key).strip()
+                normalized_pending = _normalize_single_expected_field(pending_lookup_key)
+                normalized_pending = normalized_pending or (pending_lookup_key if isinstance(pending_lookup_key, str) else None)
+                next_state_obj = PEDIR_INFO_TO_STATE.get(normalized_pending or pending_lookup_key)
+                if _is_claim_pending_field(normalized_pending or pending_lookup_key):
+                    contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+                    if normalized_pending_fields:
+                        contexto_municipio_actual["expected_fields_llm_reclamo"] = normalized_pending_fields
+                    contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending or pending_lookup_key
+                    contexto_municipio_actual["esperando_info_llm"] = normalized_pending or pending_lookup_key
+                    contexto_municipio_actual.pop("esperando_info_llm_sugerencia", None)
+                    contexto_municipio_actual.pop("expected_fields_llm_sugerencia", None)
+                elif _is_suggestion_pending_field(normalized_pending or pending_lookup_key):
+                    contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name
+                    if normalized_pending_fields:
+                        contexto_municipio_actual["expected_fields_llm_sugerencia"] = normalized_pending_fields
+                    contexto_municipio_actual["esperando_info_llm_sugerencia"] = normalized_pending or pending_lookup_key
+                    contexto_municipio_actual["esperando_info_llm"] = normalized_pending or pending_lookup_key
+                    contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                    contexto_municipio_actual.pop("expected_fields_llm_reclamo", None)
+                elif next_state_obj:
+                    contexto_municipio_actual["estado_conversacion"] = next_state_obj.name
+                    contexto_municipio_actual["esperando_info_llm"] = normalized_pending or pending_lookup_key
+                else:
+                    contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+                    contexto_municipio_actual["esperando_info_llm"] = normalized_pending or pending_lookup_key
+            else:
+                if estado_conversacion_para_llm in [
+                    state.name for state in CLAIM_WAITING_STATES.union(SUGGESTION_WAITING_STATES)
+                ]:
+                    contexto_municipio_actual["estado_conversacion"] = estado_conversacion_para_llm
+                else:
+                    contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+
             contexto_municipio_actual.setdefault("historial_conversacion_general_llm", []).append(nuevo_turno_historial)
             if (
                 context.get("es_audio")

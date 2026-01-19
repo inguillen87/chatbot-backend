@@ -398,6 +398,141 @@ class VoiceStreamService:
                         }
                     )
                 )
+            self.response_active = True
+
+        elif msg_type == "response.created":
+            self.response_active = True
+
+        elif msg_type == "response.created":
+            self.response_active = True
+        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
+            self.response_active = False
+
+        elif msg_type == "response.created":
+            self.response_active = True
+            response_payload = data.get("response") or {}
+            self.response_id = (
+                data.get("response_id")
+                or response_payload.get("id")
+                or data.get("id")
+            )
+            self.cancel_pending = False
+        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
+            self.response_active = False
+            self.response_id = None
+            self.cancel_pending = False
+
+        elif msg_type == "response.created":
+            self.response_active = True
+            response_payload = data.get("response") or {}
+            self.response_id = (
+                data.get("response_id")
+                or response_payload.get("id")
+                or data.get("id")
+            )
+            self.cancel_pending = False
+        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
+            self.response_active = False
+            self.response_id = None
+            self.cancel_pending = False
+
+        elif msg_type == "response.created":
+            self.response_active = True
+            response_payload = data.get("response") or {}
+            self.response_id = (
+                data.get("response_id")
+                or response_payload.get("id")
+                or data.get("id")
+            )
+            self.cancel_pending = False
+        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
+            self.response_active = False
+            self.response_id = None
+            self.cancel_pending = False
+
+        elif msg_type == "response.created":
+            self.response_active = True
+            response_payload = data.get("response") or {}
+            self.response_id = (
+                data.get("response_id")
+                or response_payload.get("id")
+                or data.get("id")
+            )
+            self.cancel_pending = False
+        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
+            self.response_active = False
+            self.response_id = None
+            self.cancel_pending = False
+
+        elif msg_type == "response.created":
+            self.response_active = True
+            response_payload = data.get("response") or {}
+            self.response_id = (
+                data.get("response_id")
+                or response_payload.get("id")
+                or data.get("id")
+            )
+            self.cancel_pending = False
+        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
+            self.response_active = False
+            self.response_id = None
+            self.cancel_pending = False
+
+        elif msg_type == "response.created":
+            self.response_active = True
+            response_payload = data.get("response") or {}
+            self.response_id = (
+                data.get("response_id")
+                or response_payload.get("id")
+                or data.get("id")
+            )
+            self.cancel_pending = False
+        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
+            self.response_active = False
+            self.response_id = None
+            self.cancel_pending = False
+
+        elif msg_type == "response.created":
+            self.response_active = True
+            response_payload = data.get("response") or {}
+            self.response_id = (
+                data.get("response_id")
+                or response_payload.get("id")
+                or data.get("id")
+            )
+            self.cancel_pending = False
+        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
+            self.response_active = False
+            self.response_id = None
+            self.cancel_pending = False
+
+        elif msg_type == "response.created":
+            self.response_active = True
+            response_payload = data.get("response") or {}
+            self.response_id = (
+                data.get("response_id")
+                or response_payload.get("id")
+                or data.get("id")
+            )
+            self.cancel_pending = False
+        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
+            self.response_active = False
+            self.response_id = None
+            self.cancel_pending = False
+
+        elif msg_type == "response.created":
+            self.response_active = True
+            response_payload = data.get("response") or {}
+            self.response_id = (
+                data.get("response_id")
+                or response_payload.get("id")
+                or data.get("id")
+            )
+            self.cancel_pending = False
+        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
+            self.response_active = False
+            self.response_id = None
+            self.cancel_pending = False
 
         elif msg_type == "response.created":
             self.response_active = True
@@ -448,6 +583,8 @@ class VoiceStreamService:
                 self.cancel_pending = False
                 return
             logger.error(f"[VOICE] OpenAI error: {data}")
+            if data.get("error", {}).get("code") == "response_cancel_not_active":
+                self.response_active = False
 
     # ----------------------------
     # Tools executor
@@ -715,6 +852,7 @@ class VoiceStreamService:
                 )
             )
             self.openai_ws.send(json.dumps({"type": "response.create"}))
+            self.response_active = True
 
         except Exception as e:
             logger.error(f"[VOICE] Tool execution failed: {e}", exc_info=True)
