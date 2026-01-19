@@ -492,6 +492,20 @@ class VoiceStreamService:
             self.response_id = None
             self.cancel_pending = False
 
+        elif msg_type == "response.created":
+            self.response_active = True
+            response_payload = data.get("response") or {}
+            self.response_id = (
+                data.get("response_id")
+                or response_payload.get("id")
+                or data.get("id")
+            )
+            self.cancel_pending = False
+        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
+            self.response_active = False
+            self.response_id = None
+            self.cancel_pending = False
+
         elif msg_type == "input_audio_buffer.speech_started":
             # Interrupción real-time
             self.ws.send(json.dumps({"event": "clear", "streamSid": self.stream_sid}))

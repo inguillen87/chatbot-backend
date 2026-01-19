@@ -2233,7 +2233,8 @@ def _build_missing_reclamo_prompt(pending_fields: list[str], datos_actuales: dic
 
     message = f"{base}\n📍 Ahora necesito {fields_text} para registrarlo."
     if "ubicacion" in pending_fields:
-        message += "\n\nEj: Don Bosco 55, Junín."
+        message += "\n\nPodés enviarla como quieras: ✍️ texto, 🎤 nota de voz, 📸 foto o 📍 ubicación."
+        message += "\nEj: Don Bosco 55, Junín."
     return message
 
 
@@ -4509,6 +4510,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     if not botones_llm:
                         botones_llm = [
                             {"texto": "Menú", "action_id": "menu_principal"},
+                            {"texto": "📞 Solicitar llamada", "action_id": "solicitar_llamada"},
                             {"texto": "Cancelar", "action_id": "cancelar"},
                         ]
             # Update the context that will be passed to the next turn
