@@ -2281,6 +2281,32 @@ def _detect_high_priority_action(text: Optional[str]) -> Optional[str]:
     return None
 
 
+def _infer_reclamo_categoria(text: str) -> Optional[str]:
+    if not text:
+        return None
+    normalized = normalizar_texto(text)
+    keyword_map = {
+        "arbol caido": ["arbol", "árbol", "ramas", "hojas", "poda"],
+        "luminaria": ["luz", "lampara", "lámpara", "alumbrado", "poste"],
+        "limpieza": ["basura", "residuos", "limpieza", "maleza", "escombros"],
+        "arreglo de calle": ["bache", "pozo", "calle", "pavimento", "asfalto"],
+        "falta de agua, rotura de caño": ["agua", "caño", "canilla", "perdida", "pérdida"],
+        "fumigacion": ["fumigacion", "fumigación", "mosquitos", "plagas"],
+        "riego de calle": ["riego", "regador", "camion de riego"],
+        "rotura de semaforo": ["semaforo", "semáforo", "señal", "señalizacion"],
+        "inspeccion de comercio": ["inspeccion", "inspección", "comercio", "local"],
+        "tramites de obras privadas": ["obra", "construccion", "construcción", "permiso"],
+        "incendio": ["incendio", "fuego", "humo"],
+    }
+    for categoria, keywords in keyword_map.items():
+        if any(keyword in normalized for keyword in keywords):
+            for existente in CATEGORIAS_RECLAMO:
+                if normalizar_texto(existente) == categoria:
+                    return existente
+            return categoria
+    return None
+
+
 def _prefill_contacto_from_context(
     contexto_municipio_actual: dict,
     datos_parciales: dict,
@@ -4069,6 +4095,38 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             expected_fields_active = (
                 expected_fields_sugerencia if pending_flow == "sugerencia" else expected_fields_reclamo
             )
+
+            if campo_esperado == "categoria" and pregunta_str:
+                word_count = len(pregunta_str.strip().split())
+                if word_count >= 6 or len(pregunta_str.strip()) >= 40:
+                    datos_parciales.setdefault("descripcion", pregunta_str.strip())
+                    inferred_categoria = _infer_reclamo_categoria(pregunta_str)
+                    if inferred_categoria:
+                        datos_parciales["categoria"] = inferred_categoria
+                        expected_fields_active = [
+                            field
+                            for field in expected_fields_active
+                            if field.strip().lower() != "categoria"
+                        ]
+                        contexto_municipio_actual["expected_fields_llm_reclamo"] = expected_fields_active
+                        if expected_fields_active:
+                            campo_esperado = expected_fields_active[0]
+                            contexto_municipio_actual["esperando_info_llm_reclamo"] = campo_esperado
+                            contexto_municipio_actual["esperando_info_llm"] = campo_esperado
+                        else:
+                            contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+                            contexto_municipio_actual.pop("esperando_info_llm", None)
+                        captured_field = True
+                        expected_value_captured = True
+                    else:
+                        contexto_municipio_actual["expected_fields_llm_reclamo"] = expected_fields_active
+                        contexto_municipio_actual["esperando_info_llm_reclamo"] = "categoria"
+                        contexto_municipio_actual["esperando_info_llm"] = "categoria"
+                        menu_payload = _get_reclamos_menu()
+                        menu_payload["message_body"] = (
+                            "Entendido. Para continuar, elegí la categoría del reclamo:"
+                        )
+                        return menu_payload, contexto_municipio_actual
 
             if expected_fields_active:
                 expected_fields_active = _prefill_contacto_from_context(

@@ -302,7 +302,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             ubicacion_llm = None
 
         municipio_config = self.context.get("municipio_config_actual", {})
-        if ubicacion_llm and not distrito_llm:
+        if ubicacion_llm and not distrito_llm and direccion_es_valida(ubicacion_llm):
             try:
                 logger.info(f"Attempting to parse district from address: {ubicacion_llm}")
                 parsed_addr = parse_direccion(ubicacion_llm, municipio_config)
