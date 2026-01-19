@@ -531,7 +531,7 @@ class VoiceStreamService:
                             whatsapp_target = self._normalize_phone(self.from_number)
                         if whatsapp_target:
                             try:
-                                msg_body = (
+                                msg_body = res.get("message_body") or (
                                     f"✅ *Reclamo registrado*\n"
                                     f"📌 N°: *{nro}*\n"
                                     f"🧾 Categoría: {args.get('categoria', 'General')}\n"
@@ -539,11 +539,12 @@ class VoiceStreamService:
                                     f"📍 {args.get('ubicacion', '')}\n\n"
                                     f"📷 *Si tenés una foto, respondé a este mensaje con la imagen.*"
                                 )
+                                image_url = res.get("image_url")
 
                                 enviar_mensaje_whatsapp_con_fallback(
                                     whatsapp_target,
                                     msg_body,
-                                    image_url=None,
+                                    image_url=image_url,
                                     from_number=TWILIO_WHATSAPP_NUMBER,
                                     messaging_service_sid=MESSAGING_SERVICE_SID,
                                 )
