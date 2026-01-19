@@ -358,7 +358,17 @@ class VoiceStreamService:
                     elif self.owner_user:
                         tenant_name = getattr(self.owner_user, "nombre_empresa", "tu municipio")
 
-                    greeting_text = f"Hola, soy el asistente de {tenant_name}. ¿En qué te puedo ayudar hoy?"
+                    # Dynamic Greeting based on User context
+                    user_name = getattr(self.user, "name", None)
+                    # Ignore generic placeholder names from auto-creation
+                    if user_name and user_name.lower() in ["vecino", "vecino/a", "cliente", "usuario"]:
+                        user_name = None
+
+                    if user_name:
+                        greeting_text = f"Saludá a {user_name} por su nombre. Presentate como el asistente de {tenant_name} y preguntale en qué podés ayudarlo hoy."
+                    else:
+                        greeting_text = f"Saludá al usuario. No tenés su nombre registrado, así que presentate como el asistente de {tenant_name} y preguntale amablemente su nombre para agendarlo antes de continuar."
+
                     self.openai_ws.send(
                         json.dumps(
                             {
@@ -678,10 +688,14 @@ class VoiceStreamService:
                                 )
                                 image_url = res.get("image_url")
 
+                                # Extract buttons if available in response
+                                botones = res.get("options_list") or res.get("botones")
+
                                 enviar_mensaje_whatsapp_con_fallback(
                                     whatsapp_target,
                                     msg_body,
                                     image_url=image_url,
+                                    botones=botones,
                                     from_number=TWILIO_WHATSAPP_NUMBER,
                                     messaging_service_sid=MESSAGING_SERVICE_SID,
                                 )
@@ -768,10 +782,14 @@ class VoiceStreamService:
                                     f"💰 *Total: {monto:,.2f}*\n"
                                 )
 
+                                # Extract buttons if available in response
+                                botones = res.get("options_list") or res.get("botones")
+
                                 enviar_mensaje_whatsapp_con_fallback(
                                     whatsapp_target,
                                     msg_body,
                                     image_url=None,
+                                    botones=botones,
                                     from_number=TWILIO_WHATSAPP_NUMBER,
                                     messaging_service_sid=MESSAGING_SERVICE_SID,
                                 )
