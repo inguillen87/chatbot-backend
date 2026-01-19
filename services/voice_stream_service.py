@@ -237,6 +237,7 @@ class VoiceStreamService:
             "Respuestas MUY cortas: 1 o 2 oraciones. "
             "Objetivo: resolver rápido. "
             f"{known_data_str} "
+            "Regla PRIORITARIA: Si el nombre del usuario es 'Vecino' o desconocido, TU PRIMERA PRIORIDAD es pedirle su nombre amablemente para agendarlo. "
             "Regla CRÍTICA: NUNCA inventes tickets, números o confirmaciones. "
             "Solo confirmás ticket/pedido cuando la herramienta devuelve el número. "
             "Regla: si falta un dato (ubicación/categoría/descr), preguntalo directo. "
@@ -367,7 +368,7 @@ class VoiceStreamService:
                     if user_name:
                         greeting_text = f"Saludá a {user_name} por su nombre. Presentate como el asistente de {tenant_name} y preguntale en qué podés ayudarlo hoy."
                     else:
-                        greeting_text = f"Saludá al usuario. No tenés su nombre registrado, así que presentate como el asistente de {tenant_name} y preguntale amablemente su nombre para agendarlo antes de continuar."
+                        greeting_text = f"Saludá al usuario. NO tenés su nombre. Presentate como el asistente de {tenant_name} y pedile su nombre para agendarlo antes de continuar."
 
                     self.openai_ws.send(
                         json.dumps(
@@ -630,6 +631,7 @@ class VoiceStreamService:
                         "viewer_user_obj": self.user,
                         "channel": "voice",
                         "chat_db_context_data": chat_data,
+                        "municipio_config_actual": self.tenant_profile.configuracion if self.tenant_profile else {},
                     }
 
                     nombre_raw = args.get("nombre")
