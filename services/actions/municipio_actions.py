@@ -79,6 +79,31 @@ def _address_seems_generic(address: str | None) -> bool:
     return False
 
 
+def _ubicacion_es_valida(ubicacion: str | None) -> bool:
+    if not ubicacion:
+        return False
+    normalized = normalizar_texto(ubicacion)
+    if not normalized:
+        return False
+    greeting_words = {
+        "hola",
+        "buenas",
+        "buenos",
+        "buenas tardes",
+        "buenos dias",
+        "buenas noches",
+    }
+    if normalized in greeting_words:
+        return False
+    if re.search(r"-?\d{1,3}\.\d+", normalized):
+        return True
+    if re.search(r"\b(esquina|calle|av\.?|avenida|ruta|km|altura|barrio|manzana|mz|lote)\b", normalized):
+        return True
+    if re.search(r"\d", normalized):
+        return True
+    return direccion_es_valida(ubicacion)
+
+
 def _resolve_municipio_tenant_ids(owner_user, context: Dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
     """Resolve tenant_id and municipio_id for municipal tickets."""
 
@@ -272,6 +297,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 if not ubicacion_llm or _address_seems_generic(ubicacion_llm):
                     ubicacion_llm = geocoded_from_coords.get("formatted_address")
 
+        if ubicacion_llm and not _ubicacion_es_valida(ubicacion_llm):
+            logger.info(f"[VALIDATION] Ubicacion invalida detectada: {ubicacion_llm}")
+            ubicacion_llm = None
+
         municipio_config = self.context.get("municipio_config_actual", {})
         if ubicacion_llm and not distrito_llm:
             try:
@@ -421,16 +450,21 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "campos_requeridos_reclamo",
             ['descripcion', 'ubicacion', 'nombre', 'telefono', 'email']
         )
+        if self.context.get("channel") == "voice":
+            campos_requeridos = ["descripcion", "ubicacion", "telefono"]
 
         datos_finales_reclamo = {
             "categoria": categoria,
             "descripcion": descripcion,
-            "ubicacion": ubicacion_llm or coordenadas_llm,
+            "ubicacion": ubicacion_llm if _ubicacion_es_valida(ubicacion_llm) else None,
             "nombre": nombre_vecino_final if nombre_vecino_final != "Vecino/a" else None,
             "telefono": telefono_final,
             "email": email_final,
             "dni": dni_final,
         }
+
+        if not datos_finales_reclamo.get("ubicacion") and coordenadas_llm:
+            datos_finales_reclamo["ubicacion"] = coordenadas_llm
 
         campos_faltantes = [campo for campo in campos_requeridos if not datos_finales_reclamo.get(campo)]
 
