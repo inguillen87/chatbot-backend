@@ -148,6 +148,14 @@ def create_app(config_class=Config):
     if app.config.get("TESTING"):
         app.config.setdefault("DISABLE_SQLITE_FOREIGN_KEYS", True)
 
+    @app.route("/", methods=["GET", "HEAD"])
+    def root():
+        return jsonify({"status": "ok"})
+
+    @app.route("/health", methods=["GET", "HEAD"])
+    def health():
+        return jsonify({"status": "ok"})
+
     @app.errorhandler(ApiError)
     def handle_api_error(error: ApiError):
         status = getattr(error, "status_code", 400) or 400
