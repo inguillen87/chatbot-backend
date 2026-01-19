@@ -126,9 +126,16 @@ class CrearPedidoAction(BaseActionHandler):
         email_cliente_validado = email_cliente_raw if validar_email(email_cliente_raw) else None
 
         missing_contact = []
-        if not nombre_cliente: missing_contact.append("nombre")
-        if not (telefono_cliente_validado or email_cliente_validado): missing_contact.append("un teléfono o email de contacto")
-        if not direccion_entrega: missing_contact.append("una dirección de entrega")
+        if not nombre_cliente:
+            missing_contact.append("nombre")
+        if self.context.get("channel") == "voice":
+            if not telefono_cliente_validado:
+                missing_contact.append("un teléfono de contacto")
+        else:
+            if not (telefono_cliente_validado or email_cliente_validado):
+                missing_contact.append("un teléfono o email de contacto")
+        if not direccion_entrega:
+            missing_contact.append("una dirección de entrega")
 
         if missing_contact:
             campos_str = " y ".join(missing_contact)
