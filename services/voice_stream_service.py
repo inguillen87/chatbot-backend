@@ -683,6 +683,19 @@ class VoiceStreamService:
                             session_context.context_data["awaiting_photo_for_ticket"] = nro
                             if data.get("ticket_id"):
                                 session_context.context_data["latest_ticket_id"] = data.get("ticket_id")
+                            if data.get("consulta_pin"):
+                                session_context.context_data["latest_ticket_pin"] = data.get("consulta_pin")
+                            base_chat_url = (
+                                self.tenant_profile.configuracion.get("base_chat_url")
+                                if self.tenant_profile and self.tenant_profile.configuracion
+                                else None
+                            )
+                            if base_chat_url:
+                                ticket_id_numeric = str(nro).replace("M-", "").replace("S-", "")
+                                tracking_url = f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}"
+                                if data.get("consulta_pin"):
+                                    tracking_url = f"{tracking_url}?pin={data.get('consulta_pin')}"
+                                session_context.context_data["latest_tracking_url"] = tracking_url
                             # Marcar que ya enviamos el recibo para evitar duplicados en handle_call_status
                             session_context.context_data["receipt_sent"] = True
 
