@@ -4227,10 +4227,11 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 captured_field = True
                 expected_value_captured = True
             if campo_esperado == "ubicacion":
-                if context.get("ubicacion_usuario"):
-                    lat = context["ubicacion_usuario"].get("latitude")
-                    lon = context["ubicacion_usuario"].get("longitude")
-                    address = context["ubicacion_usuario"].get("address")
+                location_ctx = context.get("ubicacion_usuario") or {}
+                if location_ctx:
+                    lat = location_ctx.get("latitude")
+                    lon = location_ctx.get("longitude")
+                    address = location_ctx.get("address")
                     if address:
                         valor_a_guardar = address
                     elif lat is not None and lon is not None:
