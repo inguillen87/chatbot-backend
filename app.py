@@ -509,6 +509,15 @@ def create_app(config_class=Config):
     app.register_blueprint(config_bp)
     app.register_blueprint(auth_bp)
 
+    # Root and health check routes for Render
+    @app.route('/', methods=['GET', 'HEAD'])
+    def root_route():
+        return "OK", 200
+
+    @app.route('/health', methods=['GET', 'HEAD'])
+    def health_route():
+        return "OK", 200
+
     # Alias de login para clientes que aún llaman a `/login` en lugar de `/auth/login`
     @app.route('/login', methods=['GET', 'POST', 'OPTIONS'])
     def login_alias():

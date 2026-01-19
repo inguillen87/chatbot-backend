@@ -9,6 +9,8 @@ from typing import Callable, Iterable
 
 from config import BACKEND_URL
 
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://api.chatboc.ar")
+
 ProviderCallable = Callable[[str], str | None]
 
 logger = logging.getLogger(__name__)
@@ -103,7 +105,8 @@ def generar_audio(text: str) -> str | None:
     cached_rel_path = os.path.join(cache_dir, f"{text_hash}.mp3")
     if os.path.exists(cached_rel_path):
         logger.info("TTS Service: Returning cached audio.")
-        return f"{BACKEND_URL}/{cached_rel_path}"
+        base_url = PUBLIC_BASE_URL or BACKEND_URL
+        return f"{base_url}/{cached_rel_path}"
 
     def cache_and_return(audio_url: str | None) -> str | None:
         if not audio_url:
@@ -120,12 +123,14 @@ def generar_audio(text: str) -> str | None:
             if os.path.exists(generated_path):
                 shutil.copyfile(generated_path, cached_rel_path)
                 logger.info(f"TTS Service: Cached audio at {cached_rel_path}")
-                return f"{BACKEND_URL}/{cached_rel_path}"
+                base_url = PUBLIC_BASE_URL or BACKEND_URL
+                return f"{base_url}/{cached_rel_path}"
         except Exception as e:
             logger.warning(f"TTS Service: Failed to cache audio file from {generated_path}: {e}")
 
         # Fallback to returning the original URL if caching fails but URL is valid
-        return f"{BACKEND_URL}/{generated_path}"
+        base_url = PUBLIC_BASE_URL or BACKEND_URL
+        return f"{base_url}/{generated_path}"
 
     def _provider_factory() -> dict[str, ProviderCallable]:
         providers: dict[str, ProviderCallable] = {}
