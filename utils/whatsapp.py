@@ -9,6 +9,7 @@ TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 # "whatsapp:+14155238886" (sandbox Twilio)
 # o "whatsapp:+54..." si tenés WhatsApp aprobado en tu cuenta
 TWILIO_WHATSAPP_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER")
+TWILIO_WHATSAPP_STATUS_CALLBACK_URL = os.environ.get("TWILIO_WHATSAPP_STATUS_CALLBACK_URL")
 
 
 def _get_twilio_client():
@@ -63,6 +64,7 @@ def enviar_mensaje_whatsapp_con_fallback(
     image_url=None,
     from_number=None,
     messaging_service_sid=None,
+    status_callback=None,
 ):
     """
     Envía WhatsApp por Twilio.
@@ -84,6 +86,9 @@ def enviar_mensaje_whatsapp_con_fallback(
         "to": numero_destino,
         "body": body_final,
     }
+    callback_url = status_callback or TWILIO_WHATSAPP_STATUS_CALLBACK_URL
+    if callback_url:
+        message_params["status_callback"] = callback_url
 
     # Imagen opcional
     if image_url:

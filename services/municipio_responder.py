@@ -2185,6 +2185,50 @@ def _normalize_single_expected_field(field_name: Optional[str]) -> Optional[str]
     return _map_candidate(normalized) or normalized
 
 
+def _join_spanish_list(items: list[str]) -> str:
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} y {items[1]}"
+    return f"{', '.join(items[:-1])} y {items[-1]}"
+
+
+def _format_pending_field_label(field_name: str) -> str:
+    labels = {
+        "ubicacion": "la ubicación exacta (calle y número)",
+        "direccion": "la dirección exacta",
+        "distrito": "el distrito/barrio",
+        "categoria": "la categoría",
+        "descripcion": "una breve descripción",
+        "nombre": "tu nombre",
+        "telefono": "tu teléfono",
+        "email": "tu email",
+        "dni": "tu DNI",
+    }
+    return labels.get(field_name, field_name.replace("_", " "))
+
+
+def _build_missing_reclamo_prompt(pending_fields: list[str], datos_actuales: dict) -> str:
+    categoria = datos_actuales.get("categoria")
+    descripcion = datos_actuales.get("descripcion")
+    base = "✅ Perfecto."
+    if categoria:
+        base = f"✅ Perfecto. Ya entendí el reclamo por {categoria}."
+    elif descripcion:
+        base = "✅ Perfecto. Ya entendí el reclamo."
+
+    labels = [_format_pending_field_label(field) for field in pending_fields]
+    fields_text = _join_spanish_list(labels)
+    if not fields_text:
+        fields_text = "los datos faltantes"
+
+    message = f"{base}\n📍 Ahora necesito {fields_text} para registrarlo."
+    if "ubicacion" in pending_fields:
+        message += "\n\nEj: Don Bosco 55, Junín."
+    return message
+
 def _prefill_contacto_from_context(
     contexto_municipio_actual: dict,
     datos_parciales: dict,
@@ -4327,11 +4371,30 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     return handler_response, contexto_municipio_actual
             else:
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
-                normalized_pending_fields = _normalize_pedir_info_fields(pedir_info_llm)
+                normalized_pending_fields = _normalize_expected_fields_list(
+                    _normalize_pedir_info_fields(pedir_info_llm)
+                )
+                required_fields = [
+                    field
+                    for field in ("categoria", "descripcion", "ubicacion")
+                    if not datos_actuales.get(field)
+                ]
+                for field in required_fields:
+                    if field not in normalized_pending_fields:
+                        normalized_pending_fields.append(field)
                 if normalized_pending_fields:
                     contexto_municipio_actual["expected_fields_llm_reclamo"] = normalized_pending_fields
                     contexto_municipio_actual["esperando_info_llm_reclamo"] = normalized_pending_fields[0]
                     contexto_municipio_actual["esperando_info_llm"] = normalized_pending_fields[0]
+                    respuesta_usuario_llm = _build_missing_reclamo_prompt(
+                        normalized_pending_fields,
+                        datos_actuales,
+                    )
+                    if not botones_llm:
+                        botones_llm = [
+                            {"texto": "Menú", "action_id": "menu_principal"},
+                            {"texto": "Cancelar", "action_id": "cancelar"},
+                        ]
             # Update the context that will be passed to the next turn
             if chat_db_context and hasattr(chat_db_context, 'context_data'):
                 chat_db_context.context_data[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
