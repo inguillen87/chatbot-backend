@@ -2335,6 +2335,19 @@ def _prefill_contacto_from_context(
     return remaining_fields
 
 
+def _merge_contacto_usuario(datos_actuales: dict, contacto_usuario: dict) -> None:
+    if not isinstance(contacto_usuario, dict):
+        return
+    for field, contacto_key in (
+        ("nombre", "nombre"),
+        ("telefono", "telefono"),
+        ("email", "email"),
+        ("dni", "dni"),
+    ):
+        if not datos_actuales.get(field) and contacto_usuario.get(contacto_key):
+            datos_actuales[field] = contacto_usuario.get(contacto_key)
+
+
 def _extract_expected_fields_from_text(
     raw_text: str,
     expected_fields: list[str],
@@ -4452,9 +4465,9 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             # Combinar datos antiguos y nuevos
             datos_actuales = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
             nuevos_datos = {k: v for k, v in datos_estructura_llm.items() if v is not None}
+            location_ctx = context.get("ubicacion_usuario") or {}
             existing_coords = datos_actuales.get("coordenadas") or (
-                context.get("ubicacion_usuario", {}).get("latitude")
-                and context.get("ubicacion_usuario", {}).get("longitude")
+                location_ctx.get("latitude") and location_ctx.get("longitude")
             )
             if existing_coords and not nuevos_datos.get("coordenadas"):
                 if isinstance(nuevos_datos.get("ubicacion"), str):
@@ -4487,10 +4500,25 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     # potentially premature confirmation message.
                     return handler_response, contexto_municipio_actual
             else:
-                contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+                _merge_contacto_usuario(
+                    datos_actuales,
+                    contexto_municipio_actual.get("contacto_usuario", {}),
+                )
+                contact_fields = {"nombre", "telefono", "email", "dni"}
+                pending_fields_only_contact = True
                 normalized_pending_fields = _normalize_expected_fields_list(
                     _normalize_pedir_info_fields(pedir_info_llm)
                 )
+                for field in normalized_pending_fields:
+                    if field not in contact_fields:
+                        pending_fields_only_contact = False
+                        break
+                if pending_fields_only_contact:
+                    handler = CrearReclamoActionHandler(context)
+                    handler_response = handler.execute(datos_actuales)
+                    if handler_response.get("success"):
+                        return handler_response, contexto_municipio_actual
+                contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                 required_fields = [
                     field
                     for field in ("categoria", "descripcion", "ubicacion")
@@ -4723,10 +4751,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             if datos_estructura_llm:
                 datos_actuales = contexto_municipio_actual.setdefault("datos_parciales_llm_reclamo", {})
                 nuevos_datos = {k: v for k, v in datos_estructura_llm.items() if v is not None}
-                existing_coords = datos_actuales.get("coordenadas") or (
-                    context.get("ubicacion_usuario", {}).get("latitude")
-                    and context.get("ubicacion_usuario", {}).get("longitude")
-                )
+            location_ctx = context.get("ubicacion_usuario") or {}
+            existing_coords = datos_actuales.get("coordenadas") or (
+                location_ctx.get("latitude") and location_ctx.get("longitude")
+            )
                 if existing_coords and not nuevos_datos.get("coordenadas"):
                     if isinstance(nuevos_datos.get("ubicacion"), str):
                         nuevos_datos.pop("ubicacion", None)
