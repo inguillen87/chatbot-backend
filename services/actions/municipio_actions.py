@@ -421,6 +421,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "campos_requeridos_reclamo",
             ['descripcion', 'ubicacion', 'nombre', 'telefono', 'email']
         )
+        if self.context.get("channel") == "voice":
+            campos_requeridos = ["descripcion", "ubicacion", "telefono"]
 
         datos_finales_reclamo = {
             "categoria": categoria,
