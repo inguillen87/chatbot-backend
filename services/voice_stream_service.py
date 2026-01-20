@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
+VOICE_STREAM_VOICE = os.getenv("VOICE_STREAM_VOICE", "alloy")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://api.chatboc.ar")
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
@@ -573,7 +574,7 @@ class VoiceStreamService:
                         "session": {
                             "modalities": ["text", "audio"],
                             "instructions": self._get_system_instruction(),
-                            "voice": "shimmer",
+                            "voice": VOICE_STREAM_VOICE,
                             "input_audio_format": "g711_ulaw",
                             "output_audio_format": "g711_ulaw",
                             "turn_detection": {
@@ -596,11 +597,11 @@ class VoiceStreamService:
 
                     if user_name:
                         greeting_line = (
-                            f"¡Hola {user_name} 👋! Soy {assistant_name} de {tenant_name}. ¿En qué te ayudo?"
+                            f"Hola {user_name}. Soy {assistant_name} de {tenant_name}. ¿En qué te ayudo?"
                         )
                     else:
                         greeting_line = (
-                            f"¡Hola! Soy {assistant_name} de {tenant_name}. ¿En qué te ayudo?"
+                            f"Hola. Soy {assistant_name} de {tenant_name}. ¿En qué te ayudo?"
                         )
 
                     greeting_text = greeting_line
