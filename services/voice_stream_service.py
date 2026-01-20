@@ -17,6 +17,7 @@ from utils.db_utils import safe_flag_modified
 from services.contact_service import resolve_contact, sanitize_profile_name
 from services.whatsapp_receipts import render_ticket_whatsapp
 from services.whatsapp_sender import send_whatsapp_message
+from services.config_loader import cargar_configuracion_municipio
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,33 @@ class VoiceStreamService:
         if isinstance(promo_section, dict):
             return promo_section.get("image_url")
         return None
+
+    def _resolve_municipio_config(self) -> dict:
+        if self.tenant_profile and isinstance(getattr(self.tenant_profile, "configuracion", None), dict):
+            return self.tenant_profile.configuracion or {}
+        municipio_id = None
+        if self.tenant_profile and getattr(self.tenant_profile, "municipio_id", None):
+            municipio_id = self.tenant_profile.municipio_id
+        elif self.owner_user and getattr(self.owner_user, "municipio_id", None):
+            municipio_id = self.owner_user.municipio_id
+        if municipio_id:
+            config = cargar_configuracion_municipio(str(municipio_id), "config.json")
+            if isinstance(config, dict):
+                return config
+        return {}
+
+    def _resolve_tenant_name(self) -> str:
+        config = self._resolve_municipio_config()
+        tenant_name = (
+            config.get("nombre_municipio")
+            or config.get("nombre")
+            or (self.tenant_profile.nombre if self.tenant_profile else None)
+            or (getattr(self.owner_user, "nombre_empresa", None) if self.owner_user else None)
+            or "tu municipio"
+        )
+        if tenant_name.lower() in {"municipio inteligente", "municipio"}:
+            return "Municipio"
+        return tenant_name
 
     def _resolve_whatsapp_sender(self) -> str | None:
         if self.tenant_profile and getattr(self.tenant_profile, "configuracion", None):
@@ -394,14 +422,11 @@ class VoiceStreamService:
         """
         Prompt de voz: corto, directo, SIN alucinación y orientado a acción.
         """
-        tenant_name = "Tu Municipio"
+        tenant_name = self._resolve_tenant_name()
         tenant_tipo = "municipio"
 
         if self.tenant_profile:
-            tenant_name = self.tenant_profile.nombre
             tenant_tipo = self.tenant_profile.tipo or tenant_tipo
-        elif self.owner_user:
-            tenant_name = getattr(self.owner_user, "nombre_empresa", "Tu Municipio")
 
         identity = self._resolve_identity_from_context(self.context_data_snapshot)
         user_name = (
@@ -433,6 +458,7 @@ class VoiceStreamService:
             "Be empathetic and human: 'Uy, qué problema', 'Entiendo', 'Lo siento', 'Ya mismo lo dejo asentado'. "
             "Regla: si falta un dato (ubicación/categoría/descr), preguntalo directo. "
             "Si falta la categoría pero hay descripción suficiente, inferila sin preguntar. "
+            "Si el usuario menciona esquina/cruce, incluí ambas calles (ej: 'Don Bosco y Sarmiento'). "
             "Cuando tengas lo mínimo, ejecutá la herramienta correspondiente. "
             "Al finalizar, DEBES DECIR: 'Listo [Nombre]. Tu reclamo quedó cargado con el número [Nro]'. "
             "Avisá que se envió el comprobante por WhatsApp. "
@@ -547,11 +573,7 @@ class VoiceStreamService:
                     }
                     self.openai_ws.send(json.dumps(session_update))
 
-                    tenant_name = "tu municipio"
-                    if self.tenant_profile:
-                        tenant_name = self.tenant_profile.nombre
-                    elif self.owner_user:
-                        tenant_name = getattr(self.owner_user, "nombre_empresa", "tu municipio")
+                    tenant_name = self._resolve_tenant_name()
 
                     user_name = self._resolve_greeting_name()
 
@@ -914,7 +936,7 @@ class VoiceStreamService:
 
                         if whatsapp_target:
                             try:
-                                municipio_cfg = self.tenant_profile.configuracion if self.tenant_profile else {}
+                                municipio_cfg = self._resolve_municipio_config()
                                 base_chat_url = municipio_cfg.get("base_chat_url", "https://www.chatboc.ar/chat")
                                 resolved_contact = (
                                     self.context_data_snapshot.get("resolved_contact")
@@ -926,8 +948,10 @@ class VoiceStreamService:
                                     if isinstance(resolved_contact, dict)
                                     else None
                                 )
+                                data_payload = res.get("data", {}) if isinstance(res, dict) else {}
                                 nombre_contacto = (
-                                    resolved_name
+                                    data_payload.get("nombre_vecino")
+                                    or resolved_name
                                     or sanitize_profile_name(getattr(self.user, "name", None))
                                     or ""
                                 )
@@ -944,6 +968,8 @@ class VoiceStreamService:
                                     promo_image_url=(
                                         res.get("image_url") or self._resolve_promo_image_url(municipio_cfg)
                                     ),
+                                    promo_text=data_payload.get("promo_text"),
+                                    contacto_especializado=data_payload.get("contacto_especializado"),
                                     info_url=municipio_cfg.get("link_web") or municipio_cfg.get("url_web"),
                                 )
                                 whatsapp_sender = self._resolve_whatsapp_sender()

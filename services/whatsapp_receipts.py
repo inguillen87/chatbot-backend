@@ -3,20 +3,50 @@ from typing import Any, Dict, Optional
 
 def _build_menu_text(kind: str) -> str:
     if kind == "sugerencia":
-        first = "Hacer otra sugerencia"
-    elif kind == "reclamo":
-        first = "Hacer otro reclamo"
-    else:
-        first = "Hacer otro"
+        return "\n".join(
+            [
+                "",
+                "1. Hacer otra sugerencia",
+                "2. Menú",
+                "3. Cancelar",
+            ]
+        )
+    if kind == "reclamo":
+        return "\n".join(
+            [
+                "",
+                "1. Menú",
+                "2. Cancelar",
+            ]
+        )
     return "\n".join(
         [
             "",
-            "¿Querés hacer algo más?",
-            f"1) {first}",
-            "2) Menú principal",
-            "3) Cancelar",
+            "1. Menú",
+            "2. Cancelar",
         ]
     )
+
+
+def _render_contact_section(contacto: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(contacto, dict):
+        return ""
+    nombre = contacto.get("nombre")
+    cargo = contacto.get("cargo") or contacto.get("titulo")
+    telefono = contacto.get("telefono")
+    horario = contacto.get("horario")
+    if not any([nombre, cargo, telefono, horario]):
+        return ""
+    lines = ["", "📞 Contacto para seguimiento:"]
+    if nombre:
+        lines.append(f"* Nombre: {nombre}")
+    if cargo:
+        lines.append(f"* Cargo: {cargo}")
+    if telefono:
+        lines.append(f"* Teléfono: {telefono}")
+    if horario:
+        lines.append(f"* Horario: {horario}")
+    return "\n".join(lines)
 
 
 def render_ticket_whatsapp(
@@ -31,18 +61,21 @@ def render_ticket_whatsapp(
     consulta_pin: Optional[str] = None,
     base_chat_url: str = "https://www.chatboc.ar/chat",
     promo_image_url: Optional[str] = None,
+    promo_text: Optional[str] = None,
+    contacto_especializado: Optional[Dict[str, Any]] = None,
     info_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     name = nombre or "Vecino/a"
-    ticket_line = f"• Ticket: {ticket_nro}" if ticket_nro else ""
-    confirmation = (
-        f"Listo {name} ✅ Tu {kind} quedó cargado con el número {ticket_nro}."
-        if ticket_nro
-        else f"Listo {name} ✅ Tu {kind} quedó registrado."
+    kind_label = (
+        "Reclamo"
+        if kind == "reclamo"
+        else "Sugerencia"
+        if kind == "sugerencia"
+        else kind.capitalize()
     )
+    ticket_line = f"• Ticket: {ticket_nro}" if ticket_nro else ""
     lines = [
-        f"✅ ¡{kind.capitalize()} recibido/a, {name}!",
-        confirmation,
+        f"✅ ¡{kind_label} recibido{'' if kind == 'reclamo' else 'a'}, {name}!",
         "",
         "📄 Resumen:",
         ticket_line,
@@ -65,7 +98,7 @@ def render_ticket_whatsapp(
         seguimiento = "\n".join(
             [
                 "",
-                "🔎 Seguimiento:",
+                "🔗 Seguimiento:",
                 f"• PIN: {consulta_pin}" if consulta_pin else "",
                 f"• Ver mi Ticket: {link}",
             ]
@@ -75,7 +108,12 @@ def render_ticket_whatsapp(
     if info_url:
         extra = f"\n\n🌐 Más información: {info_url}"
 
-    body_text = f"{resumen}{seguimiento}{extra}{_build_menu_text(kind)}"
+    contact_section = _render_contact_section(contacto_especializado)
+    promo_section = f"\n\n{promo_text}" if promo_text else ""
+
+    body_text = (
+        f"{resumen}{seguimiento}{contact_section}{promo_section}{extra}{_build_menu_text(kind)}"
+    )
 
     return {
         "body_text": body_text,
@@ -108,5 +146,7 @@ def build_ticket_receipt(
         consulta_pin=consulta_pin,
         base_chat_url=base_chat_url,
         promo_image_url=promo_image_url,
+        promo_text=None,
+        contacto_especializado=None,
         info_url=info_url,
     )

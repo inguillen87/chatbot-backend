@@ -887,6 +887,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 owner_user=owner_user,
                 municipio_config=municipio_config,
             )
+            promo_text = None
             if promo_section:
                 promo_text = promo_section.get("message_body")
                 if promo_text:
@@ -960,6 +961,9 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     "nro_ticket": nro_ticket_str,
                     "status": "creado",
                     "consulta_pin": pin_final,
+                    "nombre_vecino": ticket_data_cleaned.get("nombre_vecino"),
+                    "contacto_especializado": contacto_especializado,
+                    "promo_text": promo_text,
                 }
             }
             response_payload["whatsapp_receipt"] = render_ticket_whatsapp(
@@ -973,6 +977,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 consulta_pin=pin_final,
                 base_chat_url=base_chat_url,
                 promo_image_url=promo_image_url,
+                promo_text=promo_text,
+                contacto_especializado=contacto_especializado,
                 info_url=municipio_config.get("link_web") or municipio_config.get("url_web"),
             )
             if channel_value == "whatsapp":
@@ -1229,6 +1235,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 owner_user=owner_user,
                 municipio_config=municipio_config,
             )
+            promo_text = None
             if promo_section:
                 promo_text = promo_section.get("message_body")
                 if promo_text:
@@ -1246,7 +1253,13 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "options_list": botones_finales,
                 "message_type": "interactive_buttons",
                 "image_url": promo_image_url,
-                "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado"}
+                "data": {
+                    "ticket_id": ticket_creado.get('id'),
+                    "nro_ticket": nro_ticket_str,
+                    "status": "creado",
+                    "nombre_vecino": nombre_vecino_final,
+                    "promo_text": promo_text,
+                }
             }
             response_payload["whatsapp_receipt"] = render_ticket_whatsapp(
                 kind="sugerencia",
@@ -1259,6 +1272,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 consulta_pin=ticket_creado.get("consulta_pin") or pin_final,
                 base_chat_url=base_chat_url,
                 promo_image_url=promo_image_url,
+                promo_text=promo_text,
                 info_url=municipio_config.get("link_web") or municipio_config.get("url_web"),
             )
             channel_value = (self.context.get("channel") or "").strip().lower()
