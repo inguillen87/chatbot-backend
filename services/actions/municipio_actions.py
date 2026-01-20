@@ -22,6 +22,7 @@ from services.categorias_municipio import (
     normalizar_texto as normalizar_texto_municipio,
 )
 from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
+from services.live_chat_schedule import build_live_chat_status
 from utils.ticket_utils import normalize_category
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.config_loader import cargar_configuracion_municipio
@@ -1339,11 +1340,32 @@ class DerivarHumanoActionHandler(BaseActionHandler):
             chat_id = f"M-{sala_dict['nro_ticket']}"
 
             # formatear_ticket_respuesta now returns a tuple (message, buttons)
-            user_message, _ = formatear_ticket_respuesta("chat", nombre, pregunta_original, "Atención en Vivo", chat_id)
+            user_message, _ = formatear_ticket_respuesta(
+                "chat",
+                nombre,
+                pregunta_original,
+                "Atención en Vivo",
+                chat_id,
+            )
+            live_chat_status = build_live_chat_status()
+            if not live_chat_status.get("available"):
+                schedule_text = live_chat_status.get("description")
+                if schedule_text:
+                    user_message = (
+                        f"{user_message}\n\n"
+                        f"⏰ Nuestro horario de atención en vivo es {schedule_text}."
+                    )
+                else:
+                    user_message = f"{user_message}\n\n⏰ Ahora mismo no hay agentes disponibles."
             return {
                 "success": True,
                 "message_to_user": user_message,
-                "data": {"ticket_id": sala_dict['id'], "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
+                "data": {
+                    "ticket_id": sala_dict['id'],
+                    "chat_id": chat_id,
+                    "status": "esperando_agente_en_vivo",
+                    "live_chat": live_chat_status,
+                },
             }
         except Exception as e:
             logger.error(f"Error en DerivarHumanoActionHandler: {e}", exc_info=True)

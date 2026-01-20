@@ -281,6 +281,23 @@ def get_schedule_description() -> str:
     return base
 
 
+def build_live_chat_status(now: Optional[datetime] = None) -> dict:
+    schedule = get_live_chat_schedule()
+    description = get_schedule_description()
+    days_sorted = sorted(schedule.days)
+    days = [DAY_NAMES[day] for day in days_sorted if 0 <= day < len(DAY_NAMES)]
+    tz_label = getattr(schedule.timezone, "key", str(schedule.timezone))
+    return {
+        "enabled": schedule.enabled,
+        "available": is_live_chat_available(now),
+        "description": description,
+        "days": days,
+        "start_time": schedule.start_time.strftime("%H:%M"),
+        "end_time": schedule.end_time.strftime("%H:%M"),
+        "timezone": tz_label,
+    }
+
+
 def _load_custom_urgency_terms() -> Tuple[Set[str], Set[str]]:
     raw_terms = _get_config_value("LIVE_CHAT_AUTO_URGENCY_KEYWORDS", "")
     if not raw_terms:
@@ -321,4 +338,3 @@ def detect_urgency_reason(message: Optional[str]) -> Optional[str]:
 
 def should_auto_live_chat(message: Optional[str]) -> bool:
     return detect_urgency_reason(message) is not None
-

@@ -9,6 +9,7 @@ from services.promocion_service import promocion_service
 from services.qdrant_search import buscar_catalogo_qdrant, CATALOGO_PYME
 from services.preferences import add_preference
 from services.config_loader import cargar_configuracion_pyme
+from services.live_chat_schedule import build_live_chat_status
 from models import db
 import models
 from services.common_utils import parse_precio_flexible
@@ -391,11 +392,29 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
 
             chat_id = f"P-{sala.nro_ticket}"
 
-            user_message = f"En breve un representante se pondrá en contacto contigo. Tu número de chat es {chat_id}."
+            user_message = (
+                "En breve un representante se pondrá en contacto contigo. "
+                f"Tu número de chat es {chat_id}."
+            )
+            live_chat_status = build_live_chat_status()
+            if not live_chat_status.get("available"):
+                schedule_text = live_chat_status.get("description")
+                if schedule_text:
+                    user_message = (
+                        f"{user_message}\n\n"
+                        f"⏰ Nuestro horario de atención en vivo es {schedule_text}."
+                    )
+                else:
+                    user_message = f"{user_message}\n\n⏰ Ahora mismo no hay agentes disponibles."
             return {
                 "success": True,
                 "message_to_user": user_message,
-                "data": {"ticket_id": sala.id, "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
+                "data": {
+                    "ticket_id": sala.id,
+                    "chat_id": chat_id,
+                    "status": "esperando_agente_en_vivo",
+                    "live_chat": live_chat_status,
+                },
             }
         except Exception as e:
             logger.error(f"Error en DerivarHumanoActionHandlerPyme: {e}", exc_info=True)

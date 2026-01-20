@@ -10,9 +10,18 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from werkzeug.datastructures import FileStorage
-from models import WhatsappNumero, User, ChatSessionContext, ArchivoAdjunto  # Import necessary models
+from models import (
+    WhatsappNumero,
+    User,
+    ChatSessionContext,
+    ArchivoAdjunto,
+    MunicipioTicket,
+    PymeTicket,
+    TicketComentario,
+)  # Import necessary models
 from extensions import db  # Import db instance for database operations
 import uuid
+from sqlalchemy import or_
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm import joinedload  # To potentially eager load User.rubro
 from utils.db_utils import ensure_chat_session_context_schema, safe_flag_modified
@@ -30,6 +39,7 @@ from services.response_formatter import render_audio_text
 from services.tts_orchestrator import generar_audio
 from utils.response_utils import normalize_response_payload
 from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
+from services.ticket_service import servicio_tickets
 
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
@@ -41,6 +51,7 @@ webhook_bp = Blueprint('whatsapp_webhook', __name__)
 # chunks that comply with Twilio's limits and send them sequentially.
 
 MAX_TWILIO_BODY_LENGTH = 1600
+LIVE_CHAT_STATES = {"esperando_agente_en_vivo", "en_proceso", "en_vivo"}
 ALLOWED_MEDIA_EXTENSIONS = {
     ".png",
     ".jpg",
@@ -70,6 +81,40 @@ def _is_valid_media_url(url: Optional[str]) -> bool:
 
     extension = path.rsplit(".", 1)[-1]
     return f".{extension}" in ALLOWED_MEDIA_EXTENSIONS
+
+
+def _find_live_chat_ticket(
+    owner_user: Optional[User],
+    end_user: Optional[User],
+    anon_id: Optional[str],
+) -> Tuple[Optional[str], Optional[MunicipioTicket | PymeTicket]]:
+    if not owner_user:
+        return None, None
+
+    tipo_chat = getattr(owner_user, "tipo_chat", None)
+    if tipo_chat == "municipio":
+        municipio_id = getattr(owner_user, "municipio_id", None) or getattr(owner_user, "id", None)
+        query = MunicipioTicket.query.filter(MunicipioTicket.estado.in_(LIVE_CHAT_STATES))
+        if end_user:
+            query = query.filter(or_(MunicipioTicket.user_id == end_user.id, MunicipioTicket.anon_id == anon_id))
+        elif anon_id:
+            query = query.filter(MunicipioTicket.anon_id == anon_id)
+        if municipio_id:
+            query = query.filter(MunicipioTicket.municipio_id == municipio_id)
+        return "municipio", query.order_by(MunicipioTicket.fecha.desc()).first()
+
+    if tipo_chat == "pyme":
+        rubro_id = getattr(owner_user, "rubro_id", None)
+        query = PymeTicket.query.filter(PymeTicket.estado.in_(LIVE_CHAT_STATES))
+        if end_user:
+            query = query.filter(or_(PymeTicket.user_id == end_user.id, PymeTicket.anon_id == anon_id))
+        elif anon_id:
+            query = query.filter(PymeTicket.anon_id == anon_id)
+        if rubro_id:
+            query = query.filter(PymeTicket.rubro_id == rubro_id)
+        return "pyme", query.order_by(PymeTicket.fecha.desc()).first()
+
+    return None, None
 
 
 def _normalize_media_base(url: str) -> str:
@@ -1639,6 +1684,85 @@ def whatsapp_webhook():
             # treat message as location input only
             incoming_text = ""
             message_body = ""
+
+    # --- Live Chat Routing (WhatsApp -> Admin panel) ---
+    if message_body or uploaded_file_info or location_info:
+        tipo_ticket, live_ticket = _find_live_chat_ticket(
+            client_user,
+            end_user,
+            from_number_cleaned,
+        )
+        if live_ticket:
+            comentario_text = (message_body or "").strip()
+            if location_info and not comentario_text:
+                label = location_info.get("label") or location_info.get("address")
+                if label:
+                    comentario_text = f"[Ubicación compartida: {label}]"
+                else:
+                    comentario_text = "[Ubicación compartida]"
+
+            if uploaded_file_info:
+                attachment_name = uploaded_file_info.get("name") or "archivo"
+                if comentario_text:
+                    comentario_text = f"{comentario_text} [Archivo: {attachment_name}]"
+                else:
+                    comentario_text = f"[Archivo adjunto: {attachment_name}]"
+
+            comentario_data = {
+                "comentario": comentario_text or "[Mensaje sin texto]",
+                "user_id": getattr(end_user, "id", None),
+                "anon_id": None if end_user else from_number_cleaned,
+                "es_admin": False,
+                "origen": "whatsapp",
+                "archivo_adjunto_id": uploaded_file_info.get("id") if uploaded_file_info else None,
+            }
+
+            nuevo_comentario = servicio_tickets.crear_comentario(
+                ticket_id=live_ticket.id,
+                tipo_ticket=tipo_ticket,
+                comentario_data=comentario_data,
+            )
+
+            if uploaded_file_info:
+                adjunto = db.session.get(ArchivoAdjunto, uploaded_file_info.get("id"))
+                if adjunto:
+                    if tipo_ticket == "municipio":
+                        adjunto.municipio_ticket_id = live_ticket.id
+                    else:
+                        adjunto.pyme_ticket_id = live_ticket.id
+                    db.session.add(adjunto)
+
+            try:
+                db.session.commit()
+            except Exception as exc:
+                current_app.logger.error(
+                    "[WHATSAPP_WEBHOOK] Error guardando mensaje de chat en vivo: %s",
+                    exc,
+                    exc_info=True,
+                )
+                db.session.rollback()
+            else:
+                if nuevo_comentario:
+                    try:
+                        from socket_service import socketio
+
+                        room_name = f"ticket_{tipo_ticket}_{live_ticket.id}"
+                        socketio.emit(
+                            "new_chat_message",
+                            {
+                                "ticket_id": live_ticket.id,
+                                "message": nuevo_comentario.to_dict(),
+                            },
+                            room=room_name,
+                        )
+                    except Exception as socket_exc:
+                        current_app.logger.error(
+                            "[WHATSAPP_WEBHOOK] Error emitiendo mensaje en vivo: %s",
+                            socket_exc,
+                            exc_info=True,
+                        )
+
+            return "OK", 200
 
     # --- Human Chat Check ---
     if session_context_db_entry.context_data.get("human_chat_in_progress"):
