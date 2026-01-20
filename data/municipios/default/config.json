@@ -18,20 +18,20 @@
       "logo_url": "https://www.instagram.com/static/images/ico/favicon-200.png/ab6eff595bb1.png"
     }
   ],
-  "catalogo_base_url": "https://chatbot-backend-2e14.onrender.com",
+  "catalogo_base_url": "/",
   "catalogo_links": {
-    "catalogo_ver": "https://chatbot-backend-2e14.onrender.com/productos",
-    "catalogo_canje_puntos": "https://chatbot-backend-2e14.onrender.com/productos?view=canje",
-    "catalogo_compras": "https://chatbot-backend-2e14.onrender.com/productos?view=compras",
-    "catalogo_donaciones": "https://chatbot-backend-2e14.onrender.com/productos?view=donaciones"
+    "catalogo_ver": "/productos",
+    "catalogo_canje_puntos": "/productos?view=canje",
+    "catalogo_compras": "/productos?view=compras",
+    "catalogo_donaciones": "/productos?view=donaciones"
   },
-  "catalogo_banner_image_url": "https://chatbot-backend-2e14.onrender.com/static/encuestas/participacion_ciudadana.png",
+  "catalogo_banner_image_url": "/static/encuestas/participacion_ciudadana.png",
   "promo_section": {
     "headline": "♻️ Punto Limpio Junín",
     "tagline": "Transformamos residuos en productos sustentables.",
     "description": "Visitá nuestra planta y descubrí cómo convertimos materiales recuperados en ladrillos, tejas, postes, mangueras, luminarias LED y más.",
     "link": "https://www.juninmendoza.gov.ar/punto-limpio",
     "cta_text": "Visitar Punto Limpio",
-    "image_url": "https://www.juninmendoza.gov.ar/wp-content/uploads/logo-junin-punto-limpio-1024x472.png"
+    "image_url": "/static/municipios/default/logo-junin-punto-limpio-1024x472.png"
   }
 }
