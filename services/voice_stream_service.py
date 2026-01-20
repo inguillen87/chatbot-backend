@@ -18,11 +18,14 @@ from services.contact_service import resolve_contact, sanitize_profile_name
 from services.whatsapp_receipts import render_ticket_whatsapp
 from services.whatsapp_sender import send_whatsapp_message
 from services.config_loader import cargar_configuracion_municipio
+from utils.url_utils import public_url
 
 logger = logging.getLogger(__name__)
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
+VOICE_STREAM_VOICE = os.getenv("VOICE_STREAM_VOICE", "alloy")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://api.chatboc.ar")
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -60,6 +63,7 @@ class VoiceStreamService:
         self.response_active = False
         self.response_id = None
         self.cancel_pending = False
+        self.greeting_in_progress = False
 
         # Tools definitions
         self.tools = [
@@ -143,7 +147,10 @@ class VoiceStreamService:
     def _resolve_promo_image_url(config: dict | None) -> str | None:
         if not isinstance(config, dict):
             return None
-        promo_image_url = config.get("promo_image_url")
+        promo_image_url = (
+            config.get("closing_promo_image_url")
+            or config.get("promo_image_url")
+        )
         if promo_image_url:
             return promo_image_url
         promo_section = config.get("promo_section") or config.get("promo")
@@ -177,6 +184,13 @@ class VoiceStreamService:
         if tenant_name.lower() in {"municipio inteligente", "municipio"}:
             return "Municipio"
         return tenant_name
+
+    def _resolve_assistant_name(self) -> str:
+        config = self._resolve_municipio_config()
+        assistant_name = config.get("assistant_name") or config.get("bot_name")
+        if assistant_name:
+            return str(assistant_name)
+        return "Juni"
 
     def _resolve_whatsapp_sender(self) -> str | None:
         if self.tenant_profile and getattr(self.tenant_profile, "configuracion", None):
@@ -423,6 +437,7 @@ class VoiceStreamService:
         Prompt de voz: corto, directo, SIN alucinación y orientado a acción.
         """
         tenant_name = self._resolve_tenant_name()
+        assistant_name = self._resolve_assistant_name()
         tenant_tipo = "municipio"
 
         if self.tenant_profile:
@@ -439,6 +454,7 @@ class VoiceStreamService:
         known_data_str = f"Datos conocidos del usuario: Nombre: {user_name}."
         if user_addr:
             known_data_str += f" Dirección guardada: {user_addr}."
+        greeting_name = self._resolve_greeting_name() or "vecino"
 
         prompt = (
             f"Sos el asistente telefónico de {tenant_name}. "
@@ -447,20 +463,21 @@ class VoiceStreamService:
             "Respuestas MUY cortas: 1 o 2 oraciones. "
             "Objetivo: resolver rápido. "
             f"{known_data_str} "
-            "Regla PRIORITARIA: Si el nombre del usuario es 'Vecino' o desconocido, TU PRIMERA PRIORIDAD es decir: 'No tengo tu nombre agendado, ¿cómo te llamas?' "
-            "Si ya conocés el nombre del usuario, saludalo usando su nombre. "
-            "IMPORTANTE: No confundas saludos como 'Hola', 'Buenas', 'Hola hola' con el nombre del usuario. Si dice 'Hola', preguntá el nombre. "
+            f"Saludá SIEMPRE al iniciar con: \"Hola {greeting_name}, soy {assistant_name}.\" "
+            "Regla PRIORITARIA: En el primer turno, saludá usando el nombre del usuario si está disponible. "
+            "Si el nombre no está disponible, saludá de forma neutra ('Hola') y continuá el flujo sin pedirlo de entrada. "
+            "IMPORTANTE: No confundas saludos como 'Hola', 'Buenas', 'Hola hola' con el nombre del usuario. "
             "Regla CRÍTICA: NUNCA inventes tickets, números o confirmaciones. "
             "Solo confirmás ticket/pedido cuando la herramienta devuelve el número. "
-            "Si el usuario da varios datos en una sola frase (categoría, ubicación, descripción), separalos y NO vuelvas a pedir lo que ya dijo. "
-            "DISTINGUISH CLEARLY: 'Don Bosco 55' is a location. 'Tree fallen' is a description. Never mix them in the tool arguments. "
-            "SUMMARIZE the description for the tool. Do not send the full raw transcript. Ex: 'Árbol caído en garage'. "
-            "Be empathetic and human: 'Uy, qué problema', 'Entiendo', 'Lo siento', 'Ya mismo lo dejo asentado'. "
+            "Si el usuario da varios datos en una sola frase (categoría, ubicación, descripción), separalos y no vuelvas a pedir lo que ya dijo. "
+            "Separá claramente ubicación y descripción. Ejemplo: 'Don Bosco 55' es ubicación y 'árbol caído' es descripción. "
+            "Resumí la descripción antes de enviar la herramienta. Ejemplo: 'Árbol caído en garage'. "
+            "Sé empático y humano: 'Uy, qué problema', 'Entiendo', 'Lo siento', 'Ya mismo lo dejo asentado'. "
             "Regla: si falta un dato (ubicación/categoría/descr), preguntalo directo. "
             "Si falta la categoría pero hay descripción suficiente, inferila sin preguntar. "
             "Si el usuario menciona esquina/cruce, incluí ambas calles (ej: 'Don Bosco y Sarmiento'). "
             "Cuando tengas lo mínimo, ejecutá la herramienta correspondiente. "
-            "Al finalizar, DEBES DECIR: 'Listo [Nombre]. Tu reclamo quedó cargado con el número [Nro]'. "
+            "Al finalizar, decí: 'Listo [Nombre]. Tu reclamo quedó cargado con el número [Nro]'. "
             "Avisá que se envió el comprobante por WhatsApp. "
             "Si el usuario confirma que ya está todo listo o dice 'no', 'nada más', 'listo' o 'perfecto', "
             "saludá y ejecutá finalizar_llamada."
@@ -557,7 +574,7 @@ class VoiceStreamService:
                         "session": {
                             "modalities": ["text", "audio"],
                             "instructions": self._get_system_instruction(),
-                            "voice": "shimmer",
+                            "voice": VOICE_STREAM_VOICE,
                             "input_audio_format": "g711_ulaw",
                             "output_audio_format": "g711_ulaw",
                             "turn_detection": {
@@ -574,20 +591,20 @@ class VoiceStreamService:
                     self.openai_ws.send(json.dumps(session_update))
 
                     tenant_name = self._resolve_tenant_name()
+                    assistant_name = self._resolve_assistant_name()
 
                     user_name = self._resolve_greeting_name()
 
                     if user_name:
                         greeting_line = (
-                            f"¡Hola {user_name} 👋! Soy el asistente de {tenant_name}. ¿En qué te ayudo?"
+                            f"Hola {user_name}. Soy {assistant_name} de {tenant_name}. ¿En qué te ayudo?"
                         )
                     else:
                         greeting_line = (
-                            f"¡Hola! Soy el asistente de {tenant_name}. "
-                            "No tengo tu nombre agendado, ¿cómo te llamas?"
+                            f"Hola. Soy {assistant_name} de {tenant_name}. ¿En qué te ayudo?"
                         )
 
-                    greeting_text = f"Decí exactamente: \"{greeting_line}\""
+                    greeting_text = greeting_line
 
                     self.openai_ws.send(
                         json.dumps(
@@ -600,6 +617,7 @@ class VoiceStreamService:
                             }
                         )
                     )
+                    self.greeting_in_progress = True
         elif event_type == "media":
             if self.openai_ws:
                 self.openai_ws.send(
@@ -632,140 +650,6 @@ class VoiceStreamService:
 
         elif msg_type == "response.created":
             self.response_active = True
-
-        elif msg_type == "response.created":
-            self.response_active = True
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
             response_payload = data.get("response") or {}
             self.response_id = (
                 data.get("response_id")
@@ -781,7 +665,7 @@ class VoiceStreamService:
         elif msg_type == "input_audio_buffer.speech_started":
             # Interrupción real-time
             self.ws.send(json.dumps({"event": "clear", "streamSid": self.stream_sid}))
-            if self.response_active and not self.cancel_pending:
+            if self.response_active and not self.cancel_pending and not self.greeting_in_progress:
                 cancel_payload = {"type": "response.cancel"}
                 if self.response_id:
                     cancel_payload["response_id"] = self.response_id
@@ -800,6 +684,8 @@ class VoiceStreamService:
             self.response_active = False
             self.response_id = None
             self.cancel_pending = False
+            if self.greeting_in_progress:
+                self.greeting_in_progress = False
             if self.pending_end_call:
                 self.pending_end_call = False
                 self._safe_end_call_twilio()
@@ -955,8 +841,9 @@ class VoiceStreamService:
                                     or sanitize_profile_name(getattr(self.user, "name", None))
                                     or ""
                                 )
-                                promo_image_url = (
-                                    res.get("image_url") or self._resolve_promo_image_url(municipio_cfg)
+                                promo_image_url = public_url(
+                                    res.get("image_url") or self._resolve_promo_image_url(municipio_cfg),
+                                    PUBLIC_BASE_URL,
                                 )
                                 receipt = render_ticket_whatsapp(
                                     kind="reclamo",
@@ -1072,7 +959,10 @@ class VoiceStreamService:
                                         f"💰 *Total: {monto:,.2f}*\n"
                                     )
 
-                                image_url = res.get("image_url")
+                                image_url = public_url(
+                                    res.get("image_url"),
+                                    PUBLIC_BASE_URL,
+                                )
                                 whatsapp_sender = self._resolve_whatsapp_sender()
                                 send_whatsapp_message(
                                     whatsapp_target,
