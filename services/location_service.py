@@ -73,7 +73,10 @@ def _build_bounds(geo_ctx: Optional[Dict[str, Any]]):
         west, south, east, north = [float(value) for value in bounds]
     except (TypeError, ValueError):
         return None
-    return ((south, west), (north, east))
+    return {
+        "southwest": {"lat": south, "lng": west},
+        "northeast": {"lat": north, "lng": east},
+    }
 
 
 def _compute_location_bias(geo_ctx: Optional[Dict[str, Any]]):

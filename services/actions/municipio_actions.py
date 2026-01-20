@@ -194,7 +194,11 @@ def _ubicacion_es_valida(ubicacion: str | None) -> bool:
     if has_street_keyword and not has_number:
         return False
 
-    if re.search(r"\b(esquina|altura|barrio|manzana|mz|lote)\b", normalized):
+    if re.search(r"\b(esquina|interseccion|intersección|entre|altura|barrio|manzana|mz|lote)\b", normalized):
+        return True
+    if re.search(r"\b[a-z]{3,}\s+(y|e)\s+[a-z]{3,}\b", normalized):
+        return True
+    if re.search(r"\b(plaza|parque|monumento|rotonda|puente|terminal|hospital|escuela)\b", normalized):
         return True
 
     if has_number:

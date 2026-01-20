@@ -86,6 +86,7 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
              return {"text": "Lo siento, hubo un error de configuración.", "audio_url": None}
 
         client_user = whatsapp_mapping.user
+        whatsapp_sender = whatsapp_mapping.numero_whatsapp
 
         # Find End User (The Caller)
         from services.pymes import get_or_create_user_by_phone
@@ -166,7 +167,9 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
             try:
                 # Send the full text (with links) to the user's phone
                 kwargs = {}
-                if MESSAGING_SERVICE_SID:
+                if whatsapp_sender:
+                    kwargs["from_number"] = whatsapp_sender
+                elif MESSAGING_SERVICE_SID:
                     kwargs["messaging_service_sid"] = MESSAGING_SERVICE_SID
 
                 # Format the body to be friendly
@@ -321,6 +324,7 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
             return
 
         client_user = whatsapp_mapping.user
+        whatsapp_sender = whatsapp_mapping.numero_whatsapp
         empresa_id = client_user.id
 
         # Determine chat_session_id used during voice call
@@ -411,7 +415,8 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
         enviar_mensaje_whatsapp_con_fallback(
             numero_destino=user_phone_clean,
             cuerpo=f"{summary_text}\n\nSi necesitas algo más, podés escribirnos por aquí.",
-            messaging_service_sid=MESSAGING_SERVICE_SID,
+            from_number=whatsapp_sender,
+            messaging_service_sid=None if whatsapp_sender else MESSAGING_SERVICE_SID,
         )
         logger.info(f"Sent post-call summary to {user_phone_clean}")
 

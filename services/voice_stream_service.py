@@ -44,6 +44,7 @@ class VoiceStreamService:
         self.user = None
         self.owner_user = None
         self.tenant_profile = None
+        self.whatsapp_sender = None
 
         self.user_id = None
         self.owner_user_id = None
@@ -137,6 +138,22 @@ class VoiceStreamService:
         except Exception as exc:
             logger.error(f"[VOICE] Failed to end call: {exc}")
 
+    def _resolve_whatsapp_sender(self) -> str | None:
+        if self.tenant_profile and getattr(self.tenant_profile, "configuracion", None):
+            config = self.tenant_profile.configuracion or {}
+            sender = (
+                config.get("whatsapp_sender_id")
+                or config.get("whatsapp_number")
+                or config.get("whatsapp_sender")
+            )
+            if sender:
+                return str(sender)
+
+        if self.whatsapp_sender:
+            return str(self.whatsapp_sender)
+
+        return None
+
     def _extract_contacto_usuario(self, context_data: dict) -> dict:
         if not isinstance(context_data, dict):
             return {}
@@ -206,6 +223,7 @@ class VoiceStreamService:
 
             if whatsapp_mapping:
                 self.owner_user = whatsapp_mapping.user
+                self.whatsapp_sender = whatsapp_mapping.numero_whatsapp
                 self.tenant_profile = getattr(self.owner_user, "tenant", None) or getattr(
                     self.owner_user, "tenant_profile", None
                 )
@@ -751,13 +769,21 @@ class VoiceStreamService:
                         # Nunca usar la transcripción de voz para nombre.
                         args.pop("nombre", None)
 
+                    def _is_greeting_name(value: str | None) -> bool:
+                        if not value:
+                            return False
+                        words = re.findall(r"[a-záéíóúñ]+", value.lower())
+                        return bool(words) and all(word in {"hola", "buenas", "buenos"} for word in words)
+
                     email_raw = args.get("email")
                     if isinstance(email_raw, str) and email_raw.endswith("@whatsapp.chatboc.com"):
                         args.pop("email", None)
 
                     if self.user:
                         args.setdefault("telefono", getattr(self.user, "telefono", None))
-                        args.setdefault("nombre", getattr(self.user, "name", None) or getattr(self.user, "nombre", None))
+                        user_name = getattr(self.user, "name", None) or getattr(self.user, "nombre", None)
+                        if user_name and not _is_greeting_name(user_name):
+                            args.setdefault("nombre", user_name)
                         args.setdefault("email", getattr(self.user, "email", None))
 
                     handler = CrearReclamoActionHandler(ctx)
@@ -826,12 +852,20 @@ class VoiceStreamService:
                                 if not image_url and self.tenant_profile and self.tenant_profile.configuracion:
                                     image_url = self.tenant_profile.configuracion.get("promo_image_url")
 
+                                whatsapp_sender = self._resolve_whatsapp_sender()
+                                send_kwargs = {
+                                    "image_url": image_url,
+                                    "botones": botones,
+                                }
+                                if whatsapp_sender:
+                                    send_kwargs["from_number"] = whatsapp_sender
+                                else:
+                                    send_kwargs["messaging_service_sid"] = MESSAGING_SERVICE_SID
+
                                 enviar_mensaje_whatsapp_con_fallback(
                                     whatsapp_target,
                                     msg_body,
-                                    image_url=image_url,
-                                    botones=botones,
-                                    messaging_service_sid=MESSAGING_SERVICE_SID,
+                                    **send_kwargs,
                                 )
                                 logger.info(f"[VOICE] Sent Rich Receipt to {whatsapp_target} for ticket {nro}")
                             except Exception as ex:
@@ -929,12 +963,20 @@ class VoiceStreamService:
                                 botones = res.get("options_list") or res.get("botones")
                                 image_url = res.get("image_url")
 
+                                whatsapp_sender = self._resolve_whatsapp_sender()
+                                send_kwargs = {
+                                    "image_url": image_url,
+                                    "botones": botones,
+                                }
+                                if whatsapp_sender:
+                                    send_kwargs["from_number"] = whatsapp_sender
+                                else:
+                                    send_kwargs["messaging_service_sid"] = MESSAGING_SERVICE_SID
+
                                 enviar_mensaje_whatsapp_con_fallback(
                                     whatsapp_target,
                                     msg_body,
-                                    image_url=image_url,
-                                    botones=botones,
-                                    messaging_service_sid=MESSAGING_SERVICE_SID,
+                                    **send_kwargs,
                                 )
                             except Exception as ex:
                                 logger.warning(f"[VOICE] Could not send WhatsApp summary for order: {ex}")
