@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import logging
 import hashlib
 import re
@@ -907,6 +908,9 @@ class VoiceStreamService:
                                 "latest_ticket_nro": nro,
                                 "awaiting_photo_for_ticket": nro,
                                 "receipt_sent": True,
+                                "last_ticket_code": nro,
+                                "awaiting_ticket_photo": True,
+                                "awaiting_ticket_photo_until": time.time() + 600,
                             }
                             if data.get("ticket_id"):
                                 updates["latest_ticket_id"] = data.get("ticket_id")
