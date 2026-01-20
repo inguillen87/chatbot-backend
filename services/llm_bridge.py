@@ -107,12 +107,12 @@ def llamar_llm_para_generacion_texto(
         kwargs = {"model": model, "messages": messages, "temperature": temperature}
         if json_output:
             kwargs["response_format"] = {"type": "json_object"}
-        # Ensure the prompt contains the word "JSON" as required by OpenAI
-        json_instruction = " Respond in JSON format."
-        if messages and messages[0]["role"] == "system":
-            messages[0]["content"] += json_instruction
-        else:
-            messages.insert(0, {"role": "system", "content": "You are a helpful assistant." + json_instruction})
+            # Ensure the prompt contains the word "JSON" as required by OpenAI
+            json_instruction = " Respond in JSON format."
+            if messages and messages[0]["role"] == "system":
+                messages[0]["content"] += json_instruction
+            else:
+                messages.insert(0, {"role": "system", "content": "You are a helpful assistant." + json_instruction})
 
         response = openai_client.chat.completions.create(**kwargs)
         return response.choices[0].message.content.strip()

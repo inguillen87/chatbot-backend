@@ -17,6 +17,7 @@ from services.herramientas_municipio import (
     obtener_direccion_de_coordenadas,
 )
 from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
+from utils.ticket_utils import normalize_category
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.config_loader import cargar_configuracion_municipio
 from models import MunicipioTicket, TenantProfile
@@ -322,6 +323,20 @@ class CrearReclamoActionHandler(BaseActionHandler):
             elif not _ubicacion_es_valida(ubicacion_llm):
                 logger.info(f"[VALIDATION] Ubicacion invalida detectada: {ubicacion_llm}")
                 ubicacion_llm = None
+
+        if descripcion:
+            categoria_inferida = normalize_category(descripcion)
+            categoria_actual = normalize_category(categoria) if categoria else None
+            categorias_genericas = {
+                "Limpieza",
+                "Limpieza Y Riego",
+                "Reclamo General",
+                "Otros",
+                "Otro Motivo",
+            }
+            if categoria_inferida and categoria_inferida != categoria_actual:
+                if not categoria_actual or categoria_actual in categorias_genericas:
+                    categoria = categoria_inferida
 
         municipio_config = self.context.get("municipio_config_actual", {})
         if ubicacion_llm and not distrito_llm and direccion_es_valida(ubicacion_llm):
@@ -976,6 +991,12 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "message_to_user": "Para registrar tu sugerencia necesito tu nombre completo, DNI, email y dirección. Podés escribir todo en un solo mensaje.",
                 "pedir_info": "datos_contacto_sugerencia"
             }
+        pin_llm = action_data.get("pin") or action_data.get("consulta_pin")
+        pin_str = str(pin_llm).strip() if pin_llm else ""
+        if pin_str.isdigit() and len(pin_str) == 6:
+            pin_final = pin_str
+        else:
+            pin_final = f"{random.randint(0, 999999):06d}"
         # Create a ticket for the suggestion
         owner_user = self.context.get("user_obj")
         user_id_db = getattr(viewer_user, "id", None)
@@ -1003,6 +1024,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             ),
             "municipio_id": municipio_id,
             "tenant_id": tenant_id,
+            "consulta_pin": pin_final,
         }
         if self.context.get("foto_url"):
             ticket_data["foto_url_directa"] = self.context.get("foto_url")
@@ -1049,7 +1071,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 {}, # No hay contacto especializado para sugerencias
                 base_chat_url,
                 dni=dni_vecino,
-                consulta_pin=ticket_creado.get("consulta_pin"),
+                consulta_pin=ticket_creado.get("consulta_pin") or pin_final,
             )
 
             promo_section = promo_service.build_ticket_promo_section(
@@ -1084,7 +1106,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "nombre": nombre_vecino_final,
                 "categoria": "Sugerencia",
                 "descripcion": descripcion_sugerencia,
-                "consulta_pin": ticket_creado.get("consulta_pin"),
+                "consulta_pin": ticket_creado.get("consulta_pin") or pin_final,
             }
             return _apply_whatsapp_closing_promo(
                 response_payload,
