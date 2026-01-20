@@ -60,6 +60,7 @@ class VoiceStreamService:
         self.response_active = False
         self.response_id = None
         self.cancel_pending = False
+        self.greeting_in_progress = False
 
         # Tools definitions
         self.tools = [
@@ -143,7 +144,10 @@ class VoiceStreamService:
     def _resolve_promo_image_url(config: dict | None) -> str | None:
         if not isinstance(config, dict):
             return None
-        promo_image_url = config.get("promo_image_url")
+        promo_image_url = (
+            config.get("closing_promo_image_url")
+            or config.get("promo_image_url")
+        )
         if promo_image_url:
             return promo_image_url
         promo_section = config.get("promo_section") or config.get("promo")
@@ -447,9 +451,9 @@ class VoiceStreamService:
             "Respuestas MUY cortas: 1 o 2 oraciones. "
             "Objetivo: resolver rápido. "
             f"{known_data_str} "
-            "Regla PRIORITARIA: Si el nombre del usuario es 'Vecino' o desconocido, TU PRIMERA PRIORIDAD es decir: 'No tengo tu nombre agendado, ¿cómo te llamas?' "
-            "Si ya conocés el nombre del usuario, saludalo usando su nombre. "
-            "IMPORTANTE: No confundas saludos como 'Hola', 'Buenas', 'Hola hola' con el nombre del usuario. Si dice 'Hola', preguntá el nombre. "
+            "Regla PRIORITARIA: En el primer turno, saludá usando el nombre del usuario si está disponible. "
+            "Si el nombre no está disponible, saludá de forma neutra ('Hola') y continuá el flujo sin pedirlo de entrada. "
+            "IMPORTANTE: No confundas saludos como 'Hola', 'Buenas', 'Hola hola' con el nombre del usuario. "
             "Regla CRÍTICA: NUNCA inventes tickets, números o confirmaciones. "
             "Solo confirmás ticket/pedido cuando la herramienta devuelve el número. "
             "Si el usuario da varios datos en una sola frase (categoría, ubicación, descripción), separalos y NO vuelvas a pedir lo que ya dijo. "
@@ -583,8 +587,7 @@ class VoiceStreamService:
                         )
                     else:
                         greeting_line = (
-                            f"¡Hola! Soy el asistente de {tenant_name}. "
-                            "No tengo tu nombre agendado, ¿cómo te llamas?"
+                            f"¡Hola! Soy el asistente de {tenant_name}. ¿En qué te ayudo?"
                         )
 
                     greeting_text = f"Decí exactamente: \"{greeting_line}\""
@@ -600,6 +603,7 @@ class VoiceStreamService:
                             }
                         )
                     )
+                    self.greeting_in_progress = True
         elif event_type == "media":
             if self.openai_ws:
                 self.openai_ws.send(
@@ -632,140 +636,6 @@ class VoiceStreamService:
 
         elif msg_type == "response.created":
             self.response_active = True
-
-        elif msg_type == "response.created":
-            self.response_active = True
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
             response_payload = data.get("response") or {}
             self.response_id = (
                 data.get("response_id")
@@ -781,7 +651,7 @@ class VoiceStreamService:
         elif msg_type == "input_audio_buffer.speech_started":
             # Interrupción real-time
             self.ws.send(json.dumps({"event": "clear", "streamSid": self.stream_sid}))
-            if self.response_active and not self.cancel_pending:
+            if self.response_active and not self.cancel_pending and not self.greeting_in_progress:
                 cancel_payload = {"type": "response.cancel"}
                 if self.response_id:
                     cancel_payload["response_id"] = self.response_id
@@ -800,6 +670,8 @@ class VoiceStreamService:
             self.response_active = False
             self.response_id = None
             self.cancel_pending = False
+            if self.greeting_in_progress:
+                self.greeting_in_progress = False
             if self.pending_end_call:
                 self.pending_end_call = False
                 self._safe_end_call_twilio()
