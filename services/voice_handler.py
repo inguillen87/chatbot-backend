@@ -161,6 +161,7 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
                 enviar_mensaje_whatsapp_con_fallback(
                     numero_destino=user_phone_clean,
                     cuerpo=clean_body,
+                    messaging_service_sid=MESSAGING_SERVICE_SID,
                     **kwargs
                 )
 
@@ -378,7 +379,8 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
 
         enviar_mensaje_whatsapp_con_fallback(
             numero_destino=user_phone_clean,
-            cuerpo=f"{summary_text}\n\nSi necesitas algo más, podés escribirnos por aquí."
+            cuerpo=f"{summary_text}\n\nSi necesitas algo más, podés escribirnos por aquí.",
+            messaging_service_sid=MESSAGING_SERVICE_SID,
         )
         logger.info(f"Sent post-call summary to {user_phone_clean}")
 

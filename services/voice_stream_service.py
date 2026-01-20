@@ -731,7 +731,6 @@ class VoiceStreamService:
                                     msg_body,
                                     image_url=image_url,
                                     botones=botones,
-                                    from_number=TWILIO_WHATSAPP_NUMBER,
                                     messaging_service_sid=MESSAGING_SERVICE_SID,
                                 )
                                 logger.info(f"[VOICE] Sent Rich Receipt to {whatsapp_target} for ticket {nro}")
@@ -835,7 +834,6 @@ class VoiceStreamService:
                                     msg_body,
                                     image_url=image_url,
                                     botones=botones,
-                                    from_number=TWILIO_WHATSAPP_NUMBER,
                                     messaging_service_sid=MESSAGING_SERVICE_SID,
                                 )
                             except Exception as ex:

@@ -405,10 +405,12 @@ class PointsOfInterestHandler:
         return [
             {"texto": "🏥 Hospitales o clínicas", "action_id": "hospitales"},
             {"texto": "🩺 Farmacias (incluye 24hs)", "action_id": "farmacias 24 horas"},
+            {"texto": "🍽️ Restaurantes", "action_id": "restaurantes"},
             {"texto": "🚓 Comisarías", "action_id": "comisarias"},
             {"texto": "🚒 Bomberos", "action_id": "bomberos"},
             {"texto": "🏦 Cajeros/ATM", "action_id": "cajeros automáticos"},
             {"texto": "🏞️ Parques o plazas", "action_id": "parques"},
+            {"texto": "🛒 Supermercados", "action_id": "supermercados"},
             {"texto": "Otro tipo de lugar", "action_id": "otro lugar"},
         ]
 

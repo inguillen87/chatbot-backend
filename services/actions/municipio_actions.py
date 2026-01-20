@@ -16,6 +16,7 @@ from services.herramientas_municipio import (
     normalizar_texto,
     obtener_direccion_de_coordenadas,
 )
+from services.categorias_municipio import CATEGORIAS_SINONIMOS, normalizar_texto as normalizar_texto_municipio
 from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
 from utils.ticket_utils import normalize_category
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
@@ -78,6 +79,38 @@ def _address_seems_generic(address: str | None) -> bool:
         return True
 
     return False
+
+
+def _infer_category_from_description(description: str | None) -> str | None:
+    if not description:
+        return None
+
+    normalized_description = normalizar_texto_municipio(description)
+    if not normalized_description:
+        return None
+
+    best_match = None
+    best_score = 0
+
+    for categoria_key, synonyms in CATEGORIAS_SINONIMOS.items():
+        score = 0
+        for term in synonyms:
+            normalized_term = normalizar_texto_municipio(term)
+            if not normalized_term:
+                continue
+            pattern = rf"\b{re.escape(normalized_term)}\b"
+            if re.search(pattern, normalized_description):
+                score += 2
+            elif normalized_term in normalized_description:
+                score += 1
+        if score > best_score:
+            best_score = score
+            best_match = categoria_key
+
+    if not best_match:
+        return None
+
+    return normalize_category(best_match)
 
 
 def _ubicacion_es_valida(ubicacion: str | None) -> bool:
@@ -325,7 +358,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 ubicacion_llm = None
 
         if descripcion:
-            categoria_inferida = normalize_category(descripcion)
+            categoria_inferida = _infer_category_from_description(descripcion)
             categoria_actual = normalize_category(categoria) if categoria else None
             categorias_genericas = {
                 "Limpieza",
