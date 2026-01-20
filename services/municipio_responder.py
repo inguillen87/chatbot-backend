@@ -3068,6 +3068,87 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             flag_modified(chat_db_context, "context_data")
         return submenu
 
+    if action_id == "mostrar_menu_informacion":
+        submenu = _get_informacion_menu(context)
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return submenu
+
+    if action_id == "mostrar_menu_tramites":
+        submenu = _get_tramites_menu_completo()
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return submenu
+
+    if action_id == "mostrar_menu_catalogo":
+        submenu = _get_catalogo_menu()
+        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return submenu
+
+    if action_id == "mostrar_menu_estacionamiento":
+        # Redirect directly to the parking search logic or show options if there are multiple parking features
+        # For now, we map it to 'buscar_estacionamiento' which triggers the POI logic
+        return handle_main_menu_action("buscar_estacionamiento", context, chat_db_context)
+
+    if action_id == "mostrar_menu_encuestas":
+        # Check if there are active surveys
+        try:
+            from services.encuestas_service import list_public_encuestas_for_tenant
+            municipio_id = context.get("municipio_id", MUNICIPIO_ID)
+            encuestas = list_public_encuestas_for_tenant(municipio_id)
+            if not encuestas:
+                return {
+                    "message_body": "No hay encuestas activas en este momento.",
+                    "message_type": "text",
+                    "options_list": [{"texto": "Menú", "action_id": "menu_principal"}]
+                }
+
+            # Show list of surveys
+            opciones = []
+            for enc in encuestas:
+                opciones.append({
+                    "texto": enc.get("titulo", "Encuesta"),
+                    "action_id": f"responder_encuesta_{enc.get('id')}"
+                })
+            opciones.append({"texto": "Menú Principal", "action_id": "menu_principal"})
+
+            contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
+            contexto_municipio_actual["menu_opciones"] = opciones
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+
+            return {
+                "message_body": "Estas son las encuestas disponibles:",
+                "message_type": "interactive_buttons",
+                "options_list": opciones,
+                "fuente": "lista_encuestas"
+            }
+        except Exception as e:
+            logger.error(f"Error listing encuestas: {e}")
+            return {
+                "message_body": "Hubo un error al consultar las encuestas. Por favor intentá más tarde.",
+                "message_type": "text"
+            }
+
+    if action_id == "mostrar_menu_ayuda":
+        return {
+            "message_body": "ℹ️ *Ayuda*\n\nSoy el asistente virtual del municipio. Puedo ayudarte a realizar trámites, iniciar reclamos, consultar información y más.\n\nSimplemente seleccioná una opción del menú o escribí lo que necesitás (por ejemplo: \"quiero podar un árbol\" o \"turnos licencia\").\n\nSi necesitás hablar con una persona, elegí la opción *Solicitar llamada*.",
+            "message_type": "interactive_buttons",
+            "options_list": [{"texto": "Menú Principal", "action_id": "menu_principal"}],
+            "fuente": "menu_ayuda"
+        }
+
     # --- NEW HANDLERS FOR TRAMITES (LICENCIA, TURNOS, TASAS) ---
     if action_id == "solicitar_llamada":
         # Present options for call type
@@ -3265,95 +3346,13 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             flag_modified(chat_db_context, "context_data")
         return response_dict
 
-    if action_id == "mostrar_menu_tramites":
-        submenu = _get_tramites_menu()
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
-        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return submenu
-
-    if action_id == "mostrar_menu_informacion":
-        submenu = _get_informacion_menu()
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
-        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return submenu
-
-    if action_id == "mostrar_menu_encuestas":
-        submenu = _get_encuestas_menu(context)
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
-        opciones_accionables = [
-            opcion
-            for opcion in submenu.get("options_list", [])
-            if opcion.get("action_id")
-        ]
-        if opciones_accionables:
-            contexto_municipio_actual["menu_opciones"] = opciones_accionables
-            contexto_municipio_actual["encuestas_menu_options"] = opciones_accionables
-        else:
-            contexto_municipio_actual.pop("menu_opciones", None)
-            contexto_municipio_actual.pop("encuestas_menu_options", None)
-        surveys_meta = submenu.get("surveys")
-        if surveys_meta:
-            contexto_municipio_actual["encuestas_menu_surveys"] = surveys_meta
-        else:
-            contexto_municipio_actual.pop("encuestas_menu_surveys", None)
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return submenu
-
-    if action_id in {
-        "mostrar_menu_catalogo",
-        "mostrar_carrito_catalogo",
-        "finalizar_pedido_catalogo_demo",
-    } or action_id.startswith("catalogo_"):
-        if not _catalogo_widget_visible(context):
-            return {
-                "message_body": "El catálogo no está habilitado en este widget municipal.",
-                "message_type": "interactive_buttons",
-                "options_list": [
-                    {"texto": "Menú principal", "action_id": "menu_principal"},
-                    {"texto": "Volver", "action_id": "cancelar"},
-                ],
-                "fuente": "catalogo_desactivado_municipio",
-                "generar_audio": True,
-            }
-
-    if action_id == "mostrar_menu_catalogo":
-        submenu = _get_catalogo_menu(context)
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
-        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
         return submenu
 
     if action_id.startswith("encuesta_compartir::"):
         slug_publico = action_id.split("::", 1)[1] if "::" in action_id else ""
         return _build_encuesta_share_payload(slug_publico, context, chat_db_context)
 
-    if action_id == "mostrar_menu_estacionamiento":
-        submenu = _get_estacionamiento_menu()
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
-        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return submenu
 
-    if action_id == "mostrar_menu_ayuda":
-        submenu = _get_ayuda_menu()
-        contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
-        contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
-        contexto_municipio_actual["menu_opciones"] = submenu.get("options_list", [])
-        if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return submenu
 
     if action_id == "catalogo_subastas":
         submenu = _get_catalogo_menu(context)
@@ -6378,16 +6377,49 @@ def _get_tramites_menu():
     }
 
 
-def _get_informacion_menu():
+def _get_tramites_menu_completo():
     opciones = [
+        {"texto": "🚗 Licencia de Conducir", "action_id": "licencia_de_conducir"},
+        {"texto": "🗓️ Solicitar Otros Turnos", "action_id": "solicitar_turnos"},
+        {"texto": "💵 Pagar Tasas Municipales", "action_id": "pago_de_tasas_vigentes"},
         {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
+        {"texto": "Cancelar", "action_id": "cancelar"},
+    ]
+    return {
+        "message_body": "Seleccioná el trámite que necesitás realizar:",
+        "message_type": "interactive_buttons",
+        "options_list": opciones,
+        "fuente": "submenu_tramites_v1",
+        "generar_audio": True,
+    }
+
+
+def _get_informacion_menu(context=None):
+    opciones = [
         {"texto": "🎭 Agenda Cultural y Noticias", "action_id": "agenda_y_noticias"},
         {"texto": "🐾 Veterinaria y Bromatología", "action_id": "veterinaria_bromatologia"},
         {"texto": "🏗️ Obras", "action_id": "obras"},
-        {"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"},
     ]
+
+    # Check logic for Punto Limpio similar to common_utils
+    include_punto_limpio = False
+    if context:
+        owner_user = context.get("user_obj")
+        # Check if generic municipality or explicitly Junin (often id 4 or identified via context)
+        # For simplicity, we default to True for municipalities unless specifically excluded,
+        # mirroring the intent in common_utils.
+        include_punto_limpio = True
+
+    if include_punto_limpio:
+        opciones.append({"texto": "♻️ Punto Limpio", "action_id": "punto_limpio"})
+
+    opciones.extend([
+        {"texto": "*Volver al inicio*", "action_id": "menu_principal"},
+        {"texto": "Cancelar", "action_id": "cancelar"},
+    ])
+
     return {
-        "message_body": "Elegí la información que querés consultar:",
+        "message_body": "Aquí tenés información útil del municipio:",
         "message_type": "interactive_buttons",
         "options_list": opciones,
         "fuente": "submenu_informacion_v1",
