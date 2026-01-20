@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import sys
+import time
 from urllib.parse import urlparse
 
 from .base_action_handler import BaseActionHandler
@@ -979,6 +980,9 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "latest_ticket_pin": pin_final,
                 "latest_tracking_url": tracking_url,
                 "awaiting_photo_for_ticket": nro_ticket_str,
+                "last_ticket_code": nro_ticket_str,
+                "awaiting_ticket_photo": True,
+                "awaiting_ticket_photo_until": time.time() + 600,
             }
             response_payload["whatsapp_receipt"] = render_ticket_whatsapp(
                 kind="reclamo",
