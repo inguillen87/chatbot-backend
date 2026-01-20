@@ -26,6 +26,7 @@ from services.logic import (
     normalizar_rubro,
     es_rubro_publico,
 )
+from services.live_chat_schedule import build_live_chat_status
 from services.demo_registry import load_demo_rubros, demo_rubro_for_token
 from utils.auth_helpers import (
     anon_o_token_requerido,
@@ -2651,6 +2652,10 @@ def widget_config():
     }
 
     return jsonify(config)
+
+@chat_bp.route("/live-chat/schedule", methods=["GET"])
+def live_chat_schedule():
+    return jsonify(build_live_chat_status())
 
 @chat_bp.route("/config/google-maps-key", methods=["GET"])
 def google_maps_key():

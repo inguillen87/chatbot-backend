@@ -1075,7 +1075,10 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
             tipo,
             mensaje_notificacion_base,
             comentario_reciente=comentarios_creados[0] if comentarios_creados else None,
-            enable_whatsapp=(tipo == "municipio"),
+            enable_whatsapp=(
+                tipo == "municipio"
+                or current_app.config.get("ENABLE_PYME_WHATSAPP_CHAT", True)
+            ),
         )
 
         # Envío de adjuntos por WhatsApp si aplica

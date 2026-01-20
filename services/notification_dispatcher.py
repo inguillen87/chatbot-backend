@@ -65,7 +65,7 @@ def dispatch_ticket_update(
             exc_info=True,
         )
 
-    if enable_whatsapp and tipo == "municipio":
+    if enable_whatsapp:
         try:
             resultados["whatsapp"] = enviar_whatsapp_ticket_novedad(ticket, mensaje)
         except Exception as exc:  # pragma: no cover - solo logging defensivo

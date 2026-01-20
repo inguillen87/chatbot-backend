@@ -4,6 +4,7 @@ from typing import Dict, Any
 from .base_action_handler import BaseActionHandler
 from services.ticket_service import servicio_tickets
 from services.ticket_utils import formatear_ticket_respuesta
+from services.live_chat_schedule import build_live_chat_status
 from socket_service import emit_new_ticket
 from routes.ticket import serialize_ticket_to_json
 
@@ -79,11 +80,32 @@ class DerivarHumanoAction(BaseActionHandler):
             chat_id_prefix = "M" if target_entity_type == "municipio" else "P"
             chat_id = f"{chat_id_prefix}-{sala.nro_ticket}"
 
-            user_message = formatear_ticket_respuesta("chat", nombre, pregunta_original, "Atención en Vivo", chat_id)
+            user_message, _ = formatear_ticket_respuesta(
+                "chat",
+                nombre,
+                pregunta_original,
+                "Atención en Vivo",
+                chat_id,
+            )
+            live_chat_status = build_live_chat_status()
+            if not live_chat_status.get("available"):
+                schedule_text = live_chat_status.get("description")
+                if schedule_text:
+                    user_message = (
+                        f"{user_message}\n\n"
+                        f"⏰ Nuestro horario de atención en vivo es {schedule_text}."
+                    )
+                else:
+                    user_message = f"{user_message}\n\n⏰ Ahora mismo no hay agentes disponibles."
             return {
                 "success": True,
                 "message_to_user": user_message,
-                "data": {"ticket_id": sala.id, "chat_id": chat_id, "status": "esperando_agente_en_vivo"},
+                "data": {
+                    "ticket_id": sala.id,
+                    "chat_id": chat_id,
+                    "status": "esperando_agente_en_vivo",
+                    "live_chat": live_chat_status,
+                },
             }
         except Exception as e:
             logger.error(f"Error en DerivarHumanoAction: {e}", exc_info=True)

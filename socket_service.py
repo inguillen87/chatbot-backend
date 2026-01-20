@@ -357,7 +357,7 @@ def handle_send_chat_message(data):
 
                 enviar_email_ticket_novedad(ticket_obj, mensaje_notificacion)
                 enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion)
-                if ticket_type == "municipio":
+                if ticket_type == "municipio" or current_app.config.get("ENABLE_PYME_WHATSAPP_CHAT", True):
                     enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion)
 
                 current_app.logger.info(f"Notificaciones por respuesta de agente enviadas para ticket {ticket_id} (tipo {ticket_type}).")
