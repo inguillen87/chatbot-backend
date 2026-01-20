@@ -3129,6 +3129,13 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
                     # Construct the absolute URL for the TwiML stream
                     backend_url = current_app.config.get("BACKEND_URL") or "https://www.chatboc.ar"
                     twiml_url = f"{backend_url}/twilio/voice/inbound" # We reuse the inbound TwiML which connects to the stream
+                    chat_session_id = (
+                        kwargs.get("chat_session_uuid")
+                        or (chat_db_context.chat_session_id if chat_db_context else None)
+                    )
+                    if chat_session_id:
+                        from urllib.parse import urlencode
+                        twiml_url = f"{twiml_url}?{urlencode({'chat_session_id': chat_session_id})}"
 
                     call = client.calls.create(
                         to=phone_number,

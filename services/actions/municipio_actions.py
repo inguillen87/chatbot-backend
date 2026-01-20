@@ -1462,7 +1462,11 @@ class SolicitarLlamadaActionHandler(BaseActionHandler):
         if not clean_bot_phone.startswith("+"):
              clean_bot_phone = f"+{clean_bot_phone}"
 
-        success = initiate_outbound_call(to_number=clean_user_phone, from_number=clean_bot_phone)
+        success = initiate_outbound_call(
+            to_number=clean_user_phone,
+            from_number=clean_bot_phone,
+            chat_session_id=self.context.get("chat_session_uuid"),
+        )
 
         if success:
             return {

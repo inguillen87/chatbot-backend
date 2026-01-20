@@ -39,6 +39,7 @@ class VoiceStreamService:
         self.call_sid = None
         self.from_number = None
         self.to_number = None
+        self.source_chat_session_id = None
 
         self.user = None
         self.owner_user = None
@@ -48,6 +49,7 @@ class VoiceStreamService:
         self.owner_user_id = None
 
         self.chat_session_id = None
+        self.context_data_snapshot = {}
 
         # Flags de control
         self.pending_end_call = False
@@ -135,6 +137,54 @@ class VoiceStreamService:
         except Exception as exc:
             logger.error(f"[VOICE] Failed to end call: {exc}")
 
+    def _extract_contacto_usuario(self, context_data: dict) -> dict:
+        if not isinstance(context_data, dict):
+            return {}
+
+        for key in ("contexto_municipio_v2", "contexto_pyme_v2"):
+            ctx = context_data.get(key) or {}
+            if isinstance(ctx, dict):
+                contacto = ctx.get("contacto_usuario") or {}
+                if isinstance(contacto, dict) and contacto:
+                    return contacto
+
+        return {}
+
+    def _resolve_identity_from_context(self, context_data: dict) -> dict:
+        contacto = self._extract_contacto_usuario(context_data)
+        profile_name = context_data.get("profile_name") if isinstance(context_data, dict) else None
+
+        return {
+            "nombre": contacto.get("nombre") or profile_name,
+            "email": contacto.get("email"),
+            "telefono": contacto.get("telefono"),
+            "direccion": contacto.get("direccion"),
+        }
+
+    def _update_session_contexts(self, session_context: ChatSessionContext, updates: dict) -> None:
+        if not session_context or not updates:
+            return
+
+        if not isinstance(session_context.context_data, dict):
+            session_context.context_data = {}
+
+        session_context.context_data.update(updates)
+        safe_flag_modified(session_context, "context_data")
+
+        source_id = (
+            self.source_chat_session_id
+            or session_context.context_data.get("source_chat_session_id")
+        )
+        if source_id and source_id != session_context.chat_session_id:
+            source_context = ChatSessionContext.query.filter_by(chat_session_id=source_id).first()
+            if source_context:
+                if not isinstance(source_context.context_data, dict):
+                    source_context.context_data = {}
+                source_context.context_data.update(updates)
+                safe_flag_modified(source_context, "context_data")
+
+        db.session.commit()
+
     def _resolve_context(self, from_number, to_number, call_sid):
         """
         Resuelve Tenant, owner_user y user final.
@@ -194,16 +244,61 @@ class VoiceStreamService:
 
             self.chat_session_id = chat_session_id
 
-            # 5) Create/ensure session context
+            # 5) Load source session (WhatsApp/web) if provided or available
+            source_session = None
+            source_chat_session_id = self.source_chat_session_id
+
+            if source_chat_session_id:
+                source_session = ChatSessionContext.query.filter_by(
+                    chat_session_id=source_chat_session_id
+                ).first()
+
+            if not source_session and empresa_id and user_phone_clean:
+                whatsapp_session_id = f"whatsapp_{empresa_id}_{user_phone_clean}"
+                source_session = ChatSessionContext.query.filter_by(
+                    chat_session_id=whatsapp_session_id
+                ).first()
+                if source_session:
+                    source_chat_session_id = whatsapp_session_id
+
+            self.source_chat_session_id = source_chat_session_id
+
+            # 6) Create/ensure session context
             session_context = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
             if not session_context:
+                context_data = {}
+                if source_session and isinstance(source_session.context_data, dict):
+                    context_data = dict(source_session.context_data)
+                if source_chat_session_id:
+                    context_data["source_chat_session_id"] = source_chat_session_id
+
                 session_context = ChatSessionContext(
                     chat_session_id=chat_session_id,
                     user_id=empresa_id,
-                    context_data={},
+                    context_data=context_data,
                 )
                 db.session.add(session_context)
                 db.session.commit()
+            elif source_session and isinstance(source_session.context_data, dict):
+                merged_context = dict(source_session.context_data)
+                if isinstance(session_context.context_data, dict):
+                    merged_context.update(session_context.context_data)
+                if source_chat_session_id:
+                    merged_context["source_chat_session_id"] = source_chat_session_id
+                session_context.context_data = merged_context
+                safe_flag_modified(session_context, "context_data")
+                db.session.commit()
+
+            self.context_data_snapshot = session_context.context_data or {}
+            identity = self._resolve_identity_from_context(self.context_data_snapshot)
+            if self.user:
+                generic_names = {"vecino", "vecino/a", "cliente", "usuario"}
+                user_name = getattr(self.user, "name", None)
+                if not user_name or user_name.lower() in generic_names:
+                    if identity.get("nombre"):
+                        self.user.name = identity["nombre"]
+                if identity.get("direccion") and not getattr(self.user, "direccion", None):
+                    self.user.direccion = identity["direccion"]
 
             return True
         except Exception as e:
@@ -223,8 +318,9 @@ class VoiceStreamService:
         elif self.owner_user:
             tenant_name = getattr(self.owner_user, "nombre_empresa", "Tu Municipio")
 
-        user_name = getattr(self.user, "name", "Vecino")
-        user_addr = getattr(self.user, "direccion", "")
+        identity = self._resolve_identity_from_context(self.context_data_snapshot)
+        user_name = getattr(self.user, "name", None) or identity.get("nombre") or "Vecino"
+        user_addr = getattr(self.user, "direccion", None) or identity.get("direccion") or ""
 
         known_data_str = f"Datos conocidos del usuario: Nombre: {user_name}."
         if user_addr:
@@ -331,6 +427,7 @@ class VoiceStreamService:
             # Robusto: Twilio a veces manda From/To directos, o por custom params
             self.from_number = custom.get("from_number") or data["start"].get("from") or data["start"].get("From")
             self.to_number = custom.get("to_number") or data["start"].get("to") or data["start"].get("To")
+            self.source_chat_session_id = custom.get("chat_session_id") or custom.get("source_chat_session_id")
 
             logger.info(f"[VOICE] Stream started: {self.stream_sid} Call: {self.call_sid}")
 
@@ -365,7 +462,8 @@ class VoiceStreamService:
                         tenant_name = getattr(self.owner_user, "nombre_empresa", "tu municipio")
 
                     # Dynamic Greeting based on User context
-                    user_name = getattr(self.user, "name", None)
+                    identity = self._resolve_identity_from_context(self.context_data_snapshot)
+                    user_name = getattr(self.user, "name", None) or identity.get("nombre")
                     # Ignore generic placeholder names from auto-creation
                     if user_name and user_name.lower() in ["vecino", "vecino/a", "cliente", "usuario"]:
                         user_name = None
@@ -676,12 +774,16 @@ class VoiceStreamService:
                         )
 
                         if session_context:
-                            session_context.context_data["latest_ticket_nro"] = nro
-                            session_context.context_data["awaiting_photo_for_ticket"] = nro
+                            updates = {
+                                "latest_ticket_nro": nro,
+                                "awaiting_photo_for_ticket": nro,
+                                "receipt_sent": True,
+                            }
                             if data.get("ticket_id"):
-                                session_context.context_data["latest_ticket_id"] = data.get("ticket_id")
+                                updates["latest_ticket_id"] = data.get("ticket_id")
                             if data.get("consulta_pin"):
-                                session_context.context_data["latest_ticket_pin"] = data.get("consulta_pin")
+                                updates["latest_ticket_pin"] = data.get("consulta_pin")
+
                             base_chat_url = (
                                 self.tenant_profile.configuracion.get("base_chat_url")
                                 if self.tenant_profile and self.tenant_profile.configuracion
@@ -692,12 +794,9 @@ class VoiceStreamService:
                                 tracking_url = f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}"
                                 if data.get("consulta_pin"):
                                     tracking_url = f"{tracking_url}?pin={data.get('consulta_pin')}"
-                                session_context.context_data["latest_tracking_url"] = tracking_url
-                            # Marcar que ya enviamos el recibo para evitar duplicados en handle_call_status
-                            session_context.context_data["receipt_sent"] = True
+                                updates["latest_tracking_url"] = tracking_url
 
-                            safe_flag_modified(session_context, "context_data")
-                            db.session.commit()
+                            self._update_session_contexts(session_context, updates)
 
                         # ✅ Enviar resumen por WhatsApp (Rich Receipt)
                         whatsapp_target = None
@@ -800,12 +899,12 @@ class VoiceStreamService:
                         )
 
                         if session_context:
-                            session_context.context_data["latest_order_id"] = data.get("pedido_id")
-                            session_context.context_data["latest_order_nro"] = nro_pedido
-                            # Marcar que ya enviamos el recibo para evitar duplicados
-                            session_context.context_data["receipt_sent"] = True
-                            safe_flag_modified(session_context, "context_data")
-                            db.session.commit()
+                            updates = {
+                                "latest_order_id": data.get("pedido_id"),
+                                "latest_order_nro": nro_pedido,
+                                "receipt_sent": True,
+                            }
+                            self._update_session_contexts(session_context, updates)
 
                         whatsapp_target = None
                         if self.user and getattr(self.user, "telefono", None):

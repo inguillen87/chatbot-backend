@@ -135,6 +135,7 @@ def voice_inbound_stream():
     call_sid = request.form.get('CallSid')
     from_number = request.form.get('From')
     to_number = request.form.get('To')
+    source_chat_session_id = request.values.get("chat_session_id")
 
     # We can pass context via query params to the WebSocket URL
     # Assuming the app is running on a domain, we need to construct the wss URL
@@ -155,6 +156,8 @@ def voice_inbound_stream():
     stream.parameter(name="from_number", value=from_number)
     stream.parameter(name="to_number", value=to_number)
     stream.parameter(name="call_sid", value=call_sid)
+    if source_chat_session_id:
+        stream.parameter(name="chat_session_id", value=source_chat_session_id)
 
     response.append(connect)
 

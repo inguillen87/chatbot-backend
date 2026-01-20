@@ -15,7 +15,7 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 MESSAGING_SERVICE_SID = os.environ.get("MESSAGING_SERVICE_SID")
 
-def initiate_outbound_call(to_number, from_number):
+def initiate_outbound_call(to_number, from_number, chat_session_id=None):
     """
     Triggers an outbound call to the user using Twilio.
     The call will connect to the /voice/welcome webhook.
@@ -35,6 +35,9 @@ def initiate_outbound_call(to_number, from_number):
         return False
 
     url = f"{base_url.rstrip('/')}/twilio/voice/inbound"
+    if chat_session_id:
+        from urllib.parse import urlencode
+        url = f"{url}?{urlencode({'chat_session_id': chat_session_id})}"
 
     try:
         # Sanitize numbers for Voice API (E.164 required, no whatsapp: prefix)
@@ -109,6 +112,20 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
                 context_data={}
             )
             db.session.add(session_context)
+            db.session.commit()
+        else:
+            if not isinstance(session_context.context_data, dict):
+                session_context.context_data = {}
+
+        # Merge data from existing WhatsApp session if available
+        source_session_id = f"whatsapp_{empresa_id}_{user_phone_clean}"
+        source_session = ChatSessionContext.query.filter_by(chat_session_id=source_session_id).first()
+        if source_session and isinstance(source_session.context_data, dict):
+            merged_context = dict(source_session.context_data)
+            merged_context.update(session_context.context_data or {})
+            merged_context["source_chat_session_id"] = source_session_id
+            session_context.context_data = merged_context
+            safe_flag_modified(session_context, "context_data")
             db.session.commit()
 
         # 3. Call Responder Logic
@@ -318,7 +335,21 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
         # Retrieve the session context to find created ticket info
         session_context = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
 
-        context_data = session_context.context_data if session_context else {}
+        context_data = {}
+        source_session = None
+        if session_context and isinstance(session_context.context_data, dict):
+            source_session_id = session_context.context_data.get("source_chat_session_id")
+            if source_session_id:
+                source_session = ChatSessionContext.query.filter_by(chat_session_id=source_session_id).first()
+
+        if not session_context and empresa_id and user_phone_clean:
+            source_session_id = f"whatsapp_{empresa_id}_{user_phone_clean}"
+            source_session = ChatSessionContext.query.filter_by(chat_session_id=source_session_id).first()
+
+        if source_session and isinstance(source_session.context_data, dict):
+            context_data.update(source_session.context_data)
+        if session_context and isinstance(session_context.context_data, dict):
+            context_data.update(session_context.context_data)
 
         if context_data.get("receipt_sent"):
             logger.info("Receipt already sent during stream. Sending final summary anyway.")
