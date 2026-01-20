@@ -2092,3 +2092,32 @@ def whatsapp_webhook():
         )
 
     return "OK", 200
+
+
+@webhook_bp.route("/twilio/whatsapp/status", methods=["POST"])
+def twilio_whatsapp_status():
+    """Log WhatsApp delivery status callbacks from Twilio."""
+    if TWILIO_AUTH_TOKEN:
+        status_validator = RequestValidator(TWILIO_AUTH_TOKEN)
+        if not status_validator.validate(
+            request.url, request.form, request.headers.get("X-Twilio-Signature", "")
+        ):
+            return "Forbidden", 403
+
+    message_sid = request.form.get("MessageSid")
+    message_status = request.form.get("MessageStatus")
+    error_code = request.form.get("ErrorCode")
+    error_message = request.form.get("ErrorMessage")
+    to_number = request.form.get("To")
+    from_number = request.form.get("From")
+
+    current_app.logger.info(
+        "[TWILIO_WHATSAPP_STATUS] MessageSid=%s Status=%s ErrorCode=%s ErrorMessage=%s To=%s From=%s",
+        message_sid,
+        message_status,
+        error_code,
+        error_message,
+        to_number,
+        from_number,
+    )
+    return "OK", 200
