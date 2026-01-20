@@ -205,8 +205,11 @@ def _attach_whatsapp_adjunto_to_ticket(
     comentario_text: str,
 ) -> None:
     adjunto.municipio_ticket_id = ticket.id
-    if not ticket.foto_principal:
-        ticket.foto_principal = adjunto.url
+    if hasattr(ticket, "foto_principal"):
+        if not ticket.foto_principal:
+            ticket.foto_principal = adjunto.url
+    elif hasattr(ticket, "foto_url_directa") and not ticket.foto_url_directa:
+        ticket.foto_url_directa = adjunto.url
 
     db.session.add(adjunto)
     db.session.add(ticket)
@@ -1689,20 +1692,20 @@ def whatsapp_webhook():
                 else:
                     current_app.logger.warning("Audio transcription failed or returned empty.")
 
-            # --- Voice Bot / WhatsApp Photo Bridge ---
-            # If we were waiting for a photo for a specific ticket, link it now.
+            # --- Voice Bot / WhatsApp Media Bridge ---
+            # If we were waiting for media for a specific ticket, link it now.
             awaiting_ticket_nro = session_context_db_entry.context_data.get("awaiting_photo_for_ticket")
             awaiting_ticket_photo = session_context_db_entry.context_data.get("awaiting_ticket_photo")
             awaiting_ticket_photo_until = session_context_db_entry.context_data.get(
                 "awaiting_ticket_photo_until"
             )
             last_ticket_code = session_context_db_entry.context_data.get("last_ticket_code")
-            is_image_message = bool(media_content_type) and media_content_type.startswith("image/")
+            is_ticket_media = bool(media_content_type)
 
             if not media_content_type.startswith("audio/"):
                 session_context_db_entry.context_data.pop('source_is_audio', None)
 
-            if adjunto and is_image_message:
+            if adjunto and is_ticket_media:
                 now_ts = time.time()
                 within_photo_window = (
                     awaiting_ticket_photo
@@ -1731,7 +1734,7 @@ def whatsapp_webhook():
                             anon_id=from_number_cleaned,
                         )
                         current_app.logger.info(
-                            "[VOICE_BRIDGE] Received photo for ticket %s (resolved=%s)",
+                            "[VOICE_BRIDGE] Received media for ticket %s (resolved=%s)",
                             target_ticket_ref,
                             getattr(ticket, "nro_ticket", None),
                         )
@@ -1740,14 +1743,14 @@ def whatsapp_webhook():
                                 adjunto=adjunto,
                                 ticket=ticket,
                                 end_user=end_user,
-                                comentario_text="[SISTEMA] Vecino adjuntó foto solicitada por llamada o WhatsApp.",
+                                comentario_text="[SISTEMA] Vecino adjuntó archivo solicitado por llamada o WhatsApp.",
                             )
                             if twilio_client:
                                 twilio_client.messages.create(
                                     from_=to_number_raw,
                                     to=from_number_raw,
                                     body=(
-                                        "✅ Foto recibida y adjuntada al reclamo "
+                                        "✅ Archivo recibido y adjuntado al reclamo "
                                         f"*{ticket.nro_ticket}*. ¡Muchas gracias!"
                                     ),
                                 )
