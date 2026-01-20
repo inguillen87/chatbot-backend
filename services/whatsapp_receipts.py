@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 import os
 from typing import Any, Dict, Optional
 
@@ -27,6 +28,10 @@ def _format_horario(horario: Any) -> str:
             lines.append(f"• {dia}: {abre} a {cierra}")
     return "\n".join([line for line in lines if line])
 
+=======
+from typing import Any, Dict, Optional
+
+>>>>>>> Stashed changes
 
 def _build_menu_text(kind: str) -> str:
     if kind == "sugerencia":
@@ -64,6 +69,7 @@ def _render_contact_section(contacto: Optional[Dict[str, Any]]) -> str:
     horario = contacto.get("horario")
     if not any([nombre, cargo, telefono, horario]):
         return ""
+<<<<<<< Updated upstream
     lines = ["", "📞 *Contacto para seguimiento:*"]
     if nombre:
         lines.append(f"• *Nombre:* {nombre}")
@@ -78,6 +84,17 @@ def _render_contact_section(contacto: Optional[Dict[str, Any]]) -> str:
             lines.append(horario_txt)
         else:
             lines.append(f"• *Horario:* {horario_txt}")
+=======
+    lines = ["", "📞 Contacto para seguimiento:"]
+    if nombre:
+        lines.append(f"* Nombre: {nombre}")
+    if cargo:
+        lines.append(f"* Cargo: {cargo}")
+    if telefono:
+        lines.append(f"* Teléfono: {telefono}")
+    if horario:
+        lines.append(f"* Horario: {horario}")
+>>>>>>> Stashed changes
     return "\n".join(lines)
 
 
@@ -98,6 +115,7 @@ def render_ticket_whatsapp(
     info_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     name = nombre or "Vecino/a"
+<<<<<<< Updated upstream
     kind_label = "Reclamo" if kind == "reclamo" else "Sugerencia" if kind == "sugerencia" else kind.capitalize()
     ticket_line = f"• *Ticket:* {ticket_nro}" if ticket_nro else ""
     lines = [
@@ -109,6 +127,25 @@ def render_ticket_whatsapp(
         f"• *Dirección:* {direccion}" if direccion else "",
         f"• *Descripción:* {descripcion}" if descripcion else "",
         f"• *DNI:* {dni}" if dni else "",
+=======
+    kind_label = (
+        "Reclamo"
+        if kind == "reclamo"
+        else "Sugerencia"
+        if kind == "sugerencia"
+        else kind.capitalize()
+    )
+    ticket_line = f"• Ticket: {ticket_nro}" if ticket_nro else ""
+    lines = [
+        f"✅ ¡{kind_label} recibido{'' if kind == 'reclamo' else 'a'}, {name}!",
+        "",
+        "📄 Resumen:",
+        ticket_line,
+        f"• Categoría: {categoria}" if categoria else "",
+        f"• Dirección: {direccion}" if direccion else "",
+        f"• Descripción: {descripcion}" if descripcion else "",
+        f"• DNI: {dni}" if dni else "",
+>>>>>>> Stashed changes
     ]
 
     resumen = "\n".join([line for line in lines if line])
@@ -121,6 +158,7 @@ def render_ticket_whatsapp(
             if consulta_pin
             else f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}"
         )
+<<<<<<< Updated upstream
         seguimiento_lines = [
             "",
             "🔗 *Seguimiento:*",
@@ -129,6 +167,16 @@ def render_ticket_whatsapp(
             seguimiento_lines.append(f"• *PIN:* {consulta_pin}")
         seguimiento_lines.append(f"• *Ver mi Ticket:* {link}")
         seguimiento = "\n".join(seguimiento_lines)
+=======
+        seguimiento = "\n".join(
+            [
+                "",
+                "🔗 Seguimiento:",
+                f"• PIN: {consulta_pin}" if consulta_pin else "",
+                f"• Ver mi Ticket: {link}",
+            ]
+        )
+>>>>>>> Stashed changes
 
     extra = ""
     if info_url:
@@ -143,7 +191,11 @@ def render_ticket_whatsapp(
 
     return {
         "body_text": body_text,
+<<<<<<< Updated upstream
         "media_url": public_url(promo_image_url, PUBLIC_BASE_URL),
+=======
+        "media_url": promo_image_url,
+>>>>>>> Stashed changes
     }
 
 
