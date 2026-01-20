@@ -6,7 +6,7 @@ from pathlib import Path
 from sqlalchemy.orm.attributes import flag_modified
 
 from .herramientas_municipio import TOOL_REGISTRY
-from .location_service import find_nearby_places
+from .poi_service import nearby as poi_nearby
 from .estacionamiento_utils import _dist_m
 from .estacionamiento_service import consultar_ocupacion
 from .conversation_state import ConversationState
@@ -540,10 +540,12 @@ class PointsOfInterestHandler:
             if isinstance(location, dict) and location.get("lat") is not None and location.get("lon") is not None:
                 keyword, open_now = self._poi_keyword_from_query(original_question)
                 if keyword:
-                    results = find_nearby_places(
-                        {"lat": location.get("lat"), "lng": location.get("lon")},
-                        keyword,
+                    results = poi_nearby(
+                        location.get("lat"),
+                        location.get("lon"),
+                        keyword=keyword,
                         radius=1500,
+                        open_now=open_now,
                     )
                     if open_now:
                         results = [
@@ -681,10 +683,12 @@ class PointsOfInterestHandler:
                 ):
                     keyword, open_now = self._poi_keyword_from_query(params.get("rubro") or params.get("tipo_lugar") or "")
                     if keyword:
-                        results = find_nearby_places(
-                            {"lat": location.get("lat"), "lng": location.get("lon")},
-                            keyword,
+                        results = poi_nearby(
+                            location.get("lat"),
+                            location.get("lon"),
+                            keyword=keyword,
                             radius=1500,
+                            open_now=open_now,
                         )
                         if open_now:
                             results = [

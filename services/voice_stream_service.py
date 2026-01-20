@@ -9,7 +9,7 @@ from websockets.sync.client import connect as ws_connect
 from simple_websocket.errors import ConnectionClosed
 from twilio.rest import Client as TwilioClient
 
-from models import WhatsappNumero, ChatSessionContext, User, TenantProfile
+from models import WhatsappNumero, ChatSessionContext, User, TenantProfile, MunicipioTicket
 from extensions import db
 from sqlalchemy.orm import joinedload
 
@@ -313,8 +313,24 @@ class VoiceStreamService:
                 generic_names = {"vecino", "vecino/a", "cliente", "usuario"}
                 user_name = getattr(self.user, "name", None)
                 if not user_name or user_name.lower() in generic_names:
-                    if identity.get("nombre"):
-                        self.user.name = identity["nombre"]
+                    ticket_name = None
+                    if self.owner_user and getattr(self.owner_user, "municipio_id", None):
+                        ticket_match = (
+                            MunicipioTicket.query.filter_by(
+                                municipio_id=self.owner_user.municipio_id,
+                                telefono_vecino=user_phone_clean,
+                            )
+                            .order_by(MunicipioTicket.fecha.desc())
+                            .first()
+                        )
+                        if ticket_match and getattr(ticket_match, "nombre_vecino", None):
+                            ticket_name = ticket_match.nombre_vecino
+
+                    identity_name = (identity.get("nombre") or "").strip()
+                    banned = {"hola", "buenas", "eh", "mmm", "hola hola"}
+                    candidate_name = ticket_name or identity_name
+                    if candidate_name and candidate_name.lower() not in banned:
+                        self.user.name = candidate_name
                         db.session.add(self.user)
                         db.session.commit()
                 if identity.get("direccion") and not getattr(self.user, "direccion", None):
@@ -485,10 +501,21 @@ class VoiceStreamService:
 
                     # Dynamic Greeting based on User context
                     identity = self._resolve_identity_from_context(self.context_data_snapshot)
-                    user_name = getattr(self.user, "name", None) or identity.get("nombre")
-                    # Ignore generic placeholder names from auto-creation
-                    if user_name and user_name.lower() in ["vecino", "vecino/a", "cliente", "usuario"]:
-                        user_name = None
+                    def _sanitize_name(value: str | None) -> str | None:
+                        if not value:
+                            return None
+                        candidate = value.strip()
+                        if len(candidate) < 2:
+                            return None
+                        lowered = candidate.lower()
+                        banned = {"hola", "buenas", "eh", "mmm", "hola hola"}
+                        if lowered in banned:
+                            return None
+                        if lowered in {"vecino", "vecino/a", "cliente", "usuario"}:
+                            return None
+                        return candidate
+
+                    user_name = _sanitize_name(getattr(self.user, "name", None)) or _sanitize_name(identity.get("nombre"))
 
                     # Prompt "Ninja": Personalizado, empático y directo.
                     if user_name:
@@ -797,9 +824,16 @@ class VoiceStreamService:
                         nro = data.get("nro_ticket")
                         self.last_ticket_nro = nro
 
+                        nombre_speech = getattr(self.user, "name", None) or ""
+                        nombre_speech = nombre_speech.strip()
+                        if nombre_speech:
+                            saludo_ticket = f"Listo {nombre_speech}."
+                        else:
+                            saludo_ticket = "Listo."
+
                         result = (
-                            f"Listo {getattr(self.user, 'name', '')}. Registré tu reclamo con el número {nro}. "
-                            "Te acabo de enviar el comprobante por WhatsApp con un link para seguirlo. "
+                            f"{saludo_ticket} Tu reclamo quedó cargado con el número {nro}. "
+                            "Te acabo de enviar el resumen por WhatsApp para que tengas el comprobante. "
                             "Si tenés una foto, podés responder a ese mensaje con la imagen. ¿Necesitas algo más?"
                         )
 
@@ -849,7 +883,15 @@ class VoiceStreamService:
                                     )
 
                                 image_url = res.get("image_url")
-                                botones = res.get("options_list") or res.get("botones")
+                                botones_raw = res.get("options_list") or res.get("botones")
+                                botones_texto = []
+                                for boton in (botones_raw or []):
+                                    if isinstance(boton, dict):
+                                        texto = boton.get("texto") or boton.get("title")
+                                        if texto:
+                                            botones_texto.append(texto)
+                                    else:
+                                        botones_texto.append(str(boton))
 
                                 # Fallback de imagen promo si la acción no la trajo pero existe en config
                                 if not image_url and self.tenant_profile and self.tenant_profile.configuracion:
@@ -858,7 +900,7 @@ class VoiceStreamService:
                                 whatsapp_sender = self._resolve_whatsapp_sender()
                                 send_kwargs = {
                                     "image_url": image_url,
-                                    "botones": botones,
+                                    "botones": botones_texto or None,
                                 }
                                 if whatsapp_sender:
                                     send_kwargs["from_number"] = whatsapp_sender
@@ -963,13 +1005,21 @@ class VoiceStreamService:
                                     )
 
                                 # Extract buttons if available in response
-                                botones = res.get("options_list") or res.get("botones")
+                                botones_raw = res.get("options_list") or res.get("botones")
+                                botones_texto = []
+                                for boton in (botones_raw or []):
+                                    if isinstance(boton, dict):
+                                        texto = boton.get("texto") or boton.get("title")
+                                        if texto:
+                                            botones_texto.append(texto)
+                                    else:
+                                        botones_texto.append(str(boton))
                                 image_url = res.get("image_url")
 
                                 whatsapp_sender = self._resolve_whatsapp_sender()
                                 send_kwargs = {
                                     "image_url": image_url,
-                                    "botones": botones,
+                                    "botones": botones_texto or None,
                                 }
                                 if whatsapp_sender:
                                     send_kwargs["from_number"] = whatsapp_sender

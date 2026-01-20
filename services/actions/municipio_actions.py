@@ -16,6 +16,7 @@ from services.herramientas_municipio import (
     normalizar_texto,
     obtener_direccion_de_coordenadas,
 )
+from services.address_parser import parse_address
 from services.categorias_municipio import (
     CATEGORIAS_RECLAMO,
     CATEGORIAS_SINONIMOS,
@@ -194,11 +195,11 @@ def _ubicacion_es_valida(ubicacion: str | None) -> bool:
     if has_street_keyword and not has_number:
         return False
 
-    if re.search(r"\b(esquina|interseccion|intersección|entre|altura|barrio|manzana|mz|lote)\b", normalized):
+    if re.search(r"\b(esquina|interseccion|intersección|entre|altura|barrio|manzana|mz|lote|plaza|parque|monumento)\b", normalized):
         return True
     if re.search(r"\b[a-z]{3,}\s+(y|e)\s+[a-z]{3,}\b", normalized):
         return True
-    if re.search(r"\b(plaza|parque|monumento|rotonda|puente|terminal|hospital|escuela)\b", normalized):
+    if re.search(r"\b(rotonda|puente|terminal|hospital|escuela)\b", normalized):
         return True
 
     if has_number:
@@ -440,6 +441,14 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     categoria = categoria_inferida
 
         municipio_config = self.context.get("municipio_config_actual", {})
+        if ubicacion_llm:
+            parsed_address = parse_address(ubicacion_llm, municipio_config)
+            if parsed_address.get("distrito") and not distrito_llm:
+                distrito_llm = parsed_address.get("distrito")
+            if parsed_address.get("barrio"):
+                contexto_reclamo.setdefault("barrio_referencia", parsed_address.get("barrio"))
+            if parsed_address.get("referencia"):
+                contexto_reclamo.setdefault("referencia_ubicacion", parsed_address.get("referencia"))
         if ubicacion_llm and not distrito_llm and direccion_es_valida(ubicacion_llm):
             try:
                 logger.info(f"Attempting to parse district from address: {ubicacion_llm}")
