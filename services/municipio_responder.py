@@ -9412,6 +9412,16 @@ def responder_municipio(
     }
     # --- END CONTEXT INITIALIZATION ---
 
+    profile_name = kwargs.get("profile_name")
+    if isinstance(profile_name, str) and profile_name.strip():
+        if not chat_db_context_live_data.get("profile_name"):
+            chat_db_context_live_data["profile_name"] = profile_name.strip()
+        contacto_usuario = contexto_municipio_actual.setdefault("contacto_usuario", {})
+        if isinstance(contacto_usuario, dict) and not contacto_usuario.get("nombre"):
+            contacto_usuario["nombre"] = profile_name.strip()
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+
     def _auto_bootstrap_reclamo() -> Optional[dict[str, Any]]:
         """Return an auto-start payload when the message already looks like a claim."""
 
