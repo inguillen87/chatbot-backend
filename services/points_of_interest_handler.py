@@ -188,14 +188,9 @@ class PointsOfInterestHandler:
     def _parking_response(self, location: dict | str, info: dict | None = None) -> dict:
         """Generate a parking response based on coordinates or an address."""
         if not self.parking_data:
-            from .municipio_responder import _message_with_menu
-            payload = _message_with_menu(
-                "No tengo datos de estacionamiento disponibles en este momento.",
-                self.context,
-                include_greeting=False,
+            return self._build_simple_response(
+                "No tengo datos de estacionamiento disponibles en este momento."
             )
-            payload["fuente"] = "points_of_interest_handler"
-            return payload
 
         address = ""
         lat = lon = None
@@ -365,15 +360,7 @@ class PointsOfInterestHandler:
             })
 
         message_text = "\n".join(lines)
-        try:
-            from .municipio_responder import _message_with_menu  # local import to avoid circular dependency
-            base_payload = _message_with_menu(
-                message_text,
-                self.context,
-                include_greeting=False,
-            )
-        except ImportError:  # pragma: no cover - fallback for circular imports in isolated tests
-            base_payload = {"message_body": message_text}
+        base_payload = self._build_simple_response(message_text)
         base_payload.update({
             "fuente": "points_of_interest_handler",
             "camera": cam_name,
@@ -402,6 +389,14 @@ class PointsOfInterestHandler:
                 "no cuento con información",
                 "no pude encontrar",
                 "no pude encontrar información",
+                "podrias especificar",
+                "podrías especificar",
+                "qué tipo de lugar",
+                "que tipo de lugar",
+                "qué tipo de lugares",
+                "que tipo de lugares",
+                "que tipo de lugares cercanos",
+                "qué tipo de lugares cercanos",
             )
         )
 
@@ -410,10 +405,13 @@ class PointsOfInterestHandler:
         return [
             {"texto": "🏥 Hospitales o clínicas", "action_id": "hospitales"},
             {"texto": "🩺 Farmacias (incluye 24hs)", "action_id": "farmacias 24 horas"},
+            {"texto": "🍽️ Restaurantes", "action_id": "restaurantes"},
             {"texto": "🚓 Comisarías", "action_id": "comisarias"},
             {"texto": "🚒 Bomberos", "action_id": "bomberos"},
             {"texto": "🏦 Cajeros/ATM", "action_id": "cajeros automáticos"},
             {"texto": "🏞️ Parques o plazas", "action_id": "parques"},
+            {"texto": "🛒 Supermercados", "action_id": "supermercados"},
+            {"texto": "🅿️ Estacionamiento (demo)", "action_id": "estacionamiento"},
             {"texto": "Otro tipo de lugar", "action_id": "otro lugar"},
         ]
 
@@ -431,6 +429,38 @@ class PointsOfInterestHandler:
             "options_list": self._poi_refinement_options(),
             "message_type": "interactive_buttons",
             "fuente": "points_of_interest_refinement",
+            "generar_audio": True,
+        }
+
+    def _handle_direct_poi_lookup(self, rubro: str, location: dict | None) -> dict | None:
+        """Attempt a direct POI tool lookup when the user already chose a category."""
+        if not rubro or not location:
+            return None
+
+        herramienta = TOOL_REGISTRY.get("buscar_poi") or TOOL_REGISTRY.get("buscar_puntos_de_interes")
+        if not herramienta:
+            return None
+
+        localidad = location.get("address") or location.get("label")
+        if not localidad:
+            return None
+
+        try:
+            resultado = herramienta["funcion"](rubro=rubro, localidad=localidad)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Error executing POI tool: %s", exc, exc_info=True)
+            return self._build_simple_response(
+                "Ocurrió un error al buscar lugares cercanos."
+            )
+
+        return self._build_simple_response(str(resultado))
+
+    @staticmethod
+    def _build_simple_response(message: str) -> dict:
+        return {
+            "message_body": message,
+            "message_type": "text",
+            "fuente": "points_of_interest_handler",
             "generar_audio": True,
         }
     def handle(self, payload: dict) -> dict | None:
@@ -457,6 +487,20 @@ class PointsOfInterestHandler:
             if location.get("formatted_address") and not normalized_location.get("address"):
                 normalized_location["address"] = location.get("formatted_address")
             location = {k: v for k, v in normalized_location.items() if v}
+
+        normalized_question = self._normalize_text(pregunta)
+        if normalized_question in {"lugares cercanos", "lugares cerca", "lugares", "cerca"}:
+            return self._build_refinement_prompt(location if isinstance(location, dict) else None)
+
+        refinement_actions = {
+            self._normalize_text(option.get("action_id"))
+            for option in self._poi_refinement_options()
+            if option.get("action_id")
+        }
+        if normalized_question in refinement_actions and "estacionamiento" not in normalized_question:
+            direct_lookup = self._handle_direct_poi_lookup(original_question, location if isinstance(location, dict) else None)
+            if direct_lookup:
+                return direct_lookup
 
         keywords = ("estacionamiento", "estacionar", "lugar libre")
         if any(word in pregunta for word in keywords):
@@ -568,14 +612,9 @@ class PointsOfInterestHandler:
             params = datos.get("parametros_herramienta", {})
             herramienta = TOOL_REGISTRY.get(nombre)
             if not herramienta:
-                from .municipio_responder import _message_with_menu
-                final_payload = _message_with_menu(
-                    message_body or "No tengo una herramienta para eso.",
-                    self.context,
-                    include_greeting=False,
+                return self._build_simple_response(
+                    message_body or "No tengo una herramienta para eso."
                 )
-                final_payload["fuente"] = "points_of_interest_handler"
-                return final_payload
             try:
                 resultado = herramienta["funcion"](**params)
                 if isinstance(resultado, dict):
@@ -583,30 +622,11 @@ class PointsOfInterestHandler:
                 else:
                     result_text = str(resultado)
                 final_message = f"{message_body}\n{result_text}".strip() or result_text
-                from .municipio_responder import _message_with_menu
-                final_payload = _message_with_menu(
-                    final_message,
-                    self.context,
-                    include_greeting=False,
-                )
-                final_payload["fuente"] = "points_of_interest_handler"
-                return final_payload
+                return self._build_simple_response(final_message)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.error("Error executing tool %s: %s", nombre, exc, exc_info=True)
-                from .municipio_responder import _message_with_menu
-                final_payload = _message_with_menu(
-                    "Ocurrió un error al obtener la información solicitada.",
-                    self.context,
-                    include_greeting=False,
+                return self._build_simple_response(
+                    "Ocurrió un error al obtener la información solicitada."
                 )
-                final_payload["fuente"] = "points_of_interest_handler"
-                return final_payload
 
-        from .municipio_responder import _message_with_menu
-        final_payload = _message_with_menu(
-            message_body,
-            self.context,
-            include_greeting=False,
-        )
-        final_payload["fuente"] = "points_of_interest_handler"
-        return final_payload
+        return self._build_simple_response(message_body)

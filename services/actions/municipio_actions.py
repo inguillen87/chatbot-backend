@@ -16,10 +16,16 @@ from services.herramientas_municipio import (
     normalizar_texto,
     obtener_direccion_de_coordenadas,
 )
+from services.categorias_municipio import (
+    CATEGORIAS_RECLAMO,
+    CATEGORIAS_SINONIMOS,
+    normalizar_texto as normalizar_texto_municipio,
+)
 from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
+from utils.ticket_utils import normalize_category
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.config_loader import cargar_configuracion_municipio
-from models import MunicipioTicket, TenantProfile
+from models import MunicipioTicket, TenantProfile, CategoriaTicket
 from services.common_utils import _get_main_menu_payload
 from services import promo_service
 from services.voice_handler import initiate_outbound_call
@@ -77,6 +83,89 @@ def _address_seems_generic(address: str | None) -> bool:
         return True
 
     return False
+
+
+def _infer_category_from_description(
+    description: str | None,
+    category_candidates: list[str] | None = None,
+) -> str | None:
+    if not description:
+        return None
+
+    normalized_description = normalizar_texto_municipio(description)
+    if not normalized_description:
+        return None
+
+    best_match = None
+    best_score = 0
+    normalized_synonyms_keys = {
+        normalizar_texto_municipio(key) for key in CATEGORIAS_SINONIMOS.keys()
+    }
+
+    for categoria_key, synonyms in CATEGORIAS_SINONIMOS.items():
+        terms = [categoria_key, *synonyms]
+        score = 0
+        for term in terms:
+            normalized_term = normalizar_texto_municipio(term)
+            if not normalized_term:
+                continue
+            pattern = rf"\b{re.escape(normalized_term)}\b"
+            if re.search(pattern, normalized_description):
+                score += 2
+            elif normalized_term in normalized_description:
+                score += 1
+        if score > best_score:
+            best_score = score
+            best_match = categoria_key
+
+    for candidate in category_candidates or []:
+        normalized_candidate = normalizar_texto_municipio(candidate)
+        if not normalized_candidate or normalized_candidate in normalized_synonyms_keys:
+            continue
+        pattern = rf"\b{re.escape(normalized_candidate)}\b"
+        if re.search(pattern, normalized_description):
+            score = 2
+        elif normalized_candidate in normalized_description:
+            score = 1
+        else:
+            score = 0
+        if score > best_score:
+            best_score = score
+            best_match = candidate
+
+    if not best_match:
+        return None
+
+    return normalize_category(best_match)
+
+
+def _get_categoria_candidates(owner_user: Any, context: Dict[str, Any]) -> list[str]:
+    categorias: list[str] = list(CATEGORIAS_RECLAMO)
+    tenant_id, _ = _resolve_municipio_tenant_ids(owner_user, context)
+    if not tenant_id:
+        return categorias
+
+    try:
+        tenant_categories = (
+            CategoriaTicket.query.filter_by(tenant_id=tenant_id)
+            .order_by(CategoriaTicket.nombre.asc())
+            .all()
+        )
+    except Exception as exc:
+        logger.warning("No se pudieron cargar categorías del tenant: %s", exc)
+        return categorias
+
+    normalized_existing = {normalizar_texto_municipio(cat) for cat in categorias if cat}
+    for category in tenant_categories:
+        nombre = getattr(category, "nombre", None)
+        if not nombre:
+            continue
+        normalized = normalizar_texto_municipio(nombre)
+        if normalized and normalized not in normalized_existing:
+            categorias.append(nombre)
+            normalized_existing.add(normalized)
+
+    return categorias
 
 
 def _ubicacion_es_valida(ubicacion: str | None) -> bool:
@@ -322,6 +411,28 @@ class CrearReclamoActionHandler(BaseActionHandler):
             elif not _ubicacion_es_valida(ubicacion_llm):
                 logger.info(f"[VALIDATION] Ubicacion invalida detectada: {ubicacion_llm}")
                 ubicacion_llm = None
+
+        if descripcion:
+            categoria_candidates = _get_categoria_candidates(self.context.get("user_obj"), self.context)
+            categoria_inferida = _infer_category_from_description(descripcion, categoria_candidates)
+            categoria_actual = normalize_category(categoria) if categoria else None
+            categorias_genericas = {
+                "Limpieza",
+                "Limpieza Y Riego",
+                "Reclamo",
+                "Reclamo General",
+                "Reclamo Generico",
+                "Reclamo Genérico",
+                "General",
+                "Consulta General",
+                "Servicios",
+                "Otros",
+                "Otro",
+                "Otro Motivo",
+            }
+            if categoria_inferida and categoria_inferida != categoria_actual:
+                if not categoria_actual or categoria_actual in categorias_genericas:
+                    categoria = categoria_inferida
 
         municipio_config = self.context.get("municipio_config_actual", {})
         if ubicacion_llm and not distrito_llm and direccion_es_valida(ubicacion_llm):
@@ -976,6 +1087,12 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "message_to_user": "Para registrar tu sugerencia necesito tu nombre completo, DNI, email y dirección. Podés escribir todo en un solo mensaje.",
                 "pedir_info": "datos_contacto_sugerencia"
             }
+        pin_llm = action_data.get("pin") or action_data.get("consulta_pin")
+        pin_str = str(pin_llm).strip() if pin_llm else ""
+        if pin_str.isdigit() and len(pin_str) == 6:
+            pin_final = pin_str
+        else:
+            pin_final = f"{random.randint(0, 999999):06d}"
         # Create a ticket for the suggestion
         owner_user = self.context.get("user_obj")
         user_id_db = getattr(viewer_user, "id", None)
@@ -1003,6 +1120,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             ),
             "municipio_id": municipio_id,
             "tenant_id": tenant_id,
+            "consulta_pin": pin_final,
         }
         if self.context.get("foto_url"):
             ticket_data["foto_url_directa"] = self.context.get("foto_url")
@@ -1049,7 +1167,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 {}, # No hay contacto especializado para sugerencias
                 base_chat_url,
                 dni=dni_vecino,
-                consulta_pin=ticket_creado.get("consulta_pin"),
+                consulta_pin=ticket_creado.get("consulta_pin") or pin_final,
             )
 
             promo_section = promo_service.build_ticket_promo_section(
@@ -1084,7 +1202,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "nombre": nombre_vecino_final,
                 "categoria": "Sugerencia",
                 "descripcion": descripcion_sugerencia,
-                "consulta_pin": ticket_creado.get("consulta_pin"),
+                "consulta_pin": ticket_creado.get("consulta_pin") or pin_final,
             }
             return _apply_whatsapp_closing_promo(
                 response_payload,
@@ -1407,7 +1525,11 @@ class SolicitarLlamadaActionHandler(BaseActionHandler):
         if not clean_bot_phone.startswith("+"):
              clean_bot_phone = f"+{clean_bot_phone}"
 
-        success = initiate_outbound_call(to_number=clean_user_phone, from_number=clean_bot_phone)
+        success = initiate_outbound_call(
+            to_number=clean_user_phone,
+            from_number=clean_bot_phone,
+            chat_session_id=self.context.get("chat_session_uuid"),
+        )
 
         if success:
             return {

@@ -440,6 +440,7 @@ def _procesar_interpretacion_reclamo(
 
     from services.llm_utils import generar_descripcion_natural_de_imagen
     descripcion_natural = generar_descripcion_natural_de_imagen(imagen_descripcion_para_llm)
+    descripcion_natural = descripcion_natural.strip()
 
     logger.info(f"📝 [RECLAMO_IMG_PROC] Descripción para LLM (desde imagen): {descripcion_natural} (Análisis ID: {analisis_id_for_log})")
 
