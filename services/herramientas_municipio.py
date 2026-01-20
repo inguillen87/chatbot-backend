@@ -151,6 +151,9 @@ def _parse_direccion_basica(texto_direccion: str, municipio_config: dict | None 
     piso = None
     departamento = None
     barrio = None
+    distrito = None
+    manzana = None
+    lote = None
     localidad = None
     provincia = None
     codigo_postal = None
@@ -170,6 +173,12 @@ def _parse_direccion_basica(texto_direccion: str, municipio_config: dict | None 
                 otros_detalles.append(sobrante)
     else:
         calle = primera.strip()
+        lower_primera = calle.lower()
+        if any(token in lower_primera for token in ("barrio", "b°", "bº")):
+            barrio = re.sub(r"^(barrio|b°|bº)\s+", "", calle, flags=re.IGNORECASE).strip() or barrio
+        if any(token in lower_primera for token in ("distrito", "zona", "localidad", "ciudad")):
+            distrito = re.sub(r"^(distrito|zona|localidad|ciudad)\s+", "", calle, flags=re.IGNORECASE).strip() or distrito
+            localidad = localidad or distrito
 
     for segmento in partes[1:]:
         if not segmento:
@@ -186,6 +195,19 @@ def _parse_direccion_basica(texto_direccion: str, municipio_config: dict | None 
         lower = segmento.lower()
         if not barrio and any(token in lower for token in ('barrio', 'b°', 'bº')):
             barrio = re.sub(r"^(barrio|b°|bº)\s+", "", segmento, flags=re.IGNORECASE).strip()
+            continue
+        if any(token in lower for token in ("distrito", "zona", "localidad", "ciudad")) and not localidad:
+            distrito = re.sub(r"^(distrito|zona|localidad|ciudad)\s+", "", segmento, flags=re.IGNORECASE).strip()
+            localidad = distrito or localidad
+            continue
+        manzana_match = re.search(r"\b(?:manzana|mz)\s*([0-9a-zA-Z-]+)", segmento, flags=re.IGNORECASE)
+        if manzana_match and not manzana:
+            manzana = manzana_match.group(1).strip()
+        lote_match = re.search(r"\blote\s*([0-9a-zA-Z-]+)", segmento, flags=re.IGNORECASE)
+        if lote_match and not lote:
+            lote = lote_match.group(1).strip()
+        if re.search(r"\b(manzana|mz|lote)\b", lower):
+            otros_detalles.append(segmento)
             continue
         if not codigo_postal and re.fullmatch(r"\d{4}", segmento):
             codigo_postal = segmento
@@ -207,6 +229,9 @@ def _parse_direccion_basica(texto_direccion: str, municipio_config: dict | None 
         "piso": piso,
         "departamento": departamento,
         "barrio": barrio,
+        "distrito": distrito,
+        "manzana": manzana,
+        "lote": lote,
         "localidad": localidad,
         "provincia": provincia,
         "codigo_postal": codigo_postal,
@@ -262,8 +287,30 @@ def direccion_es_valida(texto: str) -> bool:
     if geocode_result is not None:
         return True
 
-    # Fallback heurístico: acepta direcciones que contengan texto y un número
-    return bool(re.search(r"[A-Za-zÁÉÍÓÚÑáéíóúñ ]+\s+\d+", texto))
+    # Fallback heurístico: acepta intersecciones, referencias y direcciones sin número.
+    texto_normalizado = normalizar_texto(texto)
+    if not texto_normalizado:
+        return False
+
+    if re.search(r"[A-Za-zÁÉÍÓÚÑáéíóúñ ]+\s+\d+", texto):
+        return True
+
+    if re.search(r"\b(esquina|interseccion|intersección|entre)\b", texto_normalizado):
+        return True
+
+    if re.search(r"\b[a-z]{3,}\s+(y|e)\s+[a-z]{3,}\b", texto_normalizado):
+        return True
+
+    if re.search(r"\b(km|ruta|autopista|rotonda|puente)\b", texto_normalizado):
+        return True
+
+    if re.search(r"\b(plaza|parque|monumento|terminal|hospital|escuela|cementerio)\b", texto_normalizado):
+        return True
+
+    if re.search(r"\b(barrio|distrito|manzana|mz|lote)\b", texto_normalizado):
+        return True
+
+    return False
 
 
 def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None) -> dict | None:
@@ -302,10 +349,13 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
     - "piso" (opcional)
     - "departamento" (opcional)
     - "barrio" (opcional)
+    - "distrito" (opcional)
+    - "manzana" (opcional)
+    - "lote" (opcional)
     - "localidad"
     - "provincia"
     - "codigo_postal" (opcional)
-    - "otros_detalles" (cualquier información adicional relevante que no encaje en los otros campos)
+    - "otros_detalles" (cualquier información adicional relevante: esquina/intersección, "entre calles", plaza, monumento, referencias)
 
     Responde únicamente con el objeto JSON. Si no puedes extraer una calle o una localidad, devuelve un JSON vacío.
     """
@@ -703,6 +753,13 @@ def buscar_puntos_de_interes(
 
     if not rubro:
         return "Por favor, decime qué tipo de lugar o comercio estás buscando (por ejemplo, 'farmacia', 'ferretería', etc.)."
+
+    rubro_original = rubro
+    rubro_normalizado = normalizar_texto(rubro)
+    if "farmacia" in rubro_normalizado:
+        rubro = "farmacia"
+    if any(token in rubro_normalizado for token in ("de turno", "24", "24hs", "24 horas", "guardia")):
+        opennow = True
 
     logger.info(f"[HERRAMIENTA POI] Buscando puntos de interés para: rubro='{rubro}', localidad='{localidad}', opennow={opennow}")
 
