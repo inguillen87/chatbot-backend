@@ -841,10 +841,6 @@ class VoiceStreamService:
                                     or sanitize_profile_name(getattr(self.user, "name", None))
                                     or ""
                                 )
-                                promo_image_url = public_url(
-                                    res.get("image_url") or self._resolve_promo_image_url(municipio_cfg),
-                                    PUBLIC_BASE_URL,
-                                )
                                 receipt = render_ticket_whatsapp(
                                     kind="reclamo",
                                     nombre=nombre_contacto,
@@ -855,7 +851,9 @@ class VoiceStreamService:
                                     dni=args.get("dni"),
                                     consulta_pin=data.get("consulta_pin"),
                                     base_chat_url=base_chat_url,
-                                    promo_image_url=promo_image_url,
+                                    promo_image_url=(
+                                        res.get("image_url") or self._resolve_promo_image_url(municipio_cfg)
+                                    ),
                                     promo_text=data_payload.get("promo_text"),
                                     contacto_especializado=data_payload.get("contacto_especializado"),
                                     info_url=municipio_cfg.get("link_web") or municipio_cfg.get("url_web"),
@@ -864,7 +862,7 @@ class VoiceStreamService:
                                 send_whatsapp_message(
                                     whatsapp_target,
                                     receipt["body_text"],
-                                    media_url=promo_image_url or receipt.get("media_url"),
+                                    media_url=receipt.get("media_url"),
                                     from_number=whatsapp_sender,
                                 )
                                 logger.info(f"[VOICE] Sent Rich Receipt to {whatsapp_target} for ticket {nro}")
