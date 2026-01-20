@@ -1,4 +1,29 @@
+import os
 from typing import Any, Dict, Optional
+
+from utils.url_utils import public_url
+
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://api.chatboc.ar")
+
+
+def _format_horario(horario: Any) -> str:
+    if not horario:
+        return ""
+    if not isinstance(horario, list):
+        return ""
+    lines = []
+    for item in horario:
+        if not isinstance(item, dict):
+            continue
+        dia = item.get("dia", "")
+        abre = item.get("abre", "")
+        cierra = item.get("cierra", "")
+        cerrado = item.get("cerrado", False)
+        if cerrado:
+            lines.append(f"• {dia}: cerrado")
+        else:
+            lines.append(f"• {dia}: {abre} a {cierra}")
+    return "\n".join([line for line in lines if line])
 
 
 def _build_menu_text(kind: str) -> str:
@@ -44,8 +69,10 @@ def _render_contact_section(contacto: Optional[Dict[str, Any]]) -> str:
         lines.append(f"* Cargo: {cargo}")
     if telefono:
         lines.append(f"* Teléfono: {telefono}")
-    if horario:
-        lines.append(f"* Horario: {horario}")
+    horario_txt = _format_horario(horario)
+    if horario_txt:
+        lines.append("🕘 *Horario:*")
+        lines.append(horario_txt)
     return "\n".join(lines)
 
 
@@ -117,7 +144,7 @@ def render_ticket_whatsapp(
 
     return {
         "body_text": body_text,
-        "media_url": promo_image_url,
+        "media_url": public_url(promo_image_url, PUBLIC_BASE_URL),
     }
 
 

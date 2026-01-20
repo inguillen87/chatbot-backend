@@ -146,8 +146,8 @@ def voice_inbound_stream():
     # Updated path as per requirement
     stream_url = f"{ws_url}/twilio/voice/stream"
 
-    # Add a polite filler to prevent silence/robotic noise while connecting
-    response.pause(length=1)
+    # Add a short greeting to avoid silence before streaming
+    response.say("Hola, un segundo que ya te atiendo.", language="es-AR")
 
     # The greeting will be handled by the AI Stream immediately upon connection.
     connect = Connect()
