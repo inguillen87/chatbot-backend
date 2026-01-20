@@ -6649,6 +6649,12 @@ def _build_catalogo_link_map(context: Optional[dict]) -> Dict[str, str]:
     }
 
     link_map: Dict[str, str] = {}
+
+    # FIX: Prioritize Frontend/Widget URL to avoid sending raw Backend JSON
+    frontend_base = current_app.config.get("WIDGET_URL") or current_app.config.get("PANEL_URL")
+    if frontend_base and (not base_url or "onrender.com" in base_url or "herokuapp.com" in base_url):
+        base_url = frontend_base.rstrip("/")
+
     for action_id, default_path in default_paths.items():
         raw_url = override_maps.get(action_id)
         if not raw_url and base_url:
@@ -9525,6 +9531,12 @@ def responder_municipio(
             flag_modified(chat_db_context, "context_data")
         return _finalize_response(response)
     # --- INICIO: Manejo del Flujo de Reclamos Activo ---
+    # Conflict check: If LLM state is active, prioritizing LLM and clearing legacy flow
+    if contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
+        if "reclamo_flow_v2" in contexto_municipio_actual:
+            logger_actual.info("Clearing conflicting ReclamoFlowHandler state because ESPERANDO_INFO_RECLAMO_LLM is active.")
+            contexto_municipio_actual.pop("reclamo_flow_v2", None)
+
     if "reclamo_flow_v2" in contexto_municipio_actual and contexto_municipio_actual["reclamo_flow_v2"].get("state"):
         logger_actual.info(f"Reclamo flow is active. State: {contexto_municipio_actual['reclamo_flow_v2'].get('state')}. Handing off to ReclamoFlowHandler.")
         handler = ReclamoFlowHandler(context, chat_db_context)
