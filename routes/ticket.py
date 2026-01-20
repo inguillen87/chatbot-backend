@@ -1000,8 +1000,14 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     # Create a comment for the text part, if it exists
     if comentario_texto and comentario_texto.strip():
         comentario_obj = servicio_tickets.crear_comentario(
-            ticket_id=ticket_id, tipo_ticket=tipo,
-            comentario_data={"comentario": comentario_texto, "user_id": current_user.id, "es_admin": True}
+            ticket_id=ticket_id,
+            tipo_ticket=tipo,
+            comentario_data={
+                "comentario": comentario_texto,
+                "user_id": current_user.id,
+                "es_admin": True,
+                "emit_notifications": False,
+            },
         )
         if comentario_obj:
             comentarios_creados.append(comentario_obj)
@@ -1012,13 +1018,15 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     if 'attachment_info' in locals() and attachment_info:
         file_comment_text = f"[Archivo adjunto: {attachment_info.get('name', 'archivo')}]"
         file_comment_obj = servicio_tickets.crear_comentario(
-            ticket_id=ticket_id, tipo_ticket=tipo,
+            ticket_id=ticket_id,
+            tipo_ticket=tipo,
             comentario_data={
                 "comentario": file_comment_text,
                 "user_id": current_user.id,
                 "es_admin": True,
-                "archivo_adjunto_id": attachment_info.get('id')
-            }
+                "archivo_adjunto_id": attachment_info.get('id'),
+                "emit_notifications": False,
+            },
         )
         if file_comment_obj:
             comentarios_creados.append(file_comment_obj)
@@ -1032,13 +1040,15 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
 
         file_comment_text = f"[Archivo adjunto: {adjunto.nombre_original}]"
         file_comment_obj = servicio_tickets.crear_comentario(
-            ticket_id=ticket_id, tipo_ticket=tipo,
+            ticket_id=ticket_id,
+            tipo_ticket=tipo,
             comentario_data={
                 "comentario": file_comment_text,
                 "user_id": current_user.id,
                 "es_admin": True,
-                "archivo_adjunto_id": adjunto.id
-            }
+                "archivo_adjunto_id": adjunto.id,
+                "emit_notifications": False,
+            },
         )
         if file_comment_obj:
             comentarios_creados.append(file_comment_obj)
