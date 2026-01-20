@@ -39,6 +39,8 @@ from services.response_formatter import render_audio_text
 from services.tts_orchestrator import generar_audio
 from utils.response_utils import normalize_response_payload
 from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
+from services.contact_service import resolve_contact
+from services.contact_service import resolve_contact
 from services.ticket_service import servicio_tickets
 
 # Define the blueprint for WhatsApp webhooks
@@ -1885,6 +1887,16 @@ def whatsapp_webhook():
                 kwargs_for_bot["selected_option_data"] = selected_option
 
             profile_name = post_vars.get("ProfileName")
+            resolved_contact = resolve_contact(from_number_cleaned, profile_name)
+            if resolved_contact:
+                kwargs_for_bot["resolved_contact"] = resolved_contact
+                if isinstance(session_context_db_entry.context_data, dict):
+                    session_context_db_entry.context_data["resolved_contact"] = resolved_contact
+                    session_context_db_entry.context_data.setdefault("contact_cache", {}).update(
+                        {k: v for k, v in resolved_contact.items() if v}
+                    )
+                if not profile_name and resolved_contact.get("nombre"):
+                    profile_name = resolved_contact.get("nombre")
             if profile_name:
                 kwargs_for_bot["profile_name"] = profile_name
 
@@ -1969,6 +1981,14 @@ def whatsapp_webhook():
     formatted_whatsapp_payload = {}
     try:
         from services.response_formatter import build_interactive_response
+
+        receipt_payload = bot_response_dict.get("whatsapp_receipt")
+        if receipt_payload:
+            bot_response_dict["message_body"] = receipt_payload.get("body_text")
+            bot_response_dict["options_list"] = []
+            bot_response_dict["message_type"] = "text"
+            if receipt_payload.get("media_url"):
+                bot_response_dict["image_url"] = receipt_payload.get("media_url")
 
         body_text = bot_response_dict.get("message_body", "")
 

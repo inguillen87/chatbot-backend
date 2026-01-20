@@ -9413,6 +9413,9 @@ def responder_municipio(
     # --- END CONTEXT INITIALIZATION ---
 
     profile_name = kwargs.get("profile_name")
+    resolved_contact = kwargs.get("resolved_contact") or chat_db_context_live_data.get("resolved_contact")
+    if resolved_contact and not profile_name:
+        profile_name = resolved_contact.get("nombre")
     if isinstance(profile_name, str) and profile_name.strip():
         if not chat_db_context_live_data.get("profile_name"):
             chat_db_context_live_data["profile_name"] = profile_name.strip()

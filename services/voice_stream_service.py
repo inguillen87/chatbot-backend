@@ -14,7 +14,11 @@ from extensions import db
 from sqlalchemy.orm import joinedload
 
 from utils.db_utils import safe_flag_modified
-from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
+from services.contact_service import resolve_contact
+from services.whatsapp_sender import send_whatsapp_message
+from services.contact_service import resolve_contact
+from services.whatsapp_receipts import build_ticket_receipt
+from services.whatsapp_sender import send_whatsapp_message
 
 logger = logging.getLogger(__name__)
 
@@ -309,6 +313,18 @@ class VoiceStreamService:
 
             self.context_data_snapshot = session_context.context_data or {}
             identity = self._resolve_identity_from_context(self.context_data_snapshot)
+            resolved_contact = resolve_contact(
+                user_phone_clean,
+                self.context_data_snapshot.get("profile_name"),
+            )
+            if resolved_contact:
+                self.context_data_snapshot["resolved_contact"] = resolved_contact
+                if isinstance(session_context.context_data, dict):
+                    session_context.context_data["resolved_contact"] = resolved_contact
+                    if resolved_contact.get("nombre") and not session_context.context_data.get("profile_name"):
+                        session_context.context_data["profile_name"] = resolved_contact.get("nombre")
+                    safe_flag_modified(session_context, "context_data")
+                    db.session.commit()
             if self.user:
                 generic_names = {"vecino", "vecino/a", "cliente", "usuario"}
                 user_name = getattr(self.user, "name", None)
@@ -793,6 +809,10 @@ class VoiceStreamService:
                         "municipio_config_actual": self.tenant_profile.configuracion if self.tenant_profile else {},
                     }
                     ctx["contexto_municipio_v2"] = chat_data.get("contexto_municipio_v2", {})
+                    ctx["resolved_contact"] = resolve_contact(
+                        getattr(self.user, "telefono", None) or self.from_number,
+                        self.context_data_snapshot.get("profile_name") if isinstance(self.context_data_snapshot, dict) else None,
+                    )
 
                     nombre_raw = args.get("nombre")
                     if isinstance(nombre_raw, str):
@@ -871,46 +891,27 @@ class VoiceStreamService:
 
                         if whatsapp_target:
                             try:
-                                # Usamos el payload rico que devuelve la acción (botones, imagen promo, texto formateado)
-                                msg_body = res.get("message_body")
-                                if not msg_body:
-                                    msg_body = (
-                                        f"✅ *Reclamo registrado*\n"
-                                        f"📌 N°: *{nro}*\n"
-                                        f"🧾 Categoría: {args.get('categoria', 'General')}\n"
-                                        f"📝 {args.get('descripcion', '')}\n"
-                                        f"📍 {args.get('ubicacion', '')}"
-                                    )
-
-                                image_url = res.get("image_url")
-                                botones_raw = res.get("options_list") or res.get("botones")
-                                botones_texto = []
-                                for boton in (botones_raw or []):
-                                    if isinstance(boton, dict):
-                                        texto = boton.get("texto") or boton.get("title")
-                                        if texto:
-                                            botones_texto.append(texto)
-                                    else:
-                                        botones_texto.append(str(boton))
-
-                                # Fallback de imagen promo si la acción no la trajo pero existe en config
-                                if not image_url and self.tenant_profile and self.tenant_profile.configuracion:
-                                    image_url = self.tenant_profile.configuracion.get("promo_image_url")
-
+                                municipio_cfg = self.tenant_profile.configuracion if self.tenant_profile else {}
+                                base_chat_url = municipio_cfg.get("base_chat_url", "https://www.chatboc.ar/chat")
+                                receipt = build_ticket_receipt(
+                                    kind="reclamo",
+                                    nombre=getattr(self.user, "name", None) or "",
+                                    ticket_nro=nro,
+                                    categoria=args.get("categoria", "General"),
+                                    descripcion=args.get("descripcion", ""),
+                                    direccion=args.get("ubicacion"),
+                                    dni=args.get("dni"),
+                                    consulta_pin=data.get("consulta_pin"),
+                                    base_chat_url=base_chat_url,
+                                    promo_image_url=res.get("image_url") or municipio_cfg.get("promo_image_url"),
+                                    info_url=municipio_cfg.get("link_web") or municipio_cfg.get("url_web"),
+                                )
                                 whatsapp_sender = self._resolve_whatsapp_sender()
-                                send_kwargs = {
-                                    "image_url": image_url,
-                                    "botones": botones_texto or None,
-                                }
-                                if whatsapp_sender:
-                                    send_kwargs["from_number"] = whatsapp_sender
-                                else:
-                                    send_kwargs["messaging_service_sid"] = MESSAGING_SERVICE_SID
-
-                                enviar_mensaje_whatsapp_con_fallback(
+                                send_whatsapp_message(
                                     whatsapp_target,
-                                    msg_body,
-                                    **send_kwargs,
+                                    receipt["body_text"],
+                                    media_url=receipt.get("media_url"),
+                                    from_number=whatsapp_sender,
                                 )
                                 logger.info(f"[VOICE] Sent Rich Receipt to {whatsapp_target} for ticket {nro}")
                             except Exception as ex:

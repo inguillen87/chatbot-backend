@@ -160,6 +160,12 @@ def geocode_address(address: str, geo_ctx: Optional[Dict[str, Any]] = None):
         if geocode_result:
             return geocode_result[0]
         return None
+    except googlemaps.exceptions.ApiError as e:
+        if getattr(e, "status", "") == "REQUEST_DENIED":
+            logger.warning("Google Maps Geocoding disabled or denied. Falling back.")
+            return None
+        logger.error(f"Error geocoding address: {e}", exc_info=True)
+        return None
     except Exception as e:
         logger.error(f"Error geocoding address: {e}", exc_info=True)
         return None

@@ -23,6 +23,7 @@ from services.categorias_municipio import (
     normalizar_texto as normalizar_texto_municipio,
 )
 from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
+from services.whatsapp_receipts import build_ticket_receipt
 from services.live_chat_schedule import build_live_chat_status
 from utils.ticket_utils import normalize_category
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
@@ -355,6 +356,13 @@ class CrearReclamoActionHandler(BaseActionHandler):
         viewer_user = self.context.get("viewer_user_obj")
         datos_parciales_llm = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
         contacto_ctx = contexto_reclamo.get("contacto_usuario", {})
+        resolved_contact = self.context.get("resolved_contact") or {}
+
+        if resolved_contact:
+            contacto_ctx.setdefault("nombre", resolved_contact.get("nombre"))
+            contacto_ctx.setdefault("email", resolved_contact.get("email"))
+            contacto_ctx.setdefault("dni", resolved_contact.get("dni"))
+            contacto_ctx.setdefault("telefono", resolved_contact.get("telefono"))
 
         # Fusionar datos: action_data tiene prioridad, luego el contexto del reclamo, luego el perfil del usuario
         datos_parciales = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
@@ -942,6 +950,25 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     "consulta_pin": pin_final,
                 }
             }
+            response_payload["whatsapp_receipt"] = build_ticket_receipt(
+                kind="reclamo",
+                nombre=ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
+                ticket_nro=nro_ticket_str,
+                categoria=categoria_display,
+                descripcion=descripcion,
+                direccion=ubicacion_llm,
+                dni=ticket_data_cleaned.get("dni_vecino"),
+                consulta_pin=pin_final,
+                base_chat_url=base_chat_url,
+                promo_image_url=promo_image_url,
+                info_url=municipio_config.get("link_web") or municipio_config.get("url_web"),
+            )
+            if channel_value == "whatsapp":
+                receipt = response_payload["whatsapp_receipt"]
+                response_payload["message_body"] = receipt.get("body_text") or mensaje_respuesta
+                response_payload["options_list"] = []
+                response_payload["message_type"] = "text"
+                response_payload["image_url"] = receipt.get("media_url") or promo_image_url
             caption_values = {
                 "message_body": mensaje_respuesta,
                 "ticket_nro": nro_ticket_str,
@@ -1209,6 +1236,26 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "image_url": promo_image_url,
                 "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado"}
             }
+            response_payload["whatsapp_receipt"] = build_ticket_receipt(
+                kind="sugerencia",
+                nombre=nombre_vecino_final,
+                ticket_nro=nro_ticket_str,
+                categoria="Sugerencia",
+                descripcion=descripcion_sugerencia,
+                direccion=ubicacion_sugerencia,
+                dni=dni_vecino,
+                consulta_pin=ticket_creado.get("consulta_pin") or pin_final,
+                base_chat_url=base_chat_url,
+                promo_image_url=promo_image_url,
+                info_url=municipio_config.get("link_web") or municipio_config.get("url_web"),
+            )
+            channel_value = (self.context.get("channel") or "").strip().lower()
+            if channel_value == "whatsapp":
+                receipt = response_payload["whatsapp_receipt"]
+                response_payload["message_to_user"] = receipt.get("body_text") or respuesta_formateada
+                response_payload["options_list"] = []
+                response_payload["message_type"] = "text"
+                response_payload["image_url"] = receipt.get("media_url") or promo_image_url
             caption_values = {
                 "message_body": respuesta_formateada,
                 "ticket_nro": nro_ticket_str,
