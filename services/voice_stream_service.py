@@ -649,12 +649,8 @@ class VoiceStreamService:
 
                     nombre_raw = args.get("nombre")
                     if isinstance(nombre_raw, str):
-                        # Filter out repetitive greetings captured as names
-                        normalized = re.sub(r"[^\w\s]", "", nombre_raw.lower())
-                        forbidden = {"hola", "buenas", "buenos", "buen", "dia", "tarde", "noche", "saludos"}
-                        words = normalized.split()
-                        if words and all(word in forbidden for word in words):
-                            args.pop("nombre", None)
+                        # Nunca usar la transcripción de voz para nombre.
+                        args.pop("nombre", None)
 
                     email_raw = args.get("email")
                     if isinstance(email_raw, str) and email_raw.endswith("@whatsapp.chatboc.com"):

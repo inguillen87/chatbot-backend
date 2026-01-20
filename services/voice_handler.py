@@ -320,8 +320,7 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
         context_data = session_context.context_data if session_context else {}
 
         if context_data.get("receipt_sent"):
-            logger.info("Receipt already sent during stream. Skipping status summary.")
-            return
+            logger.info("Receipt already sent during stream. Sending final summary anyway.")
 
         ticket_info_text = ""
 
