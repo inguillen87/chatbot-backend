@@ -461,7 +461,8 @@ class VoiceStreamService:
             "Si falta la categoría pero hay descripción suficiente, inferila sin preguntar. "
             "Si el usuario menciona esquina/cruce, incluí ambas calles (ej: 'Don Bosco y Sarmiento'). "
             "Cuando tengas lo mínimo, ejecutá la herramienta correspondiente. "
-            "Al finalizar, DEBES DECIR: 'Listo [Nombre]. Tu reclamo quedó cargado con el número [Nro]'. "
+            "Al finalizar, confirmá el número con una frase breve, por ejemplo: "
+            "'Tu reclamo quedó cargado con el número [Nro]'. "
             "Avisá que se envió el comprobante por WhatsApp. "
             "Si el usuario confirma que ya está todo listo o dice 'no', 'nada más', 'listo' o 'perfecto', "
             "saludá y ejecutá finalizar_llamada."
@@ -580,12 +581,12 @@ class VoiceStreamService:
 
                     if user_name:
                         greeting_line = (
-                            f"¡Hola {user_name} 👋! Soy el asistente de {tenant_name}. ¿En qué te ayudo?"
+                            f"Hola {user_name}. Te saluda el asistente de {tenant_name}. ¿En qué te ayudo?"
                         )
                     else:
                         greeting_line = (
-                            f"¡Hola! Soy el asistente de {tenant_name}. "
-                            "No tengo tu nombre agendado, ¿cómo te llamas?"
+                            f"Hola. Te saluda el asistente de {tenant_name}. "
+                            "Quiero agendar tu nombre, ¿cómo te llamás?"
                         )
 
                     greeting_text = f"Decí exactamente: \"{greeting_line}\""
@@ -893,9 +894,9 @@ class VoiceStreamService:
                         nombre_speech = getattr(self.user, "name", None) or ""
                         nombre_speech = nombre_speech.strip()
                         if nombre_speech:
-                            saludo_ticket = f"Listo {nombre_speech}."
+                            saludo_ticket = f"Gracias {nombre_speech}."
                         else:
-                            saludo_ticket = "Listo."
+                            saludo_ticket = "Gracias."
 
                         result = (
                             f"{saludo_ticket} Tu reclamo quedó cargado con el número {nro}. "
