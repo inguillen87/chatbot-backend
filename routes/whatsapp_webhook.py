@@ -1587,7 +1587,16 @@ def whatsapp_webhook():
                     # 1. Find the ticket
                     # We assume it's a Municipio ticket for now based on voice bot usage
                     from models import MunicipioTicket, TicketComentario
-                    ticket = MunicipioTicket.query.filter_by(nro_ticket=awaiting_ticket_nro).first()
+                    normalized_ticket_nro = str(awaiting_ticket_nro).strip().upper()
+                    ticket_candidates = [normalized_ticket_nro]
+                    if normalized_ticket_nro.startswith(("M-", "S-", "P-")):
+                        ticket_candidates.append(normalized_ticket_nro.split("-", 1)[1])
+                    ticket_candidates = [candidate for candidate in ticket_candidates if candidate]
+                    ticket = (
+                        MunicipioTicket.query
+                        .filter(MunicipioTicket.nro_ticket.in_(ticket_candidates))
+                        .first()
+                    )
 
                     if ticket:
                          # 2. Attach the file
@@ -1630,7 +1639,11 @@ def whatsapp_webhook():
                              # Returning "OK" stops the bot from replying "No entendi"
                              return "OK", 200
                     else:
-                        current_app.logger.warning(f"[VOICE_BRIDGE] Ticket {awaiting_ticket_nro} not found for photo attachment.")
+                        current_app.logger.warning(
+                            "[VOICE_BRIDGE] Ticket %s not found for photo attachment. Candidates: %s",
+                            awaiting_ticket_nro,
+                            ticket_candidates,
+                        )
 
                 except Exception as e_bridge:
                     current_app.logger.error(f"[VOICE_BRIDGE] Error attaching photo: {e_bridge}")
