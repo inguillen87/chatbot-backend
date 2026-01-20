@@ -320,8 +320,7 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
         context_data = session_context.context_data if session_context else {}
 
         if context_data.get("receipt_sent"):
-            logger.info("Receipt already sent during stream. Skipping status summary.")
-            return
+            logger.info("Receipt already sent during stream. Sending final summary anyway.")
 
         ticket_info_text = ""
 
@@ -336,12 +335,15 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
         created_ticket_id = context_data.get("latest_ticket_id") or municipio_ctx.get("ultimo_ticket_creado")
         created_ticket_nro = context_data.get("latest_ticket_nro")
         tracking_url = context_data.get("latest_tracking_url")
+        consulta_pin = context_data.get("latest_ticket_pin")
 
         if created_ticket_nro:
             ticket_info_text = (
                 f"✅ *Ticket generado con éxito*\n"
                 f"Número: *{created_ticket_nro}*\n"
             )
+            if consulta_pin:
+                ticket_info_text += f"PIN: *{consulta_pin}*\n"
             if tracking_url:
                 ticket_info_text += f"Seguí el estado aquí: {tracking_url}\n"
 

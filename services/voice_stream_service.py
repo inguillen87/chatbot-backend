@@ -645,15 +645,12 @@ class VoiceStreamService:
                         "chat_db_context_data": chat_data,
                         "municipio_config_actual": self.tenant_profile.configuracion if self.tenant_profile else {},
                     }
+                    ctx["contexto_municipio_v2"] = chat_data.get("contexto_municipio_v2", {})
 
                     nombre_raw = args.get("nombre")
                     if isinstance(nombre_raw, str):
-                        # Filter out repetitive greetings captured as names
-                        normalized = re.sub(r"[^\w\s]", "", nombre_raw.lower())
-                        forbidden = {"hola", "buenas", "buenos", "buen", "dia", "tarde", "noche", "saludos"}
-                        words = normalized.split()
-                        if words and all(word in forbidden for word in words):
-                            args.pop("nombre", None)
+                        # Nunca usar la transcripción de voz para nombre.
+                        args.pop("nombre", None)
 
                     email_raw = args.get("email")
                     if isinstance(email_raw, str) and email_raw.endswith("@whatsapp.chatboc.com"):
@@ -683,6 +680,19 @@ class VoiceStreamService:
                             session_context.context_data["awaiting_photo_for_ticket"] = nro
                             if data.get("ticket_id"):
                                 session_context.context_data["latest_ticket_id"] = data.get("ticket_id")
+                            if data.get("consulta_pin"):
+                                session_context.context_data["latest_ticket_pin"] = data.get("consulta_pin")
+                            base_chat_url = (
+                                self.tenant_profile.configuracion.get("base_chat_url")
+                                if self.tenant_profile and self.tenant_profile.configuracion
+                                else None
+                            )
+                            if base_chat_url:
+                                ticket_id_numeric = str(nro).replace("M-", "").replace("S-", "")
+                                tracking_url = f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}"
+                                if data.get("consulta_pin"):
+                                    tracking_url = f"{tracking_url}?pin={data.get('consulta_pin')}"
+                                session_context.context_data["latest_tracking_url"] = tracking_url
                             # Marcar que ya enviamos el recibo para evitar duplicados en handle_call_status
                             session_context.context_data["receipt_sent"] = True
 
