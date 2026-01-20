@@ -18,11 +18,13 @@ from services.contact_service import resolve_contact, sanitize_profile_name
 from services.whatsapp_receipts import render_ticket_whatsapp
 from services.whatsapp_sender import send_whatsapp_message
 from services.config_loader import cargar_configuracion_municipio
+from utils.url_utils import public_url
 
 logger = logging.getLogger(__name__)
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://api.chatboc.ar")
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
@@ -181,6 +183,13 @@ class VoiceStreamService:
         if tenant_name.lower() in {"municipio inteligente", "municipio"}:
             return "Municipio"
         return tenant_name
+
+    def _resolve_assistant_name(self) -> str:
+        config = self._resolve_municipio_config()
+        assistant_name = config.get("assistant_name") or config.get("bot_name")
+        if assistant_name:
+            return str(assistant_name)
+        return "Juni"
 
     def _resolve_whatsapp_sender(self) -> str | None:
         if self.tenant_profile and getattr(self.tenant_profile, "configuracion", None):
@@ -427,6 +436,7 @@ class VoiceStreamService:
         Prompt de voz: corto, directo, SIN alucinación y orientado a acción.
         """
         tenant_name = self._resolve_tenant_name()
+        assistant_name = self._resolve_assistant_name()
         tenant_tipo = "municipio"
 
         if self.tenant_profile:
@@ -443,6 +453,7 @@ class VoiceStreamService:
         known_data_str = f"Datos conocidos del usuario: Nombre: {user_name}."
         if user_addr:
             known_data_str += f" Dirección guardada: {user_addr}."
+        greeting_name = self._resolve_greeting_name() or "vecino"
 
         prompt = (
             f"Sos el asistente telefónico de {tenant_name}. "
@@ -451,6 +462,7 @@ class VoiceStreamService:
             "Respuestas MUY cortas: 1 o 2 oraciones. "
             "Objetivo: resolver rápido. "
             f"{known_data_str} "
+            f"Saludá SIEMPRE al iniciar con: \"Hola {greeting_name}, soy {assistant_name}.\" "
             "Regla PRIORITARIA: En el primer turno, saludá usando el nombre del usuario si está disponible. "
             "Si el nombre no está disponible, saludá de forma neutra ('Hola') y continuá el flujo sin pedirlo de entrada. "
             "IMPORTANTE: No confundas saludos como 'Hola', 'Buenas', 'Hola hola' con el nombre del usuario. "
@@ -578,16 +590,17 @@ class VoiceStreamService:
                     self.openai_ws.send(json.dumps(session_update))
 
                     tenant_name = self._resolve_tenant_name()
+                    assistant_name = self._resolve_assistant_name()
 
                     user_name = self._resolve_greeting_name()
 
                     if user_name:
                         greeting_line = (
-                            f"¡Hola {user_name} 👋! Soy el asistente de {tenant_name}. ¿En qué te ayudo?"
+                            f"¡Hola {user_name} 👋! Soy {assistant_name} de {tenant_name}. ¿En qué te ayudo?"
                         )
                     else:
                         greeting_line = (
-                            f"¡Hola! Soy el asistente de {tenant_name}. ¿En qué te ayudo?"
+                            f"¡Hola! Soy {assistant_name} de {tenant_name}. ¿En qué te ayudo?"
                         )
 
                     greeting_text = f"Decí exactamente: \"{greeting_line}\""
@@ -827,8 +840,9 @@ class VoiceStreamService:
                                     or sanitize_profile_name(getattr(self.user, "name", None))
                                     or ""
                                 )
-                                promo_image_url = (
-                                    res.get("image_url") or self._resolve_promo_image_url(municipio_cfg)
+                                promo_image_url = public_url(
+                                    res.get("image_url") or self._resolve_promo_image_url(municipio_cfg),
+                                    PUBLIC_BASE_URL,
                                 )
                                 receipt = render_ticket_whatsapp(
                                     kind="reclamo",
@@ -944,7 +958,10 @@ class VoiceStreamService:
                                         f"💰 *Total: {monto:,.2f}*\n"
                                     )
 
-                                image_url = res.get("image_url")
+                                image_url = public_url(
+                                    res.get("image_url"),
+                                    PUBLIC_BASE_URL,
+                                )
                                 whatsapp_sender = self._resolve_whatsapp_sender()
                                 send_whatsapp_message(
                                     whatsapp_target,
