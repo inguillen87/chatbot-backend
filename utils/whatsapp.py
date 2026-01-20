@@ -43,7 +43,19 @@ def _build_text_fallback_body(cuerpo: str, botones=None, lista=None) -> str:
     body = (cuerpo or "").strip()
 
     if botones:
-        body += "\n\nOpciones:\n" + "\n".join([f"- {b}" for b in botones])
+        rendered_buttons = []
+        for boton in botones:
+            if isinstance(boton, dict):
+                label = boton.get("texto") or boton.get("title") or boton.get("label")
+                if boton.get("url") and label:
+                    rendered_buttons.append(f"{label}: {boton.get('url')}")
+                elif label:
+                    rendered_buttons.append(label)
+                else:
+                    rendered_buttons.append(str(boton))
+            else:
+                rendered_buttons.append(str(boton))
+        body += "\n\nOpciones:\n" + "\n".join([f"- {b}" for b in rendered_buttons if b])
 
     if lista:
         titulo = lista.get("titulo", "Opciones")
