@@ -6,6 +6,7 @@ from pathlib import Path
 from sqlalchemy.orm.attributes import flag_modified
 
 from .herramientas_municipio import TOOL_REGISTRY
+from .poi_service import nearby as poi_nearby
 from .estacionamiento_utils import _dist_m
 from .estacionamiento_service import consultar_ocupacion
 from .conversation_state import ConversationState
@@ -415,6 +416,44 @@ class PointsOfInterestHandler:
             {"texto": "Otro tipo de lugar", "action_id": "otro lugar"},
         ]
 
+    @staticmethod
+    def _poi_keyword_from_query(query: str) -> tuple[str, bool] | tuple[None, bool]:
+        normalized = PointsOfInterestHandler._normalize_text(query)
+        keyword_map = {
+            "hospitales": "hospital",
+            "clinicas": "hospital",
+            "clínicas": "hospital",
+            "farmacias": "farmacia",
+            "farmacias 24 horas": "farmacia",
+            "farmacias 24 hs": "farmacia",
+            "farmacias 24hs": "farmacia",
+            "restaurantes": "restaurant",
+            "comisarias": "police",
+            "comisarías": "police",
+            "bomberos": "fire station",
+            "cajeros automaticos": "atm",
+            "cajeros automáticos": "atm",
+            "parques": "park",
+            "plazas": "park",
+            "supermercados": "supermarket",
+        }
+        open_now = any(token in normalized for token in ("24", "24hs", "24 horas", "de turno", "guardia"))
+        for key, keyword in keyword_map.items():
+            if key in normalized:
+                return keyword, open_now
+        return None, open_now
+
+    @staticmethod
+    def _format_poi_results(results: list[dict], label: str) -> str:
+        if not results:
+            return f"No pude encontrar {label} cerca de esa ubicación."
+        lines = [f"{label.capitalize()} cercanos:"]
+        for idx, item in enumerate(results[:3], 1):
+            name = item.get("name") or "Lugar"
+            address = item.get("vicinity") or item.get("formatted_address") or "Dirección no disponible"
+            lines.append(f"{idx}. {name} — {address}")
+        return "\n".join(lines)
+
     def _build_refinement_prompt(self, location: dict | None) -> dict:
         address = ""
         if isinstance(location, dict):
@@ -498,6 +537,30 @@ class PointsOfInterestHandler:
             if option.get("action_id")
         }
         if normalized_question in refinement_actions and "estacionamiento" not in normalized_question:
+            if isinstance(location, dict) and location.get("lat") is not None and location.get("lon") is not None:
+                keyword, open_now = self._poi_keyword_from_query(original_question)
+                if keyword:
+                    results = poi_nearby(
+                        location.get("lat"),
+                        location.get("lon"),
+                        keyword=keyword,
+                        radius=1500,
+                        open_now=open_now,
+                    )
+                    if results is None:
+                        return self._build_simple_response(
+                            "No pude consultar lugares en tiempo real. Probá más tarde o consultá la web del municipio."
+                        )
+                    if open_now:
+                        results = [
+                            item
+                            for item in (results or [])
+                            if item.get("opening_hours", {}).get("open_now") is True
+                        ]
+                    label = original_question
+                    message = self._format_poi_results(results or [], label)
+                    return self._build_simple_response(message)
+
             direct_lookup = self._handle_direct_poi_lookup(original_question, location if isinstance(location, dict) else None)
             if direct_lookup:
                 return direct_lookup
@@ -616,6 +679,35 @@ class PointsOfInterestHandler:
                     message_body or "No tengo una herramienta para eso."
                 )
             try:
+                if (
+                    nombre in {"buscar_poi", "buscar_puntos_de_interes"}
+                    and isinstance(location, dict)
+                    and location.get("lat") is not None
+                    and location.get("lon") is not None
+                ):
+                    keyword, open_now = self._poi_keyword_from_query(params.get("rubro") or params.get("tipo_lugar") or "")
+                    if keyword:
+                        results = poi_nearby(
+                            location.get("lat"),
+                            location.get("lon"),
+                            keyword=keyword,
+                            radius=1500,
+                            open_now=open_now,
+                        )
+                        if results is None:
+                            return self._build_simple_response(
+                                "No pude consultar lugares en tiempo real. Probá más tarde o consultá la web del municipio."
+                            )
+                        if open_now:
+                            results = [
+                                item
+                                for item in (results or [])
+                                if item.get("opening_hours", {}).get("open_now") is True
+                            ]
+                        label = params.get("rubro") or params.get("tipo_lugar") or "lugares"
+                        result_text = self._format_poi_results(results or [], label)
+                        return self._build_simple_response(result_text)
+
                 resultado = herramienta["funcion"](**params)
                 if isinstance(resultado, dict):
                     result_text = resultado.get("texto") or resultado.get("message_body") or str(resultado)

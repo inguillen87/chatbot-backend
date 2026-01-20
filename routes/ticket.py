@@ -1320,6 +1320,8 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
         es_agente_municipal = current_user and current_user.tipo_chat == "municipio"
         es_dueño_del_ticket = current_user and sala_de_chat.user_id == current_user.id
         es_anon_valido = anon_id and sala_de_chat.anon_id == anon_id
+        pin_query = request.args.get("pin")
+        es_pin_valido = bool(pin_query and getattr(sala_de_chat, "consulta_pin", None) == pin_query)
 
         if es_agente_municipal:
             error_response = _validar_asignacion_empleado(sala_de_chat, current_user)
@@ -1328,10 +1330,10 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
 
         log_ticket_debug("get_chat_mensajes", ticket_id, anon_id, sala_de_chat)
 
-        if not (es_agente_municipal or es_dueño_del_ticket or es_anon_valido):
+        if not (es_agente_municipal or es_dueño_del_ticket or es_anon_valido or es_pin_valido):
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
-        if sala_de_chat.estado == "cerrado" and not es_agente_municipal:
+        if sala_de_chat.estado == "cerrado" and not es_agente_municipal and not es_pin_valido:
             return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
         ultimo_mensaje_id = request.args.get('ultimo_mensaje_id', default=0, type=int)
