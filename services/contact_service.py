@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Any, Dict, Optional
 
 from services.common_utils import formatear_telefono_e164
@@ -17,7 +18,15 @@ def _sanitize_profile_name(value: Optional[str]) -> Optional[str]:
     banned = {"hola", "buenas", "eh", "mmm", "vecino", "vecino/a", "usuario", "anonimo"}
     if lowered in banned:
         return None
+    words = re.findall(r"[a-záéíóúñ]+", lowered)
+    greetings = {"hola", "buenas", "buenos", "buen"}
+    if words and all(word in greetings for word in words):
+        return None
     return cleaned
+
+
+def sanitize_profile_name(value: Optional[str]) -> Optional[str]:
+    return _sanitize_profile_name(value)
 
 
 def resolve_contact(phone: Optional[str], profile_name: Optional[str] = None) -> Dict[str, Any]:
@@ -48,9 +57,10 @@ def resolve_contact(phone: Optional[str], profile_name: Optional[str] = None) ->
             else None
         )
         if user:
+            raw_name = getattr(user, "name", None) or getattr(user, "nombre", None)
             resolved.update(
                 {
-                    "nombre": getattr(user, "name", None) or getattr(user, "nombre", None),
+                    "nombre": sanitize_profile_name(raw_name),
                     "email": getattr(user, "email", None),
                     "dni": getattr(user, "dni_vecino", None) or getattr(user, "dni", None),
                     "user_id": getattr(user, "id", None),
@@ -59,6 +69,6 @@ def resolve_contact(phone: Optional[str], profile_name: Optional[str] = None) ->
             )
 
     if not resolved.get("nombre"):
-        resolved["nombre"] = _sanitize_profile_name(profile_name)
+        resolved["nombre"] = sanitize_profile_name(profile_name)
 
     return resolved

@@ -14,7 +14,7 @@ def nearby(
     place_type: Optional[str] = None,
     radius: int = 2000,
     open_now: bool = False,
-) -> List[Dict[str, Any]]:
+) -> Optional[List[Dict[str, Any]]]:
     if lat is None or lon is None:
         return []
 
@@ -22,7 +22,10 @@ def nearby(
     if not term:
         return []
 
-    results = find_nearby_places({"lat": lat, "lng": lon}, term, radius=radius) or []
+    results = find_nearby_places({"lat": lat, "lng": lon}, term, radius=radius)
+    if results is None:
+        return None
+    results = results or []
     if open_now:
         results = [
             item

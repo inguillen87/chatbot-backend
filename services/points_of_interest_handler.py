@@ -547,6 +547,10 @@ class PointsOfInterestHandler:
                         radius=1500,
                         open_now=open_now,
                     )
+                    if results is None:
+                        return self._build_simple_response(
+                            "No pude consultar lugares en tiempo real. Probá más tarde o consultá la web del municipio."
+                        )
                     if open_now:
                         results = [
                             item
@@ -690,6 +694,10 @@ class PointsOfInterestHandler:
                             radius=1500,
                             open_now=open_now,
                         )
+                        if results is None:
+                            return self._build_simple_response(
+                                "No pude consultar lugares en tiempo real. Probá más tarde o consultá la web del municipio."
+                            )
                         if open_now:
                             results = [
                                 item

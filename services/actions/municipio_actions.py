@@ -61,6 +61,18 @@ def _normalize_url_for_comparison(raw_url: str) -> tuple[str, str]:
 
     return domain, path
 
+
+def _resolve_promo_image_url(municipio_config: dict) -> str | None:
+    if not isinstance(municipio_config, dict):
+        return None
+    promo_image_url = municipio_config.get("promo_image_url")
+    if promo_image_url:
+        return promo_image_url
+    promo_section = municipio_config.get("promo_section") or municipio_config.get("promo")
+    if isinstance(promo_section, dict):
+        return promo_section.get("image_url")
+    return None
+
 def _address_seems_generic(address: str | None) -> bool:
     if not address:
         return True
@@ -846,7 +858,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             # Formatear respuesta y obtener el botón de contacto
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
-            promo_image_url = municipio_config.get('promo_image_url')
+            promo_image_url = _resolve_promo_image_url(municipio_config)
             channel_value = (self.context.get("channel") or "").strip().lower()
             is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
             categoria_display = categoria
@@ -1197,7 +1209,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             # Obtener la URL base del chat del contexto para el botón "Ver mi Ticket"
             municipio_config = self.context.get('municipio_config_actual', {})
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
-            promo_image_url = municipio_config.get('promo_image_url')
+            promo_image_url = _resolve_promo_image_url(municipio_config)
 
             respuesta_formateada, botones_generados = formatear_ticket_respuesta(
                 "sugerencia",

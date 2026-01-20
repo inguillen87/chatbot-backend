@@ -40,7 +40,6 @@ from services.tts_orchestrator import generar_audio
 from utils.response_utils import normalize_response_payload
 from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
 from services.contact_service import resolve_contact
-from services.contact_service import resolve_contact
 from services.ticket_service import servicio_tickets
 
 # Define the blueprint for WhatsApp webhooks

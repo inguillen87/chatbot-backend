@@ -1333,7 +1333,7 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
         if not (es_agente_municipal or es_dueño_del_ticket or es_anon_valido or es_pin_valido):
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
-        if sala_de_chat.estado == "cerrado" and not es_agente_municipal:
+        if sala_de_chat.estado == "cerrado" and not es_agente_municipal and not es_pin_valido:
             return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
         ultimo_mensaje_id = request.args.get('ultimo_mensaje_id', default=0, type=int)
