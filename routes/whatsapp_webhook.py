@@ -1875,93 +1875,6 @@ def whatsapp_webhook():
                     )
                 return "OK", 200
 
-    # --- Live Chat Routing (WhatsApp -> Admin panel) ---
-    if message_body or uploaded_file_info or location_info:
-        tipo_ticket, live_ticket = _find_live_chat_ticket(
-            client_user,
-            end_user,
-            from_number_cleaned,
-        )
-        if live_ticket:
-            comentario_text = (message_body or "").strip()
-            if location_info and not comentario_text:
-                label = location_info.get("label") or location_info.get("address")
-                if label:
-                    comentario_text = f"[Ubicación compartida: {label}]"
-                else:
-                    comentario_text = "[Ubicación compartida]"
-
-            if uploaded_file_info:
-                attachment_name = uploaded_file_info.get("name") or "archivo"
-                if comentario_text:
-                    comentario_text = f"{comentario_text} [Archivo: {attachment_name}]"
-                else:
-                    comentario_text = f"[Archivo adjunto: {attachment_name}]"
-
-            comentario_data = {
-                "comentario": comentario_text or "[Mensaje sin texto]",
-                "user_id": getattr(end_user, "id", None),
-                "anon_id": None if end_user else from_number_cleaned,
-                "es_admin": False,
-                "origen": "whatsapp",
-                "archivo_adjunto_id": uploaded_file_info.get("id") if uploaded_file_info else None,
-            }
-
-            nuevo_comentario = servicio_tickets.crear_comentario(
-                ticket_id=live_ticket.id,
-                tipo_ticket=tipo_ticket,
-                comentario_data=comentario_data,
-            )
-
-            if uploaded_file_info:
-                adjunto = db.session.get(ArchivoAdjunto, uploaded_file_info.get("id"))
-                if adjunto:
-                    if tipo_ticket == "municipio":
-                        adjunto.municipio_ticket_id = live_ticket.id
-                    else:
-                        adjunto.pyme_ticket_id = live_ticket.id
-                    db.session.add(adjunto)
-
-            try:
-                db.session.commit()
-            except Exception as exc:
-                current_app.logger.error(
-                    "[WHATSAPP_WEBHOOK] Error guardando mensaje de chat en vivo: %s",
-                    exc,
-                    exc_info=True,
-                )
-                db.session.rollback()
-            else:
-                if nuevo_comentario:
-                    try:
-                        from socket_service import socketio
-
-                        room_name = f"ticket_{tipo_ticket}_{live_ticket.id}"
-                        socketio.emit(
-                            "new_chat_message",
-                            {
-                                "ticket_id": live_ticket.id,
-                                "message": nuevo_comentario.to_dict(),
-                            },
-                            room=room_name,
-                        )
-                    except Exception as socket_exc:
-                        current_app.logger.error(
-                            "[WHATSAPP_WEBHOOK] Error emitiendo mensaje en vivo: %s",
-                            socket_exc,
-                            exc_info=True,
-                        )
-
-            return "OK", 200
-
-    # --- Human Chat Check ---
-    if session_context_db_entry.context_data.get("human_chat_in_progress"):
-        room = session_context_db_entry.context_data.get("room")
-        if room:
-            from socket_service import socketio
-            socketio.emit('message', {'msg': message_body}, room=room)
-            return "OK", 200
-
     # --- Numeric Menu Handling ---
     last_options = session_context_db_entry.context_data.get("last_options_sent")
     municipio_ctx = (
@@ -2003,6 +1916,95 @@ def whatsapp_webhook():
                     or option.get("texto")
                 )
                 break
+
+    # --- Live Chat Routing (WhatsApp -> Admin panel) ---
+    if message_body or uploaded_file_info or location_info:
+        should_route_live_chat = not bool(selected_option)
+        if should_route_live_chat:
+            tipo_ticket, live_ticket = _find_live_chat_ticket(
+                client_user,
+                end_user,
+                from_number_cleaned,
+            )
+            if live_ticket:
+                comentario_text = (message_body or "").strip()
+                if location_info and not comentario_text:
+                    label = location_info.get("label") or location_info.get("address")
+                    if label:
+                        comentario_text = f"[Ubicación compartida: {label}]"
+                    else:
+                        comentario_text = "[Ubicación compartida]"
+
+                if uploaded_file_info:
+                    attachment_name = uploaded_file_info.get("name") or "archivo"
+                    if comentario_text:
+                        comentario_text = f"{comentario_text} [Archivo: {attachment_name}]"
+                    else:
+                        comentario_text = f"[Archivo adjunto: {attachment_name}]"
+
+                comentario_data = {
+                    "comentario": comentario_text or "[Mensaje sin texto]",
+                    "user_id": getattr(end_user, "id", None),
+                    "anon_id": None if end_user else from_number_cleaned,
+                    "es_admin": False,
+                    "origen": "whatsapp",
+                    "archivo_adjunto_id": uploaded_file_info.get("id") if uploaded_file_info else None,
+                }
+
+                nuevo_comentario = servicio_tickets.crear_comentario(
+                    ticket_id=live_ticket.id,
+                    tipo_ticket=tipo_ticket,
+                    comentario_data=comentario_data,
+                )
+
+                if uploaded_file_info:
+                    adjunto = db.session.get(ArchivoAdjunto, uploaded_file_info.get("id"))
+                    if adjunto:
+                        if tipo_ticket == "municipio":
+                            adjunto.municipio_ticket_id = live_ticket.id
+                        else:
+                            adjunto.pyme_ticket_id = live_ticket.id
+                        db.session.add(adjunto)
+
+                try:
+                    db.session.commit()
+                except Exception as exc:
+                    current_app.logger.error(
+                        "[WHATSAPP_WEBHOOK] Error guardando mensaje de chat en vivo: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    db.session.rollback()
+                else:
+                    if nuevo_comentario:
+                        try:
+                            from socket_service import socketio
+
+                            room_name = f"ticket_{tipo_ticket}_{live_ticket.id}"
+                            socketio.emit(
+                                "new_chat_message",
+                                {
+                                    "ticket_id": live_ticket.id,
+                                    "message": nuevo_comentario.to_dict(),
+                                },
+                                room=room_name,
+                            )
+                        except Exception as socket_exc:
+                            current_app.logger.error(
+                                "[WHATSAPP_WEBHOOK] Error emitiendo mensaje en vivo: %s",
+                                socket_exc,
+                                exc_info=True,
+                            )
+
+                return "OK", 200
+
+    # --- Human Chat Check ---
+    if session_context_db_entry.context_data.get("human_chat_in_progress"):
+        room = session_context_db_entry.context_data.get("room")
+        if room:
+            from socket_service import socketio
+            socketio.emit('message', {'msg': message_body}, room=room)
+            return "OK", 200
 
 
     # --- Call Real Chatbot Logic: responder_chatboc ---
