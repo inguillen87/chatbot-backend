@@ -7,6 +7,7 @@ import io
 import json
 import threading
 import re
+import time
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from werkzeug.datastructures import FileStorage
@@ -116,6 +117,118 @@ def _find_live_chat_ticket(
         return "pyme", query.order_by(PymeTicket.fecha.desc()).first()
 
     return None, None
+
+
+def _normalize_ticket_reference(ticket_ref: Optional[str]) -> List[str]:
+    if not ticket_ref:
+        return []
+
+    cleaned = str(ticket_ref).strip().upper().replace("#", "")
+    if not cleaned:
+        return []
+
+    candidates: List[str] = []
+    digit_match = re.search(r"\d+", cleaned)
+    if cleaned.isdigit():
+        candidates.append(cleaned)
+        candidates.append(cleaned.lstrip("0") or cleaned)
+        padded = cleaned.zfill(6)
+        candidates.append(padded)
+        for prefix in ("M-", "S-", "P-"):
+            candidates.append(f"{prefix}{padded}")
+    else:
+        candidates.append(cleaned)
+        if digit_match:
+            number = digit_match.group(0)
+            padded = number.zfill(6)
+            candidates.extend(
+                [
+                    padded,
+                    number,
+                    f"M-{padded}",
+                    f"S-{padded}",
+                    f"P-{padded}",
+                ]
+            )
+        match = re.match(r"([A-Z]+)-?(\d+)", cleaned)
+        if match:
+            prefix, number = match.groups()
+            padded = number.zfill(6)
+            candidates.extend([f"{prefix}-{padded}", padded, number])
+
+    seen: Set[str] = set()
+    unique_candidates = []
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            unique_candidates.append(candidate)
+    return unique_candidates
+
+
+def _find_municipio_ticket_for_reference(
+    ticket_ref: Optional[str],
+    tenant_id: Optional[int] = None,
+    municipio_id: Optional[int] = None,
+    anon_id: Optional[str] = None,
+) -> Optional[MunicipioTicket]:
+    candidates = _normalize_ticket_reference(ticket_ref)
+    if not candidates:
+        return None
+
+    base_query = MunicipioTicket.query
+    if municipio_id:
+        base_query = base_query.filter(MunicipioTicket.municipio_id == municipio_id)
+    elif tenant_id:
+        base_query = base_query.filter(MunicipioTicket.tenant_id == tenant_id)
+
+    ticket = base_query.filter(MunicipioTicket.nro_ticket.in_(candidates)).first()
+    if ticket:
+        return ticket
+
+    if anon_id:
+        anon_query = MunicipioTicket.query.filter(MunicipioTicket.anon_id == anon_id)
+        if municipio_id:
+            anon_query = anon_query.filter(MunicipioTicket.municipio_id == municipio_id)
+        elif tenant_id:
+            anon_query = anon_query.filter(MunicipioTicket.tenant_id == tenant_id)
+        ticket = anon_query.filter(MunicipioTicket.nro_ticket.in_(candidates)).first()
+        if ticket:
+            return ticket
+
+    return None
+
+
+def _attach_whatsapp_adjunto_to_ticket(
+    adjunto: ArchivoAdjunto,
+    ticket: MunicipioTicket,
+    end_user: Optional[User],
+    comentario_text: str,
+) -> None:
+    adjunto.municipio_ticket_id = ticket.id
+    if not ticket.foto_principal:
+        ticket.foto_principal = adjunto.url
+
+    db.session.add(adjunto)
+    db.session.add(ticket)
+
+    comentario = TicketComentario(
+        municipio_ticket_id=ticket.id,
+        comentario=comentario_text,
+        user_id=end_user.id if end_user else None,
+        es_admin=False,
+        origen="chat",
+        estado_ticket=ticket.estado,
+        archivo_adjunto_id=adjunto.id,
+    )
+    db.session.add(comentario)
+    db.session.commit()
+
+
+def _looks_like_ticket_reference(text: str) -> bool:
+    if not text:
+        return False
+    normalized = text.strip().upper()
+    return bool(re.search(r"\d{4,}", normalized))
 
 
 def _normalize_media_base(url: str) -> str:
@@ -1576,68 +1689,95 @@ def whatsapp_webhook():
                 else:
                     current_app.logger.warning("Audio transcription failed or returned empty.")
 
-            # --- Voice Bot Photo Bridge ---
-            # If we were waiting for a photo for a specific ticket (set by voice bot), link it now.
+            # --- Voice Bot / WhatsApp Photo Bridge ---
+            # If we were waiting for a photo for a specific ticket, link it now.
             awaiting_ticket_nro = session_context_db_entry.context_data.get("awaiting_photo_for_ticket")
+            awaiting_ticket_photo = session_context_db_entry.context_data.get("awaiting_ticket_photo")
+            awaiting_ticket_photo_until = session_context_db_entry.context_data.get(
+                "awaiting_ticket_photo_until"
+            )
+            last_ticket_code = session_context_db_entry.context_data.get("last_ticket_code")
+            is_image_message = bool(media_content_type) and media_content_type.startswith("image/")
 
-            if awaiting_ticket_nro and not media_content_type.startswith("audio/"):
-                try:
-                    current_app.logger.info(f"[VOICE_BRIDGE] Received photo for ticket {awaiting_ticket_nro}")
-
-                    # 1. Find the ticket
-                    # We assume it's a Municipio ticket for now based on voice bot usage
-                    from models import MunicipioTicket, TicketComentario
-                    ticket = MunicipioTicket.query.filter_by(nro_ticket=awaiting_ticket_nro).first()
-
-                    if ticket:
-                         # 2. Attach the file
-                         # adjunto was created above
-                         if adjunto:
-                             adjunto.municipio_ticket_id = ticket.id
-                             # Also set as foto_principal if none exists
-                             if not ticket.foto_principal:
-                                 ticket.foto_principal = adjunto.url
-
-                             db.session.add(adjunto)
-                             db.session.add(ticket)
-
-                             # 3. Add system comment/tracking via TicketComentario
-                             comentario = TicketComentario(
-                                 municipio_ticket_id=ticket.id,
-                                 comentario="[SISTEMA] Vecino adjuntó foto solicitada por llamada de voz.",
-                                 user_id=end_user.id if end_user else None,
-                                 es_admin=False,
-                                 origen="chat",
-                                 estado_ticket=ticket.estado,
-                                 archivo_adjunto_id=adjunto.id
-                             )
-                             db.session.add(comentario)
-                             db.session.commit()
-
-                             # 4. Confirm to user (Intercepting normal flow)
-                             twilio_client.messages.create(
-                                 from_=to_number_raw,
-                                 to=from_number_raw,
-                                 body=f"✅ Foto recibida y adjuntada al reclamo *{awaiting_ticket_nro}*. ¡Muchas gracias!"
-                             )
-
-                             # 5. Clear flag so we don't attach subsequent unrelated photos
-                             session_context_db_entry.context_data.pop("awaiting_photo_for_ticket", None)
-                             safe_flag_modified(session_context_db_entry, "context_data")
-                             db.session.commit()
-
-                             # We can optionally stop processing here or let it continue.
-                             # Returning "OK" stops the bot from replying "No entendi"
-                             return "OK", 200
-                    else:
-                        current_app.logger.warning(f"[VOICE_BRIDGE] Ticket {awaiting_ticket_nro} not found for photo attachment.")
-
-                except Exception as e_bridge:
-                    current_app.logger.error(f"[VOICE_BRIDGE] Error attaching photo: {e_bridge}")
-
-            else:
-                # If it's not audio, remove the source_is_audio flag
+            if not media_content_type.startswith("audio/"):
                 session_context_db_entry.context_data.pop('source_is_audio', None)
+
+            if adjunto and is_image_message:
+                now_ts = time.time()
+                within_photo_window = (
+                    awaiting_ticket_photo
+                    and isinstance(awaiting_ticket_photo_until, (int, float))
+                    and now_ts <= awaiting_ticket_photo_until
+                )
+                target_ticket_ref = None
+                if within_photo_window:
+                    target_ticket_ref = last_ticket_code or awaiting_ticket_nro
+                elif awaiting_ticket_nro:
+                    target_ticket_ref = awaiting_ticket_nro
+
+                if target_ticket_ref:
+                    try:
+                        municipio_owner_id = None
+                        if client_user and getattr(client_user, "tipo_chat", "") == "municipio":
+                            municipio_owner_id = (
+                                getattr(client_user, "municipio_id", None)
+                                or getattr(client_user, "id", None)
+                            )
+                        tenant_id = getattr(client_user, "tenant_id", None)
+                        ticket = _find_municipio_ticket_for_reference(
+                            target_ticket_ref,
+                            tenant_id=tenant_id,
+                            municipio_id=municipio_owner_id,
+                            anon_id=from_number_cleaned,
+                        )
+                        current_app.logger.info(
+                            "[VOICE_BRIDGE] Received photo for ticket %s (resolved=%s)",
+                            target_ticket_ref,
+                            getattr(ticket, "nro_ticket", None),
+                        )
+                        if ticket:
+                            _attach_whatsapp_adjunto_to_ticket(
+                                adjunto=adjunto,
+                                ticket=ticket,
+                                end_user=end_user,
+                                comentario_text="[SISTEMA] Vecino adjuntó foto solicitada por llamada o WhatsApp.",
+                            )
+                            if twilio_client:
+                                twilio_client.messages.create(
+                                    from_=to_number_raw,
+                                    to=from_number_raw,
+                                    body=(
+                                        "✅ Foto recibida y adjuntada al reclamo "
+                                        f"*{ticket.nro_ticket}*. ¡Muchas gracias!"
+                                    ),
+                                )
+                            session_context_db_entry.context_data.pop("awaiting_photo_for_ticket", None)
+                            session_context_db_entry.context_data.pop("awaiting_ticket_photo", None)
+                            session_context_db_entry.context_data.pop("awaiting_ticket_photo_until", None)
+                            session_context_db_entry.context_data.pop("pending_attachment_id", None)
+                            session_context_db_entry.context_data.pop("pending_ticket_code", None)
+                            session_context_db_entry.context_data.pop("pending_attachment_until", None)
+                            safe_flag_modified(session_context_db_entry, "context_data")
+                            db.session.commit()
+                            return "OK", 200
+
+                        session_context_db_entry.context_data["pending_attachment_id"] = adjunto.id
+                        session_context_db_entry.context_data["pending_ticket_code"] = target_ticket_ref
+                        session_context_db_entry.context_data["pending_attachment_until"] = now_ts + 600
+                        safe_flag_modified(session_context_db_entry, "context_data")
+                        db.session.commit()
+                        if twilio_client:
+                            twilio_client.messages.create(
+                                from_=to_number_raw,
+                                to=from_number_raw,
+                                body=(
+                                    "⚠️ Todavía no encuentro el ticket en sistema. "
+                                    "Respondé con el número del ticket para adjuntar la foto."
+                                ),
+                            )
+                        return "OK", 200
+                    except Exception as e_bridge:
+                        current_app.logger.error(f"[VOICE_BRIDGE] Error attaching photo: {e_bridge}")
 
         except requests.exceptions.RequestException as e:
             current_app.logger.error(f"Error downloading media from Twilio URL {media_url}: {e}")
@@ -1685,6 +1825,55 @@ def whatsapp_webhook():
             # treat message as location input only
             incoming_text = ""
             message_body = ""
+
+    # --- Pending attachment resolution ---
+    pending_attachment_id = session_context_db_entry.context_data.get("pending_attachment_id")
+    pending_attachment_until = session_context_db_entry.context_data.get("pending_attachment_until")
+    if pending_attachment_id and not uploaded_file_info and message_body:
+        now_ts = time.time()
+        if isinstance(pending_attachment_until, (int, float)) and now_ts > pending_attachment_until:
+            session_context_db_entry.context_data.pop("pending_attachment_id", None)
+            session_context_db_entry.context_data.pop("pending_ticket_code", None)
+            session_context_db_entry.context_data.pop("pending_attachment_until", None)
+            safe_flag_modified(session_context_db_entry, "context_data")
+            db.session.commit()
+        elif _looks_like_ticket_reference(message_body):
+            municipio_owner_id = None
+            if client_user and getattr(client_user, "tipo_chat", "") == "municipio":
+                municipio_owner_id = (
+                    getattr(client_user, "municipio_id", None)
+                    or getattr(client_user, "id", None)
+                )
+            tenant_id = getattr(client_user, "tenant_id", None)
+            ticket = _find_municipio_ticket_for_reference(
+                message_body,
+                tenant_id=tenant_id,
+                municipio_id=municipio_owner_id,
+                anon_id=from_number_cleaned,
+            )
+            if ticket:
+                adjunto = db.session.get(ArchivoAdjunto, pending_attachment_id)
+                if adjunto:
+                    _attach_whatsapp_adjunto_to_ticket(
+                        adjunto=adjunto,
+                        ticket=ticket,
+                        end_user=end_user,
+                        comentario_text="[SISTEMA] Vecino adjuntó foto pendiente por WhatsApp.",
+                    )
+                session_context_db_entry.context_data.pop("pending_attachment_id", None)
+                session_context_db_entry.context_data.pop("pending_ticket_code", None)
+                session_context_db_entry.context_data.pop("pending_attachment_until", None)
+                session_context_db_entry.context_data.pop("awaiting_ticket_photo", None)
+                session_context_db_entry.context_data.pop("awaiting_ticket_photo_until", None)
+                safe_flag_modified(session_context_db_entry, "context_data")
+                db.session.commit()
+                if twilio_client:
+                    twilio_client.messages.create(
+                        from_=to_number_raw,
+                        to=from_number_raw,
+                        body=f"✅ Listo. Adjunté la foto al ticket *{ticket.nro_ticket}*.",
+                    )
+                return "OK", 200
 
     # --- Live Chat Routing (WhatsApp -> Admin panel) ---
     if message_body or uploaded_file_info or location_info:
