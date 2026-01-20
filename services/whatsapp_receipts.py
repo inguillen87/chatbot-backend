@@ -37,15 +37,15 @@ def _render_contact_section(contacto: Optional[Dict[str, Any]]) -> str:
     horario = contacto.get("horario")
     if not any([nombre, cargo, telefono, horario]):
         return ""
-    lines = ["", "📞 Contacto para seguimiento:"]
+    lines = ["", "📞 *Contacto para seguimiento:*"]
     if nombre:
-        lines.append(f"* Nombre: {nombre}")
+        lines.append(f"* *Nombre:* {nombre}")
     if cargo:
-        lines.append(f"* Cargo: {cargo}")
+        lines.append(f"* *Cargo:* {cargo}")
     if telefono:
-        lines.append(f"* Teléfono: {telefono}")
+        lines.append(f"* *Teléfono:* {telefono}")
     if horario:
-        lines.append(f"* Horario: {horario}")
+        lines.append(f"* *Horario:* {horario}")
     return "\n".join(lines)
 
 
@@ -73,16 +73,16 @@ def render_ticket_whatsapp(
         if kind == "sugerencia"
         else kind.capitalize()
     )
-    ticket_line = f"• Ticket: {ticket_nro}" if ticket_nro else ""
+    ticket_line = f"• *Ticket:* {ticket_nro}" if ticket_nro else ""
     lines = [
-        f"✅ ¡{kind_label} recibido{'' if kind == 'reclamo' else 'a'}, {name}!",
+        f"✅ *¡{kind_label} recibido{'' if kind == 'reclamo' else 'a'}, {name}!*",
         "",
-        "📄 Resumen:",
+        "📄 *Resumen:*",
         ticket_line,
-        f"• Categoría: {categoria}" if categoria else "",
-        f"• Dirección: {direccion}" if direccion else "",
-        f"• Descripción: {descripcion}" if descripcion else "",
-        f"• DNI: {dni}" if dni else "",
+        f"• *Categoría:* {categoria}" if categoria else "",
+        f"• *Dirección:* {direccion}" if direccion else "",
+        f"• *Descripción:* {descripcion}" if descripcion else "",
+        f"• *DNI:* {dni}" if dni else "",
     ]
 
     resumen = "\n".join([line for line in lines if line])
@@ -98,15 +98,15 @@ def render_ticket_whatsapp(
         seguimiento = "\n".join(
             [
                 "",
-                "🔗 Seguimiento:",
-                f"• PIN: {consulta_pin}" if consulta_pin else "",
-                f"• Ver mi Ticket: {link}",
+                "🔗 *Seguimiento:*",
+                f"• *PIN:* {consulta_pin}" if consulta_pin else "",
+                f"• *Ver mi Ticket:* {link}",
             ]
         )
 
     extra = ""
     if info_url:
-        extra = f"\n\n🌐 Más información: {info_url}"
+        extra = f"\n\n🌐 *Más información:* {info_url}"
 
     contact_section = _render_contact_section(contacto_especializado)
     promo_section = f"\n\n{promo_text}" if promo_text else ""

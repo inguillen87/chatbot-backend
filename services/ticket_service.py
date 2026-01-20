@@ -508,34 +508,36 @@ class ServicioTickets:
             if hasattr(ticket, "ultima_actividad"):
                 ticket.ultima_actividad = get_local_now()
             # db.session.commit() # <<< ELIMINADO
-            try:
-                from services.email_service import (
-                    enviar_email_ticket_novedad,
-                    enviar_sms_ticket_novedad,
-                    enviar_whatsapp_ticket_novedad, # <--- IMPORTAR NUEVA FUNCIÓN
-                    enviar_email_ticket_admin,
-                )
-                comentario_texto = comentario_data.get('comentario', '') or ''
-                mensaje_notificacion = f"Nuevo comentario en tu ticket #{ticket.nro_ticket}: {comentario_texto[:50]}..."
-                mensaje_completo = comentario_texto.strip() or mensaje_notificacion
-                if nuevo_comentario.es_admin: # Notificar al usuario/cliente
-                    enviar_email_ticket_novedad(
-                        ticket,
-                        mensaje_completo,
-                        comentario_reciente=nuevo_comentario,
+            should_notify = comentario_data.get("emit_notifications", True)
+            if should_notify:
+                try:
+                    from services.email_service import (
+                        enviar_email_ticket_novedad,
+                        enviar_sms_ticket_novedad,
+                        enviar_whatsapp_ticket_novedad, # <--- IMPORTAR NUEVA FUNCIÓN
+                        enviar_email_ticket_admin,
                     )
-                    enviar_sms_ticket_novedad(ticket, mensaje_notificacion)
-                    if tipo_ticket == "municipio": # Por ahora, WhatsApp solo para municipio
-                        enviar_whatsapp_ticket_novedad(ticket, mensaje_notificacion)
-                else: # Notificar al admin/empleado
-                    enviar_email_ticket_admin(
-                        ticket,
-                        tipo_ticket=tipo_ticket,
-                        comentario_reciente=nuevo_comentario,
-                        mensaje_resumen=mensaje_completo,
-                    )
-            except Exception as e:  # pragma: no cover - not essential for tests
-                logger.error(f"Error enviando notificaciones tras crear comentario para ticket {ticket.id if ticket else 'N/A'}: {e}", exc_info=True)
+                    comentario_texto = comentario_data.get('comentario', '') or ''
+                    mensaje_notificacion = f"Nuevo comentario en tu ticket #{ticket.nro_ticket}: {comentario_texto[:50]}..."
+                    mensaje_completo = comentario_texto.strip() or mensaje_notificacion
+                    if nuevo_comentario.es_admin: # Notificar al usuario/cliente
+                        enviar_email_ticket_novedad(
+                            ticket,
+                            mensaje_completo,
+                            comentario_reciente=nuevo_comentario,
+                        )
+                        enviar_sms_ticket_novedad(ticket, mensaje_notificacion)
+                        if tipo_ticket == "municipio": # Por ahora, WhatsApp solo para municipio
+                            enviar_whatsapp_ticket_novedad(ticket, mensaje_notificacion)
+                    else: # Notificar al admin/empleado
+                        enviar_email_ticket_admin(
+                            ticket,
+                            tipo_ticket=tipo_ticket,
+                            comentario_reciente=nuevo_comentario,
+                            mensaje_resumen=mensaje_completo,
+                        )
+                except Exception as e:  # pragma: no cover - not essential for tests
+                    logger.error(f"Error enviando notificaciones tras crear comentario para ticket {ticket.id if ticket else 'N/A'}: {e}", exc_info=True)
             return nuevo_comentario
         except SQLAlchemyError as e:
             db.session.rollback()
