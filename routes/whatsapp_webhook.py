@@ -1779,6 +1779,10 @@ def whatsapp_webhook():
         session_context_db_entry.context_data.get(CONTEXTO_MUNICIPIO)
         or session_context_db_entry.context_data.get("contexto_municipio", {})
     )
+    if not last_options and isinstance(municipio_ctx, dict):
+        menu_opciones = municipio_ctx.get("menu_opciones")
+        if isinstance(menu_opciones, list) and menu_opciones:
+            last_options = menu_opciones
     if isinstance(municipio_ctx, dict):
         flow_state = (municipio_ctx.get("reclamo_flow_v2") or {}).get("state")
         if flow_state:

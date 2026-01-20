@@ -1,4 +1,31 @@
+import os
 from typing import Any, Dict, Optional
+
+from utils.url_utils import public_url
+
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://api.chatboc.ar")
+
+
+def _format_horario(horario: Any) -> str:
+    if not horario:
+        return ""
+    if isinstance(horario, str):
+        return horario.strip()
+    if not isinstance(horario, list):
+        return ""
+    lines = []
+    for item in horario:
+        if not isinstance(item, dict):
+            continue
+        dia = item.get("dia", "")
+        abre = item.get("abre", "")
+        cierra = item.get("cierra", "")
+        cerrado = item.get("cerrado", False)
+        if cerrado:
+            lines.append(f"• {dia}: cerrado")
+        else:
+            lines.append(f"• {dia}: {abre} a {cierra}")
+    return "\n".join([line for line in lines if line])
 
 
 def _build_menu_text(kind: str) -> str:
@@ -37,15 +64,20 @@ def _render_contact_section(contacto: Optional[Dict[str, Any]]) -> str:
     horario = contacto.get("horario")
     if not any([nombre, cargo, telefono, horario]):
         return ""
-    lines = ["", "📞 Contacto para seguimiento:"]
+    lines = ["", "📞 *Contacto para seguimiento:*"]
     if nombre:
-        lines.append(f"* Nombre: {nombre}")
+        lines.append(f"• *Nombre:* {nombre}")
     if cargo:
-        lines.append(f"* Cargo: {cargo}")
+        lines.append(f"• *Cargo:* {cargo}")
     if telefono:
-        lines.append(f"* Teléfono: {telefono}")
-    if horario:
-        lines.append(f"* Horario: {horario}")
+        lines.append(f"• *Teléfono:* {telefono}")
+    horario_txt = _format_horario(horario)
+    if horario_txt:
+        if "\n" in horario_txt:
+            lines.append("🕘 *Horario:*")
+            lines.append(horario_txt)
+        else:
+            lines.append(f"• *Horario:* {horario_txt}")
     return "\n".join(lines)
 
 
@@ -66,23 +98,17 @@ def render_ticket_whatsapp(
     info_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     name = nombre or "Vecino/a"
-    kind_label = (
-        "Reclamo"
-        if kind == "reclamo"
-        else "Sugerencia"
-        if kind == "sugerencia"
-        else kind.capitalize()
-    )
-    ticket_line = f"• Ticket: {ticket_nro}" if ticket_nro else ""
+    kind_label = "Reclamo" if kind == "reclamo" else "Sugerencia" if kind == "sugerencia" else kind.capitalize()
+    ticket_line = f"• *Ticket:* {ticket_nro}" if ticket_nro else ""
     lines = [
-        f"✅ ¡{kind_label} recibido{'' if kind == 'reclamo' else 'a'}, {name}!",
+        f"✅ ¡{kind_label} recibido, {name}!",
         "",
-        "📄 Resumen:",
+        "📄 *Resumen:*",
         ticket_line,
-        f"• Categoría: {categoria}" if categoria else "",
-        f"• Dirección: {direccion}" if direccion else "",
-        f"• Descripción: {descripcion}" if descripcion else "",
-        f"• DNI: {dni}" if dni else "",
+        f"• *Categoría:* {categoria}" if categoria else "",
+        f"• *Dirección:* {direccion}" if direccion else "",
+        f"• *Descripción:* {descripcion}" if descripcion else "",
+        f"• *DNI:* {dni}" if dni else "",
     ]
 
     resumen = "\n".join([line for line in lines if line])
@@ -95,14 +121,14 @@ def render_ticket_whatsapp(
             if consulta_pin
             else f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}"
         )
-        seguimiento = "\n".join(
-            [
-                "",
-                "🔗 Seguimiento:",
-                f"• PIN: {consulta_pin}" if consulta_pin else "",
-                f"• Ver mi Ticket: {link}",
-            ]
-        )
+        seguimiento_lines = [
+            "",
+            "🔗 *Seguimiento:*",
+        ]
+        if consulta_pin:
+            seguimiento_lines.append(f"• *PIN:* {consulta_pin}")
+        seguimiento_lines.append(f"• *Ver mi Ticket:* {link}")
+        seguimiento = "\n".join(seguimiento_lines)
 
     extra = ""
     if info_url:
@@ -117,7 +143,7 @@ def render_ticket_whatsapp(
 
     return {
         "body_text": body_text,
-        "media_url": promo_image_url,
+        "media_url": public_url(promo_image_url, PUBLIC_BASE_URL),
     }
 
 
