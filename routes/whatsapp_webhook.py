@@ -2390,7 +2390,7 @@ def whatsapp_webhook():
                 print(f"Mensaje principal enviado a {from_number_raw}, SID: {main_message.sid}")
 
             audio_enabled = bool(
-                current_app.config.get("WHATSAPP_AUDIO_ENABLED", False)
+                current_app.config.get("WHATSAPP_AUDIO_ENABLED", True)
                 or bot_response_dict.get("force_audio_whatsapp")
             )
             if audio_enabled:
