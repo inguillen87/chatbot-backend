@@ -411,6 +411,7 @@ class PointsOfInterestHandler:
             {"texto": "🏦 Cajeros/ATM", "action_id": "cajeros automáticos"},
             {"texto": "🏞️ Parques o plazas", "action_id": "parques"},
             {"texto": "🛒 Supermercados", "action_id": "supermercados"},
+            {"texto": "🅿️ Estacionamiento (demo)", "action_id": "estacionamiento"},
             {"texto": "Otro tipo de lugar", "action_id": "otro lugar"},
         ]
 
@@ -496,7 +497,7 @@ class PointsOfInterestHandler:
             for option in self._poi_refinement_options()
             if option.get("action_id")
         }
-        if normalized_question in refinement_actions:
+        if normalized_question in refinement_actions and "estacionamiento" not in normalized_question:
             direct_lookup = self._handle_direct_poi_lookup(original_question, location if isinstance(location, dict) else None)
             if direct_lookup:
                 return direct_lookup
