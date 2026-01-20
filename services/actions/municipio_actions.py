@@ -17,6 +17,7 @@ from services.herramientas_municipio import (
     obtener_direccion_de_coordenadas,
 )
 from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
+from utils.ticket_utils import normalize_category
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
 from services.config_loader import cargar_configuracion_municipio
 from models import MunicipioTicket, TenantProfile
@@ -322,6 +323,20 @@ class CrearReclamoActionHandler(BaseActionHandler):
             elif not _ubicacion_es_valida(ubicacion_llm):
                 logger.info(f"[VALIDATION] Ubicacion invalida detectada: {ubicacion_llm}")
                 ubicacion_llm = None
+
+        if descripcion:
+            categoria_inferida = normalize_category(descripcion)
+            categoria_actual = normalize_category(categoria) if categoria else None
+            categorias_genericas = {
+                "Limpieza",
+                "Limpieza Y Riego",
+                "Reclamo General",
+                "Otros",
+                "Otro Motivo",
+            }
+            if categoria_inferida and categoria_inferida != categoria_actual:
+                if not categoria_actual or categoria_actual in categorias_genericas:
+                    categoria = categoria_inferida
 
         municipio_config = self.context.get("municipio_config_actual", {})
         if ubicacion_llm and not distrito_llm and direccion_es_valida(ubicacion_llm):

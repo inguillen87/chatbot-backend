@@ -645,6 +645,7 @@ class VoiceStreamService:
                         "chat_db_context_data": chat_data,
                         "municipio_config_actual": self.tenant_profile.configuracion if self.tenant_profile else {},
                     }
+                    ctx["contexto_municipio_v2"] = chat_data.get("contexto_municipio_v2", {})
 
                     nombre_raw = args.get("nombre")
                     if isinstance(nombre_raw, str):
