@@ -873,6 +873,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 dni=ticket_data_cleaned.get("dni_vecino"),
                 consulta_pin=pin_final,
                 include_links_in_message=not is_web_like_channel,
+                ubicacion=ubicacion_llm,
             )
             if botones_finales is None:
                 botones_finales = []
@@ -965,6 +966,19 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     "contacto_especializado": contacto_especializado,
                     "promo_text": promo_text,
                 }
+            }
+            tracking_url = None
+            if base_chat_url:
+                ticket_numeric = str(nro_ticket_str).replace("M-", "").replace("S-", "")
+                tracking_url = f"{base_chat_url.rstrip('/')}/{ticket_numeric}"
+                if pin_final:
+                    tracking_url = f"{tracking_url}?pin={pin_final}"
+            response_payload["contexto_actualizado"] = {
+                "latest_ticket_id": ticket_creado.get("id"),
+                "latest_ticket_nro": nro_ticket_str,
+                "latest_ticket_pin": pin_final,
+                "latest_tracking_url": tracking_url,
+                "awaiting_photo_for_ticket": nro_ticket_str,
             }
             response_payload["whatsapp_receipt"] = render_ticket_whatsapp(
                 kind="reclamo",

@@ -484,6 +484,7 @@ def formatear_ticket_respuesta(
     dni=None,
     consulta_pin=None,
     include_links_in_message=True,
+    ubicacion=None,
 ):
     nombre_asesor = None
     titulo_asesor = None
@@ -563,6 +564,8 @@ def formatear_ticket_respuesta(
         resumen_lineas.append(f"• *Ticket:* `{id_ticket}`")
     if categoria:
         resumen_lineas.append(f"• *Categoría:* {categoria}")
+    if ubicacion:
+        resumen_lineas.append(f"• *Dirección:* {ubicacion}")
     if descripcion_resumen:
         resumen_lineas.append(f"• *Descripción:* {descripcion_resumen}")
     if dni:
