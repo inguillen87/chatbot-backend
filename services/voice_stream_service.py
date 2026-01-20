@@ -9,12 +9,14 @@ from websockets.sync.client import connect as ws_connect
 from simple_websocket.errors import ConnectionClosed
 from twilio.rest import Client as TwilioClient
 
-from models import WhatsappNumero, ChatSessionContext, User, TenantProfile
+from models import WhatsappNumero, ChatSessionContext, User, TenantProfile, MunicipioTicket
 from extensions import db
 from sqlalchemy.orm import joinedload
 
 from utils.db_utils import safe_flag_modified
-from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
+from services.contact_service import resolve_contact, sanitize_profile_name
+from services.whatsapp_receipts import build_ticket_receipt
+from services.whatsapp_sender import send_whatsapp_message
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +27,6 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 
 # WhatsApp (para resumen post-llamada)
-TWILIO_WHATSAPP_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER")
-MESSAGING_SERVICE_SID = os.environ.get("MESSAGING_SERVICE_SID")
 
 
 class VoiceStreamService:
@@ -44,6 +44,7 @@ class VoiceStreamService:
         self.user = None
         self.owner_user = None
         self.tenant_profile = None
+        self.whatsapp_sender = None
 
         self.user_id = None
         self.owner_user_id = None
@@ -72,7 +73,7 @@ class VoiceStreamService:
                         "descripcion": {"type": "string", "description": "Qué pasó"},
                         "ubicacion": {"type": "string", "description": "Dónde ocurrió (dirección)"},
                     },
-                    "required": ["categoria", "descripcion", "ubicacion"],
+                    "required": ["descripcion", "ubicacion"],
                 },
             },
             {
@@ -137,6 +138,34 @@ class VoiceStreamService:
         except Exception as exc:
             logger.error(f"[VOICE] Failed to end call: {exc}")
 
+    @staticmethod
+    def _resolve_promo_image_url(config: dict | None) -> str | None:
+        if not isinstance(config, dict):
+            return None
+        promo_image_url = config.get("promo_image_url")
+        if promo_image_url:
+            return promo_image_url
+        promo_section = config.get("promo_section") or config.get("promo")
+        if isinstance(promo_section, dict):
+            return promo_section.get("image_url")
+        return None
+
+    def _resolve_whatsapp_sender(self) -> str | None:
+        if self.tenant_profile and getattr(self.tenant_profile, "configuracion", None):
+            config = self.tenant_profile.configuracion or {}
+            sender = (
+                config.get("whatsapp_sender_id")
+                or config.get("whatsapp_number")
+                or config.get("whatsapp_sender")
+            )
+            if sender:
+                return str(sender)
+
+        if self.whatsapp_sender:
+            return str(self.whatsapp_sender)
+
+        return None
+
     def _extract_contacto_usuario(self, context_data: dict) -> dict:
         if not isinstance(context_data, dict):
             return {}
@@ -153,9 +182,13 @@ class VoiceStreamService:
     def _resolve_identity_from_context(self, context_data: dict) -> dict:
         contacto = self._extract_contacto_usuario(context_data)
         profile_name = context_data.get("profile_name") if isinstance(context_data, dict) else None
+        resolved_contact = context_data.get("resolved_contact") if isinstance(context_data, dict) else None
+        resolved_name = None
+        if isinstance(resolved_contact, dict):
+            resolved_name = resolved_contact.get("nombre")
 
         return {
-            "nombre": contacto.get("nombre") or profile_name,
+            "nombre": contacto.get("nombre") or resolved_name or sanitize_profile_name(profile_name),
             "email": contacto.get("email"),
             "telefono": contacto.get("telefono"),
             "direccion": contacto.get("direccion"),
@@ -206,6 +239,7 @@ class VoiceStreamService:
 
             if whatsapp_mapping:
                 self.owner_user = whatsapp_mapping.user
+                self.whatsapp_sender = whatsapp_mapping.numero_whatsapp
                 self.tenant_profile = getattr(self.owner_user, "tenant", None) or getattr(
                     self.owner_user, "tenant_profile", None
                 )
@@ -291,12 +325,42 @@ class VoiceStreamService:
 
             self.context_data_snapshot = session_context.context_data or {}
             identity = self._resolve_identity_from_context(self.context_data_snapshot)
+            resolved_contact = resolve_contact(
+                user_phone_clean,
+                self.context_data_snapshot.get("profile_name"),
+            )
+            if resolved_contact:
+                self.context_data_snapshot["resolved_contact"] = resolved_contact
+                if isinstance(session_context.context_data, dict):
+                    session_context.context_data["resolved_contact"] = resolved_contact
+                    if resolved_contact.get("nombre") and not session_context.context_data.get("profile_name"):
+                        session_context.context_data["profile_name"] = resolved_contact.get("nombre")
+                    safe_flag_modified(session_context, "context_data")
+                    db.session.commit()
             if self.user:
                 generic_names = {"vecino", "vecino/a", "cliente", "usuario"}
                 user_name = getattr(self.user, "name", None)
                 if not user_name or user_name.lower() in generic_names:
-                    if identity.get("nombre"):
-                        self.user.name = identity["nombre"]
+                    ticket_name = None
+                    if self.owner_user and getattr(self.owner_user, "municipio_id", None):
+                        ticket_match = (
+                            MunicipioTicket.query.filter_by(
+                                municipio_id=self.owner_user.municipio_id,
+                                telefono_vecino=user_phone_clean,
+                            )
+                            .order_by(MunicipioTicket.fecha.desc())
+                            .first()
+                        )
+                        if ticket_match and getattr(ticket_match, "nombre_vecino", None):
+                            ticket_name = ticket_match.nombre_vecino
+
+                    identity_name = (identity.get("nombre") or "").strip()
+                    banned = {"hola", "buenas", "eh", "mmm", "hola hola"}
+                    candidate_name = ticket_name or identity_name
+                    if candidate_name and candidate_name.lower() not in banned:
+                        self.user.name = candidate_name
+                        db.session.add(self.user)
+                        db.session.commit()
                 if identity.get("direccion") and not getattr(self.user, "direccion", None):
                     self.user.direccion = identity["direccion"]
 
@@ -319,7 +383,11 @@ class VoiceStreamService:
             tenant_name = getattr(self.owner_user, "nombre_empresa", "Tu Municipio")
 
         identity = self._resolve_identity_from_context(self.context_data_snapshot)
-        user_name = getattr(self.user, "name", None) or identity.get("nombre") or "Vecino"
+        user_name = (
+            sanitize_profile_name(getattr(self.user, "name", None))
+            or identity.get("nombre")
+            or "Vecino"
+        )
         user_addr = getattr(self.user, "direccion", None) or identity.get("direccion") or ""
 
         known_data_str = f"Datos conocidos del usuario: Nombre: {user_name}."
@@ -334,6 +402,7 @@ class VoiceStreamService:
             "Objetivo: resolver rápido. "
             f"{known_data_str} "
             "Regla PRIORITARIA: Si el nombre del usuario es 'Vecino' o desconocido, TU PRIMERA PRIORIDAD es decir: 'No tengo tu nombre agendado, ¿cómo te llamas?' "
+            "Si ya conocés el nombre del usuario, saludalo usando su nombre. "
             "IMPORTANTE: No confundas saludos como 'Hola', 'Buenas', 'Hola hola' con el nombre del usuario. Si dice 'Hola', preguntá el nombre. "
             "Regla CRÍTICA: NUNCA inventes tickets, números o confirmaciones. "
             "Solo confirmás ticket/pedido cuando la herramienta devuelve el número. "
@@ -342,6 +411,7 @@ class VoiceStreamService:
             "SUMMARIZE the description for the tool. Do not send the full raw transcript. Ex: 'Árbol caído en garage'. "
             "Be empathetic and human: 'Uy, qué problema', 'Entiendo', 'Lo siento', 'Ya mismo lo dejo asentado'. "
             "Regla: si falta un dato (ubicación/categoría/descr), preguntalo directo. "
+            "Si falta la categoría pero hay descripción suficiente, inferila sin preguntar. "
             "Cuando tengas lo mínimo, ejecutá la herramienta correspondiente. "
             "Al finalizar, DEBES DECIR: 'Listo [Nombre]. Tu reclamo quedó cargado con el número [Nro]'. "
             "Avisá que se envió el comprobante por WhatsApp. "
@@ -464,10 +534,21 @@ class VoiceStreamService:
 
                     # Dynamic Greeting based on User context
                     identity = self._resolve_identity_from_context(self.context_data_snapshot)
-                    user_name = getattr(self.user, "name", None) or identity.get("nombre")
-                    # Ignore generic placeholder names from auto-creation
-                    if user_name and user_name.lower() in ["vecino", "vecino/a", "cliente", "usuario"]:
-                        user_name = None
+                    def _sanitize_name(value: str | None) -> str | None:
+                        if not value:
+                            return None
+                        candidate = value.strip()
+                        if len(candidate) < 2:
+                            return None
+                        lowered = candidate.lower()
+                        banned = {"hola", "buenas", "eh", "mmm", "hola hola"}
+                        if lowered in banned:
+                            return None
+                        if lowered in {"vecino", "vecino/a", "cliente", "usuario"}:
+                            return None
+                        return candidate
+
+                    user_name = _sanitize_name(getattr(self.user, "name", None)) or _sanitize_name(identity.get("nombre"))
 
                     # Prompt "Ninja": Personalizado, empático y directo.
                     if user_name:
@@ -745,11 +826,21 @@ class VoiceStreamService:
                         "municipio_config_actual": self.tenant_profile.configuracion if self.tenant_profile else {},
                     }
                     ctx["contexto_municipio_v2"] = chat_data.get("contexto_municipio_v2", {})
+                    ctx["resolved_contact"] = resolve_contact(
+                        getattr(self.user, "telefono", None) or self.from_number,
+                        self.context_data_snapshot.get("profile_name") if isinstance(self.context_data_snapshot, dict) else None,
+                    )
 
                     nombre_raw = args.get("nombre")
                     if isinstance(nombre_raw, str):
                         # Nunca usar la transcripción de voz para nombre.
                         args.pop("nombre", None)
+
+                    def _is_greeting_name(value: str | None) -> bool:
+                        if not value:
+                            return False
+                        words = re.findall(r"[a-záéíóúñ]+", value.lower())
+                        return bool(words) and all(word in {"hola", "buenas", "buenos"} for word in words)
 
                     email_raw = args.get("email")
                     if isinstance(email_raw, str) and email_raw.endswith("@whatsapp.chatboc.com"):
@@ -757,7 +848,10 @@ class VoiceStreamService:
 
                     if self.user:
                         args.setdefault("telefono", getattr(self.user, "telefono", None))
-                        args.setdefault("nombre", getattr(self.user, "name", None) or getattr(self.user, "nombre", None))
+                        user_name = getattr(self.user, "name", None) or getattr(self.user, "nombre", None)
+                        sanitized_name = sanitize_profile_name(user_name) if user_name else None
+                        if sanitized_name and not _is_greeting_name(sanitized_name):
+                            args.setdefault("nombre", sanitized_name)
                         args.setdefault("email", getattr(self.user, "email", None))
 
                     handler = CrearReclamoActionHandler(ctx)
@@ -768,9 +862,16 @@ class VoiceStreamService:
                         nro = data.get("nro_ticket")
                         self.last_ticket_nro = nro
 
+                        nombre_speech = getattr(self.user, "name", None) or ""
+                        nombre_speech = nombre_speech.strip()
+                        if nombre_speech:
+                            saludo_ticket = f"Listo {nombre_speech}."
+                        else:
+                            saludo_ticket = "Listo."
+
                         result = (
-                            f"Listo {getattr(self.user, 'name', '')}. Registré tu reclamo con el número {nro}. "
-                            "Te acabo de enviar el comprobante por WhatsApp con un link para seguirlo. "
+                            f"{saludo_ticket} Tu reclamo quedó cargado con el número {nro}. "
+                            "Te acabo de enviar el resumen por WhatsApp para que tengas el comprobante. "
                             "Si tenés una foto, podés responder a ese mensaje con la imagen. ¿Necesitas algo más?"
                         )
 
@@ -808,30 +909,44 @@ class VoiceStreamService:
 
                         if whatsapp_target:
                             try:
-                                # Usamos el payload rico que devuelve la acción (botones, imagen promo, texto formateado)
-                                msg_body = res.get("message_body")
-                                if not msg_body:
-                                    msg_body = (
-                                        f"✅ *Reclamo registrado*\n"
-                                        f"📌 N°: *{nro}*\n"
-                                        f"🧾 Categoría: {args.get('categoria', 'General')}\n"
-                                        f"📝 {args.get('descripcion', '')}\n"
-                                        f"📍 {args.get('ubicacion', '')}"
-                                    )
-
-                                image_url = res.get("image_url")
-                                botones = res.get("options_list") or res.get("botones")
-
-                                # Fallback de imagen promo si la acción no la trajo pero existe en config
-                                if not image_url and self.tenant_profile and self.tenant_profile.configuracion:
-                                    image_url = self.tenant_profile.configuracion.get("promo_image_url")
-
-                                enviar_mensaje_whatsapp_con_fallback(
+                                municipio_cfg = self.tenant_profile.configuracion if self.tenant_profile else {}
+                                base_chat_url = municipio_cfg.get("base_chat_url", "https://www.chatboc.ar/chat")
+                                resolved_contact = (
+                                    self.context_data_snapshot.get("resolved_contact")
+                                    if isinstance(self.context_data_snapshot, dict)
+                                    else {}
+                                )
+                                resolved_name = (
+                                    resolved_contact.get("nombre")
+                                    if isinstance(resolved_contact, dict)
+                                    else None
+                                )
+                                nombre_contacto = (
+                                    resolved_name
+                                    or sanitize_profile_name(getattr(self.user, "name", None))
+                                    or ""
+                                )
+                                receipt = build_ticket_receipt(
+                                    kind="reclamo",
+                                    nombre=nombre_contacto,
+                                    ticket_nro=nro,
+                                    categoria=args.get("categoria", "General"),
+                                    descripcion=args.get("descripcion", ""),
+                                    direccion=args.get("ubicacion"),
+                                    dni=args.get("dni"),
+                                    consulta_pin=data.get("consulta_pin"),
+                                    base_chat_url=base_chat_url,
+                                    promo_image_url=(
+                                        res.get("image_url") or self._resolve_promo_image_url(municipio_cfg)
+                                    ),
+                                    info_url=municipio_cfg.get("link_web") or municipio_cfg.get("url_web"),
+                                )
+                                whatsapp_sender = self._resolve_whatsapp_sender()
+                                send_whatsapp_message(
                                     whatsapp_target,
-                                    msg_body,
-                                    image_url=image_url,
-                                    botones=botones,
-                                    messaging_service_sid=MESSAGING_SERVICE_SID,
+                                    receipt["body_text"],
+                                    media_url=receipt.get("media_url"),
+                                    from_number=whatsapp_sender,
                                 )
                                 logger.info(f"[VOICE] Sent Rich Receipt to {whatsapp_target} for ticket {nro}")
                             except Exception as ex:
@@ -925,16 +1040,13 @@ class VoiceStreamService:
                                         f"💰 *Total: {monto:,.2f}*\n"
                                     )
 
-                                # Extract buttons if available in response
-                                botones = res.get("options_list") or res.get("botones")
                                 image_url = res.get("image_url")
-
-                                enviar_mensaje_whatsapp_con_fallback(
+                                whatsapp_sender = self._resolve_whatsapp_sender()
+                                send_whatsapp_message(
                                     whatsapp_target,
                                     msg_body,
-                                    image_url=image_url,
-                                    botones=botones,
-                                    messaging_service_sid=MESSAGING_SERVICE_SID,
+                                    media_url=image_url,
+                                    from_number=whatsapp_sender,
                                 )
                             except Exception as ex:
                                 logger.warning(f"[VOICE] Could not send WhatsApp summary for order: {ex}")
