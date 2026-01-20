@@ -73,7 +73,10 @@ def _build_bounds(geo_ctx: Optional[Dict[str, Any]]):
         west, south, east, north = [float(value) for value in bounds]
     except (TypeError, ValueError):
         return None
-    return ((south, west), (north, east))
+    return {
+        "southwest": {"lat": south, "lng": west},
+        "northeast": {"lat": north, "lng": east},
+    }
 
 
 def _compute_location_bias(geo_ctx: Optional[Dict[str, Any]]):
@@ -130,6 +133,15 @@ def geocode_address(address: str, geo_ctx: Optional[Dict[str, Any]] = None):
         return None
 
     context = _resolve_geo_ctx(geo_ctx)
+    query_address = address
+    if context and isinstance(address, str):
+        city = context.get("city") or context.get("ciudad")
+        state = context.get("state") or context.get("provincia")
+        lower_addr = address.lower()
+        if city and str(city).lower() not in lower_addr:
+            query_address = f"{query_address}, {city}"
+        if state and str(state).lower() not in lower_addr:
+            query_address = f"{query_address}, {state}"
     components = _build_components(context, include_locality=True)
     region = _select_region(context)
     bounds = _build_bounds(context)
@@ -142,7 +154,7 @@ def geocode_address(address: str, geo_ctx: Optional[Dict[str, Any]] = None):
 
     try:
         geocode_result = gmaps.geocode(
-            address,
+            query_address,
             **request_kwargs,
         )
         if geocode_result:
