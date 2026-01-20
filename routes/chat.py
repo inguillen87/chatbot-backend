@@ -1092,7 +1092,6 @@ def _parse_request(tipo_chat_fijo: str | None = None):
 
 
         if attachment_info:
-            from services.logic import responder_chatboc
             if not isinstance(attachment_info, dict) or not all(k in attachment_info for k in ['id', 'url']):
                 current_app.logger.warning(
                     "attachmentInfo validado de forma laxa. Contenido: %s",
@@ -1219,6 +1218,8 @@ def _procesar_chat(
     owner_user=None,
     anon_id: str | None = None,
 ): 
+    from services.logic import responder_chatboc
+
     channel = "web"  # Define channel for this processing function
     original_user_payload = None
     # --- Session and Context Initialization ---
