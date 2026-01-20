@@ -13,6 +13,8 @@ import json
 import os
 from typing import Any, Dict
 
+from flask import current_app
+
 from services.email_service import (
     enviar_email_ticket_novedad,
     enviar_sms_ticket_novedad,
@@ -95,12 +97,16 @@ def dispatch_ticket_state_change(
     """
 
     mensaje = f"El estado de tu ticket #{getattr(ticket, 'nro_ticket', '')} ha sido actualizado a: '{nuevo_estado}'."
+    enable_whatsapp = (
+        tipo == "municipio"
+        or current_app.config.get("ENABLE_PYME_WHATSAPP_CHAT", True)
+    )
     return dispatch_ticket_update(
         ticket,
         tipo,
         mensaje,
         comentario_reciente=comentario_estado,
-        enable_whatsapp=True,
+        enable_whatsapp=enable_whatsapp,
     )
 
 
