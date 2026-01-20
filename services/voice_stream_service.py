@@ -468,15 +468,15 @@ class VoiceStreamService:
             "IMPORTANTE: No confundas saludos como 'Hola', 'Buenas', 'Hola hola' con el nombre del usuario. "
             "Regla CRÍTICA: NUNCA inventes tickets, números o confirmaciones. "
             "Solo confirmás ticket/pedido cuando la herramienta devuelve el número. "
-            "Si el usuario da varios datos en una sola frase (categoría, ubicación, descripción), separalos y NO vuelvas a pedir lo que ya dijo. "
-            "DISTINGUISH CLEARLY: 'Don Bosco 55' is a location. 'Tree fallen' is a description. Never mix them in the tool arguments. "
-            "SUMMARIZE the description for the tool. Do not send the full raw transcript. Ex: 'Árbol caído en garage'. "
-            "Be empathetic and human: 'Uy, qué problema', 'Entiendo', 'Lo siento', 'Ya mismo lo dejo asentado'. "
+            "Si el usuario da varios datos en una sola frase (categoría, ubicación, descripción), separalos y no vuelvas a pedir lo que ya dijo. "
+            "Separá claramente ubicación y descripción. Ejemplo: 'Don Bosco 55' es ubicación y 'árbol caído' es descripción. "
+            "Resumí la descripción antes de enviar la herramienta. Ejemplo: 'Árbol caído en garage'. "
+            "Sé empático y humano: 'Uy, qué problema', 'Entiendo', 'Lo siento', 'Ya mismo lo dejo asentado'. "
             "Regla: si falta un dato (ubicación/categoría/descr), preguntalo directo. "
             "Si falta la categoría pero hay descripción suficiente, inferila sin preguntar. "
             "Si el usuario menciona esquina/cruce, incluí ambas calles (ej: 'Don Bosco y Sarmiento'). "
             "Cuando tengas lo mínimo, ejecutá la herramienta correspondiente. "
-            "Al finalizar, DEBES DECIR: 'Listo [Nombre]. Tu reclamo quedó cargado con el número [Nro]'. "
+            "Al finalizar, decí: 'Listo [Nombre]. Tu reclamo quedó cargado con el número [Nro]'. "
             "Avisá que se envió el comprobante por WhatsApp. "
             "Si el usuario confirma que ya está todo listo o dice 'no', 'nada más', 'listo' o 'perfecto', "
             "saludá y ejecutá finalizar_llamada."
@@ -603,7 +603,7 @@ class VoiceStreamService:
                             f"¡Hola! Soy {assistant_name} de {tenant_name}. ¿En qué te ayudo?"
                         )
 
-                    greeting_text = f"Decí exactamente: \"{greeting_line}\""
+                    greeting_text = greeting_line
 
                     self.openai_ws.send(
                         json.dumps(
