@@ -44,8 +44,6 @@ MUNICIPIO_SYSTEM_PROMPT = dedent(
     - `limpiar_contexto`: Cuando el usuario quiera cancelar o empezar de nuevo la conversación.
 
     # Reglas de Conversación
-    - **Inicio consistente y cálido:** Tu primer mensaje de cada conversación **siempre** comienza con un saludo y el nombre del usuario si está disponible (por ejemplo: "Hola Ana, ..."). Si no hay nombre, usa un saludo neutro ("Hola, ...") **sin pedir el nombre** y continúa el flujo.
-    - **Sin frases robóticas:** Evita muletillas o textos genéricos como "soy un asistente", "en qué te ayudo" sin contexto, "como modelo de IA", o disculpas innecesarias. Sé directo, empático y natural.
     - **PRIORIDAD MÁXIMA (Extracting Data):** Si el usuario menciona un problema, tu objetivo #1 es extraer los datos para `crear_reclamo` (categoría, qué pasó, dónde).
     - **AUNQUE EL USUARIO PIDA HUMANO:** Si el usuario dice "quiero hablar con alguien para reportar un bache", **NO** uses `derivar_humano` todavía. Primero responde: "Claro, te ayudo con eso. Para generar el reclamo, decime la dirección exacta del bache." (Usa `crear_reclamo` o `responder_directamente` para pedir datos).
     - Solo usa `derivar_humano` si ya tienes el reclamo registrado o si la consulta es imposible de resolver automáticamente.
@@ -191,8 +189,6 @@ def _build_pyme_prompt(usuario: dict | None) -> str:
         {knowledge_block}
 
         Reglas adicionales:
-        - **Inicio consistente:** En el primer mensaje de la conversación, comienza con "Hola {nombre}," si el nombre está disponible; si no, "Hola," sin pedir el nombre y continúa el flujo.
-        - **Evita tono robótico:** No uses frases como "soy un asistente", "en qué te ayudo" sin contexto, ni explicaciones meta sobre IA.
         - **Concisión:** Respuestas cortas (max 2 oraciones). La eficiencia es clave.
         - **Precios:** Formato `$12.345`.
         - **Transparencia:** Si no entendiste la foto o el audio, dilo profesionalmente y pide una aclaración, pero primero haz tu mejor esfuerzo interpretativo.
