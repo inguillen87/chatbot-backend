@@ -23,7 +23,7 @@ from services.categorias_municipio import (
     normalizar_texto as normalizar_texto_municipio,
 )
 from services.ticket_utils import formatear_ticket_respuesta, remove_buttons_with_urls_in_message
-from services.whatsapp_receipts import build_ticket_receipt
+from services.whatsapp_receipts import render_ticket_whatsapp
 from services.live_chat_schedule import build_live_chat_status
 from utils.ticket_utils import normalize_category
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
@@ -962,7 +962,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     "consulta_pin": pin_final,
                 }
             }
-            response_payload["whatsapp_receipt"] = build_ticket_receipt(
+            response_payload["whatsapp_receipt"] = render_ticket_whatsapp(
                 kind="reclamo",
                 nombre=ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
                 ticket_nro=nro_ticket_str,
@@ -1248,7 +1248,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "image_url": promo_image_url,
                 "data": {"ticket_id": ticket_creado.get('id'), "nro_ticket": nro_ticket_str, "status": "creado"}
             }
-            response_payload["whatsapp_receipt"] = build_ticket_receipt(
+            response_payload["whatsapp_receipt"] = render_ticket_whatsapp(
                 kind="sugerencia",
                 nombre=nombre_vecino_final,
                 ticket_nro=nro_ticket_str,

@@ -11,7 +11,7 @@ def _build_menu_text(kind: str) -> str:
     return "\n".join(
         [
             "",
-            "Opciones:",
+            "¿Querés hacer algo más?",
             f"1) {first}",
             "2) Menú principal",
             "3) Cancelar",
@@ -19,7 +19,7 @@ def _build_menu_text(kind: str) -> str:
     )
 
 
-def build_ticket_receipt(
+def render_ticket_whatsapp(
     *,
     kind: str,
     nombre: str,
@@ -35,8 +35,14 @@ def build_ticket_receipt(
 ) -> Dict[str, Any]:
     name = nombre or "Vecino/a"
     ticket_line = f"• Ticket: {ticket_nro}" if ticket_nro else ""
+    confirmation = (
+        f"Listo {name} ✅ Tu {kind} quedó cargado con el número {ticket_nro}."
+        if ticket_nro
+        else f"Listo {name} ✅ Tu {kind} quedó registrado."
+    )
     lines = [
         f"✅ ¡{kind.capitalize()} recibido/a, {name}!",
+        confirmation,
         "",
         "📄 Resumen:",
         ticket_line,
@@ -59,7 +65,7 @@ def build_ticket_receipt(
         seguimiento = "\n".join(
             [
                 "",
-                "🔗 Seguimiento:",
+                "🔎 Seguimiento:",
                 f"• PIN: {consulta_pin}" if consulta_pin else "",
                 f"• Ver mi Ticket: {link}",
             ]
@@ -75,3 +81,32 @@ def build_ticket_receipt(
         "body_text": body_text,
         "media_url": promo_image_url,
     }
+
+
+def build_ticket_receipt(
+    *,
+    kind: str,
+    nombre: str,
+    ticket_nro: str,
+    categoria: str,
+    descripcion: str,
+    direccion: Optional[str] = None,
+    dni: Optional[str] = None,
+    consulta_pin: Optional[str] = None,
+    base_chat_url: str = "https://www.chatboc.ar/chat",
+    promo_image_url: Optional[str] = None,
+    info_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    return render_ticket_whatsapp(
+        kind=kind,
+        nombre=nombre,
+        ticket_nro=ticket_nro,
+        categoria=categoria,
+        descripcion=descripcion,
+        direccion=direccion,
+        dni=dni,
+        consulta_pin=consulta_pin,
+        base_chat_url=base_chat_url,
+        promo_image_url=promo_image_url,
+        info_url=info_url,
+    )

@@ -15,7 +15,7 @@ from sqlalchemy.orm import joinedload
 
 from utils.db_utils import safe_flag_modified
 from services.contact_service import resolve_contact, sanitize_profile_name
-from services.whatsapp_receipts import build_ticket_receipt
+from services.whatsapp_receipts import render_ticket_whatsapp
 from services.whatsapp_sender import send_whatsapp_message
 
 logger = logging.getLogger(__name__)
@@ -193,6 +193,27 @@ class VoiceStreamService:
             "telefono": contacto.get("telefono"),
             "direccion": contacto.get("direccion"),
         }
+
+    def _resolve_greeting_name(self) -> str | None:
+        identity = self._resolve_identity_from_context(self.context_data_snapshot)
+        resolved_contact = (
+            self.context_data_snapshot.get("resolved_contact")
+            if isinstance(self.context_data_snapshot, dict)
+            else {}
+        )
+        resolved_name = (
+            resolved_contact.get("nombre") if isinstance(resolved_contact, dict) else None
+        )
+        candidates = [
+            resolved_name,
+            getattr(self.user, "name", None),
+            identity.get("nombre"),
+        ]
+        for candidate in candidates:
+            sanitized = sanitize_profile_name(candidate)
+            if sanitized:
+                return sanitized
+        return None
 
     def _update_session_contexts(self, session_context: ChatSessionContext, updates: dict) -> None:
         if not session_context or not updates:
@@ -532,35 +553,19 @@ class VoiceStreamService:
                     elif self.owner_user:
                         tenant_name = getattr(self.owner_user, "nombre_empresa", "tu municipio")
 
-                    # Dynamic Greeting based on User context
-                    identity = self._resolve_identity_from_context(self.context_data_snapshot)
-                    def _sanitize_name(value: str | None) -> str | None:
-                        if not value:
-                            return None
-                        candidate = value.strip()
-                        if len(candidate) < 2:
-                            return None
-                        lowered = candidate.lower()
-                        banned = {"hola", "buenas", "eh", "mmm", "hola hola"}
-                        if lowered in banned:
-                            return None
-                        if lowered in {"vecino", "vecino/a", "cliente", "usuario"}:
-                            return None
-                        return candidate
+                    user_name = self._resolve_greeting_name()
 
-                    user_name = _sanitize_name(getattr(self.user, "name", None)) or _sanitize_name(identity.get("nombre"))
-
-                    # Prompt "Ninja": Personalizado, empático y directo.
                     if user_name:
-                        greeting_text = (
-                            f"Saludá con entusiasmo: '¡Hola {user_name}! Hablas con el asistente de {tenant_name}.' "
-                            "Luego preguntá cortito: '¿En qué te ayudo?'"
+                        greeting_line = (
+                            f"¡Hola {user_name} 👋! Soy el asistente de {tenant_name}. ¿En qué te ayudo?"
                         )
                     else:
-                        greeting_text = (
-                            f"Saludá amable: '¡Hola! Soy el asistente de {tenant_name}.' "
-                            "Y preguntá inmediatamente: 'No tengo tu nombre agendado, ¿cómo te llamas?'"
+                        greeting_line = (
+                            f"¡Hola! Soy el asistente de {tenant_name}. "
+                            "No tengo tu nombre agendado, ¿cómo te llamas?"
                         )
+
+                    greeting_text = f"Decí exactamente: \"{greeting_line}\""
 
                     self.openai_ws.send(
                         json.dumps(
@@ -926,7 +931,7 @@ class VoiceStreamService:
                                     or sanitize_profile_name(getattr(self.user, "name", None))
                                     or ""
                                 )
-                                receipt = build_ticket_receipt(
+                                receipt = render_ticket_whatsapp(
                                     kind="reclamo",
                                     nombre=nombre_contacto,
                                     ticket_nro=nro,
