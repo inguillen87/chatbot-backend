@@ -315,6 +315,8 @@ class VoiceStreamService:
                 if not user_name or user_name.lower() in generic_names:
                     if identity.get("nombre"):
                         self.user.name = identity["nombre"]
+                        db.session.add(self.user)
+                        db.session.commit()
                 if identity.get("direccion") and not getattr(self.user, "direccion", None):
                     self.user.direccion = identity["direccion"]
 
@@ -352,6 +354,7 @@ class VoiceStreamService:
             "Objetivo: resolver rápido. "
             f"{known_data_str} "
             "Regla PRIORITARIA: Si el nombre del usuario es 'Vecino' o desconocido, TU PRIMERA PRIORIDAD es decir: 'No tengo tu nombre agendado, ¿cómo te llamas?' "
+            "Si ya conocés el nombre del usuario, saludalo usando su nombre. "
             "IMPORTANTE: No confundas saludos como 'Hola', 'Buenas', 'Hola hola' con el nombre del usuario. Si dice 'Hola', preguntá el nombre. "
             "Regla CRÍTICA: NUNCA inventes tickets, números o confirmaciones. "
             "Solo confirmás ticket/pedido cuando la herramienta devuelve el número. "

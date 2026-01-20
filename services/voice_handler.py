@@ -356,6 +356,9 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
             context_data.update(session_context.context_data)
 
         if context_data.get("receipt_sent"):
+            if context_data.get("latest_ticket_nro"):
+                logger.info("Receipt already sent during stream. Skipping duplicate summary.")
+                return
             logger.info("Receipt already sent during stream. Sending final summary anyway.")
 
         ticket_info_text = ""
