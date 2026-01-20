@@ -1921,7 +1921,11 @@ def whatsapp_webhook():
                 break
 
     # --- Live Chat Routing (WhatsApp -> Admin panel) ---
-    if message_body or uploaded_file_info or location_info:
+    human_chat_active = bool(
+        session_context_db_entry.context_data.get("human_chat_in_progress")
+        or session_context_db_entry.context_data.get("room")
+    )
+    if human_chat_active and (message_body or uploaded_file_info or location_info):
         should_route_live_chat = not bool(selected_option)
         if should_route_live_chat:
             tipo_ticket, live_ticket = _find_live_chat_ticket(
