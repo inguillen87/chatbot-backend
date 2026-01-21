@@ -1,14 +1,41 @@
 from flask import Blueprint, jsonify, request, g, current_app
-from models import TenantProfile, User, db, generate_token, WhatsappNumero, Rubro, AdminAuditLog
+from models import (
+    TenantProfile,
+    User,
+    db,
+    generate_token,
+    WhatsappNumero,
+    Rubro,
+    AdminAuditLog,
+    TwilioNumber,
+)
 from utils.auth_helpers import token_requerido
 from utils.admin_decorators import super_admin_required
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from datetime import datetime, timezone, timedelta
 from services.tenant_management.folder_manager import ensure_tenant_folder_structure
 from services.plan_config import apply_plan_to_user, get_plan_metadata
+from services.user_service import assign_whatsapp_numbers
 import jwt
+import re
+import unicodedata
 
 super_admin_bp = Blueprint('super_admin', __name__, url_prefix='/api/admin')
+
+LEGACY_TENANT_SEEDS = {
+    "mauricio@junin.com": {
+        "slug": "junin",
+        "nombre": "Municipalidad de Junin",
+        "tipo": "municipio",
+        "plan": "full",
+    },
+    "franco@cuatrofincas.com": {
+        "slug": "cuatro-fincas",
+        "nombre": "Bodega Cuatro Fincas",
+        "tipo": "pyme",
+        "plan": "full",
+    },
+}
 
 
 def _normalize_plan_key(raw_plan: str | None) -> str:
@@ -38,10 +65,238 @@ def _log_admin_action(user_id: int, action: str, target: str, details: dict = No
     except Exception as e:
         current_app.logger.error(f"Failed to create audit log: {e}")
 
+
+def _slugify(value: str | None) -> str | None:
+    if not value:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    decomposed = unicodedata.normalize("NFKD", text)
+    sanitized = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    sanitized = re.sub(r"[^a-z0-9]+", "-", sanitized).strip("-")
+    return sanitized or None
+
+
+def _candidate_slug_for_user(user: User) -> str | None:
+    seed = LEGACY_TENANT_SEEDS.get((user.email or "").strip().lower())
+    if seed:
+        return _slugify(seed.get("slug"))
+    if getattr(user, "tenant_slug", None):
+        return _slugify(user.tenant_slug)
+    email = (user.email or "").strip().lower()
+    if (user.tipo_chat or "").lower() == "municipio" and "@" in email:
+        domain = email.split("@")[-1]
+        if domain and domain not in {"gmail.com", "hotmail.com", "outlook.com", "yahoo.com"}:
+            domain_root = domain.split(".")[0]
+            if domain_root:
+                return _slugify(domain_root)
+    candidate = user.nombre_empresa or user.name or email
+    if "@" in str(candidate):
+        candidate = str(candidate).split("@")[0]
+    return _slugify(str(candidate))
+
+
+def _ensure_unique_slug(base_slug: str | None) -> str:
+    base = base_slug or "tenant"
+    slug = base
+    counter = 1
+    while TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug.lower()).first():
+        slug = f"{base}-{counter}"
+        counter += 1
+    return slug
+
+
+def _slug_conflicts(desired_slug: str, tenant_id: int | None = None) -> bool:
+    if not desired_slug:
+        return False
+    query = TenantProfile.query.filter(func.lower(TenantProfile.slug) == desired_slug.lower())
+    if tenant_id:
+        query = query.filter(TenantProfile.id != tenant_id)
+    return query.first() is not None
+
+
+def _maybe_create_tenant_for_admin(user: User) -> TenantProfile | None:
+    seed = LEGACY_TENANT_SEEDS.get((user.email or "").strip().lower())
+    existing = None
+    if user.tenant_id:
+        existing = TenantProfile.query.get(user.tenant_id)
+    if not existing:
+        candidate_slug = _slugify(getattr(user, "tenant_slug", None))
+        if candidate_slug:
+            existing = TenantProfile.query.filter(
+                func.lower(TenantProfile.slug) == candidate_slug.lower()
+            ).first()
+    if not existing:
+        existing = TenantProfile.query.filter(
+            (TenantProfile.municipio_id == user.id) | (TenantProfile.pyme_id == user.id)
+        ).first()
+    if seed and existing:
+        owned_by_user = user.id in {existing.municipio_id, existing.pyme_id}
+        if not owned_by_user:
+            existing = None
+    if existing:
+        user.tenant_id = existing.id
+        user.tenant_slug = existing.slug
+        if seed:
+            desired_slug = seed["slug"]
+            if desired_slug and not _slug_conflicts(desired_slug, tenant_id=existing.id):
+                existing.slug = desired_slug
+            elif desired_slug:
+                current_app.logger.warning(
+                    "SA:seed tenant slug '%s' is already in use; keeping '%s' for user %s",
+                    desired_slug,
+                    existing.slug,
+                    user.email,
+                )
+            existing.nombre = seed["nombre"]
+            existing.tipo = seed["tipo"]
+            existing.plan = _normalize_plan_key(seed["plan"])
+        if existing.tipo == "municipio":
+            existing.municipio_id = user.id
+            existing.pyme_id = None
+            if not user.municipio_id:
+                user.municipio_id = user.id
+        if existing.tipo == "pyme":
+            existing.pyme_id = user.id
+            existing.municipio_id = None
+            if not user.pyme_id:
+                user.pyme_id = user.id
+        return existing
+
+    if user.rol not in {"admin", "admin_pyme"}:
+        return None
+
+    tipo = (seed.get("tipo") if seed else None) or (
+        user.tipo_chat or ("municipio" if user.municipio_id else "pyme")
+    )
+    tipo = tipo.lower()
+    if tipo not in {"municipio", "pyme"}:
+        return None
+
+    seed_slug = seed.get("slug") if seed else None
+    slug = _ensure_unique_slug(_candidate_slug_for_user(user) or seed_slug or f"tenant-{user.id}")
+    nombre = seed.get("nombre") if seed else None
+    nombre = nombre or user.nombre_empresa or user.name or slug.replace("-", " ").title()
+    plan = seed.get("plan") if seed else user.plan
+    tenant = TenantProfile(
+        slug=slug,
+        nombre=nombre,
+        tipo=tipo,
+        plan=_normalize_plan_key(plan),
+        is_active=True,
+        municipio_id=user.id if tipo == "municipio" else None,
+        pyme_id=user.id if tipo == "pyme" else None,
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    user.tenant_id = tenant.id
+    user.tenant_slug = slug
+    if tipo == "municipio" and not user.municipio_id:
+        user.municipio_id = user.id
+    if tipo == "pyme" and not user.pyme_id:
+        user.pyme_id = user.id
+    return tenant
+
+
+def _bootstrap_missing_tenants() -> int:
+    candidates = User.query.filter(User.rol.in_(["admin", "admin_pyme"])).all()
+    created_count = 0
+    for user in candidates:
+        tenant = _maybe_create_tenant_for_admin(user)
+        if tenant and tenant.id:
+            created_count += 1
+    if created_count:
+        db.session.commit()
+    return created_count
+
+
+def _normalize_phone(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    if normalized.lower().startswith("whatsapp:"):
+        normalized = normalized.split("whatsapp:", 1)[1].strip()
+    return normalized or None
+
+
+def _normalize_number_status(raw_status: str | None) -> str:
+    if not raw_status:
+        return "available"
+    status = str(raw_status).strip().lower()
+    allowed = {"available", "reserved", "assigned", "verified", "disabled"}
+    return status if status in allowed else "available"
+
+
+def _infer_phone_prefix(phone_number: str | None) -> str | None:
+    if not phone_number:
+        return None
+    match = re.match(r"^\+?\d{1,4}", phone_number.strip())
+    return match.group(0) if match else None
+
+
+def _serialize_twilio_number(number: TwilioNumber) -> dict:
+    tenant = number.tenant
+    status = number.status or "available"
+    return {
+        "id": number.id,
+        "phone_number": number.phone_number,
+        "sender_id": number.sender_id,
+        "status": status,
+        "prefix": _infer_phone_prefix(number.phone_number),
+        "city": None,
+        "state": None,
+        "tenant_id": number.tenant_id,
+        "tenant_slug": tenant.slug if tenant else None,
+        "tenant_nombre": tenant.nombre if tenant else None,
+    }
+
+
+def _delete_rows_by_column(table, column_name: str, ids: list[int]) -> int:
+    if not ids or column_name not in table.c:
+        return 0
+    result = db.session.execute(table.delete().where(table.c[column_name].in_(ids)))
+    return result.rowcount or 0
+
+
+def _purge_tenant_records(tenant: TenantProfile) -> dict:
+    tenant_id = tenant.id
+    deleted = {"tenant_id": tenant_id, "tables": {}}
+    for table in db.metadata.sorted_tables:
+        if table.name == TenantProfile.__tablename__:
+            continue
+        table_deleted = 0
+        if "tenant_id" in table.c:
+            table_deleted += _delete_rows_by_column(table, "tenant_id", [tenant_id])
+        if "municipio_id" in table.c:
+            table_deleted += _delete_rows_by_column(table, "municipio_id", [tenant_id])
+        if "pyme_id" in table.c:
+            table_deleted += _delete_rows_by_column(table, "pyme_id", [tenant_id])
+        if table_deleted:
+            deleted["tables"][table.name] = table_deleted
+    return deleted
+
+
+def _purge_users(user_ids: list[int]) -> dict:
+    deleted = {"users": len(user_ids), "tables": {}}
+    if not user_ids:
+        return deleted
+    for table in db.metadata.sorted_tables:
+        if table.name == User.__tablename__:
+            continue
+        if "user_id" not in table.c:
+            continue
+        deleted["tables"][table.name] = _delete_rows_by_column(table, "user_id", user_ids)
+    User.query.filter(User.id.in_(user_ids)).delete(synchronize_session=False)
+    return deleted
+
 @super_admin_bp.route('/tenants', methods=['GET'])
 @token_requerido
 @super_admin_required
 def list_tenants(current_user):
+    _bootstrap_missing_tenants()
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 20, type=int)
 
@@ -50,13 +305,9 @@ def list_tenants(current_user):
 
     tenants_data = []
     for tenant in pagination.items:
-        # IMPROVED LOGIC: Determine plan from owner or tenant, ensuring owner is fetched.
+        # IMPROVED LOGIC: Prefer tenant plan, fall back to owner if needed.
         owner = tenant.municipio or tenant.pyme
-        plan = "gratis"
-        if owner:
-            plan = owner.plan or tenant.plan or "gratis"
-        else:
-            plan = tenant.plan or "gratis"
+        plan = tenant.plan or (owner.plan if owner else None) or "gratis"
         plan = _normalize_plan_key(plan)
 
         # IMPROVED LOGIC: Status is derived from is_active field.
@@ -144,7 +395,7 @@ def get_tenant_metrics(current_user, slug):
 @super_admin_required
 def create_tenant(current_user):
     data = request.get_json() or {}
-    slug = data.get('slug')
+    slug = _slugify(data.get('slug'))
     nombre = data.get('nombre')
     tipo = data.get('tipo', 'pyme')
     email_admin = data.get('email_admin')
@@ -152,7 +403,7 @@ def create_tenant(current_user):
     if not slug or not nombre or not email_admin:
         return jsonify({"error": "Faltan datos (slug, nombre, email_admin)"}), 400
 
-    if TenantProfile.query.filter_by(slug=slug).first():
+    if _slug_conflicts(slug):
         return jsonify({"error": "Slug ya existe"}), 409
 
     # Create Owner User if not exists
@@ -220,6 +471,19 @@ def get_tenant_detail(current_user, slug):
 def update_tenant_full(current_user, slug):
     tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
     data = request.get_json() or {}
+
+    if 'slug' in data:
+        desired_slug = _slugify(data.get('slug'))
+        if not desired_slug:
+            return jsonify({"error": "Slug inválido"}), 400
+        if _slug_conflicts(desired_slug, tenant_id=tenant.id):
+            return jsonify({"error": "Slug ya existe"}), 409
+        if tenant.slug != desired_slug:
+            tenant.slug = desired_slug
+            User.query.filter(User.tenant_id == tenant.id).update(
+                {"tenant_slug": desired_slug},
+                synchronize_session=False,
+            )
 
     if 'nombre' in data: tenant.nombre = data['nombre']
     if 'plan' in data:
@@ -297,6 +561,73 @@ def delete_tenant_soft(current_user, slug):
     db.session.commit()
     return jsonify({"message": "Tenant deactivated successfully"})
 
+
+@super_admin_bp.route('/tenants/<string:slug>/purge', methods=['DELETE'])
+@token_requerido
+@super_admin_required
+def delete_tenant_hard(current_user, slug):
+    """Hard delete a tenant and its records."""
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    data = request.get_json(silent=True) or {}
+    confirm = data.get("confirm")
+    purge_users = data.get("purge_users", True)
+
+    if not confirm:
+        return jsonify({"error": "Confirmación requerida (confirm=true)"}), 400
+
+    owner_ids = {tenant.municipio_id, tenant.pyme_id}
+    owner_ids.discard(None)
+    user_ids = set(
+        u.id
+        for u in User.query.filter(
+            (User.tenant_id == tenant.id)
+            | (User.tenant_slug == tenant.slug)
+            | (User.municipio_id == tenant.id)
+            | (User.pyme_id == tenant.id)
+        ).all()
+    )
+    user_ids.update(owner_ids)
+
+    purge_summary = _purge_tenant_records(tenant)
+    user_summary = {}
+    if purge_users and user_ids:
+        user_summary = _purge_users(sorted(user_ids))
+    else:
+        User.query.filter(User.id.in_(user_ids)).update(
+            {"tenant_id": None, "tenant_slug": None},
+            synchronize_session=False,
+        )
+        User.query.filter(User.municipio_id == tenant.id).update(
+            {"municipio_id": None},
+            synchronize_session=False,
+        )
+        User.query.filter(User.pyme_id == tenant.id).update(
+            {"pyme_id": None},
+            synchronize_session=False,
+        )
+
+    db.session.delete(tenant)
+    _log_admin_action(
+        current_user.id,
+        "purge_tenant",
+        slug,
+        {"purge_users": purge_users, "user_ids": sorted(user_ids)},
+    )
+    try:
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.exception("SA:purge_tenant failed for %s", slug)
+        return jsonify({"error": "No se pudo eliminar el tenant", "details": str(exc)}), 500
+    return jsonify(
+        {
+            "message": "Tenant eliminado definitivamente",
+            "tenant_id": tenant.id,
+            "purge": purge_summary,
+            "users": user_summary,
+        }
+    )
+
 @super_admin_bp.route('/tenants/<string:slug>/activate', methods=['POST'])
 @token_requerido
 @super_admin_required
@@ -340,7 +671,8 @@ def impersonate_tenant(current_user, slug):
 
     _log_admin_action(current_user.id, "impersonate_tenant", slug, {"target_user_id": owner.id})
 
-    return jsonify({"token": token, "redirect_url": f"/portal/{tenant.slug}/admin"})
+    redirect_url = f"/perfil?tenant_slug={tenant.slug}&tenant={tenant.slug}"
+    return jsonify({"token": token, "redirect_url": redirect_url})
 
 @super_admin_bp.route('/tenants/<string:slug>/admin-user', methods=['POST'])
 @token_requerido
@@ -451,3 +783,241 @@ def configure_tenant_whatsapp(current_user, slug):
     _log_admin_action(current_user.id, "configure_whatsapp", slug, {"number": number})
     db.session.commit()
     return jsonify({"message": "WhatsApp configurado correctamente", "number": number})
+
+
+@super_admin_bp.route('/whatsapp/numbers', methods=['GET'])
+@token_requerido
+@super_admin_required
+def list_whatsapp_numbers(current_user):
+    status = request.args.get("status")
+    tenant_slug = request.args.get("tenant_slug")
+    prefix = request.args.get("prefix")
+    city = request.args.get("city")
+    state = request.args.get("state")
+
+    query = TwilioNumber.query
+    if status:
+        query = query.filter_by(status=_normalize_number_status(status))
+    if tenant_slug:
+        tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+        if not tenant:
+            return jsonify({"error": "Tenant no encontrado"}), 404
+        query = query.filter(TwilioNumber.tenant_id == tenant.id)
+    if prefix:
+        query = query.filter(TwilioNumber.phone_number.startswith(prefix))
+    if city or state:
+        current_app.logger.info(
+            "SA:whatsapp:list: city/state filter requested but not stored in TwilioNumber: %s/%s",
+            city,
+            state,
+        )
+
+    numbers = query.order_by(TwilioNumber.phone_number.asc()).all()
+    return jsonify({
+        "numbers": [_serialize_twilio_number(number) for number in numbers],
+        "total": len(numbers),
+    })
+
+
+@super_admin_bp.route('/whatsapp/numbers', methods=['POST'])
+@token_requerido
+@super_admin_required
+def create_whatsapp_number(current_user):
+    data = request.get_json() or {}
+    phone_number = _normalize_phone(data.get("phone_number") or data.get("number"))
+    sender_id = data.get("sender_id")
+    status = _normalize_number_status(data.get("status"))
+    tenant_slug = data.get("tenant_slug")
+
+    if not phone_number or not sender_id:
+        return jsonify({"error": "phone_number y sender_id requeridos"}), 400
+
+    if TwilioNumber.query.filter_by(phone_number=phone_number).first():
+        return jsonify({"error": "Número ya existe"}), 409
+
+    tenant = None
+    if tenant_slug:
+        tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+        if not tenant:
+            return jsonify({"error": "Tenant no encontrado"}), 404
+
+    number = TwilioNumber(
+        phone_number=phone_number,
+        sender_id=sender_id,
+        status=status,
+        tenant_id=tenant.id if tenant else None,
+    )
+    db.session.add(number)
+    _log_admin_action(
+        current_user.id,
+        "create_whatsapp_number",
+        tenant_slug or "",
+        {"phone_number": phone_number, "status": status},
+    )
+    db.session.commit()
+    return jsonify({"message": "Número creado", "number": _serialize_twilio_number(number)}), 201
+
+
+@super_admin_bp.route('/whatsapp/numbers/reserve', methods=['POST'])
+@token_requerido
+@super_admin_required
+def reserve_whatsapp_number(current_user):
+    data = request.get_json() or {}
+    number_id = data.get("number_id")
+    tenant_slug = data.get("tenant_slug")
+
+    if not number_id:
+        return jsonify({"error": "number_id requerido"}), 400
+
+    number = TwilioNumber.query.get(number_id)
+    if not number:
+        return jsonify({"error": "Número no encontrado"}), 404
+
+    if number.status not in {"available", "reserved"}:
+        return jsonify({"error": "Número no disponible"}), 409
+
+    tenant = None
+    if tenant_slug:
+        tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+        if not tenant:
+            return jsonify({"error": "Tenant no encontrado"}), 404
+
+    number.status = "reserved"
+    number.tenant_id = tenant.id if tenant else number.tenant_id
+
+    _log_admin_action(
+        current_user.id,
+        "reserve_whatsapp_number",
+        tenant_slug or "",
+        {"number_id": number.id, "phone_number": number.phone_number},
+    )
+    db.session.commit()
+    return jsonify({"message": "Número reservado", "number": _serialize_twilio_number(number)})
+
+
+@super_admin_bp.route('/whatsapp/numbers/release', methods=['POST'])
+@token_requerido
+@super_admin_required
+def release_whatsapp_number(current_user):
+    data = request.get_json() or {}
+    number_id = data.get("number_id")
+
+    if not number_id:
+        return jsonify({"error": "number_id requerido"}), 400
+
+    number = TwilioNumber.query.get(number_id)
+    if not number:
+        return jsonify({"error": "Número no encontrado"}), 404
+
+    number.status = "available"
+    number.tenant_id = None
+
+    _log_admin_action(
+        current_user.id,
+        "release_whatsapp_number",
+        "",
+        {"number_id": number.id, "phone_number": number.phone_number},
+    )
+    db.session.commit()
+    return jsonify({"message": "Número liberado", "number": _serialize_twilio_number(number)})
+
+
+@super_admin_bp.route('/whatsapp/numbers/assign', methods=['POST'])
+@token_requerido
+@super_admin_required
+def assign_whatsapp_number_to_tenant(current_user):
+    data = request.get_json() or {}
+    tenant_slug = data.get("tenant_slug")
+    number_id = data.get("number_id")
+
+    if not tenant_slug or not number_id:
+        return jsonify({"error": "tenant_slug y number_id requeridos"}), 400
+
+    tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+    if not tenant:
+        return jsonify({"error": "Tenant no encontrado"}), 404
+
+    number = TwilioNumber.query.get(number_id)
+    if not number:
+        return jsonify({"error": "Número no encontrado"}), 404
+
+    if number.status not in {"available", "reserved", "assigned"}:
+        return jsonify({"error": "Número no disponible"}), 409
+    if number.status == "assigned" and number.tenant_id != tenant.id:
+        return jsonify({"error": "Número ya asignado a otro tenant"}), 409
+
+    number.status = "assigned"
+    number.tenant_id = tenant.id
+    tenant.whatsapp_sender_id = number.sender_id
+
+    owner = tenant.municipio or tenant.pyme
+    if owner:
+        assign_whatsapp_numbers(owner, [_normalize_phone(number.phone_number)], activate=True, commit=False)
+
+    _log_admin_action(
+        current_user.id,
+        "assign_whatsapp_number",
+        tenant_slug,
+        {"number_id": number.id, "phone_number": number.phone_number},
+    )
+    db.session.commit()
+    return jsonify({
+        "message": "Número asignado correctamente",
+        "number": _serialize_twilio_number(number),
+    })
+
+
+@super_admin_bp.route('/whatsapp/numbers/register', methods=['POST'])
+@token_requerido
+@super_admin_required
+def register_external_whatsapp_number(current_user):
+    data = request.get_json() or {}
+    tenant_slug = data.get("tenant_slug")
+    number_raw = data.get("number")
+    sender_id = data.get("sender_id")
+    status = _normalize_number_status(data.get("status") or "verified")
+
+    if not tenant_slug or not number_raw:
+        return jsonify({"error": "tenant_slug y number requeridos"}), 400
+
+    tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+    if not tenant:
+        return jsonify({"error": "Tenant no encontrado"}), 404
+
+    number = _normalize_phone(number_raw)
+    if not number:
+        return jsonify({"error": "Número inválido"}), 400
+
+    sender_value = sender_id or f"whatsapp:{number}"
+    tenant.whatsapp_sender_id = sender_value
+    owner = tenant.municipio or tenant.pyme
+    if owner:
+        assign_whatsapp_numbers(owner, [number], activate=True, commit=False)
+
+    twilio_number = TwilioNumber.query.filter_by(phone_number=number).first()
+    if not twilio_number:
+        twilio_number = TwilioNumber(
+            phone_number=number,
+            sender_id=sender_value,
+            status=status,
+            tenant_id=tenant.id,
+        )
+        db.session.add(twilio_number)
+    else:
+        twilio_number.sender_id = sender_value
+        twilio_number.status = status
+        twilio_number.tenant_id = tenant.id
+
+    _log_admin_action(
+        current_user.id,
+        "register_external_whatsapp",
+        tenant_slug,
+        {"number": number, "sender_id": tenant.whatsapp_sender_id, "status": status},
+    )
+    db.session.commit()
+    return jsonify({
+        "message": "Número registrado correctamente",
+        "tenant_slug": tenant.slug,
+        "whatsapp_sender_id": tenant.whatsapp_sender_id,
+        "number": _serialize_twilio_number(twilio_number),
+    })
