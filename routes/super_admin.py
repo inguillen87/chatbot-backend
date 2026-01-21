@@ -2,7 +2,7 @@ from flask import Blueprint, jsonify, request, g, current_app
 from models import TenantProfile, User, db, generate_token, WhatsappNumero, Rubro, AdminAuditLog
 from utils.auth_helpers import token_requerido
 from utils.admin_decorators import super_admin_required
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from datetime import datetime, timezone, timedelta
 from services.tenant_management.folder_manager import ensure_tenant_folder_structure
 from services.plan_config import apply_plan_to_user, get_plan_metadata
@@ -73,7 +73,7 @@ def _ensure_unique_slug(base_slug: str | None) -> str:
     base = base_slug or "tenant"
     slug = base
     counter = 1
-    while TenantProfile.query.filter_by(slug=slug).first():
+    while TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug.lower()).first():
         slug = f"{base}-{counter}"
         counter += 1
     return slug
@@ -84,10 +84,26 @@ def _maybe_create_tenant_for_admin(user: User) -> TenantProfile | None:
     if user.tenant_id:
         existing = TenantProfile.query.get(user.tenant_id)
     if not existing:
+        candidate_slug = _slugify(getattr(user, "tenant_slug", None))
+        if candidate_slug:
+            existing = TenantProfile.query.filter(
+                func.lower(TenantProfile.slug) == candidate_slug.lower()
+            ).first()
+    if not existing:
         existing = TenantProfile.query.filter(
             (TenantProfile.municipio_id == user.id) | (TenantProfile.pyme_id == user.id)
         ).first()
     if existing:
+        user.tenant_id = existing.id
+        user.tenant_slug = existing.slug
+        if existing.tipo == "municipio" and not existing.municipio_id:
+            existing.municipio_id = user.id
+        if existing.tipo == "pyme" and not existing.pyme_id:
+            existing.pyme_id = user.id
+        if existing.tipo == "municipio" and not user.municipio_id:
+            user.municipio_id = user.id
+        if existing.tipo == "pyme" and not user.pyme_id:
+            user.pyme_id = user.id
         return existing
 
     if user.rol not in {"admin", "admin_pyme"}:
