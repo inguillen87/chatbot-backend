@@ -9548,12 +9548,18 @@ def responder_municipio(
         return _finalize_response(response)
     # --- INICIO: Manejo del Flujo de Reclamos Activo ---
     # Conflict check: If LLM state is active, prioritizing LLM and clearing legacy flow
-    if contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
+    current_state_str = contexto_municipio_actual.get("estado_conversacion")
+    llm_state_names = {ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name, ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name}
+
+    if current_state_str in llm_state_names:
         if "reclamo_flow_v2" in contexto_municipio_actual:
-            logger_actual.info("Clearing conflicting ReclamoFlowHandler state because ESPERANDO_INFO_RECLAMO_LLM is active.")
+            logger_actual.info(f"Clearing conflicting ReclamoFlowHandler state because LLM state '{current_state_str}' is active.")
             contexto_municipio_actual.pop("reclamo_flow_v2", None)
 
-    if "reclamo_flow_v2" in contexto_municipio_actual and contexto_municipio_actual["reclamo_flow_v2"].get("state"):
+    # Double check: ensure we don't enter flow if state is LLM (redundant safety)
+    is_llm_active = (current_state_str in llm_state_names)
+
+    if not is_llm_active and "reclamo_flow_v2" in contexto_municipio_actual and contexto_municipio_actual["reclamo_flow_v2"].get("state"):
         logger_actual.info(f"Reclamo flow is active. State: {contexto_municipio_actual['reclamo_flow_v2'].get('state')}. Handing off to ReclamoFlowHandler.")
         handler = ReclamoFlowHandler(context, chat_db_context)
         response = handler.handle(pregunta_str, received_payload)
