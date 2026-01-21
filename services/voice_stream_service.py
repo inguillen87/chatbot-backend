@@ -461,6 +461,8 @@ class VoiceStreamService:
             "Si falta la categoría pero hay descripción suficiente, inferila sin preguntar. "
             "Si el usuario menciona esquina/cruce, incluí ambas calles (ej: 'Don Bosco y Sarmiento'). "
             "Cuando tengas lo mínimo, ejecutá la herramienta correspondiente. "
+            "IMPORTANTE: Si el usuario corrige la dirección o descripción DESPUÉS de que ya creaste el ticket, NO vuelvas a llamar a crear_reclamo. "
+            "Simplemente decile que tomaste nota de la corrección. "
             "Al finalizar, confirmá el número con una frase breve, por ejemplo: "
             "'Tu reclamo quedó cargado con el número [Nro]'. "
             "Avisá que se envió el comprobante por WhatsApp. "
@@ -882,6 +884,29 @@ class VoiceStreamService:
                         if sanitized_name and not _is_greeting_name(sanitized_name):
                             args.setdefault("nombre", sanitized_name)
                         args.setdefault("email", getattr(self.user, "email", None))
+
+                    if self.last_ticket_nro:
+                        logger.info(f"[VOICE] Skipping duplicated ticket creation. Existing: {self.last_ticket_nro}")
+                        result = (
+                            f"Ya tenés registrado el reclamo número {self.last_ticket_nro}. "
+                            "He tomado nota de los detalles adicionales."
+                        )
+                        # Returning early without creating a new ticket.
+                        self.openai_ws.send(
+                            json.dumps(
+                                {
+                                    "type": "conversation.item.create",
+                                    "item": {
+                                        "type": "function_call_output",
+                                        "call_id": call_id,
+                                        "output": result,
+                                    },
+                                }
+                            )
+                        )
+                        self.openai_ws.send(json.dumps({"type": "response.create"}))
+                        self.response_active = True
+                        return
 
                     handler = CrearReclamoActionHandler(ctx)
                     res = handler.execute(args)

@@ -909,7 +909,19 @@ class ReclamoFlowHandler:
     def start_flow(self, datos_iniciales=None, categoria_inicial=None):
         logger.info("Iniciando flujo de reclamo v2.")
         self.flow_context.clear()
-        self.flow_context['datos_reclamo'] = datos_iniciales or {}
+
+        # Merge incoming initial data with any data already extracted by the LLM
+        # in previous turns (e.g. while in CONVERSACION_GENERAL_LLM state).
+        merged_datos = {}
+        llm_partials = self.municipal_ctx.get("datos_parciales_llm_reclamo", {})
+        if llm_partials:
+            logger.info(f"Merging partial LLM data into flow: {llm_partials}")
+            merged_datos.update(llm_partials)
+
+        if datos_iniciales:
+            merged_datos.update(datos_iniciales)
+
+        self.flow_context['datos_reclamo'] = merged_datos
         datos = self.flow_context['datos_reclamo']
 
         if _is_placeholder_description(datos.get('descripcion')):
