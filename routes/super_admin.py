@@ -12,6 +12,20 @@ import unicodedata
 
 super_admin_bp = Blueprint('super_admin', __name__, url_prefix='/api/admin')
 
+LEGACY_TENANT_SEEDS = {
+    "mauricio@junin.com": {
+        "slug": "junin",
+        "nombre": "Municipalidad de Junin",
+        "tipo": "municipio",
+        "plan": "full",
+    },
+    "franco@cuatrofincas.com": {
+        "slug": "cuatro-fincas",
+        "nombre": "Bodega Cuatro Fincas",
+        "tipo": "pyme",
+        "plan": "full",
+    },
+}
 
 def _normalize_plan_key(raw_plan: str | None) -> str:
     if not raw_plan:
@@ -54,6 +68,9 @@ def _slugify(value: str | None) -> str | None:
 
 
 def _candidate_slug_for_user(user: User) -> str | None:
+    seed = LEGACY_TENANT_SEEDS.get((user.email or "").strip().lower())
+    if seed:
+        return _slugify(seed.get("slug"))
     if getattr(user, "tenant_slug", None):
         return _slugify(user.tenant_slug)
     email = (user.email or "").strip().lower()
@@ -80,6 +97,7 @@ def _ensure_unique_slug(base_slug: str | None) -> str:
 
 
 def _maybe_create_tenant_for_admin(user: User) -> TenantProfile | None:
+    seed = LEGACY_TENANT_SEEDS.get((user.email or "").strip().lower())
     existing = None
     if user.tenant_id:
         existing = TenantProfile.query.get(user.tenant_id)
@@ -96,30 +114,43 @@ def _maybe_create_tenant_for_admin(user: User) -> TenantProfile | None:
     if existing:
         user.tenant_id = existing.id
         user.tenant_slug = existing.slug
-        if existing.tipo == "municipio" and not existing.municipio_id:
+        if seed:
+            existing.slug = seed["slug"]
+            existing.nombre = seed["nombre"]
+            existing.tipo = seed["tipo"]
+            existing.plan = _normalize_plan_key(seed["plan"])
+        if existing.tipo == "municipio":
             existing.municipio_id = user.id
-        if existing.tipo == "pyme" and not existing.pyme_id:
+            existing.pyme_id = None
+            if not user.municipio_id:
+                user.municipio_id = user.id
+        if existing.tipo == "pyme":
             existing.pyme_id = user.id
-        if existing.tipo == "municipio" and not user.municipio_id:
-            user.municipio_id = user.id
-        if existing.tipo == "pyme" and not user.pyme_id:
-            user.pyme_id = user.id
+            existing.municipio_id = None
+            if not user.pyme_id:
+                user.pyme_id = user.id
         return existing
 
     if user.rol not in {"admin", "admin_pyme"}:
         return None
 
-    tipo = (user.tipo_chat or ("municipio" if user.municipio_id else "pyme")).lower()
+    tipo = (seed.get("tipo") if seed else None) or (
+        user.tipo_chat or ("municipio" if user.municipio_id else "pyme")
+    )
+    tipo = tipo.lower()
     if tipo not in {"municipio", "pyme"}:
         return None
 
-    slug = _ensure_unique_slug(_candidate_slug_for_user(user) or f"tenant-{user.id}")
-    nombre = user.nombre_empresa or user.name or slug.replace("-", " ").title()
+    seed_slug = seed.get("slug") if seed else None
+    slug = _ensure_unique_slug(_candidate_slug_for_user(user) or seed_slug or f"tenant-{user.id}")
+    nombre = seed.get("nombre") if seed else None
+    nombre = nombre or user.nombre_empresa or user.name or slug.replace("-", " ").title()
+    plan = seed.get("plan") if seed else user.plan
     tenant = TenantProfile(
         slug=slug,
         nombre=nombre,
         tipo=tipo,
-        plan=_normalize_plan_key(user.plan),
+        plan=_normalize_plan_key(plan),
         is_active=True,
         municipio_id=user.id if tipo == "municipio" else None,
         pyme_id=user.id if tipo == "pyme" else None,
