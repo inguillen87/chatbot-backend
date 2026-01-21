@@ -124,6 +124,13 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         if context.get("es_foto") and context.get("foto_url"):
             mensaje_completo_para_llm["imagen_url"] = context.get("foto_url")
 
+        if context.get("es_ubicacion") and context.get("ubicacion_usuario"):
+            loc = context.get("ubicacion_usuario")
+            address_str = loc.get('address') or f"Lat: {loc.get('latitude')}, Lon: {loc.get('longitude')}"
+            mensaje_completo_para_llm["ubicacion_adjunta"] = address_str
+            # Append to text to ensure the model attends to it even if it ignores the separate field
+            mensaje_completo_para_llm["texto"] = (mensaje_completo_para_llm["texto"] + f" [UBICACIÓN COMPARTIDA: {address_str}]").strip()
+
         # Inject voice channel instruction
         is_voice = context.get("channel") == "voice"
         # Check explicit flag from DB context if channel didn't propagate
@@ -264,6 +271,9 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 return handler.execute(datos_actuales), contexto_municipio_actual
             else:
                 contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
+                # Clear legacy flow state to prevent interference
+                contexto_municipio_actual.pop("reclamo_flow_v2", None)
+
                 pending_fields = _normalize_pedir_info_fields(pedir_info_llm)
                 if pending_fields:
                     contexto_municipio_actual["expected_fields_llm_reclamo"] = pending_fields
