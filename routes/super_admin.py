@@ -96,6 +96,15 @@ def _ensure_unique_slug(base_slug: str | None) -> str:
     return slug
 
 
+def _slug_conflicts(desired_slug: str, tenant_id: int | None = None) -> bool:
+    if not desired_slug:
+        return False
+    query = TenantProfile.query.filter(func.lower(TenantProfile.slug) == desired_slug.lower())
+    if tenant_id:
+        query = query.filter(TenantProfile.id != tenant_id)
+    return query.first() is not None
+
+
 def _maybe_create_tenant_for_admin(user: User) -> TenantProfile | None:
     seed = LEGACY_TENANT_SEEDS.get((user.email or "").strip().lower())
     existing = None
@@ -111,11 +120,24 @@ def _maybe_create_tenant_for_admin(user: User) -> TenantProfile | None:
         existing = TenantProfile.query.filter(
             (TenantProfile.municipio_id == user.id) | (TenantProfile.pyme_id == user.id)
         ).first()
+    if seed and existing:
+        owned_by_user = user.id in {existing.municipio_id, existing.pyme_id}
+        if not owned_by_user:
+            existing = None
     if existing:
         user.tenant_id = existing.id
         user.tenant_slug = existing.slug
         if seed:
-            existing.slug = seed["slug"]
+            desired_slug = seed["slug"]
+            if desired_slug and not _slug_conflicts(desired_slug, tenant_id=existing.id):
+                existing.slug = desired_slug
+            elif desired_slug:
+                current_app.logger.warning(
+                    "SA:seed tenant slug '%s' is already in use; keeping '%s' for user %s",
+                    desired_slug,
+                    existing.slug,
+                    user.email,
+                )
             existing.nombre = seed["nombre"]
             existing.tipo = seed["tipo"]
             existing.plan = _normalize_plan_key(seed["plan"])
@@ -191,13 +213,9 @@ def list_tenants(current_user):
 
     tenants_data = []
     for tenant in pagination.items:
-        # IMPROVED LOGIC: Determine plan from owner or tenant, ensuring owner is fetched.
+        # IMPROVED LOGIC: Prefer tenant plan, fall back to owner if needed.
         owner = tenant.municipio or tenant.pyme
-        plan = "gratis"
-        if owner:
-            plan = owner.plan or tenant.plan or "gratis"
-        else:
-            plan = tenant.plan or "gratis"
+        plan = tenant.plan or (owner.plan if owner else None) or "gratis"
         plan = _normalize_plan_key(plan)
 
         # IMPROVED LOGIC: Status is derived from is_active field.
