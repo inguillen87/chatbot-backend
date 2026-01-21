@@ -1,11 +1,21 @@
 from flask import Blueprint, jsonify, request, g, current_app
-from models import TenantProfile, User, db, generate_token, WhatsappNumero, Rubro, AdminAuditLog
+from models import (
+    TenantProfile,
+    User,
+    db,
+    generate_token,
+    WhatsappNumero,
+    Rubro,
+    AdminAuditLog,
+    TwilioNumber,
+)
 from utils.auth_helpers import token_requerido
 from utils.admin_decorators import super_admin_required
 from sqlalchemy import desc, func
 from datetime import datetime, timezone, timedelta
 from services.tenant_management.folder_manager import ensure_tenant_folder_structure
 from services.plan_config import apply_plan_to_user, get_plan_metadata
+from services.user_service import assign_whatsapp_numbers
 import jwt
 import re
 import unicodedata
@@ -26,6 +36,7 @@ LEGACY_TENANT_SEEDS = {
         "plan": "full",
     },
 }
+
 
 def _normalize_plan_key(raw_plan: str | None) -> str:
     if not raw_plan:
@@ -199,6 +210,29 @@ def _bootstrap_missing_tenants() -> int:
         db.session.commit()
     return created_count
 
+
+def _normalize_phone(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    if normalized.lower().startswith("whatsapp:"):
+        normalized = normalized.split("whatsapp:", 1)[1].strip()
+    return normalized or None
+
+
+def _serialize_twilio_number(number: TwilioNumber) -> dict:
+    tenant = number.tenant
+    return {
+        "id": number.id,
+        "phone_number": number.phone_number,
+        "sender_id": number.sender_id,
+        "status": number.status,
+        "tenant_id": number.tenant_id,
+        "tenant_slug": tenant.slug if tenant else None,
+        "tenant_nombre": tenant.nombre if tenant else None,
+    }
 
 @super_admin_bp.route('/tenants', methods=['GET'])
 @token_requerido
@@ -610,3 +644,111 @@ def configure_tenant_whatsapp(current_user, slug):
     _log_admin_action(current_user.id, "configure_whatsapp", slug, {"number": number})
     db.session.commit()
     return jsonify({"message": "WhatsApp configurado correctamente", "number": number})
+
+
+@super_admin_bp.route('/whatsapp/numbers', methods=['GET'])
+@token_requerido
+@super_admin_required
+def list_whatsapp_numbers(current_user):
+    status = request.args.get("status")
+    tenant_slug = request.args.get("tenant_slug")
+    prefix = request.args.get("prefix")
+
+    query = TwilioNumber.query
+    if status:
+        query = query.filter_by(status=status)
+    if tenant_slug:
+        tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+        if not tenant:
+            return jsonify({"error": "Tenant no encontrado"}), 404
+        query = query.filter(TwilioNumber.tenant_id == tenant.id)
+    if prefix:
+        query = query.filter(TwilioNumber.phone_number.startswith(prefix))
+
+    numbers = query.order_by(TwilioNumber.phone_number.asc()).all()
+    return jsonify({
+        "numbers": [_serialize_twilio_number(number) for number in numbers],
+        "total": len(numbers),
+    })
+
+
+@super_admin_bp.route('/whatsapp/numbers/assign', methods=['POST'])
+@token_requerido
+@super_admin_required
+def assign_whatsapp_number_to_tenant(current_user):
+    data = request.get_json() or {}
+    tenant_slug = data.get("tenant_slug")
+    number_id = data.get("number_id")
+
+    if not tenant_slug or not number_id:
+        return jsonify({"error": "tenant_slug y number_id requeridos"}), 400
+
+    tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+    if not tenant:
+        return jsonify({"error": "Tenant no encontrado"}), 404
+
+    number = TwilioNumber.query.get(number_id)
+    if not number:
+        return jsonify({"error": "Número no encontrado"}), 404
+
+    if number.status != "available":
+        return jsonify({"error": "Número no disponible"}), 409
+
+    number.status = "assigned"
+    number.tenant_id = tenant.id
+    tenant.whatsapp_sender_id = number.sender_id
+
+    owner = tenant.municipio or tenant.pyme
+    if owner:
+        assign_whatsapp_numbers(owner, [_normalize_phone(number.phone_number)], activate=True, commit=False)
+
+    _log_admin_action(
+        current_user.id,
+        "assign_whatsapp_number",
+        tenant_slug,
+        {"number_id": number.id, "phone_number": number.phone_number},
+    )
+    db.session.commit()
+    return jsonify({
+        "message": "Número asignado correctamente",
+        "number": _serialize_twilio_number(number),
+    })
+
+
+@super_admin_bp.route('/whatsapp/numbers/register', methods=['POST'])
+@token_requerido
+@super_admin_required
+def register_external_whatsapp_number(current_user):
+    data = request.get_json() or {}
+    tenant_slug = data.get("tenant_slug")
+    number_raw = data.get("number")
+    sender_id = data.get("sender_id")
+
+    if not tenant_slug or not number_raw:
+        return jsonify({"error": "tenant_slug y number requeridos"}), 400
+
+    tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+    if not tenant:
+        return jsonify({"error": "Tenant no encontrado"}), 404
+
+    number = _normalize_phone(number_raw)
+    if not number:
+        return jsonify({"error": "Número inválido"}), 400
+
+    tenant.whatsapp_sender_id = sender_id or f"whatsapp:{number}"
+    owner = tenant.municipio or tenant.pyme
+    if owner:
+        assign_whatsapp_numbers(owner, [number], activate=True, commit=False)
+
+    _log_admin_action(
+        current_user.id,
+        "register_external_whatsapp",
+        tenant_slug,
+        {"number": number, "sender_id": tenant.whatsapp_sender_id},
+    )
+    db.session.commit()
+    return jsonify({
+        "message": "Número registrado correctamente",
+        "tenant_slug": tenant.slug,
+        "whatsapp_sender_id": tenant.whatsapp_sender_id,
+    })

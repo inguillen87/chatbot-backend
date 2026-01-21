@@ -17,6 +17,7 @@ from routes.auth import (
     login as login_view,
     me_perfil as perfil_view,
     google_login,
+    admin_login,
 )
 from routes.chat import ask, ask_municipio, ask_pyme
 from routes.carrito import agregar, carrito_root, eliminar, vaciar, actualizar
@@ -63,6 +64,11 @@ from routes.pwa_public import public_events, public_news
 
 api_aliases_bp = Blueprint("api_aliases", __name__, url_prefix="/api")
 public_aliases_bp = Blueprint("public_aliases", __name__)
+
+
+@api_aliases_bp.route("/auth/admin/login", methods=["POST", "OPTIONS"], strict_slashes=False)
+def admin_login_alias():
+    return admin_login()
 
 
 @api_aliases_bp.route("/productos", methods=["GET", "OPTIONS"], strict_slashes=False)
