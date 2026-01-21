@@ -267,9 +267,15 @@ def _purge_tenant_records(tenant: TenantProfile) -> dict:
     for table in db.metadata.sorted_tables:
         if table.name == TenantProfile.__tablename__:
             continue
-        if "tenant_id" not in table.c:
-            continue
-        deleted["tables"][table.name] = _delete_rows_by_column(table, "tenant_id", [tenant_id])
+        table_deleted = 0
+        if "tenant_id" in table.c:
+            table_deleted += _delete_rows_by_column(table, "tenant_id", [tenant_id])
+        if "municipio_id" in table.c:
+            table_deleted += _delete_rows_by_column(table, "municipio_id", [tenant_id])
+        if "pyme_id" in table.c:
+            table_deleted += _delete_rows_by_column(table, "pyme_id", [tenant_id])
+        if table_deleted:
+            deleted["tables"][table.name] = table_deleted
     return deleted
 
 
@@ -589,6 +595,14 @@ def delete_tenant_hard(current_user, slug):
     else:
         User.query.filter(User.id.in_(user_ids)).update(
             {"tenant_id": None, "tenant_slug": None},
+            synchronize_session=False,
+        )
+        User.query.filter(User.municipio_id == tenant.id).update(
+            {"municipio_id": None},
+            synchronize_session=False,
+        )
+        User.query.filter(User.pyme_id == tenant.id).update(
+            {"pyme_id": None},
             synchronize_session=False,
         )
 
