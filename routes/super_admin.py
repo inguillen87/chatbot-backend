@@ -7,6 +7,8 @@ from datetime import datetime, timezone, timedelta
 from services.tenant_management.folder_manager import ensure_tenant_folder_structure
 from services.plan_config import apply_plan_to_user, get_plan_metadata
 import jwt
+import re
+import unicodedata
 
 super_admin_bp = Blueprint('super_admin', __name__, url_prefix='/api/admin')
 
@@ -38,10 +40,102 @@ def _log_admin_action(user_id: int, action: str, target: str, details: dict = No
     except Exception as e:
         current_app.logger.error(f"Failed to create audit log: {e}")
 
+
+def _slugify(value: str | None) -> str | None:
+    if not value:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    decomposed = unicodedata.normalize("NFKD", text)
+    sanitized = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    sanitized = re.sub(r"[^a-z0-9]+", "-", sanitized).strip("-")
+    return sanitized or None
+
+
+def _candidate_slug_for_user(user: User) -> str | None:
+    if getattr(user, "tenant_slug", None):
+        return _slugify(user.tenant_slug)
+    email = (user.email or "").strip().lower()
+    if (user.tipo_chat or "").lower() == "municipio" and "@" in email:
+        domain = email.split("@")[-1]
+        if domain and domain not in {"gmail.com", "hotmail.com", "outlook.com", "yahoo.com"}:
+            domain_root = domain.split(".")[0]
+            if domain_root:
+                return _slugify(domain_root)
+    candidate = user.nombre_empresa or user.name or email
+    if "@" in str(candidate):
+        candidate = str(candidate).split("@")[0]
+    return _slugify(str(candidate))
+
+
+def _ensure_unique_slug(base_slug: str | None) -> str:
+    base = base_slug or "tenant"
+    slug = base
+    counter = 1
+    while TenantProfile.query.filter_by(slug=slug).first():
+        slug = f"{base}-{counter}"
+        counter += 1
+    return slug
+
+
+def _maybe_create_tenant_for_admin(user: User) -> TenantProfile | None:
+    existing = None
+    if user.tenant_id:
+        existing = TenantProfile.query.get(user.tenant_id)
+    if not existing:
+        existing = TenantProfile.query.filter(
+            (TenantProfile.municipio_id == user.id) | (TenantProfile.pyme_id == user.id)
+        ).first()
+    if existing:
+        return existing
+
+    if user.rol not in {"admin", "admin_pyme"}:
+        return None
+
+    tipo = (user.tipo_chat or ("municipio" if user.municipio_id else "pyme")).lower()
+    if tipo not in {"municipio", "pyme"}:
+        return None
+
+    slug = _ensure_unique_slug(_candidate_slug_for_user(user) or f"tenant-{user.id}")
+    nombre = user.nombre_empresa or user.name or slug.replace("-", " ").title()
+    tenant = TenantProfile(
+        slug=slug,
+        nombre=nombre,
+        tipo=tipo,
+        plan=_normalize_plan_key(user.plan),
+        is_active=True,
+        municipio_id=user.id if tipo == "municipio" else None,
+        pyme_id=user.id if tipo == "pyme" else None,
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    user.tenant_id = tenant.id
+    user.tenant_slug = slug
+    if tipo == "municipio" and not user.municipio_id:
+        user.municipio_id = user.id
+    if tipo == "pyme" and not user.pyme_id:
+        user.pyme_id = user.id
+    return tenant
+
+
+def _bootstrap_missing_tenants() -> int:
+    candidates = User.query.filter(User.rol.in_(["admin", "admin_pyme"])).all()
+    created_count = 0
+    for user in candidates:
+        tenant = _maybe_create_tenant_for_admin(user)
+        if tenant and tenant.id:
+            created_count += 1
+    if created_count:
+        db.session.commit()
+    return created_count
+
+
 @super_admin_bp.route('/tenants', methods=['GET'])
 @token_requerido
 @super_admin_required
 def list_tenants(current_user):
+    _bootstrap_missing_tenants()
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 20, type=int)
 
