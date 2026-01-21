@@ -2,14 +2,30 @@ from flask import Blueprint, jsonify, request, g, current_app
 from models import TenantProfile, User, db, generate_token, WhatsappNumero, Rubro, AdminAuditLog
 from utils.auth_helpers import token_requerido
 from utils.admin_decorators import super_admin_required
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from datetime import datetime, timezone, timedelta
 from services.tenant_management.folder_manager import ensure_tenant_folder_structure
 from services.plan_config import apply_plan_to_user, get_plan_metadata
 import jwt
+import re
+import unicodedata
 
 super_admin_bp = Blueprint('super_admin', __name__, url_prefix='/api/admin')
 
+LEGACY_TENANT_SEEDS = {
+    "mauricio@junin.com": {
+        "slug": "junin",
+        "nombre": "Municipalidad de Junin",
+        "tipo": "municipio",
+        "plan": "full",
+    },
+    "franco@cuatrofincas.com": {
+        "slug": "cuatro-fincas",
+        "nombre": "Bodega Cuatro Fincas",
+        "tipo": "pyme",
+        "plan": "full",
+    },
+}
 
 def _normalize_plan_key(raw_plan: str | None) -> str:
     if not raw_plan:
@@ -38,10 +54,157 @@ def _log_admin_action(user_id: int, action: str, target: str, details: dict = No
     except Exception as e:
         current_app.logger.error(f"Failed to create audit log: {e}")
 
+
+def _slugify(value: str | None) -> str | None:
+    if not value:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    decomposed = unicodedata.normalize("NFKD", text)
+    sanitized = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    sanitized = re.sub(r"[^a-z0-9]+", "-", sanitized).strip("-")
+    return sanitized or None
+
+
+def _candidate_slug_for_user(user: User) -> str | None:
+    seed = LEGACY_TENANT_SEEDS.get((user.email or "").strip().lower())
+    if seed:
+        return _slugify(seed.get("slug"))
+    if getattr(user, "tenant_slug", None):
+        return _slugify(user.tenant_slug)
+    email = (user.email or "").strip().lower()
+    if (user.tipo_chat or "").lower() == "municipio" and "@" in email:
+        domain = email.split("@")[-1]
+        if domain and domain not in {"gmail.com", "hotmail.com", "outlook.com", "yahoo.com"}:
+            domain_root = domain.split(".")[0]
+            if domain_root:
+                return _slugify(domain_root)
+    candidate = user.nombre_empresa or user.name or email
+    if "@" in str(candidate):
+        candidate = str(candidate).split("@")[0]
+    return _slugify(str(candidate))
+
+
+def _ensure_unique_slug(base_slug: str | None) -> str:
+    base = base_slug or "tenant"
+    slug = base
+    counter = 1
+    while TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug.lower()).first():
+        slug = f"{base}-{counter}"
+        counter += 1
+    return slug
+
+
+def _slug_conflicts(desired_slug: str, tenant_id: int | None = None) -> bool:
+    if not desired_slug:
+        return False
+    query = TenantProfile.query.filter(func.lower(TenantProfile.slug) == desired_slug.lower())
+    if tenant_id:
+        query = query.filter(TenantProfile.id != tenant_id)
+    return query.first() is not None
+
+
+def _maybe_create_tenant_for_admin(user: User) -> TenantProfile | None:
+    seed = LEGACY_TENANT_SEEDS.get((user.email or "").strip().lower())
+    existing = None
+    if user.tenant_id:
+        existing = TenantProfile.query.get(user.tenant_id)
+    if not existing:
+        candidate_slug = _slugify(getattr(user, "tenant_slug", None))
+        if candidate_slug:
+            existing = TenantProfile.query.filter(
+                func.lower(TenantProfile.slug) == candidate_slug.lower()
+            ).first()
+    if not existing:
+        existing = TenantProfile.query.filter(
+            (TenantProfile.municipio_id == user.id) | (TenantProfile.pyme_id == user.id)
+        ).first()
+    if seed and existing:
+        owned_by_user = user.id in {existing.municipio_id, existing.pyme_id}
+        if not owned_by_user:
+            existing = None
+    if existing:
+        user.tenant_id = existing.id
+        user.tenant_slug = existing.slug
+        if seed:
+            desired_slug = seed["slug"]
+            if desired_slug and not _slug_conflicts(desired_slug, tenant_id=existing.id):
+                existing.slug = desired_slug
+            elif desired_slug:
+                current_app.logger.warning(
+                    "SA:seed tenant slug '%s' is already in use; keeping '%s' for user %s",
+                    desired_slug,
+                    existing.slug,
+                    user.email,
+                )
+            existing.nombre = seed["nombre"]
+            existing.tipo = seed["tipo"]
+            existing.plan = _normalize_plan_key(seed["plan"])
+        if existing.tipo == "municipio":
+            existing.municipio_id = user.id
+            existing.pyme_id = None
+            if not user.municipio_id:
+                user.municipio_id = user.id
+        if existing.tipo == "pyme":
+            existing.pyme_id = user.id
+            existing.municipio_id = None
+            if not user.pyme_id:
+                user.pyme_id = user.id
+        return existing
+
+    if user.rol not in {"admin", "admin_pyme"}:
+        return None
+
+    tipo = (seed.get("tipo") if seed else None) or (
+        user.tipo_chat or ("municipio" if user.municipio_id else "pyme")
+    )
+    tipo = tipo.lower()
+    if tipo not in {"municipio", "pyme"}:
+        return None
+
+    seed_slug = seed.get("slug") if seed else None
+    slug = _ensure_unique_slug(_candidate_slug_for_user(user) or seed_slug or f"tenant-{user.id}")
+    nombre = seed.get("nombre") if seed else None
+    nombre = nombre or user.nombre_empresa or user.name or slug.replace("-", " ").title()
+    plan = seed.get("plan") if seed else user.plan
+    tenant = TenantProfile(
+        slug=slug,
+        nombre=nombre,
+        tipo=tipo,
+        plan=_normalize_plan_key(plan),
+        is_active=True,
+        municipio_id=user.id if tipo == "municipio" else None,
+        pyme_id=user.id if tipo == "pyme" else None,
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    user.tenant_id = tenant.id
+    user.tenant_slug = slug
+    if tipo == "municipio" and not user.municipio_id:
+        user.municipio_id = user.id
+    if tipo == "pyme" and not user.pyme_id:
+        user.pyme_id = user.id
+    return tenant
+
+
+def _bootstrap_missing_tenants() -> int:
+    candidates = User.query.filter(User.rol.in_(["admin", "admin_pyme"])).all()
+    created_count = 0
+    for user in candidates:
+        tenant = _maybe_create_tenant_for_admin(user)
+        if tenant and tenant.id:
+            created_count += 1
+    if created_count:
+        db.session.commit()
+    return created_count
+
+
 @super_admin_bp.route('/tenants', methods=['GET'])
 @token_requerido
 @super_admin_required
 def list_tenants(current_user):
+    _bootstrap_missing_tenants()
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 20, type=int)
 
@@ -50,13 +213,9 @@ def list_tenants(current_user):
 
     tenants_data = []
     for tenant in pagination.items:
-        # IMPROVED LOGIC: Determine plan from owner or tenant, ensuring owner is fetched.
+        # IMPROVED LOGIC: Prefer tenant plan, fall back to owner if needed.
         owner = tenant.municipio or tenant.pyme
-        plan = "gratis"
-        if owner:
-            plan = owner.plan or tenant.plan or "gratis"
-        else:
-            plan = tenant.plan or "gratis"
+        plan = tenant.plan or (owner.plan if owner else None) or "gratis"
         plan = _normalize_plan_key(plan)
 
         # IMPROVED LOGIC: Status is derived from is_active field.
