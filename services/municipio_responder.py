@@ -895,7 +895,7 @@ class ReclamoFlowHandler:
         elif state == ReclamoState.ESPERANDO_DIRECCION:
             return self.handle_direccion(user_input, payload)
         elif state == ReclamoState.ESPERANDO_DESCRIPCION:
-            return self.handle_descripcion(user_input)
+            return self.handle_descripcion(user_input, payload)
         elif state == ReclamoState.ESPERANDO_FOTO:
             return self.handle_foto(user_input, payload)
         elif state == ReclamoState.ESPERANDO_DATOS_CONTACTO:
@@ -1339,12 +1339,51 @@ class ReclamoFlowHandler:
         }
 
     
-    def handle_descripcion(self, user_input):
+    def handle_descripcion(self, user_input, payload=None):
+        # Allow payload to be optional for backward compatibility if called without it
+        payload = payload or {}
+
+        # If user sent a location instead of text, capture it and move forward if we already have a description
+        if payload.get("es_ubicacion"):
+            location_data = payload.get("ubicacion_usuario") or {}
+            self.flow_context['datos_reclamo']['direccion'] = location_data.get("address") or "Ubicación compartida"
+            if location_data.get("latitude") and location_data.get("longitude"):
+                self.flow_context['datos_reclamo']['coordenadas'] = {
+                    "lat": location_data.get("latitude"),
+                    "lng": location_data.get("longitude")
+                }
+
+            # If we already have a description from previous turns (LLM), we can proceed
+            if self.flow_context['datos_reclamo'].get('descripcion'):
+                if self.flow_context['datos_reclamo'].get('foto_url') or self.context.get('foto_url'):
+                    return self.ask_for_contact_details()
+                self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
+                return {
+                    "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
+                    "options_list": [{"texto": "Sí, agregar foto", "action_id": "reclamo_adjuntar_foto_si"}, {"texto": "No, omitir foto", "action_id": "reclamo_adjuntar_foto_no"}],
+                    "message_type": "interactive_buttons"
+                }
+
+        # Check if we already have a valid description in the context (e.g. extracted by LLM)
+        existing_desc = self.flow_context['datos_reclamo'].get('descripcion')
+
         if len(user_input) < 10:
-            return {"message_body": "Por favor, dame una descripción un poco más detallada del problema."}
-        descripcion_texto = user_input.strip()
-        self.flow_context['datos_reclamo']['descripcion'] = descripcion_texto
-        self.flow_context['datos_reclamo']['descripcion_resumida'] = construir_descripcion_breve(descripcion_texto)
+            # If input is too short but we have a valid existing description, assume the user
+            # might have sent a location (handled above) or just confirmed.
+            # However, if we are strictly in ESPERANDO_DESCRIPCION, we expect text.
+            # If we have an existing description, we should have probably skipped this state.
+            # But if we are here, let's check if the existing description is good enough.
+            if existing_desc and len(existing_desc) >= 10:
+                # Use existing description and proceed
+                pass
+            else:
+                return {"message_body": "Por favor, dame una descripción un poco más detallada del problema."}
+        else:
+            # New valid input overrides existing
+            descripcion_texto = user_input.strip()
+            self.flow_context['datos_reclamo']['descripcion'] = descripcion_texto
+            self.flow_context['datos_reclamo']['descripcion_resumida'] = construir_descripcion_breve(descripcion_texto)
+
         if not self.flow_context['datos_reclamo'].get('direccion'):
             self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
             categoria = self.flow_context['datos_reclamo'].get('categoria', '')
