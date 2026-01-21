@@ -8,6 +8,9 @@ from utils.db_utils import safe_flag_modified
 from sqlalchemy.orm import joinedload
 from twilio.rest import Client
 from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
+from services.whatsapp_receipts import render_ticket_whatsapp
+from services import promo_service
+from services.config_loader import cargar_configuracion_municipio
 
 logger = logging.getLogger(__name__)
 
@@ -361,63 +364,92 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
                 return
             logger.info("Receipt already sent during stream. Sending final summary anyway.")
 
-        ticket_info_text = ""
-
         # Check for Municipio Ticket
         municipio_ctx = context_data.get("contexto_municipio_v2", {})
-        # Not all flows save to 'ultimo_ticket_creado' but action handlers often return data
-        # We rely on 'numero_ticket_creado_sesion' or similar if persisted.
-        # Alternatively, we can check the last message body if it contains ticket info,
-        # but structured data is better.
-
-        # Let's check for standard keys we'll ensure are saved
-        created_ticket_id = context_data.get("latest_ticket_id") or municipio_ctx.get("ultimo_ticket_creado")
         created_ticket_nro = context_data.get("latest_ticket_nro")
-        tracking_url = context_data.get("latest_tracking_url")
-        consulta_pin = context_data.get("latest_ticket_pin")
+
+        message_body = None
+        media_url = None
 
         if created_ticket_nro:
-            ticket_info_text = (
-                f"✅ *Ticket generado con éxito*\n"
-                f"Número: *{created_ticket_nro}*\n"
-            )
-            if consulta_pin:
-                ticket_info_text += f"PIN: *{consulta_pin}*\n"
-            if tracking_url:
-                ticket_info_text += f"Seguí el estado aquí: {tracking_url}\n"
+            # Attempt to build a Rich Receipt
+            try:
+                # Resolve config
+                municipio_id = client_user.municipio_id if hasattr(client_user, 'municipio_id') else None
+                municipio_cfg = {}
+                if municipio_id:
+                    municipio_cfg = cargar_configuracion_municipio(str(municipio_id), "config.json")
 
-        # Check for Pyme Order
-        pyme_ctx = context_data.get("contexto_pyme_v2", {})
-        created_order_id = pyme_ctx.get("ultimo_ticket_creado") # Usually stores ID
-        # Pyme logic saves order number in 'nro_pedido' inside success payload
-        # If we can't find it easily, we default to generic message.
+                # Get promo info
+                promo_section = promo_service.build_ticket_promo_section(
+                    ticket_number=created_ticket_nro,
+                    owner_user=client_user,
+                    municipio_config=municipio_cfg
+                )
+                promo_image_url = None
+                promo_text = None
+                if promo_section:
+                    promo_image_url = promo_section.get("image_url")
+                    promo_text = promo_section.get("message_body")
 
-        summary_text = "Gracias por tu llamada."
+                # Retrieve ticket details from context if available (fallback to generic)
+                # context data usually has 'datos_reclamo' or 'datos_parciales_llm_reclamo'
+                datos_reclamo = municipio_ctx.get("reclamo_flow_v2", {}).get("datos_reclamo", {})
+                if not datos_reclamo:
+                    datos_reclamo = municipio_ctx.get("datos_parciales_llm_reclamo", {})
 
-        # Determine incomplete status to recover
-        # If ticket was NOT created, but we have partial data, prompt for it.
-        if not ticket_info_text:
-            # Check Municipio partials
+                # Render receipt
+                receipt = render_ticket_whatsapp(
+                    kind="reclamo",
+                    nombre=datos_reclamo.get("nombre") or municipio_ctx.get("contacto_usuario", {}).get("nombre") or "Vecino/a",
+                    ticket_nro=created_ticket_nro,
+                    categoria=datos_reclamo.get("categoria", "General"),
+                    descripcion=datos_reclamo.get("descripcion", "Reclamo registrado telefónicamente"),
+                    direccion=datos_reclamo.get("direccion") or datos_reclamo.get("ubicacion"),
+                    dni=datos_reclamo.get("dni"),
+                    consulta_pin=context_data.get("latest_ticket_pin"),
+                    base_chat_url=municipio_cfg.get("base_chat_url", "https://www.chatboc.ar/chat"),
+                    promo_image_url=promo_image_url,
+                    promo_text=promo_text,
+                    info_url=municipio_cfg.get("link_web") or municipio_cfg.get("url_web"),
+                )
+
+                message_body = receipt.get("body_text")
+                media_url = receipt.get("media_url")
+
+                # Append photo prompt
+                if "M-" in str(created_ticket_nro):
+                     message_body += "\n\n📷 Si tenés una foto del problema, podés enviarla respondiendo a este mensaje."
+
+            except Exception as e_rich:
+                logger.error(f"Error building rich receipt for voice fallback: {e_rich}", exc_info=True)
+                # Fallback to basic text if rich receipt fails
+                message_body = (
+                    f"Gracias por tu llamada.\n\n✅ *Ticket generado con éxito*\n"
+                    f"Número: *{created_ticket_nro}*\n"
+                )
+                if context_data.get("latest_ticket_pin"):
+                    message_body += f"PIN: *{context_data.get('latest_ticket_pin')}*\n"
+
+        else:
+            # Fallback/Recovery message logic
+            summary_text = "Gracias por tu llamada."
             datos_parciales = municipio_ctx.get("datos_parciales_llm_reclamo", {})
+            pyme_ctx = context_data.get("contexto_pyme_v2", {})
+
             if datos_parciales.get("descripcion") and not datos_parciales.get("ubicacion"):
                 summary_text = "⚠️ Se cortó la llamada y me faltó la ubicación para terminar tu reclamo. Por favor escribí la dirección o compartí tu ubicación por acá."
             elif datos_parciales.get("descripcion") and not municipio_ctx.get("ultimo_ticket_creado"):
                 summary_text = "⚠️ Se cortó la llamada antes de confirmar el reclamo. Por favor escribí 'continuar' para terminarlo."
-
-            # Check Pyme partials (simplified check)
             elif pyme_ctx.get("estado_conversacion") and pyme_ctx.get("estado_conversacion") != "IDLE":
                  summary_text = "⚠️ Se cortó la llamada. Si querés retomar tu pedido, escribí 'hola' por acá."
 
-        if ticket_info_text:
-            summary_text = f"{summary_text}\n\n{ticket_info_text}"
-
-            # Append photo prompt if applicable (Municipality)
-            if created_ticket_nro and "M-" in str(created_ticket_nro):
-                 summary_text += "\n\n📷 Si tenés una foto del problema, podés enviarla respondiendo a este mensaje."
+            message_body = f"{summary_text}\n\nSi necesitas algo más, podés escribirnos por aquí."
 
         enviar_mensaje_whatsapp_con_fallback(
             numero_destino=user_phone_clean,
-            cuerpo=f"{summary_text}\n\nSi necesitas algo más, podés escribirnos por aquí.",
+            cuerpo=message_body,
+            media_url=media_url,
             from_number=whatsapp_sender,
             messaging_service_sid=None if whatsapp_sender else MESSAGING_SERVICE_SID,
         )
