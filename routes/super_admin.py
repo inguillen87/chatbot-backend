@@ -533,7 +533,8 @@ def impersonate_tenant(current_user, slug):
 
     _log_admin_action(current_user.id, "impersonate_tenant", slug, {"target_user_id": owner.id})
 
-    return jsonify({"token": token, "redirect_url": f"/portal/{tenant.slug}/admin"})
+    redirect_url = f"/perfil?tenant_slug={tenant.slug}&tenant={tenant.slug}"
+    return jsonify({"token": token, "redirect_url": redirect_url})
 
 @super_admin_bp.route('/tenants/<string:slug>/admin-user', methods=['POST'])
 @token_requerido

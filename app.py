@@ -471,10 +471,13 @@ def create_app(config_class=Config):
     from routes.estacionamiento import bp_est
     from routes.media import media_bp
     from routes.accessibility import accessibility_bp
-    from routes.encuestas_publicas import (
-        encuestas_admin_bp,
-        encuestas_public_bp,
-    )
+    encuestas_admin_publicas_bp = None
+    encuestas_public_publicas_bp = None
+    if not FEATURE_ENCUESTAS:
+        from routes.encuestas_publicas import (
+            encuestas_admin_bp as encuestas_admin_publicas_bp,
+            encuestas_public_bp as encuestas_public_publicas_bp,
+        )
     from routes.pwa_public import pwa_public_bp, pwa_tenant_info_bp, public_api_bp
     from routes.market import market_admin_bp, market_bp
     from routes.portal_api import portal_api_bp
@@ -627,7 +630,10 @@ def create_app(config_class=Config):
     app.register_blueprint(webauthn_bp)
     app.register_blueprint(admin_tenant_bp)
     app.register_blueprint(public_tenant_bp)
-    app.register_blueprint(encuestas_admin_bp)
+    if encuestas_admin_publicas_bp:
+        app.register_blueprint(encuestas_admin_publicas_bp)
+    elif FEATURE_ENCUESTAS:
+        app.register_blueprint(encuestas_admin_bp)
     app.register_blueprint(pyme_catalog_fix_bp)
     app.register_blueprint(health_bp)
     app.register_blueprint(voice_bp)
@@ -638,7 +644,10 @@ def create_app(config_class=Config):
 
     from routes.admin_market import admin_market_bp
     app.register_blueprint(admin_market_bp, url_prefix='/api/admin/tenants/<slug>')
-    app.register_blueprint(encuestas_public_bp)
+    if encuestas_public_publicas_bp:
+        app.register_blueprint(encuestas_public_publicas_bp)
+    elif FEATURE_ENCUESTAS:
+        app.register_blueprint(encuestas_public_bp)
     if FEATURE_ENCUESTAS:
         app.register_blueprint(encuestas_admin_api_bp)
         app.register_blueprint(encuestas_admin_legacy_bp)
