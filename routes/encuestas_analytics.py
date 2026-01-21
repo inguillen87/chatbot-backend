@@ -121,3 +121,13 @@ encuestas_analytics_legacy_bp = _create_blueprint(
     "/admin/encuestas/<int:encuesta_id>/analytics",
     spanish_aliases=True,
 )
+encuestas_analytics_admin_bp = _create_blueprint(
+    "encuestas_analytics_admin_bp",
+    "/api/admin/encuestas/<int:encuesta_id>/analytics",
+    spanish_aliases=True,
+)
+encuestas_analytics_municipal_bp = _create_blueprint(
+    "encuestas_analytics_municipal_bp",
+    "/api/municipal/encuestas/<int:encuesta_id>/analytics",
+    spanish_aliases=True,
+)

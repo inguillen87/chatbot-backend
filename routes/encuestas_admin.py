@@ -303,3 +303,7 @@ encuestas_admin_legacy_bp = _create_admin_blueprint(
 encuestas_admin_api_bp = _create_admin_blueprint(
     "encuestas_admin_api_bp", "/api/admin/encuestas"
 )
+# Alias para la integración municipal que consume /api/municipal/encuestas
+encuestas_municipal_api_bp = _create_admin_blueprint(
+    "encuestas_municipal_api_bp", "/api/municipal/encuestas"
+)

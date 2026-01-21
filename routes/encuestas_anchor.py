@@ -19,6 +19,12 @@ encuestas_anchor_bp = Blueprint("encuestas_anchor_bp", __name__, url_prefix="/ap
 encuestas_anchor_legacy_bp = Blueprint(
     "encuestas_anchor_legacy_bp", __name__, url_prefix="/admin/encuestas/<int:encuesta_id>"
 )
+encuestas_anchor_admin_bp = Blueprint(
+    "encuestas_anchor_admin_bp", __name__, url_prefix="/api/admin/encuestas/<int:encuesta_id>"
+)
+encuestas_anchor_municipal_bp = Blueprint(
+    "encuestas_anchor_municipal_bp", __name__, url_prefix="/api/municipal/encuestas/<int:encuesta_id>"
+)
 
 
 def _feature_guard():
@@ -36,6 +42,8 @@ def _check_feature():
 
 
 @encuestas_anchor_legacy_bp.before_request
+@encuestas_anchor_admin_bp.before_request
+@encuestas_anchor_municipal_bp.before_request
 def _check_feature_legacy():
     guard = _feature_guard()
     if guard:
@@ -101,6 +109,8 @@ def snapshot(current_user, encuesta_id: int):
 
 
 @encuestas_anchor_legacy_bp.route("/snapshot", methods=["POST"])
+@encuestas_anchor_admin_bp.route("/snapshot", methods=["POST"])
+@encuestas_anchor_municipal_bp.route("/snapshot", methods=["POST"])
 @token_requerido
 @require_role("admin", "super_admin")
 def snapshot_legacy(current_user, encuesta_id: int):
@@ -115,6 +125,8 @@ def publish(current_user, encuesta_id: int, snapshot_id: int):
 
 
 @encuestas_anchor_legacy_bp.route("/publish/<int:snapshot_id>", methods=["POST"])
+@encuestas_anchor_admin_bp.route("/publish/<int:snapshot_id>", methods=["POST"])
+@encuestas_anchor_municipal_bp.route("/publish/<int:snapshot_id>", methods=["POST"])
 @token_requerido
 @require_role("admin", "super_admin")
 def publish_legacy(current_user, encuesta_id: int, snapshot_id: int):
@@ -129,6 +141,8 @@ def verify(current_user, encuesta_id: int, snapshot_id: int):
 
 
 @encuestas_anchor_legacy_bp.route("/<int:snapshot_id>/verify", methods=["GET"])
+@encuestas_anchor_admin_bp.route("/<int:snapshot_id>/verify", methods=["GET"])
+@encuestas_anchor_municipal_bp.route("/<int:snapshot_id>/verify", methods=["GET"])
 @token_requerido
 @require_role("admin", "super_admin", "empleado")
 def verify_legacy(current_user, encuesta_id: int, snapshot_id: int):
@@ -143,6 +157,8 @@ def list_snapshots_api(current_user, encuesta_id: int):
 
 
 @encuestas_anchor_legacy_bp.route("/snapshots", methods=["GET"])
+@encuestas_anchor_admin_bp.route("/snapshots", methods=["GET"])
+@encuestas_anchor_municipal_bp.route("/snapshots", methods=["GET"])
 @token_requerido
 @require_role("admin", "super_admin", "empleado")
 def list_snapshots_legacy(current_user, encuesta_id: int):

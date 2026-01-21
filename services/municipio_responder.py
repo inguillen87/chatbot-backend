@@ -6663,9 +6663,13 @@ def _build_catalogo_link_map(context: Optional[dict]) -> Dict[str, str]:
     link_map: Dict[str, str] = {}
 
     # FIX: Prioritize Frontend/Widget URL to avoid sending raw Backend JSON
-    frontend_base = current_app.config.get("WIDGET_URL") or current_app.config.get("PANEL_URL")
-    if frontend_base and (not base_url or "onrender.com" in base_url or "herokuapp.com" in base_url):
+    frontend_base = current_app.config.get("FRONTEND_URL") or current_app.config.get("WIDGET_URL") or current_app.config.get("PANEL_URL")
+    if frontend_base and (not base_url or "onrender.com" in base_url or "herokuapp.com" in base_url or "api." in base_url):
         base_url = frontend_base.rstrip("/")
+        # Ensure tenant slug is in the path for marketplace/profile links if we are using the generic frontend base
+        # Heuristic: if slug is not in base_url, append it using the /m/ prefix standard for this platform
+        if tenant_slug and f"/{tenant_slug}" not in base_url and "/m/" not in base_url:
+            base_url = f"{base_url}/m/{tenant_slug}"
 
     for action_id, default_path in default_paths.items():
         raw_url = override_maps.get(action_id)
