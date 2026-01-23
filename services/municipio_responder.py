@@ -8807,6 +8807,14 @@ def responder_municipio(
 
     estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
     action = received_payload.get("action")
+    if (
+        estado_conversacion == ConversationState.ESPERANDO_INTENCION_UBICACION.name
+        and (received_payload.get("es_foto") or context.get("datos_interpretados_archivo"))
+    ):
+        contexto_municipio_actual["estado_conversacion"] = None
+        estado_conversacion = None
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
 
     # Detectar número de ticket ingresado directamente antes de evaluar menús
     if (
