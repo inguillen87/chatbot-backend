@@ -1712,11 +1712,22 @@ def whatsapp_webhook():
                     and isinstance(awaiting_ticket_photo_until, (int, float))
                     and now_ts <= awaiting_ticket_photo_until
                 )
+                if (
+                    awaiting_ticket_photo_until
+                    and isinstance(awaiting_ticket_photo_until, (int, float))
+                    and now_ts > awaiting_ticket_photo_until
+                ):
+                    session_context_db_entry.context_data.pop("awaiting_photo_for_ticket", None)
+                    session_context_db_entry.context_data.pop("awaiting_ticket_photo", None)
+                    session_context_db_entry.context_data.pop("awaiting_ticket_photo_until", None)
+                    safe_flag_modified(session_context_db_entry, "context_data")
+                    db.session.add(session_context_db_entry)
+                    db.session.commit()
+                    within_photo_window = False
+
                 target_ticket_ref = None
                 if within_photo_window:
                     target_ticket_ref = last_ticket_code or awaiting_ticket_nro
-                elif awaiting_ticket_nro:
-                    target_ticket_ref = awaiting_ticket_nro
 
                 if target_ticket_ref:
                     try:
