@@ -740,7 +740,8 @@ def _determine_tenant_id(user: Any) -> int:
         return tenant_profile.id
 
     tenant_candidate = (
-        getattr(user, "municipio_id", None)
+        getattr(user, "tenant_id", None)
+        or getattr(user, "municipio_id", None)
         or getattr(user, "empresa_id", None)
         or getattr(user, "pyme_id", None)
         or getattr(user, "id", None)
