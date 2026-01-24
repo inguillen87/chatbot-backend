@@ -602,8 +602,10 @@ def public_tenant_widget_config(tenant_slug: str):
 
             # Ensure cta_messages is always a list to prevent frontend map() crashes
             if isinstance(cta_msgs_raw, list):
-                interaction["cta_messages"] = cta_msgs_raw
-                cta_messages = cta_msgs_raw
+                # Filter out None/null items and ensure dicts
+                valid_msgs = [msg for msg in cta_msgs_raw if isinstance(msg, dict)]
+                interaction["cta_messages"] = valid_msgs
+                cta_messages = valid_msgs
             else:
                 interaction["cta_messages"] = []
                 cta_messages = []
