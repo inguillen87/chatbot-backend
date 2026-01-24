@@ -5,7 +5,7 @@ import logging
 import hashlib
 import re
 
-from flask import current_app, url_for
+from flask import current_app
 from websockets.sync.client import connect as ws_connect
 from simple_websocket.errors import ConnectionClosed
 from twilio.rest import Client as TwilioClient
