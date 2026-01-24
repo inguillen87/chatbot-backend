@@ -2218,7 +2218,11 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     accion_backend = llm_response_structured.get("accion_backend")
 
     # Check if we have items in cart or a current intent
-    cart_summary_check = cart_service.get_cart_summary(self.pyme_carts_data, self.pyme_id_actual, self.cliente_id_actual)
+    cart_summary_check = cart_service.get_cart_summary(
+        chat_db_context.context_data.get(cart_service.SESSION_CARTS_KEY, {}),
+        getattr(owner_user, "id", None),
+        getattr(viewer_user, "id", None),
+    )
     has_cart_items = cart_summary_check and bool(cart_summary_check.get("items_detalle"))
 
     if accion_backend in ["pyme_hablar_agente"] and not has_cart_items:
