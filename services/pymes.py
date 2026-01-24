@@ -2164,6 +2164,9 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             menu_request = ("menu", None)
         elif normalized_input in MENU_COMMAND_KEYWORDS:
             menu_request = ("menu", None)
+        # Fix loop where user says just their name
+        elif usuario_nombre and normalized_input == _normalize_user_input(usuario_nombre):
+            menu_request = ("menu", None)
         else:
             resolved_action = _find_menu_action_by_input(pregunta_str, last_options_sent)
             if resolved_action:
