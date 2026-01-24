@@ -449,7 +449,7 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
         enviar_mensaje_whatsapp_con_fallback(
             numero_destino=user_phone_clean,
             cuerpo=message_body,
-            media_url=media_url,
+            image_url=media_url,
             from_number=whatsapp_sender,
             messaging_service_sid=None if whatsapp_sender else MESSAGING_SERVICE_SID,
         )

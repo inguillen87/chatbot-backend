@@ -1034,6 +1034,7 @@ class VoiceStreamService:
 
                     ctx = {
                         "user_obj": self.owner_user,
+                        "user_id": self.owner_user.id if self.owner_user else None,
                         "viewer_user_obj": self.user,
                         "channel": "voice",
                         "cliente_id": self.user.id if self.user else None,
@@ -1160,7 +1161,9 @@ class VoiceStreamService:
                     if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and self.call_sid:
                         try:
                             client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-                            transfer_url = url_for("voice.voice_transfer", target=target_number, _external=True)
+                            backend_url = current_app.config.get("BACKEND_URL", "").rstrip("/")
+                            transfer_url = f"{backend_url}/twilio/voice/transfer?target={target_number}"
+
                             client.calls(self.call_sid).update(method="POST", url=transfer_url)
                             logger.info(f"[VOICE] Transferred call {self.call_sid} to {target_number}")
                         except Exception as exc:

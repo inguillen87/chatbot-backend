@@ -559,10 +559,11 @@ def public_tenant_widget_config(tenant_slug: str):
         theme = {}
 
     # Backfill legacy keys for compatibility
-    if theme_config["light"].get("primary"):
-        theme["primaryColor"] = theme_config["light"]["primary"]
-    if theme_config["light"].get("secondary"):
-        theme["secondaryColor"] = theme_config["light"]["secondary"]
+    theme_light = theme_config.get("light") or {}
+    if theme_light.get("primary"):
+        theme["primaryColor"] = theme_light.get("primary")
+    if theme_light.get("secondary"):
+        theme["secondaryColor"] = theme_light.get("secondary")
 
     theme["config"] = theme_config
 
@@ -598,14 +599,14 @@ def public_tenant_widget_config(tenant_slug: str):
         try:
             # Defensive access to support legacy schemas or pending migrations
             cta_msgs_raw = getattr(widget_settings, "cta_messages", None)
-            if cta_msgs_raw:
-                # Ensure cta_messages is a list to prevent frontend map() crashes
-                if isinstance(cta_msgs_raw, list):
-                    interaction["cta_messages"] = cta_msgs_raw
-                    cta_messages = cta_msgs_raw
-                else:
-                    # If malformed (e.g. dict or string), wrap or ignore
-                    pass
+
+            # Ensure cta_messages is always a list to prevent frontend map() crashes
+            if isinstance(cta_msgs_raw, list):
+                interaction["cta_messages"] = cta_msgs_raw
+                cta_messages = cta_msgs_raw
+            else:
+                interaction["cta_messages"] = []
+                cta_messages = []
 
             w_title = getattr(widget_settings, "welcome_title", None)
             if w_title:
