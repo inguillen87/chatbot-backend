@@ -1,11 +1,17 @@
 # app.py
-# Monkey patch must happen before importing any other modules that might use threads/sockets
-import eventlet
-eventlet.monkey_patch()
-
 import ssl
 import os
 import sys
+
+# --- Modo "solo migraciones" o "testing" para evitar carga pesada de eventlet ---
+MIGRATIONS_ONLY = os.getenv("FLASK_MIGRATIONS_ONLY") == "1"
+TESTING_MODE = os.getenv("TESTING") == "1" or "pytest" in sys.modules
+
+# Monkey patch must happen before importing any other modules that might use threads/sockets
+# Solo en runtime normal (no migraciones, no testing)
+if not MIGRATIONS_ONLY and not TESTING_MODE:
+    import eventlet
+    eventlet.monkey_patch()
 import logging
 from typing import Pattern
 
@@ -23,9 +29,10 @@ MIGRATIONS_ONLY = os.getenv("FLASK_MIGRATIONS_ONLY") == "1"
 os.environ.setdefault("EVENTLET_NO_GREENDNS", "YES")
 
 # Solo en runtime normal (no durante migraciones) parcheamos con eventlet
-if not MIGRATIONS_ONLY:
+if not MIGRATIONS_ONLY and not TESTING_MODE:
     import eventlet
-    eventlet.monkey_patch()
+    # Ya parcheado arriba, pero mantenemos consistencia si hay lógica duplicada
+    # eventlet.monkey_patch()
 
 from flask import Flask, request, current_app, g, jsonify
 from werkzeug.middleware.proxy_fix import ProxyFix

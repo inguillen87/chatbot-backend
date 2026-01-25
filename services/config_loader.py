@@ -138,6 +138,13 @@ def cargar_configuracion_pyme(rubro_slug: str, archivo: str, tenant_slug: str | 
         ))
 
     # 2. Check rubro-specific path
+    # If a tenant_slug is present, we check `data/pyme/rubros/{rubro_slug}/{tenant_slug}/{archivo}`
+    if tenant_slug:
+        rutas_candidatas.append(os.path.join(BASE_PYME_CONFIG_PATH, rubro_slug, tenant_slug, archivo))
+        rutas_candidatas.append(os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "data", "pyme", "rubros", rubro_slug, tenant_slug, archivo
+        ))
+
     rutas_candidatas.append(os.path.join(BASE_PYME_CONFIG_PATH, rubro_slug, archivo))
     rutas_candidatas.append(os.path.join(
         os.path.dirname(os.path.dirname(__file__)), "data", "pyme", "rubros", rubro_slug, archivo
