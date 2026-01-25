@@ -1,12 +1,1 @@
-{
-  "nombre": "Chatboc Demo",
-  "descripcion": "Equipo de ventas omnicanal que responde consultas, toma pedidos y coordina envíos para pymes de distintos rubros.",
-  "welcome_message": "¡Hola! 👋 Soy tu asistente virtual. Estoy aquí para ayudarte a mostrar cómo funciona nuestra plataforma. Elige una opción:",
-  "quick_actions": [
-    {
-      "texto": "Ver demos disponibles",
-      "action": "demo_menu",
-      "description": "Explora ejemplos por industria"
-    }
-  ]
-}
+{}

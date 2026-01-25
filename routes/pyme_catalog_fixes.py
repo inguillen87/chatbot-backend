@@ -17,26 +17,66 @@ def _add_cors_headers(response):
     return response
 
 @pyme_catalog_fix_bp.route('/<int:pyme_id>/process-catalog-file', methods=['POST'])
-def process_catalog_proxy(pyme_id):
+@token_requerido
+def process_catalog_proxy(current_user, pyme_id):
     """
     Proxy endpoint to handle the legacy/frontend route /api/pymes/<id>/process-catalog-file.
     It delegates the actual processing to the existing logic in subir_catalogo.
     """
-    logger.info(f"Proxying catalog upload for pyme_id={pyme_id}")
+    logger.info(f"Proxying catalog upload for pyme_id={pyme_id} by user={current_user.email}")
+
+    # Verify authorization: Only the owner or an admin should upload
+    if current_user.id != pyme_id and current_user.rol != 'admin':
+        # If pyme_id refers to the tenant/empresa ID, we check if user owns it
+        if current_user.empresa_id != pyme_id:
+             logger.warning(f"User {current_user.id} denied upload for pyme {pyme_id}")
+             response = jsonify({'error': 'Unauthorized'}), 403
+             return _add_cors_headers(response)
 
     # Delegate to the existing upload processor
     # ensure response has CORS headers if subir_catalogo doesn't add them (it usually returns a tuple)
-    response = subir_catalogo()
+    # subir_catalogo normally expects 'current_user' from the decorator context or g.user
+    # Since we are calling it from here, we rely on the context being set up correctly by token_requerido
 
-    # If response is a tuple (json, status), unwrap it
+    # IMPORTANT: subir_catalogo is a route handler itself in `services/upload_processor.py`.
+    # It likely uses `request.files` and `token_requerido` internally if used as a route.
+    # However, since we're calling it as a function, we must ensure it doesn't fail on missing args if it expects `current_user`.
+    # Let's inspect `subir_catalogo` signature in a future step if this fails, but for now we assume it relies on `g` or request context.
+    # Actually, `subir_catalogo` is often decorated with `@token_requerido` in its definition.
+    # Calling a decorated function directly passes the arguments explicitly.
+    # We pass `current_user` to satisfy the decorator signature if it's reused.
+
+    try:
+        if hasattr(subir_catalogo, 'original'):
+             # If it's decorated, try to call the original function
+             response = subir_catalogo.original(current_user)
+        else:
+             # If it's not decorated or we can't access original, just call it.
+             # If it's a route handler, it might expect (current_user) if it was decorated with token_requerido.
+             # We try passing current_user first.
+             try:
+                 response = subir_catalogo(current_user)
+             except TypeError:
+                 response = subir_catalogo() # Try without args
+    except Exception as e:
+        logger.error(f"Error delegating to subir_catalogo: {e}")
+        response = jsonify({'error': str(e)}), 500
+
+    # If response is a tuple (json, status), unwrap it to add headers
     if isinstance(response, tuple):
         resp_obj, status = response
-        if not hasattr(resp_obj, 'headers'):
-             # If it's a dict or string, jsonify it if needed, but subir_catalogo returns jsonify usually
-             pass
-        return response # subir_catalogo typically handles response format
+        # We need to wrap it back or modify the response object
+        if hasattr(resp_obj, 'headers'):
+             _add_cors_headers(resp_obj)
+             return resp_obj, status
+        else:
+             # It's likely a Response object or JSON string/dict
+             if isinstance(resp_obj, dict):
+                 resp_obj = jsonify(resp_obj)
+             _add_cors_headers(resp_obj)
+             return resp_obj, status
 
-    return response
+    return _add_cors_headers(response)
 
 @pyme_catalog_fix_bp.route('/<int:pyme_id>/process-catalog-file', methods=['OPTIONS'])
 def process_catalog_options(pyme_id):

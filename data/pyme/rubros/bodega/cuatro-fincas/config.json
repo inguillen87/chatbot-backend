@@ -1,0 +1,15 @@
+{
+    "nombre_pyme": "Bodega Cuatro Fincas",
+    "whatsapp": {
+        "numero": "+5492613168608"
+    },
+    "welcome": {
+        "template_sid": "saludo_inicial_cfincas",
+        "sticker_url": "https://www.chatboc.ar/static/demo/bodega/CFlogo.webp",
+        "audio_url": null,
+        "template_variables": {
+            "1": "{{user_name}}"
+        },
+        "sticker_cooldown_seconds": 300
+    }
+}

@@ -22,12 +22,22 @@ def get_qdrant_client() -> Optional[QdrantClient]:
         try:
             # Fix common Qdrant Cloud issue: remove port 6333 if present in a Cloud URL (https)
             # Cloud usually exposes API on 443 (implicit) or rejects :6333 for REST
-            if url and "cloud.qdrant.io" in url and ":6333" in url:
-                url = url.replace(":6333", "")
-                logger.info(f"[QDRANT UTILS] URL ajustada para Cloud: {url}")
+            if url and "cloud.qdrant.io" in url:
+                # Force port 443 for Cloud if using HTTPS, effectively stripping implicit 6333
+                if ":6333" in url:
+                    url = url.replace(":6333", "")
 
-            logger.info(f"[QDRANT UTILS] Intentando conectar a Qdrant URL: {url}")
-            qdrant_client_instance = QdrantClient(url=url, api_key=api_key, timeout=20)
+                logger.info(f"[QDRANT UTILS] URL ajustada para Cloud: {url}")
+                # Explicitly passing port=None or 443 might be needed depending on client version
+                # But typically ensuring the URL is correct is enough.
+                # If QdrantClient adds 6333, we can try passing port=443 explicitly if https.
+                if url.startswith("https://"):
+                     qdrant_client_instance = QdrantClient(url=url, port=443, api_key=api_key, timeout=20)
+                else:
+                     qdrant_client_instance = QdrantClient(url=url, api_key=api_key, timeout=20)
+            else:
+                logger.info(f"[QDRANT UTILS] Intentando conectar a Qdrant URL: {url}")
+                qdrant_client_instance = QdrantClient(url=url, api_key=api_key, timeout=20)
             logger.info("✅ [QDRANT UTILS] Cliente Qdrant inicializado.")
         except Exception as e:
             logger.error(
