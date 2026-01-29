@@ -451,6 +451,22 @@ def extraer_productos_pedido(texto: str) -> list[dict]:
 def formatear_carrito_desde_summary(summary_cart_obj: dict, context: dict = None) -> str:
     if not summary_cart_obj or not summary_cart_obj.get("items_detalle"):
         return "Tu carrito está vacío."
+
+    from decimal import Decimal, InvalidOperation
+    from utils.money_ar import format_ars
+
+    def _format_money(value: object, moneda: str) -> str:
+        if moneda != "ARS":
+            try:
+                return f"{float(value):,.2f}"
+            except (TypeError, ValueError):
+                return str(value)
+        try:
+            dec_value = Decimal(str(value))
+        except (TypeError, ValueError, InvalidOperation):
+            return str(value)
+        decimals = 0 if dec_value == dec_value.to_integral_value() else 2
+        return format_ars(dec_value, decimals=decimals)
     items_detalle = summary_cart_obj.get("items_detalle", [])
     lineas_carrito = ["**Tu Carrito de Compras:**"]
     for item in items_detalle:
@@ -462,25 +478,41 @@ def formatear_carrito_desde_summary(summary_cart_obj: dict, context: dict = None
         promocion_aplicada_item_info = item.get("promocion_aplicada_info")
         linea = f"- {cantidad} x {nombre}"
         if presentacion: linea += f" ({presentacion})"
-        linea += f" @ ${precio_original_unit:,.2f} {moneda} c/u"
+        linea += f" @ ${_format_money(precio_original_unit, moneda)} {moneda} c/u"
         if descuento_aplicado_linea > 0:
             precio_original_total_linea = cantidad * precio_original_unit
-            linea += f" (Original: <s style='color:grey;'>${precio_original_total_linea:,.2f}</s>)"
-            linea += f" <b style='color:green;'>Ahora: ${subtotal_con_descuento_item:,.2f} {moneda}</b>"
+            linea += (
+                " (Original: <s style='color:grey;'>"
+                f"${_format_money(precio_original_total_linea, moneda)}</s>)"
+            )
+            linea += (
+                " <b style='color:green;'>Ahora: "
+                f"${_format_money(subtotal_con_descuento_item, moneda)} {moneda}</b>"
+            )
             if promocion_aplicada_item_info and promocion_aplicada_item_info.get("nombre_promocion"):
                  linea += f" <i style='font-size:smaller; color:green;'>({promocion_aplicada_item_info['nombre_promocion']})</i>"
-        else: linea += f" = ${subtotal_con_descuento_item:,.2f} {moneda}"
+        else:
+            linea += f" = ${_format_money(subtotal_con_descuento_item, moneda)} {moneda}"
         lineas_carrito.append(linea)
     total_original_calc = summary_cart_obj.get("total_original_calculado", 0.0)
     total_final_desc = summary_cart_obj.get("total_final_con_descuento", total_original_calc)
     total_ahorrado = summary_cart_obj.get("total_ahorrado_final", 0.0)
     moneda_carrito = items_detalle[0].get("moneda", "ARS") if items_detalle else "ARS"
     if total_original_calc > 0:
-        lineas_carrito.append(f"\nSubtotal Original: ${total_original_calc:,.2f} {moneda_carrito}")
+        lineas_carrito.append(
+            f"\nSubtotal Original: ${_format_money(total_original_calc, moneda_carrito)} {moneda_carrito}"
+        )
         if total_ahorrado > 0:
-            lineas_carrito.append(f"**Descuentos Totales: -${total_ahorrado:,.2f} {moneda_carrito}** 🎉")
+            lineas_carrito.append(
+                f"**Descuentos Totales: -${_format_money(total_ahorrado, moneda_carrito)} {moneda_carrito}** 🎉"
+            )
             promo_total_info = summary_cart_obj.get("promo_total_carrito_aplicada_info")
-            if promo_total_info: lineas_carrito.append(f"<i style='font-size:smaller; color:green;'>Promo sobre el total: '{promo_total_info['nombre_promocion']}' (-${promo_total_info['descuento_sobre_total_aplicado']:.2f})</i>")
+            if promo_total_info:
+                lineas_carrito.append(
+                    "<i style='font-size:smaller; color:green;'>Promo sobre el total: "
+                    f"'{promo_total_info['nombre_promocion']}' (-"
+                    f"${_format_money(promo_total_info['descuento_sobre_total_aplicado'], moneda_carrito)})</i>"
+                )
             nombres_promos_items_unicos = set()
             for item_det in items_detalle:
                 if item_det.get("promocion_aplicada_info") and item_det["promocion_aplicada_info"].get("nombre_promocion"):
@@ -488,7 +520,9 @@ def formatear_carrito_desde_summary(summary_cart_obj: dict, context: dict = None
             if nombres_promos_items_unicos and not promo_total_info:
                  if len(nombres_promos_items_unicos) == 1: lineas_carrito.append(f"<i style='font-size:smaller; color:green;'>Promoción aplicada: {list(nombres_promos_items_unicos)[0]}</i>")
                  elif len(nombres_promos_items_unicos) > 1: lineas_carrito.append(f"<i style='font-size:smaller; color:green;'>Promociones aplicadas: {', '.join(list(nombres_promos_items_unicos))}</i>")
-        lineas_carrito.append(f"\n**TOTAL A PAGAR: ${total_final_desc:,.2f} {moneda_carrito}**")
+        lineas_carrito.append(
+            f"\n**TOTAL A PAGAR: ${_format_money(total_final_desc, moneda_carrito)} {moneda_carrito}**"
+        )
     return "\n".join(lineas_carrito)
 
 

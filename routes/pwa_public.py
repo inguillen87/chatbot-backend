@@ -270,6 +270,11 @@ def public_catalog():
                 "imagen_url": item.imagen_url,
                 "descripcion_corta": item.descripcion_corta,
                 "promocion_info": item.promocion_info,
+                "precio_por_caja": item.precio_por_caja,
+                "unidad_por_caja": item.unidad_por_caja,
+                "moneda": item.moneda,
+                "precio_float": item.precio_monetario,
+                "extra_metadata": item.extra_metadata,
             }
         )
         prod["catalogo_item_id"] = item.id
