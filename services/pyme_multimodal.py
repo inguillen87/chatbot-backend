@@ -23,7 +23,7 @@ from services.multimodal_analyzer import analizar_imagen_con_fallback
 from services.pyme_menu import get_pyme_menu_payload
 from services.config_loader import cargar_configuracion_pyme
 from services.document_processing_service import document_processing_service
-from utils.money_ar import format_ars
+from utils.money_ar import format_ars, parse_ars
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ def _format_money(value: object, currency: str = "ARS") -> str:
         except (TypeError, ValueError):
             return str(value)
     try:
+        # Convert float to string to avoid precision issues before Decimal
         dec_value = Decimal(str(value))
     except (TypeError, ValueError, InvalidOperation):
         return str(value)
@@ -116,8 +117,8 @@ def _parse_price(value: Any) -> float:
     if isinstance(value, (int, float)):
         return float(value)
     try:
-        cleaned = str(value).strip().replace("$", "").replace(",", "")
-        return float(cleaned)
+        # Use localized parser to handle '5.207' as 5207.0, not 5.207
+        return float(parse_ars(value))
     except Exception:
         return 0.0
 
@@ -192,7 +193,19 @@ def match_catalog_items(
             results.append((score, item))
 
     results.sort(key=lambda pair: pair[0], reverse=True)
-    return [item for _, item in results[:max_results]]
+
+    # Log top matches for observability
+    top_matches = results[:max_results]
+    if top_matches:
+        logger.info(
+            f"[CATALOG_MATCH] Query: '{query}' | Tokens: {tokens} | Top {len(top_matches)} matches:"
+        )
+        for score, item in top_matches:
+            logger.info(f"  - Score: {score} | Item: {item.get('nombre')} (SKU: {item.get('sku')})")
+    else:
+        logger.info(f"[CATALOG_MATCH] Query: '{query}' | No matches found.")
+
+    return [item for _, item in top_matches]
 
 
 def add_items_to_cart(
@@ -364,12 +377,16 @@ def detect_intent_from_text(text: str) -> Optional[str]:
             scores[intent] = score
 
     if not scores:
+        logger.info(f"[INTENT_DETECT] No keywords matched for text: '{text}'")
         return None
 
     max_score = max(scores.values())
     candidates = [intent for intent, score in scores.items() if score == max_score]
     candidates.sort(key=lambda intent: INTENT_PRIORITY.get(intent, 99))
-    return candidates[0]
+
+    winner = candidates[0]
+    logger.info(f"[INTENT_DETECT] Winner: '{winner}' | Scores: {scores}")
+    return winner
 
 
 @dataclass
@@ -415,6 +432,9 @@ def handle_keyword_intent(
     parsed_items: Optional[List[Dict[str, Any]]] = None,
     request_id: Optional[str] = None,
 ) -> Optional[PymeFlowResult]:
+    logger.info(
+        f"[HANDLE_INTENT] Intent: '{intent}' | Text: '{text}' | Parsed Items: {parsed_items} | Request ID: {request_id}"
+    )
     catalog = load_catalog(owner_user_id, rubro_slug)
 
     if intent in {"ver_catalogo", "precios"}:
@@ -440,6 +460,7 @@ def handle_keyword_intent(
 
     if intent == "pedido":
         matches: List[Tuple[Dict[str, Any], int]] = []
+        # Explicit items (e.g. "2 cajas de Malbec")
         if parsed_items:
             for parsed in parsed_items:
                 nombre = parsed.get("nombre")
@@ -449,45 +470,67 @@ def handle_keyword_intent(
                 catalog_match = match_catalog_items(nombre, catalog, max_results=1)
                 if catalog_match:
                     matches.append((catalog_match[0], cantidad))
-        if not matches:
-            fallback_matches = match_catalog_items(text, catalog)
-            matches.extend((item, 1) for item in fallback_matches)
-        if not matches:
-            return PymeFlowResult(
-                message_body=(
-                    "No reconocí el producto en el catálogo. Podés pedirme, por ejemplo, "
-                    "'Agregar 2 cajas de Malbec Reserva'."
-                ),
-                source="pyme_catalogo_sin_match",
-            )
-        logger.info(
-            "[PYME_FLOW] catalog_hit",
-            extra={
-                "request_id": request_id,
-                "intent": "pedido",
-                "matches": [
-                    {"sku": item.get("sku"), "qty": qty} for item, qty in matches if item.get("sku")
-                ],
-            },
-        )
-        cart_updates = add_items_to_cart(state, matches)
-        if cart_updates:
+
+        # If explicit matches found, add to cart
+        if matches:
             logger.info(
-                "[PYME_FLOW] cart_updated",
+                "[PYME_FLOW] catalog_hit",
                 extra={
                     "request_id": request_id,
-                    "updates": cart_updates,
-                    "subtotal": state.cart.get("subtotal"),
+                    "intent": "pedido",
+                    "matches": [
+                        {"sku": item.get("sku"), "qty": qty} for item, qty in matches if item.get("sku")
+                    ],
                 },
             )
-        state.last_intent = "pedido"
-        body = render_cart_summary(state)
+            cart_updates = add_items_to_cart(state, matches)
+            if cart_updates:
+                logger.info(
+                    "[PYME_FLOW] cart_updated",
+                    extra={
+                        "request_id": request_id,
+                        "updates": cart_updates,
+                        "subtotal": state.cart.get("subtotal"),
+                    },
+                )
+            state.last_intent = "pedido"
+            body = render_cart_summary(state)
+            return PymeFlowResult(
+                message_body=body,
+                source="pyme_item_agregado",
+                options_list=[
+                    {"texto": "Pedir presupuesto", "action_id": "armar_presupuesto"},
+                    {"texto": "Confirmar pedido", "action_id": "confirmar_pedido"},
+                ],
+            )
+
+        # Fallback: treat as SEARCH if no explicit quantity/item found
+        # User said "quiero comprar malbec" -> Show list of malbecs
+        fallback_matches = match_catalog_items(text, catalog, max_results=5)
+        if not fallback_matches:
+            return PymeFlowResult(
+                message_body=(
+                    "No encontré productos que coincidan con tu búsqueda. "
+                    "Podés ver el catálogo completo o probar con otro nombre."
+                ),
+                source="pyme_catalogo_sin_match",
+                options_list=[
+                    {"texto": "Ver catálogo", "action_id": "ver_catalogo"},
+                ]
+            )
+
+        lines = ["Encontré estos productos:"]
+        for item in fallback_matches:
+            lines.append(
+                f"• {item.get('nombre')} — ${_format_money(_parse_price(item.get('precio')))} ({item.get('presentacion')})"
+            )
+        lines.append("\nRespondé con el nombre o cantidad para agregarlos al carrito.")
+
         return PymeFlowResult(
-            message_body=body,
-            source="pyme_item_agregado",
+            message_body="\n".join(lines),
+            source="pyme_catalogo_busqueda",
             options_list=[
-                {"texto": "Pedir presupuesto", "action_id": "armar_presupuesto"},
-                {"texto": "Confirmar pedido", "action_id": "confirmar_pedido"},
+                {"texto": "Ver más opciones", "action_id": "ver_catalogo_completo"},
             ],
         )
 

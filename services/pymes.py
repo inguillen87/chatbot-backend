@@ -1527,7 +1527,7 @@ def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> O
     """
     Busca un usuario por su número de teléfono. Si no existe, crea uno nuevo
     asociado al `owner_user` (la pyme o municipio).
-    Maneja condiciones de carrera durante la creación.
+    Maneja condiciones de carrera durante la creación mediante try/except IntegrityError.
     """
     if not phone_number or not owner_user:
         return None
@@ -1538,7 +1538,7 @@ def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> O
         return user
 
     # Si no existe, intentar crear uno nuevo
-    logger.info(f"No se encontró un usuario para el teléfono '{phone_number}'. Creando uno nuevo.")
+    logger.info(f"No se encontró un usuario para el teléfono '{phone_number}'. Intentando crear uno nuevo...")
 
     nuevo_usuario = models.User(
         telefono=phone_number,
@@ -1562,6 +1562,7 @@ def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> O
     except IntegrityError:
         db.session.rollback()
         logger.warning(f"Race condition detectada para el teléfono '{phone_number}'. Re-intentando la búsqueda.")
+        # Re-intentar la búsqueda, asumiendo que otro proceso lo creó
         return models.User.query.filter_by(telefono=phone_number, empresa_id=owner_user.id).first()
     except Exception as e:
         db.session.rollback()

@@ -16,6 +16,7 @@ from services.common_utils import parse_precio_flexible
 from socket_service import emit_new_ticket
 from routes.ticket import serialize_ticket_to_json
 from services.pyme_menu import get_pyme_menu_payload
+from services.pyme_multimodal import load_catalog, match_catalog_items
 
 logger = logging.getLogger(__name__)
 
@@ -31,54 +32,86 @@ class CatalogoHandler(BasePymeHandler):
     def execute(self, action_data):
         pregunta = action_data.get("pregunta", "")
         if not self.pyme_id_actual: return {"respuesta": "No puedo identificar la tienda.", "fuente": "catalogo_sin_pyme_id_v2"}
-        query_qdrant = pregunta
-        if self.context.get("intencion") == "ver_catalogo" and len(pregunta.split()) < 3: query_qdrant = "productos populares"
+
+        # 1. Try Deterministic/Fuzzy Search first (better for specific varietals like "Malbec")
+        rubro_slug = self.context.get("rubro_slug") or self.pyme_ctx.get("rubro_slug") or "default"
+        catalog_items_memory = load_catalog(self.pyme_id_actual, rubro_slug)
+
+        # Filter query to remove common stopwords if needed, but match_catalog_items does token matching
+        deterministic_matches = match_catalog_items(pregunta, catalog_items_memory, max_results=5)
 
         resultados_qdrant: List[Any] = []
-        try:
-            resultados_qdrant = buscar_catalogo_qdrant(
-                self.pyme_id_actual,
-                query_qdrant,
-                self.context.get("rubro_nombre"),
-                3,
-                self.context.get("coleccion_qdrant", CATALOGO_PYME),
-            )
-        except Exception as exc:
-            logger.warning(
-                "[PYME][CatalogoHandler] Error consultando Qdrant: %s",
-                exc,
-                exc_info=True,
-            )
-            resultados_qdrant = []
+        fuente_catalogo = "catalogo_qdrant_sin_resultados_v2"
+        respuesta_texto = ""
+        botones_catalogo = []
+
+        if deterministic_matches:
+             # Use deterministic matches
+             fuente_catalogo = "catalogo_deterministic_match"
+             productos_formateados = []
+             for item in deterministic_matches:
+                 nombre = item.get("nombre", "Producto")
+                 precio = item.get("precio", 0.0)
+                 moneda = item.get("moneda", "ARS")
+                 presentacion = item.get("presentacion", "")
+
+                 from services.pyme_multimodal import _format_money # Import locally to avoid circular if at top
+                 precio_txt = f"${_format_money(precio, moneda)}"
+                 linea = f"• *{nombre}* ({presentacion}) — {precio_txt}"
+                 productos_formateados.append(linea)
+
+                 identificador = item.get("sku") or item.get("nombre")
+                 botones_catalogo.append({"texto": f"Pedir {nombre[:15]}", "action": f"pedir_item_{identificador}"})
+
+             if productos_formateados:
+                respuesta_texto = "Encontré estos productos para tu búsqueda:\n\n" + "\n".join(productos_formateados)
+                respuesta_texto += "\n\n¿Te gustaría encargar alguno? Respondé con el nombre o usá los botones."
+
+        # 2. If no deterministic matches, try Qdrant
+        if not respuesta_texto:
+            query_qdrant = pregunta
+            if self.context.get("intencion") == "ver_catalogo" and len(pregunta.split()) < 3: query_qdrant = "productos populares"
+
+            try:
+                resultados_qdrant = buscar_catalogo_qdrant(
+                    self.pyme_id_actual,
+                    query_qdrant,
+                    self.context.get("rubro_nombre"),
+                    3,
+                    self.context.get("coleccion_qdrant", CATALOGO_PYME),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[PYME][CatalogoHandler] Error consultando Qdrant: %s",
+                    exc,
+                    exc_info=True,
+                )
+                resultados_qdrant = []
+
+            if resultados_qdrant:
+                productos_formateados = []
+                for idx, hit in enumerate(resultados_qdrant):
+                    payload = getattr(hit, "payload", {}); item_db_id = payload.get("db_id")
+                    nombre = payload.get("nombre", "Producto")
+                    precio_s, precio_f, moneda = parse_precio_flexible(payload.get("precio_str", ""))
+                    cantidad = payload.get("cantidad", "")
+
+                    precio_txt = f"${precio_f:,.0f} {moneda or 'ARS'}" if precio_f else "Consultar precio"
+                    linea = f"• *{nombre}* ({precio_txt})"
+                    if cantidad:
+                        linea += f" - Stock: {cantidad}"
+
+                    productos_formateados.append(linea)
+                    identificador_accion = payload.get("sku") or item_db_id or nombre
+                    botones_catalogo.append({"texto": f"Pedir {nombre[:15]}", "action": f"pedir_item_{identificador_accion}"})
+
+                if productos_formateados:
+                    respuesta_texto = "¡Claro! Aquí tienes algunos productos relacionados que encontré:\n\n" + "\n".join(productos_formateados)
+                    respuesta_texto += "\n\n¿Te gustaría encargar alguno? Puedes usar los botones o decírmelo."
+                    fuente_catalogo = "catalogo_qdrant_con_promos_v2"
 
         chat_ctx = self.context.setdefault("chat_db_context_data", {})
         add_preference(chat_ctx, "busquedas", pregunta)
-
-        respuesta_texto = ""; botones_catalogo = []; fuente_catalogo = "catalogo_qdrant_sin_resultados_v2"
-
-        if resultados_qdrant:
-            productos_formateados = []
-            for idx, hit in enumerate(resultados_qdrant):
-                payload = getattr(hit, "payload", {}); item_db_id = payload.get("db_id")
-                # Removed redundant DB lookup if payload has info
-                nombre = payload.get("nombre", "Producto")
-                precio_s, precio_f, moneda = parse_precio_flexible(payload.get("precio_str", ""))
-                cantidad = payload.get("cantidad", "")
-
-                # Make the text more conversational
-                precio_txt = f"${precio_f:,.0f} {moneda or 'ARS'}" if precio_f else "Consultar precio"
-                linea = f"• *{nombre}* ({precio_txt})"
-                if cantidad:
-                    linea += f" - Stock: {cantidad}"
-
-                productos_formateados.append(linea)
-                identificador_accion = payload.get("sku") or item_db_id or nombre
-                botones_catalogo.append({"texto": f"Pedir {nombre[:15]}", "action": f"pedir_item_{identificador_accion}"})
-
-            if productos_formateados:
-                respuesta_texto = "¡Claro! Aquí tienes algunos productos relacionados que encontré:\n\n" + "\n".join(productos_formateados)
-                respuesta_texto += "\n\n¿Te gustaría encargar alguno? Puedes usar los botones o decírmelo."
-                fuente_catalogo = "catalogo_qdrant_con_promos_v2"
 
         if not respuesta_texto:
             fallback_items: List[Dict[str, Any]] = []

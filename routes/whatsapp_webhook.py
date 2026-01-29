@@ -1202,7 +1202,10 @@ def whatsapp_webhook():
                 # Prioritize DB name, then WhatsApp profile name. Avoid generic
                 # "vecino" fallback so the bot either personalizes or greets
                 # without a name and lets downstream logic ask for it.
-                user_name = getattr(end_user, "name", "") or (post_vars.get("ProfileName") or "").strip()
+                user_name = getattr(end_user, "name", "")
+                if not user_name or user_name.lower() in {"vecino", "vecina", "vecino/a"}:
+                    user_name = (post_vars.get("ProfileName") or "").strip()
+
                 if user_name.lower() in {"vecino", "vecina", "vecino/a"}:
                     user_name = ""
 
