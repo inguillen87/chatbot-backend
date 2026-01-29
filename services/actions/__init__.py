@@ -53,6 +53,7 @@ ACTION_HANDLER_MAP = {
 
     # Handlers for PYME interactive menu
     "ver_catalogo": "services.actions.pyme_actions.CatalogoHandler",
+    "ver_catalogo": "services.actions.pyme_actions.CatalogoHandler",
     "pyme_productos_stock": "services.actions.pyme_actions.CatalogoHandler",
     "pyme_promociones": "services.actions.pyme_actions.OfertasHandler",
     "pyme_estado_pedido": "services.actions.pyme_actions.ConsultarEstadoPedidoActionHandler",

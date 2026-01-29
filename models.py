@@ -1068,6 +1068,9 @@ class CatalogoItem(db.Model):
     modalidad = db.Column(db.String(20), nullable=False, default="venta")
     precio_por_caja = deferred(db.Column(db.Numeric(12, 2), nullable=True))
     unidad_por_caja = deferred(db.Column(db.Integer, nullable=True))
+    unidades_por_pallet = deferred(db.Column(db.Integer, nullable=True))
+    precio_sugerido = deferred(db.Column(db.Numeric(12, 2), nullable=True)) # suggested_public_unit_ars
+    fecha_vigencia = deferred(db.Column(db.Date, nullable=True)) # effective_date
     extra_metadata = db.Column("metadata", JSONType, nullable=True)
     # Nuevos campos para información más detallada del catálogo
     descripcion_corta = db.Column(db.String(512), nullable=True)

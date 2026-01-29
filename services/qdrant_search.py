@@ -17,6 +17,12 @@ from .herramientas_municipio import normalizar_texto
 # Permite ajustar el número de resultados devueltos desde una variable de entorno.
 DEFAULT_SEARCH_LIMIT = int(os.getenv("CATALOGO_RESULT_LIMIT", "5"))
 
+def _safe_int(value, default=DEFAULT_SEARCH_LIMIT):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
 # Columnas por defecto para la tabla de catálogo en formato Markdown
 DEFAULT_TABLE_COLUMNS = [
     ("ID", "id"), ("Nombre", "nombre"), ("Desc", "descripcion"), ("Precio", "precio_str"),
@@ -67,6 +73,8 @@ def buscar_catalogo_qdrant(
             "[QDRANT SEARCH] No se pudo inicializar colección/indexes en Qdrant."
         )
         return []
+
+    limite = _safe_int(limite, DEFAULT_SEARCH_LIMIT)
 
     try:
         pregunta_pre = unir_codigos_alfa_numericos(pregunta.strip())
