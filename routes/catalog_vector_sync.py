@@ -49,3 +49,13 @@ def get_catalog_vector_status(current_user, pyme_id: int):
     status = catalog_vector_sync_service.get_status(pyme_id)
     return jsonify(status.to_dict()), 200
 
+
+@catalog_vector_sync_bp.route("", methods=["POST", "OPTIONS"])
+@token_requerido
+def trigger_catalog_vector_sync(current_user, pyme_id: int):
+    """Acknowledge catalog vector sync triggers from the frontend."""
+
+    if not _user_can_access_pyme(current_user, pyme_id):
+        return jsonify({"error": "No tiene permiso para consultar esta PYME."}), 403
+
+    return jsonify({"status": "accepted"}), 202
