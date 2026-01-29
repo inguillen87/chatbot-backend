@@ -293,18 +293,19 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
         raise ValueError(f"Error interno grave al procesar el catálogo. Por favor, contacta a soporte si el problema persiste.")
 
 @upload_bp.route("/subir_catalogo", methods=["POST"])
-def subir_catalogo():
-    user: Optional[User] = None
+def subir_catalogo(current_user=None):
+    user: Optional[User] = current_user
     ruta_guardado_temporal: Optional[str] = None
 
     try:
-        token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-        if not token:
-            return jsonify({"error": "Token no proporcionado. Por favor, inicia sesión de nuevo."}), 401
+        if user is None:
+            token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+            if not token:
+                return jsonify({"error": "Token no proporcionado. Por favor, inicia sesión de nuevo."}), 401
 
-        user = User.query.filter_by(token=token).first()
-        if not user:
-            return jsonify({"error": "Token inválido o sesión expirada. Por favor, inicia sesión de nuevo."}), 401
+            user = User.query.filter_by(token=token).first()
+            if not user:
+                return jsonify({"error": "Token inválido o sesión expirada. Por favor, inicia sesión de nuevo."}), 401
 
         if 'file' not in request.files:
             return jsonify({"error": "No se encontró el archivo en la solicitud."}), 400
