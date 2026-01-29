@@ -205,7 +205,13 @@ def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]
     else:
         logger.warning(f"[QDRANT_SAVE] No se prepararon puntos válidos para Qdrant para user_id={user_id}. Ningún ítem fue enviado.")
 
-def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nombre: str = "generico", coleccion: str = CATALOGO_PYME) -> int:
+def procesar_y_embedear_catalogo(
+    path_archivo: str,
+    user_id: int,
+    pyme_rubro_nombre: str = "generico",
+    coleccion: str = CATALOGO_PYME,
+    mime_type_override: Optional[str] = None,
+) -> int:
     logger.info(f"[UPLOAD_PROC] Iniciando procesamiento y embedding de catálogo: '{os.path.basename(path_archivo)}' para user_id={user_id}, rubro Pyme='{pyme_rubro_nombre}'")
     registros_estructurados: List[Dict[str, Any]] = []
 
@@ -213,7 +219,7 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
         _, extension_archivo = os.path.splitext(path_archivo)
         extension_archivo = extension_archivo.lower()
         mime_type, _ = mimetypes.guess_type(path_archivo)
-        mime_type = mime_type or ""
+        mime_type = mime_type_override or mime_type or ""
         file_name = os.path.basename(path_archivo)
 
         if extension_archivo in [".xlsx", ".xls", ".csv"]:
@@ -480,8 +486,10 @@ def subir_catalogo(current_user: Optional[User] = None):
         if not archivo.filename:
             return jsonify({"error": "Archivo no válido o no presente."}), 400
 
+        mime_type = archivo.mimetype or ""
+        extension_archivo = os.path.splitext(archivo.filename)[1].lower()
         if not extension_valida(archivo.filename):
-            if archivo.mimetype not in ALLOWED_MIME_TYPES:
+            if mime_type not in ALLOWED_MIME_TYPES:
                 return jsonify(
                     {
                         "error": (
@@ -491,9 +499,22 @@ def subir_catalogo(current_user: Optional[User] = None):
                         )
                     }
                 ), 400
+            extension_archivo = mimetypes.guess_extension(mime_type) or ""
+            if extension_archivo not in ALLOWED_EXTENSIONS:
+                return jsonify(
+                    {
+                        "error": (
+                            "Formato de archivo no permitido. "
+                            "El archivo no tiene extensión válida y no se pudo inferir una compatible."
+                        )
+                    }
+                ), 400
 
         nombre_empresa_seguro = limpiar_texto_base(user.nombre_empresa if user.nombre_empresa else "pyme").replace(" ", "_")
         nombre_base_seguro, extension_archivo_segura = os.path.splitext(secure_filename(archivo.filename))
+        if not extension_archivo_segura or not extension_valida(archivo.filename):
+            if extension_archivo:
+                extension_archivo_segura = extension_archivo
         nombre_archivo_unico = f"user_{user.id}_{nombre_empresa_seguro[:15]}_{uuid.uuid4().hex[:6]}{extension_archivo_segura}"
 
         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -541,6 +562,7 @@ def subir_catalogo(current_user: Optional[User] = None):
             user.id,
             pyme_rubro_nombre=pyme_rubro_nombre,
             coleccion=coleccion,
+            mime_type_override=mime_type,
         )
 
         # Guardar el archivo original para descargas futuras

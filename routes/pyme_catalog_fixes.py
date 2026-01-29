@@ -177,7 +177,8 @@ def trigger_catalog_vector_sync(current_user, pyme_id):
     """
     if current_user.id != pyme_id and current_user.rol != 'admin':
         if current_user.empresa_id != pyme_id:
-            response = jsonify({'error': 'Unauthorized'}), 403
+            response = jsonify({'error': 'Unauthorized'})
+            response.status_code = 403
             return _add_cors_headers(response)
 
     response = jsonify({"status": "accepted"})
