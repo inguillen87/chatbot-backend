@@ -545,7 +545,7 @@ def user_from_token(token: str) -> Optional[User]:
     Busca un usuario a partir de un token de autenticación JWT.
     """
     if not token or not _is_jwt_token(token):
-        current_app.logger.warning(f"[user_from_token] Invalid token format: {token}")
+        current_app.logger.debug("[user_from_token] Token no JWT recibido, se ignora.")
         return None
     try:
         payload = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
