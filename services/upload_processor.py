@@ -4,7 +4,7 @@ import logging
 import traceback
 import re
 import shutil
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 from werkzeug.utils import secure_filename
 from extensions import db
 from models import CatalogoItem, User, Rubro, ArchivoAdjunto
@@ -293,16 +293,26 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
         raise ValueError(f"Error interno grave al procesar el catálogo. Por favor, contacta a soporte si el problema persiste.")
 
 @upload_bp.route("/subir_catalogo", methods=["POST"])
-def subir_catalogo():
-    user: Optional[User] = None
+def subir_catalogo(current_user: Optional[User] = None):
+    user: Optional[User] = current_user
     ruta_guardado_temporal: Optional[str] = None
 
     try:
-        token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-        if not token:
-            return jsonify({"error": "Token no proporcionado. Por favor, inicia sesión de nuevo."}), 401
+        if not user and getattr(g, "current_user", None):
+            user = g.current_user
 
-        user = User.query.filter_by(token=token).first()
+        if not user:
+            from utils.auth_helpers import obtener_token, user_from_token
+
+            raw_token = obtener_token()
+            if raw_token:
+                user = user_from_token(raw_token)
+
+        if not user:
+            token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+            if token:
+                user = User.query.filter_by(token=token).first()
+
         if not user:
             return jsonify({"error": "Token inválido o sesión expirada. Por favor, inicia sesión de nuevo."}), 401
 
