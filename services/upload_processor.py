@@ -316,11 +316,25 @@ def subir_catalogo(current_user: Optional[User] = None):
         if not user:
             return jsonify({"error": "Token inválido o sesión expirada. Por favor, inicia sesión de nuevo."}), 401
 
-        if 'file' not in request.files:
-            return jsonify({"error": "No se encontró el archivo en la solicitud."}), 400
-
-        archivo = request.files.get("file")
-        if not archivo or not archivo.filename:
+        archivo = (
+            request.files.get("file")
+            or request.files.get("archivo")
+            or request.files.get("catalogo")
+            or request.files.get("catalog_file")
+        )
+        if not archivo and request.files:
+            archivo = next(iter(request.files.values()))
+        if not archivo:
+            return jsonify(
+                {
+                    "error": (
+                        "No se encontró el archivo en la solicitud. "
+                        "Usa un form-data con el campo 'file' (o 'archivo', "
+                        "'catalogo', 'catalog_file')."
+                    )
+                }
+            ), 400
+        if not archivo.filename:
             return jsonify({"error": "Archivo no válido o no presente."}), 400
 
         if not extension_valida(archivo.filename):
