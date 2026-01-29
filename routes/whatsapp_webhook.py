@@ -1398,12 +1398,28 @@ def whatsapp_webhook():
                 if tenant_config:
                     municipio_config.update(tenant_config)
 
+                profile_name = (post_vars.get("ProfileName") or "").strip()
+                if profile_name.lower() in {"vecino", "vecina", "vecino/a"}:
+                    profile_name = ""
+                resolved_contact = resolve_contact(from_number_cleaned, profile_name or None)
+                if resolved_contact and not profile_name:
+                    profile_name = resolved_contact.get("nombre") or ""
+                if profile_name:
+                    session_context_db_entry.context_data["profile_name"] = profile_name
+                    contexto_municipio_actual = session_context_db_entry.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+                    contacto_usuario = contexto_municipio_actual.setdefault("contacto_usuario", {})
+                    if isinstance(contacto_usuario, dict) and not contacto_usuario.get("nombre"):
+                        contacto_usuario["nombre"] = profile_name
+                    safe_flag_modified(session_context_db_entry, "context_data")
+
                 menu_context = {
                     "user_obj": client_user,
                     "viewer_user_obj": end_user,
                     "chat_db_context_data": session_context_db_entry.context_data,
                     "channel": "whatsapp",
                     "municipio_config_actual": municipio_config,
+                    "profile_name": profile_name or None,
+                    "resolved_contact": resolved_contact or None,
                 }
                 reduced_menu = template_sent or greeting_sent or sticker_sent
                 welcome_message_override = None
