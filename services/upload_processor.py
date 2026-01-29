@@ -4,7 +4,8 @@ import logging
 import traceback
 import re
 import shutil
-from flask import Blueprint, request, jsonify
+import mimetypes
+from flask import Blueprint, request, jsonify, g
 from werkzeug.utils import secure_filename
 from extensions import db
 from models import CatalogoItem, User, Rubro, ArchivoAdjunto
@@ -12,6 +13,9 @@ from services.embedding_service import embed_textos_llm as embed_textos
 
 from services.google_docai import procesar_catalogo_pdf_google, procesar_catalogo_imagen_google
 from services.procesar_catalogo_excel import procesar_catalogo_excel
+from services.document_processing_service import document_processing_service
+from services.llm_utils import llamar_llm_para_json_estructurado
+from services.vision_fallback_service import analyze_image_smart
 
 from .common_utils import limpiar_texto_base # Changed from .utils
 
@@ -27,12 +31,99 @@ from typing import List, Dict, Any, Optional
 upload_bp = Blueprint("upload_bp", __name__)
 logger = logging.getLogger(__name__)
 
-ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf", ".png", ".jpg", ".jpeg", ".doc", ".docx", ".txt"}
+ALLOWED_EXTENSIONS = {
+    ".csv",
+    ".xlsx",
+    ".xls",
+    ".xlsm",
+    ".tsv",
+    ".ods",
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".doc",
+    ".docx",
+    ".txt",
+}
+ALLOWED_MIME_TYPES = {
+    "text/csv",
+    "text/tab-separated-values",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel.sheet.macroenabled.12",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/plain",
+}
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads")  # Esto anda en cualquier entorno
 CATALOGO_FOLDER = os.path.join("data", "catalogos")
 
 def extension_valida(nombre_archivo: str) -> bool:
     return os.path.splitext(nombre_archivo)[1].lower() in ALLOWED_EXTENSIONS
+
+def _normalizar_items_documento(items: List[Dict[str, Any]], rubro: str) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        nombre = str(item.get("nombre") or item.get("producto") or "").strip()
+        if not nombre:
+            continue
+        normalized.append(
+            {
+                "nombre": nombre,
+                "descripcion": str(item.get("descripcion") or "").strip(),
+                "unidad": str(item.get("unidad") or "").strip(),
+                "stock": str(item.get("cantidad") or item.get("stock") or "").strip(),
+                "precio_str": str(item.get("precio_unitario") or item.get("precio") or "").strip(),
+                "moneda": str(item.get("moneda") or "").strip(),
+                "categoria": str(item.get("categoria") or rubro).strip(),
+            }
+        )
+    return normalized
+
+def _extraer_items_desde_texto(texto: str, filename: str | None) -> List[Dict[str, Any]]:
+    if not texto:
+        return []
+    system_prompt = (
+        "Eres un asistente experto en interpretar documentos comerciales de pymes. "
+        "Debes producir JSON estricto que describa pedidos o catálogos."
+    )
+    user_prompt = (
+        "Analiza el siguiente texto (extraído de un documento) y genera un JSON con esta estructura exacta:\n"
+        "{\n"
+        "  \"resumen\": string,\n"
+        "  \"items\": [\n"
+        "    {\n"
+        "      \"nombre\": string,\n"
+        "      \"descripcion\": string,\n"
+        "      \"unidad\": string,\n"
+        "      \"cantidad\": string,\n"
+        "      \"precio_unitario\": string,\n"
+        "      \"moneda\": string,\n"
+        "      \"subtotal_estimado\": string\n"
+        "    }\n"
+        "  ],\n"
+        "  \"totales\": {\"moneda\": string, \"total_estimado\": string},\n"
+        "  \"contacto\": {\"nombre\": string, \"telefono\": string, \"email\": string}\n"
+        "}\n"
+        "Usa cadenas vacías si un dato no aparece. No inventes información.\n"
+        f"Nombre del archivo (si disponible): {filename or 'desconocido'}.\n"
+        "Texto extraído:\n"
+        f'"""{texto}"""\n'
+        "Devuelve solamente el JSON final."
+    )
+    llm_response = llamar_llm_para_json_estructurado(system_prompt, user_prompt)
+    if isinstance(llm_response, dict):
+        items = llm_response.get("items")
+        if isinstance(items, list):
+            return items
+    return []
 
 def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]], vectores: List[List[float]], coleccion: str):
     qdrant_cli = get_qdrant_client()
@@ -110,28 +201,58 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
     try:
         _, extension_archivo = os.path.splitext(path_archivo)
         extension_archivo = extension_archivo.lower()
+        mime_type, _ = mimetypes.guess_type(path_archivo)
+        mime_type = mime_type or ""
+        file_name = os.path.basename(path_archivo)
 
         if extension_archivo in [".xlsx", ".xls", ".csv"]:
             registros_estructurados = procesar_catalogo_excel(path_archivo)
-        elif extension_archivo == ".pdf":
-            registros_estructurados = procesar_catalogo_pdf_google(path_archivo, user_id)
-        elif extension_archivo in [".png", ".jpg", ".jpeg"]:
-            registros_estructurados = procesar_catalogo_imagen_google(path_archivo, user_id)
+        elif extension_archivo == ".pdf" or mime_type == "application/pdf":
+            with open(path_archivo, "rb") as archivo:
+                doc_result = document_processing_service.process_document(
+                    archivo.read(),
+                    mime_type or "application/pdf",
+                    file_name,
+                )
+            if doc_result.get("success") and doc_result.get("datos_estructurados"):
+                items = doc_result["datos_estructurados"].get("items", [])
+                registros_estructurados = _normalizar_items_documento(items, pyme_rubro_nombre)
+            if not registros_estructurados:
+                registros_estructurados = procesar_catalogo_pdf_google(path_archivo, user_id)
+        elif extension_archivo in [".png", ".jpg", ".jpeg"] or mime_type.startswith("image/"):
+            with open(path_archivo, "rb") as archivo:
+                vision_result = analyze_image_smart(archivo.read())
+            extracted_text = ""
+            if vision_result.get("full_text_annotation"):
+                extracted_text = vision_result["full_text_annotation"].get("description", "").strip()
+            items = _extraer_items_desde_texto(extracted_text, file_name) if extracted_text else []
+            registros_estructurados = _normalizar_items_documento(items, pyme_rubro_nombre)
+            if not registros_estructurados:
+                registros_estructurados = procesar_catalogo_imagen_google(path_archivo, user_id)
         else:
-            # Fallback a genérico para .doc, .docx, .txt
-            from services.generic_file_processor import procesar_archivo_generico
-            from mimetypes import guess_type
-            mime_type, _ = guess_type(path_archivo)
             if mime_type:
-                resultado_generico = procesar_archivo_generico(path_archivo, mime_type)
-                if resultado_generico and resultado_generico.get("analisis_llm"):
-                    registros_estructurados = resultado_generico["analisis_llm"]
-                    if isinstance(registros_estructurados, dict) and "productos" in registros_estructurados:
-                        registros_estructurados = registros_estructurados["productos"]
+                with open(path_archivo, "rb") as archivo:
+                    doc_result = document_processing_service.process_document(
+                        archivo.read(),
+                        mime_type,
+                        file_name,
+                    )
+                if doc_result.get("success") and doc_result.get("datos_estructurados"):
+                    items = doc_result["datos_estructurados"].get("items", [])
+                    registros_estructurados = _normalizar_items_documento(items, pyme_rubro_nombre)
+            if not registros_estructurados:
+                # Fallback a genérico para .doc, .docx, .txt
+                from services.generic_file_processor import procesar_archivo_generico
+                if mime_type:
+                    resultado_generico = procesar_archivo_generico(path_archivo, mime_type)
+                    if resultado_generico and resultado_generico.get("analisis_llm"):
+                        registros_estructurados = resultado_generico["analisis_llm"]
+                        if isinstance(registros_estructurados, dict) and "productos" in registros_estructurados:
+                            registros_estructurados = registros_estructurados["productos"]
+                    else:
+                        registros_estructurados = []
                 else:
-                    registros_estructurados = []
-            else:
-                 raise ValueError(f"Tipo de archivo no soportado: {extension_archivo}")
+                    raise ValueError(f"Tipo de archivo no soportado: {extension_archivo}")
 
         if not isinstance(registros_estructurados, list):
             logger.error(f"[UPLOAD_PROC] El procesador de archivos no devolvió una lista para '{os.path.basename(path_archivo)}'. Devolvió: {type(registros_estructurados)}")
@@ -293,28 +414,61 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
         raise ValueError(f"Error interno grave al procesar el catálogo. Por favor, contacta a soporte si el problema persiste.")
 
 @upload_bp.route("/subir_catalogo", methods=["POST"])
-def subir_catalogo():
-    user: Optional[User] = None
+def subir_catalogo(current_user: Optional[User] = None):
+    user: Optional[User] = current_user
     ruta_guardado_temporal: Optional[str] = None
 
     try:
-        token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-        if not token:
-            return jsonify({"error": "Token no proporcionado. Por favor, inicia sesión de nuevo."}), 401
+        if not user and getattr(g, "current_user", None):
+            user = g.current_user
 
-        user = User.query.filter_by(token=token).first()
+        if not user:
+            from utils.auth_helpers import obtener_token, user_from_token
+
+            raw_token = obtener_token()
+            if raw_token:
+                user = user_from_token(raw_token)
+
+        if not user:
+            token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+            if token:
+                user = User.query.filter_by(token=token).first()
+
         if not user:
             return jsonify({"error": "Token inválido o sesión expirada. Por favor, inicia sesión de nuevo."}), 401
 
-        if 'file' not in request.files:
-            return jsonify({"error": "No se encontró el archivo en la solicitud."}), 400
-
-        archivo = request.files.get("file")
-        if not archivo or not archivo.filename:
+        archivo = (
+            request.files.get("file")
+            or request.files.get("archivo")
+            or request.files.get("catalogo")
+            or request.files.get("catalog_file")
+        )
+        if not archivo and request.files:
+            archivo = next(iter(request.files.values()))
+        if not archivo:
+            return jsonify(
+                {
+                    "error": (
+                        "No se encontró el archivo en la solicitud. "
+                        "Usa un form-data con el campo 'file' (o 'archivo', "
+                        "'catalogo', 'catalog_file')."
+                    )
+                }
+            ), 400
+        if not archivo.filename:
             return jsonify({"error": "Archivo no válido o no presente."}), 400
 
         if not extension_valida(archivo.filename):
-            return jsonify({"error": "Formato de archivo no permitido. Solo se aceptan: " + ", ".join(ALLOWED_EXTENSIONS)}), 400
+            if archivo.mimetype not in ALLOWED_MIME_TYPES:
+                return jsonify(
+                    {
+                        "error": (
+                            "Formato de archivo no permitido. "
+                            "Solo se aceptan: "
+                            + ", ".join(sorted(ALLOWED_EXTENSIONS))
+                        )
+                    }
+                ), 400
 
         nombre_empresa_seguro = limpiar_texto_base(user.nombre_empresa if user.nombre_empresa else "pyme").replace(" ", "_")
         nombre_base_seguro, extension_archivo_segura = os.path.splitext(secure_filename(archivo.filename))
