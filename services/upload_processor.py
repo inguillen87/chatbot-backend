@@ -17,7 +17,7 @@ from services.document_processing_service import document_processing_service
 from services.llm_utils import llamar_llm_para_json_estructurado
 from services.vision_fallback_service import analyze_image_smart
 
-from .common_utils import limpiar_texto_base # Changed from .utils
+from .common_utils import limpiar_texto_base, parse_precio_flexible # Changed from .utils
 
 from services.qdrant_utils import (
     get_qdrant_client,
@@ -124,6 +124,17 @@ def _extraer_items_desde_texto(texto: str, filename: str | None) -> List[Dict[st
         if isinstance(items, list):
             return items
     return []
+
+def _infer_unidad_por_caja(descripcion: str) -> Optional[int]:
+    if not descripcion:
+        return None
+    match = re.search(r"(\d{1,3})\s*[xX]\s*\d", descripcion)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"^\s*(\d{1,3})\b", descripcion)
+    if match:
+        return int(match.group(1))
+    return None
 
 def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]], vectores: List[List[float]], coleccion: str):
     qdrant_cli = get_qdrant_client()
@@ -327,6 +338,81 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
             logger.warning("[UPLOAD_PROC] No se generaron textos válidos para embedding después de procesar todos los registros.")
             return 0
 
+        items_para_db_sql: List[CatalogoItem] = []
+        try:
+            from services.llm_utils import resumir_descripcion_producto_llm
+
+            for item_dict in productos_finales_para_qdrant_y_db:
+                desc_larga = str(item_dict.get("descripcion", ""))
+                desc_corta_extraida = str(item_dict.get("descripcion_corta", ""))
+
+                if not desc_corta_extraida and desc_larga:
+                    desc_corta_generada = resumir_descripcion_producto_llm(desc_larga)
+                    item_dict["descripcion_corta_final_para_db"] = desc_corta_generada
+                else:
+                    item_dict["descripcion_corta_final_para_db"] = desc_corta_extraida
+
+            CatalogoItem.query.filter_by(user_id=user_id).delete()
+
+            for prod_dict_final in productos_finales_para_qdrant_y_db:
+                precio_str = str(prod_dict_final.get("precio_str", ""))
+                precio_normalizado, precio_float, moneda_detectada = parse_precio_flexible(precio_str)
+                moneda = str(prod_dict_final.get("moneda") or moneda_detectada or "")
+                unidad = str(prod_dict_final.get("unidad", "")).strip()
+                unidad_por_caja = prod_dict_final.get("cantidad_empaque") or _infer_unidad_por_caja(
+                    str(prod_dict_final.get("descripcion", ""))
+                )
+                precio_por_caja = None
+                precio_unitario = None
+                if precio_float is not None and unidad:
+                    if "caja" in unidad.lower():
+                        precio_por_caja = precio_float
+                        if unidad_por_caja:
+                            precio_unitario = precio_float / float(unidad_por_caja)
+                    else:
+                        precio_unitario = precio_float
+
+                extra_metadata = dict(prod_dict_final.get("extra_metadata") or {})
+                if precio_unitario is not None:
+                    extra_metadata["precio_unitario_estimado"] = precio_unitario
+                if unidad_por_caja:
+                    extra_metadata["unidad_por_caja"] = unidad_por_caja
+
+                items_para_db_sql.append(
+                    CatalogoItem(
+                        user_id=user_id,
+                        nombre=str(prod_dict_final.get("nombre", "S/N"))[:255],
+                        descripcion=str(prod_dict_final.get("descripcion", ""))[:1024],
+                        descripcion_corta=str(prod_dict_final.get("descripcion_corta_final_para_db", ""))[:512],
+                        promocion_info=str(prod_dict_final.get("promocion_texto", ""))[:255],
+                        precio=str(precio_normalizado or precio_str)[:50],
+                        cantidad=str(prod_dict_final.get("stock", "0"))[:50],
+                        categoria=str(prod_dict_final.get("categoria_qdrant", pyme_rubro_nombre))[:100],
+                        unidad=unidad[:50],
+                        sku=str(prod_dict_final.get("sku", ""))[:100],
+                        marca=str(prod_dict_final.get("marca", ""))[:100],
+                        texto=prod_dict_final.get("texto_para_embedding", ""),
+                        moneda=moneda or None,
+                        precio_monetario=precio_float,
+                        precio_por_caja=precio_por_caja,
+                        unidad_por_caja=unidad_por_caja,
+                        imagen_url=str(prod_dict_final.get("imagen_url", ""))[:512] or None,
+                        pdf_url=str(prod_dict_final.get("pdf_url", ""))[:512] or None,
+                        extra_metadata=extra_metadata or None,
+                    )
+                )
+
+            db.session.add_all(items_para_db_sql)
+            db.session.flush()
+            for item_obj, item_dict in zip(items_para_db_sql, productos_finales_para_qdrant_y_db):
+                item_dict["db_id"] = item_obj.id
+            db.session.commit()
+            logger.info(f"✅ {len(items_para_db_sql)} ítems guardados en DB relacional para user_id={user_id} (desc. cortas procesadas).")
+        except Exception as e_db_relacional:
+            db.session.rollback()
+            logger.error(f"❌ Error guardando en DB relacional para user_id={user_id}: {e_db_relacional}", exc_info=True)
+            raise ValueError(f"Error al guardar el catálogo en la base de datos principal: {str(e_db_relacional)}")
+
         logger.info(f"🧠 Textos para embedding preparados (Total: {len(textos_para_embedding)}). Primeros 3 (si hay): {textos_para_embedding[:3]}")
         logger.info("🧬 Generando vectores con Cohere...")
         vectores = embed_textos(textos_para_embedding, input_type="search_document")
@@ -338,70 +424,6 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
         logger.info(f"🧬 Vectores generados: {len(vectores)}. Dimensión del primer vector (si existe): {len(vectores[0]) if vectores and isinstance(vectores[0], list) else 'N/A'}")
 
         guardar_en_qdrant(user_id, productos_finales_para_qdrant_y_db, vectores, coleccion)
-
-        items_para_db_sql: List[CatalogoItem] = []
-        for prod_dict_final in productos_finales_para_qdrant_y_db:
-            items_para_db_sql.append(
-                CatalogoItem(
-                    user_id=user_id,
-                    nombre=str(prod_dict_final.get("nombre", "S/N"))[:255],
-                    descripcion=str(prod_dict_final.get("descripcion", ""))[:1024], # Descripcion larga
-                    descripcion_corta=str(prod_dict_final.get("descripcion_corta", ""))[:512], # Nuevo campo
-                    promocion_info=str(prod_dict_final.get("promocion_texto", ""))[:255], # Nuevo campo
-                    precio=str(prod_dict_final.get("precio_str", ""))[:50],
-                    cantidad=str(prod_dict_final.get("stock", "0"))[:50], # Mapea 'stock' a 'cantidad'
-                    categoria=str(prod_dict_final.get("categoria_qdrant", pyme_rubro_nombre))[:100],
-                    unidad=str(prod_dict_final.get("unidad", ""))[:50],
-                    sku=str(prod_dict_final.get("sku", ""))[:100],
-                    marca=str(prod_dict_final.get("marca", ""))[:100],
-                    texto=prod_dict_final.get("texto_para_embedding", "")
-                )
-            )
-
-        if items_para_db_sql:
-            try:
-                # Importar la función de resumen aquí para evitar importación circular si llm_utils importa algo de upload_processor indirectamente
-                from services.llm_utils import resumir_descripcion_producto_llm
-
-                # Procesar descripciones cortas ANTES de bulk_save_objects
-                for item_dict in productos_finales_para_qdrant_y_db: # Necesitamos iterar sobre los diccionarios originales
-                    desc_larga = str(item_dict.get("descripcion", "")) 
-                    desc_corta_extraida = str(item_dict.get("descripcion_corta", ""))
-                    
-                    if not desc_corta_extraida and desc_larga:
-                        desc_corta_generada = resumir_descripcion_producto_llm(desc_larga)
-                        item_dict["descripcion_corta_final_para_db"] = desc_corta_generada # Guardar en el dict para usarla abajo
-                    else:
-                        item_dict["descripcion_corta_final_para_db"] = desc_corta_extraida
-
-                # Reconstruir items_para_db_sql con la descripción corta posiblemente generada
-                items_para_db_sql_actualizados: List[CatalogoItem] = []
-                for prod_dict_final_actualizado in productos_finales_para_qdrant_y_db:
-                    items_para_db_sql_actualizados.append(
-                        CatalogoItem(
-                            user_id=user_id,
-                            nombre=str(prod_dict_final_actualizado.get("nombre", "S/N"))[:255],
-                            descripcion=str(prod_dict_final_actualizado.get("descripcion", ""))[:1024],
-                            descripcion_corta=str(prod_dict_final_actualizado.get("descripcion_corta_final_para_db", ""))[:512], # Usar el campo actualizado
-                            promocion_info=str(prod_dict_final_actualizado.get("promocion_texto", ""))[:255],
-                            precio=str(prod_dict_final_actualizado.get("precio_str", ""))[:50],
-                            cantidad=str(prod_dict_final_actualizado.get("stock", "0"))[:50],
-                            categoria=str(prod_dict_final_actualizado.get("categoria_qdrant", pyme_rubro_nombre))[:100],
-                            unidad=str(prod_dict_final_actualizado.get("unidad", ""))[:50],
-                            sku=str(prod_dict_final_actualizado.get("sku", ""))[:100],
-                            marca=str(prod_dict_final_actualizado.get("marca", ""))[:100],
-                            texto=prod_dict_final_actualizado.get("texto_para_embedding", "")
-                        )
-                    )
-                
-                CatalogoItem.query.filter_by(user_id=user_id).delete()
-                db.session.bulk_save_objects(items_para_db_sql_actualizados)
-                db.session.commit()
-                logger.info(f"✅ {len(items_para_db_sql_actualizados)} ítems guardados en DB relacional para user_id={user_id} (desc. cortas procesadas).")
-            except Exception as e_db_relacional:
-                db.session.rollback()
-                logger.error(f"❌ Error guardando en DB relacional para user_id={user_id}: {e_db_relacional}", exc_info=True)
-                raise ValueError(f"Error al guardar el catálogo en la base de datos principal: {str(e_db_relacional)}")
 
         logger.info(f"🎉 Proceso de catálogo completado: {len(productos_finales_para_qdrant_y_db)} ítems procesados y guardados para user_id={user_id}")
         return len(productos_finales_para_qdrant_y_db)

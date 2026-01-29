@@ -168,3 +168,22 @@ def _catalog_status_logic(current_user, pyme_id):
 def catalog_vector_sync_status_options(pyme_id):
     response = jsonify({'status': 'ok'})
     return _add_cors_headers(response)
+
+@pyme_catalog_fix_bp.route('/<int:pyme_id>/catalog-vector-sync', methods=['POST'])
+@token_requerido
+def trigger_catalog_vector_sync(current_user, pyme_id):
+    """
+    Acknowledge frontend requests to trigger a catalog vector sync.
+    """
+    if current_user.id != pyme_id and current_user.rol != 'admin':
+        if current_user.empresa_id != pyme_id:
+            response = jsonify({'error': 'Unauthorized'}), 403
+            return _add_cors_headers(response)
+
+    response = jsonify({"status": "accepted"})
+    return _add_cors_headers(response)
+
+@pyme_catalog_fix_bp.route('/<int:pyme_id>/catalog-vector-sync', methods=['OPTIONS'])
+def trigger_catalog_vector_sync_options(pyme_id):
+    response = jsonify({'status': 'ok'})
+    return _add_cors_headers(response)
