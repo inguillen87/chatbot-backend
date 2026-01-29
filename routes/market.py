@@ -222,6 +222,11 @@ def _pricing_snapshot(product: CatalogoItem) -> Dict[str, object]:
             "imagen_url": product.imagen_url,
             "descripcion_corta": product.descripcion_corta,
             "promocion_info": product.promocion_info,
+            "precio_por_caja": product.precio_por_caja,
+            "unidad_por_caja": product.unidad_por_caja,
+            "moneda": product.moneda,
+            "precio_float": product.precio_monetario,
+            "extra_metadata": product.extra_metadata,
         }
     )
 

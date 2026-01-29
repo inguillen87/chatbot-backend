@@ -4,7 +4,8 @@ import logging
 import traceback
 import re
 import shutil
-from flask import Blueprint, request, jsonify
+import mimetypes
+from flask import Blueprint, request, jsonify, g
 from werkzeug.utils import secure_filename
 from extensions import db
 from models import CatalogoItem, User, Rubro, ArchivoAdjunto
@@ -12,8 +13,11 @@ from services.embedding_service import embed_textos_llm as embed_textos
 
 from services.google_docai import procesar_catalogo_pdf_google, procesar_catalogo_imagen_google
 from services.procesar_catalogo_excel import procesar_catalogo_excel
+from services.document_processing_service import document_processing_service
+from services.llm_utils import llamar_llm_para_json_estructurado
+from services.vision_fallback_service import analyze_image_smart
 
-from .common_utils import limpiar_texto_base # Changed from .utils
+from .common_utils import limpiar_texto_base, parse_precio_flexible # Changed from .utils
 
 from services.qdrant_utils import (
     get_qdrant_client,
@@ -27,12 +31,110 @@ from typing import List, Dict, Any, Optional
 upload_bp = Blueprint("upload_bp", __name__)
 logger = logging.getLogger(__name__)
 
-ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf", ".png", ".jpg", ".jpeg", ".doc", ".docx", ".txt"}
+ALLOWED_EXTENSIONS = {
+    ".csv",
+    ".xlsx",
+    ".xls",
+    ".xlsm",
+    ".tsv",
+    ".ods",
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".doc",
+    ".docx",
+    ".txt",
+}
+ALLOWED_MIME_TYPES = {
+    "text/csv",
+    "text/tab-separated-values",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel.sheet.macroenabled.12",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/plain",
+}
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads")  # Esto anda en cualquier entorno
 CATALOGO_FOLDER = os.path.join("data", "catalogos")
 
 def extension_valida(nombre_archivo: str) -> bool:
     return os.path.splitext(nombre_archivo)[1].lower() in ALLOWED_EXTENSIONS
+
+def _normalizar_items_documento(items: List[Dict[str, Any]], rubro: str) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        nombre = str(item.get("nombre") or item.get("producto") or "").strip()
+        if not nombre:
+            continue
+        normalized.append(
+            {
+                "nombre": nombre,
+                "descripcion": str(item.get("descripcion") or "").strip(),
+                "unidad": str(item.get("unidad") or "").strip(),
+                "stock": str(item.get("cantidad") or item.get("stock") or "").strip(),
+                "precio_str": str(item.get("precio_unitario") or item.get("precio") or "").strip(),
+                "moneda": str(item.get("moneda") or "").strip(),
+                "categoria": str(item.get("categoria") or rubro).strip(),
+            }
+        )
+    return normalized
+
+def _extraer_items_desde_texto(texto: str, filename: str | None) -> List[Dict[str, Any]]:
+    if not texto:
+        return []
+    system_prompt = (
+        "Eres un asistente experto en interpretar documentos comerciales de pymes. "
+        "Debes producir JSON estricto que describa pedidos o catálogos."
+    )
+    user_prompt = (
+        "Analiza el siguiente texto (extraído de un documento) y genera un JSON con esta estructura exacta:\n"
+        "{\n"
+        "  \"resumen\": string,\n"
+        "  \"items\": [\n"
+        "    {\n"
+        "      \"nombre\": string,\n"
+        "      \"descripcion\": string,\n"
+        "      \"unidad\": string,\n"
+        "      \"cantidad\": string,\n"
+        "      \"precio_unitario\": string,\n"
+        "      \"moneda\": string,\n"
+        "      \"subtotal_estimado\": string\n"
+        "    }\n"
+        "  ],\n"
+        "  \"totales\": {\"moneda\": string, \"total_estimado\": string},\n"
+        "  \"contacto\": {\"nombre\": string, \"telefono\": string, \"email\": string}\n"
+        "}\n"
+        "Usa cadenas vacías si un dato no aparece. No inventes información.\n"
+        f"Nombre del archivo (si disponible): {filename or 'desconocido'}.\n"
+        "Texto extraído:\n"
+        f'"""{texto}"""\n'
+        "Devuelve solamente el JSON final."
+    )
+    llm_response = llamar_llm_para_json_estructurado(system_prompt, user_prompt)
+    if isinstance(llm_response, dict):
+        items = llm_response.get("items")
+        if isinstance(items, list):
+            return items
+    return []
+
+def _infer_unidad_por_caja(descripcion: str) -> Optional[int]:
+    if not descripcion:
+        return None
+    match = re.search(r"(\d{1,3})\s*[xX]\s*\d", descripcion)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"^\s*(\d{1,3})\b", descripcion)
+    if match:
+        return int(match.group(1))
+    return None
 
 def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]], vectores: List[List[float]], coleccion: str):
     qdrant_cli = get_qdrant_client()
@@ -103,35 +205,71 @@ def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]
     else:
         logger.warning(f"[QDRANT_SAVE] No se prepararon puntos válidos para Qdrant para user_id={user_id}. Ningún ítem fue enviado.")
 
-def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nombre: str = "generico", coleccion: str = CATALOGO_PYME) -> int:
+def procesar_y_embedear_catalogo(
+    path_archivo: str,
+    user_id: int,
+    pyme_rubro_nombre: str = "generico",
+    coleccion: str = CATALOGO_PYME,
+    mime_type_override: Optional[str] = None,
+) -> int:
     logger.info(f"[UPLOAD_PROC] Iniciando procesamiento y embedding de catálogo: '{os.path.basename(path_archivo)}' para user_id={user_id}, rubro Pyme='{pyme_rubro_nombre}'")
     registros_estructurados: List[Dict[str, Any]] = []
 
     try:
         _, extension_archivo = os.path.splitext(path_archivo)
         extension_archivo = extension_archivo.lower()
+        mime_type, _ = mimetypes.guess_type(path_archivo)
+        mime_type = mime_type_override or mime_type or ""
+        file_name = os.path.basename(path_archivo)
 
         if extension_archivo in [".xlsx", ".xls", ".csv"]:
             registros_estructurados = procesar_catalogo_excel(path_archivo)
-        elif extension_archivo == ".pdf":
-            registros_estructurados = procesar_catalogo_pdf_google(path_archivo, user_id)
-        elif extension_archivo in [".png", ".jpg", ".jpeg"]:
-            registros_estructurados = procesar_catalogo_imagen_google(path_archivo, user_id)
+        elif extension_archivo == ".pdf" or mime_type == "application/pdf":
+            with open(path_archivo, "rb") as archivo:
+                doc_result = document_processing_service.process_document(
+                    archivo.read(),
+                    mime_type or "application/pdf",
+                    file_name,
+                )
+            if doc_result.get("success") and doc_result.get("datos_estructurados"):
+                items = doc_result["datos_estructurados"].get("items", [])
+                registros_estructurados = _normalizar_items_documento(items, pyme_rubro_nombre)
+            if not registros_estructurados:
+                registros_estructurados = procesar_catalogo_pdf_google(path_archivo, user_id)
+        elif extension_archivo in [".png", ".jpg", ".jpeg"] or mime_type.startswith("image/"):
+            with open(path_archivo, "rb") as archivo:
+                vision_result = analyze_image_smart(archivo.read())
+            extracted_text = ""
+            if vision_result.get("full_text_annotation"):
+                extracted_text = vision_result["full_text_annotation"].get("description", "").strip()
+            items = _extraer_items_desde_texto(extracted_text, file_name) if extracted_text else []
+            registros_estructurados = _normalizar_items_documento(items, pyme_rubro_nombre)
+            if not registros_estructurados:
+                registros_estructurados = procesar_catalogo_imagen_google(path_archivo, user_id)
         else:
-            # Fallback a genérico para .doc, .docx, .txt
-            from services.generic_file_processor import procesar_archivo_generico
-            from mimetypes import guess_type
-            mime_type, _ = guess_type(path_archivo)
             if mime_type:
-                resultado_generico = procesar_archivo_generico(path_archivo, mime_type)
-                if resultado_generico and resultado_generico.get("analisis_llm"):
-                    registros_estructurados = resultado_generico["analisis_llm"]
-                    if isinstance(registros_estructurados, dict) and "productos" in registros_estructurados:
-                        registros_estructurados = registros_estructurados["productos"]
+                with open(path_archivo, "rb") as archivo:
+                    doc_result = document_processing_service.process_document(
+                        archivo.read(),
+                        mime_type,
+                        file_name,
+                    )
+                if doc_result.get("success") and doc_result.get("datos_estructurados"):
+                    items = doc_result["datos_estructurados"].get("items", [])
+                    registros_estructurados = _normalizar_items_documento(items, pyme_rubro_nombre)
+            if not registros_estructurados:
+                # Fallback a genérico para .doc, .docx, .txt
+                from services.generic_file_processor import procesar_archivo_generico
+                if mime_type:
+                    resultado_generico = procesar_archivo_generico(path_archivo, mime_type)
+                    if resultado_generico and resultado_generico.get("analisis_llm"):
+                        registros_estructurados = resultado_generico["analisis_llm"]
+                        if isinstance(registros_estructurados, dict) and "productos" in registros_estructurados:
+                            registros_estructurados = registros_estructurados["productos"]
+                    else:
+                        registros_estructurados = []
                 else:
-                    registros_estructurados = []
-            else:
-                 raise ValueError(f"Tipo de archivo no soportado: {extension_archivo}")
+                    raise ValueError(f"Tipo de archivo no soportado: {extension_archivo}")
 
         if not isinstance(registros_estructurados, list):
             logger.error(f"[UPLOAD_PROC] El procesador de archivos no devolvió una lista para '{os.path.basename(path_archivo)}'. Devolvió: {type(registros_estructurados)}")
@@ -206,6 +344,81 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
             logger.warning("[UPLOAD_PROC] No se generaron textos válidos para embedding después de procesar todos los registros.")
             return 0
 
+        items_para_db_sql: List[CatalogoItem] = []
+        try:
+            from services.llm_utils import resumir_descripcion_producto_llm
+
+            for item_dict in productos_finales_para_qdrant_y_db:
+                desc_larga = str(item_dict.get("descripcion", ""))
+                desc_corta_extraida = str(item_dict.get("descripcion_corta", ""))
+
+                if not desc_corta_extraida and desc_larga:
+                    desc_corta_generada = resumir_descripcion_producto_llm(desc_larga)
+                    item_dict["descripcion_corta_final_para_db"] = desc_corta_generada
+                else:
+                    item_dict["descripcion_corta_final_para_db"] = desc_corta_extraida
+
+            CatalogoItem.query.filter_by(user_id=user_id).delete()
+
+            for prod_dict_final in productos_finales_para_qdrant_y_db:
+                precio_str = str(prod_dict_final.get("precio_str", ""))
+                precio_normalizado, precio_float, moneda_detectada = parse_precio_flexible(precio_str)
+                moneda = str(prod_dict_final.get("moneda") or moneda_detectada or "")
+                unidad = str(prod_dict_final.get("unidad", "")).strip()
+                unidad_por_caja = prod_dict_final.get("cantidad_empaque") or _infer_unidad_por_caja(
+                    str(prod_dict_final.get("descripcion", ""))
+                )
+                precio_por_caja = None
+                precio_unitario = None
+                if precio_float is not None and unidad:
+                    if "caja" in unidad.lower():
+                        precio_por_caja = precio_float
+                        if unidad_por_caja:
+                            precio_unitario = precio_float / float(unidad_por_caja)
+                    else:
+                        precio_unitario = precio_float
+
+                extra_metadata = dict(prod_dict_final.get("extra_metadata") or {})
+                if precio_unitario is not None:
+                    extra_metadata["precio_unitario_estimado"] = precio_unitario
+                if unidad_por_caja:
+                    extra_metadata["unidad_por_caja"] = unidad_por_caja
+
+                items_para_db_sql.append(
+                    CatalogoItem(
+                        user_id=user_id,
+                        nombre=str(prod_dict_final.get("nombre", "S/N"))[:255],
+                        descripcion=str(prod_dict_final.get("descripcion", ""))[:1024],
+                        descripcion_corta=str(prod_dict_final.get("descripcion_corta_final_para_db", ""))[:512],
+                        promocion_info=str(prod_dict_final.get("promocion_texto", ""))[:255],
+                        precio=str(precio_normalizado or precio_str)[:50],
+                        cantidad=str(prod_dict_final.get("stock", "0"))[:50],
+                        categoria=str(prod_dict_final.get("categoria_qdrant", pyme_rubro_nombre))[:100],
+                        unidad=unidad[:50],
+                        sku=str(prod_dict_final.get("sku", ""))[:100],
+                        marca=str(prod_dict_final.get("marca", ""))[:100],
+                        texto=prod_dict_final.get("texto_para_embedding", ""),
+                        moneda=moneda or None,
+                        precio_monetario=precio_float,
+                        precio_por_caja=precio_por_caja,
+                        unidad_por_caja=unidad_por_caja,
+                        imagen_url=str(prod_dict_final.get("imagen_url", ""))[:512] or None,
+                        pdf_url=str(prod_dict_final.get("pdf_url", ""))[:512] or None,
+                        extra_metadata=extra_metadata or None,
+                    )
+                )
+
+            db.session.add_all(items_para_db_sql)
+            db.session.flush()
+            for item_obj, item_dict in zip(items_para_db_sql, productos_finales_para_qdrant_y_db):
+                item_dict["db_id"] = item_obj.id
+            db.session.commit()
+            logger.info(f"✅ {len(items_para_db_sql)} ítems guardados en DB relacional para user_id={user_id} (desc. cortas procesadas).")
+        except Exception as e_db_relacional:
+            db.session.rollback()
+            logger.error(f"❌ Error guardando en DB relacional para user_id={user_id}: {e_db_relacional}", exc_info=True)
+            raise ValueError(f"Error al guardar el catálogo en la base de datos principal: {str(e_db_relacional)}")
+
         logger.info(f"🧠 Textos para embedding preparados (Total: {len(textos_para_embedding)}). Primeros 3 (si hay): {textos_para_embedding[:3]}")
         logger.info("🧬 Generando vectores con Cohere...")
         vectores = embed_textos(textos_para_embedding, input_type="search_document")
@@ -218,70 +431,6 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
 
         guardar_en_qdrant(user_id, productos_finales_para_qdrant_y_db, vectores, coleccion)
 
-        items_para_db_sql: List[CatalogoItem] = []
-        for prod_dict_final in productos_finales_para_qdrant_y_db:
-            items_para_db_sql.append(
-                CatalogoItem(
-                    user_id=user_id,
-                    nombre=str(prod_dict_final.get("nombre", "S/N"))[:255],
-                    descripcion=str(prod_dict_final.get("descripcion", ""))[:1024], # Descripcion larga
-                    descripcion_corta=str(prod_dict_final.get("descripcion_corta", ""))[:512], # Nuevo campo
-                    promocion_info=str(prod_dict_final.get("promocion_texto", ""))[:255], # Nuevo campo
-                    precio=str(prod_dict_final.get("precio_str", ""))[:50],
-                    cantidad=str(prod_dict_final.get("stock", "0"))[:50], # Mapea 'stock' a 'cantidad'
-                    categoria=str(prod_dict_final.get("categoria_qdrant", pyme_rubro_nombre))[:100],
-                    unidad=str(prod_dict_final.get("unidad", ""))[:50],
-                    sku=str(prod_dict_final.get("sku", ""))[:100],
-                    marca=str(prod_dict_final.get("marca", ""))[:100],
-                    texto=prod_dict_final.get("texto_para_embedding", "")
-                )
-            )
-
-        if items_para_db_sql:
-            try:
-                # Importar la función de resumen aquí para evitar importación circular si llm_utils importa algo de upload_processor indirectamente
-                from services.llm_utils import resumir_descripcion_producto_llm
-
-                # Procesar descripciones cortas ANTES de bulk_save_objects
-                for item_dict in productos_finales_para_qdrant_y_db: # Necesitamos iterar sobre los diccionarios originales
-                    desc_larga = str(item_dict.get("descripcion", "")) 
-                    desc_corta_extraida = str(item_dict.get("descripcion_corta", ""))
-                    
-                    if not desc_corta_extraida and desc_larga:
-                        desc_corta_generada = resumir_descripcion_producto_llm(desc_larga)
-                        item_dict["descripcion_corta_final_para_db"] = desc_corta_generada # Guardar en el dict para usarla abajo
-                    else:
-                        item_dict["descripcion_corta_final_para_db"] = desc_corta_extraida
-
-                # Reconstruir items_para_db_sql con la descripción corta posiblemente generada
-                items_para_db_sql_actualizados: List[CatalogoItem] = []
-                for prod_dict_final_actualizado in productos_finales_para_qdrant_y_db:
-                    items_para_db_sql_actualizados.append(
-                        CatalogoItem(
-                            user_id=user_id,
-                            nombre=str(prod_dict_final_actualizado.get("nombre", "S/N"))[:255],
-                            descripcion=str(prod_dict_final_actualizado.get("descripcion", ""))[:1024],
-                            descripcion_corta=str(prod_dict_final_actualizado.get("descripcion_corta_final_para_db", ""))[:512], # Usar el campo actualizado
-                            promocion_info=str(prod_dict_final_actualizado.get("promocion_texto", ""))[:255],
-                            precio=str(prod_dict_final_actualizado.get("precio_str", ""))[:50],
-                            cantidad=str(prod_dict_final_actualizado.get("stock", "0"))[:50],
-                            categoria=str(prod_dict_final_actualizado.get("categoria_qdrant", pyme_rubro_nombre))[:100],
-                            unidad=str(prod_dict_final_actualizado.get("unidad", ""))[:50],
-                            sku=str(prod_dict_final_actualizado.get("sku", ""))[:100],
-                            marca=str(prod_dict_final_actualizado.get("marca", ""))[:100],
-                            texto=prod_dict_final_actualizado.get("texto_para_embedding", "")
-                        )
-                    )
-                
-                CatalogoItem.query.filter_by(user_id=user_id).delete()
-                db.session.bulk_save_objects(items_para_db_sql_actualizados)
-                db.session.commit()
-                logger.info(f"✅ {len(items_para_db_sql_actualizados)} ítems guardados en DB relacional para user_id={user_id} (desc. cortas procesadas).")
-            except Exception as e_db_relacional:
-                db.session.rollback()
-                logger.error(f"❌ Error guardando en DB relacional para user_id={user_id}: {e_db_relacional}", exc_info=True)
-                raise ValueError(f"Error al guardar el catálogo en la base de datos principal: {str(e_db_relacional)}")
-
         logger.info(f"🎉 Proceso de catálogo completado: {len(productos_finales_para_qdrant_y_db)} ítems procesados y guardados para user_id={user_id}")
         return len(productos_finales_para_qdrant_y_db)
 
@@ -293,31 +442,79 @@ def procesar_y_embedear_catalogo(path_archivo: str, user_id: int, pyme_rubro_nom
         raise ValueError(f"Error interno grave al procesar el catálogo. Por favor, contacta a soporte si el problema persiste.")
 
 @upload_bp.route("/subir_catalogo", methods=["POST"])
-def subir_catalogo():
-    user: Optional[User] = None
+def subir_catalogo(current_user: Optional[User] = None):
+    user: Optional[User] = current_user
     ruta_guardado_temporal: Optional[str] = None
 
     try:
-        token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-        if not token:
-            return jsonify({"error": "Token no proporcionado. Por favor, inicia sesión de nuevo."}), 401
+        if not user and getattr(g, "current_user", None):
+            user = g.current_user
 
-        user = User.query.filter_by(token=token).first()
+        if not user:
+            from utils.auth_helpers import obtener_token, user_from_token
+
+            raw_token = obtener_token()
+            if raw_token:
+                user = user_from_token(raw_token)
+
+        if not user:
+            token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+            if token:
+                user = User.query.filter_by(token=token).first()
+
         if not user:
             return jsonify({"error": "Token inválido o sesión expirada. Por favor, inicia sesión de nuevo."}), 401
 
-        if 'file' not in request.files:
-            return jsonify({"error": "No se encontró el archivo en la solicitud."}), 400
-
-        archivo = request.files.get("file")
-        if not archivo or not archivo.filename:
+        archivo = (
+            request.files.get("file")
+            or request.files.get("archivo")
+            or request.files.get("catalogo")
+            or request.files.get("catalog_file")
+        )
+        if not archivo and request.files:
+            archivo = next(iter(request.files.values()))
+        if not archivo:
+            return jsonify(
+                {
+                    "error": (
+                        "No se encontró el archivo en la solicitud. "
+                        "Usa un form-data con el campo 'file' (o 'archivo', "
+                        "'catalogo', 'catalog_file')."
+                    )
+                }
+            ), 400
+        if not archivo.filename:
             return jsonify({"error": "Archivo no válido o no presente."}), 400
 
+        mime_type = archivo.mimetype or ""
+        extension_archivo = os.path.splitext(archivo.filename)[1].lower()
         if not extension_valida(archivo.filename):
-            return jsonify({"error": "Formato de archivo no permitido. Solo se aceptan: " + ", ".join(ALLOWED_EXTENSIONS)}), 400
+            if mime_type not in ALLOWED_MIME_TYPES:
+                return jsonify(
+                    {
+                        "error": (
+                            "Formato de archivo no permitido. "
+                            "Solo se aceptan: "
+                            + ", ".join(sorted(ALLOWED_EXTENSIONS))
+                        )
+                    }
+                ), 400
+            extension_archivo = mimetypes.guess_extension(mime_type) or ""
+            if extension_archivo not in ALLOWED_EXTENSIONS:
+                return jsonify(
+                    {
+                        "error": (
+                            "Formato de archivo no permitido. "
+                            "El archivo no tiene extensión válida y no se pudo inferir una compatible."
+                        )
+                    }
+                ), 400
 
         nombre_empresa_seguro = limpiar_texto_base(user.nombre_empresa if user.nombre_empresa else "pyme").replace(" ", "_")
         nombre_base_seguro, extension_archivo_segura = os.path.splitext(secure_filename(archivo.filename))
+        if not extension_archivo_segura or not extension_valida(archivo.filename):
+            if extension_archivo:
+                extension_archivo_segura = extension_archivo
         nombre_archivo_unico = f"user_{user.id}_{nombre_empresa_seguro[:15]}_{uuid.uuid4().hex[:6]}{extension_archivo_segura}"
 
         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -365,6 +562,7 @@ def subir_catalogo():
             user.id,
             pyme_rubro_nombre=pyme_rubro_nombre,
             coleccion=coleccion,
+            mime_type_override=mime_type,
         )
 
         # Guardar el archivo original para descargas futuras

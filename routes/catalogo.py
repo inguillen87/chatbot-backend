@@ -210,6 +210,7 @@ def _formatear_producto(data: dict) -> dict:
     """Normaliza un diccionario de producto al formato universal."""
     precio_pack = None
     precio_unitario = None
+    extra_metadata = data.get("extra_metadata") or {}
 
     precio_float = data.get("precio_float")
     precio_str = data.get("precio_str")
@@ -262,6 +263,16 @@ def _formatear_producto(data: dict) -> dict:
 
     categoria_normalizada = (data.get("categoria") or data.get("categoria_qdrant", "")).strip()
     imagen_url = _fallback_image_for_item(data.get("imagen_url"), data, categoria_normalizada)
+
+    unidad_por_caja = (
+        data.get("unidad_por_caja")
+        or extra_metadata.get("unidad_por_caja")
+        or extra_metadata.get("unidades_por_caja")
+    )
+    precio_por_caja = data.get("precio_por_caja") or extra_metadata.get("precio_por_caja")
+    precio_unitario_estimado = extra_metadata.get("precio_unitario_estimado")
+    if precio_unitario_estimado is not None:
+        precio_unitario = precio_unitario_estimado
 
     precio_texto = precio_str or (str(precio_pack) if precio_pack is not None else None)
     precio_puntos = data.get("precio_puntos")
@@ -318,6 +329,12 @@ def _formatear_producto(data: dict) -> dict:
         "colores": data.get("colores"),
         "precio_unitario": precio_unitario,
         "precio_pack": precio_pack if precio_pack != precio_unitario else None,
+        "precio_por_caja": precio_por_caja,
+        "unidades_por_caja": unidad_por_caja,
+        "precio_anterior": extra_metadata.get("precio_anterior"),
+        "promocion_activa": extra_metadata.get("promocion_activa") or promo_info,
+        "precio_mayorista": extra_metadata.get("precio_mayorista"),
+        "cantidad_minima_mayorista": extra_metadata.get("cantidad_minima_mayorista"),
         "precio_texto": precio_texto,
         "precio_puntos":
             precio_puntos
@@ -357,6 +374,12 @@ def _agrupar_variantes(productos: list[dict]) -> list[dict]:
             "colores": prod.get("colores"),
             "precio_unitario": prod.get("precio_unitario"),
             "precio_pack": prod.get("precio_pack"),
+            "precio_por_caja": prod.get("precio_por_caja"),
+            "unidades_por_caja": prod.get("unidades_por_caja"),
+            "precio_anterior": prod.get("precio_anterior"),
+            "promocion_activa": prod.get("promocion_activa"),
+            "precio_mayorista": prod.get("precio_mayorista"),
+            "cantidad_minima_mayorista": prod.get("cantidad_minima_mayorista"),
             "stock": prod.get("stock"),
         }
         variante = {k: v for k, v in variante.items() if v not in (None, "")}
@@ -402,6 +425,11 @@ def listar_catalogo(user, *args, **kwargs):
                 "imagen_url": item.imagen_url,
                 "descripcion_corta": item.descripcion_corta,
                 "promocion_info": item.promocion_info,
+                "precio_por_caja": item.precio_por_caja,
+                "unidad_por_caja": item.unidad_por_caja,
+                "moneda": item.moneda,
+                "precio_float": item.precio_monetario,
+                "extra_metadata": item.extra_metadata,
                 "talles": item.extra_metadata.get("talles") if item.extra_metadata else None,
                 "colores": item.extra_metadata.get("colores") if item.extra_metadata else None,
             }
@@ -601,4 +629,3 @@ def _resolve_catalog_owner(user: User) -> User:
     if empresa is not None:
         return empresa
     return user
-
