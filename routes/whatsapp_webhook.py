@@ -1161,10 +1161,9 @@ def whatsapp_webhook():
 
     safe_flag_modified(session_context_db_entry, "context_data")
 
-    # Explicitly exclude PYME users from the Boti-style welcome logic.
-    # PYMEs should fall through to responder_chatboc which handles their specific welcome flows.
-    is_pyme_user = client_user and getattr(client_user, "tipo_chat", "") == "pyme"
-    should_trigger_welcome = is_greeting and not is_waiting_for_info and not is_pyme_user
+    # Universal greeting logic: both Pymes and Municipios now use the Boti-style welcome block.
+    # _get_main_menu_payload handles generating the correct menu structure for each type.
+    should_trigger_welcome = is_greeting and not is_waiting_for_info
 
     request_root = request.url_root or ""
     request_root_stripped = request_root.rstrip("/")

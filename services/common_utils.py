@@ -6,6 +6,7 @@ from typing import Dict, Any, Tuple, Optional, List
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.response_formatter import render_audio_text
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
+from services.pyme_menu import get_pyme_menu_payload
 
 # --- PLACEHOLDER DEFINITIONS ---
 # The original definitions for these functions were not found in the codebase.
@@ -693,6 +694,44 @@ def _get_main_menu_payload(
 
     tenant_name_text = _resolve_tenant_name()
 
+    # --- PYME LOGIC: If the user is interacting with a Pyme, use the specific Pyme menu generator ---
+    if owner_user and getattr(owner_user, "tipo_chat", "") == "pyme":
+        # Pass relevant context to the Pyme menu builder
+        rubro_obj = getattr(owner_user, "rubro", None)
+        rubro_slug = _slugify_rubro(getattr(rubro_obj, "clave", None) if rubro_obj else None)
+
+        pyme_context = {
+            "nombre_pyme": tenant_name_text,
+            "rubro_slug": rubro_slug,
+            "rubro_nombre": getattr(rubro_obj, "nombre", None) if rubro_obj else None,
+        }
+
+        # This returns a dict with 'message_body', 'options_list', 'message_type', etc.
+        # tailored for the specific business category (or generic pyme).
+        pyme_payload = get_pyme_menu_payload(pyme_context, channel=context.get("channel", "web"))
+
+        # Override the greeting in the payload to respect the user's name if known
+        if user_name:
+            assistant_name = "Tu Asistente" # Default, could be extracted from pyme config
+            # Try to extract assistant name from message_body if it follows standard format, or just prepend
+            # Simpler: Prepend a personalized hello if not already present
+            if f"Hola, {user_name}" not in pyme_payload["message_body"]:
+                 pyme_payload["message_body"] = f"👋 ¡Hola, {user_name}! " + pyme_payload["message_body"]
+
+        # If we need to ask for name (pyme flow might handle this differently, but let's stick to standard)
+        if not user_name:
+             contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+             contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NOMBRE_INICIAL.name
+             return {
+                "message_body": f"¡Hola! Soy el asistente virtual de {tenant_name_text}. Para una atención más personalizada, ¿podrías decirme tu nombre?",
+                "message_type": "text",
+                "fuente": "pedir_nombre_inicial_pyme"
+            }
+
+        return pyme_payload
+
+    # --- MUNICIPIO LOGIC (Existing) ---
+
     if welcome_message_override:
         welcome_message = welcome_message_override
     elif user_name:
@@ -930,6 +969,12 @@ def _get_main_menu_payload(
     # conversation lightweight and similar to other professional bots like
     # Boti. Removing the image avoids large headers in WhatsApp.
     return response
+
+def _slugify_rubro(value: str | None) -> str:
+    """Helper to slugify rubro names, duplicated from pyme_menu to avoid circular imports if needed."""
+    if not value:
+        return "default"
+    return re.sub(r"[^a-z0-9]+", "-", str(value).lower()).strip("-") or "default"
 
 def clean_text_for_tts(text: str) -> str:
     """
