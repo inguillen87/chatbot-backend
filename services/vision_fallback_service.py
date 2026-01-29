@@ -10,7 +10,7 @@ import cohere
 
 logger = logging.getLogger(__name__)
 
-def _call_openai(image_bytes: bytes) -> Optional[Dict[str, Any]]:
+def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Analyze an image using OpenAI's vision models."""
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -22,7 +22,7 @@ def _call_openai(image_bytes: bytes) -> Optional[Dict[str, Any]]:
         # `Client.__init__()` receiving unsupported arguments.
         http_client = httpx.Client(proxy=None, trust_env=False)
         client = OpenAI(api_key=api_key, http_client=http_client)
-        prompt = (
+        prompt = custom_prompt or (
             "Describe la imagen en español para un sistema de reclamos municipales. "
             "Devuelve un JSON con las claves: labels (lista de palabras clave en español), "
             "objects (lista de objetos principales en español) y text (cadena con cualquier texto encontrado en español)."
@@ -90,7 +90,7 @@ def _call_openai(image_bytes: bytes) -> Optional[Dict[str, Any]]:
         logger.error(f"OpenAI Vision failed: {e}", exc_info=True)
         return None
 
-def _call_cohere(image_bytes: bytes) -> Optional[Dict[str, Any]]:
+def _call_cohere(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Analyze an image using Cohere's multimodal API."""
     api_key = os.getenv("COHERE_API_KEY")
     if not api_key:
@@ -98,7 +98,7 @@ def _call_cohere(image_bytes: bytes) -> Optional[Dict[str, Any]]:
     try:
         b64 = base64.b64encode(image_bytes).decode("utf-8")
         co = cohere.Client(api_key)
-        prompt = (
+        prompt = custom_prompt or (
             "Describe the image for a municipal complaint system. "
             "Return JSON with keys: labels, objects, text."
         )
@@ -136,13 +136,13 @@ def _normalize_result(result: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
-def analyze_image_smart(image_bytes: bytes) -> Dict[str, Any]:
+def analyze_image_smart(image_bytes: bytes, prompt: Optional[str] = None) -> Dict[str, Any]:
     """Analyze image bytes using OpenAI, then Cohere."""
-    result = _call_openai(image_bytes)
+    result = _call_openai(image_bytes, custom_prompt=prompt)
     if result:
         return _normalize_result(result)
     logger.warning("Falling back to Cohere vision...")
-    result = _call_cohere(image_bytes)
+    result = _call_cohere(image_bytes, custom_prompt=prompt)
     if result:
         return _normalize_result(result)
     logger.error("All vision providers failed")

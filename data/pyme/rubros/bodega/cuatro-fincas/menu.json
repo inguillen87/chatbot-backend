@@ -9,12 +9,12 @@
       "options": [
         {
           "id": "pyme_productos_stock",
-          "label": "Vinos y stock",
+          "label": "Ver Productos",
           "description": "Tintos, blancos, espumantes y ediciones limitadas"
         },
         {
           "id": "pyme_promociones",
-          "label": "Promos mayoristas",
+          "label": "Promociones",
           "description": "Bonificaciones por volumen y combos gastronómicos"
         },
         {
@@ -39,8 +39,8 @@
         },
         {
           "id": "pyme_hablar_agente",
-          "label": "Hablar con sommelier",
-          "description": "Coordiná degustaciones, eventos o wine pairing"
+          "label": "Hablar con un representante",
+          "description": "Atención personalizada"
         }
       ]
     }

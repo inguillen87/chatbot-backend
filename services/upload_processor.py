@@ -19,6 +19,11 @@ from services.vision_fallback_service import analyze_image_smart
 
 from .common_utils import limpiar_texto_base, parse_precio_flexible # Changed from .utils
 
+# Import Processors
+from services.catalog_processors.base import BaseCatalogProcessor
+from services.catalog_processors.bodega import BodegaCatalogProcessor
+from services.catalog_processors.generic import GenericCatalogProcessor
+
 from services.qdrant_utils import (
     get_qdrant_client,
     verificar_y_crear_coleccion_qdrant,
@@ -66,77 +71,42 @@ CATALOGO_FOLDER = os.path.join("data", "catalogos")
 def extension_valida(nombre_archivo: str) -> bool:
     return os.path.splitext(nombre_archivo)[1].lower() in ALLOWED_EXTENSIONS
 
-def _normalizar_items_documento(items: List[Dict[str, Any]], rubro: str) -> List[Dict[str, Any]]:
-    normalized: List[Dict[str, Any]] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        nombre = str(item.get("nombre") or item.get("producto") or "").strip()
-        if not nombre:
-            continue
-        normalized.append(
-            {
-                "nombre": nombre,
-                "descripcion": str(item.get("descripcion") or "").strip(),
-                "unidad": str(item.get("unidad") or "").strip(),
-                "stock": str(item.get("cantidad") or item.get("stock") or "").strip(),
-                "precio_str": str(item.get("precio_unitario") or item.get("precio") or "").strip(),
-                "moneda": str(item.get("moneda") or "").strip(),
-                "categoria": str(item.get("categoria") or rubro).strip(),
-            }
-        )
-    return normalized
+def get_processor_for_rubro(rubro_nombre: str) -> BaseCatalogProcessor:
+    """Factory to get the correct processor based on the industry (rubro)."""
+    rubro_norm = rubro_nombre.lower().strip()
+    if rubro_norm in ["bodega", "vinoteca", "vinos"]:
+        return BodegaCatalogProcessor(rubro_nombre)
+    # Future: Add more rubros here (e.g., "corralon" -> CorralonCatalogProcessor)
+    return GenericCatalogProcessor(rubro_nombre)
 
-def _extraer_items_desde_texto(texto: str, filename: str | None) -> List[Dict[str, Any]]:
+def _extraer_items_con_processor(texto: str, filename: str | None, processor: BaseCatalogProcessor) -> List[Dict[str, Any]]:
     if not texto:
         return []
-    system_prompt = (
-        "Eres un asistente experto en interpretar documentos comerciales de pymes. "
-        "Debes producir JSON estricto que describa pedidos o catálogos."
-    )
-    user_prompt = (
-        "Analiza el siguiente texto (extraído de un documento) y genera un JSON con esta estructura exacta:\n"
-        "{\n"
-        "  \"resumen\": string,\n"
-        "  \"items\": [\n"
-        "    {\n"
-        "      \"nombre\": string,\n"
-        "      \"descripcion\": string,\n"
-        "      \"unidad\": string,\n"
-        "      \"cantidad\": string,\n"
-        "      \"precio_unitario\": string,\n"
-        "      \"moneda\": string,\n"
-        "      \"subtotal_estimado\": string\n"
-        "    }\n"
-        "  ],\n"
-        "  \"totales\": {\"moneda\": string, \"total_estimado\": string},\n"
-        "  \"contacto\": {\"nombre\": string, \"telefono\": string, \"email\": string}\n"
-        "}\n"
-        "Usa cadenas vacías si un dato no aparece. No inventes información.\n"
-        f"Nombre del archivo (si disponible): {filename or 'desconocido'}.\n"
-        "Texto extraído:\n"
-        f'"""{texto}"""\n'
-        "Devuelve solamente el JSON final."
-    )
-    llm_response = llamar_llm_para_json_estructurado(system_prompt, user_prompt)
+
+    system_prompt, user_prompt = processor.get_extraction_prompt(filename)
+    # Inject text into prompt (assuming get_extraction_prompt returns template or we append)
+    # The base logic used to construct user_prompt fully inside.
+    # Let's adjust get_extraction_prompt to return the prompts *before* injecting text, or just assume we inject it.
+    # Looking at the processor code, user_prompt expects to be used as is, but it has placeholders?
+    # Actually, in my previous edit I put the text placeholders inside the processor class but didn't pass 'texto' to it.
+    # Let's check BodegaCatalogProcessor. It constructs the prompt.
+    # But it doesn't have the text! I need to pass the text to get_extraction_prompt OR append it here.
+
+    # In my implementation of processors, I returned a string that says "Analiza el siguiente texto...".
+    # But I forgot to include the f-string for the actual text content in the processor class.
+    # Wait, the processor's `get_extraction_prompt` takes `filename` but NOT `text`.
+    # So I must append the text here.
+
+    full_user_prompt = f"{user_prompt}\n\nTexto extraído:\n\"\"\"{texto}\"\"\"\n"
+
+    llm_response = llamar_llm_para_json_estructurado(system_prompt, full_user_prompt)
     if isinstance(llm_response, dict):
         items = llm_response.get("items")
         if isinstance(items, list):
             return items
     return []
 
-def _infer_unidad_por_caja(descripcion: str) -> Optional[int]:
-    if not descripcion:
-        return None
-    match = re.search(r"(\d{1,3})\s*[xX]\s*\d", descripcion)
-    if match:
-        return int(match.group(1))
-    match = re.search(r"^\s*(\d{1,3})\b", descripcion)
-    if match:
-        return int(match.group(1))
-    return None
-
-def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]], vectores: List[List[float]], coleccion: str):
+def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]], vectores: List[List[float]], coleccion: str, rubro_nombre: str):
     qdrant_cli = get_qdrant_client()
     if not qdrant_cli:
         logger.error(f"[QDRANT_SAVE] No se pudo obtener cliente Qdrant para user_id={user_id}.")
@@ -156,7 +126,7 @@ def guardar_en_qdrant(user_id: int, productos_estructurados: List[Dict[str, Any]
         # Normalizar categoria_producto antes de usarla
         categoria_norm = limpiar_texto_base(
             str(producto_dict.get("categoria_producto", producto_dict.get("categoria", ""))) # Prioriza categoria_producto
-        ).lower() or pyme_rubro_nombre # Fallback al rubro de la pyme si no hay categoría específica
+        ).lower() or rubro_nombre # Fallback al rubro de la pyme si no hay categoría específica
 
         payload = {
             "user_id": user_id,
@@ -215,6 +185,10 @@ def procesar_y_embedear_catalogo(
     logger.info(f"[UPLOAD_PROC] Iniciando procesamiento y embedding de catálogo: '{os.path.basename(path_archivo)}' para user_id={user_id}, rubro Pyme='{pyme_rubro_nombre}'")
     registros_estructurados: List[Dict[str, Any]] = []
 
+    # Select processor based on Rubro
+    processor = get_processor_for_rubro(pyme_rubro_nombre)
+    logger.info(f"[UPLOAD_PROC] Usando procesador de catálogo: {type(processor).__name__}")
+
     try:
         _, extension_archivo = os.path.splitext(path_archivo)
         extension_archivo = extension_archivo.lower()
@@ -233,17 +207,26 @@ def procesar_y_embedear_catalogo(
                 )
             if doc_result.get("success") and doc_result.get("datos_estructurados"):
                 items = doc_result["datos_estructurados"].get("items", [])
-                registros_estructurados = _normalizar_items_documento(items, pyme_rubro_nombre)
+                registros_estructurados = processor.normalizar_items(items)
             if not registros_estructurados:
                 registros_estructurados = procesar_catalogo_pdf_google(path_archivo, user_id)
         elif extension_archivo in [".png", ".jpg", ".jpeg"] or mime_type.startswith("image/"):
             with open(path_archivo, "rb") as archivo:
-                vision_result = analyze_image_smart(archivo.read())
+                prompt_catalogo = (
+                    "Transcribe todo el texto visible en esta imagen de catálogo o lista de precios. "
+                    "Mantén el orden y la estructura tabular si es posible. "
+                    "Si hay columnas de precios, cantidades o unidades, inclúyelas tal cual. "
+                    "Devuelve un JSON con las claves: text (el texto transcrito completo)."
+                )
+                vision_result = analyze_image_smart(archivo.read(), prompt=prompt_catalogo)
             extracted_text = ""
             if vision_result.get("full_text_annotation"):
                 extracted_text = vision_result["full_text_annotation"].get("description", "").strip()
-            items = _extraer_items_desde_texto(extracted_text, file_name) if extracted_text else []
-            registros_estructurados = _normalizar_items_documento(items, pyme_rubro_nombre)
+
+            # Use processor extraction prompt logic
+            items = _extraer_items_con_processor(extracted_text, file_name, processor) if extracted_text else []
+            registros_estructurados = processor.normalizar_items(items)
+
             if not registros_estructurados:
                 registros_estructurados = procesar_catalogo_imagen_google(path_archivo, user_id)
         else:
@@ -256,7 +239,7 @@ def procesar_y_embedear_catalogo(
                     )
                 if doc_result.get("success") and doc_result.get("datos_estructurados"):
                     items = doc_result["datos_estructurados"].get("items", [])
-                    registros_estructurados = _normalizar_items_documento(items, pyme_rubro_nombre)
+                    registros_estructurados = processor.normalizar_items(items)
             if not registros_estructurados:
                 # Fallback a genérico para .doc, .docx, .txt
                 from services.generic_file_processor import procesar_archivo_generico
@@ -365,12 +348,49 @@ def procesar_y_embedear_catalogo(
                 precio_normalizado, precio_float, moneda_detectada = parse_precio_flexible(precio_str)
                 moneda = str(prod_dict_final.get("moneda") or moneda_detectada or "")
                 unidad = str(prod_dict_final.get("unidad", "")).strip()
-                unidad_por_caja = prod_dict_final.get("cantidad_empaque") or _infer_unidad_por_caja(
-                    str(prod_dict_final.get("descripcion", ""))
-                )
-                precio_por_caja = None
+
+                # Nuevos campos extraídos (ya vienen normalizados por el processor)
+                unidades_por_caja_raw = prod_dict_final.get("unidades_por_caja")
+                unidades_por_pallet_raw = prod_dict_final.get("unidades_por_pallet")
+                precio_sugerido_raw = prod_dict_final.get("precio_sugerido")
+                precio_caja_raw = prod_dict_final.get("precio_caja")
+
+                # Parseo de unidades por caja
+                unidad_por_caja = None
+                if unidades_por_caja_raw:
+                     try:
+                         unidad_por_caja = int(float(unidades_por_caja_raw))
+                     except (ValueError, TypeError):
+                         pass
+
+                # Logic for inference moved to processor, so here we mostly trust it,
+                # but if processor didn't find it, we check prod_dict_final keys again just in case
+                if not unidad_por_caja:
+                     unidad_por_caja = prod_dict_final.get("cantidad_empaque")
+
+                # Parseo unidades por pallet
+                unidades_por_pallet = None
+                if unidades_por_pallet_raw:
+                    try:
+                        unidades_por_pallet = int(float(unidades_por_pallet_raw))
+                    except (ValueError, TypeError):
+                        pass
+
+                # Parseo precio sugerido
+                precio_sugerido_float = None
+                if precio_sugerido_raw:
+                    _, precio_sugerido_float, _ = parse_precio_flexible(precio_sugerido_raw)
+
+                # Parseo precio caja
+                precio_caja_float = None
+                if precio_caja_raw:
+                     _, precio_caja_float, _ = parse_precio_flexible(precio_caja_raw)
+
+                precio_por_caja = precio_caja_float
                 precio_unitario = None
-                if precio_float is not None and unidad:
+
+                # Lógica de precio caja vs unitario si no vino explícito
+                if precio_float is not None and not precio_por_caja:
                     if "caja" in unidad.lower():
                         precio_por_caja = precio_float
                         if unidad_por_caja:
@@ -402,6 +422,8 @@ def procesar_y_embedear_catalogo(
                         precio_monetario=precio_float,
                         precio_por_caja=precio_por_caja,
                         unidad_por_caja=unidad_por_caja,
+                        unidades_por_pallet=unidades_por_pallet,
+                        precio_sugerido=precio_sugerido_float,
                         imagen_url=str(prod_dict_final.get("imagen_url", ""))[:512] or None,
                         pdf_url=str(prod_dict_final.get("pdf_url", ""))[:512] or None,
                         extra_metadata=extra_metadata or None,
@@ -429,7 +451,7 @@ def procesar_y_embedear_catalogo(
 
         logger.info(f"🧬 Vectores generados: {len(vectores)}. Dimensión del primer vector (si existe): {len(vectores[0]) if vectores and isinstance(vectores[0], list) else 'N/A'}")
 
-        guardar_en_qdrant(user_id, productos_finales_para_qdrant_y_db, vectores, coleccion)
+        guardar_en_qdrant(user_id, productos_finales_para_qdrant_y_db, vectores, coleccion, pyme_rubro_nombre)
 
         logger.info(f"🎉 Proceso de catálogo completado: {len(productos_finales_para_qdrant_y_db)} ítems procesados y guardados para user_id={user_id}")
         return len(productos_finales_para_qdrant_y_db)

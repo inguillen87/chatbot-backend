@@ -155,11 +155,11 @@ def get_pyme_menu_payload(context: Dict[str, Any], channel: str = "web") -> Dict
     if not flat_options:
         flat_options.extend(
             [
-                {"id": "pyme_productos_stock", "texto": "📦 Catálogo y precios"},
-                {"id": "pyme_promociones", "texto": "🔥 Promos mayoristas"},
+                {"id": "pyme_productos_stock", "texto": "📦 Ver productos"},
+                {"id": "pyme_promociones", "texto": "🔥 Promociones"},
                 {"id": "pyme_hacer_pedido", "texto": "🛒 Armar pedido"},
                 {"id": "pyme_estado_pedido", "texto": "📲 Seguir mi pedido"},
-                {"id": "pyme_hablar_agente", "texto": "🤝 Hablar con un asesor"},
+                {"id": "pyme_hablar_agente", "texto": "🤝 Hablar con un representante"},
             ]
         )
 

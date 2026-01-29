@@ -289,7 +289,11 @@ class HumanHandler(BasePymeHandler):
         self._guardar_contexto_pyme()
         nombre_pyme = self.context.get("nombre_pyme", "la empresa")
 
-        body = f"Entendido. Para hablar con un representante de {nombre_pyme}, por favor contáctanos directamente."
+        from services.live_chat_schedule import build_live_chat_status
+        live_status = build_live_chat_status()
+        is_available = live_status.get("available", True)
+        schedule_text = live_status.get("description", "")
+
         ticket_creado_id = None
         if self.pyme_id_actual and self.cliente_id_actual:
             try:
@@ -306,20 +310,27 @@ class HumanHandler(BasePymeHandler):
                     fuente_ticket="CHATBOT_PYME",
                 )
                 if ticket_creado_id:
-                    body = f"He generado el ticket #{ticket_creado_id} para que un agente se ponga en contacto contigo. ¿Hay algo más en lo que pueda ayudarte mientras tanto?"
                     self.pyme_ctx["ultimo_ticket_creado"] = ticket_creado_id
                     self._guardar_contexto_pyme()
+
+                    if is_available:
+                        body = f"Entendido. He generado el ticket #{ticket_creado_id} y derivado tu consulta. Un representante de {nombre_pyme} te atenderá en breve por este medio."
+                    else:
+                        body = f"Entendido. He generado el ticket #{ticket_creado_id} con tu consulta.\n\n⚠️ Nuestro horario de atención es {schedule_text}. Un agente te contactará apenas estemos disponibles."
+                else:
+                    body = f"Entendido. Para hablar con un representante de {nombre_pyme}, por favor contáctanos directamente."
             except Exception as e:
                 logger.error(f"Error creando ticket en HumanHandler: {e}")
-                body += "\n(Hubo un problema al intentar generar un ticket automático)."
-
+                body = f"Entendido. Para hablar con un representante de {nombre_pyme}, por favor contáctanos directamente."
+        else:
+             body = f"Entendido. Para hablar con un representante de {nombre_pyme}, por favor contáctanos directamente."
 
         options = [{"id": "ver_catalogo_pyme_post_human", "texto": "Ver catálogo"}]
         return {
             "message_body": body,
             "options_list": options,
             "message_type": "interactive_buttons",
-            "fuente": "pyme_human_handler_placeholder_v2",
+            "fuente": "pyme_human_handler_schedule_aware_v3",
             "ticket_id": ticket_creado_id
         }
 
@@ -485,4 +496,24 @@ class FacturaHandler(BasePymeHandler):
             "options_list": options,
             "message_type": message_type,
             "fuente": "pyme_factura_submenu_v1"
+        }
+
+class DescargarCatalogoHandler(BasePymeHandler):
+    def execute(self, action_data):
+        if not self.pyme_id_actual or not tiene_archivo_catalogo(self.pyme_id_actual):
+             return {
+                "message_body": "Lo siento, no tengo un catálogo PDF disponible para descargar en este momento.",
+                "options_list": [{"id": "ver_catalogo_pyme", "texto": "Ver productos"}],
+                "message_type": "interactive_buttons",
+                "fuente": "pyme_descargar_catalogo_error"
+            }
+
+        url_cat = url_descargar_catalogo_pyme(self.pyme_id_actual)
+        return {
+            "message_body": "Aquí tienes nuestro catálogo.",
+            "options_list": [{"id": "menu_principal", "texto": "Menú principal"}],
+            "message_type": "file",
+            "media_url": url_cat,
+            "media_type": "application/pdf",
+            "fuente": "pyme_descargar_catalogo_pdf"
         }
