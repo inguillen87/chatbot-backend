@@ -13,6 +13,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from flask import current_app
@@ -22,8 +23,23 @@ from services.multimodal_analyzer import analizar_imagen_con_fallback
 from services.pyme_menu import get_pyme_menu_payload
 from services.config_loader import cargar_configuracion_pyme
 from services.document_processing_service import document_processing_service
+from utils.money_ar import format_ars
 
 logger = logging.getLogger(__name__)
+
+
+def _format_money(value: object, currency: str = "ARS") -> str:
+    if currency != "ARS":
+        try:
+            return f"{float(value):,.2f}"
+        except (TypeError, ValueError):
+            return str(value)
+    try:
+        dec_value = Decimal(str(value))
+    except (TypeError, ValueError, InvalidOperation):
+        return str(value)
+    decimals = 0 if dec_value == dec_value.to_integral_value() else 2
+    return format_ars(dec_value, decimals=decimals)
 
 
 # ---------------------------------------------------------------------------
@@ -245,21 +261,22 @@ def render_cart_summary(state: PymeSessionState) -> str:
         price = item.get("unitPrice", 0.0)
         total = qty * price
         presentacion = item.get("metadata", {}).get("presentacion")
+        currency = item.get("currency", "ARS")
         detail = f"- {qty} x {title}"
         if presentacion:
             detail += f" ({presentacion})"
-        detail += f" — ${total:,.2f}"
+        detail += f" — ${_format_money(total, currency)}"
         lines.append(detail)
 
     subtotal = state.cart.get("subtotal", 0.0)
     envio = state.delivery.get("shipping_total")
     total = state.cart.get("total", subtotal)
 
-    lines.append(f"Subtotal productos: ${subtotal:,.2f}")
+    lines.append(f"Subtotal productos: ${_format_money(subtotal)}")
     if envio is not None:
-        lines.append(f"Envío estimado: ${envio:,.2f}")
+        lines.append(f"Envío estimado: ${_format_money(envio)}")
         total = subtotal + envio
-    lines.append(f"Total estimado: ${total:,.2f}")
+    lines.append(f"Total estimado: ${_format_money(total)}")
     return "\n".join(lines)
 
 
@@ -410,7 +427,7 @@ def handle_keyword_intent(
         lines = ["Estos son algunos destacados:"]
         for item in destacados:
             lines.append(
-                f"• {item.get('nombre')} — ${_parse_price(item.get('precio')):,.2f} ({item.get('presentacion')})"
+                f"• {item.get('nombre')} — ${_format_money(_parse_price(item.get('precio')))} ({item.get('presentacion')})"
             )
         return PymeFlowResult(
             message_body="\n".join(lines),
@@ -981,4 +998,3 @@ __all__ = [
     "build_default_context",
     "ensure_session_context",
 ]
-
