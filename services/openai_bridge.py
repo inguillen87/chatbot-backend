@@ -3,7 +3,7 @@ import openai
 import logging
 import json
 import httpx
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from services.chatbot_prompts import get_system_prompt
 
@@ -26,6 +26,10 @@ try:
 except Exception as e:
     logger.error(f"Failed to initialize OpenAI client: {e}")
     client = None
+
+def get_openai_client() -> Optional[openai.OpenAI]:
+    """Returns the initialized OpenAI client instance."""
+    return client
 
 def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, chat_session_id: str, model: str = "gpt-4o-mini") -> tuple[dict, dict]:
     """

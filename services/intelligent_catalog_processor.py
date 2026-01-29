@@ -8,6 +8,7 @@ from models import db, CatalogoItem, ArchivoAdjunto, AnalisisArchivo
 from services.procesar_catalogo_excel import procesar_catalogo_excel
 from services.generic_file_processor import procesar_archivo_generico
 from services.google_vision_service import GoogleVisionService
+from services.openai_vision_service import OpenAIVisionService
 from services.analisis_archivo_service import AnalisisArchivoService
 from services.llm_utils import llamar_llm_para_json_estructurado
 
@@ -80,7 +81,7 @@ class IntelligentCatalogProcessor:
 
 
     def _process_pdf(self, filepath: str) -> tuple[str, List[Dict[str, Any]]]:
-        """Processes a PDF file using LLM."""
+        """Processes a PDF file using open-source text extraction + LLM."""
         logger.info(f"Processing PDF file: {filepath}")
         analysis_result = procesar_archivo_generico(filepath, 'application/pdf')
         if not analysis_result or not analysis_result.get('texto_extraido'):
@@ -102,8 +103,22 @@ class IntelligentCatalogProcessor:
         return extracted_text, self._normalize_data(structured_data)
 
     def _process_image(self, filepath: str) -> tuple[str, List[Dict[str, Any]]]:
-        """Processes an image file using Vision OCR and LLM."""
+        """Processes an image file using OpenAI Vision, falling back to Google Vision."""
         logger.info(f"Processing image file: {filepath}")
+
+        # Try OpenAI Vision first
+        try:
+            openai_service = OpenAIVisionService()
+            structured_data = openai_service.analyze_image(filepath)
+            if structured_data and len(structured_data) > 0:
+                logger.info("Successfully extracted catalog data using OpenAI Vision.")
+                # We don't get 'extracted_text' in the same way, but we have structured data.
+                # We can mock extracted text or leave it None/empty description.
+                return "Extracted by OpenAI Vision", self._normalize_data(structured_data)
+        except Exception as e:
+            logger.warning(f"OpenAI Vision extraction failed: {e}. Falling back to Google Vision.")
+
+        # Fallback to Google Vision
         vision_service = GoogleVisionService()
         with open(filepath, "rb") as image_file:
             content = image_file.read()

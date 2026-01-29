@@ -4,6 +4,7 @@ from typing import Optional, Dict, Any
 import pandas as pd
 from docx import Document
 from services.llm_bridge import llamar_llm_para_generacion_texto
+import pdfplumber
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +22,7 @@ def procesar_archivo_generico(file_path: str, mime_type: str) -> Optional[Dict[s
     try:
         texto_extraido = None
         if mime_type == 'application/pdf':
-            # La lógica de procesamiento de PDF se manejará a través de Document AI
-            # en analisis_archivo_service, por lo que aquí podemos omitirla o
-            # usar una extracción de texto simple como fallback.
-            logger.info(f"El procesamiento de PDF se delega a Document AI. Pasando por alto en procesador genérico por ahora: {file_path}")
-            return None # O implementar una lógica de texto simple si es necesario
+            texto_extraido = _extraer_texto_de_pdf(file_path)
         elif mime_type in ['application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'text/csv']:
             texto_extraido = _extraer_texto_de_excel_o_csv(file_path)
         elif mime_type in ['application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']:
@@ -41,8 +38,6 @@ def procesar_archivo_generico(file_path: str, mime_type: str) -> Optional[Dict[s
             return None
 
         # Una vez extraído el texto, lo enviamos al LLM para análisis
-        # El prompt puede ser ajustado para ser más específico según el contexto
-        # que se le pase a esta función en el futuro.
         prompt_para_llm = f"""
         Analiza el siguiente texto extraído de un documento y estructura la información clave.
         Si parece un catálogo de productos, extrae una lista de productos con su nombre, descripción y precio si es posible.
@@ -69,6 +64,19 @@ def procesar_archivo_generico(file_path: str, mime_type: str) -> Optional[Dict[s
         logger.error(f"Error procesando archivo genérico {file_path}: {e}", exc_info=True)
         return None
 
+def _extraer_texto_de_pdf(file_path: str) -> Optional[str]:
+    """Extrae el contenido de texto de un archivo PDF usando pdfplumber."""
+    try:
+        full_text = []
+        with pdfplumber.open(file_path) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    full_text.append(text)
+        return "\n".join(full_text)
+    except Exception as e:
+        logger.error(f"Error leyendo archivo PDF {file_path}: {e}", exc_info=True)
+        return None
 
 def _extraer_texto_de_excel_o_csv(file_path: str) -> Optional[str]:
     """Extrae el contenido de un archivo Excel o CSV como una cadena de texto."""
