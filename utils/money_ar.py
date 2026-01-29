@@ -42,9 +42,15 @@ def format_ars(value: Decimal, decimals: int = 2) -> str:
     v = value.quantize(q, rounding=ROUND_HALF_UP)
 
     s = f"{v:.{decimals}f}"
-    int_part, dec_part = s.split(".")
+    if decimals == 0:
+        int_part = s
+        dec_part = ""
+    else:
+        int_part, dec_part = s.split(".")
 
     int_rev = int_part[::-1]
     grouped = ".".join([int_rev[i:i + 3] for i in range(0, len(int_rev), 3)])[::-1]
 
+    if decimals == 0:
+        return grouped
     return f"{grouped},{dec_part}"
