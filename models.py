@@ -1087,6 +1087,9 @@ class CatalogoItem(db.Model):
     external_url = db.Column(db.String(500), nullable=True)
     timestamp = db.Column(db.DateTime(timezone=True), default=get_local_now)
 
+    # Link to the upload source for versioning and traceability
+    catalog_upload_id = db.Column(db.Integer, db.ForeignKey('catalog_upload.id'), nullable=True)
+
     def __repr__(self):
         return f"<CatalogoItem {self.id} para user {self.user_id}>"
 
@@ -2095,3 +2098,69 @@ class AdminAuditLog(db.Model, TimestampMixin):
 
     def __repr__(self):
         return f"<AdminAuditLog {self.action} by {self.admin_user_id}>"
+from extensions import db
+from datetime import datetime, timezone
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.sqlite import JSON as SQLITE_JSON
+
+JSONType = JSONB().with_variant(SQLITE_JSON, "sqlite")
+
+class CatalogUpload(db.Model):
+    __tablename__ = "catalog_upload"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    filename = db.Column(db.String(255), nullable=False)
+    mime_type = db.Column(db.String(100), nullable=True)
+
+    processor_slug = db.Column(db.String(50), nullable=False, default="generic")
+    processor_version = db.Column(db.String(20), nullable=True, default="1.0")
+
+    status = db.Column(db.String(20), default="pending") # pending, processing, completed, failed
+    stats = db.Column(JSONType, nullable=True) # e.g. {items_found: 100, confidence: 0.9}
+
+    raw_text_snippet = db.Column(db.Text, nullable=True)
+
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "filename": self.filename,
+            "processor": self.processor_slug,
+            "status": self.status,
+            "stats": self.stats,
+            "created_at": self.created_at.isoformat() if self.created_at else None
+        }
+from extensions import db
+from datetime import datetime, timezone
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.sqlite import JSON as SQLITE_JSON
+
+JSONType = JSONB().with_variant(SQLITE_JSON, "sqlite")
+
+class TenantCatalogMapping(db.Model):
+    __tablename__ = "tenant_catalog_mapping"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    rubro_slug = db.Column(db.String(50), nullable=False) # e.g. "bodega", "generic"
+    mapping_json = db.Column(JSONType, nullable=False) # The saved mapping
+
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        db.UniqueConstraint("tenant_id", "rubro_slug", name="uq_tenant_mapping_rubro"),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "tenant_id": self.tenant_id,
+            "rubro_slug": self.rubro_slug,
+            "mapping": self.mapping_json,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None
+        }

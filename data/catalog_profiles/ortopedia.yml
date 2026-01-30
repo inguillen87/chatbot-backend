@@ -1,0 +1,36 @@
+synonyms:
+  nombre: ["nombre", "producto", "articulo", "descripcion", "insumo", "modelo"]
+  precio: ["precio", "valor", "importe", "precio lista", "precio publico"]
+  sku: ["sku", "codigo", "art", "ref", "id", "cod"]
+  stock: ["stock", "cantidad", "disponible", "existencias"]
+  talle: ["talle", "talles", "medida", "size", "numero", "dimensiones"]
+  lado: ["lado", "lateralidad", "mano", "pie"] # Izquierdo, Derecho, Ambidextro
+  material: ["material", "composicion"]
+  tipo: ["tipo", "clase", "categoria"]
+
+required_fields:
+  - nombre
+
+attributes:
+  - talle
+  - lado
+  - material
+  - marca
+  - tipo
+  - codigo_anmat
+
+prompt_template: |
+  Eres un experto en insumos médicos y ORTOPEDIA.
+  Analiza la lista de precios o catálogo.
+
+  Presta atención a:
+  - Talles: S, M, L, XL, 1, 2, 3, 4, Pediátrico, Adulto.
+  - Lado: Izquierdo, Derecho, Ambidextro, Bilateral.
+  - Material: Neopreno, Elástico, Termoplástico.
+
+  Extrae:
+  - Nombre (ej: "Rodillera Articulada")
+  - Precio
+  - Talle
+  - Lado (si aplica)
+  - Marca
