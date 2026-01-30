@@ -67,3 +67,19 @@ def parse_ars(value: str | float | int | None) -> Optional[Decimal]:
         return Decimal(s)
     except:
         return None
+
+def format_ars(value: Decimal | float | int, decimals: int = 2) -> str:
+    """
+    Formats a number as ARS currency string (e.g. 1.234,56).
+    """
+    if value is None:
+        return ""
+    try:
+        # Standard formatting with thousands comma
+        s = "{:,.{}f}".format(value, decimals)
+        # Swap comma and dot to match ARS (1,234.56 -> 1.234,56)
+        main, dec = s.split('.')
+        main = main.replace(',', '.')
+        return f"{main},{dec}"
+    except:
+        return str(value)

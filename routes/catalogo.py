@@ -1,5 +1,5 @@
 import os
-from flask import Blueprint, request, jsonify, send_from_directory, render_template, g, url_for
+from flask import Blueprint, request, jsonify, send_from_directory, render_template, g, url_for, redirect
 from models import CatalogoItem, QA, ArchivoAdjunto, User, CatalogoModalidad, TenantProfile
 from routes.auth import token_requerido
 from socket_service import emit_tenant_update
@@ -554,10 +554,21 @@ def descargar_catalogo_publico(pyme_user_id):
     # O si está en config: current_app.config.get("CATALOGO_FOLDER_PATH")
     # Por ahora, asumimos que CATALOGO_FOLDER (definido al inicio de este archivo) es correcto.
 
+    # Check if URL is external or internal
+    if adj.url and (adj.url.startswith("http") or adj.url.startswith("//")):
+        current_app.logger.info(f"Redirigiendo a URL externa del catálogo: {adj.url}")
+        return redirect(adj.url)
+
     current_app.logger.info(f"Proporcionando descarga pública del catálogo '{adj.filename}' para PYME ID: {pyme_user_id} desde la carpeta {CATALOGO_FOLDER}")
 
     # Verificar que el archivo exista antes de intentar enviarlo
     if not os.path.exists(os.path.join(CATALOGO_FOLDER, adj.filename)):
+        # Fallback: maybe it's in the static uploads folder (new storage system)?
+        # But we don't know the exact path easily without resolving logic.
+        # If url is relative like /static/uploads/..., redirect there.
+        if adj.url and adj.url.startswith("/"):
+             return redirect(adj.url)
+
         current_app.logger.error(f"El archivo de catálogo '{adj.filename}' no fue encontrado en la ruta esperada: {os.path.join(CATALOGO_FOLDER, adj.filename)} para PYME ID: {pyme_user_id}")
         return jsonify({"error": "Archivo de catálogo no encontrado en el servidor."}), 500
 
