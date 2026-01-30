@@ -1,0 +1,36 @@
+synonyms:
+  nombre: ["nombre", "producto", "articulo", "descripcion", "prenda", "modelo"]
+  precio: ["precio", "valor", "importe", "precio lista", "precio publico"]
+  sku: ["sku", "codigo", "art", "ref", "id"]
+  stock: ["stock", "cantidad", "disponible", "existencias"]
+  talle: ["talle", "talles", "medida", "size", "numero", "calce"]
+  color: ["color", "colores", "tono", "variante"]
+  material: ["material", "tela", "composicion", "tejido"]
+  genero: ["genero", "sexo", "para", "categoria"] # Hombre, Mujer, Unisex, Niño
+
+required_fields:
+  - nombre
+
+attributes:
+  - talle
+  - color
+  - material
+  - marca
+  - genero
+  - temporada
+
+prompt_template: |
+  Eres un experto en moda y retail de INDUMENTARIA y CALZADO.
+  Analiza la lista de precios o catálogo.
+
+  Detecta variaciones de talles y colores.
+  - Talles: S, M, L, XL, 38, 40, 42, etc.
+  - Colores: Rojo, Azul, Negro, Estampado, etc.
+
+  Extrae:
+  - Nombre (ej: "Remera Básica Algodón")
+  - Precio
+  - Talles Disponibles (si están listados en una columna o agrupados)
+  - Colores Disponibles
+  - Material (ej: "Algodón", "Lycra")
+  - Género (Hombre, Mujer, Niños, Unisex)

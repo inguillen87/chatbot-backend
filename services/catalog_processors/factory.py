@@ -18,9 +18,15 @@ def get_processor_for_rubro(rubro_nombre: str) -> BaseCatalogProcessor:
     if rubro_norm in ["bodega", "vinoteca", "vinos"]:
         return BodegaCatalogProcessor(rubro_nombre)
 
-    # Future: Add more rubros here (e.g., "corralon" -> CorralonCatalogProcessor)
-    # if rubro_norm in ["corralon", "materiales", "construccion"]:
-    #     return CorralonCatalogProcessor(rubro_nombre)
+    # Clothing / Fashion
+    if rubro_norm in ["indumentaria", "ropa", "moda", "textil", "calzado", "zapatillas", "zapatos", "medias", "lenceria", "deportes"]:
+        from services.catalog.registry import registry
+        return registry.get_processor("indumentaria")
+
+    # Orthopedics
+    if rubro_norm in ["ortopedia", "medicina", "clinica", "salud", "insumos medicos"]:
+        from services.catalog.registry import registry
+        return registry.get_processor("ortopedia")
 
     # Default fallback
     return GenericCatalogProcessor(rubro_nombre)
