@@ -31,7 +31,7 @@ class AgregarItemCarritoAction(BaseActionHandler):
         # For now, it relies on a direct Qdrant search.
         qdrant_collection = CATALOGO_PYME
         logger.info(f"Searching Qdrant '{qdrant_collection}' for '{product_identifier}' (pyme_id: {pyme_id})")
-        qdrant_results = buscar_catalogo_qdrant(user_id=pyme_id, texto_busqueda=product_identifier, limite=1, coleccion=qdrant_collection)
+        qdrant_results = buscar_catalogo_qdrant(user_id=pyme_id, pregunta=product_identifier, limite=1, coleccion=qdrant_collection)
 
         if not qdrant_results or not qdrant_results[0].payload:
             logger.warning(f"Product '{product_identifier}' not found for pyme_id {pyme_id}.")
@@ -232,7 +232,7 @@ class ConsultarProductoAction(BaseActionHandler):
         rubro_nombre = getattr(pyme_user.rubro, "nombre", "general") if pyme_user and hasattr(pyme_user, "rubro") else "general"
         qdrant_collection = CATALOGO_PYME
 
-        resultados = buscar_catalogo_qdrant(user_id=pyme_id, texto_busqueda=query, limite=3, coleccion=qdrant_collection)
+        resultados = buscar_catalogo_qdrant(user_id=pyme_id, pregunta=query, limite=3, coleccion=qdrant_collection)
 
         if not resultados:
             return {"success": True, "message_to_user": f"No encontré productos para '{query}'. ¿Intentar otra búsqueda?"}
