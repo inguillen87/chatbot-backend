@@ -117,10 +117,17 @@ def listar_archivos(user):
         .order_by(ArchivoAdjunto.fecha.desc())
         .all()
     )
-    data = [
-        {"nombre": c.nombre_original or c.filename, "url": f"/catalogo/archivo/{c.filename}"}
-        for c in catalogos
-    ]
+    data = []
+    for c in catalogos:
+        url = c.url
+        # If url is not external and not relative starting with /, construct local endpoint
+        if not (url and (url.startswith("http") or url.startswith("//") or url.startswith("/"))):
+             url = f"/catalogo/archivo/{c.filename}"
+        elif not url:
+             url = f"/catalogo/archivo/{c.filename}"
+
+        data.append({"nombre": c.nombre_original or c.filename, "url": url})
+
     return jsonify(data)
 
 
@@ -135,6 +142,10 @@ def descargar_catalogo(user):
     )
     if not adj:
         return jsonify({"error": "No hay catálogo disponible"}), 404
+
+    if adj.url and (adj.url.startswith("http") or adj.url.startswith("//")):
+        return redirect(adj.url)
+
     return send_from_directory(CATALOGO_FOLDER, adj.filename, as_attachment=True)
 
 
@@ -145,6 +156,10 @@ def descargar_archivo(user, filename):
     adj = ArchivoAdjunto.query.filter_by(filename=filename, tipo="catalogo", user_id=user.id).first()
     if not adj:
         return jsonify({"error": "Archivo no encontrado"}), 404
+
+    if adj.url and (adj.url.startswith("http") or adj.url.startswith("//")):
+        return redirect(adj.url)
+
     return send_from_directory(CATALOGO_FOLDER, filename, as_attachment=True)
 
 
