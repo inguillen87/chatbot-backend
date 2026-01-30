@@ -1,7 +1,7 @@
 """add catalog processing tables
 
 Revision ID: 20300113
-Revises: 20300112_add_tenant_id_to_pyme_ticket
+Revises: 8e8cabaf31c8
 Create Date: 2026-01-30 10:00:00.000000
 
 """
@@ -11,7 +11,7 @@ from sqlalchemy.dialects import postgresql, sqlite
 
 # revision identifiers, used by Alembic.
 revision = '20300113'
-down_revision = '20300112_add_tenant_id_to_pyme_ticket'
+down_revision = '8e8cabaf31c8'
 branch_labels = None
 depends_on = None
 
