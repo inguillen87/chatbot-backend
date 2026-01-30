@@ -74,11 +74,11 @@ class CatalogoHandler(BasePymeHandler):
 
             try:
                 resultados_qdrant = buscar_catalogo_qdrant(
-                    self.pyme_id_actual,
-                    query_qdrant,
-                    self.context.get("rubro_nombre"),
-                    3,
-                    self.context.get("coleccion_qdrant", CATALOGO_PYME),
+                    user_id=self.pyme_id_actual,
+                    pregunta=query_qdrant,
+                    categoria=self.context.get("rubro_nombre"),
+                    limite=3,
+                    coleccion=self.context.get("coleccion_qdrant", CATALOGO_PYME),
                 )
             except Exception as exc:
                 logger.warning(

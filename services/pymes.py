@@ -2703,11 +2703,11 @@ def sugerir_productos_relacionados(
     try:
         query = f"complemento para {seed}"
         hits = buscar_catalogo_qdrant(
-            pyme_id,
-            query,
-            rubro_nombre or "general",
-            3,
-            CATALOGO_PYME,
+            user_id=pyme_id,
+            pregunta=query,
+            categoria=rubro_nombre or "general",
+            limite=3,
+            coleccion=CATALOGO_PYME,
         )
         # elegí el primer hit decente
         for hit in hits or []:
