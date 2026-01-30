@@ -20,9 +20,7 @@ from services.vision_fallback_service import analyze_image_smart
 from .common_utils import limpiar_texto_base, parse_precio_flexible # Changed from .utils
 
 # Import Processors
-from services.catalog_processors.base import BaseCatalogProcessor
-from services.catalog_processors.bodega import BodegaCatalogProcessor
-from services.catalog_processors.generic import GenericCatalogProcessor
+from services.catalog_processors import BaseCatalogProcessor, get_processor_for_rubro
 
 from services.qdrant_utils import (
     get_qdrant_client,
@@ -70,14 +68,6 @@ CATALOGO_FOLDER = os.path.join("data", "catalogos")
 
 def extension_valida(nombre_archivo: str) -> bool:
     return os.path.splitext(nombre_archivo)[1].lower() in ALLOWED_EXTENSIONS
-
-def get_processor_for_rubro(rubro_nombre: str) -> BaseCatalogProcessor:
-    """Factory to get the correct processor based on the industry (rubro)."""
-    rubro_norm = rubro_nombre.lower().strip()
-    if rubro_norm in ["bodega", "vinoteca", "vinos"]:
-        return BodegaCatalogProcessor(rubro_nombre)
-    # Future: Add more rubros here (e.g., "corralon" -> CorralonCatalogProcessor)
-    return GenericCatalogProcessor(rubro_nombre)
 
 def _extraer_items_con_processor(texto: str, filename: str | None, processor: BaseCatalogProcessor) -> List[Dict[str, Any]]:
     if not texto:
