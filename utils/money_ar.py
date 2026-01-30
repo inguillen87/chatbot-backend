@@ -13,14 +13,16 @@ def parse_ars(value: str | float | int | None) -> Optional[Decimal]:
     - 10,41 (decimal)
     """
     if value is None:
-        return None
+        return Decimal("0")
 
     s = str(value).strip()
     if not s:
-        return None
+        return Decimal("0")
 
     # Remove symbol
     s = s.replace('$', '').replace('ARS', '').strip()
+    # Remove all internal spaces (e.g. OCR artifacts "1 5.000")
+    s = s.replace(' ', '')
 
     # 1. Check for common ARS format: 1.234,56
     # If comma is present and is the last separator (or unique), treat as decimal
@@ -78,8 +80,12 @@ def format_ars(value: Decimal | float | int, decimals: int = 2) -> str:
         # Standard formatting with thousands comma
         s = "{:,.{}f}".format(value, decimals)
         # Swap comma and dot to match ARS (1,234.56 -> 1.234,56)
-        main, dec = s.split('.')
-        main = main.replace(',', '.')
-        return f"{main},{dec}"
+        if '.' in s:
+            main, dec = s.split('.')
+            main = main.replace(',', '.')
+            return f"{main},{dec}"
+        else:
+            # Integer case (decimals=0)
+            return s.replace(',', '.')
     except:
         return str(value)
