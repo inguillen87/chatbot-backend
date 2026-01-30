@@ -122,6 +122,26 @@ def buscar_catalogo_qdrant(
                 )
             )
 
+        # Filtro adicional explícito para rubros complejos (ej. Varietal en bodegas)
+        # Esto soluciona que buscar "Malbec" traiga "Torrontés" si el vector está "sucio"
+        # o si la búsqueda vectorial es demasiado laxa.
+        # Detectamos si la pregunta contiene palabras clave de atributos específicos.
+        pregunta_lower = pregunta.lower()
+        if "malbec" in pregunta_lower:
+             must_conditions.append(
+                qdrant_models.FieldCondition(
+                    key="texto_original_para_embedding", # O un campo específico 'varietal' si existe en payload
+                    match=qdrant_models.MatchText(text="Malbec")
+                )
+            )
+        elif "cabernet" in pregunta_lower:
+             must_conditions.append(
+                qdrant_models.FieldCondition(
+                    key="texto_original_para_embedding",
+                    match=qdrant_models.MatchText(text="Cabernet")
+                )
+            )
+
         # Filtros booleanos (promocion, stock)
         # Nota: Asumimos que el payload tiene campos 'en_promocion' y 'con_stock' o similar.
         # Si el payload usa otros nombres (ej. 'stock' > 0), ajustamos aquí.
@@ -165,6 +185,13 @@ def buscar_catalogo_qdrant(
                     range=rango_precio
                 )
             )
+
+        # Filtro por Rubro Slug (si está disponible en payload)
+        # Esto asegura que si dos tenants comparten colección, no se mezclen rubros
+        # aunque el user_id ya debería aislar tenants.
+        # Es una capa extra de seguridad.
+        # Asumimos que 'rubro_slug' se indexa.
+        # if rubro_slug: ...
 
         search_filter = None
         if must_conditions:

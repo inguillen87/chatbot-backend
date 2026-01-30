@@ -1,54 +1,69 @@
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 import re
+from typing import Optional, Tuple
 
-def parse_ars(s: str) -> Decimal:
+def parse_ars(value: str | float | int | None) -> Optional[Decimal]:
     """
-    Convierte strings tipo:
-      "15.620,00" -> 15620.00
-      "5.207"     -> 5207
-      "$ 2.603,33"-> 2603.33
-      "1 5.620,00"-> 15620.00 (pdfplumber a veces separa el primer dígito)
+    Parses a monetary value string (ARS convention) into a Decimal.
+    Handles:
+    - 43.200 (thousands dot)
+    - 43200 (integer)
+    - 43.200,50 (comma decimal)
+    - $ 43.200
+    - 10,41 (decimal)
     """
-    if s is None:
-        return Decimal("0")
+    if value is None:
+        return None
 
-    s = str(s).strip()
-    s = s.replace("$", "").strip()
+    s = str(value).strip()
+    if not s:
+        return None
 
-    # arregla casos tipo "1 5.620,00"
-    s = re.sub(r"(\d)\s+(\d{1,3}[\.,]\d{3})", r"\1\2", s)
+    # Remove symbol
+    s = s.replace('$', '').replace('ARS', '').strip()
 
-    # saca espacios
-    s = re.sub(r"\s+", "", s)
+    # 1. Check for common ARS format: 1.234,56
+    # If comma is present and is the last separator (or unique), treat as decimal
+    # If dot is present, treat as thousands unless it's the only separator and clearly decimal (heuristic)
 
-    # Si tiene coma, coma = decimales, punto = miles
-    if "," in s:
-        s = s.replace(".", "")
-        s = s.replace(",", ".")
-        return Decimal(s)
+    # Simplest reliable heuristic for ARS:
+    # - If ',' is present, replace '.' (thousands) with nothing, then ',' with '.'
+    # - If only '.' is present:
+    #    - If it has 3 digits after: ambiguous (could be thousands or decimal).
+    #      Context suggests thousands in ARS for integers > 1000.
+    #      But 10.50 is clearly decimal.
+    # Let's use a robust approach:
 
-    # Si NO tiene coma pero tiene punto y son 3 dígitos al final -> punto = miles
-    if "." in s and re.search(r"\.\d{3}$", s):
-        return Decimal(s.replace(".", ""))
+    # Remove thousands separators if present
+    # Case: 43.200 -> 43200 (dot is thousands)
+    # Case: 43.200,50 -> 43200.50 (dot thousands, comma decimal)
+    # Case: 10,41 -> 10.41 (comma decimal)
+    # Case: 10.41 -> 10.41 (dot decimal, US style - risky but possible)
 
-    # Caso simple
-    return Decimal(s)
-
-def format_ars(value: Decimal, decimals: int = 2) -> str:
-    q = Decimal(10) ** -decimals
-    v = value.quantize(q, rounding=ROUND_HALF_UP)
-
-    s = f"{v:.{decimals}f}"     # "15620.00"
-    if "." in s:
-        int_part, dec_part = s.split(".")
+    if ',' in s:
+        # Assume comma is decimal separator
+        s = s.replace('.', '') # Remove thousands dot
+        s = s.replace(',', '.') # Convert decimal comma to dot
     else:
-        int_part = s
-        dec_part = ""
+        # No comma. Only dots?
+        if '.' in s:
+            parts = s.split('.')
+            if len(parts) > 2:
+                # 1.234.567 -> Thousands
+                s = s.replace('.', '')
+            elif len(parts) == 2:
+                # 10.50 vs 1.200
+                decimals = parts[1]
+                if len(decimals) == 3:
+                    # Likely thousands: 1.200 -> 1200
+                    # BUT could be 1.234 (1 unit and 234 millis?). Unlikely in prices.
+                    # Assume thousands
+                    s = s.replace('.', '')
+                else:
+                    # Likely decimal: 10.50, 10.5
+                    pass # Keep dot
 
-    # miles con punto
-    int_rev = int_part[::-1]
-    grouped = ".".join([int_rev[i:i+3] for i in range(0, len(int_rev), 3)])[::-1]
-
-    if decimals > 0:
-        return f"{grouped},{dec_part}"
-    return grouped
+    try:
+        return Decimal(s)
+    except:
+        return None

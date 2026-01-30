@@ -2133,3 +2133,34 @@ class CatalogUpload(db.Model):
             "stats": self.stats,
             "created_at": self.created_at.isoformat() if self.created_at else None
         }
+from extensions import db
+from datetime import datetime, timezone
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.sqlite import JSON as SQLITE_JSON
+
+JSONType = JSONB().with_variant(SQLITE_JSON, "sqlite")
+
+class TenantCatalogMapping(db.Model):
+    __tablename__ = "tenant_catalog_mapping"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    rubro_slug = db.Column(db.String(50), nullable=False) # e.g. "bodega", "generic"
+    mapping_json = db.Column(JSONType, nullable=False) # The saved mapping
+
+    is_active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        db.UniqueConstraint("tenant_id", "rubro_slug", name="uq_tenant_mapping_rubro"),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "tenant_id": self.tenant_id,
+            "rubro_slug": self.rubro_slug,
+            "mapping": self.mapping_json,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None
+        }
