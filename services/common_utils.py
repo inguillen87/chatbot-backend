@@ -6,7 +6,6 @@ from typing import Dict, Any, Tuple, Optional, List
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.response_formatter import render_audio_text
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
-from services.pyme_menu import get_pyme_menu_payload
 
 # --- PLACEHOLDER DEFINITIONS ---
 # The original definitions for these functions were not found in the codebase.
@@ -696,6 +695,8 @@ def _get_main_menu_payload(
 
     # --- PYME LOGIC: If the user is interacting with a Pyme, use the specific Pyme menu generator ---
     if owner_user and getattr(owner_user, "tipo_chat", "") == "pyme":
+        from services.pyme_menu import get_pyme_menu_payload
+
         # Pass relevant context to the Pyme menu builder
         rubro_obj = getattr(owner_user, "rubro", None)
         rubro_slug = _slugify_rubro(getattr(rubro_obj, "clave", None) if rubro_obj else None)
