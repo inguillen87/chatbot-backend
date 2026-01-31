@@ -39,6 +39,7 @@ from services.encuestas_service import (
     list_comentarios,
     reportar_comentario,
 )
+from services.encuestas_analytics_service import calculate_live_results
 from utils.auth_helpers import obtener_token, user_from_token
 
 _DEFAULT_RATE_LIMIT = 150
@@ -644,6 +645,21 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             return "", 204
         return _handle_responder(slug)
 
+    @bp.route("/<slug>/live-results", methods=["GET", "OPTIONS"])
+    def live_results(slug: str):
+        if request.method == "OPTIONS":
+            return "", 204
+
+        try:
+            # Reusing existing service/analytics logic
+            results = calculate_live_results(slug)
+            return jsonify(results)
+        except EncuestaError as err:
+            return jsonify(err.to_dict()), err.status_code
+        except Exception as e:
+            current_app.logger.error(f"Error fetching live results for {slug}: {e}")
+            return jsonify({"error": "Error interno"}), 500
+
     @bp.route("/<slug>/comentarios", methods=["GET", "POST", "OPTIONS"])
     def comentarios(slug: str):
         if request.method == "OPTIONS":
@@ -797,4 +813,3 @@ def share_redirect(slug: str):
         whatsapp_message=whatsapp_message,
         share_image_url=share_image_url,
     )
-

@@ -20,6 +20,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 from .integracion_municipal import enviar_ticket_a_sigem # SIGEM Integration
 from utils.heatmap import enrich_heatmap_points
+from services.notification_dispatcher import notification_dispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -384,7 +385,11 @@ class ServicioTickets:
                     # La integración externa no debe impedir el funcionamiento primario.
                     logger.error(f"Error durante el envío del Ticket #{ticket.nro_ticket} a SIGEM: {e_sigem}", exc_info=True)
 
-            # Notificaciones por email (admin y cliente)
+            # Notificaciones centralizadas (email, whatsapp, admin)
+            # notification_dispatcher no tiene un metodo especifico para tickets aun,
+            # pero podemos adaptar o llamar a _notificar_ticket_por_email por ahora
+            # y extender dispatcher despues.
+            # Para mantener consistencia con el pedido del usuario:
             self._notificar_ticket_por_email(ticket, tipo_ticket, ticket_data)
 
             # Notificar panel en tiempo real
