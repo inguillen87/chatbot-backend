@@ -531,6 +531,13 @@ class TenantProfile(db.Model, TimestampMixin):
     whatsapp_sender_id = db.Column(db.String(255), nullable=True)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
 
+    # Dispatch & Notification Configuration
+    dispatch_email = db.Column(db.String(255), nullable=True)
+    dispatch_phone = db.Column(db.String(50), nullable=True)
+    send_buyer_email = db.Column(db.Boolean, default=True, nullable=False)
+    send_dispatch_email = db.Column(db.Boolean, default=True, nullable=False)
+    send_dispatch_whatsapp = db.Column(db.Boolean, default=True, nullable=False)
+
     municipio = db.relationship(
         "User",
         foreign_keys=[municipio_id],

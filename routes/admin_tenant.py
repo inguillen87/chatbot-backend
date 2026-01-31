@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify, g, current_app
 from utils.auth_helpers import token_requerido
 from middleware.tenant_context import require_tenant
-from models import db, TenantProfile, User, TenantConfig, Role, UserRole, CategoriaTicket, IntegrationAccount
+from models import db, TenantProfile, User, TenantConfig, Role, UserRole, CategoriaTicket, IntegrationAccount, PymePedido
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
 from services.tenant_resolver import apply_tenant_alias
 
@@ -637,3 +637,68 @@ def sync_integration(current_user, slug, integration_type):
         return jsonify(result)
 
     return jsonify({"error": "Integration not supported"}), 400
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/<string:integration_type>/preview', methods=['GET'])
+@token_requerido
+@require_tenant
+def preview_integration_sync(current_user, slug, integration_type):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+         return jsonify({'error': 'Unauthorized'}), 403
+    if not _plan_allows_integrations(tenant):
+        return (
+            jsonify(
+                {
+                    "error": "plan_required",
+                    "message": "Integraciones disponibles para planes Pro/Full.",
+                }
+            ),
+            403,
+        )
+
+    if integration_type.lower() == 'mercadolibre':
+        from services.integrations.mercadolibre import MercadoLibreService
+        service = MercadoLibreService(tenant)
+        result = service.preview_sync()
+        return jsonify(result)
+
+    return jsonify({"error": "Integration not supported or preview unavailable"}), 400
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/orders', methods=['GET'])
+@token_requerido
+@require_tenant
+def list_tenant_orders(current_user, slug):
+    """
+    List orders for a specific tenant.
+    """
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+
+    if not _is_authorized_for_tenant(current_user, tenant):
+         return jsonify({'error': 'Unauthorized'}), 403
+
+    # Fetch orders linked to this tenant
+    # PymePedido should have tenant_id populated. If not, fallback to pyme_id owner check.
+    query = PymePedido.query.filter(
+        (PymePedido.tenant_id == tenant.id) | (PymePedido.pyme_id == tenant.pyme_id)
+    )
+
+    # Optional Filters
+    status = request.args.get('status')
+    if status:
+        query = query.filter(PymePedido.estado == status)
+
+    orders = query.order_by(PymePedido.fecha.desc()).limit(50).all()
+
+    results = []
+    for o in orders:
+        results.append(o.to_dict())
+
+    return jsonify({
+        "orders": results,
+        "count": len(results)
+    })
