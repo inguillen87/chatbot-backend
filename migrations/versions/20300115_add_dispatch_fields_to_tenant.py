@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '20300115_add_dispatch_fields_to_tenant'
+revision = '20300115'
 down_revision = '20300114'
 branch_labels = None
 depends_on = None

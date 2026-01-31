@@ -9,9 +9,9 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = '20300119_merge_all_heads'
+revision = '20300119'
 down_revision = (
-    '20300118_add_order_event_table',
+    '20300118',
     '20250210_add_features_table',
     '20261205_add_whatsapp_sender_id_to_tenant_profile',
     '20280415_add_live_voting_flags_to_enc_encuesta',
