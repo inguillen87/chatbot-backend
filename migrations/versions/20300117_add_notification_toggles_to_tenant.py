@@ -9,8 +9,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = '20300117_add_notification_toggles'
-down_revision = '20300116_add_tenant_and_idempotency'
+revision = '20300117'
+down_revision = '20300116'
 branch_labels = None
 depends_on = None
 

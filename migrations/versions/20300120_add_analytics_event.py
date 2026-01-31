@@ -10,8 +10,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql, sqlite
 
 # revision identifiers, used by Alembic.
-revision = '20300120_add_analytics_event'
-down_revision = '20300119_merge_all_heads'
+revision = '20300120'
+down_revision = '20300119'
 branch_labels = None
 depends_on = None
 
