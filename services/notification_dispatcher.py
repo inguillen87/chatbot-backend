@@ -1,11 +1,13 @@
 import logging
-from typing import Optional
+from typing import Optional, Union
 
-from models import PymePedido, TenantProfile, OrderEvent, db
+from models import PymePedido, TenantProfile, OrderEvent, MunicipioTicket, PymeTicket, db
 from services.email_service import (
     enviar_email_pedido_cliente,
     enviar_email_pedido_despacho,
     enviar_email_pedido_admin,
+    enviar_email_ticket_admin,
+    enviar_email_ticket_cliente,
 )
 from services.notifications import (
     enviar_notificacion_sms,
@@ -17,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 class NotificationDispatcher:
     """
-    Centralized service to handle omnichannel notifications for orders.
+    Centralized service to handle omnichannel notifications for orders and tickets.
     Designed to be robust: failures in one channel do not block others.
     """
 
@@ -46,7 +48,7 @@ class NotificationDispatcher:
         if not tenant or tenant.send_buyer_email:
             self._notify_customer(pedido, pdf_bytes)
         else:
-             logger.info(f"Buyer email disabled for tenant {tenant.id}")
+             logger.info(f"Buyer email disabled for tenant {tenant.id if tenant else 'unknown'}")
 
         # 3. Dispatch (Depósito) Notifications
         self._notify_dispatch(pedido, tenant, pdf_bytes)
@@ -78,6 +80,57 @@ class NotificationDispatcher:
                     pass
         except Exception as e:
             logger.error(f"Error dispatching order update for {order.id}: {e}")
+
+    def dispatch_ticket_created(self, ticket: Union[MunicipioTicket, PymeTicket], tipo_ticket: str, ticket_data: dict):
+        """
+        Dispatches notifications for a new ticket.
+        """
+        logger.info(f"Dispatching notifications for new ticket {ticket.nro_ticket}")
+
+        # 1. Email Notifications (Existing Logic Wrapped)
+        try:
+            admin_user = None
+            owner_id = None
+
+            if tipo_ticket == "municipio":
+                owner_id = ticket_data.get("municipio_id") or getattr(ticket, "municipio_id", None)
+            elif tipo_ticket == "pyme":
+                owner_id = ticket_data.get("pyme_id")
+
+            if owner_id:
+                try:
+                    from models import User
+                    admin_user = db.session.get(User, owner_id)
+                except Exception:
+                    admin_user = None
+
+            enviar_email_ticket_admin(
+                ticket,
+                admin_user=admin_user,
+                tipo_ticket=tipo_ticket,
+                ticket_data=ticket_data,
+            )
+            enviar_email_ticket_cliente(
+                ticket,
+                tipo_ticket=tipo_ticket,
+                admin_user=admin_user,
+                ticket_data=ticket_data,
+            )
+        except Exception as e:
+            logger.error(f"Error sending ticket emails: {e}")
+
+        # 2. WhatsApp Notification to User (New)
+        contact_phone = getattr(ticket, "telefono_vecino", None) or getattr(ticket, "telefono", None) or getattr(ticket, "telefono_cliente", None)
+        if contact_phone:
+            try:
+                enviar_notificacion_whatsapp_con_plantilla(
+                    contact_phone,
+                    getattr(ticket, "nombre_vecino", None) or getattr(ticket, "nombre_cliente", None) or "Vecino",
+                    str(ticket.nro_ticket),
+                    f"Ticket creado: {ticket.asunto}"
+                )
+            except Exception as e:
+                logger.error(f"Error sending ticket WhatsApp: {e}")
 
     def _notify_customer(self, pedido: PymePedido, pdf_bytes: Optional[bytes]):
         # Email
