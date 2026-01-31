@@ -43,7 +43,8 @@ with engine.connect() as conn:
         command.upgrade(cfg, "head")
     except CommandError as exc:
         message = str(exc)
-        if "Multiple heads" in message:
+        message_lower = message.lower()
+        if "multiple head" in message_lower:
             print("Multiple heads detected, upgrading all heads instead...")
             command.upgrade(cfg, "heads")
         else:
