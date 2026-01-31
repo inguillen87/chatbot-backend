@@ -3,7 +3,7 @@ from flask import Blueprint, jsonify, request, g, abort, current_app, url_for
 from sqlalchemy import or_
 from datetime import datetime, timezone, timedelta
 
-from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem, User, TenantProfile, WidgetConfig, EncEncuesta, PointsTransaction
+from models import MunicipioPost, CatalogoItem, TenantTicket, MarketOrder, MarketOrderItem, User, TenantProfile, WidgetConfig, EncEncuesta, PointsTransaction, PymePedido
 from extensions import db
 from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
 from services.rewards import recompensas_service
@@ -522,18 +522,51 @@ def get_orders(tenant_slug):
     tenant = _resolve_context(tenant_slug)
     user = g.viewer
 
-    orders = MarketOrder.query.filter_by(
+    # Fetch MarketOrders (Web/Checkout)
+    market_orders = MarketOrder.query.filter_by(
         tenant_id=tenant.id,
         user_id=user.id
     ).order_by(MarketOrder.created_at.desc()).all()
 
-    return jsonify([{
-        "id": o.id,
-        "status": o.status,
-        "total": float(o.total_monetary or 0),
-        "date": o.created_at.isoformat(),
-        "items_count": len(o.items)
-    } for o in orders])
+    # Fetch PymePedidos (Chat/Whatsapp)
+    # Using pyme_id link if possible, or tenant link
+    pyme_orders = []
+    if tenant.pyme_id:
+        pyme_orders = PymePedido.query.filter(
+            PymePedido.pyme_id == tenant.pyme_id,
+            PymePedido.user_id == user.id
+        ).order_by(PymePedido.fecha.desc()).all()
+
+    results = []
+
+    # Normalize MarketOrder
+    for o in market_orders:
+        results.append({
+            "id": str(o.id),
+            "order_number": o.external_order_id or str(o.id),
+            "status": o.status,
+            "total": float(o.total_monetary or 0),
+            "date": o.created_at.isoformat(),
+            "channel": o.channel,
+            "type": "web"
+        })
+
+    # Normalize PymePedido
+    for p in pyme_orders:
+        results.append({
+            "id": str(p.id),
+            "order_number": p.nro_pedido,
+            "status": p.estado,
+            "total": float(p.monto_total or 0),
+            "date": p.fecha.isoformat() if p.fecha else None,
+            "channel": "chat", # Typically chat/whatsapp
+            "type": "chat"
+        })
+
+    # Sort combined list by date desc
+    results.sort(key=lambda x: x['date'] or "", reverse=True)
+
+    return jsonify(results)
 
 @portal_api_bp.route('/orders', methods=['POST'])
 @require_auth
