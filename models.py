@@ -530,6 +530,8 @@ class TenantProfile(db.Model, TimestampMixin):
     plan = db.Column(db.String(50), default="free")
     whatsapp_sender_id = db.Column(db.String(255), nullable=True)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
+    dispatch_email = db.Column(db.String(255), nullable=True)
+    dispatch_phone = db.Column(db.String(50), nullable=True)
 
     municipio = db.relationship(
         "User",
@@ -802,6 +804,10 @@ class PymePedido(db.Model):
 
     user = db.relationship('User', foreign_keys=[user_id], backref='pyme_pedidos_realizados')
     pyme = db.relationship('User', foreign_keys=[pyme_id], backref='pyme_pedidos_recibidos')
+
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True, index=True)
+    idempotency_key = db.Column(db.String(128), unique=True, nullable=True, index=True)
+    tenant = db.relationship("TenantProfile")
 
     nro_pedido = db.Column(db.String(50), unique=True, nullable=False)
     asunto = db.Column(db.String(255), nullable=True)

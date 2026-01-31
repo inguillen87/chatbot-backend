@@ -21,7 +21,7 @@ from services.qdrant_utils import (
     get_qdrant_client,
     verificar_y_crear_coleccion_qdrant,
 )
-from services.qdrant_search import CATALOGO_PYME, CATALOGO_MUNICIPIO
+from services.qdrant_search import CATALOGO_PYME, CATALOGO_MUNICIPIO, coleccion_catalogo_para_rubro
 from services.logic import es_rubro_publico
 from qdrant_client import models as qdrant_models
 from typing import List, Dict, Any, Optional
@@ -202,10 +202,14 @@ def subir_catalogo(current_user: Optional[User] = None):
         if user.rubro:
             rubro_nombre = user.rubro.nombre
 
+        # Determinar colección correcta
+        coleccion_destino = coleccion_catalogo_para_rubro(rubro_nombre)
+
         count = procesar_y_embedear_catalogo(
             path,
             user.id,
             pyme_rubro_nombre=rubro_nombre,
+            coleccion=coleccion_destino,
             mime_type_override=mime_type,
             catalog_upload_id=upload_rec.id
         )

@@ -329,6 +329,13 @@ def _crear_pedido(payload: dict):
         pedido.estado = "confirmado"
         db.session.commit()
 
+        # Trigger PymePedido creation for persistence and notifications
+        try:
+            from services.pedido_service import servicio_pedidos
+            servicio_pedidos.create_from_conversational(pedido)
+        except Exception as e:
+            logger.error(f"Error creating PymePedido from checkout: {e}")
+
     return jsonify(
         {
             "pedido_id": pedido.id,

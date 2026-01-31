@@ -767,6 +767,35 @@ def enviar_email_pedido_admin(pedido, *, pdf_bytes: bytes | None = None, empresa
     return enviar_email(admin_email_val, asunto, cuerpo_html_pedido, cuerpo_texto=cuerpo_texto)
 
 
+def enviar_email_pedido_despacho(pedido, dispatch_email: str, *, pdf_bytes: bytes | None = None) -> bool:
+    """Envía un correo al responsable de despacho con el nuevo pedido."""
+    if not _email_notifications_enabled():
+        _log_email_disabled_once("[EMAIL_DISPATCH]")
+        return False
+
+    if not dispatch_email:
+        return False
+
+    asunto = f"Despacho: Nuevo pedido {pedido.nro_pedido}"
+    cuerpo_html_pedido = (
+        f"<h3>Orden de Despacho</h3>"
+        f"<p><strong>Número:</strong> {pedido.nro_pedido}</p>"
+        f"<p><strong>Cliente:</strong> {pedido.nombre_cliente} - {pedido.telefono_cliente}</p>"
+        f"<p><strong>Dirección:</strong> {pedido.direccion or 'Retiro en tienda'}</p>"
+        f"{_render_items_html(pedido)}"
+    )
+    cuerpo_texto = (
+        f"Orden de Despacho {pedido.nro_pedido}. Cliente: {pedido.nombre_cliente}. "
+        f"Items: ver adjunto o sistema."
+    )
+
+    if pdf_bytes:
+        nombre_archivo = f"Despacho-{pedido.nro_pedido}.pdf"
+        return enviar_email_con_adjunto(dispatch_email, asunto, cuerpo_html_pedido, nombre_archivo, pdf_bytes, cuerpo_texto)
+
+    return enviar_email(dispatch_email, asunto, cuerpo_html_pedido, cuerpo_texto=cuerpo_texto)
+
+
 def enviar_email_pedido_cliente(pedido, *, pdf_bytes: bytes | None = None, empresa_info: Dict[str, Any] | None = None) -> bool:
     """Envía un correo al cliente confirmando su pedido."""
     if not _email_notifications_enabled():
