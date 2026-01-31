@@ -2222,6 +2222,30 @@ class AnalyticsEvent(db.Model):
     )
 
 
+class AnalyticsEventV2(db.Model):
+    """Optimized Event Store for High-Volume Analytics."""
+    __tablename__ = "analytics_events_v2"
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    ts = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+
+    tenant_id = db.Column(db.Integer, nullable=False, index=True) # Direct ID for speed
+    tenant_type = db.Column(db.String(20), nullable=True) # pyme | municipio
+
+    user_id = db.Column(db.Integer, nullable=True)
+    anon_id = db.Column(db.String(100), nullable=True)
+
+    channel = db.Column(db.String(50), nullable=True) # web_widget | whatsapp | etc
+    event_name = db.Column(db.String(100), nullable=False, index=True) # order_created, page_view
+    session_id = db.Column(db.String(100), nullable=True)
+
+    metadata_payload = db.Column("metadata", JSONType, nullable=True) # Renamed to avoid reserved word conflict if mapped
+
+    lat = db.Column(db.Float, nullable=True)
+    lng = db.Column(db.Float, nullable=True)
+    entity_ref = db.Column(db.String(100), nullable=True) # ID of related object (order #, ticket #)
+
+
 class Order(db.Model, TimestampMixin):
     __tablename__ = "orders"
 

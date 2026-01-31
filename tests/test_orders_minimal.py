@@ -6,7 +6,9 @@ import json
 
 def test_order_creation_persistence():
     # Setup - In-memory DB or temporary file would be better, but we rely on app config
-    app = create_app()
+    from config import Config
+    Config.SESSION_TYPE = 'filesystem'
+    app = create_app(Config)
     app.config['TESTING'] = True
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
 
@@ -14,13 +16,17 @@ def test_order_creation_persistence():
         db.create_all()
 
         # Create dependencies
-        u = User(name="Test User", email="test@test.com", password_hash="hash")
-        db.session.add(u)
-        db.session.commit()
+        u = User.query.filter_by(email="test@test.com").first()
+        if not u:
+            u = User(name="Test User", email="test@test.com", password_hash="hash")
+            db.session.add(u)
+            db.session.commit()
 
-        t = TenantProfile(slug="test-tenant", nombre="Test Tenant", tipo="pyme", pyme_id=u.id)
-        db.session.add(t)
-        db.session.commit()
+        t = TenantProfile.query.filter_by(slug="test-tenant").first()
+        if not t:
+            t = TenantProfile(slug="test-tenant", nombre="Test Tenant", tipo="pyme", pyme_id=u.id)
+            db.session.add(t)
+            db.session.commit()
 
         # Test Order Create
         o = Order(

@@ -6,6 +6,7 @@ from werkzeug.utils import secure_filename
 import os
 import json
 import logging
+import uuid # Imported for UUID generation
 
 # Re-using upload folder logic
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads")
@@ -116,11 +117,16 @@ def commit_import_session(current_user, upload_id):
     items = upload.preview_data or []
     count = 0
 
+    # Lazy import to avoid circular dependency if service imports routes
+    from services.qdrant_service import index_catalog_item
+    from services.embedding_service import embed_textos_llm
+
     # Bulk Upsert Logic
     for item in items:
         sku = item.get('sku')
         if not sku: continue
 
+        item_obj = None
         # Check existing
         existing = CatalogoItem.query.filter_by(tenant_id=tenant.id, sku=sku).first()
         # Fallback to user_id ownership if tenant_id is ambiguous (legacy)
@@ -131,6 +137,7 @@ def commit_import_session(current_user, upload_id):
             existing.nombre = item.get('title', existing.nombre)
             existing.precio = str(item.get('price', existing.precio)) # Legacy uses string
             existing.precio_monetario = float(item.get('price', 0))
+            item_obj = existing
             # Update other fields
         else:
             new_item = CatalogoItem(
@@ -145,6 +152,34 @@ def commit_import_session(current_user, upload_id):
                 disponible=True
             )
             db.session.add(new_item)
+            item_obj = new_item
+
+        # Flush to generate ID for indexing
+        db.session.flush()
+
+        # Trigger Indexing (Sync for P0, should be async job)
+        try:
+            # Generate embedding on the fly (expensive but correct for P0)
+            text_to_embed = f"{item.get('title')} {item.get('category')} {item.get('price')}"
+            embedding_list = embed_textos_llm([text_to_embed])
+            if embedding_list and embedding_list[0]:
+                rubro_nombre = "general"
+                if tenant.pyme and tenant.pyme.rubro:
+                    rubro_nombre = tenant.pyme.rubro.nombre
+
+                # Prepare item dict for indexing service
+                item_data = {
+                    "id": item_obj.id, # Now available after flush
+                    "nombre": item.get('title'),
+                    "descripcion": "",
+                    "precio": float(item.get('price', 0)),
+                    "rubro": rubro_nombre,
+                    "stock": item.get('stock', 0)
+                }
+                index_catalog_item(tenant.id, item_data, embedding_list[0])
+
+        except Exception as e:
+            logger.warning(f"Failed to index item {sku}: {e}")
 
         count += 1
 
