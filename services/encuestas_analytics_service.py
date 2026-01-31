@@ -10,10 +10,11 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import joinedload
 
-from models import EncEncuesta, EncRespuesta
+from models import EncEncuesta, EncRespuesta, EncPregunta
 from services.encuestas_service import (
     EncuestaError,
     get_encuesta,
+    get_public_encuesta,
     _parse_datetime,
     _resolve_geo_metadata_for_tenant,
 )
@@ -673,3 +674,29 @@ def export_csv(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> It
         yield buffer.getvalue()
         buffer.seek(0)
         buffer.truncate(0)
+
+def calculate_live_results(slug_publico: str) -> Dict[str, Any]:
+    """
+    Returns simplified aggregate counts for live voting animations.
+    Optimized for frequent polling.
+    """
+    encuesta = get_public_encuesta(slug_publico)
+
+    # We can use the existing summary logic but lightweight
+    # Or write a specific query for speed.
+    # For now, reuse get_summary but strip PII/heavy data.
+    summary = get_summary(encuesta.id)
+
+    results = {
+        "total_respuestas": summary["total_respuestas"],
+        "preguntas": []
+    }
+
+    for p in summary["preguntas"]:
+        results["preguntas"].append({
+            "id": p["pregunta_id"],
+            "titulo": p["texto"],
+            "opciones": p.get("series", []) # {label, value}
+        })
+
+    return results
