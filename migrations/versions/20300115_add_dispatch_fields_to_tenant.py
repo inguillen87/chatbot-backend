@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = '20300115_add_dispatch_fields_to_tenant'
-down_revision = '20300114'
+down_revision = '20300114_add_fecha_vigencia_to_catalogo_item'
 branch_labels = None
 depends_on = None
 
