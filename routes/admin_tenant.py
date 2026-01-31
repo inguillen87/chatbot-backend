@@ -158,6 +158,7 @@ def get_tenant_config_bundle(current_user, slug):
             "send_buyer_email": tenant.send_buyer_email,
             "send_dispatch_email": tenant.send_dispatch_email,
             "send_dispatch_whatsapp": tenant.send_dispatch_whatsapp,
+            "theme_json": tenant.theme_json or {}
         },
         "configs": config_dict,
         "features": {
@@ -191,6 +192,8 @@ def update_tenant_config_bundle(current_user, slug):
     if 'send_buyer_email' in tenant_data: tenant.send_buyer_email = bool(tenant_data['send_buyer_email'])
     if 'send_dispatch_email' in tenant_data: tenant.send_dispatch_email = bool(tenant_data['send_dispatch_email'])
     if 'send_dispatch_whatsapp' in tenant_data: tenant.send_dispatch_whatsapp = bool(tenant_data['send_dispatch_whatsapp'])
+
+    if 'theme_json' in tenant_data: tenant.theme_json = tenant_data['theme_json']
 
     # Update Configs
     # Expecting: "configs": { "menu": { "default": {...}, "widget": {...} } }
@@ -681,22 +684,41 @@ def list_tenant_orders(current_user, slug):
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
 
-    # Fetch orders linked to this tenant
-    # PymePedido should have tenant_id populated. If not, fallback to pyme_id owner check.
-    query = PymePedido.query.filter(
+    # Fetch orders linked to this tenant (Unified View)
+    from models import Order
+
+    # 1. Legacy Orders
+    legacy_query = PymePedido.query.filter(
         (PymePedido.tenant_id == tenant.id) | (PymePedido.pyme_id == tenant.pyme_id)
     )
+    if request.args.get('status'):
+        legacy_query = legacy_query.filter(PymePedido.estado == request.args.get('status'))
 
-    # Optional Filters
-    status = request.args.get('status')
-    if status:
-        query = query.filter(PymePedido.estado == status)
+    legacy_orders = legacy_query.order_by(PymePedido.fecha.desc()).limit(50).all()
 
-    orders = query.order_by(PymePedido.fecha.desc()).limit(50).all()
+    # 2. New Orders
+    new_query = Order.query.filter(Order.tenant_id == tenant.id)
+    if request.args.get('status'):
+        new_query = new_query.filter(Order.status == request.args.get('status'))
 
+    new_orders = new_query.order_by(Order.created_at.desc()).limit(50).all()
+
+    # Merge and Sort
     results = []
-    for o in orders:
-        results.append(o.to_dict())
+    for o in legacy_orders:
+        d = o.to_dict()
+        d['source_type'] = 'legacy'
+        d['created_at_iso'] = o.fecha.isoformat() if o.fecha else None
+        results.append(d)
+
+    for o in new_orders:
+        d = o.to_dict()
+        d['source_type'] = 'new'
+        d['created_at_iso'] = o.created_at.isoformat() if o.created_at else None
+        results.append(d)
+
+    # Simple sort by date descending
+    results.sort(key=lambda x: x.get('created_at_iso') or '', reverse=True)
 
     return jsonify({
         "orders": results,
