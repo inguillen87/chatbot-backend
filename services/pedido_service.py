@@ -12,7 +12,7 @@ from models import (
     TenantProfile,
     User,
 )
-from .email_service import enviar_email_pedido_admin
+from .email_service import enviar_email_pedido_admin, enviar_email_pedido_cliente
 from .notifications import (
     enviar_notificacion_sms,
     enviar_notificacion_whatsapp_con_plantilla,
@@ -470,31 +470,11 @@ class PedidoService:
                 monto_total_calculado,
             )
 
-            # Enviar notificaciones (reutilizando la lógica existente)
+            # Enviar notificaciones (reutilizando la lógica centralizada)
             try:
-                enviar_email_pedido_admin(nuevo_pedido_obj)
-            except Exception as e_admin_mail:
-                logger.error(f"Error enviando email de pedido (carrito) al admin: {e_admin_mail}")
-            try:
-                enviar_email_pedido_cliente(nuevo_pedido_obj)
-            except Exception as e_cliente_mail:
-                logger.error(f"Error enviando email de pedido (carrito) al cliente: {e_cliente_mail}")
-            try:
-                if nuevo_pedido_obj.telefono_cliente:
-                    telefono_notif = nuevo_pedido_obj.telefono_cliente
-                    enviar_notificacion_sms(
-                        telefono_notif,
-                        f"Hola {nuevo_pedido_obj.nombre_cliente or ''}! Tu pedido {nuevo_pedido_obj.nro_pedido} desde el carrito fue registrado.",
-                    )
-                    # Asumiendo que enviar_notificacion_whatsapp_con_plantilla existe y es aplicable
-                    enviar_notificacion_whatsapp_con_plantilla(
-                        telefono_notif,
-                        nuevo_pedido_obj.nombre_cliente or "Cliente",
-                        nuevo_pedido_obj.nro_pedido,
-                        nuevo_pedido_obj.rubro or "Pedido",
-                    )
-            except Exception as e_sms_wp:
-                logger.error(f"Error enviando SMS/WhatsApp de pedido (carrito): {e_sms_wp}")
+                notification_dispatcher.dispatch_order_created(nuevo_pedido_obj)
+            except Exception as e:
+                logger.error(f"Error dispatching notifications for cart order {nuevo_pedido_obj.nro_pedido}: {e}")
 
             return nuevo_pedido_obj
 

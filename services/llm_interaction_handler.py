@@ -18,6 +18,7 @@ from services.herramientas_municipio import TOOL_REGISTRY
 from services.municipio_responder import es_consulta_general
 from services.llm_utils import extract_multiple_contact_details_llm
 from utils.response_utils import normalize_response_payload
+from services.user_context_service import user_context_service
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +165,27 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 "perfil": f"{base_url}/portal/{tenant_slug}/perfil"
             }
         }
+
+        # --- Smart Context Injection ---
+        try:
+            # Inject history, points, and frequent items
+            smart_context = user_context_service.get_context(
+                tenant_id=owner_user.tenant_id if owner_user and owner_user.tenant_id else None,
+                user_id=viewer_user.id if viewer_user else None,
+                anon_id=context.get("anon_id")
+            )
+            if smart_context:
+                usuario_info_llm["historial_usuario"] = smart_context
+
+                # Add specific prompt instruction if last order exists
+                if smart_context.get("last_order"):
+                    last_order = smart_context["last_order"]
+                    mensaje_completo_para_llm["instruccion_contexto"] = (
+                        f"EL USUARIO HIZO UN PEDIDO RECIENTE ({last_order.get('date')}) DE: {last_order.get('items_summary')}. "
+                        "SI EL USUARIO DICE 'QUIERO LO MISMO', OFRECELE REPETIR ESE PEDIDO."
+                    )
+        except Exception as e_ctx:
+            logger_actual.warning(f"[HANDLE_LLM] Failed to inject smart context: {e_ctx}")
 
         # Select model based on conversation state (Flagship for extraction/intent, Mini for simple flows)
         model_to_use = "gpt-4o-mini"
