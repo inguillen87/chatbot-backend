@@ -1,7 +1,7 @@
 """Add dispatch fields to tenant_profile
 
-Revision ID: 20300115
-Revises: 20300114
+Revision ID: 20300115_add_dispatch_fields_to_tenant
+Revises: 20300114_add_fecha_vigencia_to_catalogo_item
 Create Date: 2026-01-30 12:00:00.000000
 
 """
