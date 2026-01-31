@@ -1,7 +1,7 @@
 """Add tenant_id and idempotency_key to PymePedido
 
 Revision ID: 20300116_add_tenant_and_idempotency
-Revises: 20300115_add_dispatch_fields_to_tenant
+Revises: 20300115
 Create Date: 2030-01-16 12:00:00
 
 """
