@@ -154,7 +154,10 @@ def get_tenant_config_bundle(current_user, slug):
             "logo_url": tenant.logo_url,
             "whatsapp_sender_id": tenant.whatsapp_sender_id,
             "dispatch_email": getattr(tenant, "dispatch_email", None),
-            "dispatch_phone": getattr(tenant, "dispatch_phone", None)
+            "dispatch_phone": getattr(tenant, "dispatch_phone", None),
+            "send_buyer_email": tenant.send_buyer_email,
+            "send_dispatch_email": tenant.send_dispatch_email,
+            "send_dispatch_whatsapp": tenant.send_dispatch_whatsapp,
         },
         "configs": config_dict,
         "features": {
@@ -184,6 +187,10 @@ def update_tenant_config_bundle(current_user, slug):
     if 'logo_url' in tenant_data: tenant.logo_url = tenant_data['logo_url']
     if 'dispatch_email' in tenant_data: tenant.dispatch_email = tenant_data['dispatch_email']
     if 'dispatch_phone' in tenant_data: tenant.dispatch_phone = tenant_data['dispatch_phone']
+
+    if 'send_buyer_email' in tenant_data: tenant.send_buyer_email = bool(tenant_data['send_buyer_email'])
+    if 'send_dispatch_email' in tenant_data: tenant.send_dispatch_email = bool(tenant_data['send_dispatch_email'])
+    if 'send_dispatch_whatsapp' in tenant_data: tenant.send_dispatch_whatsapp = bool(tenant_data['send_dispatch_whatsapp'])
 
     # Update Configs
     # Expecting: "configs": { "menu": { "default": {...}, "widget": {...} } }

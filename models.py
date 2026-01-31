@@ -533,6 +533,10 @@ class TenantProfile(db.Model, TimestampMixin):
     dispatch_email = db.Column(db.String(255), nullable=True)
     dispatch_phone = db.Column(db.String(50), nullable=True)
 
+    send_buyer_email = db.Column(db.Boolean, default=True, nullable=False)
+    send_dispatch_email = db.Column(db.Boolean, default=True, nullable=False)
+    send_dispatch_whatsapp = db.Column(db.Boolean, default=True, nullable=False)
+
     municipio = db.relationship(
         "User",
         foreign_keys=[municipio_id],
@@ -1424,6 +1428,22 @@ class PedidoConversacional(db.Model, TimestampMixin):
     __table_args__ = (
         db.Index("ix_pedido_conv_tenant_estado", "tenant_id", "estado"),
     )
+
+
+class OrderEvent(db.Model, TimestampMixin):
+    __tablename__ = "order_event"
+
+    id = db.Column(db.Integer, primary_key=True)
+    pyme_pedido_id = db.Column(db.Integer, db.ForeignKey("pyme_pedido.id"), nullable=True, index=True)
+    market_order_id = db.Column(db.Integer, db.ForeignKey("market_order.id"), nullable=True, index=True)
+    type = db.Column(db.String(50), nullable=False) # 'created', 'notification_sent', 'status_changed', 'error'
+    payload = db.Column(JSONType, nullable=True)
+
+    pyme_pedido = db.relationship("PymePedido", backref=db.backref("events", lazy="dynamic"))
+    market_order = db.relationship("MarketOrder", backref=db.backref("events", lazy="dynamic"))
+
+    def __repr__(self):
+        return f"<OrderEvent type={self.type} pyme={self.pyme_pedido_id} market={self.market_order_id}>"
 
 
 class PublicSurvey(db.Model):

@@ -1,7 +1,7 @@
 import logging
 from typing import Optional
 
-from models import PymePedido, TenantProfile
+from models import PymePedido, TenantProfile, OrderEvent, db
 from services.email_service import (
     enviar_email_pedido_cliente,
     enviar_email_pedido_despacho,
@@ -27,9 +27,11 @@ class NotificationDispatcher:
         """
         logger.info(f"Dispatching notifications for order {pedido.nro_pedido} (Tenant: {pedido.tenant_id})")
 
+        # Log initial event
+        self._log_event(pedido, "order_created", {"status": pedido.estado})
+
         tenant = pedido.tenant
         if not tenant and pedido.tenant_id:
-            from models import db
             tenant = db.session.get(TenantProfile, pedido.tenant_id)
 
         # 1. Generate PDF if not provided (and feasible)
@@ -41,7 +43,10 @@ class NotificationDispatcher:
                 logger.warning(f"Could not generate PDF for order {pedido.nro_pedido}: {e}")
 
         # 2. Customer Notifications
-        self._notify_customer(pedido, pdf_bytes)
+        if not tenant or tenant.send_buyer_email:
+            self._notify_customer(pedido, pdf_bytes)
+        else:
+             logger.info(f"Buyer email disabled for tenant {tenant.id}")
 
         # 3. Dispatch (Depósito) Notifications
         self._notify_dispatch(pedido, tenant, pdf_bytes)
@@ -80,8 +85,10 @@ class NotificationDispatcher:
             try:
                 enviar_email_pedido_cliente(pedido, pdf_bytes=pdf_bytes)
                 logger.info(f"Customer email sent for order {pedido.nro_pedido}")
+                self._log_event(pedido, "email_sent_buyer", {"email": pedido.email_cliente})
             except Exception as e:
                 logger.error(f"Failed to send customer email for order {pedido.nro_pedido}: {e}")
+                self._log_event(pedido, "email_failed_buyer", {"error": str(e)})
 
         # WhatsApp / SMS
         if pedido.telefono_cliente:
@@ -111,15 +118,17 @@ class NotificationDispatcher:
             return
 
         # Email to Warehouse
-        if tenant.dispatch_email:
+        if tenant.dispatch_email and tenant.send_dispatch_email:
             try:
                 enviar_email_pedido_despacho(pedido, tenant.dispatch_email, pdf_bytes=pdf_bytes)
                 logger.info(f"Dispatch email sent to {tenant.dispatch_email} for order {pedido.nro_pedido}")
+                self._log_event(pedido, "email_sent_dispatch", {"email": tenant.dispatch_email})
             except Exception as e:
                 logger.error(f"Failed to send dispatch email for order {pedido.nro_pedido}: {e}")
+                self._log_event(pedido, "email_failed_dispatch", {"error": str(e)})
 
         # WhatsApp to Warehouse
-        if tenant.dispatch_phone:
+        if tenant.dispatch_phone and tenant.send_dispatch_whatsapp:
             try:
                 enviar_notificacion_whatsapp_con_plantilla(
                     tenant.dispatch_phone,
@@ -137,6 +146,19 @@ class NotificationDispatcher:
             enviar_email_pedido_admin(pedido, pdf_bytes=pdf_bytes)
         except Exception as e:
             logger.error(f"Failed to send admin email for order {pedido.nro_pedido}: {e}")
+
+    def _log_event(self, pedido, event_type, payload):
+        try:
+            event = OrderEvent(
+                pyme_pedido_id=pedido.id,
+                type=event_type,
+                payload=payload
+            )
+            db.session.add(event)
+            db.session.commit()
+        except Exception as e:
+             logger.error(f"Failed to log order event {event_type}: {e}")
+             db.session.rollback()
 
     def _get_empresa_info(self, pedido: PymePedido) -> dict:
         info = {}
