@@ -530,12 +530,6 @@ class TenantProfile(db.Model, TimestampMixin):
     plan = db.Column(db.String(50), default="free")
     whatsapp_sender_id = db.Column(db.String(255), nullable=True)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
-    dispatch_email = db.Column(db.String(255), nullable=True)
-    dispatch_phone = db.Column(db.String(50), nullable=True)
-
-    send_buyer_email = db.Column(db.Boolean, default=True, nullable=False)
-    send_dispatch_email = db.Column(db.Boolean, default=True, nullable=False)
-    send_dispatch_whatsapp = db.Column(db.Boolean, default=True, nullable=False)
 
     municipio = db.relationship(
         "User",
@@ -1078,9 +1072,6 @@ class CatalogoItem(db.Model):
     modalidad = db.Column(db.String(20), nullable=False, default="venta")
     precio_por_caja = deferred(db.Column(db.Numeric(12, 2), nullable=True))
     unidad_por_caja = deferred(db.Column(db.Integer, nullable=True))
-    unidades_por_pallet = deferred(db.Column(db.Integer, nullable=True))
-    precio_sugerido = deferred(db.Column(db.Numeric(12, 2), nullable=True)) # suggested_public_unit_ars
-    fecha_vigencia = deferred(db.Column(db.Date, nullable=True)) # effective_date
     extra_metadata = db.Column("metadata", JSONType, nullable=True)
     # Nuevos campos para información más detallada del catálogo
     descripcion_corta = db.Column(db.String(512), nullable=True)
@@ -1096,9 +1087,6 @@ class CatalogoItem(db.Model):
     checkout_type = db.Column(db.String(50), default="chatboc") # chatboc, mercadolibre, tiendanube
     external_url = db.Column(db.String(500), nullable=True)
     timestamp = db.Column(db.DateTime(timezone=True), default=get_local_now)
-
-    # Link to the upload source for versioning and traceability
-    catalog_upload_id = db.Column(db.Integer, db.ForeignKey('catalog_upload.id'), nullable=True)
 
     def __repr__(self):
         return f"<CatalogoItem {self.id} para user {self.user_id}>"
@@ -2188,3 +2176,33 @@ class TenantCatalogMapping(db.Model):
             "mapping": self.mapping_json,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+class AnalyticsEvent(db.Model):
+    __tablename__ = "analytics_event"
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    target_type = db.Column(db.String(20), nullable=True) # pyme, municipio, ente
+    channel = db.Column(db.String(50), nullable=True) # whatsapp, widget, telegram, web
+    event_type = db.Column(db.String(50), nullable=False, index=True) # message_in, order_created, etc.
+    timestamp = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True) # Optional link to user
+    conversation_id = db.Column(db.String(100), nullable=True)
+    ticket_id = db.Column(db.Integer, nullable=True) # Loose link to ticket ID
+    order_id = db.Column(db.Integer, nullable=True) # Loose link to order ID
+
+    lat = db.Column(db.Float, nullable=True)
+    lng = db.Column(db.Float, nullable=True)
+    geohash = db.Column(db.String(12), nullable=True, index=True)
+
+    payload = db.Column(JSONType, nullable=True)
+
+    tenant = db.relationship("TenantProfile")
+    user = db.relationship("User")
+
+    __table_args__ = (
+        db.Index("ix_analytics_event_tenant_ts", "tenant_id", "timestamp"),
+        db.Index("ix_analytics_event_tenant_type", "tenant_id", "event_type"),
+    )
