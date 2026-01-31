@@ -1,6 +1,6 @@
 """Add fecha_vigencia to catalogo_item
 
-Revision ID: 20300114
+Revision ID: 20300114_add_fecha_vigencia_to_catalogo_item
 Revises: 20300113
 Create Date: 2026-01-30 11:00:00.000000
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '20300114'
+revision = '20300114_add_fecha_vigencia_to_catalogo_item'
 down_revision = '20300113'
 branch_labels = None
 depends_on = None
