@@ -75,6 +75,7 @@ def webhook(provider):
 
     try:
         if provider == "mercadolibre":
+            # Pass tenant_id if available to help identify the account
             MercadoLibreService.process_webhook(payload, tenant_id)
 
         return jsonify({"status": "ok"}), 200

@@ -59,7 +59,22 @@ def _serialize_settings(settings: WidgetSettings, tenant: TenantProfile) -> dict
     snippet_attrs = " ".join(
         f'{key}="{value}"' for key, value in attrs.items() if value is not None
     )
-    embed_code = f"<script {snippet_attrs}></script>"
+
+    # Inject default styles to ensure readability and size
+    default_styles = """
+<style>
+  #chatboc-widget-container {
+    transform-origin: bottom right;
+    transform: scale(1.05);
+  }
+  @media (max-width: 768px) {
+    #chatboc-widget-container {
+      transform: scale(1.0); /* Reset on mobile */
+    }
+  }
+</style>"""
+
+    embed_code = f"{default_styles}\n<script {snippet_attrs}></script>"
 
     return {
         **cfg,
@@ -133,6 +148,12 @@ def manage_settings(current_user):
         settings.bubble_shape = payload.get("bubble_shape", settings.bubble_shape)
         if "default_open" in payload:
             settings.default_open = bool(payload.get("default_open"))
+
+        # Support for JSON fields (cta_messages, theme_config)
+        if "cta_messages" in payload:
+            settings.cta_messages = payload["cta_messages"]
+        if "theme_config" in payload:
+            settings.theme_config = payload["theme_config"]
 
         db.session.add(settings)
         db.session.commit()

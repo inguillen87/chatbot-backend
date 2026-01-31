@@ -165,6 +165,7 @@ def importar_catalogo():
     template_name = request.form.get("plantilla") or request.form.get("template_name")
     raw_column_map = request.form.get("column_map") or request.form.get("mapa_columnas")
     save_template = str(request.form.get("guardar_plantilla", "")).lower() in {"1", "true", "yes", "on"}
+    preview_mode = str(request.form.get("preview", "")).lower() in {"1", "true", "yes", "on"}
     try:
         provided_column_map = _parse_column_map(raw_column_map)
     except ValueError as exc:
@@ -201,6 +202,20 @@ def importar_catalogo():
         return _json_error(500, "error_interno", "Error interno al importar el catálogo")
 
     filas = _apply_column_map(filas or [], column_map)
+
+    if preview_mode:
+        return _with_cors_headers(
+            jsonify(
+                {
+                    "ok": True,
+                    "preview": True,
+                    "items": filas[:100],  # Return first 100 for preview
+                    "total_detected": len(filas),
+                    "plantilla_aplicada": template_name if column_map else None,
+                }
+            )
+        )
+
     creados = _persist_rows(owner.id, tenant.id, filas)
 
     if save_template:

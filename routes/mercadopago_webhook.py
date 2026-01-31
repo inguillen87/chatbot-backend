@@ -137,6 +137,15 @@ def mercadopago_webhook():
         else:
             pedido.estado = status or "rechazado"
         db.session.commit()
+
+        if status == "approved":
+            # Persist to PymePedido for admin panel visibility
+            try:
+                from services.pedido_service import servicio_pedidos
+                servicio_pedidos.create_from_conversational(pedido)
+            except Exception as e:
+                logging.error(f"Error creating PymePedido from webhook: {e}")
+
         _emit_payment_notification(pedido)
         return jsonify({"ok": True, "estado": pedido.estado})
 

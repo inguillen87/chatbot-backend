@@ -1,93 +1,22 @@
-# Frontend Catalog Tasks & Integration Guide
+# Frontend Catalog & Widget Tasks
 
-## Overview
-We are implementing a robust, industry-specific catalog system. The backend now supports a 2-step upload process (Upload -> Preview -> Confirm) and industry-specific processors (Winery, Construction, Fashion, etc.).
+## 1. Widget Sizing & Styling
+- [ ] **Fix Widget Scale:** The widget container (`#chatboc-widget-container`) currently has a CSS injection (`transform: scale(1.05)`) applied from the backend (`/api/public/tenants/.../widget-config`) to improve readability. This should be properly handled in the frontend CSS/JS to avoid reliance on backend overrides and ensure responsiveness on mobile (where scale should be 1).
+- [ ] **Chat Window Opening:** Users report that "Hablar con un agente" does not automatically open the chat window if closed. Ensure the widget listens for trigger events or the backend `pedir_info` signals to force-open the chat UI.
 
-## 1. Catalog Upload Widget (New Stepper UI)
+## 2. Integration Connection Feedback
+- [ ] **Handle 422 Unprocessable Entity:** The integration connect endpoints (`/api/admin/tenants/.../integrations/.../connect`) now return `422` with a specific JSON error message (e.g., `{"error": "platform_not_configured", "message": "..."}`) when server-side keys are missing.
+    - **Task:** Update the Admin UI to catch 422 errors and display the `message` field to the user in a toast/alert, instead of generic "Server Error".
 
-**Goal:** Replace the simple file input with a multi-step wizard.
+## 3. Order Management UI
+- [ ] **Orders Not Appearing:** Users reported created orders are not visible in the Admin Tenant > Orders section.
+    - **Task:** Verify the API call used to fetch orders (`GET /api/admin/tenants/<slug>/orders` vs `/api/orders`). Ensure the frontend is sending the correct `tenant_slug` or `tenant_id` query parameters if required by the backend filters.
+    - **Task:** Check if the frontend properly handles pagination or status filters that might be hiding "Pending" or "Open" orders by default.
 
-### Step 1: File Selection
-*   **UI:** Drag & Drop zone + "Or paste URL" input.
-*   **Action:** POST to `/api/catalog/upload`.
-    *   Payload (Multipart): `file` (binary) OR JSON `{"file_url": "https://..."}`.
-*   **Loading State:** Show "Analyzing file..." (The backend runs OCR/Parsing immediately).
+## 4. Chat & Agent Interaction
+- [ ] **Live Chat Trigger:** When the backend returns a "Derivar a Humano" response (often accompanied by a `ticket_id` in the payload), the frontend should visually indicate a handover status or switch the chat mode if applicable.
+- [ ] **Audio Responses:** Ensure the widget properly renders and plays `audio_url` fields returned in the JSON response, specifically for "Neutral Argentine" voice responses.
 
-### Step 2: Preview & Mapping (The "Smart" Step)
-*   **Input Data:** The JSON response from Step 1.
-    *   `status`: `preview_ready` or `needs_mapping`.
-    *   `preview_items`: Array of first ~5 items detected.
-    *   `detected_columns`: List of headers found in the file (e.g., ["Producto", "Precio", "Vino"]).
-    *   `expected_fields`: List of fields the backend needs (e.g., `["sku", "precio", "cantidad", "varietal"]`).
-    *   `upload_token`: ID to send back.
-
-*   **UI - If `status == 'preview_ready'`:**
-    *   Show a table of `preview_items`.
-    *   Show "Confidence Score" (from `stats`).
-    *   **Button:** "Confirm Import".
-
-*   **UI - If `status == 'needs_mapping'` (or user clicks "Edit Mapping"):**
-    *   Show a mapping interface.
-    *   **Left Column:** Backend Fields (e.g., "Price").
-    *   **Right Column:** Dropdown of `detected_columns` (e.g., "Precio Venta Publico").
-    *   *Auto-select* best matches if possible.
-
-### Step 3: Confirmation
-*   **Action:** POST to `/api/catalog/confirm`.
-    *   Payload:
-        ```json
-        {
-          "upload_token": "123...",
-          "mapping_override": {
-            "precio": "Precio Venta",
-            "sku": "Codigo"
-          }
-        }
-        ```
-*   **UI:** Success message. "Catalog is processing in background."
-
----
-
-## 2. Catalog Management View (Dashboard)
-
-**Goal:** Admin view to manage products.
-
-*   **Filters:**
-    *   Standard: Category, Price Range, Stock Status.
-    *   **Dynamic/Industry:** If the user is a Winery (`rubro_slug="bodega"`), show a "Varietal" filter (derived from `extra_metadata.varietal` or `categoria`).
-*   **Columns:**
-    *   Image (with fallback handling).
-    *   Name & Description.
-    *   Price (Editable inline if possible).
-    *   Stock.
-    *   **External Link:** If `external_url` is present (e.g., MercadoLibre link), show it.
-
----
-
-## 3. Public Marketplace (PWA)
-
-*   **Product Cards:**
-    *   Display `promocion_info` (e.g., "20% OFF") as a badge.
-    *   Display `modalidad` (Sale, Donation, Exchange).
-    *   **Images:** Use the `imagen_url`. If missing, use the specific category fallbacks provided by the backend API.
-*   **Search:**
-    *   The search bar now hits `/catalogo/buscar` which uses Qdrant. It supports semantic search (e.g., "vinos tintos baratos" works even if no product is named exactly that).
-
-## 4. Technical Details
-
-### Backend Endpoints
-
-*   `POST /api/catalog/upload`: Analyzes file. Returns preview.
-*   `POST /api/catalog/confirm`: Commits data.
-*   `GET /catalogo`: Lists processed items.
-*   `GET /catalogo/archivos`: Lists raw PDF/Excel files.
-
-### Data Types
-
-*   **Price:** Backend handles "1.200,00", "$1200", etc. Display as `currency` (ARS/USD).
-*   **Stock:** Can be numeric or string ("Consultar").
-
-### Error Handling
-
-*   If Upload returns `400`: Show specific error message.
-*   If Confirm returns `partial_success`: Show warnings (e.g., "5 items skipped due to missing price").
+## 5. Catalog Display
+- [ ] **Rich Response Rendering:** The backend sends `message_type: "interactive_list"` or `"interactive_buttons"` with an `options_list`. Ensure the frontend renders these as clickable elements.
+- [ ] **Product Cards:** When `data.cart_summary` or `data.catalogo` items are present, render them as structured cards rather than just relying on the markdown `message_body`.

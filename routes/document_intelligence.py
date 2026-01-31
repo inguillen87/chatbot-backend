@@ -2,6 +2,7 @@ import io
 from typing import Any, List
 
 import pandas as pd
+import pdfplumber
 from flask import Blueprint, jsonify, request
 
 from routes.auth import token_requerido
@@ -54,19 +55,55 @@ def _document_intelligence_preview(current_user, pyme_id: int):
     header_row = request.form.get("headerRow", type=int)
     header_index = 0 if header_row is None else header_row
 
-    try:
-        df = pd.read_excel(io.BytesIO(content), sheet_name=sheet, header=header_index)
-    except Exception:
+    filename = uploaded.filename.lower() if uploaded.filename else ""
+
+    if filename.endswith(".pdf"):
         try:
-            df = pd.read_csv(io.BytesIO(content), header=header_index)
+            with pdfplumber.open(io.BytesIO(content)) as pdf:
+                # Intenta extraer tablas de la primera página
+                page = pdf.pages[0]
+                tables = page.extract_tables()
+
+                if tables and tables[0]:
+                    # Usar la primera tabla encontrada
+                    table_data = tables[0]
+                    # Asumir que la primera fila es el encabezado si hay más de 1 fila
+                    if len(table_data) > 1:
+                        headers = table_data[0]
+                        rows = table_data[1:]
+                    else:
+                        headers = [f"Columna {i+1}" for i in range(len(table_data[0]))]
+                        rows = table_data
+
+                    df = pd.DataFrame(rows, columns=headers)
+                else:
+                    # Si no hay tablas, extraer texto simple
+                    text = page.extract_text() or ""
+                    # Crear un DF dummy con el texto
+                    df = pd.DataFrame([{"Contenido": line} for line in text.split('\n') if line.strip()])
+
         except Exception as exc:
             return (
                 jsonify({
-                    "error": "No se pudo leer el archivo. Usa CSV o Excel.",
+                    "error": "No se pudo procesar el PDF.",
                     "details": str(exc),
                 }),
                 400,
             )
+    else:
+        try:
+            df = pd.read_excel(io.BytesIO(content), sheet_name=sheet, header=header_index)
+        except Exception:
+            try:
+                df = pd.read_csv(io.BytesIO(content), header=header_index)
+            except Exception as exc:
+                return (
+                    jsonify({
+                        "error": "No se pudo leer el archivo. Usa CSV, Excel o PDF.",
+                        "details": str(exc),
+                    }),
+                    400,
+                )
 
     df = df.dropna(how="all")
 

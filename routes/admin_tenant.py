@@ -152,7 +152,9 @@ def get_tenant_config_bundle(current_user, slug):
             "tipo": tenant.tipo,
             "plan": tenant.plan,
             "logo_url": tenant.logo_url,
-            "whatsapp_sender_id": tenant.whatsapp_sender_id
+            "whatsapp_sender_id": tenant.whatsapp_sender_id,
+            "dispatch_email": getattr(tenant, "dispatch_email", None),
+            "dispatch_phone": getattr(tenant, "dispatch_phone", None)
         },
         "configs": config_dict,
         "features": {
@@ -180,6 +182,8 @@ def update_tenant_config_bundle(current_user, slug):
     tenant_data = data.get('tenant', {})
     if 'nombre' in tenant_data: tenant.nombre = tenant_data['nombre']
     if 'logo_url' in tenant_data: tenant.logo_url = tenant_data['logo_url']
+    if 'dispatch_email' in tenant_data: tenant.dispatch_email = tenant_data['dispatch_email']
+    if 'dispatch_phone' in tenant_data: tenant.dispatch_phone = tenant_data['dispatch_phone']
 
     # Update Configs
     # Expecting: "configs": { "menu": { "default": {...}, "widget": {...} } }
@@ -479,7 +483,12 @@ def connect_integration(current_user, slug, integration_type):
     if integration_type.lower() == 'tiendanube':
         client_id = current_app.config.get("TIENDANUBE_CLIENT_ID")
         if not client_id:
-            return jsonify({"error": "Platform not configured for TiendaNube"}), 503
+            # Fallback for development or incomplete config - don't crash with 503
+            current_app.logger.warning("TIENDANUBE_CLIENT_ID not set. Integration unavailable.")
+            return jsonify({
+                "error": "platform_not_configured",
+                "message": "La plataforma no tiene configurado TiendaNube."
+            }), 422
 
         redirect_uri = f"{base_url}/api/integrations/tiendanube/callback"
         # TiendaNube typically doesn't support 'state' in all docs, but standard OAuth does.
@@ -490,11 +499,39 @@ def connect_integration(current_user, slug, integration_type):
     elif integration_type.lower() == 'mercadolibre':
         client_id = current_app.config.get("ML_APP_ID")
         if not client_id:
-             return jsonify({"error": "Platform not configured for MercadoLibre"}), 503
+             current_app.logger.warning("ML_APP_ID not set. Integration unavailable.")
+             return jsonify({
+                "error": "platform_not_configured",
+                "message": "La plataforma no tiene configurado MercadoLibre."
+            }), 422
 
         redirect_uri = f"{base_url}/api/integrations/mercadolibre/callback"
         # MercadoLibre supports 'state' perfectly.
         auth_url = f"https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&state={tenant.id}"
+        return jsonify({"redirect_url": auth_url})
+
+    elif integration_type.lower() == 'whatsapp':
+        # WhatsApp Cloud API / Embedded Signup flow
+        # This usually requires a Facebook App ID and a specific config ID
+        fb_app_id = current_app.config.get("FACEBOOK_APP_ID")
+        if not fb_app_id:
+             current_app.logger.warning("FACEBOOK_APP_ID not set. WhatsApp integration unavailable.")
+             return jsonify({
+                "error": "platform_not_configured",
+                "message": "La plataforma no tiene configurado Facebook/WhatsApp."
+            }), 422
+
+        # Simplified flow: Redirect to a frontend page that handles the Embedded Signup
+        # or return the config needed for the SDK.
+        # For now, let's assume we return a setup URL or instruction.
+        # Since the frontend calls 'connect', it expects a redirect_url.
+        # If we are doing Embedded Signup, the frontend should trigger the popup.
+        # If we are doing OAuth (less common for WA Business), we generate a URL.
+        # Let's assume standard OAuth for now or a placeholder to stop the 400.
+
+        redirect_uri = f"{base_url}/api/integrations/whatsapp/callback"
+        auth_url = f"https://www.facebook.com/v17.0/dialog/oauth?client_id={fb_app_id}&redirect_uri={redirect_uri}&state={tenant.id}&scope=whatsapp_business_management,whatsapp_business_messaging"
+
         return jsonify({"redirect_url": auth_url})
 
     return jsonify({"error": "Integration type not supported"}), 400

@@ -8,17 +8,16 @@ from models import (
     MarketOrder,
     MarketOrderItem,
     PymePedido,
+    PedidoConversacional,
     TenantProfile,
     User,
 )
-from .email_service import (
-    enviar_email_pedido_admin,
-    enviar_email_pedido_cliente,
-)
+from .email_service import enviar_email_pedido_admin
 from .notifications import (
     enviar_notificacion_sms,
     enviar_notificacion_whatsapp_con_plantilla,
 )
+from services.notification_dispatcher import notification_dispatcher
 from utils.validators import (
     validate_name,
     validate_email_address,
@@ -127,6 +126,14 @@ class PedidoService:
 
     def crear_nuevo_pedido(self, pedido_data: dict) -> PymePedido | None:
         try:
+            # Check idempotency first if provided
+            idempotency_key = pedido_data.get("idempotency_key")
+            if idempotency_key:
+                existing = PymePedido.query.filter_by(idempotency_key=idempotency_key).first()
+                if existing:
+                    logger.info(f"Pedido idempotente encontrado: {existing.nro_pedido}")
+                    return existing
+
             # Validar datos básicos
             if (
                 not pedido_data.get("asunto")
@@ -166,8 +173,16 @@ class PedidoService:
                 logger.error("pyme_id es requerido para registrar un pedido")
                 return None
 
+            tenant_id = pedido_data.get("tenant_id")
+            if not tenant_id:
+                # Try to resolve from pyme_id
+                pyme_user = db.session.get(User, pyme_id)
+                if pyme_user:
+                    tenant_id = pyme_user.tenant_id
+
             nuevo_pedido = PymePedido(
                 pyme_id=pyme_id,
+                tenant_id=tenant_id,
                 asunto=pedido_data["asunto"],
                 detalles=pedido_data["detalles"],
                 monto_total=pedido_data.get("monto_total"),
@@ -178,6 +193,7 @@ class PedidoService:
                 direccion=pedido_data.get("direccion"),
                 latitud=pedido_data.get("latitud"),
                 longitud=pedido_data.get("longitud"),
+                idempotency_key=idempotency_key,
             )
             if pedido_data.get("rubro"):
                 nuevo_pedido.rubro = pedido_data.get("rubro")
@@ -214,37 +230,11 @@ class PedidoService:
             nuevo_pedido._nota_pedido_pdf_bytes = pdf_bytes  # type: ignore[attr-defined]
             nuevo_pedido._empresa_info_pdf = empresa_info  # type: ignore[attr-defined]
 
+            # Dispatch all notifications via hardened service
             try:
-                enviar_email_pedido_admin(
-                    nuevo_pedido,
-                    pdf_bytes=pdf_bytes,
-                    empresa_info=empresa_info,
-                )
+                notification_dispatcher.dispatch_order_created(nuevo_pedido, pdf_bytes=pdf_bytes)
             except Exception as e:
-                logger.error(f"Error enviando email de pedido: {e}")
-            try:
-                enviar_email_pedido_cliente(
-                    nuevo_pedido,
-                    pdf_bytes=pdf_bytes,
-                    empresa_info=empresa_info,
-                )
-            except Exception as e:
-                logger.error(f"Error enviando email al cliente: {e}")
-            try:
-                if nuevo_pedido.telefono_cliente:
-                    telefono = nuevo_pedido.telefono_cliente
-                    enviar_notificacion_sms(
-                        telefono,
-                        f"Hola {nuevo_pedido.nombre_cliente or ''}! Tu pedido {nuevo_pedido.nro_pedido} fue registrado.",
-                    )
-                    enviar_notificacion_whatsapp_con_plantilla(
-                        telefono,
-                        nuevo_pedido.nombre_cliente or "Cliente",
-                        nuevo_pedido.nro_pedido,
-                        nuevo_pedido.rubro or "Pedido",
-                    )
-            except Exception as e:
-                logger.error(f"Error enviando SMS/WhatsApp de pedido: {e}")
+                logger.error(f"Error dispatching notifications for order {nuevo_pedido.nro_pedido}: {e}", exc_info=True)
             try:
                 self.sync_market_order_from_pyme(
                     nuevo_pedido,
@@ -273,6 +263,70 @@ class PedidoService:
             logger.error(
                 f"Error al obtener pedido por número '{nro_pedido}': {e}", exc_info=True
             )
+            return None
+
+    def create_from_conversational(self, conversacional: PedidoConversacional) -> Optional[PymePedido]:
+        """Creates a PymePedido from a confirmed PedidoConversacional."""
+        try:
+            if not conversacional.tenant_id:
+                logger.error("PedidoConversacional %s missing tenant_id", conversacional.id)
+                return None
+
+            tenant = db.session.get(TenantProfile, conversacional.tenant_id)
+            if not tenant or not tenant.pyme_id:
+                logger.error("Tenant %s or its pyme_id not found for order %s", conversacional.tenant_id, conversacional.id)
+                return None
+
+            # Check if already linked via idempotency or similar logic?
+            # We use idempotency_key constructed from conversacional.id
+            idempotency_key = f"conv_order_{conversacional.id}"
+
+            # Map items to detalles
+            # PedidoConversacional items format:
+            # [{"title": "...", "quantity": 1, "unit_price": 100, ...}]
+            # PymePedido detalles format:
+            # [{"nombre": "...", "cantidad": 1, "precio_unitario": 100, "subtotal": 100}]
+
+            detalles = []
+            for item in conversacional.items:
+                qty = item.get("quantity", 1)
+                price = item.get("unit_price", 0)
+                subtotal = qty * price
+                detalles.append({
+                    "nombre": item.get("title"),
+                    "cantidad": qty,
+                    "precio_unitario": price,
+                    "subtotal": subtotal,
+                    "sku": item.get("sku"), # if available
+                    "currency_id": item.get("currency_id")
+                })
+
+            import json
+
+            # Prepare user contact info
+            # User might be updated during checkout, so fetch fresh
+            user = db.session.get(User, conversacional.user_id)
+
+            pedido_data = {
+                "pyme_id": tenant.pyme_id,
+                "tenant_id": tenant.id,
+                "asunto": f"Pedido Web #{conversacional.id}",
+                "detalles": json.dumps(detalles, ensure_ascii=False),
+                "monto_total": float(conversacional.monto_monetario or 0),
+                "nombre_cliente": user.name if user else None,
+                "email_cliente": user.email if user else None,
+                "telefono_cliente": user.telefono if user else None,
+                "direccion": user.direccion if user else None,
+                "user_id": conversacional.user_id,
+                "rubro": "general", # Or derived from tenant
+                "idempotency_key": idempotency_key,
+                "channel": conversacional.origen
+            }
+
+            return self.crear_nuevo_pedido(pedido_data)
+
+        except Exception as e:
+            logger.error("Error creating PymePedido from Conversacional %s: %s", conversacional.id, e, exc_info=True)
             return None
 
     # Puedes añadir más funciones aquí, como actualizar estado, listar pedidos, etc.
