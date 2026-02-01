@@ -120,6 +120,45 @@ def render_ticket_whatsapp(
         "media_url": promo_image_url,
     }
 
+def render_order_whatsapp(
+    *,
+    nombre: str,
+    nro_pedido: str,
+    monto_total: float,
+    items_text: str,
+    direccion: Optional[str] = None,
+    link_seguimiento: Optional[str] = None,
+    promo_image_url: Optional[str] = None,
+    contacto_info: Optional[str] = None,
+) -> Dict[str, Any]:
+    name = nombre or "Cliente"
+    lines = [
+        f"✅ *¡Pedido confirmado, {name}!*",
+        "",
+        f"🆔 N°: *{nro_pedido}*",
+        "📦 *Resumen del pedido:*",
+        items_text,
+        "",
+        f"💰 *Total: ${monto_total:,.2f}*",
+    ]
+
+    if direccion:
+        lines.append(f"📍 *Entrega:* {direccion}")
+
+    if link_seguimiento:
+        lines.append(f"\n🔗 *Seguimiento:* {link_seguimiento}")
+
+    if contacto_info:
+        lines.append(f"\n📞 *Contacto:* {contacto_info}")
+
+    lines.append("\nGracias por tu compra. Te avisaremos cuando salga en camino.")
+
+    body_text = "\n".join(lines)
+
+    return {
+        "body_text": body_text,
+        "media_url": promo_image_url
+    }
 
 def build_ticket_receipt(
     *,
