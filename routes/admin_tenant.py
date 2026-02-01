@@ -449,6 +449,7 @@ def list_integrations(current_user, slug):
     # Fill from DB
     for integ in integrations:
         result[integ.type] = {
+            "type": integ.type,
             "connected": integ.status == 'active',
             "lastSync": integ.last_sync_at.isoformat() if integ.last_sync_at else None,
             "account": integ.metadata_payload.get('account_name') if integ.metadata_payload else None
@@ -457,9 +458,9 @@ def list_integrations(current_user, slug):
     # Fill missing
     for t in known_types:
         if t not in result:
-            result[t] = {"connected": False}
+            result[t] = {"type": t, "connected": False}
 
-    return jsonify(result)
+    return jsonify(list(result.values()))
 
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/<string:integration_type>/connect', methods=['GET'])
@@ -495,10 +496,13 @@ def connect_integration(current_user, slug, integration_type):
         if not client_id:
             # Fallback for development or incomplete config - don't crash with 503
             current_app.logger.warning("TIENDANUBE_CLIENT_ID not set. Integration unavailable.")
+            # Si estamos en modo desarrollo o no hay config, devolvemos un mock o un error 200 con mensaje
+            # Para evitar 422 que rompe el frontend, devolvemos un error manejable o un mensaje de demo
             return jsonify({
                 "error": "platform_not_configured",
-                "message": "La plataforma no tiene configurado TiendaNube."
-            }), 422
+                "message": "Falta TIENDANUBE_CLIENT_ID en el servidor. Contacte al administrador.",
+                "demo_mode": True
+            }), 200 # Cambiamos a 200 para que el frontend pueda manejarlo sin excepción
 
         redirect_uri = f"{base_url}/api/integrations/tiendanube/callback"
         # TiendaNube typically doesn't support 'state' in all docs, but standard OAuth does.
@@ -512,8 +516,9 @@ def connect_integration(current_user, slug, integration_type):
              current_app.logger.warning("ML_APP_ID not set. Integration unavailable.")
              return jsonify({
                 "error": "platform_not_configured",
-                "message": "La plataforma no tiene configurado MercadoLibre."
-            }), 422
+                "message": "Falta ML_APP_ID en el servidor. Contacte al administrador.",
+                "demo_mode": True
+            }), 200
 
         redirect_uri = f"{base_url}/api/integrations/mercadolibre/callback"
         # MercadoLibre supports 'state' perfectly.
@@ -528,8 +533,9 @@ def connect_integration(current_user, slug, integration_type):
              current_app.logger.warning("FACEBOOK_APP_ID not set. WhatsApp integration unavailable.")
              return jsonify({
                 "error": "platform_not_configured",
-                "message": "La plataforma no tiene configurado Facebook/WhatsApp."
-            }), 422
+                "message": "Falta FACEBOOK_APP_ID en el servidor. Contacte al administrador.",
+                "demo_mode": True
+            }), 200
 
         # Simplified flow: Redirect to a frontend page that handles the Embedded Signup
         # or return the config needed for the SDK.
