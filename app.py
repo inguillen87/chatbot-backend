@@ -437,9 +437,10 @@ def create_app(config_class=Config):
     from routes.legacy_auth import legacy_auth_bp
     from routes.chat import chat_bp
     from routes.ticket import ticket_bp
-    from routes.crm import crm_bp
+    # from routes.crm import crm_bp # Imported above as crm.routes.crm_bp to avoid circular if package exists
     from routes.analytics import analytics_bp
     from routes.analytics_routes import analytics_v2_bp
+    from routes.crm.routes import crm_bp
     from routes.gov_analytics import gov_analytics_bp
     from services.upload_processor import upload_bp
     from routes.archivos import archivos_bp

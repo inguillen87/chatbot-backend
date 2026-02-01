@@ -10,7 +10,7 @@ from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from datetime import datetime, timedelta, timezone
 from utils.time_utils import get_local_now
 from utils.permissions import require_role
-from routes.crm import _obtener_clientes
+# from routes.crm import _obtener_clientes
 from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
 from routes.categorias import _bootstrap_municipio_categories, _serialize_categoria
 from routes.tramites import listar_tramites, obtener_tramite
@@ -842,18 +842,19 @@ def municipal_usuarios(current_user):
         order = request.args.get('order')
         limit = request.args.get('limit')
         offset = request.args.get('offset')
-    return jsonify(
-        _obtener_clientes(
-            current_user,
-            tag,
-            q=q,
-            acepta_marketing=marketing,
-            sort=sort,
-            order=order,
-            limit=limit,
-            offset=offset,
-        )
-    )
+    # return jsonify(
+    #     _obtener_clientes(
+    #         current_user,
+    #         tag,
+    #         q=q,
+    #         acepta_marketing=marketing,
+    #         sort=sort,
+    #         order=order,
+    #         limit=limit,
+    #         offset=offset,
+    #     )
+    # )
+    return jsonify({"error": "Endpoint under construction", "status": "pending"})
 
 @municipal_bp.route('/categorias', methods=['GET', 'OPTIONS'])
 @token_requerido
