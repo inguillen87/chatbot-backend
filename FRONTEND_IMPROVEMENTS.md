@@ -2,6 +2,8 @@
 
 This document outlines the recent backend updates supporting the comprehensive platform improvement plan, including enhanced chat previews, integration previews, order management notifications, and the **new CRM/Memory system**.
 
+**🚨 ACTION REQUIRED:** Please refer to `FRONTEND_INTEGRATION_CHECKLIST.md` for the specific task list to replace frontend mocks with real backend data.
+
 ## 1. Chat Customization & Preview
 
 The backend supports dynamic chat widget customization via the `TenantConfig` and `TenantProfile` models.
