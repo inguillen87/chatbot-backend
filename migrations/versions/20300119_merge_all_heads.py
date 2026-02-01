@@ -9,7 +9,7 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = '20300119'
+revision = '20300119_merge_catalog_and_order_event_heads'
 down_revision = (
     '20300118',
     '20250210_add_features_table',
