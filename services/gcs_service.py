@@ -821,7 +821,7 @@ def _save_to_cloudinary(
         return None
 
 
-def upload_to_gcs(file_storage) -> dict | None:
+def upload_to_gcs(file_storage, kind: str = "attachments") -> dict | None:
     """Upload a file to the configured storage backend.
 
     Order of preference:
@@ -832,6 +832,7 @@ def upload_to_gcs(file_storage) -> dict | None:
 
     Args:
         file_storage: The ``FileStorage`` object from Flask request.
+        kind: The subfolder or type of upload (e.g. 'catalogos', 'logos', 'attachments')
 
     Returns:
         A dictionary containing the file's metadata (unique name, URL, size, etc.) or
@@ -853,7 +854,7 @@ def upload_to_gcs(file_storage) -> dict | None:
         if not owner and has_app_context() and hasattr(g, 'viewer'):
             owner = g.viewer
 
-        key_prefix = _determine_r2_key_prefix(owner)
+        key_prefix = _determine_r2_key_prefix(owner, kind=kind)
         r2_key = f"{key_prefix}/{unique_name}"
 
         file_stream_r2 = io.BytesIO(file_bytes)
@@ -945,14 +946,14 @@ def upload_to_gcs(file_storage) -> dict | None:
         return None
 
 
-def _determine_r2_key_prefix(owner_user) -> str:
+def _determine_r2_key_prefix(owner_user, kind: str = "attachments") -> str:
     """
     Determine the R2 key prefix (folder structure) based on the owner.
-    Format: <type>/<slug>/<subfolder>/<filename>
+    Format: <type>/<slug>/<kind>/<filename>
     User request: pymes/<tenant_slug>/... or municipios/<tenant_slug>/...
     """
     if not owner_user:
-        return "uploads/anonymous"
+        return f"uploads/anonymous/{kind}"
 
     # Try to find tenant profile slug via relationships or IDs
     # If we have a direct tenant relationship:
@@ -990,15 +991,13 @@ def _determine_r2_key_prefix(owner_user) -> str:
             prefix_type = 'pymes'
             slug = getattr(owner_user, 'tenant_slug', str(owner_user.id))
 
-    # Context subfolder (optional, could be passed in arguments but we infer 'general' for now)
-    # The user asked for "reclamos", "catalogos", etc.
-    # Since this function is generic, we might default to 'general' or 'attachments'
-    # For now, let's use 'attachments' as a safe default for generic uploads.
-    # Specific uploaders (like catalog import) should construct their own keys.
-    return f"{prefix_type}/{slug}/attachments"
+    # Sanitize kind to prevent directory traversal or weird chars
+    safe_kind = _sanitize_path_segment(kind) or "attachments"
+
+    return f"{prefix_type}/{slug}/{safe_kind}"
 
 
-def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
+def guardar_adjunto_y_thumbnail(file_storage, kind: str = "attachments") -> dict | None:
     """Upload a file and its generated thumbnail to storage.
 
     Order of preference:
@@ -1009,6 +1008,7 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
 
     Args:
         file_storage: The ``FileStorage`` object from the request.
+        kind: The subfolder or type of upload (e.g. 'catalogos', 'logos', 'attachments')
 
     Returns:
         A dictionary with the file URL and thumbnail metadata, or ``None`` on failure.
@@ -1043,7 +1043,7 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
         if not owner and has_app_context() and hasattr(g, 'viewer'):
             owner = g.viewer
 
-        key_prefix = _determine_r2_key_prefix(owner)
+        key_prefix = _determine_r2_key_prefix(owner, kind=kind)
         r2_key = f"{key_prefix}/{unique_name}"
 
         # Reset stream for R2
@@ -1164,7 +1164,7 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
         )
 
 
-def upload_file_from_url(url: str) -> dict | None:
+def upload_file_from_url(url: str, kind: str = "attachments") -> dict | None:
     """
     Downloads a file from a URL and uploads it to the configured storage.
     """
@@ -1186,6 +1186,7 @@ def upload_file_from_url(url: str) -> dict | None:
         file_stream = io.BytesIO(response.content)
 
         # Create a FileStorage-like object
+        from werkzeug.datastructures import FileStorage # Import here if needed or at top
         file_storage = FileStorage(
             stream=file_stream,
             filename=filename,
@@ -1195,7 +1196,7 @@ def upload_file_from_url(url: str) -> dict | None:
         )
 
         current_app.logger.info(f"Uploading file from URL: {url} as {filename}")
-        return guardar_adjunto_y_thumbnail(file_storage)
+        return guardar_adjunto_y_thumbnail(file_storage, kind=kind)
 
     except requests.exceptions.RequestException as e:
         current_app.logger.error(

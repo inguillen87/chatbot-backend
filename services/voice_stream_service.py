@@ -1093,22 +1093,22 @@ class VoiceStreamService:
 
                         if whatsapp_target:
                             try:
-                                # Usar el body que ya viene formateado si es posible, o construirlo
-                                msg_body = res.get("message_body")
-                                if not msg_body:
-                                    msg_body = (
-                                        f"✅ *Pedido registrado*\n"
-                                        f"🆔 N°: *{nro_pedido}*\n"
-                                        f"📦 *Resumen:*\n{resumen}\n\n"
-                                        f"💰 *Total: {monto:,.2f}*\n"
-                                    )
+                                from services.whatsapp_receipts import render_order_whatsapp
 
-                                image_url = res.get("image_url")
+                                receipt = render_order_whatsapp(
+                                    nombre=getattr(self.user, "name", None) or "Cliente",
+                                    nro_pedido=str(nro_pedido),
+                                    monto_total=float(monto or 0),
+                                    items_text=resumen,
+                                    direccion=getattr(self.user, "direccion", None),
+                                    promo_image_url=res.get("image_url") or self._resolve_promo_image_url(self.tenant_profile.configuracion if self.tenant_profile else {}),
+                                )
+
                                 whatsapp_sender = self._resolve_whatsapp_sender()
                                 send_whatsapp_message(
                                     whatsapp_target,
-                                    msg_body,
-                                    media_url=image_url,
+                                    receipt["body_text"],
+                                    media_url=receipt["media_url"],
                                     from_number=whatsapp_sender,
                                 )
                             except Exception as ex:
