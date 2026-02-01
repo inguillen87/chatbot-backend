@@ -110,6 +110,9 @@ def _document_intelligence_preview(current_user, pyme_id: int):
     max_rows = request.form.get("maxRows", type=int) or 50
     preview_df = df.head(max_rows).fillna("")
 
+    # Ensure all column names are strings to avoid JSON serialization issues (e.g. sorting keys)
+    preview_df.columns = preview_df.columns.map(str)
+
     response_payload = {
         "pymeId": pyme_id,
         "totalRows": int(len(df.index)),

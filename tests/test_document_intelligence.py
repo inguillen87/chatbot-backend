@@ -13,7 +13,6 @@ class TestDocumentIntelligencePreview:
     def setup(self, client):
         self.client = client
         self.pyme_user = User(
-            id=1,
             name="Test PYME",
             email="pyme@test.com",
             rol="admin",
