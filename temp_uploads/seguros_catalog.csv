@@ -1,0 +1,3 @@
+sku,title,price,stock,category,description
+TEST001,Test Item A,150.00,50,General,A test item
+TEST002,Test Item B,200.00,20,Tools,Another test item
