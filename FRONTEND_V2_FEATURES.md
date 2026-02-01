@@ -10,7 +10,29 @@ Use this guide to update the frontend application (Admin Portal and Widget).
 
 **Objective:** Allow users to upload a raw file (PDF, Excel, CSV), see a structured preview of the data, and confirm the import.
 
-### Step 1: Upload & Preview
+### Step 1: Upload & Preview (Wizard Flow)
+**Endpoint:** `POST /api/admin/catalog/import`
+**Auth:** Bearer Token
+**Content-Type:** `multipart/form-data`
+
+**Request Body:**
+- `file`: The file object (CSV, XLSX, PDF).
+
+**Response (200 OK):**
+```json
+{
+  "id": 45,
+  "upload_id": 45,
+  "filename": "catalogo.xlsx",
+  "status": "ready_to_commit",
+  "preview_data": [
+    { "title": "Vino Malbec", "price": "5000", "sku": "V001" }
+  ],
+  "warnings": []
+}
+```
+
+### Alternative: Raw Document Intelligence Preview (Legacy)
 **Endpoint:** `POST /api/pymes/{pyme_id}/document-intelligence/preview`
 **Auth:** Bearer Token
 **Content-Type:** `multipart/form-data`

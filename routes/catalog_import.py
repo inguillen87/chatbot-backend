@@ -68,7 +68,14 @@ def create_import_session(current_user):
         db.session.commit()
         return jsonify({"error": "Processing failed"}), 500
 
-    return jsonify(upload.to_dict())
+    resp = upload.to_dict()
+    # Ensure legacy frontend compatibility if it expects 'upload_id'
+    resp['upload_id'] = resp['id']
+    return jsonify(resp)
+
+@catalog_import_bp.route('/api/admin/catalog/import/<int:upload_id>', methods=['OPTIONS'])
+def options_import_session(upload_id):
+    return jsonify({'status': 'ok'})
 
 @catalog_import_bp.route('/api/admin/catalog/import/<int:upload_id>', methods=['GET'])
 @token_requerido
@@ -79,7 +86,10 @@ def get_import_session(current_user, upload_id):
     if not upload:
         return jsonify({"error": "Not found"}), 404
 
-    return jsonify(upload.to_dict())
+    resp = upload.to_dict()
+    # Ensure legacy frontend compatibility if it expects 'upload_id'
+    resp['upload_id'] = resp['id']
+    return jsonify(resp)
 
 @catalog_import_bp.route('/api/admin/catalog/import/<int:upload_id>', methods=['PUT'])
 @token_requerido
