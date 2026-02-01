@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # This is crucial for 'autogenerate' to detect changes.
 from extensions import db
 import models  # Ensure all models are imported
+import models_memory # Ensure memory models are imported for Alembic
 
 target_metadata = db.metadata
 

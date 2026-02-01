@@ -11,7 +11,7 @@ from sqlalchemy.dialects import postgresql, sqlite
 
 # revision identifiers, used by Alembic.
 revision = '20300120'
-down_revision = '20300119'
+down_revision = '20300119_merge_catalog_and_order_event_heads'
 branch_labels = None
 depends_on = None
 
