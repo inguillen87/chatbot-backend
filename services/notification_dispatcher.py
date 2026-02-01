@@ -23,32 +23,38 @@ class NotificationDispatcher:
     Designed to be robust: failures in one channel do not block others.
     """
 
-    def dispatch_order_created(self, pedido: PymePedido, pdf_bytes: Optional[bytes] = None):
+    def dispatch_order_created(self, pedido, pdf_bytes: Optional[bytes] = None):
         """
         Dispatches all configured notifications for a new order.
+        Supports both PymePedido (legacy) and Order (new).
         """
-        logger.info(f"Dispatching notifications for order {pedido.nro_pedido} (Tenant: {pedido.tenant_id})")
+        # Determine ID and Tenant
+        order_id = getattr(pedido, 'nro_pedido', getattr(pedido, 'id', 'unknown'))
+        tenant_id = getattr(pedido, 'tenant_id', None)
 
-        # Log initial event
-        self._log_event(pedido, "order_created", {"status": pedido.estado})
+        logger.info(f"Dispatching notifications for order {order_id} (Tenant: {tenant_id})")
 
-        tenant = pedido.tenant
-        if not tenant and pedido.tenant_id:
-            tenant = db.session.get(TenantProfile, pedido.tenant_id)
+        # Log initial event (if event system supports the model)
+        # self._log_event(pedido, "order_created", {"status": getattr(pedido, 'status', getattr(pedido, 'estado', ''))})
+
+        tenant = getattr(pedido, 'tenant', None)
+        if not tenant and tenant_id:
+            tenant = db.session.get(TenantProfile, tenant_id)
 
         # 1. Generate PDF if not provided (and feasible)
-        if not pdf_bytes:
+        # TODO: Adapt PDF generator for new Order model
+        if not pdf_bytes and hasattr(pedido, 'nro_pedido'): # Only legacy for now for PDF
             try:
                 empresa_info = self._get_empresa_info(pedido)
                 pdf_bytes = generar_pdf_nota_pedido(pedido, empresa_info=empresa_info)
             except Exception as e:
-                logger.warning(f"Could not generate PDF for order {pedido.nro_pedido}: {e}")
+                logger.warning(f"Could not generate PDF for order {order_id}: {e}")
 
         # 2. Customer Notifications
-        if not tenant or tenant.send_buyer_email:
+        if not tenant or getattr(tenant, 'send_buyer_email', True):
             self._notify_customer(pedido, pdf_bytes)
         else:
-             logger.info(f"Buyer email disabled for tenant {tenant.id if tenant else 'unknown'}")
+             logger.info(f"Buyer email disabled for tenant {tenant_id}")
 
         # 3. Dispatch (Depósito) Notifications
         self._notify_dispatch(pedido, tenant, pdf_bytes)
@@ -81,117 +87,90 @@ class NotificationDispatcher:
         except Exception as e:
             logger.error(f"Error dispatching order update for {order.id}: {e}")
 
-    def dispatch_ticket_created(self, ticket: Union[MunicipioTicket, PymeTicket], tipo_ticket: str, ticket_data: dict):
-        """
-        Dispatches notifications for a new ticket.
-        """
-        logger.info(f"Dispatching notifications for new ticket {ticket.nro_ticket}")
+    def _notify_customer(self, pedido, pdf_bytes: Optional[bytes]):
+        # Adapt fields for Order vs PymePedido
+        email = getattr(pedido, 'email_cliente', getattr(pedido, 'buyer_email', None))
+        phone = getattr(pedido, 'telefono_cliente', getattr(pedido, 'buyer_phone', None))
+        name = getattr(pedido, 'nombre_cliente', getattr(pedido, 'buyer_name', "Cliente"))
+        order_ref = getattr(pedido, 'nro_pedido', getattr(pedido, 'id', ''))
+        rubro_ref = getattr(pedido, 'rubro', "Pedido")
 
-        # 1. Email Notifications (Existing Logic Wrapped)
-        try:
-            admin_user = None
-            owner_id = None
+        # Create an adapter if it's the new Order model so legacy email service can read it
+        pedido_adapter = pedido
+        if not hasattr(pedido, 'nro_pedido'):
+            class OrderAdapter:
+                def __init__(self, order):
+                    self.nro_pedido = order.id
+                    self.nombre_cliente = order.buyer_name
+                    self.email_cliente = order.buyer_email
+                    self.telefono_cliente = order.buyer_phone
+                    self.monto_total = float(order.total)
+                    self.detalles = "items..." # Simplify or render items
+                    # For PDF/HTML rendering, legacy service might expect 'detalles' string or items list
+                    # We rely on email service handling the object if updated, or this adapter basic fields.
+                    # Ideally, email service should be updated to handle Order object natively.
+                    self.direccion = order.delivery_address if hasattr(order, 'delivery_address') else None
 
-            if tipo_ticket == "municipio":
-                owner_id = ticket_data.get("municipio_id") or getattr(ticket, "municipio_id", None)
-            elif tipo_ticket == "pyme":
-                owner_id = ticket_data.get("pyme_id")
+                def __getattr__(self, name):
+                    return getattr(pedido, name, None)
 
-            if owner_id:
-                try:
-                    from models import User
-                    admin_user = db.session.get(User, owner_id)
-                except Exception:
-                    admin_user = None
+            pedido_adapter = OrderAdapter(pedido)
 
-            enviar_email_ticket_admin(
-                ticket,
-                admin_user=admin_user,
-                tipo_ticket=tipo_ticket,
-                ticket_data=ticket_data,
-            )
-            enviar_email_ticket_cliente(
-                ticket,
-                tipo_ticket=tipo_ticket,
-                admin_user=admin_user,
-                ticket_data=ticket_data,
-            )
-        except Exception as e:
-            logger.error(f"Error sending ticket emails: {e}")
-
-        # 2. WhatsApp Notification to User (New)
-        contact_phone = getattr(ticket, "telefono_vecino", None) or getattr(ticket, "telefono", None) or getattr(ticket, "telefono_cliente", None)
-        if contact_phone:
-            try:
-                enviar_notificacion_whatsapp_con_plantilla(
-                    contact_phone,
-                    getattr(ticket, "nombre_vecino", None) or getattr(ticket, "nombre_cliente", None) or "Vecino",
-                    str(ticket.nro_ticket),
-                    f"Ticket creado: {ticket.asunto}"
-                )
-            except Exception as e:
-                logger.error(f"Error sending ticket WhatsApp: {e}")
-
-    def _notify_customer(self, pedido: PymePedido, pdf_bytes: Optional[bytes]):
         # Email
-        if pedido.email_cliente:
+        if email:
             try:
-                enviar_email_pedido_cliente(pedido, pdf_bytes=pdf_bytes)
-                logger.info(f"Customer email sent for order {pedido.nro_pedido}")
-                self._log_event(pedido, "email_sent_buyer", {"email": pedido.email_cliente})
+                enviar_email_pedido_cliente(pedido_adapter, pdf_bytes=pdf_bytes)
+                logger.info(f"Customer email sent for order {order_ref}")
             except Exception as e:
-                logger.error(f"Failed to send customer email for order {pedido.nro_pedido}: {e}")
-                self._log_event(pedido, "email_failed_buyer", {"error": str(e)})
+                logger.error(f"Failed to send customer email for order {order_ref}: {e}")
 
         # WhatsApp / SMS
-        if pedido.telefono_cliente:
+        if phone:
             try:
-                # Prioritize WhatsApp if available/configured, fallback to SMS logic handled inside or separately
-                # Here we assume a template mechanism exists
                 enviar_notificacion_whatsapp_con_plantilla(
-                    pedido.telefono_cliente,
-                    pedido.nombre_cliente or "Cliente",
-                    pedido.nro_pedido,
-                    pedido.rubro or "Pedido"
+                    phone,
+                    name,
+                    str(order_ref),
+                    rubro_ref
                 )
-                logger.info(f"Customer WhatsApp sent for order {pedido.nro_pedido}")
+                logger.info(f"Customer WhatsApp sent for order {order_ref}")
             except Exception as e:
-                logger.error(f"Failed to send customer WhatsApp for order {pedido.nro_pedido}: {e}")
-                # Fallback to SMS?
+                logger.error(f"Failed to send customer WhatsApp for order {order_ref}: {e}")
+                # Fallback to SMS
                 try:
                     enviar_notificacion_sms(
-                        pedido.telefono_cliente,
-                        f"Hola {pedido.nombre_cliente or ''}! Tu pedido {pedido.nro_pedido} fue registrado."
+                        phone,
+                        f"Hola {name}! Tu pedido {order_ref} fue registrado."
                     )
                 except Exception as sms_e:
-                    logger.error(f"Failed to send customer SMS fallback for order {pedido.nro_pedido}: {sms_e}")
+                    logger.error(f"Failed to send customer SMS fallback for order {order_ref}: {sms_e}")
 
-    def _notify_dispatch(self, pedido: PymePedido, tenant: Optional[TenantProfile], pdf_bytes: Optional[bytes]):
+    def _notify_dispatch(self, pedido, tenant: Optional[TenantProfile], pdf_bytes: Optional[bytes]):
         if not tenant:
             return
 
+        order_ref = getattr(pedido, 'nro_pedido', getattr(pedido, 'id', ''))
+
         # Email to Warehouse
-        if tenant.dispatch_email and tenant.send_dispatch_email:
+        if getattr(tenant, 'dispatch_email', None) and getattr(tenant, 'send_dispatch_email', True):
             try:
                 enviar_email_pedido_despacho(pedido, tenant.dispatch_email, pdf_bytes=pdf_bytes)
-                logger.info(f"Dispatch email sent to {tenant.dispatch_email} for order {pedido.nro_pedido}")
-                self._log_event(pedido, "email_sent_dispatch", {"email": tenant.dispatch_email})
+                logger.info(f"Dispatch email sent to {tenant.dispatch_email} for order {order_ref}")
             except Exception as e:
-                logger.error(f"Failed to send dispatch email for order {pedido.nro_pedido}: {e}")
-                self._log_event(pedido, "email_failed_dispatch", {"error": str(e)})
+                logger.error(f"Failed to send dispatch email for order {order_ref}: {e}")
 
         # WhatsApp to Warehouse
-        if tenant.dispatch_phone and tenant.send_dispatch_whatsapp:
+        if getattr(tenant, 'dispatch_phone', None) and getattr(tenant, 'send_dispatch_whatsapp', True):
             try:
                 enviar_notificacion_whatsapp_con_plantilla(
                     tenant.dispatch_phone,
-                    "Depósito", # Nombre genérico
-                    pedido.nro_pedido,
+                    "Depósito",
+                    str(order_ref),
                     "Nuevo Pedido a Preparar"
                 )
-                logger.info(f"Dispatch WhatsApp sent to {tenant.dispatch_phone} for order {pedido.nro_pedido}")
+                logger.info(f"Dispatch WhatsApp sent to {tenant.dispatch_phone} for order {order_ref}")
             except Exception as e:
-                logger.error(f"Failed to send dispatch WhatsApp for order {pedido.nro_pedido}: {e}")
+                logger.error(f"Failed to send dispatch WhatsApp for order {order_ref}: {e}")
 
     def _notify_admin(self, pedido: PymePedido, pdf_bytes: Optional[bytes]):
         # This is the legacy "owner" notification

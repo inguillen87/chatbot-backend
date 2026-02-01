@@ -531,6 +531,15 @@ class TenantProfile(db.Model, TimestampMixin):
     whatsapp_sender_id = db.Column(db.String(255), nullable=True)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
 
+    # Dispatch & Notification Configuration
+    dispatch_email = db.Column(db.String(255), nullable=True)
+    dispatch_phone = db.Column(db.String(50), nullable=True)
+    send_buyer_email = db.Column(db.Boolean, default=True, nullable=False)
+    send_dispatch_email = db.Column(db.Boolean, default=True, nullable=False)
+    send_dispatch_whatsapp = db.Column(db.Boolean, default=True, nullable=False)
+
+    theme_json = db.Column(JSONType, nullable=True) # UI/Widget theme customization
+
     municipio = db.relationship(
         "User",
         foreign_keys=[municipio_id],
@@ -2137,6 +2146,9 @@ class CatalogUpload(db.Model):
         onupdate=lambda: datetime.now(timezone.utc),
     )
 
+    preview_data = db.Column(JSONType, nullable=True) # Normalized preview for frontend validation
+    warnings = db.Column(JSONType, nullable=True) # List of warnings (e.g. missing prices)
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -2144,6 +2156,8 @@ class CatalogUpload(db.Model):
             "processor": self.processor_slug,
             "status": self.status,
             "stats": self.stats,
+            "preview_data": self.preview_data,
+            "warnings": self.warnings,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
@@ -2206,3 +2220,103 @@ class AnalyticsEvent(db.Model):
         db.Index("ix_analytics_event_tenant_ts", "tenant_id", "timestamp"),
         db.Index("ix_analytics_event_tenant_type", "tenant_id", "event_type"),
     )
+
+
+class AnalyticsEventV2(db.Model):
+    """Optimized Event Store for High-Volume Analytics."""
+    __tablename__ = "analytics_events_v2"
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    ts = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
+
+    tenant_id = db.Column(db.Integer, nullable=False, index=True) # Direct ID for speed
+    tenant_type = db.Column(db.String(20), nullable=True) # pyme | municipio
+
+    user_id = db.Column(db.Integer, nullable=True)
+    anon_id = db.Column(db.String(100), nullable=True)
+
+    channel = db.Column(db.String(50), nullable=True) # web_widget | whatsapp | etc
+    event_name = db.Column(db.String(100), nullable=False, index=True) # order_created, page_view
+    session_id = db.Column(db.String(100), nullable=True)
+
+    metadata_payload = db.Column("metadata", JSONType, nullable=True) # Renamed to avoid reserved word conflict if mapped
+
+    lat = db.Column(db.Float, nullable=True)
+    lng = db.Column(db.Float, nullable=True)
+    entity_ref = db.Column(db.String(100), nullable=True) # ID of related object (order #, ticket #)
+
+
+class Order(db.Model, TimestampMixin):
+    __tablename__ = "orders"
+
+    id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+
+    # User / Customer info
+    customer_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    buyer_name = db.Column(db.String(255), nullable=True)
+    buyer_email = db.Column(db.String(255), nullable=True)
+    buyer_phone = db.Column(db.String(50), nullable=True)
+    buyer_notes = db.Column(db.Text, nullable=True)
+
+    # State
+    status = db.Column(db.String(50), default="created", nullable=False, index=True) # created, confirmed, paid, preparing, shipped, cancelled
+    channel = db.Column(db.String(50), default="web_widget") # web_widget, whatsapp, manual
+
+    # Financials
+    currency = db.Column(db.String(10), default="ARS")
+    subtotal = db.Column(db.Numeric(12, 2), default=0)
+    discount = db.Column(db.Numeric(12, 2), default=0)
+    shipping_cost = db.Column(db.Numeric(12, 2), default=0)
+    total = db.Column(db.Numeric(12, 2), default=0)
+
+    # Delivery
+    delivery_address = db.Column(JSONType, nullable=True)
+
+    items = db.relationship("OrderItem", backref="order", cascade="all, delete-orphan")
+    tenant = db.relationship("TenantProfile")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "status": self.status,
+            "channel": self.channel,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "buyer": {
+                "name": self.buyer_name,
+                "email": self.buyer_email,
+                "phone": self.buyer_phone,
+            },
+            "totals": {
+                "subtotal": float(self.subtotal),
+                "total": float(self.total),
+                "currency": self.currency
+            },
+            "items": [item.to_dict() for item in self.items]
+        }
+
+
+class OrderItem(db.Model):
+    __tablename__ = "order_items"
+
+    id = db.Column(db.Integer, primary_key=True)
+    order_id = db.Column(db.String(36), db.ForeignKey("orders.id"), nullable=False, index=True)
+    catalog_item_id = db.Column(db.Integer, db.ForeignKey("catalogo_item.id"), nullable=True)
+
+    sku = db.Column(db.String(100), nullable=True)
+    title = db.Column(db.String(255), nullable=False)
+    quantity = db.Column(db.Integer, nullable=False, default=1)
+    unit_price = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    total_price = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+
+    meta_data = db.Column(JSONType, nullable=True) # variants, options
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "title": self.title,
+            "sku": self.sku,
+            "quantity": self.quantity,
+            "unit_price": float(self.unit_price),
+            "total_price": float(self.total_price)
+        }
