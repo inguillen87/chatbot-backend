@@ -16,23 +16,33 @@ def _add_cors_headers(response):
     response.headers.add('Access-Control-Allow-Credentials', 'true')
     return response
 
-@pyme_catalog_fix_bp.route('/<int:pyme_id>/process-catalog-file', methods=['POST'])
+@pyme_catalog_fix_bp.route('/<int:pyme_id>/process-catalog-file', methods=['POST', 'OPTIONS'])
 @token_requerido
 def process_catalog_proxy(current_user, pyme_id):
     """
     Proxy endpoint to handle the legacy/frontend route /api/pymes/<id>/process-catalog-file.
     It delegates the actual processing to the existing logic in subir_catalogo.
     """
+    if request.method == 'OPTIONS':
+         response = jsonify({'status': 'ok'})
+         return _add_cors_headers(response)
+
     logger.info(f"Proxying catalog upload for pyme_id={pyme_id} by user={current_user.email}")
     return _handle_catalog_upload(current_user, pyme_id)
 
-@pyme_catalog_fix_bp.route('/<int:pyme_id>/catalog-upload/subir_catalogo', methods=['POST'])
+@pyme_catalog_fix_bp.route('/<int:pyme_id>/catalog-upload/subir_catalogo', methods=['POST', 'OPTIONS'])
+@pyme_catalog_fix_bp.route('/<int:pyme_id>/catalog_upload/subir_catalogo', methods=['POST', 'OPTIONS'])
 @token_requerido
 def process_catalog_upload_alias(current_user, pyme_id):
     """
     Alias for process-catalog-file to match frontend requests from some clients.
     Path: /api/pymes/<id>/catalog-upload/subir_catalogo
+    Supports both dash and underscore versions to be robust.
     """
+    if request.method == 'OPTIONS':
+         response = jsonify({'status': 'ok'})
+         return _add_cors_headers(response)
+
     logger.info(f"Proxying catalog upload (alias) for pyme_id={pyme_id} by user={current_user.email}")
     return _handle_catalog_upload(current_user, pyme_id)
 
@@ -72,22 +82,16 @@ def _handle_catalog_upload(current_user, pyme_id):
 
     return _add_cors_headers(response)
 
-@pyme_catalog_fix_bp.route('/<int:pyme_id>/process-catalog-file', methods=['OPTIONS'])
-def process_catalog_options(pyme_id):
-    response = jsonify({'status': 'ok'})
-    return _add_cors_headers(response)
-
-@pyme_catalog_fix_bp.route('/<int:pyme_id>/catalog-upload/subir_catalogo', methods=['OPTIONS'])
-def process_catalog_upload_alias_options(pyme_id):
-    response = jsonify({'status': 'ok'})
-    return _add_cors_headers(response)
-
-@pyme_catalog_fix_bp.route('/<int:pyme_id>/catalog-status', methods=['GET'])
+@pyme_catalog_fix_bp.route('/<int:pyme_id>/catalog-status', methods=['GET', 'OPTIONS'])
 @token_requerido
 def catalog_status(current_user, pyme_id):
     """
     Returns the status of the catalog indexing.
     """
+    if request.method == 'OPTIONS':
+         response = jsonify({'status': 'ok'})
+         return _add_cors_headers(response)
+
     tenant_id = None
     if hasattr(g, 'tenant_profile') and g.tenant_profile:
         tenant_id = g.tenant_profile.id
@@ -115,14 +119,13 @@ def catalog_status(current_user, pyme_id):
     })
     return _add_cors_headers(response)
 
-@pyme_catalog_fix_bp.route('/<int:pyme_id>/catalog-status', methods=['OPTIONS'])
-def catalog_status_options(pyme_id):
-    response = jsonify({'status': 'ok'})
-    return _add_cors_headers(response)
-
-@pyme_catalog_fix_bp.route('/<int:pyme_id>/catalog-vector-sync/status', methods=['GET'])
+@pyme_catalog_fix_bp.route('/<int:pyme_id>/catalog-vector-sync/status', methods=['GET', 'OPTIONS'])
 @token_requerido
 def catalog_vector_sync_status(current_user, pyme_id):
+    if request.method == 'OPTIONS':
+         response = jsonify({'status': 'ok'})
+         return _add_cors_headers(response)
+
     # Delegate to catalog_status logic
     return catalog_status.original(current_user, pyme_id) if hasattr(catalog_status, 'original') else _catalog_status_logic(current_user, pyme_id)
 
@@ -136,14 +139,13 @@ def _catalog_status_logic(current_user, pyme_id):
     })
     return _add_cors_headers(response)
 
-@pyme_catalog_fix_bp.route('/<int:pyme_id>/catalog-vector-sync/status', methods=['OPTIONS'])
-def catalog_vector_sync_status_options(pyme_id):
-    response = jsonify({'status': 'ok'})
-    return _add_cors_headers(response)
-
-@pyme_catalog_fix_bp.route('/<int:pyme_id>/catalog-vector-sync', methods=['POST'])
+@pyme_catalog_fix_bp.route('/<int:pyme_id>/catalog-vector-sync', methods=['POST', 'OPTIONS'])
 @token_requerido
 def trigger_catalog_vector_sync(current_user, pyme_id):
+    if request.method == 'OPTIONS':
+         response = jsonify({'status': 'ok'})
+         return _add_cors_headers(response)
+
     if current_user.id != pyme_id and current_user.rol != 'admin':
         if current_user.empresa_id != pyme_id:
             response = jsonify({'error': 'Unauthorized'})
@@ -151,9 +153,4 @@ def trigger_catalog_vector_sync(current_user, pyme_id):
             return _add_cors_headers(response)
 
     response = jsonify({"status": "accepted"})
-    return _add_cors_headers(response)
-
-@pyme_catalog_fix_bp.route('/<int:pyme_id>/catalog-vector-sync', methods=['OPTIONS'])
-def trigger_catalog_vector_sync_options(pyme_id):
-    response = jsonify({'status': 'ok'})
     return _add_cors_headers(response)
