@@ -111,7 +111,13 @@ def _document_intelligence_preview(current_user, pyme_id: int):
     preview_df = df.head(max_rows).fillna("")
 
     # Ensure all column names are strings to avoid JSON serialization issues (e.g. sorting keys)
-    preview_df.columns = preview_df.columns.map(str)
+    preview_df.columns = preview_df.columns.map(lambda x: str(x) if x is not None else "")
+
+    # Deduplicate columns to avoid UserWarning and potential serialization issues
+    preview_df = preview_df.loc[:, ~preview_df.columns.duplicated()]
+
+    # Fill NaN/None values in the data to ensure clean JSON
+    preview_df = preview_df.fillna("")
 
     response_payload = {
         "pymeId": pyme_id,
