@@ -38,7 +38,8 @@ def document_intelligence_preview_options(pyme_id: int):
 def _document_intelligence_preview(current_user, pyme_id: int):
     """Return a lightweight preview of the uploaded spreadsheet or CSV file."""
 
-    if getattr(current_user, "id", None) != pyme_id:
+    # Relax check to allow pyme_id=0 (generic context) or ID match
+    if pyme_id != 0 and getattr(current_user, "id", None) != pyme_id:
         return (
             jsonify({"error": "Solo podés previsualizar archivos de tu propia PYME."}),
             403,

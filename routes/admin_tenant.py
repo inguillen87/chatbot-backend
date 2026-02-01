@@ -467,6 +467,19 @@ def list_integrations(current_user, slug):
 @token_requerido
 @require_tenant
 def connect_integration(current_user, slug, integration_type):
+    # Handle numeric index from legacy frontend
+    if integration_type.isdigit():
+        idx = int(integration_type)
+        # Order matching list_integrations: ["MercadoLibre", "TiendaNube", "WhatsApp"]
+        mapping = {
+            0: 'mercadolibre',
+            1: 'tiendanube',
+            2: 'whatsapp'
+        }
+        if idx in mapping:
+            integration_type = mapping[idx]
+            current_app.logger.info(f"Mapped integration index {idx} to {integration_type}")
+
     tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({"error": "Tenant not found"}), 404
