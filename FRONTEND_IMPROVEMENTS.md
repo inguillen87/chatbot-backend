@@ -1,6 +1,6 @@
 # Frontend Improvements & Integration Guide
 
-This document outlines the recent backend updates supporting the comprehensive platform improvement plan, including enhanced chat previews, integration previews, and order management notifications.
+This document outlines the recent backend updates supporting the comprehensive platform improvement plan, including enhanced chat previews, integration previews, order management notifications, and the **new CRM/Memory system**.
 
 ## 1. Chat Customization & Preview
 
@@ -17,11 +17,11 @@ Returns the full configuration bundle, including the new dispatch fields and the
     "slug": "municipio-demo",
     "nombre": "Municipio Demo",
     "logo_url": "...",
-    "dispatch_email": "deposito@municipio.gov.ar", // NEW
-    "dispatch_phone": "+54911...", // NEW
-    "send_buyer_email": true, // NEW
-    "send_dispatch_email": true, // NEW
-    "send_dispatch_whatsapp": true // NEW
+    "dispatch_email": "deposito@municipio.gov.ar",
+    "dispatch_phone": "+54911...",
+    "send_buyer_email": true,
+    "send_dispatch_email": true,
+    "send_dispatch_whatsapp": true
   },
   "configs": {
     "widget": {
@@ -40,22 +40,6 @@ Returns the full configuration bundle, including the new dispatch fields and the
 ### Endpoint: `PUT /api/admin/tenants/<slug>/config`
 
 Updates the configuration. Frontend should include preview controls (color pickers, text inputs) that update the local state for "Live Preview" before sending this PUT request to save.
-
-**Request Payload:**
-```json
-{
-  "tenant": {
-    "dispatch_email": "nuevo@deposito.com",
-    "send_buyer_email": false
-  },
-  "configs": {
-    "widget": {
-      "primaryColor": "#FF5733",
-      "welcomeMessage": "Bienvenido a la tienda!"
-    }
-  }
-}
-```
 
 ---
 
@@ -94,7 +78,6 @@ Supported types: `mercadolibre`
 **Frontend Task:**
 - Display these items in a table/grid.
 - Highlight "New" vs "Update".
-- Allow users to uncheck items they don't want to import (logic would be client-side filter before calling Sync, or just informational).
 
 ---
 
@@ -111,15 +94,73 @@ New fields have been added to the `TenantProfile` to manage order notifications.
 **Frontend Task:**
 - Add a "Configuración de Pedidos y Envíos" section in the Tenant Settings / Integrations page.
 - Expose these fields as inputs and toggles.
-- Use `GET/PUT /api/admin/tenants/<slug>/config` to read/write these values.
 
-## 4. Order Management
+---
 
-Orders created via the Chatbot or Web Checkout are stored in `PymePedido`.
-Notifications are dispatched automatically by the backend upon creation (`NotificationDispatcher`).
+## 4. CRM & Customer History (New)
 
-- **Buyer**: Receives Email (if enabled) and WhatsApp (if phone provided).
-- **Dispatch**: Receives Email (if enabled & configured) and WhatsApp (if enabled & configured).
-- **Admin**: Receives Email (legacy owner notification).
+The system now supports a unified **Customer Memory** feature.
 
-Ensure the "Pedidos" section in the admin panel lists these records (endpoint `GET /api/pedidos` or similar exists).
+### Endpoint: `GET /api/admin/tenants/<slug>/contacts`
+
+Lists all resolved contacts with their metrics.
+
+**Response:**
+```json
+{
+  "contacts": [
+    {
+      "id": "uuid...",
+      "name": "Juan Perez",
+      "phone": "+54911223344",
+      "type": "customer",
+      "total_orders": 5,
+      "ltv": 150000.00,
+      "last_interaction": "2024-01-30T10:00:00Z"
+    }
+  ]
+}
+```
+
+### Endpoint: `GET /api/admin/tenants/<slug>/contacts/<id>/history`
+
+Returns the interaction history and structured data for a specific contact.
+
+**Response:**
+```json
+{
+  "contact": { ... },
+  "snapshot": {
+    "summary": "Cliente frecuente de vinos tintos. Prefiere delivery por la tarde.",
+    "last_intent": "compra_vino",
+    "suggested_actions": ["ofrecer_promo_malbec"]
+  },
+  "orders": [ ... ],
+  "tickets": [ ... ],
+  "interactions": [
+    { "channel": "whatsapp", "direction": "inbound", "content": "Quiero comprar", "ts": "..." }
+  ]
+}
+```
+
+**Frontend Task:**
+- Create a **"Clientes / CRM"** section in the admin panel.
+- Show the list of contacts with key metrics (LTV, Orders).
+- Create a Detail View for each contact showing their history and the AI-generated "Memory Snapshot".
+
+---
+
+## 5. Loyalty Points (New)
+
+### Endpoint: `GET /api/admin/tenants/<slug>/loyalty/ledger`
+
+Shows points transactions.
+
+**Response:**
+```json
+{
+  "transactions": [
+    { "contact": "Juan Perez", "amount": +100, "reason": "purchase", "ref": "ORD-123" }
+  ]
+}
+```

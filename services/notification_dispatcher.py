@@ -1,13 +1,11 @@
 import logging
-from typing import Optional, Union
+from typing import Optional
 
-from models import PymePedido, TenantProfile, OrderEvent, MunicipioTicket, PymeTicket, db
+from models import PymePedido, TenantProfile, OrderEvent, db
 from services.email_service import (
     enviar_email_pedido_cliente,
     enviar_email_pedido_despacho,
     enviar_email_pedido_admin,
-    enviar_email_ticket_admin,
-    enviar_email_ticket_cliente,
 )
 from services.notifications import (
     enviar_notificacion_sms,
@@ -19,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 class NotificationDispatcher:
     """
-    Centralized service to handle omnichannel notifications for orders and tickets.
+    Centralized service to handle omnichannel notifications for orders.
     Designed to be robust: failures in one channel do not block others.
     """
 
