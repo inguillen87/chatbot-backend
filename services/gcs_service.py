@@ -12,6 +12,7 @@ import requests
 from flask import current_app, has_app_context, has_request_context, request, g
 from werkzeug.utils import secure_filename
 from services.thumbnail_service import generar_thumbnail
+from services.r2_service import r2_service
 
 logger = logging.getLogger(__name__)
 
@@ -823,8 +824,11 @@ def _save_to_cloudinary(
 def upload_to_gcs(file_storage) -> dict | None:
     """Upload a file to the configured storage backend.
 
-    If ``GCS_ENABLED`` is false, the file is saved to the local filesystem instead of
-    Google Cloud Storage.
+    Order of preference:
+    1. Cloudflare R2 (Primary)
+    2. Cloudinary (Fallback)
+    3. GCS (Legacy/Secondary)
+    4. Local Filesystem (Dev/Last Resort)
 
     Args:
         file_storage: The ``FileStorage`` object from Flask request.
@@ -842,6 +846,33 @@ def upload_to_gcs(file_storage) -> dict | None:
     file_storage.seek(0)
     file_bytes = file_storage.read()
 
+    # 1. R2 Upload Strategy
+    try:
+        # Determine context/owner
+        owner = getattr(g, 'current_user', None) or getattr(g, 'owner_user', None)
+        if not owner and has_app_context() and hasattr(g, 'viewer'):
+            owner = g.viewer
+
+        key_prefix = _determine_r2_key_prefix(owner)
+        r2_key = f"{key_prefix}/{unique_name}"
+
+        file_stream_r2 = io.BytesIO(file_bytes)
+        r2_url = r2_service.upload_file_with_key(file_stream_r2, r2_key, file_storage.mimetype)
+
+        if r2_url:
+            return {
+                "unique_name": unique_name,
+                "public_url": r2_url,
+                "size": len(file_bytes),
+                "original_name": original_filename,
+                "mimetype": file_storage.mimetype,
+            }
+        else:
+            logger.warning(f"R2 upload failed for {original_filename}, attempting fallback.")
+    except Exception as e:
+        logger.error(f"R2 Upload Exception: {e}", exc_info=True)
+
+    # 2. Cloudinary Fallback
     _ensure_cloudinary_initialized()
 
     if CLOUDINARY_ENABLED:
@@ -914,10 +945,67 @@ def upload_to_gcs(file_storage) -> dict | None:
         return None
 
 
+def _determine_r2_key_prefix(owner_user) -> str:
+    """
+    Determine the R2 key prefix (folder structure) based on the owner.
+    Format: <type>/<slug>/<subfolder>/<filename>
+    User request: pymes/<tenant_slug>/... or municipios/<tenant_slug>/...
+    """
+    if not owner_user:
+        return "uploads/anonymous"
+
+    # Try to find tenant profile slug via relationships or IDs
+    # If we have a direct tenant relationship:
+    tenant = getattr(owner_user, 'tenant', None) # If User has 'tenant'
+    if not tenant and getattr(owner_user, 'tenant_profile_pyme', None):
+        tenant = owner_user.tenant_profile_pyme
+    if not tenant and getattr(owner_user, 'tenant_profile_municipio', None):
+        tenant = owner_user.tenant_profile_municipio
+
+    # Or maybe via the g.tenant_profile if set by middleware
+    if has_app_context() and hasattr(g, 'tenant_profile') and g.tenant_profile:
+        tenant = g.tenant_profile
+
+    slug = "unknown"
+    prefix_type = "uploads"
+
+    if tenant:
+        slug = tenant.slug
+        if tenant.tipo == 'municipio':
+            prefix_type = 'municipios'
+        else:
+            prefix_type = 'pymes'
+    else:
+        # Fallback logic if no full tenant profile is loaded but IDs exist
+        if getattr(owner_user, 'municipio_id', None):
+            prefix_type = 'municipios'
+            slug = str(owner_user.municipio_id) # Ideally fetch slug, but ID is safe fallback
+        elif getattr(owner_user, 'pyme_id', None):
+            prefix_type = 'pymes'
+            slug = str(owner_user.pyme_id)
+        elif getattr(owner_user, 'tipo_chat', None) == 'municipio':
+            prefix_type = 'municipios'
+            slug = getattr(owner_user, 'tenant_slug', str(owner_user.id))
+        elif getattr(owner_user, 'tipo_chat', None) == 'pyme':
+            prefix_type = 'pymes'
+            slug = getattr(owner_user, 'tenant_slug', str(owner_user.id))
+
+    # Context subfolder (optional, could be passed in arguments but we infer 'general' for now)
+    # The user asked for "reclamos", "catalogos", etc.
+    # Since this function is generic, we might default to 'general' or 'attachments'
+    # For now, let's use 'attachments' as a safe default for generic uploads.
+    # Specific uploaders (like catalog import) should construct their own keys.
+    return f"{prefix_type}/{slug}/attachments"
+
+
 def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
     """Upload a file and its generated thumbnail to storage.
 
-    Uses GCS when enabled, otherwise falls back to local filesystem storage.
+    Order of preference:
+    1. Cloudflare R2 (Primary)
+    2. Cloudinary (Fallback)
+    3. GCS (Legacy/Secondary)
+    4. Local Filesystem (Dev/Last Resort)
 
     Args:
         file_storage: The ``FileStorage`` object from the request.
@@ -947,6 +1035,52 @@ def guardar_adjunto_y_thumbnail(file_storage) -> dict | None:
         file_stream_for_thumb, file_storage.mimetype
     )
 
+    # 1. R2 Upload Strategy
+    try:
+        # Determine context/owner
+        owner = getattr(g, 'current_user', None) or getattr(g, 'owner_user', None)
+        # Use g.viewer from app.py logic if available
+        if not owner and has_app_context() and hasattr(g, 'viewer'):
+            owner = g.viewer
+
+        key_prefix = _determine_r2_key_prefix(owner)
+        r2_key = f"{key_prefix}/{unique_name}"
+
+        # Reset stream for R2
+        file_stream_r2 = io.BytesIO(file_bytes)
+        r2_url = r2_service.upload_file_with_key(file_stream_r2, r2_key, file_storage.mimetype)
+
+        if r2_url:
+            # Upload thumbnail to R2 if exists
+            thumb_url = None
+            if thumbnail_bytes and thumb_meta:
+                thumb_filename = get_thumb_filename(unique_name)
+                r2_thumb_key = f"{key_prefix}/{thumb_filename}"
+                thumb_url = r2_service.upload_file_with_key(
+                    io.BytesIO(thumbnail_bytes),
+                    r2_thumb_key,
+                    "image/webp"
+                )
+                if thumb_url:
+                    thumb_meta["url"] = thumb_url
+
+            return {
+                "unique_name": unique_name,
+                "original_url": r2_url,
+                "size": len(file_bytes),
+                "original_name": original_filename,
+                "mimetype": file_storage.mimetype,
+                "thumb_meta": thumb_meta,
+                "thumbUrl": thumb_url,
+            }
+        else:
+            logger.warning(f"R2 upload failed for {original_filename}, attempting fallback.")
+
+    except Exception as e:
+        logger.error(f"R2 Upload Exception: {e}", exc_info=True)
+        # Continue to fallbacks
+
+    # 2. Cloudinary Fallback
     _ensure_cloudinary_initialized()
 
     if CLOUDINARY_ENABLED:
