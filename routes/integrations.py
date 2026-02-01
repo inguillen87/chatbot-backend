@@ -82,3 +82,63 @@ def webhook(provider):
     except Exception as e:
         current_app.logger.error(f"Webhook Error: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@integrations_bp.route('/<provider>/preview', methods=['GET'])
+@token_requerido
+def preview_integration(current_user, provider):
+    """
+    Returns a preview of the integration mapping status.
+    This prevents 404s on the frontend and provides user feedback.
+    """
+    tenant = g.tenant_profile
+    if not tenant:
+        return jsonify({"error": "Tenant required"}), 400
+
+    # Validate provider
+    if provider not in ['mercadolibre', 'tiendanube']:
+        return jsonify({"error": "Provider not supported"}), 400
+
+    # Check connection status
+    account = IntegrationAccount.query.filter_by(
+        tenant_id=tenant.id,
+        type=provider,
+        status="active"
+    ).first()
+
+    if not account:
+        return jsonify({
+            "status": "disconnected",
+            "message": f"Conectá tu cuenta de {provider} para sincronizar productos.",
+            "preview_data": [],
+            "mapped_count": 0,
+            "error_count": 0
+        })
+
+    # TODO: Implement real-time fetch of remote items for comparison
+    # For now, return a 'connected' state with existing catalog stats to satisfy the preview UI
+
+    # Simple heuristic: Count items with the provider's metadata/ID if stored,
+    # or just total items eligible for sync.
+    from models import CatalogoItem
+    total_items = CatalogoItem.query.filter_by(tenant_id=tenant.id).count()
+
+    # Mock preview data for the UI
+    preview_sample = []
+    if total_items > 0:
+        item = CatalogoItem.query.filter_by(tenant_id=tenant.id).first()
+        preview_sample.append({
+            "local_sku": item.sku or "SKU-UNK",
+            "local_title": item.nombre,
+            "remote_status": "pending_sync", # Default state
+            "message": "Listo para publicar"
+        })
+
+    return jsonify({
+        "status": "connected",
+        "message": f"Cuenta vinculada. {total_items} productos listos para sincronizar.",
+        "preview_data": preview_sample,
+        "mapped_count": 0, # To be implemented with real sync logic
+        "pending_count": total_items,
+        "error_count": 0
+    })
