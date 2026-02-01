@@ -111,7 +111,7 @@ def procesar_y_embedear_catalogo(
         # Create DB Model
         db_item = CatalogoItem(
             user_id=user_id,
-            catalog_upload_id=catalog_upload_id,
+            # catalog_upload_id removed as it is not in the model
             nombre=item_data.nombre,
             descripcion=str(item_data.atributos) if item_data.atributos else "",
             precio=str(item_data.precio) if item_data.precio else None,
