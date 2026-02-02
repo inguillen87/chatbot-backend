@@ -121,16 +121,21 @@ class IntelligentCatalogProcessor:
         """Uses a specific prompt to get structured product data from text using an LLM."""
 
         system_prompt = """
-        Eres un asistente experto en procesamiento de catálogos de productos.
+        Eres un asistente experto en procesamiento de catálogos de productos para Argentina.
         Tu tarea es analizar el texto proporcionado y extraer una lista de productos en formato JSON.
         El JSON debe ser una lista de objetos, donde cada objeto representa un producto.
         Cada producto debe tener los siguientes campos: 'nombre', 'descripcion', 'precio', 'sku', 'marca', 'categoria', 'unidad'.
 
         Instrucciones importantes:
-        1. Infiere la 'categoria' y la 'marca' basándote en el nombre del producto o el contexto si no están explícitas. Por ejemplo, si el producto es 'Vino Malbec', la categoría es 'Vinos'.
-        2. Si encuentras una descripción, inclúyela. Si no, intenta generar una breve basada en el nombre.
-        3. El campo 'precio' debe ser un string numérico limpio (ej: "1500.00").
-        4. Si un campo no está presente y no puedes inferirlo con seguridad, déjalo como null o string vacío.
+        1. **Categoria y Marca (Crítico):** Debes inferir SIEMPRE la 'categoria' y la 'marca' basándote en el nombre del producto, la descripción o el contexto general. No dejes estos campos vacíos.
+           - Ejemplo: Si el producto es 'Rutini Malbec', Marca: 'Rutini', Categoria: 'Vinos Tintos'.
+           - Ejemplo: Si es 'Coca Cola 1.5L', Marca: 'Coca Cola', Categoria: 'Bebidas'.
+        2. **Precios (Argentina):** El formato de precios es argentino. El punto (.) se usa para miles y la coma (,) para decimales (ej: "$ 10.410" son diez mil cuatrocientos diez pesos).
+           - Devuelve el precio como un número flotante (JSON number) o string SIN separadores de miles, usando punto para decimales si es necesario.
+           - Ejemplo: Si el texto dice "$ 10.410", devuelve 10410. Si dice "5.207", devuelve 5207. Si dice "10,50", devuelve 10.50.
+           - PRECAUCIÓN: No confundas "10.410" (diez mil) con "10.41" (diez con cuarenta). En este contexto, precios de productos como vinos suelen ser > 1000.
+        3. **Descripción:** Si encuentras una descripción, inclúyela. Si no, genera una breve y atractiva basada en el nombre y tipo de producto.
+        4. **Unidad:** Normaliza la unidad (ej: "u", "unid", "caja x6", "750ml").
 
         El resultado debe ser únicamente el JSON, sin ninguna otra explicación.
         """
@@ -216,17 +221,27 @@ class IntelligentCatalogProcessor:
 
         for item_data in items:
             enriched_item_data = self._enrich_item_data(item_data)
+
+            # Parse price for monetary field
+            raw_price = enriched_item_data.get('precio', 0)
+            try:
+                price_float = float(raw_price) if raw_price else 0
+            except (ValueError, TypeError):
+                price_float = 0
+
             item = CatalogoItem(
                 user_id=self.user_id,
                 nombre=enriched_item_data.get('nombre'),
                 descripcion=enriched_item_data.get('descripcion'),
-                precio=str(enriched_item_data.get('precio', '')),
+                precio=str(raw_price),
+                precio_monetario=price_float,
                 cantidad=str(enriched_item_data.get('cantidad', '')),
                 sku=enriched_item_data.get('sku'),
                 marca=enriched_item_data.get('marca'),
                 categoria=enriched_item_data.get('categoria'),
                 unidad=enriched_item_data.get('unidad'),
-                imagen_url=enriched_item_data.get('imagen_url')
+                imagen_url=enriched_item_data.get('imagen_url'),
+                extra_metadata=enriched_item_data # Store full raw data for future flexibility
             )
             db.session.add(item)
 
