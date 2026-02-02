@@ -829,8 +829,9 @@ class PymePedido(db.Model):
     latitud = db.Column(db.Float, nullable=True)
     longitud = db.Column(db.Float, nullable=True)
 
-    def __init__(self, pyme_id, asunto, detalles, monto_total=None, nombre_cliente=None, email_cliente=None, telefono_cliente=None, user_id=None, direccion=None, latitud=None, longitud=None):
+    def __init__(self, pyme_id, asunto, detalles, monto_total=None, nombre_cliente=None, email_cliente=None, telefono_cliente=None, user_id=None, direccion=None, latitud=None, longitud=None, tenant_id=None, idempotency_key=None, channel=None):
         self.pyme_id = pyme_id
+        self.tenant_id = tenant_id
         self.asunto = asunto
         self.detalles = detalles
         self.monto_total = monto_total
@@ -841,6 +842,10 @@ class PymePedido(db.Model):
         self.direccion = direccion
         self.latitud = latitud
         self.longitud = longitud
+        self.idempotency_key = idempotency_key
+        # channel might not be a column yet in PymePedido, but useful to accept if future-proofing.
+        # But wait, PymePedido doesn't have 'channel' column in the definition I saw earlier?
+        # Let's check columns again. It has 'idempotency_key' and 'tenant_id'.
         self.nro_pedido = self._generate_nro_pedido()
 
     def _generate_nro_pedido(self):
