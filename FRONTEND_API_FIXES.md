@@ -44,8 +44,36 @@ A new endpoint is available to manage dispatch settings (used for order notifica
 }
 ```
 
-## 5. Summary of Fixes
+## 5. Pyme Heatmap Filters
+Fixed 404 errors for the heatmap filters in the "Mapas" section.
+
+**Endpoints:**
+*   `GET /api/pyme/estados?tenant_slug=<slug>`
+*   `GET /api/pyme/categorias?tenant_slug=<slug>`
+
+These endpoints now return the correct lists of states and categories for the tenant, resolving the heatmap filter issue.
+
+## 6. Order Listing (Admin)
+Fixed 405 Method Not Allowed error when fetching the order list.
+
+**Endpoint:** `GET /api/orders`
+
+*   **Authentication:** Required (JWT Bearer Token).
+*   **Behavior:** This is now an alias for `list_admin_orders`. It returns the list of orders for the tenant associated with the authenticated admin user.
+*   **Response:**
+    ```json
+    {
+      "items": [ ... ],
+      "total": 10,
+      "pages": 1,
+      "current_page": 1
+    }
+    ```
+
+## 7. Summary of Fixes
 *   **Fixed:** `404 Not Found` on catalog upload (Route aliases added).
 *   **Fixed:** `405 Method Not Allowed` on catalog upload (CORS/OPTIONS handled).
 *   **Fixed:** `400 Bad Request` on integration connect (Numeric types mapped).
 *   **Fixed:** `403 Forbidden` on file preview (Generic ID 0 allowed).
+*   **Fixed:** `404 Not Found` on Pyme map filters (`/api/pyme/estados`, `/api/pyme/categorias`).
+*   **Fixed:** `405 Method Not Allowed` on Order listing (`GET /api/orders`).
