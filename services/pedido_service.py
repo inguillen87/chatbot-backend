@@ -124,7 +124,7 @@ class PedidoService:
             db.session.commit()
         return order
 
-    def sync_order_model_from_pyme(self, pedido: PymePedido, channel: Optional[str] = None) -> Optional["Order"]:
+    def sync_order_model_from_pyme(self, pedido: PymePedido, channel: Optional[str] = None):
         """
         Creates or updates an Order record (new model) from a PymePedido (legacy model).
         This ensures orders appear in the new Admin Panel.
@@ -266,6 +266,7 @@ class PedidoService:
                 latitud=pedido_data.get("latitud"),
                 longitud=pedido_data.get("longitud"),
                 idempotency_key=idempotency_key,
+                channel=pedido_data.get("channel"), # Optional, ignored by current __init__ if not added, but safe if added to __init__
             )
             if pedido_data.get("rubro"):
                 nuevo_pedido.rubro = pedido_data.get("rubro")
