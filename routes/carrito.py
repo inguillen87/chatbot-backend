@@ -395,6 +395,9 @@ def agregar():
         return _tenant_missing_response()
 
     payload = request.get_json(silent=True) or {}
+    if not payload and request.form:
+        payload = request.form
+
     session_debug = _resolve_session_identifier()
     logger.debug(f"Carrito Add Payload: {payload} | SessionID: {session_debug}")
 
