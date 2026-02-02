@@ -117,6 +117,7 @@ def create_order():
         return jsonify({"error": str(e)}), 500
 
 @orders_bp.route('/api/admin/orders', methods=['GET'])
+@orders_bp.route('/api/orders', methods=['GET'])
 @token_requerido
 @require_tenant
 def list_admin_orders(current_user):
