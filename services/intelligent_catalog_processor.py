@@ -125,13 +125,17 @@ class IntelligentCatalogProcessor:
         Tu tarea es analizar el texto proporcionado y extraer una lista de productos en formato JSON.
         El JSON debe ser una lista de objetos, donde cada objeto representa un producto.
         Cada producto debe tener los siguientes campos: 'nombre', 'descripcion', 'precio', 'sku', 'marca', 'categoria', 'unidad'.
-        Si un campo no está presente, puedes omitirlo o dejarlo como un string vacío.
-        El campo 'precio' debe ser un string, no un número.
-        Analiza cuidadosamente el texto para identificar cada producto y sus detalles.
+
+        Instrucciones importantes:
+        1. Infiere la 'categoria' y la 'marca' basándote en el nombre del producto o el contexto si no están explícitas. Por ejemplo, si el producto es 'Vino Malbec', la categoría es 'Vinos'.
+        2. Si encuentras una descripción, inclúyela. Si no, intenta generar una breve basada en el nombre.
+        3. El campo 'precio' debe ser un string numérico limpio (ej: "1500.00").
+        4. Si un campo no está presente y no puedes inferirlo con seguridad, déjalo como null o string vacío.
+
         El resultado debe ser únicamente el JSON, sin ninguna otra explicación.
         """
 
-        user_prompt = f"Aquí está el texto del catálogo:\n\n---\n{text}\n\n---\nPor favor, extráelo en el formato JSON especificado."
+        user_prompt = f"Aquí está el texto del catálogo:\n\n---\n{text}\n\n---\nPor favor, extráelo en el formato JSON especificado, asegurando inferir categorías y marcas cuando sea posible."
 
         response_json = llamar_llm_para_json_estructurado(
             system_prompt=system_prompt,
@@ -177,7 +181,8 @@ class IntelligentCatalogProcessor:
         """Enriches a single catalog item with an image URL and description if they are missing."""
         if not item_data.get('imagen_url'):
             try:
-                query = f"{item_data.get('nombre', '')} {item_data.get('marca', '')}"
+                query = f"{item_data.get('nombre', '')} {item_data.get('marca', '')}".strip()
+                logger.info(f"Searching image for: {query}")
                 search_results = google_search(query)
                 # A simple strategy: take the first image result.
                 # This could be improved with more sophisticated logic.
