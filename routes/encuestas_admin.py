@@ -206,6 +206,13 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
     @token_requerido
     @require_role("admin", "super_admin")
     def seed_demo_endpoint(current_user, encuesta_id: int):
+        def _parse_bool(value):
+            if isinstance(value, bool):
+                return value
+            if value is None:
+                return False
+            return str(value).strip().lower() in {"1", "true", "yes", "si", "on"}
+
         data = request.get_json(silent=True) or {}
         cantidad = data.get("cantidad") or 100
         try:
@@ -222,6 +229,8 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
             except (TypeError, ValueError):
                 return jsonify({"error": "Seed inválido"}), 400
 
+        reset_data = _parse_bool(data.get("reset") or data.get("borrar"))
+
         try:
             result = seed_encuesta_respuestas_demo(
                 encuesta_id,
@@ -230,6 +239,7 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
                 geo_profile_key=geo_profile_key,
                 municipality_label=municipality_label,
                 seed=seed_value,
+                reset_data=reset_data,
             )
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
