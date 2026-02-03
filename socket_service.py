@@ -1,7 +1,7 @@
 from flask_socketio import SocketIO, join_room, emit
 from flask import current_app, request
 from config import ALLOWED_ORIGINS
-from models import User, db, TicketComentario, MunicipioTicket, PymeTicket
+from models import User, TenantProfile, db, TicketComentario, MunicipioTicket, PymeTicket
 import jwt
 from services.ticket_service import servicio_tickets # Reutilizamos el servicio de tickets
 from services.tts_orchestrator import generar_audio
@@ -65,6 +65,20 @@ def _get_rooms_for_user(user: Optional[User]) -> list[str]:
 
     return list(rooms)
 
+def _get_rooms_for_tenant_slug(tenant_slug: Optional[str]) -> list[str]:
+    if not tenant_slug:
+        return []
+
+    tenant = TenantProfile.query.filter_by(slug=str(tenant_slug).strip()).first()
+    if not tenant:
+        return []
+
+    rooms: Set[str] = set()
+    if tenant.municipio_id:
+        rooms.add(f"municipio_{tenant.municipio_id}")
+    if tenant.pyme_id:
+        rooms.add(f"pyme_{tenant.pyme_id}")
+    return list(rooms)
 
 def _resolve_ticket_room(payload: Any) -> Optional[str]:
     if not isinstance(payload, dict):
@@ -230,6 +244,7 @@ def on_connect(auth):
         try:
             payload = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
             user_id = payload.get('user_id')
+            tenant_slug = payload.get('tenant_slug')
             user = User.query.get(user_id) if user_id else None
             if not user:
                 current_app.logger.warning(
@@ -239,6 +254,7 @@ def on_connect(auth):
                 return False
 
             rooms = _get_rooms_for_user(user)
+            rooms.extend([room for room in _get_rooms_for_tenant_slug(tenant_slug) if room not in rooms])
             for room in rooms:
                 join_room(room)
                 current_app.logger.debug(
@@ -261,6 +277,7 @@ def on_connect(auth):
 @socketio.on('subscribe_ticket_updates')
 def on_subscribe_ticket_updates(data):
     token = (data or {}).get('token')
+    tenant_slug = (data or {}).get('tenant_slug')
     if not token:
         emit('subscription_error', {'error': 'missing_token'})
         return
@@ -279,6 +296,7 @@ def on_subscribe_ticket_updates(data):
         return
 
     rooms = _get_rooms_for_user(user)
+    rooms.extend([room for room in _get_rooms_for_tenant_slug(tenant_slug) if room not in rooms])
     for room in rooms:
         join_room(room)
     emit('subscribed_ticket_updates', {'rooms': rooms or []})
