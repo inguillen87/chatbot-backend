@@ -68,6 +68,9 @@ def index_catalog_item(tenant_id: str, item_data: Dict[str, Any], embedding: Lis
         "source": "manual",
         "updated_at": datetime.utcnow().isoformat()
     }
+    extra_metadata = item_data.get("extra_metadata") or {}
+    if isinstance(extra_metadata, dict) and extra_metadata:
+        payload["extra_metadata"] = extra_metadata
 
     client.upsert(
         collection_name=COLLECTION_CATALOG,
