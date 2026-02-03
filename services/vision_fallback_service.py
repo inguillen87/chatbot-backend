@@ -48,7 +48,8 @@ def _safe_json_loads(text: str) -> Dict[str, Any]:
         except Exception:
             continue
 
-    raise ValueError("No se pudo parsear JSON válido desde la respuesta del modelo.")
+    logger.warning("No se pudo parsear JSON válido desde la respuesta del modelo.")
+    return {}
 
 
 def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:

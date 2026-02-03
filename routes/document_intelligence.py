@@ -348,14 +348,8 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                         [{"Contenido": line} for line in fallback_text.split("\n") if line.strip()]
                     )
 
-        except Exception as exc:
-            return (
-                jsonify({
-                    "error": "No se pudo procesar el PDF.",
-                    "details": str(exc),
-                }),
-                400,
-            )
+        except Exception:
+            df = pd.DataFrame()
     else:
         try:
             df = pd.read_excel(io.BytesIO(content), sheet_name=sheet, header=header_index)
