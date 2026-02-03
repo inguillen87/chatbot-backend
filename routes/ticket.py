@@ -116,10 +116,21 @@ def _authorized_for_tenant_scope(current_user: User, tenant: Optional[TenantProf
 
 
 def _get_allowed_municipio_id(current_user: User) -> Optional[int]:
+    allowed_ids = _get_allowed_municipio_ids(current_user)
+    if not allowed_ids:
+        return None
+    return allowed_ids[0]
+
+
+def _get_allowed_municipio_ids(current_user: User) -> list[int]:
     tenant, tenant_municipio_id, _tenant_pyme_id = _resolve_tenant_scope(current_user)
+    allowed_ids: list[int] = []
+    if current_user.municipio_id:
+        allowed_ids.append(current_user.municipio_id)
     if _authorized_for_tenant_scope(current_user, tenant) and tenant_municipio_id:
-        return tenant_municipio_id
-    return current_user.municipio_id
+        if tenant_municipio_id not in allowed_ids:
+            allowed_ids.append(tenant_municipio_id)
+    return allowed_ids
 
 
 def _is_municipio_agent(current_user: User) -> bool:
@@ -375,24 +386,24 @@ def get_tickets_del_usuario_logic(current_user: User):
             )
         ):
             TicketModel = MunicipioTicket
-            municipio_id_for_query = current_user.municipio_id
-            if tenant_owner_municipio_id and _authorized_for_tenant():
-                municipio_id_for_query = tenant_owner_municipio_id
+            municipio_ids_for_query = _get_allowed_municipio_ids(current_user)
+            if not municipio_ids_for_query and tenant_owner_municipio_id and _authorized_for_tenant():
+                municipio_ids_for_query = [tenant_owner_municipio_id]
             current_app.logger.info(
-                "[DEBUG] Usuario municipal: id=%s, municipio_id=%s, rol=%s, tipo_chat=%s, tenant_slug=%s, municipio_query_id=%s",
+                "[DEBUG] Usuario municipal: id=%s, municipio_id=%s, rol=%s, tipo_chat=%s, tenant_slug=%s, municipio_query_ids=%s",
                 current_user.id,
                 current_user.municipio_id,
                 current_user.rol,
                 current_user.tipo_chat,
                 tenant_slug,
-                municipio_id_for_query,
+                municipio_ids_for_query,
             )
-            if not municipio_id_for_query:
+            if not municipio_ids_for_query:
                 current_app.logger.error(f"[DEBUG] Usuario {current_user.id} no tiene municipio_id.")
                 return jsonify({"error": "El usuario municipal no tiene asignado un municipio_id válido. Comuníquese con el soporte."}), 400
 
-            query_base = TicketModel.query.filter(TicketModel.municipio_id == municipio_id_for_query)
-            current_app.logger.info(f"[DEBUG] Querying for municipio_id: {municipio_id_for_query}")
+            query_base = TicketModel.query.filter(TicketModel.municipio_id.in_(municipio_ids_for_query))
+            current_app.logger.info(f"[DEBUG] Querying for municipio_ids: {municipio_ids_for_query}")
             tipo_ticket_str = 'municipio'
         elif tenant_owner_pyme_id or (
             current_user.tipo_chat == "pyme" or (
@@ -871,12 +882,8 @@ def get_ticket_details(current_user: User, ticket_id: int):
         if not (_authorized_for_tenant_scope(current_user, tenant) and tenant_municipio_id):
             return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
 
-    allowed_municipio_id = (
-        tenant_municipio_id
-        if _authorized_for_tenant_scope(current_user, tenant) and tenant_municipio_id
-        else current_user.municipio_id
-    )
-    if ticket.municipio_id != allowed_municipio_id:
+    allowed_municipio_ids = _get_allowed_municipio_ids(current_user)
+    if not allowed_municipio_ids or ticket.municipio_id not in allowed_municipio_ids:
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
 
     error_response = _validar_asignacion_empleado(ticket, current_user)
@@ -1043,10 +1050,10 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
 
     # Refuerzo de permisos:
     if tipo == 'municipio':
-        allowed_municipio_id = _get_allowed_municipio_id(current_user)
-        if not _is_municipio_agent(current_user) or not allowed_municipio_id:
+        allowed_municipio_ids = _get_allowed_municipio_ids(current_user)
+        if not _is_municipio_agent(current_user) or not allowed_municipio_ids:
             return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
-        if ticket_obj.municipio_id != allowed_municipio_id:
+        if ticket_obj.municipio_id not in allowed_municipio_ids:
             return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
     elif tipo == 'pyme':
         if not (
@@ -1298,10 +1305,10 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
 
     # Refuerzo de permisos:
     if tipo == 'municipio':
-        allowed_municipio_id = _get_allowed_municipio_id(current_user)
-        if not _is_municipio_agent(current_user) or not allowed_municipio_id:
+        allowed_municipio_ids = _get_allowed_municipio_ids(current_user)
+        if not _is_municipio_agent(current_user) or not allowed_municipio_ids:
             return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
-        if ticket_obj.municipio_id != allowed_municipio_id:
+        if ticket_obj.municipio_id not in allowed_municipio_ids:
             return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
     elif tipo == 'pyme':
         if not (

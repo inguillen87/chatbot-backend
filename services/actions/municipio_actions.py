@@ -1321,12 +1321,14 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "options_list": botones_finales,
                 "message_type": "interactive_buttons",
                 "image_url": promo_image_url,
+                "consulta_pin": pin_value,
                 "data": {
                     "ticket_id": ticket_creado.get('id'),
                     "nro_ticket": nro_ticket_str,
                     "status": "creado",
                     "nombre_vecino": nombre_vecino_final,
                     "promo_text": promo_text,
+                    "consulta_pin": pin_value,
                 }
             }
             channel_value = (self.context.get("channel") or "").strip().lower()
