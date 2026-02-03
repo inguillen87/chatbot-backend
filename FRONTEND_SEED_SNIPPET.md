@@ -1,7 +1,7 @@
 # Frontend Integration: Survey Seed Tool (Producción)
 
 To add the "Seed 100 Participantes" feature to your Admin Frontend, use the following React component.
-This component communicates with the Backend API endpoint `/api/admin/encuestas/:id/seed-demo`.
+This component communicates with the production Backend API endpoint `/api/admin/encuestas/:id/seed-demo`.
 
 ## Backend API Requirement
 The backend must have the `seed_demo_endpoint` enabled (already implemented in `routes/encuestas_admin.py`).

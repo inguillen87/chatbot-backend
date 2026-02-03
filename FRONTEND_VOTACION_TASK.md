@@ -131,12 +131,13 @@ Cuando esté socket:
   - Reset votos + comentarios.
   - Generar 100 respuestas aleatorias **coherentes con el tipo de encuesta** (edad, género, barrio, rango etario, etc. si aplica).
   - Actualizar analytics, mapas de calor, métricas.
+  - Dejar la encuesta limpia para que el tenant continúe con datos reales.
 
 ### Estado visual recomendado
 Badge “Datos simulados”.
 
 ### Endpoint seed (backend)
-- **POST** `/api/admin/encuestas/{id}/seed-demo`
+- **POST** `/api/admin/encuestas/{id}/seed-demo` *(endpoint en producción para sembrar datos sintéticos)*
   - Body: `{ cantidad: 100, reset: true }`
   - Soporta `geo_profile_key` y `municipality_label` para mapas de calor.
 
