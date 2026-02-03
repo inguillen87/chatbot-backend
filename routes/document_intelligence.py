@@ -6,6 +6,7 @@ import pdfplumber
 from flask import Blueprint, jsonify, request
 
 from routes.auth import token_requerido
+from services.vision_fallback_service import analyze_image_structured
 
 
 document_intelligence_bp = Blueprint(
@@ -61,23 +62,65 @@ def _document_intelligence_preview(current_user, pyme_id: int):
     if filename.endswith(".pdf"):
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
-                # Intenta extraer tablas de la primera página
                 page = pdf.pages[0]
-                tables = page.extract_tables()
+                table_data = None
+                for page in pdf.pages[:2]:
+                    table = page.extract_table(
+                        {
+                            "vertical_strategy": "lines",
+                            "horizontal_strategy": "lines",
+                            "snap_tolerance": 3,
+                            "join_tolerance": 3,
+                        }
+                    )
+                    if table:
+                        table_data = table
+                        break
+                    tables = page.extract_tables() or []
+                    if tables:
+                        table_data = max(tables, key=len)
+                        break
 
-                if tables and tables[0]:
-                    # Usar la primera tabla encontrada
-                    table_data = tables[0]
-                    # Asumir que la primera fila es el encabezado si hay más de 1 fila
-                    if len(table_data) > 1:
-                        headers = table_data[0]
-                        rows = table_data[1:]
-                    else:
-                        headers = [f"Columna {i+1}" for i in range(len(table_data[0]))]
-                        rows = table_data
+                if table_data:
+                    headers = []
+                    rows = []
+                    header_index = None
+                    header_tokens = ("marca", "varietal", "precio", "caja", "botella", "pallet")
+                    for idx, row in enumerate(table_data):
+                        joined = " ".join(str(cell or "").lower() for cell in row)
+                        if any(token in joined for token in header_tokens):
+                            header_index = idx
+                            break
+
+                    if header_index is None:
+                        header_index = 0
+
+                    headers = [str(cell or "").strip() for cell in table_data[header_index]]
+                    rows = table_data[header_index + 1 :]
+
+                    if not any(headers):
+                        headers = [f"Columna {i+1}" for i in range(len(rows[0]))] if rows else []
 
                     df = pd.DataFrame(rows, columns=headers)
-                else:
+                if df is None or df.empty:
+                    try:
+                        image = page.to_image(resolution=300).original
+                        buffer = io.BytesIO()
+                        image.save(buffer, format="JPEG")
+                        prompt = (
+                            "Extrae la tabla del catálogo en JSON con claves "
+                            "'columns' (lista de strings) y 'rows' (lista de objetos con esas columnas). "
+                            "Incluye columnas como Marca, Varietal, Unidades/Caja, Pallet, "
+                            "Precio Caja, Precio Botella, Sugerido Público si están presentes. "
+                            "No inventes datos, deja vacío si no se ve."
+                        )
+                        vision = analyze_image_structured(buffer.getvalue(), prompt)
+                        if isinstance(vision, dict) and vision.get("rows") and vision.get("columns"):
+                            df = pd.DataFrame(vision["rows"], columns=vision["columns"])
+                    except Exception:
+                        df = None
+
+                if df is None or df.empty:
                     # Si no hay tablas, extraer texto simple
                     text = page.extract_text() or ""
                     # Crear un DF dummy con el texto
@@ -155,4 +198,3 @@ def document_intelligence_preview_public(current_user, pyme_id: int):
     """Public alias that reuses the API handler for /pymes/... requests."""
 
     return _document_intelligence_preview(current_user, pyme_id)
-
