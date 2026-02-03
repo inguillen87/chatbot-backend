@@ -86,7 +86,7 @@ def _document_intelligence_preview(current_user, pyme_id: int):
     if filename.endswith(".pdf"):
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
-                page = pdf.pages[0]
+                page_for_image = pdf.pages[0]
                 table_data = None
                 for page in pdf.pages[:2]:
                     table = page.extract_table(
@@ -99,10 +99,12 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                     )
                     if table:
                         table_data = table
+                        page_for_image = page
                         break
                     tables = page.extract_tables() or []
                     if tables:
                         table_data = max(tables, key=len)
+                        page_for_image = page
                         break
 
                 if table_data:
@@ -129,7 +131,7 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                 use_vision = df is None or df.empty or _looks_like_flat_pdf_table(df)
                 if use_vision:
                     try:
-                        image = page.to_image(resolution=300).original
+                        image = page_for_image.to_image(resolution=300).original
                         buffer = io.BytesIO()
                         image.save(buffer, format="JPEG")
                         prompt = (
@@ -147,7 +149,7 @@ def _document_intelligence_preview(current_user, pyme_id: int):
 
                 if df is None or df.empty:
                     # Si no hay tablas, extraer texto simple
-                    text = page.extract_text() or ""
+                    text = page_for_image.extract_text() or ""
                     # Crear un DF dummy con el texto
                     df = pd.DataFrame([{"Contenido": line} for line in text.split('\n') if line.strip()])
 
