@@ -70,6 +70,17 @@ class MunicipioTicketCreator(TicketCreator):
 
 class PymeTicketCreator(TicketCreator):
     def create(self, ticket_data: Dict[str, Any]) -> PymeTicket:
+        tenant_id = ticket_data.get("tenant_id")
+        rubro_id = ticket_data.get("rubro_id")
+        pyme_id = ticket_data.get("pyme_id")
+        if (tenant_id is None or rubro_id is None) and pyme_id:
+            pyme_user = db.session.get(User, pyme_id)
+            if pyme_user:
+                if tenant_id is None:
+                    tenant_id = getattr(pyme_user, "tenant_id", None)
+                if rubro_id is None:
+                    rubro_id = getattr(pyme_user, "rubro_id", None)
+
         lat = (
             ticket_data.get("latitud")
             or ticket_data.get("lat")
@@ -93,13 +104,13 @@ class PymeTicketCreator(TicketCreator):
         )
         return PymeTicket(
             user_id=ticket_data.get("user_id"),
-            tenant_id=ticket_data.get("tenant_id"),
+            tenant_id=tenant_id,
             anon_id=ticket_data.get("anon_id"),
             asunto=ticket_data.get("asunto", "Sin Asunto"),
             categoria=ticket_data.get("categoria", "General"),
             pregunta=ticket_data.get("pregunta"),
             nro_ticket=ticket_data.get("nro_ticket"),
-            rubro_id=ticket_data.get("rubro_id"),
+            rubro_id=rubro_id,
             direccion=ticket_data.get("direccion"),
             latitud=lat,
             longitud=lon,
@@ -369,7 +380,7 @@ class ServicioTickets:
                     comentario.pyme_ticket = ticket
                 db.session.add(comentario)
 
-            # db.session.commit() # <<< ELIMINADO
+            db.session.commit()
             logger.info(f"Ticket #{ticket.nro_ticket} (ID: {ticket.id}) ({tipo_ticket}) creado localmente. Municipio ID: {getattr(ticket, 'municipio_id', 'N/A')}. Datos: {ticket.__dict__}")
 
             # Integración con SIGEM para tickets municipales
@@ -512,7 +523,7 @@ class ServicioTickets:
             db.session.add(nuevo_comentario)
             if hasattr(ticket, "ultima_actividad"):
                 ticket.ultima_actividad = get_local_now()
-            # db.session.commit() # <<< ELIMINADO
+            db.session.commit()
             should_notify = comentario_data.get("emit_notifications", True)
             if should_notify:
                 try:
