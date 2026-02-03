@@ -388,14 +388,26 @@ def _document_intelligence_preview(current_user, pyme_id: int):
         except Exception:
             try:
                 df = pd.read_csv(io.BytesIO(content), header=header_index)
-            except Exception as exc:
-                return (
-                    jsonify({
-                        "error": "No se pudo leer el archivo. Usa CSV, Excel o PDF.",
-                        "details": str(exc),
-                    }),
-                    400,
+            else:
+                engine = None
+                if filename.endswith(".xls"):
+                    engine = "xlrd"
+                elif filename.endswith((".xlsx", ".xlsm", ".xlsb")):
+                    engine = "openpyxl"
+                df = pd.read_excel(
+                    io.BytesIO(content),
+                    sheet_name=sheet,
+                    header=header_index,
+                    engine=engine,
                 )
+        except Exception as exc:
+            return (
+                jsonify({
+                    "error": "No se pudo leer el archivo. Usa CSV, Excel o PDF.",
+                    "details": str(exc),
+                }),
+                400,
+            )
 
     df = df if df is not None else pd.DataFrame()
     df = df.dropna(how="all")
