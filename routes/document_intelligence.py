@@ -1,5 +1,5 @@
 import io
-from typing import Any, List
+from typing import Any, List, Optional
 
 import pandas as pd
 import pdfplumber
