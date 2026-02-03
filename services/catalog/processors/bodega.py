@@ -17,7 +17,10 @@ class BodegaProcessor(CatalogProcessor):
         Texto extraído:
         \"\"\"{extracted_text[:15000]}\"\"\"
 
-        Genera JSON con 'items'. Campos: nombre, precio_unitario, precio_caja, varietal, anada, presentacion.
+        Genera JSON con 'items'. Campos: nombre, marca, varietal, anada, presentacion,
+        unidades_por_caja, pallet, precio_caja, precio_botella, sugerido_publico, moneda.
+        Usa valores numéricos y respeta separadores de miles/decimales.
+        Si hay símbolo $ sin aclarar, asumí ARS. Si aparece USD/U$S, asigná USD.
         """
 
         try:
@@ -29,23 +32,63 @@ class BodegaProcessor(CatalogProcessor):
                 # Industry specific logic
                 presentacion = raw.get("presentacion", "")
                 contenido_paquete = presentacion # e.g. "Caja x 6"
+                marca = raw.get("marca")
+                varietal = raw.get("varietal")
+                nombre = raw.get("nombre")
+                if not nombre:
+                    nombre = " ".join(part for part in [marca, varietal] if part) or "Vino sin nombre"
+                unidad_base = "botella"
+                presentacion_lower = str(presentacion or "").lower()
+                if "bag" in presentacion_lower or "box" in presentacion_lower:
+                    unidad_base = "bag_in_box"
+                elif "lata" in presentacion_lower:
+                    unidad_base = "lata"
 
                 # Parsing prices
-                _, precio_unit, _ = parse_precio_flexible(raw.get("precio_unitario"))
-                _, precio_caja, _ = parse_precio_flexible(raw.get("precio_caja"))
+                _, precio_unit, moneda_unit = parse_precio_flexible(raw.get("precio_botella"))
+                _, precio_caja, moneda_caja = parse_precio_flexible(raw.get("precio_caja"))
+                _, precio_publico, moneda_publico = parse_precio_flexible(raw.get("sugerido_publico"))
+                moneda = raw.get("moneda")
+                if not moneda:
+                    moneda = moneda_unit or moneda_caja or moneda_publico
+                if not moneda:
+                    referencia_precio = precio_unit or precio_caja or precio_publico
+                    if referencia_precio is not None and referencia_precio < 100:
+                        moneda = "USD"
+                    else:
+                        moneda = "ARS"
+
+                unidades_por_caja = raw.get("unidades_por_caja") or raw.get("unidades_caja")
+                try:
+                    unidades_por_caja = int(float(unidades_por_caja)) if unidades_por_caja else None
+                except (TypeError, ValueError):
+                    unidades_por_caja = None
+
+                pallet = raw.get("pallet")
+                try:
+                    pallet = int(float(pallet)) if pallet else None
+                except (TypeError, ValueError):
+                    pallet = None
 
                 # Attributes mapping
                 attrs = {
-                    "varietal": raw.get("varietal"),
+                    "marca": marca,
+                    "varietal": varietal,
                     "anada": raw.get("anada"),
                     "precio_caja": precio_caja,
-                    "presentacion_original": presentacion
+                    "precio_botella": precio_unit,
+                    "sugerido_publico": precio_publico,
+                    "unidades_por_caja": unidades_por_caja,
+                    "pallet": pallet,
+                    "presentacion_original": presentacion,
+                    "moneda": moneda,
                 }
 
                 item = CatalogItemData(
-                    nombre=raw.get("nombre", "Vino sin nombre"),
-                    precio=precio_unit, # Canonical price is usually unit price
-                    unidad_base="botella", # Default for wineries usually
+                    nombre=nombre,
+                    precio=precio_unit or precio_publico or precio_caja, # Canonical price is usually unit price
+                    moneda=moneda,
+                    unidad_base=unidad_base, # Default for wineries usually
                     contenido_paquete=contenido_paquete,
                     categoria="Vinos",
                     atributos=attrs,
