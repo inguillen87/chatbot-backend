@@ -301,8 +301,10 @@ def get_tickets_del_usuario_logic(current_user: User):
 
     try:
         tenant_slug = get_current_tenant()
+        tenant_for_query = None
         if tenant_slug:
             g.current_tenant = tenant_slug
+            tenant_for_query = TenantProfile.query.filter_by(slug=tenant_slug).first()
 
         requested_estado_filter = request.args.get("estado")
         requested_categoria_filter = request.args.get("categoria")
@@ -316,27 +318,65 @@ def get_tickets_del_usuario_logic(current_user: User):
         TicketModel = None
         tipo_ticket_str = '' # Para usar en la serialización
 
-        # Determinar el tipo de ticket usando `tipo_chat` y, como fallback, los IDs asociados
-        if current_user.tipo_chat == "municipio" or (
-            not current_user.tipo_chat and current_user.municipio_id
+        tenant_owner_municipio_id = None
+        tenant_owner_pyme_id = None
+        if tenant_for_query:
+            tenant_owner_municipio_id = tenant_for_query.municipio_id
+            tenant_owner_pyme_id = tenant_for_query.pyme_id
+
+        def _authorized_for_tenant() -> bool:
+            if not tenant_for_query:
+                return False
+            if current_user.tenant_id == tenant_for_query.id:
+                return True
+            if tenant_owner_municipio_id and current_user.municipio_id == tenant_owner_municipio_id:
+                return True
+            if tenant_owner_pyme_id and current_user.id == tenant_owner_pyme_id:
+                return True
+            if tenant_owner_pyme_id and current_user.pyme_id == tenant_owner_pyme_id:
+                return True
+            if tenant_owner_municipio_id and current_user.empresa_id == tenant_owner_municipio_id:
+                return True
+            return False
+
+        # Determinar el tipo de ticket usando tenant_slug primero y luego `tipo_chat`.
+        if tenant_owner_municipio_id or (
+            current_user.tipo_chat == "municipio" or (
+                not current_user.tipo_chat and current_user.municipio_id
+            )
         ):
             TicketModel = MunicipioTicket
-            current_app.logger.info(f"[DEBUG] Usuario municipal: id={current_user.id}, municipio_id={current_user.municipio_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
-            if not current_user.municipio_id:
+            municipio_id_for_query = current_user.municipio_id
+            if tenant_owner_municipio_id and _authorized_for_tenant():
+                municipio_id_for_query = tenant_owner_municipio_id
+            current_app.logger.info(
+                "[DEBUG] Usuario municipal: id=%s, municipio_id=%s, rol=%s, tipo_chat=%s, tenant_slug=%s, municipio_query_id=%s",
+                current_user.id,
+                current_user.municipio_id,
+                current_user.rol,
+                current_user.tipo_chat,
+                tenant_slug,
+                municipio_id_for_query,
+            )
+            if not municipio_id_for_query:
                 current_app.logger.error(f"[DEBUG] Usuario {current_user.id} no tiene municipio_id.")
                 return jsonify({"error": "El usuario municipal no tiene asignado un municipio_id válido. Comuníquese con el soporte."}), 400
 
-            query_base = TicketModel.query.filter(TicketModel.municipio_id == current_user.municipio_id)
-            current_app.logger.info(f"[DEBUG] Querying for municipio_id: {current_user.municipio_id}")
+            query_base = TicketModel.query.filter(TicketModel.municipio_id == municipio_id_for_query)
+            current_app.logger.info(f"[DEBUG] Querying for municipio_id: {municipio_id_for_query}")
             tipo_ticket_str = 'municipio'
-        elif current_user.tipo_chat == "pyme" or (
-            not current_user.tipo_chat and current_user.rubro_id
+        elif tenant_owner_pyme_id or (
+            current_user.tipo_chat == "pyme" or (
+                not current_user.tipo_chat and current_user.rubro_id
+            )
         ):
             TicketModel = PymeTicket
             current_app.logger.info(f"[DEBUG] Usuario PYME: id={current_user.id}, rubro_id={current_user.rubro_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
 
             tenant_pyme = getattr(current_user, "tenant_profile_pyme", None)
-            if tenant_pyme:
+            if tenant_for_query and _authorized_for_tenant():
+                query_base = TicketModel.query.filter(PymeTicket.tenant_id == tenant_for_query.id)
+            elif tenant_pyme:
                 query_base = TicketModel.query.filter(PymeTicket.tenant_id == tenant_pyme.id)
             elif current_user.rubro_id:
                 query_base = TicketModel.query.filter(PymeTicket.rubro_id == current_user.rubro_id)
