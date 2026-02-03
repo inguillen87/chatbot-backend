@@ -367,7 +367,24 @@ def _document_intelligence_preview(current_user, pyme_id: int):
             df = pd.DataFrame()
     else:
         try:
-            df = pd.read_excel(io.BytesIO(content), sheet_name=sheet, header=header_index)
+            if filename.endswith(".csv") or filename.endswith(".txt"):
+                df = pd.read_csv(io.BytesIO(content), header=header_index)
+            else:
+                engine = None
+                if filename.endswith(".xls"):
+                    engine = "xlrd"
+                elif filename.endswith((".xlsx", ".xlsm")):
+                    engine = "openpyxl"
+                sheet_name = sheet if sheet is not None else 0
+                df = pd.read_excel(
+                    io.BytesIO(content),
+                    sheet_name=sheet_name,
+                    header=header_index,
+                    engine=engine,
+                )
+                if isinstance(df, dict):
+                    first_sheet = next(iter(df.values()), pd.DataFrame())
+                    df = first_sheet
         except Exception:
             try:
                 df = pd.read_csv(io.BytesIO(content), header=header_index)
