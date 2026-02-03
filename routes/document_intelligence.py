@@ -129,6 +129,39 @@ def _catalog_upload_from_request(upload_id: Optional[int]) -> Optional[CatalogUp
     return CatalogUpload.query.filter_by(id=upload_id).first()
 
 
+def _read_tabular_file(
+    content: bytes,
+    filename: str,
+    sheet: Optional[str],
+    header_index: int,
+) -> tuple[Optional[pd.DataFrame], Optional[str]]:
+    if filename.endswith(".csv") or filename.endswith(".txt"):
+        return pd.read_csv(io.BytesIO(content), header=header_index), None
+
+    engine = None
+    if filename.endswith(".xls"):
+        engine = "xlrd"
+    elif filename.endswith((".xlsx", ".xlsm")):
+        engine = "openpyxl"
+
+    sheet_name = sheet if sheet is not None else 0
+    try:
+        df = pd.read_excel(
+            io.BytesIO(content),
+            sheet_name=sheet_name,
+            header=header_index,
+            engine=engine,
+        )
+        if isinstance(df, dict):
+            df = next(iter(df.values()), pd.DataFrame())
+        return df, None
+    except Exception:
+        try:
+            return pd.read_csv(io.BytesIO(content), header=header_index), None
+        except Exception as exc:
+            return None, str(exc)
+
+
 @document_intelligence_bp.route("/preview", methods=["OPTIONS"])
 def document_intelligence_preview_options(pyme_id: int):
     """Handle CORS preflight requests for the preview endpoint."""
@@ -366,45 +399,12 @@ def _document_intelligence_preview(current_user, pyme_id: int):
         except Exception:
             df = pd.DataFrame()
     else:
-        try:
-            if filename.endswith(".csv") or filename.endswith(".txt"):
-                df = pd.read_csv(io.BytesIO(content), header=header_index)
-            else:
-                engine = None
-                if filename.endswith(".xls"):
-                    engine = "xlrd"
-                elif filename.endswith((".xlsx", ".xlsm")):
-                    engine = "openpyxl"
-                sheet_name = sheet if sheet is not None else 0
-                df = pd.read_excel(
-                    io.BytesIO(content),
-                    sheet_name=sheet_name,
-                    header=header_index,
-                    engine=engine,
-                )
-                if isinstance(df, dict):
-                    first_sheet = next(iter(df.values()), pd.DataFrame())
-                    df = first_sheet
-        except Exception:
-            try:
-                df = pd.read_csv(io.BytesIO(content), header=header_index)
-            else:
-                engine = None
-                if filename.endswith(".xls"):
-                    engine = "xlrd"
-                elif filename.endswith((".xlsx", ".xlsm", ".xlsb")):
-                    engine = "openpyxl"
-                df = pd.read_excel(
-                    io.BytesIO(content),
-                    sheet_name=sheet,
-                    header=header_index,
-                    engine=engine,
-                )
-        except Exception as exc:
+        df, error = _read_tabular_file(content, filename, sheet, header_index)
+        if error:
             return (
                 jsonify({
                     "error": "No se pudo leer el archivo. Usa CSV, Excel o PDF.",
-                    "details": str(exc),
+                    "details": error,
                 }),
                 400,
             )
