@@ -12,7 +12,7 @@ from services.embedding_service import embed_textos_llm as embed_textos
 
 from services.vision_fallback_service import analyze_image_smart
 from services.document_processing_service import document_processing_service
-from .common_utils import limpiar_texto_base
+from .common_utils import limpiar_texto_base, parse_cantidad_flexible, parse_precio_flexible
 
 # Import Registry
 from services.catalog.registry import registry as catalog_registry
@@ -62,7 +62,8 @@ def procesar_y_embedear_catalogo(
     pyme_rubro_nombre: str = "generico",
     coleccion: str = CATALOGO_PYME,
     mime_type_override: Optional[str] = None,
-    catalog_upload_id: int = None
+    catalog_upload_id: int = None,
+    tenant_id: Optional[int] = None,
 ) -> int:
     logger.info(f"[UPLOAD_PROC] Iniciando v2 para user_id={user_id}, rubro='{pyme_rubro_nombre}'")
 
@@ -105,22 +106,34 @@ def procesar_y_embedear_catalogo(
 
     # Clear old items for this user? Or maybe version them.
     # For now, keep "replace all" logic for simplicity unless user wants history.
-    CatalogoItem.query.filter_by(user_id=user_id).delete()
+    items_query = CatalogoItem.query.filter_by(user_id=user_id)
+    if tenant_id:
+        items_query = items_query.filter_by(tenant_id=tenant_id)
+    items_query.delete()
 
     for item_data in result.items:
         # Create DB Model
+        extra_metadata = item_data.atributos or {}
+        precio_por_caja = extra_metadata.get("precio_caja") or extra_metadata.get("precio_por_caja")
+        unidad_por_caja = extra_metadata.get("unidades_por_caja") or extra_metadata.get("unidad_por_caja")
         db_item = CatalogoItem(
             user_id=user_id,
+            tenant_id=tenant_id,
             # catalog_upload_id removed as it is not in the model
             nombre=item_data.nombre,
             descripcion=str(item_data.atributos) if item_data.atributos else "",
             precio=str(item_data.precio) if item_data.precio else None,
             precio_monetario=item_data.precio,
+            moneda=item_data.moneda,
             sku=item_data.sku,
             cantidad=str(item_data.stock) if item_data.stock else None,
             unidad=item_data.unidad_base,
             categoria=item_data.categoria or pyme_rubro_nombre,
             extra_metadata=item_data.atributos,
+            marca=extra_metadata.get("marca"),
+            precio_por_caja=precio_por_caja,
+            unidad_por_caja=unidad_por_caja,
+            descripcion_corta=item_data.contenido_paquete,
             texto=item_data.original_text
         )
         items_para_db.append(db_item)
@@ -135,13 +148,52 @@ def procesar_y_embedear_catalogo(
         payloads = []
 
         for db_item in items_para_db:
-            texto = f"{db_item.nombre} {db_item.descripcion or ''} {db_item.sku or ''}"
+            extra_text = ""
+            if isinstance(db_item.extra_metadata, dict):
+                extra_text = " ".join(
+                    str(value) for value in db_item.extra_metadata.values() if value
+                )
+            texto = " ".join(
+                part
+                for part in [
+                    db_item.nombre,
+                    db_item.descripcion or "",
+                    db_item.sku or "",
+                    extra_text,
+                ]
+                if part
+            ).strip()
             textos_embed.append(texto)
+            precio_float = None
+            if db_item.precio_monetario is not None:
+                precio_float = float(db_item.precio_monetario)
+            else:
+                _, precio_float, _ = parse_precio_flexible(db_item.precio)
+            categoria_qdrant = (db_item.categoria or "").strip().lower() or None
+            stock_val = parse_cantidad_flexible(db_item.cantidad)
+            extra_metadata = db_item.extra_metadata or {}
             payloads.append({
                 "db_id": db_item.id,
                 "nombre": db_item.nombre,
                 "precio": db_item.precio_monetario,
-                "user_id": user_id
+                "precio_float": precio_float,
+                "precio_str": db_item.precio,
+                "categoria_qdrant": categoria_qdrant,
+                "descripcion": db_item.descripcion,
+                "sku": db_item.sku,
+                "marca": db_item.marca,
+                "stock": stock_val,
+                "unidad": db_item.unidad,
+                "moneda": db_item.moneda,
+                "precio_por_caja": db_item.precio_por_caja,
+                "unidad_por_caja": db_item.unidad_por_caja,
+                "user_id": user_id,
+                "tenant_id": tenant_id,
+                "rubro_slug": pyme_rubro_nombre,
+                "texto_original_para_embedding": texto,
+                "varietal": extra_metadata.get("varietal"),
+                "anada": extra_metadata.get("anada"),
+                "presentacion": extra_metadata.get("presentacion_original"),
             })
 
         vectores = embed_textos(textos_embed)
@@ -211,7 +263,8 @@ def subir_catalogo(current_user: Optional[User] = None):
             pyme_rubro_nombre=rubro_nombre,
             coleccion=coleccion_destino,
             mime_type_override=mime_type,
-            catalog_upload_id=upload_rec.id
+            catalog_upload_id=upload_rec.id,
+            tenant_id=tenant_id,
         )
 
         return jsonify({

@@ -131,6 +131,8 @@ def commit_import_session(current_user, upload_id):
     from services.qdrant_service import index_catalog_item
     from services.embedding_service import embed_textos_llm
 
+    CatalogoItem.query.filter_by(tenant_id=tenant.id).delete()
+
     # Bulk Upsert Logic
     for item in items:
         sku = item.get('sku')
