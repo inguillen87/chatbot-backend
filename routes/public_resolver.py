@@ -221,6 +221,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
 
     attrs = {
         "data-owner-token": canonical_token,
+        "data-widget-token": canonical_token,
+        "data-entity-token": canonical_token,
         "data-tenant": tenant.slug,
         "data-tenant-slug": tenant.slug,
         "data-default-open": str(cfg.get("widget_default_open", False)).lower(),

@@ -11,6 +11,7 @@ Estas sugerencias apuntan a que la vista de integraciones y la personalización 
 - Mostrar el widget con **estado real** (abierto/cerrado) y un conmutador “Preview abierto/cerrado”.
 - Permitir **rotación de dispositivo** (desktop/tablet/mobile) con toggles, y mostrar el ancho real del widget.
 - Agregar un “Modo embed” que muestre el **snippet** y un panel lateral con los atributos activos.
+- Para el **preview real**, inyectar el `embed_snippet` desde `/api/public/widget-config` y renderizarlo dentro del iframe/contenedor de la vista previa (no usar mock estático).
 
 ## Controles de personalización
 - Separar “Apariencia” (colores, tipografía, bordes) de “Contenido” (título, mensaje de bienvenida, CTA).
