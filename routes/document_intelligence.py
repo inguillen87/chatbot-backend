@@ -6,7 +6,7 @@ import pdfplumber
 from flask import Blueprint, jsonify, request
 
 from routes.auth import token_requerido
-from services.vision_fallback_service import analyze_image_structured
+from services.vision_fallback_service import analyze_image_structured, analyze_text_structured
 
 
 document_intelligence_bp = Blueprint(
@@ -193,10 +193,21 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                         df = df if df is not None and not df.empty else None
 
                 if df is None or df.empty:
-                    # Si no hay tablas, extraer texto simple
                     text = page_for_image.extract_text() or ""
-                    # Crear un DF dummy con el texto
-                    df = pd.DataFrame([{"Contenido": line} for line in text.split('\n') if line.strip()])
+                    text_prompt = (
+                        "Extrae la tabla del catálogo en JSON con claves "
+                        "'columns' (lista de strings) y 'rows' (lista de listas ordenadas según columns). "
+                        "Incluye columnas como Marca, Varietal, Unidades/Caja, Pallet, "
+                        "Precio Caja, Precio Botella, Sugerido Público si están presentes. "
+                        "No inventes datos, deja vacío si no se ve. "
+                        "Mantén los valores numéricos tal como aparecen (puntos para miles, comas decimales)."
+                    )
+                    structured = analyze_text_structured(text, text_prompt)
+                    structured_df = _build_df_from_vision(structured)
+                    if structured_df is not None and not structured_df.empty:
+                        df = structured_df
+                    else:
+                        df = pd.DataFrame([{"Contenido": line} for line in text.split('\n') if line.strip()])
 
         except Exception as exc:
             return (
@@ -225,6 +236,19 @@ def _document_intelligence_preview(current_user, pyme_id: int):
 
     max_rows = request.form.get("maxRows", type=int) or 50
     preview_df = df.head(max_rows).fillna("")
+    text_prompt = (
+        "Extrae la tabla del catálogo en JSON con claves "
+        "'columns' (lista de strings) y 'rows' (lista de listas ordenadas según columns). "
+        "Incluye columnas como Marca, Varietal, Unidades/Caja, Pallet, "
+        "Precio Caja, Precio Botella, Sugerido Público si están presentes. "
+        "No inventes datos, deja vacío si no se ve. "
+        "Mantén los valores numéricos tal como aparecen (puntos para miles, comas decimales)."
+    )
+    csv_sample = preview_df.to_csv(index=False)
+    structured = analyze_text_structured(csv_sample, text_prompt)
+    structured_df = _build_df_from_vision(structured)
+    if structured_df is not None and not structured_df.empty:
+        preview_df = structured_df.head(max_rows).fillna("")
 
     # Ensure all column names are strings to avoid JSON serialization issues (e.g. sorting keys)
     preview_df.columns = preview_df.columns.map(lambda x: str(x) if x is not None else "")
