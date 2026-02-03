@@ -249,6 +249,21 @@ PLACEHOLDER_CONTACT_RESPONSES = {
     "la de antes",
     "igual que antes",
     "la anterior",
+    "ya tenes todo",
+    "ya tienes todo",
+    "ya tenes todos",
+    "ya tienes todos",
+    "ya te los di",
+    "ya te los pase",
+    "ya te los pasé",
+    "ya te los envie",
+    "ya te los envié",
+    "que datos mas necesitas",
+    "que datos más necesitas",
+    "que datos necesitas",
+    "que mas necesitas",
+    "que más necesitas",
+    "no se",
 }
 
 
@@ -320,7 +335,7 @@ def _ensure_sugerencia_address(datos: Dict[str, Any]) -> None:
 
 def _has_valid_sugerencia_address(datos: Dict[str, Any]) -> bool:
     direccion = datos.get("direccion")
-    if isinstance(direccion, str) and direccion.strip():
+    if isinstance(direccion, str) and direccion.strip() and not _is_placeholder_address(direccion):
         return True
     ubicacion = datos.get("ubicacion")
     if isinstance(ubicacion, str) and ubicacion.strip() and ubicacion != "N/A":
@@ -347,7 +362,7 @@ def _get_missing_sugerencia_contact_fields(datos: Dict[str, Any]) -> list[str]:
 
 def _format_sugerencia_address(datos: Dict[str, Any]) -> str:
     direccion = datos.get("direccion")
-    if isinstance(direccion, str) and direccion.strip():
+    if isinstance(direccion, str) and direccion.strip() and not _is_placeholder_address(direccion):
         return direccion
     ubicacion = datos.get("ubicacion")
     if isinstance(ubicacion, dict):
@@ -9180,8 +9195,17 @@ def responder_municipio(
             if campos_faltantes:
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
+                if campos_faltantes == ["direccion"]:
+                    message_body = (
+                        "Necesito la dirección o una ubicación aproximada para registrar la sugerencia. "
+                        "Podés escribirla en un solo mensaje."
+                    )
+                else:
+                    message_body = (
+                        f"Aún necesito: {', '.join(campos_faltantes)}. Podés enviarlos todos juntos."
+                    )
                 return _finalize_response({
-                    "message_body": f"Aún necesito: {', '.join(campos_faltantes)}. Podés enviarlos todos juntos.",
+                    "message_body": message_body,
                     "fuente": "datos_contacto_sugerencia_incompletos"
                 })
 
@@ -9247,8 +9271,17 @@ def responder_municipio(
             else:
                 contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
+                botones = [
+                    {"texto": "Sí, enviar sugerencia", "action_id": "confirmar_sugerencia_si"},
+                    {"texto": "No, corregir", "action_id": "confirmar_sugerencia_no"},
+                ]
                 return _finalize_response({
-                    "message_body": "Entendido. Por favor, enviá los datos correctos en un solo mensaje.",
+                    "message_body": (
+                        "Para continuar, confirmá si los datos son correctos o indicá el dato a corregir "
+                        "(por ejemplo: dirección, email o teléfono)."
+                    ),
+                    "options_list": botones,
+                    "message_type": "interactive_buttons",
                     "fuente": "pide_correccion_sugerencia"
                 })
 
@@ -10104,8 +10137,17 @@ def responder_municipio(
             if campos_faltantes:
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
+                if campos_faltantes == ["direccion"]:
+                    message_body = (
+                        "Necesito la dirección o una ubicación aproximada para registrar la sugerencia. "
+                        "Podés escribirla en un solo mensaje."
+                    )
+                else:
+                    message_body = (
+                        f"Aún necesito: {', '.join(campos_faltantes)}. Podés enviarlos todos juntos."
+                    )
                 return _finalize_response({
-                    "message_body": f"Aún necesito: {', '.join(campos_faltantes)}. Podés enviarlos todos juntos.",
+                    "message_body": message_body,
                     "fuente": "datos_contacto_sugerencia_incompletos"
                 })
 
@@ -10143,14 +10185,24 @@ def responder_municipio(
                 or any(a in texto_normalizado for a in afirmativos)
             ):
                 datos_confirmados = contexto_municipio_actual.pop('datos_sugerencia', {})
-                handler = CrearReclamoActionHandler(context)
+                handler = HacerSugerenciaActionHandler(context)
                 response = handler.execute(datos_confirmados)
                 if response.get("success"):
-                    response["message_to_user"] = f"✅ ¡Hemos recibido tu sugerencia! Muchas gracias por tu aporte. Lo hemos registrado con el número de ticket `{response.get('data', {}).get('nro_ticket', 'N/A')}` para su seguimiento."
-                    contexto_municipio_actual['estado_conversacion'] = None
-                    if chat_db_context: flag_modified(chat_db_context, "context_data")
-                    final_payload = _message_with_menu(response["message_to_user"], context)
-                    final_payload['success'] = True
+                    contexto_municipio_actual = chat_db_context_live_data.setdefault(
+                        CONTEXTO_MUNICIPIO, {}
+                    )
+                    contexto_municipio_actual['estado_conversacion'] = (
+                        ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
+                    )
+                    context[CONTEXTO_MUNICIPIO] = contexto_municipio_actual
+                    if chat_db_context:
+                        flag_modified(chat_db_context, "context_data")
+
+                    final_payload = _build_sugerencia_success_payload(
+                        context,
+                        datos_confirmados,
+                        response,
+                    )
                     return _finalize_response(final_payload)
                 contexto_municipio_actual['datos_sugerencia'] = datos_confirmados
                 if response.get("pedir_info"):
@@ -10160,8 +10212,17 @@ def responder_municipio(
             else:
                 contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
+                botones = [
+                    {"texto": "Sí, enviar sugerencia", "action_id": "confirmar_sugerencia_si"},
+                    {"texto": "No, corregir", "action_id": "confirmar_sugerencia_no"},
+                ]
                 return _finalize_response({
-                    "message_body": "Entendido. Por favor, enviá los datos correctos en un solo mensaje.",
+                    "message_body": (
+                        "Para continuar, confirmá si los datos son correctos o indicá el dato a corregir "
+                        "(por ejemplo: dirección, email o teléfono)."
+                    ),
+                    "options_list": botones,
+                    "message_type": "interactive_buttons",
                     "fuente": "pide_correccion_sugerencia"
                 })
 
