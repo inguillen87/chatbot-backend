@@ -41,6 +41,11 @@ def _looks_like_flat_pdf_table(df: pd.DataFrame) -> bool:
     header_tokens = ("marca", "varietal", "precio", "caja", "botella", "pallet", "unidad")
     token_hits = 0
     long_row_hits = 0
+    mostly_empty_second_column = False
+    if column_count == 2:
+        second_values = sample_rows.iloc[:, 1].astype(str).str.strip()
+        empty_ratio = (second_values == "").mean() if len(second_values) else 0
+        mostly_empty_second_column = empty_ratio >= 0.6
     for _, row in sample_rows.iterrows():
         cell_text = " ".join(str(value) for value in row if value is not None).strip()
         if not cell_text:
@@ -50,155 +55,10 @@ def _looks_like_flat_pdf_table(df: pd.DataFrame) -> bool:
         if len(cell_text) > 80:
             long_row_hits += 1
 
-    return column_count <= 1 and (token_hits >= 2 or long_row_hits >= 2)
-
-
-def _group_words_by_line(
-    words: List[dict[str, Any]], y_tolerance: float = 3.0
-) -> List[dict[str, Any]]:
-    if not words:
-        return []
-
-    sorted_words = sorted(words, key=lambda w: (w.get("top", 0), w.get("x0", 0)))
-    lines: List[dict[str, Any]] = []
-    current_line: List[dict[str, Any]] = []
-    current_top = None
-
-    for word in sorted_words:
-        top = float(word.get("top", 0))
-        if current_top is None or abs(top - current_top) <= y_tolerance:
-            current_line.append(word)
-            current_top = top if current_top is None else current_top
-        else:
-            lines.append(
-                {
-                    "top": current_top,
-                    "words": sorted(current_line, key=lambda w: w.get("x0", 0)),
-                }
-            )
-            current_line = [word]
-            current_top = top
-
-    if current_line:
-        lines.append(
-            {"top": current_top, "words": sorted(current_line, key=lambda w: w.get("x0", 0))}
-        )
-
-    return lines
-
-
-def _build_columns_from_header_words(
-    header_words: List[dict[str, Any]], gap_tolerance: float = 12.0
-) -> List[dict[str, Any]]:
-    if not header_words:
-        return []
-
-    segments: List[dict[str, Any]] = []
-    current_segment = {
-        "words": [header_words[0]],
-        "x0": float(header_words[0]["x0"]),
-        "x1": float(header_words[0]["x1"]),
-    }
-
-    for word in header_words[1:]:
-        gap = float(word["x0"]) - current_segment["x1"]
-        if gap > gap_tolerance:
-            segments.append(current_segment)
-            current_segment = {
-                "words": [word],
-                "x0": float(word["x0"]),
-                "x1": float(word["x1"]),
-            }
-        else:
-            current_segment["words"].append(word)
-            current_segment["x1"] = max(current_segment["x1"], float(word["x1"]))
-
-    segments.append(current_segment)
-
-    return [
-        {
-            "name": " ".join(word["text"] for word in segment["words"]).strip(),
-            "x0": segment["x0"],
-            "x1": segment["x1"],
-        }
-        for segment in segments
-    ]
-
-
-def _assign_word_to_column(
-    word: dict[str, Any], column_boundaries: List[float]
-) -> int:
-    center = (float(word["x0"]) + float(word["x1"])) / 2
-    for idx, boundary in enumerate(column_boundaries):
-        if center <= boundary:
-            return idx
-    return len(column_boundaries)
-
-
-def _extract_table_from_words(page: pdfplumber.page.Page) -> Optional[pd.DataFrame]:
-    words = page.extract_words(
-        x_tolerance=2,
-        y_tolerance=2,
-        keep_blank_chars=False,
-        extra_attrs=["x0", "x1", "top", "bottom"],
-    )
-    if not words:
-        return None
-
-    lines = _group_words_by_line(words)
-    if not lines:
-        return None
-
-    header_tokens = ("marca", "varietal", "precio", "caja", "botella", "pallet", "unidad")
-    header_idx = None
-    header_hits = 0
-    for idx, line in enumerate(lines):
-        line_text = " ".join(word["text"].lower() for word in line["words"])
-        hits = sum(token in line_text for token in header_tokens)
-        if hits > header_hits:
-            header_hits = hits
-            header_idx = idx
-
-    if header_idx is None or header_hits < 2:
-        return None
-
-    header_lines = [lines[header_idx]]
-    if header_idx + 1 < len(lines):
-        next_line = lines[header_idx + 1]
-        if abs(next_line["top"] - lines[header_idx]["top"]) <= 10:
-            header_lines.append(next_line)
-
-    header_words = sorted(
-        [word for line in header_lines for word in line["words"]],
-        key=lambda w: w.get("x0", 0),
-    )
-    column_defs = _build_columns_from_header_words(header_words)
-    if not column_defs:
-        return None
-
-    columns = [col["name"] or f"Columna {idx + 1}" for idx, col in enumerate(column_defs)]
-    centers = [(col["x0"] + col["x1"]) / 2 for col in column_defs]
-    boundaries = [
-        (centers[idx] + centers[idx + 1]) / 2 for idx in range(len(centers) - 1)
-    ]
-
-    header_bottom = max(line["top"] for line in header_lines) + 4
-    rows: List[List[str]] = []
-    for line in lines[header_idx + len(header_lines) :]:
-        if line["top"] <= header_bottom:
-            continue
-        row_cells = [""] * len(columns)
-        for word in line["words"]:
-            col_idx = _assign_word_to_column(word, boundaries)
-            existing = row_cells[col_idx]
-            row_cells[col_idx] = f"{existing} {word['text']}".strip() if existing else word["text"]
-        if any(cell.strip() for cell in row_cells):
-            rows.append(row_cells)
-
-    if not rows:
-        return None
-
-    return pd.DataFrame(rows, columns=columns)
+    flat_by_tokens = token_hits >= 2 or long_row_hits >= 2
+    if column_count <= 1:
+        return flat_by_tokens
+    return mostly_empty_second_column and flat_by_tokens
 
 
 @document_intelligence_bp.route("/preview", methods=["OPTIONS"])
@@ -236,19 +96,20 @@ def _document_intelligence_preview(current_user, pyme_id: int):
             with pdfplumber.open(io.BytesIO(content)) as pdf:
                 page_for_image = pdf.pages[0]
                 table_data = None
-                table_settings = {
-                    "vertical_strategy": "lines",
-                    "horizontal_strategy": "lines",
-                    "snap_tolerance": 3,
-                    "join_tolerance": 3,
-                }
                 for page in pdf.pages[:2]:
-                    table = page.extract_table(table_settings)
+                    table = page.extract_table(
+                        {
+                            "vertical_strategy": "lines",
+                            "horizontal_strategy": "lines",
+                            "snap_tolerance": 3,
+                            "join_tolerance": 3,
+                        }
+                    )
                     if table:
                         table_data = table
                         page_for_image = page
                         break
-                    tables = page.extract_tables(table_settings) or []
+                    tables = page.extract_tables() or []
                     if tables:
                         table_data = max(tables, key=len)
                         page_for_image = page
@@ -258,14 +119,7 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                     headers = []
                     rows = []
                     header_index = None
-                    header_tokens = (
-                        "marca",
-                        "varietal",
-                        "precio",
-                        "caja",
-                        "botella",
-                        "pallet",
-                    )
+                    header_tokens = ("marca", "varietal", "precio", "caja", "botella", "pallet")
                     for idx, row in enumerate(table_data):
                         joined = " ".join(str(cell or "").lower() for cell in row)
                         if any(token in joined for token in header_tokens):
@@ -283,11 +137,6 @@ def _document_intelligence_preview(current_user, pyme_id: int):
 
                     df = pd.DataFrame(rows, columns=headers)
                 use_vision = df is None or df.empty or _looks_like_flat_pdf_table(df)
-                if use_vision:
-                    structured_df = _extract_table_from_words(page_for_image)
-                    if structured_df is not None and not structured_df.empty:
-                        df = structured_df
-                        use_vision = False
                 if use_vision:
                     try:
                         image = page_for_image.to_image(resolution=300).original
