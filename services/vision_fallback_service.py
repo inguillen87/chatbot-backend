@@ -147,3 +147,16 @@ def analyze_image_smart(image_bytes: bytes, prompt: Optional[str] = None) -> Dic
         return _normalize_result(result)
     logger.error("All vision providers failed")
     return {"labels": [], "objects": []}
+
+
+def analyze_image_structured(image_bytes: bytes, prompt: str) -> Optional[Dict[str, Any]]:
+    """Analyze image bytes and return provider JSON without normalization."""
+    result = _call_openai(image_bytes, custom_prompt=prompt)
+    if result:
+        return result
+    logger.warning("Structured vision falling back to Cohere...")
+    result = _call_cohere(image_bytes, custom_prompt=prompt)
+    if result:
+        return result
+    logger.error("All structured vision providers failed")
+    return None
