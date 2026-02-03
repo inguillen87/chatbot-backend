@@ -779,6 +779,28 @@ class CrearReclamoActionHandler(BaseActionHandler):
             nro_ticket_str = f"M-{ticket_nro}"
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
 
+            try:
+                from models import MunicipioTicket
+                from routes.ticket import serialize_ticket_to_json
+                from socket_service import emit_new_ticket
+
+                ticket_obj = db.session.get(MunicipioTicket, ticket_creado.get("id"))
+                if ticket_obj:
+                    ticket_json = serialize_ticket_to_json(ticket_obj, "municipio")
+                    emit_new_ticket(ticket_json)
+                else:
+                    logger.warning(
+                        "No se pudo recuperar el ticket recién creado para emitir socket: id=%s",
+                        ticket_creado.get("id"),
+                    )
+            except Exception as e_notify:
+                logger.error(
+                    "Error enviando notificación en tiempo real para ticket %s: %s",
+                    nro_ticket_str,
+                    e_notify,
+                    exc_info=True,
+                )
+
             # Completar datos desde tramites.json si existen
             tramites_cfg = cargar_configuracion_municipio(
                 getattr(owner_user, "municipio_id", "default"),
@@ -1212,6 +1234,28 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
 
             nro_ticket_str = f"S-{ticket_creado.get('nro_ticket')}"
             logger.info(f"Ticket de sugerencia {nro_ticket_str} creado exitosamente.")
+
+            try:
+                from models import MunicipioTicket
+                from routes.ticket import serialize_ticket_to_json
+                from socket_service import emit_new_ticket
+
+                ticket_obj = db.session.get(MunicipioTicket, ticket_creado.get("id"))
+                if ticket_obj:
+                    ticket_json = serialize_ticket_to_json(ticket_obj, "municipio")
+                    emit_new_ticket(ticket_json)
+                else:
+                    logger.warning(
+                        "No se pudo recuperar la sugerencia recién creada para emitir socket: id=%s",
+                        ticket_creado.get("id"),
+                    )
+            except Exception as e_notify:
+                logger.error(
+                    "Error enviando notificación en tiempo real para sugerencia %s: %s",
+                    nro_ticket_str,
+                    e_notify,
+                    exc_info=True,
+                )
 
             # Limpiar el contexto para evitar estados pegajosos
             user_info = self.context.get(CONTEXTO_MUNICIPIO, {}).get('user', {})
