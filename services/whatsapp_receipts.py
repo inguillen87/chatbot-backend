@@ -45,7 +45,15 @@ def _render_contact_section(contacto: Optional[Dict[str, Any]]) -> str:
     if telefono:
         lines.append(f"* *Teléfono:* {telefono}")
     if horario:
-        lines.append(f"* *Horario:* {horario}")
+        if isinstance(horario, list):
+            h_lines = []
+            for h in horario:
+                if not h.get("cerrado"):
+                    h_lines.append(f"  - {h.get("dia")}: {h.get("abre")} - {h.get("cierra")}")
+            if h_lines:
+                lines.append(f"* *Horario:*\n" + "\n".join(h_lines))
+        else:
+            lines.append(f"* *Horario:* {horario}")
     return "\n".join(lines)
 
 

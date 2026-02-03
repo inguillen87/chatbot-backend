@@ -112,6 +112,14 @@ def llamar_openai(app, mensaje_usuario: str, usuario: dict, historial: list, cha
         # 4. Parse the response
         parsed_response = json.loads(raw_response_text)
 
+        if not isinstance(parsed_response, dict):
+            # logger.warning(f"OpenAI returned non-dict response: {parsed_response}")
+            parsed_response = {
+                "message_body": str(parsed_response),
+                "accion_backend": "responder_directamente",
+                "respuesta_usuario": str(parsed_response)
+            }
+
         usage_dict = None
         if getattr(response, "usage", None):
             usage = response.usage
