@@ -1235,6 +1235,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             nro_ticket_str = f"S-{ticket_creado.get('nro_ticket')}"
             logger.info(f"Ticket de sugerencia {nro_ticket_str} creado exitosamente.")
 
+            pin_value = ticket_creado.get("consulta_pin") or pin_final
             try:
                 from models import MunicipioTicket, db
                 from routes.ticket import serialize_ticket_to_json
@@ -1242,6 +1243,10 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
 
                 ticket_obj = db.session.get(MunicipioTicket, ticket_creado.get("id"))
                 if ticket_obj:
+                    if not ticket_obj.consulta_pin:
+                        ticket_obj.consulta_pin = pin_value
+                        db.session.commit()
+                    pin_value = ticket_obj.consulta_pin or pin_value
                     ticket_json = serialize_ticket_to_json(ticket_obj, "municipio")
                     emit_new_ticket(ticket_json)
                 else:
@@ -1289,7 +1294,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 {}, # No hay contacto especializado para sugerencias
                 base_chat_url,
                 dni=dni_vecino,
-                consulta_pin=ticket_creado.get("consulta_pin") or pin_final,
+                consulta_pin=pin_value,
             )
 
             promo_section = promo_service.build_ticket_promo_section(
@@ -1333,7 +1338,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 descripcion=descripcion_sugerencia,
                 direccion=ubicacion_sugerencia,
                 dni=dni_vecino,
-                consulta_pin=ticket_creado.get("consulta_pin") or pin_final,
+                consulta_pin=pin_value,
                 base_chat_url=base_chat_url,
                 promo_image_url=promo_image_url,
                 promo_text=promo_text,
@@ -1352,7 +1357,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 "nombre": nombre_vecino_final,
                 "categoria": "Sugerencia",
                 "descripcion": descripcion_sugerencia,
-                "consulta_pin": ticket_creado.get("consulta_pin") or pin_final,
+                "consulta_pin": pin_value,
             }
             return _apply_whatsapp_closing_promo(
                 response_payload,
