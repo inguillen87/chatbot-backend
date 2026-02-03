@@ -6,7 +6,7 @@ import pdfplumber
 from flask import Blueprint, jsonify, request
 
 from routes.auth import token_requerido
-from services.vision_fallback_service import analyze_image_structured
+from services.vision_fallback_service import analyze_image_structured, analyze_text_structured
 
 
 document_intelligence_bp = Blueprint(
@@ -59,6 +59,36 @@ def _looks_like_flat_pdf_table(df: pd.DataFrame) -> bool:
     if column_count <= 1:
         return flat_by_tokens
     return mostly_empty_second_column and flat_by_tokens
+
+
+def _looks_like_placeholder_columns(columns: List[Any]) -> bool:
+    if not columns:
+        return True
+    normalized = [str(col or "").strip().lower() for col in columns]
+    if all(not col for col in normalized):
+        return True
+    placeholder_hits = 0
+    for col in normalized:
+        if col.startswith("col_") or col.startswith("columna") or col.startswith("column"):
+            placeholder_hits += 1
+    return placeholder_hits >= max(1, int(len(normalized) * 0.6))
+
+
+def _build_df_from_vision(vision: dict) -> Optional[pd.DataFrame]:
+    if not isinstance(vision, dict):
+        return None
+    columns = vision.get("columns") or []
+    rows = vision.get("rows") or []
+    if not rows:
+        return None
+    if rows and isinstance(rows[0], dict):
+        df = pd.DataFrame(rows)
+        if columns:
+            df = df.reindex(columns=columns)
+        return df
+    if columns:
+        return pd.DataFrame(rows, columns=columns)
+    return pd.DataFrame(rows)
 
 
 @document_intelligence_bp.route("/preview", methods=["OPTIONS"])
@@ -136,7 +166,12 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                         headers = [f"Columna {i+1}" for i in range(len(rows[0]))] if rows else []
 
                     df = pd.DataFrame(rows, columns=headers)
-                use_vision = df is None or df.empty or _looks_like_flat_pdf_table(df)
+                use_vision = (
+                    df is None
+                    or df.empty
+                    or _looks_like_flat_pdf_table(df)
+                    or _looks_like_placeholder_columns(list(df.columns) if df is not None else [])
+                )
                 if use_vision:
                     try:
                         image = page_for_image.to_image(resolution=300).original
@@ -144,22 +179,35 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                         image.save(buffer, format="JPEG")
                         prompt = (
                             "Extrae la tabla del catálogo en JSON con claves "
-                            "'columns' (lista de strings) y 'rows' (lista de objetos con esas columnas). "
+                            "'columns' (lista de strings) y 'rows' (lista de listas ordenadas según columns). "
                             "Incluye columnas como Marca, Varietal, Unidades/Caja, Pallet, "
                             "Precio Caja, Precio Botella, Sugerido Público si están presentes. "
-                            "No inventes datos, deja vacío si no se ve."
+                            "No inventes datos, deja vacío si no se ve. "
+                            "Mantén los valores numéricos tal como aparecen (puntos para miles, comas decimales)."
                         )
                         vision = analyze_image_structured(buffer.getvalue(), prompt)
-                        if isinstance(vision, dict) and vision.get("rows") and vision.get("columns"):
-                            df = pd.DataFrame(vision["rows"], columns=vision["columns"])
+                        vision_df = _build_df_from_vision(vision)
+                        if vision_df is not None and not vision_df.empty:
+                            df = vision_df
                     except Exception:
                         df = df if df is not None and not df.empty else None
 
                 if df is None or df.empty:
-                    # Si no hay tablas, extraer texto simple
                     text = page_for_image.extract_text() or ""
-                    # Crear un DF dummy con el texto
-                    df = pd.DataFrame([{"Contenido": line} for line in text.split('\n') if line.strip()])
+                    text_prompt = (
+                        "Extrae la tabla del catálogo en JSON con claves "
+                        "'columns' (lista de strings) y 'rows' (lista de listas ordenadas según columns). "
+                        "Incluye columnas como Marca, Varietal, Unidades/Caja, Pallet, "
+                        "Precio Caja, Precio Botella, Sugerido Público si están presentes. "
+                        "No inventes datos, deja vacío si no se ve. "
+                        "Mantén los valores numéricos tal como aparecen (puntos para miles, comas decimales)."
+                    )
+                    structured = analyze_text_structured(text, text_prompt)
+                    structured_df = _build_df_from_vision(structured)
+                    if structured_df is not None and not structured_df.empty:
+                        df = structured_df
+                    else:
+                        df = pd.DataFrame([{"Contenido": line} for line in text.split('\n') if line.strip()])
 
         except Exception as exc:
             return (
@@ -188,6 +236,19 @@ def _document_intelligence_preview(current_user, pyme_id: int):
 
     max_rows = request.form.get("maxRows", type=int) or 50
     preview_df = df.head(max_rows).fillna("")
+    text_prompt = (
+        "Extrae la tabla del catálogo en JSON con claves "
+        "'columns' (lista de strings) y 'rows' (lista de listas ordenadas según columns). "
+        "Incluye columnas como Marca, Varietal, Unidades/Caja, Pallet, "
+        "Precio Caja, Precio Botella, Sugerido Público si están presentes. "
+        "No inventes datos, deja vacío si no se ve. "
+        "Mantén los valores numéricos tal como aparecen (puntos para miles, comas decimales)."
+    )
+    csv_sample = preview_df.to_csv(index=False)
+    structured = analyze_text_structured(csv_sample, text_prompt)
+    structured_df = _build_df_from_vision(structured)
+    if structured_df is not None and not structured_df.empty:
+        preview_df = structured_df.head(max_rows).fillna("")
 
     # Ensure all column names are strings to avoid JSON serialization issues (e.g. sorting keys)
     preview_df.columns = preview_df.columns.map(lambda x: str(x) if x is not None else "")
