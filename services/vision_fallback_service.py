@@ -10,6 +10,13 @@ import cohere
 
 logger = logging.getLogger(__name__)
 
+def _ensure_json_prompt(prompt: str) -> str:
+    suffix = "\nResponde solo JSON válido sin texto adicional."
+    if suffix.strip().lower() in prompt.lower():
+        return prompt
+    return f"{prompt}{suffix}"
+
+
 def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Analyze an image using OpenAI's vision models."""
     api_key = os.getenv("OPENAI_API_KEY")
@@ -27,6 +34,7 @@ def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
             "Devuelve un JSON con las claves: labels (lista de palabras clave en español), "
             "objects (lista de objetos principales en español) y text (cadena con cualquier texto encontrado en español)."
         )
+        prompt = _ensure_json_prompt(prompt)
 
         # Use the modern Responses API when available; otherwise fall back
         # to chat completions for older OpenAI client versions. If the
@@ -45,8 +53,9 @@ def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
                         ],
                     }],
                     max_output_tokens=300,
+                    response_format={"type": "json_object"},
                 )
-                text = response.output[0].content[0].text
+                text = getattr(response, "output_text", "") or response.output[0].content[0].text
             except Exception as exc:
                 logger.warning("Responses API unavailable (%s); falling back to chat completions", exc)
 
@@ -61,6 +70,7 @@ def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
                     ],
                 }],
                 max_tokens=300,
+                response_format={"type": "json_object"},
             )
             message = completion.choices[0].message
             # ``message`` may be a dict (old SDK) or a pydantic object (new SDK)
@@ -82,9 +92,10 @@ def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", text, re.DOTALL)
-            if match:
-                return json.loads(match.group(0))
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                return json.loads(text[start : end + 1])
             raise
     except Exception as e:
         logger.error(f"OpenAI Vision failed: {e}", exc_info=True)
@@ -147,3 +158,13 @@ def analyze_image_smart(image_bytes: bytes, prompt: Optional[str] = None) -> Dic
         return _normalize_result(result)
     logger.error("All vision providers failed")
     return {"labels": [], "objects": []}
+
+
+def analyze_image_structured(image_bytes: bytes, prompt: str) -> Optional[Dict[str, Any]]:
+    """Analyze image bytes and return provider JSON without normalization."""
+    result = _call_openai(image_bytes, custom_prompt=prompt)
+    if result:
+        return result
+    logger.warning("Structured vision failed for OpenAI; skipping Cohere structured fallback.")
+    logger.error("All structured vision providers failed")
+    return None
