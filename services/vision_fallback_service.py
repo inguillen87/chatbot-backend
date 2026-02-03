@@ -11,6 +11,35 @@ import cohere
 
 logger = logging.getLogger(__name__)
 
+TABLE_SCHEMA = {
+    "name": "catalog_table",
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "columns": {"type": "array", "items": {"type": "string"}},
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "number"},
+                            {"type": "null"},
+                        ]
+                    },
+                },
+            },
+        },
+        "required": ["columns", "rows"],
+    },
+}
+
+
+def _openai_model(default_model: str = "gpt-4.1") -> str:
+    return os.getenv("OPENAI_MODEL", default_model)
+
 def _ensure_json_prompt(prompt: str) -> str:
     suffix = "\nResponde solo JSON válido sin texto adicional."
     if suffix.strip().lower() in prompt.lower():
@@ -83,6 +112,8 @@ def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
         )
         prompt = _ensure_json_prompt(prompt)
 
+        model = _openai_model()
+
         # Use the modern Responses API when available; otherwise fall back
         # to chat completions for older OpenAI client versions. If the
         # Responses API call fails for any reason, attempt the chat
@@ -91,7 +122,7 @@ def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
         if hasattr(client, "responses"):
             try:
                 response = client.responses.create(
-                    model="gpt-4.1",
+                    model=model,
                     input=[{
                         "role": "user",
                         "content": [
@@ -100,7 +131,7 @@ def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
                         ],
                     }],
                     max_output_tokens=300,
-                    response_format={"type": "json_object"},
+                    response_format={"type": "json_schema", "json_schema": TABLE_SCHEMA},
                 )
                 text = getattr(response, "output_text", "") or response.output[0].content[0].text
             except Exception as exc:
@@ -108,7 +139,7 @@ def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
 
         if not text:
             completion = client.chat.completions.create(
-                model="gpt-4.1",
+                model=model,
                 messages=[{
                     "role": "user",
                     "content": [
@@ -157,11 +188,12 @@ def _call_openai_image_text(image_bytes: bytes, custom_prompt: Optional[str] = N
             "No agregues explicaciones."
         )
 
+        model = _openai_model()
         text = ""
         if hasattr(client, "responses"):
             try:
                 response = client.responses.create(
-                    model="gpt-4.1",
+                    model=model,
                     input=[{
                         "role": "user",
                         "content": [
@@ -177,7 +209,7 @@ def _call_openai_image_text(image_bytes: bytes, custom_prompt: Optional[str] = N
 
         if not text:
             completion = client.chat.completions.create(
-                model="gpt-4.1",
+                model=model,
                 messages=[{
                     "role": "user",
                     "content": [
@@ -213,21 +245,22 @@ def _call_openai_text(text: str, custom_prompt: Optional[str] = None) -> Optiona
         )
         prompt = _ensure_json_prompt(prompt)
 
+        model = _openai_model()
         text_response = ""
         if hasattr(client, "responses"):
             response = client.responses.create(
-                model="gpt-4.1",
+                model=model,
                 input=[{
                     "role": "user",
                     "content": [{"type": "input_text", "text": f"{prompt}\n\n{str(text)}"}],
                 }],
                 max_output_tokens=600,
-                response_format={"type": "json_object"},
+                response_format={"type": "json_schema", "json_schema": TABLE_SCHEMA},
             )
             text_response = getattr(response, "output_text", "") or response.output[0].content[0].text
         if not text_response:
             completion = client.chat.completions.create(
-                model="gpt-4.1",
+                model=model,
                 messages=[{
                     "role": "user",
                     "content": f"{prompt}\n\n{str(text)}",
