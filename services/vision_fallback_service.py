@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+from ast import literal_eval
 from typing import Any, Dict, Optional
 import httpx
 from openai import OpenAI
@@ -17,8 +18,16 @@ def _ensure_json_prompt(prompt: str) -> str:
     return f"{prompt}{suffix}"
 
 def _safe_json_loads(text: str) -> Dict[str, Any]:
+    def _strip_code_fences(payload: str) -> str:
+        if not payload:
+            return payload
+        fenced = re.compile(r"```(?:json)?\s*(.+?)\s*```", re.DOTALL | re.IGNORECASE)
+        match = fenced.search(payload)
+        return match.group(1) if match else payload
+
     candidates = []
     if text:
+        text = _strip_code_fences(text.strip())
         candidates.append(text)
         candidates.append(re.sub(r"[\x00-\x1f]", " ", text))
         obj_start = text.find("{")
@@ -36,7 +45,10 @@ def _safe_json_loads(text: str) -> Dict[str, Any]:
         except json.JSONDecodeError:
             cleaned = re.sub(r"[\x00-\x1f]", " ", payload)
             cleaned = re.sub(r",\\s*([}\\]])", r"\\1", cleaned)
-            return json.loads(cleaned, strict=False)
+            try:
+                return json.loads(cleaned, strict=False)
+            except json.JSONDecodeError:
+                return literal_eval(cleaned)
 
     for candidate in candidates:
         try:
