@@ -11,29 +11,37 @@ import cohere
 
 logger = logging.getLogger(__name__)
 
-TABLE_SCHEMA = {
-    "name": "catalog_table",
-    "schema": {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "columns": {"type": "array", "items": {"type": "string"}},
-            "rows": {
+TABLE_SCHEMA_ONLY = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "columns": {"type": "array", "items": {"type": "string"}},
+        "rows": {
+            "type": "array",
+            "items": {
                 "type": "array",
                 "items": {
-                    "type": "array",
-                    "items": {
-                        "anyOf": [
-                            {"type": "string"},
-                            {"type": "number"},
-                            {"type": "null"},
-                        ]
-                    },
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "number"},
+                        {"type": "null"},
+                    ]
                 },
             },
         },
-        "required": ["columns", "rows"],
     },
+    "required": ["columns", "rows"],
+}
+
+VISION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "labels": {"type": "array", "items": {"type": "string"}},
+        "objects": {"type": "array", "items": {"type": "string"}},
+        "text": {"type": "string"},
+    },
+    "required": ["labels", "objects", "text"],
 }
 
 
@@ -73,10 +81,13 @@ def _safe_json_loads(text: str) -> Dict[str, Any]:
             return json.loads(payload, strict=False)
         except json.JSONDecodeError:
             cleaned = re.sub(r"[\x00-\x1f]", " ", payload)
-            cleaned = re.sub(r",\\s*([}\\]])", r"\\1", cleaned)
+            cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
             try:
                 return json.loads(cleaned, strict=False)
             except json.JSONDecodeError:
+                cleaned = re.sub(r"\bnull\b", "None", cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(r"\btrue\b", "True", cleaned, flags=re.IGNORECASE)
+                cleaned = re.sub(r"\bfalse\b", "False", cleaned, flags=re.IGNORECASE)
                 return literal_eval(cleaned)
 
     for candidate in candidates:
@@ -89,11 +100,22 @@ def _safe_json_loads(text: str) -> Dict[str, Any]:
         except Exception:
             continue
 
-    logger.warning("No se pudo parsear JSON válido desde la respuesta del modelo.")
+    if text:
+        snippet = text[:800]
+        logger.warning(
+            "No se pudo parsear JSON válido desde la respuesta del modelo. Raw snippet: %s",
+            snippet,
+        )
+    else:
+        logger.warning("No se pudo parsear JSON válido desde la respuesta del modelo.")
     return {}
 
 
-def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def _call_openai(
+    image_bytes: bytes,
+    custom_prompt: Optional[str] = None,
+    schema: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     """Analyze an image using OpenAI's vision models."""
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -114,6 +136,8 @@ def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
 
         model = _openai_model()
 
+        schema = schema or VISION_SCHEMA
+
         # Use the modern Responses API when available; otherwise fall back
         # to chat completions for older OpenAI client versions. If the
         # Responses API call fails for any reason, attempt the chat
@@ -131,7 +155,15 @@ def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
                         ],
                     }],
                     max_output_tokens=300,
-                    response_format={"type": "json_schema", "json_schema": TABLE_SCHEMA},
+                    temperature=0,
+                    text={
+                        "format": {
+                            "type": "json_schema",
+                            "name": "vision_payload",
+                            "schema": schema,
+                            "strict": True,
+                        }
+                    },
                 )
                 text = getattr(response, "output_text", "") or response.output[0].content[0].text
             except Exception as exc:
@@ -148,7 +180,15 @@ def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
                     ],
                 }],
                 max_tokens=300,
-                response_format={"type": "json_object"},
+                temperature=0,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "vision_payload",
+                        "schema": schema,
+                        "strict": True,
+                    },
+                },
             )
             message = completion.choices[0].message
             # ``message`` may be a dict (old SDK) or a pydantic object (new SDK)
@@ -229,7 +269,11 @@ def _call_openai_image_text(image_bytes: bytes, custom_prompt: Optional[str] = N
         return None
 
 
-def _call_openai_text(text: str, custom_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def _call_openai_text(
+    text: str,
+    custom_prompt: Optional[str] = None,
+    schema: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     """Analyze text using OpenAI and return structured JSON."""
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -246,6 +290,7 @@ def _call_openai_text(text: str, custom_prompt: Optional[str] = None) -> Optiona
         prompt = _ensure_json_prompt(prompt)
 
         model = _openai_model()
+        schema = schema or TABLE_SCHEMA_ONLY
         text_response = ""
         if hasattr(client, "responses"):
             response = client.responses.create(
@@ -255,7 +300,15 @@ def _call_openai_text(text: str, custom_prompt: Optional[str] = None) -> Optiona
                     "content": [{"type": "input_text", "text": f"{prompt}\n\n{str(text)}"}],
                 }],
                 max_output_tokens=600,
-                response_format={"type": "json_schema", "json_schema": TABLE_SCHEMA},
+                temperature=0,
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "catalog_table",
+                        "schema": schema,
+                        "strict": True,
+                    }
+                },
             )
             text_response = getattr(response, "output_text", "") or response.output[0].content[0].text
         if not text_response:
@@ -266,7 +319,15 @@ def _call_openai_text(text: str, custom_prompt: Optional[str] = None) -> Optiona
                     "content": f"{prompt}\n\n{str(text)}",
                 }],
                 max_tokens=600,
-                response_format={"type": "json_object"},
+                temperature=0,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "catalog_table",
+                        "schema": schema,
+                        "strict": True,
+                    },
+                },
             )
             message = completion.choices[0].message
             content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
@@ -327,7 +388,7 @@ def _normalize_result(result: Dict[str, Any]) -> Dict[str, Any]:
 
 def analyze_image_smart(image_bytes: bytes, prompt: Optional[str] = None) -> Dict[str, Any]:
     """Analyze image bytes using OpenAI, then Cohere."""
-    result = _call_openai(image_bytes, custom_prompt=prompt)
+    result = _call_openai(image_bytes, custom_prompt=prompt, schema=VISION_SCHEMA)
     if result:
         return _normalize_result(result)
     logger.warning("Falling back to Cohere vision...")
@@ -340,7 +401,7 @@ def analyze_image_smart(image_bytes: bytes, prompt: Optional[str] = None) -> Dic
 
 def analyze_image_structured(image_bytes: bytes, prompt: str) -> Optional[Dict[str, Any]]:
     """Analyze image bytes and return provider JSON without normalization."""
-    result = _call_openai(image_bytes, custom_prompt=prompt)
+    result = _call_openai(image_bytes, custom_prompt=prompt, schema=TABLE_SCHEMA_ONLY)
     if result:
         return result
     logger.warning("Structured vision failed for OpenAI; skipping Cohere structured fallback.")
@@ -355,7 +416,7 @@ def analyze_image_text(image_bytes: bytes, prompt: Optional[str] = None) -> Opti
 
 def analyze_text_structured(text: str, prompt: str) -> Optional[Dict[str, Any]]:
     """Analyze text and return provider JSON without normalization."""
-    result = _call_openai_text(text, custom_prompt=prompt)
+    result = _call_openai_text(text, custom_prompt=prompt, schema=TABLE_SCHEMA_ONLY)
     if result:
         return result
     logger.error("Structured text analysis failed")

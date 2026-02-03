@@ -1,5 +1,6 @@
 import io
 import re
+import uuid
 from typing import Any, List, Optional
 
 import pandas as pd
@@ -300,7 +301,13 @@ def _document_intelligence_preview(current_user, pyme_id: int):
 
     rubro_hint = request.form.get("rubro") or request.form.get("rubroSlug")
 
-    if filename.endswith(".pdf"):
+    is_pdf = filename.endswith(".pdf")
+
+    structured_attempts = 0
+    structured_failures = 0
+    debug_id = str(uuid.uuid4())
+
+    if is_pdf:
         try:
             with pdfplumber.open(io.BytesIO(content)) as pdf:
                 max_pages = request.form.get("maxPages", type=int) or 3
@@ -314,6 +321,7 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                         image = page.to_image(resolution=300).original
                         buffer = io.BytesIO()
                         image.save(buffer, format="JPEG")
+                        structured_attempts += 1
                         vision = analyze_image_structured(
                             buffer.getvalue(),
                             _catalog_llm_prompt(rubro_hint),
@@ -322,13 +330,17 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                         if vision_df is not None and not vision_df.empty:
                             vision_tables.append(vision_df)
                         else:
+                            structured_failures += 1
                             ocr_text = analyze_image_text(buffer.getvalue())
                             if ocr_text:
                                 ocr_texts.append(ocr_text)
+                                structured_attempts += 1
                                 structured = analyze_text_structured(ocr_text, _catalog_llm_prompt(rubro_hint))
                                 structured_df = _build_df_from_vision(structured)
                                 if structured_df is not None and not structured_df.empty:
                                     text_tables.append(structured_df)
+                                else:
+                                    structured_failures += 1
                     except Exception:
                         pass
 
@@ -374,10 +386,13 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                     try:
                         text = page.extract_text() or ""
                         if text.strip():
+                            structured_attempts += 1
                             structured = analyze_text_structured(text, _catalog_llm_prompt(rubro_hint))
                             structured_df = _build_df_from_vision(structured)
                             if structured_df is not None and not structured_df.empty:
                                 text_tables.append(structured_df)
+                            else:
+                                structured_failures += 1
                     except Exception:
                         pass
 
@@ -387,6 +402,16 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                 if df is None or df.empty:
                     df = _merge_dataframes(text_tables)
                 if df is None or df.empty:
+                    if structured_attempts > 0 and structured_attempts == structured_failures:
+                        return (
+                            jsonify({
+                                "ok": False,
+                                "error": "preview_failed",
+                                "detail": "No se pudo interpretar el PDF con IA.",
+                                "debug_id": debug_id,
+                            }),
+                            502,
+                        )
                     fallback_text = ""
                     if ocr_texts:
                         fallback_text = "\n".join(ocr_texts)
@@ -414,12 +439,28 @@ def _document_intelligence_preview(current_user, pyme_id: int):
 
     max_rows = request.form.get("maxRows", type=int) or 50
     preview_df = df.head(max_rows).fillna("")
-    if not preview_df.empty and len(preview_df.columns) > 0:
+    if (
+        not preview_df.empty
+        and len(preview_df.columns) > 0
+        and is_pdf
+    ):
         csv_sample = preview_df.to_csv(index=False)
+        structured_attempts += 1
         structured = analyze_text_structured(csv_sample, _catalog_llm_prompt(rubro_hint))
         structured_df = _build_df_from_vision(structured)
         if structured_df is not None and not structured_df.empty:
             preview_df = structured_df.head(max_rows).fillna("")
+        else:
+            structured_failures += 1
+            return (
+                jsonify({
+                    "ok": False,
+                    "error": "preview_failed",
+                    "detail": "No se pudo interpretar la tabla con IA.",
+                    "debug_id": debug_id,
+                }),
+                502,
+            )
 
     # Ensure all column names are strings to avoid JSON serialization issues (e.g. sorting keys)
     preview_df.columns = preview_df.columns.map(lambda x: str(x) if x is not None else "")
