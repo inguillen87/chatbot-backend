@@ -44,7 +44,7 @@ def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
         if hasattr(client, "responses"):
             try:
                 response = client.responses.create(
-                    model="gpt-4.1-mini",
+                    model="gpt-4.1",
                     input=[{
                         "role": "user",
                         "content": [
@@ -61,7 +61,7 @@ def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
 
         if not text:
             completion = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4.1",
                 messages=[{
                     "role": "user",
                     "content": [
@@ -99,6 +99,63 @@ def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
             raise
     except Exception as e:
         logger.error(f"OpenAI Vision failed: {e}", exc_info=True)
+        return None
+
+
+def _call_openai_text(text: str, custom_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Analyze text using OpenAI and return structured JSON."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        logger.error("OPENAI_API_KEY not found in environment variables.")
+        return None
+    try:
+        http_client = httpx.Client(proxy=None, trust_env=False)
+        client = OpenAI(api_key=api_key, http_client=http_client)
+        prompt = custom_prompt or (
+            "Extrae la tabla del catálogo en JSON con claves "
+            "'columns' (lista de strings) y 'rows' (lista de listas ordenadas según columns). "
+            "No inventes datos, deja vacío si no se ve."
+        )
+        prompt = _ensure_json_prompt(prompt)
+
+        text_response = ""
+        if hasattr(client, "responses"):
+            response = client.responses.create(
+                model="gpt-4.1",
+                input=[{
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": f"{prompt}\n\n{str(text)}"}],
+                }],
+                max_output_tokens=600,
+                response_format={"type": "json_object"},
+            )
+            text_response = getattr(response, "output_text", "") or response.output[0].content[0].text
+        if not text_response:
+            completion = client.chat.completions.create(
+                model="gpt-4.1",
+                messages=[{
+                    "role": "user",
+                    "content": f"{prompt}\n\n{str(text)}",
+                }],
+                max_tokens=600,
+                response_format={"type": "json_object"},
+            )
+            message = completion.choices[0].message
+            content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+            text_response = content if isinstance(content, str) else ""
+
+        if not text_response:
+            raise ValueError("No content returned from OpenAI")
+        try:
+            return json.loads(text_response)
+        except json.JSONDecodeError:
+            start = text_response.find("{")
+            end = text_response.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                return json.loads(text_response[start : end + 1])
+            raise
+    except Exception as e:
+        logger.error(f"OpenAI text analysis failed: {e}", exc_info=True)
         return None
 
 def _call_cohere(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -167,4 +224,13 @@ def analyze_image_structured(image_bytes: bytes, prompt: str) -> Optional[Dict[s
         return result
     logger.warning("Structured vision failed for OpenAI; skipping Cohere structured fallback.")
     logger.error("All structured vision providers failed")
+    return None
+
+
+def analyze_text_structured(text: str, prompt: str) -> Optional[Dict[str, Any]]:
+    """Analyze text and return provider JSON without normalization."""
+    result = _call_openai_text(text, custom_prompt=prompt)
+    if result:
+        return result
+    logger.error("Structured text analysis failed")
     return None
