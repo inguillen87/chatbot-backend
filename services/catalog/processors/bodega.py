@@ -32,6 +32,17 @@ class BodegaProcessor(CatalogProcessor):
                 # Industry specific logic
                 presentacion = raw.get("presentacion", "")
                 contenido_paquete = presentacion # e.g. "Caja x 6"
+                marca = raw.get("marca")
+                varietal = raw.get("varietal")
+                nombre = raw.get("nombre")
+                if not nombre:
+                    nombre = " ".join(part for part in [marca, varietal] if part) or "Vino sin nombre"
+                unidad_base = "botella"
+                presentacion_lower = str(presentacion or "").lower()
+                if "bag" in presentacion_lower or "box" in presentacion_lower:
+                    unidad_base = "bag_in_box"
+                elif "lata" in presentacion_lower:
+                    unidad_base = "lata"
 
                 # Parsing prices
                 _, precio_unit, moneda_unit = parse_precio_flexible(raw.get("precio_botella"))
@@ -61,8 +72,8 @@ class BodegaProcessor(CatalogProcessor):
 
                 # Attributes mapping
                 attrs = {
-                    "marca": raw.get("marca"),
-                    "varietal": raw.get("varietal"),
+                    "marca": marca,
+                    "varietal": varietal,
                     "anada": raw.get("anada"),
                     "precio_caja": precio_caja,
                     "precio_botella": precio_unit,
@@ -74,10 +85,10 @@ class BodegaProcessor(CatalogProcessor):
                 }
 
                 item = CatalogItemData(
-                    nombre=raw.get("nombre", "Vino sin nombre"),
+                    nombre=nombre,
                     precio=precio_unit or precio_publico or precio_caja, # Canonical price is usually unit price
                     moneda=moneda,
-                    unidad_base="botella", # Default for wineries usually
+                    unidad_base=unidad_base, # Default for wineries usually
                     contenido_paquete=contenido_paquete,
                     categoria="Vinos",
                     atributos=attrs,

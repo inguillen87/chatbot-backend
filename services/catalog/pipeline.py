@@ -47,13 +47,22 @@ class CatalogPipeline:
         result = processor.process(file_path, mime_type, extracted_text=raw_text)
         items = []
         for idx, item in enumerate(result.items, start=1):
+            attrs = item.atributos or {}
             items.append(
                 {
                     "sku": item.sku or f"AUTO-{idx}",
                     "title": item.nombre,
                     "price": item.precio or 0,
+                    "currency": item.moneda,
                     "category": item.categoria or "General",
                     "stock": int(item.stock or 0),
+                    "unit": item.unidad_base,
+                    "pack": item.contenido_paquete,
+                    "brand": attrs.get("marca"),
+                    "varietal": attrs.get("varietal"),
+                    "anada": attrs.get("anada"),
+                    "unidades_por_caja": attrs.get("unidades_por_caja"),
+                    "pallet": attrs.get("pallet"),
                 }
             )
         warnings = list(result.warnings or [])

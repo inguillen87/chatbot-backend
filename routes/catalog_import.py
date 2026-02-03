@@ -146,11 +146,7 @@ def commit_import_session(current_user, upload_id):
              existing = CatalogoItem.query.filter_by(user_id=tenant.pyme_id, sku=sku).first()
 
         if existing:
-            existing.nombre = item.get('title', existing.nombre)
-            existing.precio = str(item.get('price', existing.precio)) # Legacy uses string
-            existing.precio_monetario = float(item.get('price', 0))
             item_obj = existing
-            # Update other fields
         else:
             new_item = CatalogoItem(
                 user_id=tenant.pyme_id or current_user.id, # Fallback
@@ -165,6 +161,24 @@ def commit_import_session(current_user, upload_id):
             )
             db.session.add(new_item)
             item_obj = new_item
+
+        item_obj.nombre = item.get('title', item_obj.nombre)
+        item_obj.precio = str(item.get('price', item_obj.precio))
+        item_obj.precio_monetario = float(item.get('price', 0))
+        item_obj.categoria = item.get('category', item_obj.categoria)
+        item_obj.moneda = item.get('currency', item_obj.moneda)
+        item_obj.marca = item.get('brand') or item.get('marca') or item_obj.marca
+        item_obj.unidad = item.get('unit') or item_obj.unidad
+        item_obj.descripcion_corta = item.get('pack') or item_obj.descripcion_corta
+        item_obj.precio_por_caja = item.get('precio_por_caja') or item_obj.precio_por_caja
+        item_obj.unidad_por_caja = item.get('unidad_por_caja') or item_obj.unidad_por_caja
+        extra_metadata = item_obj.extra_metadata or {}
+        for key in ("varietal", "anada", "pallet", "presentacion"):
+            value = item.get(key)
+            if value:
+                extra_metadata[key] = value
+        if extra_metadata:
+            item_obj.extra_metadata = extra_metadata
 
         # Flush to generate ID for indexing
         db.session.flush()
