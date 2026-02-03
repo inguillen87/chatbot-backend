@@ -17,20 +17,38 @@ def _ensure_json_prompt(prompt: str) -> str:
     return f"{prompt}{suffix}"
 
 def _safe_json_loads(text: str) -> Dict[str, Any]:
-    try:
-        return json.loads(text, strict=False)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            snippet = text[start : end + 1]
-            try:
-                return json.loads(snippet, strict=False)
-            except json.JSONDecodeError:
-                cleaned = re.sub(r"[\x00-\x1f]", " ", snippet)
-                return json.loads(cleaned, strict=False)
-        cleaned = re.sub(r"[\x00-\x1f]", " ", text)
-        return json.loads(cleaned, strict=False)
+    candidates = []
+    if text:
+        candidates.append(text)
+        candidates.append(re.sub(r"[\x00-\x1f]", " ", text))
+        obj_start = text.find("{")
+        obj_end = text.rfind("}")
+        if obj_start != -1 and obj_end != -1 and obj_end > obj_start:
+            candidates.append(text[obj_start : obj_end + 1])
+        arr_start = text.find("[")
+        arr_end = text.rfind("]")
+        if arr_start != -1 and arr_end != -1 and arr_end > arr_start:
+            candidates.append(text[arr_start : arr_end + 1])
+
+    def _attempt(payload: str) -> Optional[Dict[str, Any]]:
+        try:
+            return json.loads(payload, strict=False)
+        except json.JSONDecodeError:
+            cleaned = re.sub(r"[\x00-\x1f]", " ", payload)
+            cleaned = re.sub(r",\\s*([}\\]])", r"\\1", cleaned)
+            return json.loads(cleaned, strict=False)
+
+    for candidate in candidates:
+        try:
+            parsed = _attempt(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+            if isinstance(parsed, list):
+                return {"rows": parsed}
+        except Exception:
+            continue
+
+    raise ValueError("No se pudo parsear JSON válido desde la respuesta del modelo.")
 
 
 def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:

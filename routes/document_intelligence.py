@@ -286,48 +286,54 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                     except Exception:
                         pass
 
-                    table_data = page.extract_table(
-                        {
-                            "vertical_strategy": "lines",
-                            "horizontal_strategy": "lines",
-                            "snap_tolerance": 3,
-                            "join_tolerance": 3,
-                        }
-                    )
-                    if table_data:
-                        header_index = None
-                        header_tokens = ("marca", "varietal", "precio", "caja", "botella", "pallet")
-                        for idx, row in enumerate(table_data):
-                            joined = " ".join(str(cell or "").lower() for cell in row)
-                            if any(token in joined for token in header_tokens):
-                                header_index = idx
-                                break
-                        if header_index is None:
-                            header_index = 0
-                        headers = [str(cell or "").strip() for cell in table_data[header_index]]
-                        rows = table_data[header_index + 1 :]
-                        if not any(headers):
-                            headers = [f"Columna {i+1}" for i in range(len(rows[0]))] if rows else []
-                        table_df = pd.DataFrame(rows, columns=headers)
-                        if table_df is not None and not table_df.empty:
-                            table_tables.append(table_df)
-                    else:
-                        tables = page.extract_tables() or []
-                        if tables:
-                            table_data = max(tables, key=len)
-                            if table_data:
-                                headers = [str(cell or "").strip() for cell in table_data[0]]
-                                rows = table_data[1:]
-                                table_df = pd.DataFrame(rows, columns=headers)
-                                if table_df is not None and not table_df.empty:
-                                    table_tables.append(table_df)
+                    try:
+                        table_data = page.extract_table(
+                            {
+                                "vertical_strategy": "lines",
+                                "horizontal_strategy": "lines",
+                                "snap_tolerance": 3,
+                                "join_tolerance": 3,
+                            }
+                        )
+                        if table_data:
+                            header_index = None
+                            header_tokens = ("marca", "varietal", "precio", "caja", "botella", "pallet")
+                            for idx, row in enumerate(table_data):
+                                joined = " ".join(str(cell or "").lower() for cell in row)
+                                if any(token in joined for token in header_tokens):
+                                    header_index = idx
+                                    break
+                            if header_index is None:
+                                header_index = 0
+                            headers = [str(cell or "").strip() for cell in table_data[header_index]]
+                            rows = table_data[header_index + 1 :]
+                            if not any(headers):
+                                headers = [f"Columna {i+1}" for i in range(len(rows[0]))] if rows else []
+                            table_df = pd.DataFrame(rows, columns=headers)
+                            if table_df is not None and not table_df.empty:
+                                table_tables.append(table_df)
+                        else:
+                            tables = page.extract_tables() or []
+                            if tables:
+                                table_data = max(tables, key=len)
+                                if table_data:
+                                    headers = [str(cell or "").strip() for cell in table_data[0]]
+                                    rows = table_data[1:]
+                                    table_df = pd.DataFrame(rows, columns=headers)
+                                    if table_df is not None and not table_df.empty:
+                                        table_tables.append(table_df)
+                    except Exception:
+                        pass
 
-                    text = page.extract_text() or ""
-                    if text.strip():
-                        structured = analyze_text_structured(text, _catalog_llm_prompt(rubro_hint))
-                        structured_df = _build_df_from_vision(structured)
-                        if structured_df is not None and not structured_df.empty:
-                            text_tables.append(structured_df)
+                    try:
+                        text = page.extract_text() or ""
+                        if text.strip():
+                            structured = analyze_text_structured(text, _catalog_llm_prompt(rubro_hint))
+                            structured_df = _build_df_from_vision(structured)
+                            if structured_df is not None and not structured_df.empty:
+                                text_tables.append(structured_df)
+                    except Exception:
+                        pass
 
                 df = _merge_dataframes(vision_tables)
                 if df is None or df.empty:
@@ -335,7 +341,12 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                 if df is None or df.empty:
                     df = _merge_dataframes(text_tables)
                 if df is None or df.empty:
-                    df = pd.DataFrame([{"Contenido": line} for line in (pdf.pages[0].extract_text() or "").split('\n') if line.strip()])
+                    fallback_text = ""
+                    if pdf.pages:
+                        fallback_text = pdf.pages[0].extract_text() or ""
+                    df = pd.DataFrame(
+                        [{"Contenido": line} for line in fallback_text.split("\n") if line.strip()]
+                    )
 
         except Exception as exc:
             return (
@@ -360,15 +371,17 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                     400,
                 )
 
+    df = df if df is not None else pd.DataFrame()
     df = df.dropna(how="all")
 
     max_rows = request.form.get("maxRows", type=int) or 50
     preview_df = df.head(max_rows).fillna("")
-    csv_sample = preview_df.to_csv(index=False)
-    structured = analyze_text_structured(csv_sample, _catalog_llm_prompt(rubro_hint))
-    structured_df = _build_df_from_vision(structured)
-    if structured_df is not None and not structured_df.empty:
-        preview_df = structured_df.head(max_rows).fillna("")
+    if not preview_df.empty and len(preview_df.columns) > 0:
+        csv_sample = preview_df.to_csv(index=False)
+        structured = analyze_text_structured(csv_sample, _catalog_llm_prompt(rubro_hint))
+        structured_df = _build_df_from_vision(structured)
+        if structured_df is not None and not structured_df.empty:
+            preview_df = structured_df.head(max_rows).fillna("")
 
     # Ensure all column names are strings to avoid JSON serialization issues (e.g. sorting keys)
     preview_df.columns = preview_df.columns.map(lambda x: str(x) if x is not None else "")
