@@ -11,7 +11,11 @@ from routes.auth import token_requerido
 from services.embedding_service import embed_textos_llm
 from services.llm_utils import llamar_llm_para_json_estructurado
 from services.qdrant_service import index_catalog_item
-from services.vision_fallback_service import analyze_image_structured, analyze_text_structured
+from services.vision_fallback_service import (
+    analyze_image_structured,
+    analyze_image_text,
+    analyze_text_structured,
+)
 
 
 document_intelligence_bp = Blueprint(
@@ -270,6 +274,7 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                 vision_tables: List[pd.DataFrame] = []
                 text_tables: List[pd.DataFrame] = []
                 table_tables: List[pd.DataFrame] = []
+                ocr_texts: List[str] = []
 
                 for page in pdf.pages[:max_pages]:
                     try:
@@ -283,6 +288,14 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                         vision_df = _build_df_from_vision(vision)
                         if vision_df is not None and not vision_df.empty:
                             vision_tables.append(vision_df)
+                        else:
+                            ocr_text = analyze_image_text(buffer.getvalue())
+                            if ocr_text:
+                                ocr_texts.append(ocr_text)
+                                structured = analyze_text_structured(ocr_text, _catalog_llm_prompt(rubro_hint))
+                                structured_df = _build_df_from_vision(structured)
+                                if structured_df is not None and not structured_df.empty:
+                                    text_tables.append(structured_df)
                     except Exception:
                         pass
 
@@ -342,7 +355,9 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                     df = _merge_dataframes(text_tables)
                 if df is None or df.empty:
                     fallback_text = ""
-                    if pdf.pages:
+                    if ocr_texts:
+                        fallback_text = "\n".join(ocr_texts)
+                    elif pdf.pages:
                         fallback_text = pdf.pages[0].extract_text() or ""
                     df = pd.DataFrame(
                         [{"Contenido": line} for line in fallback_text.split("\n") if line.strip()]

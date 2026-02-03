@@ -130,6 +130,61 @@ def _call_openai(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
         return None
 
 
+def _call_openai_image_text(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Optional[str]:
+    """Extract raw text from an image using OpenAI (no JSON enforcement)."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        logger.error("OPENAI_API_KEY not found in environment variables.")
+        return None
+    try:
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        http_client = httpx.Client(proxy=None, trust_env=False)
+        client = OpenAI(api_key=api_key, http_client=http_client)
+        prompt = custom_prompt or (
+            "Extrae TODO el texto visible de la imagen respetando saltos de línea. "
+            "No agregues explicaciones."
+        )
+
+        text = ""
+        if hasattr(client, "responses"):
+            try:
+                response = client.responses.create(
+                    model="gpt-4.1",
+                    input=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": prompt},
+                            {"type": "input_image", "image": {"data": b64, "mime_type": "image/jpeg"}},
+                        ],
+                    }],
+                    max_output_tokens=800,
+                )
+                text = getattr(response, "output_text", "") or response.output[0].content[0].text
+            except Exception as exc:
+                logger.warning("Responses API unavailable for OCR (%s); falling back to chat completions", exc)
+
+        if not text:
+            completion = client.chat.completions.create(
+                model="gpt-4.1",
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                    ],
+                }],
+                max_tokens=800,
+            )
+            message = completion.choices[0].message
+            content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+            text = content if isinstance(content, str) else ""
+
+        return text.strip() or None
+    except Exception as exc:
+        logger.error("OpenAI OCR failed: %s", exc, exc_info=True)
+        return None
+
+
 def _call_openai_text(text: str, custom_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Analyze text using OpenAI and return structured JSON."""
     api_key = os.getenv("OPENAI_API_KEY")
@@ -246,6 +301,11 @@ def analyze_image_structured(image_bytes: bytes, prompt: str) -> Optional[Dict[s
     logger.warning("Structured vision failed for OpenAI; skipping Cohere structured fallback.")
     logger.error("All structured vision providers failed")
     return None
+
+
+def analyze_image_text(image_bytes: bytes, prompt: Optional[str] = None) -> Optional[str]:
+    """Extract raw text from image bytes."""
+    return _call_openai_image_text(image_bytes, custom_prompt=prompt)
 
 
 def analyze_text_structured(text: str, prompt: str) -> Optional[Dict[str, Any]]:
