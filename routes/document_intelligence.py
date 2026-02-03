@@ -155,6 +155,9 @@ def _catalog_items_prompt(rubro: Optional[str] = None) -> str:
         f"{rubro_hint}"
         "Cada item debe incluir, cuando esté disponible: "
         "nombre, sku, marca, categoria, precio, moneda, stock, unidad, presentacion, descripcion. "
+        "Además, incluí campos dinámicos en 'extra_metadata' cuando existan (por ejemplo: "
+        "varietal, anada, pallet, caja, unidades_por_caja, precio_por_caja, "
+        "litros, ml, kg, gramos, bolsa, medida, alto, ancho, largo, peso). "
         "No inventes datos; si falta un campo, dejalo vacío o null. "
         "Mantén los precios tal como aparecen (puntos miles, comas decimales)."
     )
@@ -182,6 +185,57 @@ def _sanitize_sku(raw: Optional[str], fallback: str) -> str:
     value = value.lower()
     value = re.sub(r"[^a-z0-9]+", "-", value).strip("-")
     return value or fallback
+
+
+def _build_extra_metadata(item: dict) -> dict:
+    base_keys = {
+        "nombre",
+        "title",
+        "sku",
+        "marca",
+        "brand",
+        "categoria",
+        "category",
+        "precio",
+        "price",
+        "moneda",
+        "currency",
+        "stock",
+        "unidad",
+        "unit",
+        "presentacion",
+        "pack",
+        "descripcion",
+        "description",
+        "extra_metadata",
+    }
+    extra = {}
+    for key, value in item.items():
+        if key in base_keys or value in (None, "", []):
+            continue
+        extra[key] = value
+    explicit = {
+        "varietal": item.get("varietal"),
+        "anada": item.get("anada") or item.get("añada"),
+        "pallet": item.get("pallet"),
+        "caja": item.get("caja") or item.get("box"),
+        "unidades_por_caja": item.get("unidades_por_caja") or item.get("unidad_por_caja"),
+        "precio_por_caja": item.get("precio_por_caja"),
+        "litros": item.get("litros"),
+        "ml": item.get("ml"),
+        "kg": item.get("kg"),
+        "gramos": item.get("gramos"),
+        "bolsa": item.get("bolsa"),
+        "medida": item.get("medida"),
+        "alto": item.get("alto"),
+        "ancho": item.get("ancho"),
+        "largo": item.get("largo"),
+        "peso": item.get("peso"),
+    }
+    for key, value in explicit.items():
+        if value not in (None, "", []):
+            extra.setdefault(key, value)
+    return extra
 
 
 def _document_intelligence_preview(current_user, pyme_id: int):
@@ -407,6 +461,7 @@ def document_intelligence_commit(current_user, pyme_id: int):
             "unidad": item.get("unidad") or item.get("unit"),
             "presentacion": item.get("presentacion") or item.get("pack"),
             "descripcion": item.get("descripcion") or item.get("description"),
+            "extra_metadata": _build_extra_metadata(item),
         })
         texts_to_embed.append(f"{nombre} {item.get('categoria') or ''} {precio or ''}")
 
@@ -426,6 +481,7 @@ def document_intelligence_commit(current_user, pyme_id: int):
             unidad=item.get("unidad"),
             descripcion_corta=item.get("presentacion"),
             descripcion=item.get("descripcion"),
+            extra_metadata=item.get("extra_metadata") or None,
             modalidad="venta",
             disponible=True,
         )
@@ -443,6 +499,7 @@ def document_intelligence_commit(current_user, pyme_id: int):
                     "precio": catalog_item.precio,
                     "rubro": rubro_hint or "general",
                     "stock": item.get("stock") or 0,
+                    "extra_metadata": item.get("extra_metadata") or {},
                 },
                 embedding,
             )
