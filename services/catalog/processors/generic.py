@@ -1,6 +1,7 @@
 from typing import Dict, Any, List
 from ..base import CatalogProcessor, ProcessResult, CatalogItemData
 from services.llm_utils import llamar_llm_para_json_estructurado
+from services.common_utils import parse_precio_flexible
 
 class GenericProcessor(CatalogProcessor):
     @property
@@ -47,11 +48,8 @@ class GenericProcessor(CatalogProcessor):
 
     def _parse_price(self, val):
         if not val: return None
-        # Basic parsing, can be enhanced with common_utils
-        try:
-            return float(str(val).replace("$", "").replace(",", ""))
-        except:
-            return None
+        _, precio_float, _ = parse_precio_flexible(str(val))
+        return precio_float
 
     def _parse_float(self, val):
         try:

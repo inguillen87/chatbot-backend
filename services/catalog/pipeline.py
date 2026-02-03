@@ -1,10 +1,66 @@
 import logging
+import os
+from typing import Any, Dict
+
 import pandas as pd
-from typing import Dict, Any
+
+from services.catalog.registry import registry as catalog_registry
+from services.document_processing_service import document_processing_service
+from services.vision_fallback_service import analyze_image_smart
 
 logger = logging.getLogger(__name__)
 
 class CatalogPipeline:
+    def _extract_text_raw(self, file_path: str, mime_type: str) -> str:
+        try:
+            if mime_type and "image" in mime_type:
+                with open(file_path, "rb") as f:
+                    vision = analyze_image_smart(f.read())
+                return vision.get("full_text_annotation", {}).get("description", "")
+
+            with open(file_path, "rb") as f:
+                result = document_processing_service.process_document(
+                    f.read(),
+                    mime_type or "application/octet-stream",
+                    os.path.basename(file_path),
+                )
+
+            if result.get("success"):
+                return result.get("text_content", "") or str(result.get("datos_estructurados", ""))
+
+            return ""
+        except Exception as exc:
+            logger.warning(f"[CATALOG PIPELINE] Failed to extract raw text: {exc}")
+            return ""
+
+    def _preview_from_processor(
+        self,
+        file_path: str,
+        mime_type: str,
+        rubro_slug: str,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        raw_text = self._extract_text_raw(file_path, mime_type)
+        if not raw_text:
+            return [], ["No se pudo extraer texto del archivo."]
+
+        processor = catalog_registry.get_processor(rubro_slug)
+        result = processor.process(file_path, mime_type, extracted_text=raw_text)
+        items = []
+        for idx, item in enumerate(result.items, start=1):
+            items.append(
+                {
+                    "sku": item.sku or f"AUTO-{idx}",
+                    "title": item.nombre,
+                    "price": item.precio or 0,
+                    "category": item.categoria or "General",
+                    "stock": int(item.stock or 0),
+                }
+            )
+        warnings = list(result.warnings or [])
+        if result.confidence < 0.6 and items:
+            warnings.append("Extracción con baja confianza. Revisar antes de confirmar.")
+        return items, warnings
+
     def process_upload_preview(self, upload_id: int, file_path: str, mime_type: str, rubro_slug: str = "generic") -> Dict[str, Any]:
         """
         Processes a file (XLSX, CSV) and returns a list of detected items and warnings.
@@ -45,14 +101,27 @@ class CatalogPipeline:
                         "stock": int(row.get("stock") or 0)
                     })
 
-            elif "pdf" in mime_type:
+            if not items and mime_type:
+                is_pdf = "pdf" in mime_type
+                is_textish = any(
+                    token in mime_type for token in ("text", "json", "xml", "word", "doc", "docx")
+                )
+                if is_pdf or is_textish or "image" in mime_type:
+                    extracted_items, extraction_warnings = self._preview_from_processor(
+                        file_path,
+                        mime_type,
+                        rubro_slug or "generic",
+                    )
+                    items.extend(extracted_items)
+                    warnings.extend(extraction_warnings)
+
+            if not items and mime_type and "pdf" in mime_type:
                 # Attempt to use legacy extraction if available, otherwise fallback
                 try:
                     # Try to import legacy extractor (if exists)
                     from services.pdf_extractor import extract_table_from_file
                     items = extract_table_from_file(file_path)
                 except ImportError:
-                    # Fallback if no legacy extractor found (P0 Mock)
                     logger.warning(f"Legacy PDF extractor not found. Using mock for {file_path}")
                     items = [
                         {"sku": "PDF-001", "title": "Producto PDF Detectado 1", "price": 1500.0, "category": "General"},
@@ -63,7 +132,11 @@ class CatalogPipeline:
                     logger.error(f"Legacy PDF extraction failed: {e}")
                     warnings.append("PDF extraction failed.")
 
-            else:
+            if not items and mime_type not in [
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "application/vnd.ms-excel",
+                "text/csv",
+            ]:
                 warnings.append(f"Unsupported file type: {mime_type}")
 
         except Exception as e:
