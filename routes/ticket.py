@@ -26,7 +26,7 @@ from collections import defaultdict
 from sqlalchemy import or_, func
 from utils.ticket_utils import normalize_category
 from utils.time_utils import datetime_to_iso_utc, get_local_now
-from utils.tenant import get_current_tenant
+from utils.tenant import get_current_tenant, get_current_tenant_profile
 from utils.errors import ApiError
 logger = logging.getLogger("app")
 
@@ -83,6 +83,50 @@ def _categorias_permitidas_para_empleado(user: User) -> tuple[list[str], list[in
 
     # Remover duplicados preservando orden
     return list(dict.fromkeys(nombres)), list(dict.fromkeys(ids))
+
+
+def _resolve_tenant_scope(current_user: User) -> tuple[Optional[TenantProfile], Optional[int], Optional[int]]:
+    tenant = get_current_tenant_profile()
+    if not tenant:
+        return None, None, None
+    return tenant, tenant.municipio_id, tenant.pyme_id
+
+
+def _authorized_for_tenant_scope(current_user: User, tenant: Optional[TenantProfile]) -> bool:
+    if not tenant:
+        return False
+    if current_user.tenant_id == tenant.id:
+        return True
+    if tenant.municipio_id and current_user.municipio_id == tenant.municipio_id:
+        return True
+    if tenant.pyme_id and current_user.id == tenant.pyme_id:
+        return True
+    if tenant.pyme_id and current_user.pyme_id == tenant.pyme_id:
+        return True
+    if tenant.municipio_id and current_user.empresa_id == tenant.municipio_id:
+        return True
+    if (
+        current_user.rol in {"admin", "empleado"}
+        and current_user.tipo_chat
+        and tenant.tipo
+        and current_user.tipo_chat == tenant.tipo
+    ):
+        return True
+    return False
+
+
+def _get_allowed_municipio_id(current_user: User) -> Optional[int]:
+    tenant, tenant_municipio_id, _tenant_pyme_id = _resolve_tenant_scope(current_user)
+    if _authorized_for_tenant_scope(current_user, tenant) and tenant_municipio_id:
+        return tenant_municipio_id
+    return current_user.municipio_id
+
+
+def _is_municipio_agent(current_user: User) -> bool:
+    tenant, tenant_municipio_id, _tenant_pyme_id = _resolve_tenant_scope(current_user)
+    if _authorized_for_tenant_scope(current_user, tenant) and tenant_municipio_id:
+        return True
+    return current_user.tipo_chat == "municipio" and bool(current_user.municipio_id)
 
 
 @ticket_bp.route('/tickets/estados', methods=['GET'])
@@ -300,11 +344,8 @@ def get_tickets_del_usuario_logic(current_user: User):
     g.current_user = current_user
 
     try:
-        tenant_slug = get_current_tenant()
-        tenant_for_query = None
-        if tenant_slug:
-            g.current_tenant = tenant_slug
-            tenant_for_query = TenantProfile.query.filter_by(slug=tenant_slug).first()
+        tenant_for_query = get_current_tenant_profile()
+        tenant_slug = getattr(tenant_for_query, "slug", None)
 
         requested_estado_filter = request.args.get("estado")
         requested_categoria_filter = request.args.get("categoria")
@@ -325,26 +366,7 @@ def get_tickets_del_usuario_logic(current_user: User):
             tenant_owner_pyme_id = tenant_for_query.pyme_id
 
         def _authorized_for_tenant() -> bool:
-            if not tenant_for_query:
-                return False
-            if current_user.tenant_id == tenant_for_query.id:
-                return True
-            if tenant_owner_municipio_id and current_user.municipio_id == tenant_owner_municipio_id:
-                return True
-            if tenant_owner_pyme_id and current_user.id == tenant_owner_pyme_id:
-                return True
-            if tenant_owner_pyme_id and current_user.pyme_id == tenant_owner_pyme_id:
-                return True
-            if tenant_owner_municipio_id and current_user.empresa_id == tenant_owner_municipio_id:
-                return True
-            if (
-                current_user.rol in {"admin", "empleado"}
-                and current_user.tipo_chat
-                and tenant_for_query.tipo
-                and current_user.tipo_chat == tenant_for_query.tipo
-            ):
-                return True
-            return False
+            return _authorized_for_tenant_scope(current_user, tenant_for_query)
 
         # Determinar el tipo de ticket usando tenant_slug primero y luego `tipo_chat`.
         if tenant_owner_municipio_id or (
@@ -840,14 +862,21 @@ def get_ticket_details(current_user: User, ticket_id: int):
     Devuelve el detalle de un ticket municipal, verificando que el usuario
     (admin o empleado) pertenezca al municipio correcto.
     """
-    if current_user.tipo_chat != "municipio" or not current_user.municipio_id:
-        return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
-
     ticket = db.session.get(MunicipioTicket, ticket_id)
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    if ticket.municipio_id != current_user.municipio_id:
+    tenant, tenant_municipio_id, _tenant_pyme_id = _resolve_tenant_scope(current_user)
+    if current_user.tipo_chat != "municipio" or not current_user.municipio_id:
+        if not (_authorized_for_tenant_scope(current_user, tenant) and tenant_municipio_id):
+            return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
+
+    allowed_municipio_id = (
+        tenant_municipio_id
+        if _authorized_for_tenant_scope(current_user, tenant) and tenant_municipio_id
+        else current_user.municipio_id
+    )
+    if ticket.municipio_id != allowed_municipio_id:
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
 
     error_response = _validar_asignacion_empleado(ticket, current_user)
@@ -945,14 +974,21 @@ def get_ticket_details_pyme(current_user: User, ticket_id: int):
     Devuelve el detalle de un ticket de pyme, verificando que el usuario
     (admin o empleado) pertenezca a la pyme correcta.
     """
-    if current_user.tipo_chat != "pyme" or not current_user.rubro_id:
-        return jsonify({"error": "Acceso denegado. Se requiere un usuario de pyme."}), 403
-
     ticket = db.session.get(PymeTicket, ticket_id)
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    if ticket.rubro_id != current_user.rubro_id:
+    tenant, _tenant_municipio_id, tenant_pyme_id = _resolve_tenant_scope(current_user)
+    if current_user.tipo_chat != "pyme" or not current_user.rubro_id:
+        if not (_authorized_for_tenant_scope(current_user, tenant) and tenant_pyme_id):
+            return jsonify({"error": "Acceso denegado. Se requiere un usuario de pyme."}), 403
+
+    allowed_rubro_id = (
+        tenant_pyme_id
+        if _authorized_for_tenant_scope(current_user, tenant) and tenant_pyme_id
+        else current_user.rubro_id
+    )
+    if ticket.rubro_id != allowed_rubro_id:
         return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
 
     error_response = _validar_asignacion_empleado(ticket, current_user)
@@ -1007,10 +1043,10 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
 
     # Refuerzo de permisos:
     if tipo == 'municipio':
-        if not (
-            current_user.tipo_chat == "municipio" and
-            ticket_obj.municipio_id == current_user.municipio_id
-        ):
+        allowed_municipio_id = _get_allowed_municipio_id(current_user)
+        if not _is_municipio_agent(current_user) or not allowed_municipio_id:
+            return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
+        if ticket_obj.municipio_id != allowed_municipio_id:
             return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
     elif tipo == 'pyme':
         if not (
@@ -1262,10 +1298,10 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
 
     # Refuerzo de permisos:
     if tipo == 'municipio':
-        if not (
-            current_user.tipo_chat == "municipio" and
-            ticket_obj.municipio_id == current_user.municipio_id
-        ):
+        allowed_municipio_id = _get_allowed_municipio_id(current_user)
+        if not _is_municipio_agent(current_user) or not allowed_municipio_id:
+            return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
+        if ticket_obj.municipio_id != allowed_municipio_id:
             return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
     elif tipo == 'pyme':
         if not (
