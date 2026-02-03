@@ -64,6 +64,7 @@ def render_ticket_whatsapp(
     promo_text: Optional[str] = None,
     contacto_especializado: Optional[Dict[str, Any]] = None,
     info_url: Optional[str] = None,
+    include_menu: bool = True,
 ) -> Dict[str, Any]:
     name = nombre or "Vecino/a"
     kind_label = (
@@ -111,9 +112,8 @@ def render_ticket_whatsapp(
     contact_section = _render_contact_section(contacto_especializado)
     promo_section = f"\n\n{promo_text}" if promo_text else ""
 
-    body_text = (
-        f"{resumen}{seguimiento}{contact_section}{promo_section}{extra}{_build_menu_text(kind)}"
-    )
+    menu_text = _build_menu_text(kind) if include_menu else ""
+    body_text = f"{resumen}{seguimiento}{contact_section}{promo_section}{extra}{menu_text}"
 
     return {
         "body_text": body_text,
@@ -173,6 +173,7 @@ def build_ticket_receipt(
     base_chat_url: str = "https://www.chatboc.ar/chat",
     promo_image_url: Optional[str] = None,
     info_url: Optional[str] = None,
+    include_menu: bool = True,
 ) -> Dict[str, Any]:
     return render_ticket_whatsapp(
         kind=kind,
@@ -188,4 +189,5 @@ def build_ticket_receipt(
         promo_text=None,
         contacto_especializado=None,
         info_url=info_url,
+        include_menu=include_menu,
     )
