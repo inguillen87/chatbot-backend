@@ -326,6 +326,11 @@ def _build_bootstrap_payloads(
             "requiere_identidad": bool(
                 template_copy.get("requiere_datos_contacto", False)
             ),
+            "es_votacion_envivo": bool(template_copy.get("es_votacion_envivo", False)),
+            "mostrar_resultados_envivo": bool(
+                template_copy.get("mostrar_resultados_envivo", False)
+            ),
+            "permitir_comentarios": bool(template_copy.get("permitir_comentarios", False)),
             "politica_unicidad": template_copy.get("politica_unicidad", "libre"),
             "tags": list(template_copy.get("tags") or []),
             "inicio_at": inicio.isoformat(),
@@ -470,6 +475,11 @@ def list_template_catalog(
                 "politica_unicidad": template_copy.get("politica_unicidad", "libre"),
                 "anonimato": bool(template_copy.get("anonimato", True)),
                 "requiere_datos_contacto": bool(template_copy.get("requiere_datos_contacto", False)),
+                "es_votacion_envivo": bool(template_copy.get("es_votacion_envivo", False)),
+                "mostrar_resultados_envivo": bool(
+                    template_copy.get("mostrar_resultados_envivo", False)
+                ),
+                "permitir_comentarios": bool(template_copy.get("permitir_comentarios", False)),
                 "tags": list(template_copy.get("tags") or []),
                 "preguntas": preguntas_rendered,
                 "demo_seed": demo_seed,
@@ -2532,6 +2542,7 @@ def seed_encuesta_respuestas_demo(
     geo_profile_key: Optional[str] = None,
     municipality_label: Optional[str] = None,
     seed: Optional[int] = None,
+    reset_data: bool = False,
 ) -> Dict[str, Any]:
     if cantidad <= 0:
         raise EncuestaError("Debe solicitar al menos una respuesta demo")
@@ -2543,6 +2554,10 @@ def seed_encuesta_respuestas_demo(
         geo_metadata = _resolve_geo_metadata(profile_key=geo_profile_key)
     if not geo_metadata and municipality_label:
         geo_metadata = _resolve_geo_metadata(municipality=municipality_label)
+    reset_summary: Optional[Dict[str, int]] = None
+    if reset_data:
+        reset_summary = _reset_encuesta_demo_data(encuesta)
+
     rng = random.Random(seed)
 
     location_question = None
@@ -2764,6 +2779,53 @@ def seed_encuesta_respuestas_demo(
         "omitidas": skipped,
         "objetivo": cantidad,
         "seed": seed,
+        "reset": reset_summary,
+    }
+
+
+def _reset_encuesta_demo_data(encuesta: EncEncuesta) -> Dict[str, int]:
+    respuesta_ids = [
+        respuesta_id
+        for (respuesta_id,) in (
+            db.session.query(EncRespuesta.id)
+            .filter_by(encuesta_id=encuesta.id)
+            .all()
+        )
+    ]
+    respuestas_count = len(respuesta_ids)
+    comentarios_count = (
+        db.session.query(EncComentario.id)
+        .filter_by(encuesta_id=encuesta.id)
+        .count()
+    )
+
+    if respuesta_ids:
+        (
+            db.session.query(EncRespuestaDetalle)
+            .filter(EncRespuestaDetalle.respuesta_id.in_(respuesta_ids))
+            .delete(synchronize_session=False)
+        )
+        (
+            db.session.query(EncRespuesta)
+            .filter(EncRespuesta.id.in_(respuesta_ids))
+            .delete(synchronize_session=False)
+        )
+
+    db.session.query(EncComentario).filter_by(encuesta_id=encuesta.id).delete(
+        synchronize_session=False
+    )
+    db.session.commit()
+
+    current_app.logger.info(
+        "[encuestas] Reset demo datos encuesta %s (respuestas=%s comentarios=%s)",
+        encuesta.id,
+        respuestas_count,
+        comentarios_count,
+    )
+
+    return {
+        "respuestas": respuestas_count,
+        "comentarios": comentarios_count,
     }
 
 
