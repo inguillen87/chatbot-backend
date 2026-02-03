@@ -216,6 +216,9 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
 
     script_url = current_app.config.get("WIDGET_SCRIPT_URL", "https://www.chatboc.ar/widget.js")
 
+    right_offset = cfg.get("widget_right", "20px")
+    left_offset = cfg.get("widget_left", right_offset)
+
     attrs = {
         "data-owner-token": canonical_token,
         "data-default-open": str(cfg.get("widget_default_open", False)).lower(),
@@ -224,7 +227,6 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-closed-width": closed_size,
         "data-closed-height": closed_size,
         "data-bottom": cfg.get("widget_bottom", "20px"),
-        "data-right": cfg.get("widget_right", "20px"),
         "data-z-index": cfg.get("widget_z_index", "100000"),
         "data-endpoint": cfg.get("widget_endpoint") or tenant.tipo or "municipio",
         "data-theme": cfg.get("widget_theme") or cfg.get("tema") or "light",
@@ -243,6 +245,10 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-domain": tenant.dominio or None,
         "data-shadow-dom": "true",  # Ensure styles don't leak/conflict with host page
     }
+    if str(position).lower() == "left":
+        attrs["data-left"] = left_offset
+    else:
+        attrs["data-right"] = right_offset
     if position:
         attrs["data-position"] = position
     if border_radius:
@@ -261,26 +267,28 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     attr_snippet = " ".join(f"{k}='{v}'" for k, v in attrs.items())
     embed_snippet = f"<script src='{script_url}' async {attr_snippet}></script>"
 
+    builder_config = {
+        "welcome_title": welcome_title,
+        "welcome_subtitle": welcome_subtitle,
+        "cta_messages": cfg.get("cta_messages") or [],
+        "theme_config": cfg.get("theme_config") or {},
+        "channels": cfg.get("channels") or {},
+        "preview": cfg.get("preview") or {},
+        "layout": {
+            "position": position or "right",
+            "width": width,
+            "height": height,
+            "closed_size": closed_size,
+            "border_radius": border_radius,
+        },
+    }
+
     return {
         "script_url": script_url,
         "attributes": attrs,
         "embed_snippet": embed_snippet,
         "theme": theme,
-        "builder_config": {
-            "welcome_title": welcome_title,
-            "welcome_subtitle": welcome_subtitle,
-            "cta_messages": cfg.get("cta_messages") or [],
-            "theme_config": cfg.get("theme_config") or {},
-            "channels": cfg.get("channels") or {},
-            "preview": cfg.get("preview") or {},
-            "layout": {
-                "position": position or "right",
-                "width": width,
-                "height": height,
-                "closed_size": closed_size,
-                "border_radius": border_radius,
-            },
-        },
+        "builder_config": builder_config,
         "marketplace": marketplace,
         "widget_token": canonical_token,
         "widget_token_cookie_name": current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token"),
@@ -665,9 +673,11 @@ def widget_config():
 
     is_integration_preview = "/integracion" in (request.headers.get("Referer", "") or "")
 
+    widget_payload = _build_widget_embed_payload(tenant, widget_token)
     payload = {
         "tenant": tenant.to_public_dict(),
-        "widget": _build_widget_embed_payload(tenant, widget_token),
+        "widget": widget_payload,
+        "builder_config": widget_payload.get("builder_config", {}),
         # The integration builder renders its own preview iframe; the global
         # site-wide widget bubble must stay hidden to avoid duplicated widgets
         # on /t/[tenant]/integracion.
