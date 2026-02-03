@@ -98,6 +98,17 @@ def document_intelligence_preview_options(pyme_id: int):
     return "", 204
 
 
+def _catalog_llm_prompt() -> str:
+    return (
+        "Extrae la tabla del catálogo en JSON con claves "
+        "'columns' (lista de strings) y 'rows' (lista de listas ordenadas según columns). "
+        "Incluye columnas como Marca, Varietal, Unidades/Caja, Pallet, "
+        "Precio Caja, Precio Botella, Sugerido Público si están presentes. "
+        "No inventes datos, deja vacío si no se ve. "
+        "Mantén los valores numéricos tal como aparecen (puntos para miles, comas decimales)."
+    )
+
+
 def _document_intelligence_preview(current_user, pyme_id: int):
     """Return a lightweight preview of the uploaded spreadsheet or CSV file."""
 
@@ -166,43 +177,29 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                         headers = [f"Columna {i+1}" for i in range(len(rows[0]))] if rows else []
 
                     df = pd.DataFrame(rows, columns=headers)
-                use_vision = (
+                try:
+                    image = page_for_image.to_image(resolution=300).original
+                    buffer = io.BytesIO()
+                    image.save(buffer, format="JPEG")
+                    vision = analyze_image_structured(buffer.getvalue(), _catalog_llm_prompt())
+                    vision_df = _build_df_from_vision(vision)
+                    if vision_df is not None and not vision_df.empty:
+                        df = vision_df
+                except Exception:
+                    pass
+
+                use_pdf_fallback = (
                     df is None
                     or df.empty
                     or _looks_like_flat_pdf_table(df)
                     or _looks_like_placeholder_columns(list(df.columns) if df is not None else [])
                 )
-                if use_vision:
-                    try:
-                        image = page_for_image.to_image(resolution=300).original
-                        buffer = io.BytesIO()
-                        image.save(buffer, format="JPEG")
-                        prompt = (
-                            "Extrae la tabla del catálogo en JSON con claves "
-                            "'columns' (lista de strings) y 'rows' (lista de listas ordenadas según columns). "
-                            "Incluye columnas como Marca, Varietal, Unidades/Caja, Pallet, "
-                            "Precio Caja, Precio Botella, Sugerido Público si están presentes. "
-                            "No inventes datos, deja vacío si no se ve. "
-                            "Mantén los valores numéricos tal como aparecen (puntos para miles, comas decimales)."
-                        )
-                        vision = analyze_image_structured(buffer.getvalue(), prompt)
-                        vision_df = _build_df_from_vision(vision)
-                        if vision_df is not None and not vision_df.empty:
-                            df = vision_df
-                    except Exception:
-                        df = df if df is not None and not df.empty else None
+                if use_pdf_fallback:
+                    df = df if df is not None and not df.empty else None
 
                 if df is None or df.empty:
                     text = page_for_image.extract_text() or ""
-                    text_prompt = (
-                        "Extrae la tabla del catálogo en JSON con claves "
-                        "'columns' (lista de strings) y 'rows' (lista de listas ordenadas según columns). "
-                        "Incluye columnas como Marca, Varietal, Unidades/Caja, Pallet, "
-                        "Precio Caja, Precio Botella, Sugerido Público si están presentes. "
-                        "No inventes datos, deja vacío si no se ve. "
-                        "Mantén los valores numéricos tal como aparecen (puntos para miles, comas decimales)."
-                    )
-                    structured = analyze_text_structured(text, text_prompt)
+                    structured = analyze_text_structured(text, _catalog_llm_prompt())
                     structured_df = _build_df_from_vision(structured)
                     if structured_df is not None and not structured_df.empty:
                         df = structured_df
@@ -236,16 +233,8 @@ def _document_intelligence_preview(current_user, pyme_id: int):
 
     max_rows = request.form.get("maxRows", type=int) or 50
     preview_df = df.head(max_rows).fillna("")
-    text_prompt = (
-        "Extrae la tabla del catálogo en JSON con claves "
-        "'columns' (lista de strings) y 'rows' (lista de listas ordenadas según columns). "
-        "Incluye columnas como Marca, Varietal, Unidades/Caja, Pallet, "
-        "Precio Caja, Precio Botella, Sugerido Público si están presentes. "
-        "No inventes datos, deja vacío si no se ve. "
-        "Mantén los valores numéricos tal como aparecen (puntos para miles, comas decimales)."
-    )
     csv_sample = preview_df.to_csv(index=False)
-    structured = analyze_text_structured(csv_sample, text_prompt)
+    structured = analyze_text_structured(csv_sample, _catalog_llm_prompt())
     structured_df = _build_df_from_vision(structured)
     if structured_df is not None and not structured_df.empty:
         preview_df = structured_df.head(max_rows).fillna("")
