@@ -1,6 +1,7 @@
 from typing import Dict, Any, List
 from ..base import CatalogProcessor, ProcessResult, CatalogItemData
 from services.llm_utils import llamar_llm_para_json_estructurado
+from services.common_utils import parse_precio_flexible
 
 class GenericProcessor(CatalogProcessor):
     @property
@@ -18,7 +19,8 @@ class GenericProcessor(CatalogProcessor):
         \"\"\"{extracted_text[:15000]}\"\"\"
 
         Genera un JSON con una lista de items bajo la clave 'items'.
-        Cada item debe tener: nombre, precio, sku, stock, descripcion.
+        Cada item debe tener: nombre, precio, moneda, sku, stock, descripcion, marca,
+        categoria, unidad, presentacion.
         """
 
         try:
@@ -27,11 +29,23 @@ class GenericProcessor(CatalogProcessor):
 
             canonical_items = []
             for raw in raw_items:
+                precio, moneda = self._parse_price(raw.get("precio"))
+                atributos = {
+                    "marca": raw.get("marca"),
+                    "categoria": raw.get("categoria"),
+                    "unidad": raw.get("unidad"),
+                    "presentacion": raw.get("presentacion"),
+                }
                 item = CatalogItemData(
                     nombre=raw.get("nombre", "Sin nombre"),
-                    precio=self._parse_price(raw.get("precio")),
+                    precio=precio,
+                    moneda=moneda or "ARS",
                     sku=raw.get("sku"),
                     stock=self._parse_float(raw.get("stock")),
+                    unidad_base=raw.get("unidad"),
+                    contenido_paquete=raw.get("presentacion"),
+                    categoria=raw.get("categoria"),
+                    atributos=atributos,
                     original_text=str(raw)
                 )
                 canonical_items.append(item)
@@ -46,12 +60,10 @@ class GenericProcessor(CatalogProcessor):
             return ProcessResult(items=[], confidence=0.0, warnings=[str(e)], raw_text=extracted_text)
 
     def _parse_price(self, val):
-        if not val: return None
-        # Basic parsing, can be enhanced with common_utils
-        try:
-            return float(str(val).replace("$", "").replace(",", ""))
-        except:
-            return None
+        if not val:
+            return None, None
+        _, precio_float, moneda = parse_precio_flexible(str(val))
+        return precio_float, moneda
 
     def _parse_float(self, val):
         try:
