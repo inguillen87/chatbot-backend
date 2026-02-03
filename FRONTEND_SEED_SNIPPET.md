@@ -1,7 +1,7 @@
-# Frontend Integration: Survey Seed Tool
+# Frontend Integration: Survey Seed Tool (Producción)
 
 To add the "Seed 100 Participantes" feature to your Admin Frontend, use the following React component.
-This component communicates with the new Backend API endpoint `/api/admin/encuestas/:id/seed-demo`.
+This component communicates with the Backend API endpoint `/api/admin/encuestas/:id/seed-demo`.
 
 ## Backend API Requirement
 The backend must have the `seed_demo_endpoint` enabled (already implemented in `routes/encuestas_admin.py`).
@@ -17,7 +17,7 @@ import axios from 'axios'; // Or your preferred http client
 /**
  * SeedButton Component
  *
- * Renders a button to populate a survey with mock data.
+ * Renders a button to populate a survey with realistic synthetic data.
  *
  * @param {number|string} surveyId - The ID of the survey to seed.
  * @param {string} title - The title of the survey (for confirmation dialog).
@@ -29,7 +29,7 @@ const SeedButton = ({ surveyId, title, token, apiUrlBase, onSuccess }) => {
   const [loading, setLoading] = useState(false);
 
   const handleSeed = async () => {
-    if (!window.confirm(`¿Generar 100 respuestas de prueba para "${title}"?`)) {
+    if (!window.confirm(`¿Resetear y generar 100 respuestas para "${title}"?`)) {
       return;
     }
 
@@ -42,6 +42,7 @@ const SeedButton = ({ surveyId, title, token, apiUrlBase, onSuccess }) => {
         endpoint,
         {
           cantidad: 100, // Default requested amount
+          reset: true, // Borra respuestas/comentarios previos antes de sembrar
           // Optional: municipality_label: "Junín"
         },
         {
@@ -53,7 +54,10 @@ const SeedButton = ({ surveyId, title, token, apiUrlBase, onSuccess }) => {
       );
 
       if (response.data && response.data.creadas > 0) {
-        alert(`✅ Éxito: Se generaron ${response.data.creadas} respuestas.`);
+        const resetInfo = response.data.reset
+          ? ` (reset: ${response.data.reset.respuestas} respuestas, ${response.data.reset.comentarios} comentarios)`
+          : '';
+        alert(`✅ Éxito: Se generaron ${response.data.creadas} respuestas.${resetInfo}`);
         if (onSuccess) onSuccess();
       } else {
         alert('⚠️ El proceso finalizó pero no se generaron respuestas (revisar logs).');
