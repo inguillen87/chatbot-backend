@@ -337,6 +337,13 @@ def get_tickets_del_usuario_logic(current_user: User):
                 return True
             if tenant_owner_municipio_id and current_user.empresa_id == tenant_owner_municipio_id:
                 return True
+            if (
+                current_user.rol in {"admin", "empleado"}
+                and current_user.tipo_chat
+                and tenant_for_query.tipo
+                and current_user.tipo_chat == tenant_for_query.tipo
+            ):
+                return True
             return False
 
         # Determinar el tipo de ticket usando tenant_slug primero y luego `tipo_chat`.

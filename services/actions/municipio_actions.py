@@ -780,7 +780,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
 
             try:
-                from models import MunicipioTicket
+                from models import MunicipioTicket, db
                 from routes.ticket import serialize_ticket_to_json
                 from socket_service import emit_new_ticket
 
@@ -1236,7 +1236,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             logger.info(f"Ticket de sugerencia {nro_ticket_str} creado exitosamente.")
 
             try:
-                from models import MunicipioTicket
+                from models import MunicipioTicket, db
                 from routes.ticket import serialize_ticket_to_json
                 from socket_service import emit_new_ticket
 
