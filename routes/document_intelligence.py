@@ -29,6 +29,30 @@ def _build_columns(columns: List[Any]) -> List[dict[str, str]]:
     return parsed
 
 
+def _looks_like_flat_pdf_table(df: pd.DataFrame) -> bool:
+    if df is None or df.empty:
+        return False
+
+    column_count = len(df.columns)
+    if column_count >= 3:
+        return False
+
+    sample_rows = df.head(6).fillna("")
+    header_tokens = ("marca", "varietal", "precio", "caja", "botella", "pallet", "unidad")
+    token_hits = 0
+    long_row_hits = 0
+    for _, row in sample_rows.iterrows():
+        cell_text = " ".join(str(value) for value in row if value is not None).strip()
+        if not cell_text:
+            continue
+        lowered = cell_text.lower()
+        token_hits += sum(token in lowered for token in header_tokens)
+        if len(cell_text) > 80:
+            long_row_hits += 1
+
+    return column_count <= 1 and (token_hits >= 2 or long_row_hits >= 2)
+
+
 @document_intelligence_bp.route("/preview", methods=["OPTIONS"])
 def document_intelligence_preview_options(pyme_id: int):
     """Handle CORS preflight requests for the preview endpoint."""
@@ -102,7 +126,8 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                         headers = [f"Columna {i+1}" for i in range(len(rows[0]))] if rows else []
 
                     df = pd.DataFrame(rows, columns=headers)
-                if df is None or df.empty:
+                use_vision = df is None or df.empty or _looks_like_flat_pdf_table(df)
+                if use_vision:
                     try:
                         image = page.to_image(resolution=300).original
                         buffer = io.BytesIO()
@@ -118,7 +143,7 @@ def _document_intelligence_preview(current_user, pyme_id: int):
                         if isinstance(vision, dict) and vision.get("rows") and vision.get("columns"):
                             df = pd.DataFrame(vision["rows"], columns=vision["columns"])
                     except Exception:
-                        df = None
+                        df = df if df is not None and not df.empty else None
 
                 if df is None or df.empty:
                     # Si no hay tablas, extraer texto simple
